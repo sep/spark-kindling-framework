@@ -1,5 +1,12 @@
 # Fabric notebook source
 
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   }
+# META }
 
 # CELL ********************
 
@@ -111,3 +118,10 @@ class WatermarkManager(BaseServiceProvider, WatermarkService):
             self.logger.debug(f"read_current_changes - {entity.entityid} for {pipe.name}: No new data")   
             return None
         
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
