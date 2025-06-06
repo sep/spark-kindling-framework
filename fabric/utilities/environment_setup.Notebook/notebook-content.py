@@ -21,15 +21,26 @@
 
 # CELL ********************
 
+%run fabric_notebook_sdk
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 # =============================================================================
 # BOOTSTRAP CONFIGURATION
 # =============================================================================
 
 BOOTSTRAP_CONFIG = {
     'workspace_endpoint': "https://sep-syws-dataanalytics-dev.dev.azuresynapse.net",
-    'package_storage_path': "abfss://artifacts@sepstdatalakedev.blob.core.windows.net/packages/latest",
-    'required_packages': ["azure.identity", "azure.synapse.artifacts", "injector", "dynaconf", "pytest"],
-    'ignored_folders': ['sandbox', 'utilities'],
+    'package_storage_path': "Files/artifacts/packages/latest",
+    'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
+    'ignored_folders': ['utilities'],
     'spark_configs': {
         'spark.databricks.delta.schema.autoMerge.enabled': 'true'
     }
