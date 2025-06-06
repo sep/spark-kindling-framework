@@ -5,6 +5,18 @@
 # META {
 # META   "kernel_info": {
 # META     "name": "synapse_pyspark"
+# META   },
+# META   "dependencies": {
+# META     "lakehouse": {
+# META       "default_lakehouse": "e2a89496-5a18-4104-ac7a-4bfe4f325065",
+# META       "default_lakehouse_name": "ent_datalake_np",
+# META       "default_lakehouse_workspace_id": "ab18d43b-50de-4b41-b44b-f513a6731b99",
+# META       "known_lakehouses": [
+# META         {
+# META           "id": "e2a89496-5a18-4104-ac7a-4bfe4f325065"
+# META         }
+# META       ]
+# META     }
 # META   }
 # META }
 
@@ -169,34 +181,17 @@ def is_interactive_session():
     except:
         return False
 
+def setup_synapse_credentials():
+    return DefaultAzureCredential()
+
 
 # =============================================================================
 # PHASE 3: SYNAPSE CLIENT INITIALIZATION
 # =============================================================================
 
-def setup_synapse_credentials():
-    """Setup Synapse authentication"""
-    from azure.identity import ManagedIdentityCredential, AzureAuthorityHosts
-    from azure.synapse.artifacts import ArtifactsClient
-    from azure.core.credentials import AccessToken, TokenCredential
-    import time
-    from notebookutils import mssparkutils
-
-    class SynapseTokenCredential(TokenCredential):
-        def __init__(self, expires_on=None):
-            token = mssparkutils.credentials.getToken("Synapse")
-            self.token = token
-            self.expires_on = expires_on or (time.time() + 3600)
-            
-        def get_token(self, *scopes, **kwargs):
-            return AccessToken(self.token, self.expires_on)
-    
-    return SynapseTokenCredential()
-
 def initialize_synapse_client():
     """Set up authenticated Synapse client"""
-    from azure.synapse.artifacts import ArtifactsClient
-    
+
     credential = setup_synapse_credentials()
     endpoint = BOOTSTRAP_CONFIG['workspace_endpoint']
     client = ArtifactsClient(endpoint=endpoint, credential=credential)

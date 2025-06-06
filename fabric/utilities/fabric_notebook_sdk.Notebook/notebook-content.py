@@ -39,7 +39,6 @@ from azure.core.exceptions import (
     ClientAuthenticationError
 )
 
-
 # ============================================================================
 # MODELS (azure.synapse.artifacts.models)
 # ============================================================================
