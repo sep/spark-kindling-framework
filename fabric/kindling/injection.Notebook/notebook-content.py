@@ -1,5 +1,12 @@
 # Fabric notebook source
 
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   }
+# META }
 
 # CELL ********************
 
@@ -83,3 +90,10 @@ if 'GI_IMPORT_GUARD' not in globals():
                 
                 return singleton_cls
             return decorator
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }

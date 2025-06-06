@@ -24,13 +24,13 @@ from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder
 
 notebook_import(".spark_session")
-notebook_import(".spark_log")
 notebook_import(".injection")
 notebook_import(".spark_config")
+notebook_import(".spark_log")
 
 class CustomEventEmitter(ABC):
     @abstractmethod
-    def emit_custom_event(
+    def emit_custom_event(self,
         component: str,
         operation: str,
         details: dict,
@@ -43,10 +43,10 @@ class SynapseEventEmitter(BaseServiceProvider, CustomEventEmitter):
 
     @inject
     def __init__(self):
-        self.logger = SparkLogger("spark_trace")
+        self.logger = GlobalInjector.get(PythonLoggerProvider).get_logger('EventEmitter')
 
     # Keep the original helper functions
-    def emit_custom_event(
+    def emit_custom_event(self,
         component: str,
         operation: str,
         details: dict,
@@ -82,7 +82,6 @@ class SynapseEventEmitter(BaseServiceProvider, CustomEventEmitter):
         listener_bus = spark.sparkContext._jsc.sc().listenerBus()
         listener_bus.post(event)
 
-
 @contextmanager
 def mdc_context(**kwargs):
     spark = get_or_create_spark_session()
@@ -108,28 +107,31 @@ class SparkSpan:
     start_time: datetime = None
     end_time: datetime = None
 
-class CustomEventPoster(ABC):
-    @abstractmethod
-    def emit_custom_event(
-        component: str,
-        operation: str,
-        details: dict,
-        eventId: str,
-        traceId: uuid ) -> None:
-            pass
 
 class CustomTraceProvider(ABC):
     @abstractmethod
     def span(self, operation: str = None, component: str = None, details: dict = None, reraise: bool = False):
         pass  
 
+class SparkTrace():
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def current():
+        return SparkTrace()
+
+    def span(self, *args, **kwargs):
+        spt = GlobalInjector.get(CustomTraceProvider)
+        return spt.span(*args, **kwargs)
+
 @GlobalInjector.singleton_autobind()
-class SparkTrace(BaseServiceProvider, CustomEventPoster):
+class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
     # Static instance to maintain session trace
     _instance = None
     
     @inject
-    def __init__(self, emitter: CustomEventPoster):
+    def __init__(self, emitter: CustomEventEmitter):
         self.emitter = emitter 
         self.activity_counter = 1
     

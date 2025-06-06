@@ -1,5 +1,12 @@
 # Fabric notebook source
 
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   }
+# META }
 
 # CELL ********************
 
@@ -168,3 +175,10 @@ class ConfigModule(Module):
 def configure_injector():
     injector = Injector([ConfigModule()])
     return injector
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }

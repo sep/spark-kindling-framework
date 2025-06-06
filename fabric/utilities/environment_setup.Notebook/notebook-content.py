@@ -44,12 +44,15 @@
 
 # CELL ********************
 
+from azure.identity import DefaultAzureCredential
+import requests
+
 # =============================================================================
 # BOOTSTRAP CONFIGURATION
 # =============================================================================
 
 BOOTSTRAP_CONFIG = {
-    'workspace_endpoint': "https://sep-syws-dataanalytics-dev.dev.azuresynapse.net",
+    'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'package_storage_path': "Files/artifacts/packages/latest",
     'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
     'ignored_folders': ['utilities'],
@@ -107,6 +110,108 @@ def safe_bootstrap_operation(operation_name, operation_func, *args, **kwargs):
     except Exception as e:
         logger.error(f"Failed {operation_name}: {str(e)}")
         raise BootstrapException(f"Bootstrap failed at {operation_name}: {str(e)}") from e
+
+def publish_notebook_folder_as_package(folder_name, package_name, location):
+    import os
+    import uuid
+    import subprocess
+    import shutil
+    from setuptools import setup, find_packages
+
+    # Create a temporary folder with a unique name
+    temp_folder_path = f"/tmp/dist_{uuid.uuid4().hex}"
+    os.makedirs(temp_folder_path, exist_ok=True)
+    
+    # Get all notebooks from the folder
+    nbs = get_all_notebooks_for_folder(folder_name)
+
+    # Filter modules and create package structure
+    filtered_modules = [nb.name for nb in nbs if '_init' not in nb.name]
+    import_lines = [f"from . import {nb_name}" for nb_name in filtered_modules]
+    init_content = "\n".join(import_lines)
+    if init_content:
+        init_content += "\n"
+
+    display(f"Init content = {init_content})")
+
+    package_dir = os.path.join(temp_folder_path, package_name)
+    os.makedirs(package_dir, exist_ok=True)
+    
+    # Write __init__.py file
+    with open(f"{package_dir}/__init__.py", "w") as f:
+        f.write(init_content)
+
+    # Write each notebook as a Python module
+    for nb_name in filtered_modules:
+        code, _ = load_notebook_code(nb_name)
+        with open(f"{package_dir}/{nb_name}.py", "w") as f:
+            f.write(code)
+    
+    
+    # Create pyproject.toml file in the temp_folder_path
+    pyproject_content = f"""[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{package_name}"
+version = "0.1.0"
+description = "Package created from notebooks in {folder_name}"
+readme = "README.md"
+authors = [{{"name" = "Author"}}]
+license = {{"text" = "MIT"}}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.7"
+"""
+    
+    # Create a minimal README.md
+    readme_content = f"""# {package_name}
+
+A package created from notebooks in {folder_name}.
+"""
+    
+    # Write pyproject.toml to the root directory
+    with open(os.path.join(temp_folder_path, "pyproject.toml"), "w") as f:
+        f.write(pyproject_content)
+        
+    # Write README.md to the root directory
+    with open(os.path.join(temp_folder_path, "README.md"), "w") as f:
+        f.write(readme_content)
+    
+    # Build the wheel package
+    current_dir = os.getcwd()
+    try:
+        # Change to the temporary directory
+        os.chdir(temp_folder_path)
+        
+        # Build the wheel
+        subprocess.check_call(["pip", "wheel", ".", "--no-deps", "-w", "dist/"])
+        
+        # Find the built wheel file
+        wheel_files = os.listdir("dist/")
+        wheel_file = wheel_files[0]
+        wheel_path = os.path.join(temp_folder_path, "dist", wheel_file)
+        
+        # For local file system destination
+        if location.startswith("/"):
+            os.makedirs(os.path.dirname(location), exist_ok=True)
+            shutil.copy2(wheel_path, location)
+        else:
+            # For ABFSS or other remote storage in Synapse
+            # Use mssparkutils.fs.cp directly with the file path
+            local_path = f"file:///{wheel_path}"
+            mssparkutils.fs.cp(local_path, f"{location}/{wheel_file}", True)
+        
+        print(f"Package {package_name} successfully built and saved to {location}")
+        
+    finally:
+        os.chdir(current_dir)
+        # Clean up temporary files
+        shutil.rmtree(temp_folder_path)
 
 # Initialize logger
 logger = create_console_logger()
@@ -181,9 +286,15 @@ def is_interactive_session():
     except:
         return False
 
-def setup_synapse_credentials():
-    return DefaultAzureCredential()
+class SimpleObject:
+    pass
 
+class BearerTokenCredential:
+    def get_token(self, audience):
+        token_obj = SimpleObject()
+        token_obj.token = mssparkutils.credentials.getToken(audience)
+        token_obj.expires_on = int(time.time() + 3600) 
+        return token_obj
 
 # =============================================================================
 # PHASE 3: SYNAPSE CLIENT INITIALIZATION
@@ -192,7 +303,8 @@ def setup_synapse_credentials():
 def initialize_synapse_client():
     """Set up authenticated Synapse client"""
 
-    credential = setup_synapse_credentials()
+    credential = BearerTokenCredential()
+
     endpoint = BOOTSTRAP_CONFIG['workspace_endpoint']
     client = ArtifactsClient(endpoint=endpoint, credential=credential)
     

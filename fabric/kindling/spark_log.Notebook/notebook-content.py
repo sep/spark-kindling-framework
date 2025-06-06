@@ -14,7 +14,9 @@ import re
 from datetime import datetime
  
 notebook_import(".spark_session")
- 
+notebook_import('.injection')
+notebook_import('.spark_config')
+
 class SparkLogger:
     def __init__(self, name: str):
         spark = get_or_create_spark_session()
@@ -107,15 +109,15 @@ class SparkLogger:
 
         return result
 
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
-
-# CELL ********************
-
+class PythonLoggerProvider(ABC):
+    @abstractmethod
+    def get_logger(self, name: str):
+        pass
+ 
+@GlobalInjector.singleton_autobind()
+class SparkLoggerProvider(BaseServiceProvider, PythonLoggerProvider):
+    def get_logger(self, name: str):
+        return SparkLogger(name)
 
 # METADATA ********************
 
