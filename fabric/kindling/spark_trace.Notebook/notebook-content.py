@@ -26,7 +26,7 @@ from injector import Injector, inject, singleton, Binder
 notebook_import(".spark_session")
 notebook_import(".injection")
 notebook_import(".spark_config")
-notebook_import(".spark_log")
+notebook_import(".spark_log_provider")
 
 class CustomEventEmitter(ABC):
     @abstractmethod
@@ -133,16 +133,17 @@ class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
     @inject
     def __init__(self, emitter: CustomEventEmitter):
         self.emitter = emitter 
+        self.current_span = None
         self.activity_counter = 1
     
-    def _add_timestamp_to_dict(dict: dict[str,str], key: str, ts: datetime) -> dict[str,str]:
+    def _add_timestamp_to_dict(self, dict: dict[str,str], key: str, ts: datetime) -> dict[str,str]:
         d = dict or {}
         return {**d, **{ key: ts.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] }}
 
-    def _merge_dict(d1: dict[str,str], d2: dict[str,str]) -> dict[str,str]:
+    def _merge_dict(self, d1: dict[str,str], d2: dict[str,str]) -> dict[str,str]:
         return {**d1, **d2}
 
-    def _calculate_time_diff(dt1: datetime, dt2: datetime) -> str:
+    def _calculate_time_diff(self, dt1: datetime, dt2: datetime) -> str:
         diff = (dt2 - dt1).total_seconds()
         return f"{diff:.3f}"
 
@@ -160,7 +161,7 @@ class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
             operation = operation or self.current_span.operation if self.current_span else None, 
             attributes = details or self.current_span.attributes if self.current_span else None, 
             start_time = datetime.now(),
-            traceId = self.traceId, 
+            traceId = self.current_span.traceId if self.current_span else uuid.uuid4(), 
             reraise = reraise or self.current_span.reraise if self.current_span else None
         )
 
@@ -170,7 +171,7 @@ class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
                         component=current_span.name, operation=current_span.operation):
             start_details = self._add_timestamp_to_dict(details or {}, "startTime", current_span.start_time)
             try:
-                self.emitter(current_span.name, f"{current_span.operation}_START", 
+                self.emitter.emit_custom_event(current_span.name, f"{current_span.operation}_START", 
                            start_details, current_span.id, current_span.traceId)
                 yield self
                 
@@ -178,7 +179,7 @@ class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
                 error_time = datetime.now()
                 error_details = self._add_timestamp_to_dict(start_details, "errorTime", error_time)
                 error_details["exception"] = traceback.format_exc()
-                self.emitter(current_span.name, f"{current_span.operation}_ERROR", 
+                self.emitter.emit_custom_event(current_span.name, f"{current_span.operation}_ERROR", 
                            error_details, current_span.id, current_span.traceId)
                 if reraise:
                     raise
@@ -187,7 +188,7 @@ class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
                 current_span.end_time = datetime.now()
                 end_details = self._add_timestamp_to_dict(start_details, "endTime", current_span.end_time)
                 end_details["totalTime"] = self._calculate_time_diff(current_span.start_time, current_span.end_time)
-                self.emitter(current_span.name, f"{current_span.operation}_END", 
+                self.emitter.emit_custom_event(current_span.name, f"{current_span.operation}_END", 
                            end_details, current_span.id, current_span.traceId)
 
 

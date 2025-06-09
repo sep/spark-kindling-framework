@@ -16,7 +16,6 @@ from dynaconf import Dynaconf
 from pyspark.sql import SparkSession
   
 notebook_import('.injection')
-notebook_import('.spark_log')
 notebook_import(".spark_session")
 
 class ConfigInterface(ABC):

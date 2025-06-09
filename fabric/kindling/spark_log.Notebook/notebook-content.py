@@ -109,15 +109,7 @@ class SparkLogger:
 
         return result
 
-class PythonLoggerProvider(ABC):
-    @abstractmethod
-    def get_logger(self, name: str):
-        pass
- 
-@GlobalInjector.singleton_autobind()
-class SparkLoggerProvider(BaseServiceProvider, PythonLoggerProvider):
-    def get_logger(self, name: str):
-        return SparkLogger(name)
+
 
 # METADATA ********************
 
