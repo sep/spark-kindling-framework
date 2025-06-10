@@ -104,13 +104,14 @@ import notebookutils
 @GlobalInjector.singleton_autobind()
 class SimpleFileIngestionProcessor(BaseServiceProvider, FileIngestionProcessor):
     @inject
-    def __init__(self, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider ):
+    def __init__(self, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider, lp: PythonLoggerProvider ):
         super().__init__()
         self.fir = fir
         self.ep = ep
         self.der = der
         self.tp = tp
         self.server = self.config.get("SYNAPSE_STORAGE_SERVER")
+        self.logger = lp.get_logger("SimpleFileIngestionProcessor")
 
     def process_path(self, path: str ):
         with self.tp.span(component="SimpleFileIngestionProcessor", operation="process_path",details={},reraise=True ):        

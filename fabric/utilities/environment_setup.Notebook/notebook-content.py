@@ -22,14 +22,17 @@
 
 # CELL ********************
 
-def execute_remote_py_file(abfss_path):
-    """Execute a Python file directly from ABFSS"""
-    content = mssparkutils.fs.head(abfss_path, max_bytes=1000000)  # Adjust size as needed
-    exec(compile(content, abfss_path, 'exec'), globals())
+def execute_remote_py_file(abfss_path, **kwargs):
+    """Execute a Python file directly from ABFSS with parameters"""
+    content = mssparkutils.fs.head(abfss_path, max_bytes=1000000)
+    current_globals = globals()
+    current_globals.update(kwargs)
+    exec(compile(content, abfss_path, 'exec'), current_globals)
 
-def boostrap_environment(path):
-    execute_remote_py_file(f"{path}/kindling-bootstrap.py")   
+def bootstrap_environment():
+    execute_remote_py_file(f"{BOOTSTRAP_CONFIG['package_storage_path']}/kindling-bootstrap.py", bootstrap_config=BOOTSTRAP_CONFIG)   
 
+bootstrap_environment()
 
 # METADATA ********************
 

@@ -122,7 +122,7 @@ class SparkTrace():
         return SparkTrace()
 
     def span(self, *args, **kwargs):
-        spt = GlobalInjector.get(CustomTraceProvider)
+        spt = GlobalInjector.get(SparkTraceProvider)
         return spt.span(*args, **kwargs)
 
 @GlobalInjector.singleton_autobind()

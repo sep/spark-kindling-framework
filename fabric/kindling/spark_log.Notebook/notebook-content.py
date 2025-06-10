@@ -24,24 +24,64 @@ class SparkLogger:
         self.logger = spark._jvm.org.apache.log4j.LogManager.getLogger(name)
         self.pattern = "%m%ntrace_id=%x{trace_id} span_id=%x{span_id} component=%x{component} operation=%x{operation}"
         self.spark = spark
+        
+        # Log level hierarchy (lower numbers = higher priority)
+        self._level_hierarchy = {
+            'error': 0,
+            'warn': 1, 
+            'info': 2,
+            'debug': 3
+        }
+        
+        # Cache log level methods for efficiency
+        self._log_methods = {
+            'debug': self.logger.debug,
+            'info': self.logger.info,
+            'warn': self.logger.warn,
+            'error': self.logger.error
+        }
 
     def debug(self, msg: str):
-        print(f"Logger: {self._format_msg(msg, 'debug')}")
-        self.logger.debug(self._format_msg(msg, "debug"))
-        print(self._format_msg(msg, "debug"))
+        self._log('debug', msg)
     
     def info(self, msg: str):
-        print(f"Logger: {self._format_msg(msg, 'info')}")
-        self.logger.info(self._format_msg(msg, "info"))
-        print(self._format_msg(msg, "info"))
+        self._log('info', msg)
 
     def warn(self, msg: str):
-        self.logger.warn(self._format_msg(msg, "warn"))
-        print(self._format_msg(msg, "warn"))
+        self._log('warn', msg)
+
+    def warning(self, msg: str):
+        self._log('warn', msg)
     
     def error(self, msg: str):
-        self.logger.error(self._format_msg(msg, "error")) 
-        print(self._format_msg(msg, "error"))
+        self._log('error', msg)
+    
+    def _is_level_enabled(self, level: str) -> bool:
+        """Check if the given log level should be logged based on current logger level"""
+        # Get the effective level (handles inheritance from parent loggers)
+        current_level = self.logger.getEffectiveLevel()
+        
+        # Convert Log4j level to string and compare
+        current_level_str = current_level.toString().lower()
+        
+        # If current level is not in our hierarchy, default to allowing all
+        if current_level_str not in self._level_hierarchy:
+            return True
+            
+        return self._level_hierarchy[level] <= self._level_hierarchy[current_level_str]
+    
+    def _log(self, level: str, msg: str):
+        """Central logging method that respects log levels and eliminates redundancy"""
+        # Only format message, log, and print if the level is enabled
+        if self._is_level_enabled(level):
+            formatted_msg = self._format_msg(msg, level)
+            self._log_methods[level](formatted_msg)
+            
+            # Print respects the same log level - only print for debug and info levels
+            if level in ['debug', 'info']:
+                print(f"Logger: {formatted_msg}")
+            else:
+                print(formatted_msg)
     
     def with_pattern(self, pattern: str):
         self.pattern = pattern + "%ntrace_id=%x{trace_id} span_id=%x{span_id} component=%x{component} operation=%x{operation}"
@@ -68,14 +108,15 @@ class SparkLogger:
         
         # Handle date/time
         date_matches = re.findall(r'%d(?:{([^}]+)})?', result)
-        now = datetime.now()
-        for date_format in date_matches:
-            if date_format:
-                date_str = now.strftime(date_format)[:-3]
-                result = result.replace(f'%d{{{date_format}}}', date_str)
-            else:
-                date_str = now.isoformat()[:-3]
-                result = result.replace('%d', date_str)
+        if date_matches:  # Only compute datetime if needed
+            now = datetime.now()
+            for date_format in date_matches:
+                if date_format:
+                    date_str = now.strftime(date_format)[:-3]
+                    result = result.replace(f'%d{{{date_format}}}', date_str)
+                else:
+                    date_str = now.isoformat()[:-3]
+                    result = result.replace('%d', date_str)
                 
         # Handle logger name with optional truncation
         logger_matches = re.findall(r'%c(?:{(\d+)})?', result)
@@ -92,10 +133,7 @@ class SparkLogger:
         mdc_matches = re.findall(r'%x{([^}]+)}', result)
         for mdc_key in mdc_matches:
             mdc_value = self.spark.sparkContext.getLocalProperty("mdc." + mdc_key)  
-            if mdc_value:
-                result = result.replace(f'%x{{{mdc_key}}}', mdc_value)
-            else:
-                result = result.replace(f'%x{{{mdc_key}}}', "n/a")
+            result = result.replace(f'%x{{{mdc_key}}}', mdc_value or "n/a")
         
         # Handle simple replacements
         replacements = {
@@ -108,8 +146,6 @@ class SparkLogger:
             result = result.replace(pattern, value)
 
         return result
-
-
 
 # METADATA ********************
 

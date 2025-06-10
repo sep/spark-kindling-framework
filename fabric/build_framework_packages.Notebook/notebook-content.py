@@ -22,12 +22,18 @@
 
 # CELL ********************
 
-globals()["is_interactive"] = False
-globals()["use_lake_packages"] = False
-globals()["load_local_packages"] = False
-if "frameworkPackageGuard" in globals():
-    print("Removing package guard")
-    del globals()["frameworkPackageGuard"]
+BOOTSTRAP_CONFIG = {
+    'is_interactive': False,
+    'use_lake_packages' : False,
+    'load_local_packages' : False,
+    'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
+    'package_storage_path': "Files/artifacts/packages/latest",
+    'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
+    'ignored_folders': ['utilities'],
+    'spark_configs': {
+        'spark.databricks.delta.schema.autoMerge.enabled': 'true'
+    }
+}
 
 # METADATA ********************
 
@@ -38,18 +44,7 @@ if "frameworkPackageGuard" in globals():
 
 # CELL ********************
 
-%run environment_setup
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
-
-# CELL ********************
-
-boostrap_environment("abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/latest")
+%run environment_bootstrap
 
 # METADATA ********************
 
