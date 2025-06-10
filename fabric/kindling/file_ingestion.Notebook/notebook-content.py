@@ -1,5 +1,12 @@
 # Fabric notebook source
 
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   }
+# META }
 
 # CELL ********************
 
@@ -19,6 +26,8 @@ from injector import Injector, inject, singleton, Binder
 notebook_import(".injection")
 notebook_import(".spark_config")
 notebook_import(".spark_log_provider")
+notebook_import(".data_entities")
+notebook_import(".spark_trace")
 
 @dataclass
 class FileIngestionMetadata:
@@ -30,7 +39,6 @@ class FileIngestionMetadata:
     infer_schema: bool = True
  
 class FileIngestionEntries:
-
     deregistry = None
     
     @classmethod
@@ -86,3 +94,61 @@ class FileIngestionManager(BaseServiceProvider, FileIngestionRegistry):
     def get_entry_definition(self, entryId):
         return self.registry.get(entryId)
 
+class FileIngestionProcessor(ABC):
+    @abstractmethod
+    def process_path(self, path: str ):
+        pass
+
+import notebookutils
+
+@GlobalInjector.singleton_autobind()
+class SimpleFileIngestionProcessor(BaseServiceProvider, FileIngestionProcessor):
+    @inject
+    def __init__(self, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider ):
+        super().__init__()
+        self.fir = fir
+        self.ep = ep
+        self.der = der
+        self.tp = tp
+        self.server = self.config.get("SYNAPSE_STORAGE_SERVER")
+
+    def process_path(self, path: str ):
+        with self.tp.span(component="SimpleFileIngestionProcessor", operation="process_path",details={},reraise=True ):        
+            file_list = notebookutils.fs.ls(path)
+
+            filenames = [file.name for file in file_list if file.isFile]
+
+            import re
+
+            for fn in filenames:
+                fis = self.fir.get_entry_ids()
+                for fi in fis:
+                    fe = self.fir.get_entry_definition(fi)
+                    pattern = re.compile(fe.patterns[0])
+                    match = re.match(pattern, fn)
+                    matched = not match is None
+
+                    if matched:
+                        with self.tp.span(operation="ingest_on_match"):   
+                            named_groups = match.groupdict()
+                            dest_entity_id = fe.dest_entity_id.format(**named_groups)
+                            print(f"Filename: {fn} Pattern: {fe.patterns[0]} Matched: {matched} Matches: {named_groups} DestEntityId: {dest_entity_id}")
+
+                            filetype = named_groups['filetype']
+
+                            de = self.der.get_entity_definition(dest_entity_id)
+
+                            df = spark.read.format(filetype) \
+                                .option("header", "true") \
+                                .option("inferSchema", "true" if fe.infer_schema else "false" ) \
+                                .load(f"{path}/{fn}")
+                            with self.tp.span(operation="merge_to_entity"):   
+                                self.ep.merge_to_entity( df, de )
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }

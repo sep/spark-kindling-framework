@@ -76,7 +76,7 @@ class SynapseEventEmitter(BaseServiceProvider, CustomEventEmitter):
             spark._jvm.org.slf4j.event.Level.INFO               # Level logLevel
         )
 
-        print(f"Tracer: {spark.sparkContext.appName} Component: {component} Op: {operation} Msg: {custom_message} trace_id:{str(traceId)}")
+        print(f"Tracer: {spark.sparkContext.appName} Component: {component} Op: {operation} Msg: {custom_message} Id: {eventId} trace_id:{str(traceId)}")
 
         # Get the SparkListener manager and post the event
         listener_bus = spark.sparkContext._jsc.sc().listenerBus()
@@ -99,7 +99,7 @@ def mdc_context(**kwargs):
 @dataclass
 class SparkSpan: 
     id: str
-    name: str
+    component: str
     operation: str
     attributes: Dict[str, str] 
     traceId: uuid
@@ -108,7 +108,7 @@ class SparkSpan:
     end_time: datetime = None
 
 
-class CustomTraceProvider(ABC):
+class SparkTraceProvider(ABC):
     @abstractmethod
     def span(self, operation: str = None, component: str = None, details: dict = None, reraise: bool = False):
         pass  
@@ -126,7 +126,7 @@ class SparkTrace():
         return spt.span(*args, **kwargs)
 
 @GlobalInjector.singleton_autobind()
-class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
+class SynapseSparkTrace(BaseServiceProvider, SparkTraceProvider):
     # Static instance to maintain session trace
     _instance = None
     
@@ -157,21 +157,21 @@ class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
 
         current_span = SparkSpan( 
             id = id, 
-            name = component or self.current_span.name if self.current_span else None, 
-            operation = operation or self.current_span.operation if self.current_span else None, 
-            attributes = details or self.current_span.attributes if self.current_span else None, 
+            component = component or ( self.current_span.component if self.current_span else None ), 
+            operation = operation or ( self.current_span.operation if self.current_span else None ), 
+            attributes = details or ( self.current_span.attributes if self.current_span else None ), 
             start_time = datetime.now(),
             traceId = self.current_span.traceId if self.current_span else uuid.uuid4(), 
-            reraise = reraise or self.current_span.reraise if self.current_span else None
+            reraise = reraise or ( self.current_span.reraise if self.current_span else None )
         )
 
         self.current_span = current_span
 
         with mdc_context(trace_id=str(current_span.traceId), span_id=current_span.id, 
-                        component=current_span.name, operation=current_span.operation):
+                        component=current_span.component, operation=current_span.operation):
             start_details = self._add_timestamp_to_dict(details or {}, "startTime", current_span.start_time)
             try:
-                self.emitter.emit_custom_event(current_span.name, f"{current_span.operation}_START", 
+                self.emitter.emit_custom_event(current_span.component, f"{current_span.operation}_START", 
                            start_details, current_span.id, current_span.traceId)
                 yield self
                 
@@ -179,7 +179,7 @@ class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
                 error_time = datetime.now()
                 error_details = self._add_timestamp_to_dict(start_details, "errorTime", error_time)
                 error_details["exception"] = traceback.format_exc()
-                self.emitter.emit_custom_event(current_span.name, f"{current_span.operation}_ERROR", 
+                self.emitter.emit_custom_event(current_span.component, f"{current_span.operation}_ERROR", 
                            error_details, current_span.id, current_span.traceId)
                 if reraise:
                     raise
@@ -188,7 +188,7 @@ class SynapseSparkTrace(BaseServiceProvider, CustomTraceProvider):
                 current_span.end_time = datetime.now()
                 end_details = self._add_timestamp_to_dict(start_details, "endTime", current_span.end_time)
                 end_details["totalTime"] = self._calculate_time_diff(current_span.start_time, current_span.end_time)
-                self.emitter.emit_custom_event(current_span.name, f"{current_span.operation}_END", 
+                self.emitter.emit_custom_event(current_span.component, f"{current_span.operation}_END", 
                            end_details, current_span.id, current_span.traceId)
 
 

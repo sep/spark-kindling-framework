@@ -24,6 +24,7 @@
 
 globals()["is_interactive"] = False
 globals()["use_lake_packages"] = False
+globals()["load_local_packages"] = False
 if "frameworkPackageGuard" in globals():
     print("Removing package guard")
     del globals()["frameworkPackageGuard"]
@@ -38,6 +39,17 @@ if "frameworkPackageGuard" in globals():
 # CELL ********************
 
 %run environment_setup
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+boostrap_environment("abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/latest")
 
 # METADATA ********************
 

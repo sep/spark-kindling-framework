@@ -1,5 +1,12 @@
 # Fabric notebook source
 
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   }
+# META }
 
 # CELL ********************
 
@@ -276,3 +283,10 @@ class DeltaEntityProvider(BaseServiceProvider, EntityProvider):
         table_ref = self._get_table_reference(entity)
         return self._get_table_version(table_ref)
 
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }

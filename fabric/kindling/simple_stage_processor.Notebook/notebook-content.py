@@ -37,20 +37,15 @@ class StageProcessingService(ABC):
 @GlobalInjector.singleton_autobind()
 class StageProcessor(BaseServiceProvider, StageProcessingService):
     @inject
-    def __init__(self, dpr: DataPipesRegistry, ep: EntityProvider, dep: DataPipesExecution, wef: WatermarkEntityFinder ):
+    def __init__(self, dpr: DataPipesRegistry, ep: EntityProvider, dep: DataPipesExecution, wef: WatermarkEntityFinder, tp: SparkTraceProvider ):
         self.wef = wef
         self.ep = ep
         self.dpr = dpr        
         self.dep = dep
+        self.tp = tp
 
     def execute( self, stage: str, stage_description:str, stage_details: Dict, layer: str ):
-        app_trace = SparkTrace(
-            component=stage_description,
-            operation=stage_description,
-            details=stage_details,
-            reraise=True 
-        )
-        with SparkTrace.current().span():        
+        with self.tp.span(component=stage_description,operation=stage_description,details=stage_details,reraise=True ):        
             self.ep.ensure_entity_table(self.wef.get_watermark_entity_for_layer(layer))
             pipe_ids = self.dpr.get_pipe_ids()
             stage_pipe_ids = [pipe_id for pipe_id in pipe_ids if pipe_id.startswith(stage)]
