@@ -18,12 +18,16 @@ notebook_import('.injection')
 notebook_import('.spark_config')
 
 class SparkLogger:
-    def __init__(self, name: str):
+    def __init__(self, name: str, baselogger = None):
         spark = get_or_create_spark_session()
         self.name = name
-        self.logger = spark._jvm.org.apache.log4j.LogManager.getLogger(name)
         self.pattern = "%m%ntrace_id=%x{trace_id} span_id=%x{span_id} component=%x{component} operation=%x{operation}"
         self.spark = spark
+
+        if baselogger is None:
+            self.logger = spark._jvm.org.apache.log4j.LogManager.getLogger(name)
+        else:
+            self.logger = baselogger
         
         # Log level hierarchy (lower numbers = higher priority)
         self._level_hierarchy = {
