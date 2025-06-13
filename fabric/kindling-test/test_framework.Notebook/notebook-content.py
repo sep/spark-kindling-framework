@@ -318,6 +318,18 @@ class NotebookTestEnvironment:
             
             globals()['SparkTraceProvider'] = MockSparkTraceProvider
 
+        if 'DataPipesExecution' not in globals():
+            class MockDataPipesExecution:
+                def __init__(self, logger_provider=None, entity_registry=None, pipes_registry=None, read_persist_strategy=None):
+                    self.logger_provider = logger_provider or MagicMock()
+                    self.entity_registry = entity_registry or MagicMock()
+                    self.pipes_registry = pipes_registry or MagicMock()
+                    read_persist_strategy = read_persist_strategy or MagicMock()
+                def run_datapipes(self, pipes):
+                    return MagicMock()
+
+            globals()['DataPipesExecution'] = MockDataPipesExecution
+
         if 'SimpleReadPersistStrategy' not in globals():
             class MockSimpleReadPersistStrategy:
                 def __init__(self, watermark_service=None, entity_provider=None, logger_provider=None):

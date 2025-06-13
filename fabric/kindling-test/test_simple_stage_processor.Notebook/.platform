@@ -1,11 +1,12 @@
 {
   "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
   "metadata": {
-    "type": "DataPipeline",
-    "displayName": "form-submission-pipeline"
+    "type": "Notebook",
+    "displayName": "test_simple_stage_processor",
+    "description": "New notebook"
   },
   "config": {
     "version": "2.0",
-    "logicalId": "3130cc29-a77e-a15d-45f3-a2ebb089b9cc"
+    "logicalId": "e3b268dd-f19b-9058-4484-bcf6e85a7523"
   }
 }
