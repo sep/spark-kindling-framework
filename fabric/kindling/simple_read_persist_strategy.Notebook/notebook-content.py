@@ -33,33 +33,34 @@ class SimpleReadPersistStrategy(BaseServiceProvider, EntityReadPersistStrategy):
     def create_pipe_entity_reader(self, pipe: str):
         return lambda entity, usewm: self.wms.read_current_entity_changes(entity, pipe) if usewm else self.ep.read_entity(entity)
 
-    def create_pipe_persist_activator(self, pipe: PipeMetadata):
+    def create_pipe_persist_activator(self, pipe):
 
         ##TODO: More intelligent processing -- parallelization, caching, error handling, skipping if inputs fail, etc.
 
         def persist_lambda(df):
-            read_versions = {
-                entityid: self.ep.get_entity_version(self.der.get_entity_definition(entityid)) for entityid in pipe.input_entity_ids 
-            }
 
-            self.logger.debug(f"read_versions - pipe = {pipe.pipeid} - map = {json.dumps(read_versions)}") 
+            if( pipe.input_entity_ids and len(pipe.input_entity_ids) > 0 ):
+                
+                src_input_entity_id = self.der.get_entity_definition(pipe.input_entity_ids[0])
 
-            self.logger.debug(f"persist_lambda - pipe = {pipe.pipeid}")    
-            output_entity = self.der.get_entity_definition(pipe.output_entity_id)
-            filter_condition = reduce(lambda a, b: a | b, (col(c).isNull() for c in output_entity.merge_columns))
+                src_read_version = self.ep.get_entity_version(src_input_entity_id)
 
-            with self.tp.span(component="data_utils", operation="merge_and_watermark", reraise=False):
-                if(self.ep.check_entity_exists(output_entity)):
-                    with self.tp.span(operation="merge_to_entity_table"):          
-                        self.ep.merge_to_entity(df, output_entity)
-                else:
-                    with self.tp.span(operation="write_to_entity_table", reraise=True):  
-                        self.ep.write_to_entity(df, output_entity)
+                self.logger.debug(f"read_version - pipe = {pipe.pipeid} - ver = {src_read_version}") 
 
-                with self.tp.span(operation="save_watermarks"): 
-                    src = pipe.input_entity_ids[0]
-                    with SparkTrace.current().span(operation="save_watermark", component=f"{src}"):  
-                        self.wms.save_watermark(src, pipe.pipeid, read_versions[src], str(uuid.uuid4()))
+                self.logger.debug(f"persist_lambda - pipe = {pipe.pipeid}")    
+                output_entity = self.der.get_entity_definition(pipe.output_entity_id)
+
+                with self.tp.span(component="data_utils", operation="merge_and_watermark", reraise=False):
+                    if(self.ep.check_entity_exists(output_entity)):
+                        with self.tp.span(operation="merge_to_entity_table"):          
+                            self.ep.merge_to_entity(df, output_entity)
+                    else:
+                        with self.tp.span(operation="write_to_entity_table", reraise=True):  
+                            self.ep.write_to_entity(df, output_entity)
+
+                    with self.tp.span(operation="save_watermarks"): 
+                        with self.tp.span(operation="save_watermark", component=f"{src_input_entity_id}"):  
+                            self.wms.save_watermark(src_input_entity_id, pipe.pipeid, src_read_version, str(uuid.uuid4()))
 
         return persist_lambda
 

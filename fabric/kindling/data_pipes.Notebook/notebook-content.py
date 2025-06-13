@@ -1,5 +1,12 @@
 # Fabric notebook source
 
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   }
+# META }
 
 # CELL ********************
 
@@ -16,8 +23,6 @@ notebook_import(".injection")
 notebook_import(".spark_log_provider")
 notebook_import(".spark_trace")
 notebook_import(".data_entities")
-   
-global spark
 
 @dataclass
 class PipeMetadata:
@@ -135,6 +140,12 @@ class DataPipesExecuter(BaseServiceProvider, DataPipesExecution):
 
 
 
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
 # MARKDOWN ********************
 
-# 

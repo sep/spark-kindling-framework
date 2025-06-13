@@ -25,7 +25,7 @@ from pyspark.sql.types import (
     StructField
 )
   
-notebook_import(".spark_log")
+notebook_import(".spark_log_provider")
 notebook_import(".data_entities")
 notebook_import(".injection")
 notebook_import(".spark_session")
@@ -64,10 +64,10 @@ class WatermarkService(ABC):
 @GlobalInjector.singleton_autobind()
 class WatermarkManager(BaseServiceProvider, WatermarkService):
     @inject
-    def __init__(self, ep: EntityProvider, wef: WatermarkEntityFinder ):
+    def __init__(self, ep: EntityProvider, wef: WatermarkEntityFinder, lp: PythonLoggerProvider ):
         self.wef = wef
         self.ep = ep
-        self.logger = SparkLogger("watermark")
+        self.logger = lp.get_logger("watermark")
 
     def get_watermark(self, source_entity_id: str, reader_id: str) -> Optional[int]:
         self.logger.debug(f"Getting watermark for {source_entity_id}-{reader_id}")

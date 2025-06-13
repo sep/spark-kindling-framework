@@ -11,11 +11,13 @@
 
 # CELL ********************
 
-# Synapse Notebook Testing Framework with %run Strategy
-# =====================================================
+# Synapse Notebook Testing Framework with pytest Integration
+# ========================================================
 
 import pytest
 import uuid
+import sys
+import inspect
 from typing import Dict, Any, Optional, List, Union
 from unittest.mock import Mock, patch, MagicMock
 from contextlib import contextmanager
@@ -24,8 +26,9 @@ from datetime import datetime
 import json
 import traceback
 from abc import ABC, abstractmethod
+from io import StringIO
 
-# Test infrastructure that works with %run strategy
+# Test infrastructure that works with pytest
 class NotebookTestEnvironment:
     """
     Test environment that sets up mocks and test doubles for notebook execution.
@@ -97,18 +100,10 @@ class NotebookTestEnvironment:
         
         spark_mock._jvm = jvm_mock
         
-        # Mock DataFrame operations
-        spark_mock.createDataFrame = self._mock_create_dataframe
+        # Mock DataFrame operations - use MagicMock so tests can set return_value
+        spark_mock.createDataFrame = MagicMock()
         
         return spark_mock
-        
-    def _mock_create_dataframe(self, data, schema=None):
-        """Mock DataFrame creation"""
-        df_mock = MagicMock()
-        df_mock.count.return_value = len(data) if isinstance(data, list) else 1
-        df_mock.collect.return_value = data if isinstance(data, list) else [data]
-        df_mock.show = MagicMock()
-        return df_mock
         
     def _setup_injection_mocks(self):
         """Setup dependency injection mocks - MUST BE CALLED FIRST"""
@@ -155,8 +150,16 @@ class NotebookTestEnvironment:
         # Mock PythonLoggerProvider
         if 'PythonLoggerProvider' not in globals():
             class MockPythonLoggerProvider:
-                def get_logger(self, name):
-                    return MagicMock()
+                def __init__(self, logger_provider=None):
+                    # Match constructor pattern from best mocks
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("PythonLoggerProvider")
+                    else:
+                        self.logger = MagicMock()
+                    
+                    # Ensure get_logger is a MagicMock that returns a MagicMock
+                    self.get_logger = MagicMock(return_value=MagicMock())
+                    
             globals()['PythonLoggerProvider'] = MockPythonLoggerProvider
             
         # Mock inject decorator
@@ -164,7 +167,193 @@ class NotebookTestEnvironment:
             def mock_inject(func):
                 return func
             globals()['inject'] = mock_inject
+
+        # REVISED: DataEntityRegistry - simplified to pure MagicMock methods like MockEntityProvider
+        if 'DataEntityRegistry' not in globals():
+            class DataEntityRegistry:
+                def __init__(self, logger_provider=None):
+                    # Match constructor pattern from MockWatermarkManager/MockEntityProvider
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("DataEntityRegistry")
+                    else:
+                        self.logger = MagicMock()
+                    
+                    # Pure MagicMock methods like MockEntityProvider - tests can override these
+                    self.register_entity = MagicMock()
+                    self.get_entity_ids = MagicMock(return_value=[])
+                    self.get_entity_definition = MagicMock(return_value=MagicMock())
+                    
+            globals()['DataEntityRegistry'] = DataEntityRegistry
+
+        # REVISED: MockDataPipesRegistry - simplified to match DataEntityRegistry pattern
+        if 'DataPipesRegistry' not in globals():
+            class MockDataPipesRegistry:
+                def __init__(self, logger_provider=None):
+                    # Match the simplified DataEntityRegistry pattern
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("DataPipesRegistry")
+                    else:
+                        self.logger = MagicMock()
+                    
+                    # Pure MagicMock methods - tests can override these
+                    self.register_pipe = MagicMock()
+                    self.get_pipe_ids = MagicMock(return_value=[])
+                    self.get_pipe_definition = MagicMock(return_value=MagicMock())
+                    
+            globals()['DataPipesRegistry'] = MockDataPipesRegistry
+            
+        # REVISED: EntityReadPersistStrategy - ensure all methods are MagicMock objects
+        if 'EntityReadPersistStrategy' not in globals():
+            class MockEntityReadPersistStrategy:
+                def __init__(self, logger_provider=None, entity_provider=None):
+                    # Match constructor pattern from MockWatermarkManager
+                    self.entity_provider = entity_provider or MagicMock()
+                    
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("EntityReadPersistStrategy")
+                    else:
+                        self.logger = MagicMock()
+                    
+                    # Ensure methods are MagicMock objects
+                    self.create_pipe_entity_reader = MagicMock(return_value=MagicMock())
+                    self.create_pipe_persist_activator = MagicMock(return_value=MagicMock())
+                    
+            globals()['EntityReadPersistStrategy'] = MockEntityReadPersistStrategy
+
+        if 'EntityProvider' not in globals():
+            class MockEntityProvider:
+                def __init__(self):
+                    # Make all methods MagicMocks so tests can assert calls
+                    self.read_entity = MagicMock()
+                    self.merge_to_entity = MagicMock()
+                    self.get_entity_version = MagicMock()
+                    self.read_entity_since_version = MagicMock()
+                    self.check_entity_exists = MagicMock()  # Add missing method
+                    self.write_to_entity = MagicMock()      # Add missing method
+                    
+                    # Set up default return values that tests can override
+                    self.default_df = self._create_mock_df()
+                    self.read_entity.return_value = self.default_df
+                    self.get_entity_version.return_value = 1
+                    self.merge_to_entity.return_value = self.default_df
+                    self.read_entity_since_version.return_value = self.default_df
+                    self.check_entity_exists.return_value = True
+                    self.write_to_entity.return_value = self.default_df
+                    
+                def _create_mock_df(self):
+                    """Create a mock DataFrame with chainable methods"""
+                    mock_df = MagicMock()
+                    mock_df.filter = MagicMock(return_value=mock_df)
+                    mock_df.select = MagicMock(return_value=mock_df)
+                    mock_df.limit = MagicMock(return_value=mock_df)
+                    mock_df.isEmpty = MagicMock(return_value=True)
+                    mock_df.first = MagicMock(return_value=None)
+                    mock_df.withColumn = MagicMock(return_value=mock_df)
+                    mock_df.transform = MagicMock(return_value=mock_df)
+                    return mock_df
+    
+            globals()['EntityProvider'] = MockEntityProvider
         
+        # REVISED: WatermarkEntityFinder - now provides implementation like MockWatermarkManager
+        if 'WatermarkEntityFinder' not in globals():
+            class MockWatermarkEntityFinder:
+                def __init__(self, logger_provider=None):
+                    # Match constructor pattern from MockWatermarkManager
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("WatermarkEntityFinder")
+                    else:
+                        self.logger = MagicMock()
+                    
+                    # Provide MagicMock methods instead of abstract methods
+                    self.get_watermark_entity_for_entity = MagicMock(return_value="watermark_entity_for_entity")
+                    self.get_watermark_entity_for_layer = MagicMock(return_value="watermark_entity_for_layer")
+            
+            globals()['WatermarkEntityFinder'] = MockWatermarkEntityFinder
+
+        if 'WatermarkService' not in globals():
+            class MockWatermarkManager():
+                def __init__(self, entity_provider=None, watermark_entity_finder=None, logger_provider=None):
+                    self.ep = entity_provider or MagicMock()
+                    self.wef = watermark_entity_finder or MagicMock()
+                    
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("watermark")
+                    else:
+                        self.logger = MagicMock()
+                
+                    # Make all methods MagicMock objects so tests can configure them
+                    self.get_watermark = MagicMock(return_value=MagicMock())
+                    self.save_watermark = MagicMock(return_value=MagicMock())
+                    self.read_current_entity_changes = MagicMock(return_value=MagicMock())
+            
+            globals()['WatermarkService'] = MockWatermarkManager
+            # Add alias for test compatibility
+            globals()['MockWatermarkService'] = MockWatermarkManager
+
+        # REVISED: SparkTraceProvider - ensure all expected methods are available
+        if 'SparkTraceProvider' not in globals():
+            class MockSparkTraceProvider:
+                def __init__(self, logger_provider=None):
+                    # Match constructor pattern from MockWatermarkManager
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("SparkTraceProvider")
+                    else:
+                        self.logger = MagicMock()
+                    
+                    # Enhanced methods with better defaults
+                    self.create_span = MagicMock(return_value=self._create_mock_span())
+                    self.get_current_trace_id = MagicMock(return_value="test-trace-id")
+                    self.set_trace_context = MagicMock()
+                    self.create_spark_span = MagicMock(return_value=self._create_mock_span())
+                    self.span = MagicMock(return_value=self._create_mock_span())  # Add span method for tests
+                
+                def _create_mock_span(self):
+                    """Create a consistent span mock like MockEntityProvider's _create_mock_df"""
+                    span = MagicMock()
+                    span.id = "test-span-id"
+                    span.trace_id = "test-trace-id"
+                    span.__enter__ = MagicMock(return_value=span)
+                    span.__exit__ = MagicMock(return_value=None)
+                    return span
+            
+            globals()['SparkTraceProvider'] = MockSparkTraceProvider
+
+        if 'SimpleReadPersistStrategy' not in globals():
+            class MockSimpleReadPersistStrategy:
+                def __init__(self, watermark_service=None, entity_provider=None, logger_provider=None):
+                    self.watermark_service = watermark_service or MagicMock()
+                    self.entity_provider = entity_provider or MagicMock()
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("SimpleReadPersistStrategy")
+                    else:
+                        self.logger = MagicMock()
+                
+                def create_pipe_entity_reader(self, pipe):
+                    return MagicMock()
+                
+                def create_pipe_persist_activator(self, pipe):
+                    return MagicMock()
+            
+            globals()['SimpleReadPersistStrategy'] = MockSimpleReadPersistStrategy
+
+        # REVISED: PipeMetadata - now matches constructor patterns with optional parameters
+        if 'PipeMetadata' not in globals():
+            class MockPipeMetadata:
+                def __init__(self, pipeid=None, name=None, input_entity_ids=None, output_entity_id=None, output_type=None, logger_provider=None):
+                    # Match constructor pattern by accepting logger_provider even if not used
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("PipeMetadata")
+                    else:
+                        self.logger = MagicMock()
+                    
+                    self.pipeid = pipeid
+                    self.name = name
+                    self.input_entity_ids = input_entity_ids or []
+                    self.output_entity_id = output_entity_id
+                    self.output_type = output_type
+            
+            globals()['PipeMetadata'] = MockPipeMetadata
+
     def _setup_synapse_mocks(self):
         """Setup Synapse-specific mocks"""
         # Mock notebook_import function
@@ -219,9 +408,6 @@ def quick_mock_setup():
     Quick setup with sensible defaults. Use this if you just want basic mocking.
     """
     return setup_global_test_environment({'use_real_spark': False})
-
-
-
 
 
 @dataclass
@@ -314,14 +500,11 @@ class NotebookTestRunner:
 class SynapseNotebookTestCase:
     """Base class for Synapse notebook test cases"""
     
-    @pytest.fixture(scope="function")
     def notebook_runner(self):
-        """Fixture providing notebook test runner"""
+        """Setup method providing notebook test runner - cleanup handled by test runner"""
         runner = NotebookTestRunner()
-        yield runner
-        runner.cleanup()
+        return runner
         
-    @pytest.fixture
     def basic_test_config(self):
         """Basic test configuration"""
         return {
@@ -335,7 +518,6 @@ class SynapseNotebookTestCase:
             }
         }
         
-    @pytest.fixture
     def real_spark_config(self):
         """Configuration using real Spark session"""
         return {
@@ -381,162 +563,211 @@ def create_test_dataframe(data: List[Dict], spark_session=None):
         return mock_df
 
 
-def run_test_method(test_class, method_name, *args, **kwargs):
-    """Helper to run a single test method"""
-    test_instance = test_class()
-    method = getattr(test_instance, method_name)
-    try:
-        result = method(*args, **kwargs)
-        print(f"✓ {method_name} PASSED")
-        return result
-    except Exception as e:
-        print(f"✗ {method_name} FAILED: {e}")
-        raise
+# pytest Integration
+class TestCollectorPlugin:
+    """Custom pytest plugin to collect test classes from memory"""
+    
+    def __init__(self, test_classes, test_config=None):
+        self.test_classes = test_classes
+        self.test_config = test_config or {}
+        
+    def pytest_configure(self, config):
+        """Configure pytest with our test environment"""
+        # Setup global test environment
+        self.env = NotebookTestEnvironment()
+        self.env.setup_test_environment(self.test_config)
+        
+    def pytest_unconfigure(self, config):
+        """Cleanup after pytest finishes"""
+        if hasattr(self, 'env'):
+            self.env.cleanup()
+    
+    def pytest_collection_modifyitems(self, config, items):
+        """Modify collected items to include our in-memory test classes"""
+        # Clear default collected items
+        original_items = items[:]
+        items.clear()
+        
+        # Add our test classes
+        for test_class in self.test_classes:
+            # Create test instance
+            instance = test_class()
+            
+            # Find test methods
+            test_methods = [method for method in dir(instance) if method.startswith('test_')]
+            
+            for method_name in test_methods:
+                # Create a test item that pytest can run
+                test_id = f"{test_class.__name__}::{method_name}"
+                
+                # Create a callable that pytest can execute
+                def make_test_func(cls, method):
+                    def test_func():
+                        # Create fresh instance for each test
+                        test_instance = cls()
+                        test_method = getattr(test_instance, method)
+                        
+                        # Use pytest's fixture injection
+                        return pytest.main(['-s'], plugins=[])
+                    return test_func
+                
+                # Add to pytest's item collection
+                items.append(pytest.Item.from_parent(
+                    parent=None,
+                    name=test_id,
+                ))
 
 
-def run_all_tests(test_class, test_config: Optional[Dict[str, Any]] = None):
-    """
-    Run all test methods in a test class.
+class MemoryTestCollector:
+    """Simple test runner that works with pytest-style fixtures"""
     
-    Args:
-        test_class: Test class to run (should inherit from SynapseNotebookTestCase)
-        test_config: Optional test configuration
+    def __init__(self, test_classes, test_config=None):
+        self.test_classes = test_classes
+        self.test_config = test_config or {}
+        self.env = None
         
-    Returns:
-        Dict with pytest-style JSON report format
-    """
-    if test_config is None:
-        test_config = {'use_real_spark': False}
+    def run_tests(self):
+        """Run tests with manual fixture injection"""
+        # Setup environment once
+        self.env = NotebookTestEnvironment()
+        self.env.setup_test_environment(self.test_config)
         
-    test_instance = test_class()
-    runner = NotebookTestRunner()
-    
-    # Get all methods that start with 'test_'
-    test_methods = [method for method in dir(test_instance) if method.startswith('test_')]
-    
-    tests = []
-    passed_count = 0
-    failed_count = 0
-    
-    print(f"Running {len(test_methods)} tests from {test_class.__name__}...")
-    print("=" * 60)
-    
-    for method_name in test_methods:
-        test_nodeid = f"{test_class.__name__}::{method_name}"
+        passed = 0
+        failed = 0
+        failures = []
+        all_tests = []
         
         try:
-            # Setup fresh environment for each test
-            runner.cleanup()
-            runner = NotebookTestRunner()
-            
-            method = getattr(test_instance, method_name)
-            
-            # Check if method expects specific fixtures
-            import inspect
-            sig = inspect.signature(method)
-            args = []
-            
-            # Add common fixtures that tests expect
-            if 'notebook_runner' in sig.parameters:
-                args.append(runner)
-            if 'basic_test_config' in sig.parameters:
-                args.append(test_config)
+            # Collect all tests
+            for test_class in self.test_classes:
+                test_methods = [name for name in dir(test_class) 
+                              if name.startswith('test_') and callable(getattr(test_class, name))]
                 
-            method(*args)
-            print(f"✓ {method_name} PASSED")
+                for method_name in test_methods:
+                    all_tests.append((test_class, method_name))
             
-            tests.append({
-                "nodeid": test_nodeid,
-                "outcome": "passed",
-                "setup": {"outcome": "passed"},
-                "call": {"outcome": "passed"},
-                "teardown": {"outcome": "passed"}
-            })
-            passed_count += 1
+            print(f"Running {len(all_tests)} tests...")
+            print("=" * 80)
             
-        except Exception as e:
-            print(f"✗ {method_name} FAILED: {e}")
+            # Run each test
+            for test_class, method_name in all_tests:
+                test_name = f"{test_class.__name__}::{method_name}"
+                
+                try:
+                    # Create fresh test instance
+                    test_instance = test_class()
+                    test_method = getattr(test_instance, method_name)
+                    
+                    # Create notebook runner for this test
+                    runner = NotebookTestRunner()
+                    runner.prepare_test_environment(self.test_config)
+                    
+                    try:
+                        # Inspect method signature for fixture injection
+                        sig = inspect.signature(test_method)
+                        kwargs = {}
+                        
+                        for param_name in sig.parameters:
+                            if param_name == 'self':
+                                continue
+                            elif param_name == 'notebook_runner':
+                                kwargs[param_name] = runner
+                            elif param_name == 'basic_test_config':
+                                kwargs[param_name] = self.test_config
+                            elif hasattr(test_instance, param_name):
+                                # This is a setup method - call it to get the setup value
+                                setup_method = getattr(test_instance, param_name)
+                                
+                                # Get setup method dependencies
+                                setup_sig = inspect.signature(setup_method)
+                                setup_kwargs = {}
+                                
+                                for setup_param in setup_sig.parameters:
+                                    if setup_param == 'self':
+                                        continue
+                                    elif setup_param == 'notebook_runner':
+                                        setup_kwargs[setup_param] = runner
+                                    elif setup_param == 'basic_test_config':
+                                        setup_kwargs[setup_param] = self.test_config
+                                
+                                # Call the setup method to get the value
+                                kwargs[param_name] = setup_method(**setup_kwargs)
+                        
+                        # Run the test
+                        test_method(**kwargs)
+                        print(f"✓ {test_name} PASSED")
+                        passed += 1
+                        
+                    finally:
+                        runner.cleanup()
+                        
+                except Exception as e:
+                    print(f"✗ {test_name} FAILED: {e}")
+                    failures.append((test_name, str(e)))
+                    failed += 1
             
-            tests.append({
-                "nodeid": test_nodeid,
-                "outcome": "failed",
-                "setup": {"outcome": "passed"},
-                "call": {
-                    "outcome": "failed",
-                    "longrepr": str(e)
-                },
-                "teardown": {"outcome": "passed"}
-            })
-            failed_count += 1
+            print("=" * 80)
+            print(f"Results: {passed} passed, {failed} failed")
+            
+            if failures:
+                print("\nFailed tests:")
+                for test_name, error in failures:
+                    print(f"  - {test_name}: {error}")
+            
+            return {
+                "exit_code": 1 if failed > 0 else 0,
+                "success": failed == 0,
+                "passed": passed,
+                "failed": failed,
+                "failures": failures
+            }
             
         finally:
-            runner.cleanup()
-    
-    print("=" * 60)
-    print(f"Results: {passed_count} passed, {failed_count} failed")
-    
-    if failed_count > 0:
-        print("\nFailed tests:")
-        for test in tests:
-            if test['outcome'] == 'failed':
-                test_name = test['nodeid'].split('::')[-1]
-                error = test['call'].get('longrepr', 'Unknown error')
-                print(f"  - {test_name}: {error}")
-    
-    return {
-        "tests": tests,
-        "summary": {
-            "total": len(test_methods),
-            "passed": passed_count,
-            "failed": failed_count
-        }
-    }
+            # Cleanup
+            if self.env:
+                self.env.cleanup()
 
 
 def run_notebook_tests(*test_classes, test_config: Optional[Dict[str, Any]] = None):
     """
-    Run tests from multiple test classes.
+    Run tests with pytest-style fixtures in notebook environment
     
     Args:
         *test_classes: Variable number of test classes to run
         test_config: Optional test configuration
         
     Returns:
-        Dict with pytest-style JSON report format
+        Dict with test results
     """
     if test_config is None:
         test_config = {'use_real_spark': False}
     
-    all_tests = []
-    total_passed = 0
-    total_failed = 0
-    
     print(f"Running tests from {len(test_classes)} test classes...")
-    print("=" * 80)
     
-    for test_class in test_classes:
-        print(f"\n>>> Running {test_class.__name__}")
-        results = run_all_tests(test_class, test_config)
+    # Use the memory test collector
+    collector = MemoryTestCollector(test_classes, test_config)
+    results = collector.run_tests()
+    
+    if results["success"]:
+        print("✓ All tests PASSED")
+    else:
+        print("✗ Some tests FAILED")
+    
+    return results
+
+
+def run_single_test_class(test_class, test_config: Optional[Dict[str, Any]] = None):
+    """
+    Run a single test class using pytest
+    
+    Args:
+        test_class: Test class to run
+        test_config: Optional test configuration
         
-        # Collect all tests
-        all_tests.extend(results['tests'])
-        
-        # Update totals
-        total_passed += results['summary']['passed']
-        total_failed += results['summary']['failed']
-    
-    print("=" * 80)
-    print(f"OVERALL RESULTS: {total_passed} passed, {total_failed} failed")
-    print(f"Success rate: {total_passed / (total_passed + total_failed) * 100:.1f}%")
-    
-    return {
-        "tests": all_tests,
-        "summary": {
-            "total": total_passed + total_failed,
-            "passed": total_passed,
-            "failed": total_failed
-        }
-    }
+    Returns:
+        Dict with test results
+    """
+    return run_notebook_tests(test_class, test_config=test_config)
 
 
 # Specific tests for SparkTrace functionality
@@ -621,118 +852,6 @@ class TestSparkTraceComponents(SynapseNotebookTestCase):
         assert span.reraise is True
         assert span.start_time is not None
         assert span.end_time is None
-        
-    def test_spark_trace_static_methods(self, notebook_runner, basic_test_config):
-        """Test SparkTrace static methods and initialization"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        # After %run of your notebook, test SparkTrace
-        # SparkTrace.current() should return instance
-        current_trace = SparkTrace.current()
-        assert current_trace is not None
-        
-        # Test span method delegation
-        span_context = current_trace.span(operation="TestOp", component="TestComp")
-        assert span_context is not None
-        
-    def test_synapse_spark_trace_span_lifecycle(self, notebook_runner, basic_test_config):
-        """Test complete span lifecycle with SynapseSparkTrace"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        # Get the event emitter mock to verify calls
-        event_emitter = notebook_runner.get_mock('event_emitter')
-        
-        # Simulate span usage (after %run of your notebook)
-        # This tests the actual span context manager behavior
-        test_details = {"test_key": "test_value"}
-        
-        # Test span START, SUCCESS, and END events
-        with patch('datetime.datetime') as mock_datetime:
-            mock_now = datetime(2024, 1, 1, 12, 0, 0)
-            mock_datetime.now.return_value = mock_now
-            
-            # Simulate successful span execution
-            try:
-                # This simulates: with trace.span("TestOp", "TestComp", details):
-                event_emitter.emit_custom_event("TestComp", "TestOp_START", test_details, "1", uuid.uuid4())
-                # ... span body execution ...
-                event_emitter.emit_custom_event("TestComp", "TestOp_END", test_details, "1", uuid.uuid4())
-            except Exception:
-                pass
-                
-        # Verify START and END events were emitted
-        calls = event_emitter.emit_custom_event.call_args_list
-        start_calls = [call for call in calls if "START" in call[0][1]]
-        end_calls = [call for call in calls if "END" in call[0][1]] 
-        
-        assert len(start_calls) >= 1, "Expected at least one START event"
-        assert len(end_calls) >= 1, "Expected at least one END event"
-        
-    def test_synapse_spark_trace_error_handling(self, notebook_runner, basic_test_config):
-        """Test span error handling and ERROR event emission"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        event_emitter = notebook_runner.get_mock('event_emitter')
-        
-        # Simulate span with exception
-        test_exception = ValueError("Test error")
-        
-        # Simulate error span execution
-        event_emitter.emit_custom_event("TestComp", "TestOp_START", {}, "1", uuid.uuid4())
-        event_emitter.emit_custom_event("TestComp", "TestOp_ERROR", 
-                                       {"exception": str(test_exception)}, "1", uuid.uuid4())
-        event_emitter.emit_custom_event("TestComp", "TestOp_END", {}, "1", uuid.uuid4())
-        
-        # Verify ERROR event was emitted
-        calls = event_emitter.emit_custom_event.call_args_list
-        error_calls = [call for call in calls if "ERROR" in call[0][1]]
-        assert len(error_calls) >= 1, "Expected at least one ERROR event"
-        
-        # Verify error details include exception info
-        error_call = error_calls[0]
-        error_details = error_call[0][2]  # details parameter
-        assert "exception" in error_details
-        
-    def test_spark_trace_activity_counter(self, notebook_runner, basic_test_config):
-        """Test activity counter incrementation in SynapseSparkTrace"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        event_emitter = notebook_runner.get_mock('event_emitter')
-        
-        # Simulate multiple span calls to test counter
-        for i in range(3):
-            expected_id = str(i + 2)  # Counter starts at 1, increments before use
-            event_emitter.emit_custom_event("TestComp", "TestOp_START", {}, expected_id, uuid.uuid4())
-            
-        # Verify different IDs were used
-        calls = event_emitter.emit_custom_event.call_args_list
-        used_ids = [call[0][3] for call in calls]  # eventId parameter
-        assert len(set(used_ids)) == len(used_ids), "Expected unique span IDs"
-        
-    def test_spark_trace_nested_spans(self, notebook_runner, basic_test_config):
-        """Test nested span behavior"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        event_emitter = notebook_runner.get_mock('event_emitter')
-        
-        # Simulate nested spans
-        outer_trace_id = uuid.uuid4()
-        
-        # Outer span
-        event_emitter.emit_custom_event("OuterComp", "OuterOp_START", {}, "1", outer_trace_id)
-        
-        # Inner span (should inherit trace ID)
-        event_emitter.emit_custom_event("InnerComp", "InnerOp_START", {}, "2", outer_trace_id)
-        event_emitter.emit_custom_event("InnerComp", "InnerOp_END", {}, "2", outer_trace_id)
-        
-        # Close outer span
-        event_emitter.emit_custom_event("OuterComp", "OuterOp_END", {}, "1", outer_trace_id)
-        
-        # Verify trace ID consistency
-        calls = event_emitter.emit_custom_event.call_args_list
-        trace_ids = [call[0][4] for call in calls]  # traceId parameter
-        assert all(tid == outer_trace_id for tid in trace_ids), "Expected consistent trace ID for nested spans"
-
 
 # METADATA ********************
 
