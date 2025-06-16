@@ -230,31 +230,36 @@ class NotebookTestEnvironment:
                     self.read_entity_since_version = MagicMock()
                     self.check_entity_exists = MagicMock()  # Add missing method
                     self.write_to_entity = MagicMock()      # Add missing method
+                    self.ensure_entity_table = MagicMock()  # ← ADD THIS LINE
                     
                     # Set up default return values that tests can override
-                    self.default_df = self._create_mock_df()
+                    self.default_df = MagicMock()
                     self.read_entity.return_value = self.default_df
                     self.get_entity_version.return_value = 1
                     self.merge_to_entity.return_value = self.default_df
                     self.read_entity_since_version.return_value = self.default_df
                     self.check_entity_exists.return_value = True
                     self.write_to_entity.return_value = self.default_df
-                    
-                def _create_mock_df(self):
-                    """Create a mock DataFrame with chainable methods"""
-                    mock_df = MagicMock()
-                    mock_df.filter = MagicMock(return_value=mock_df)
-                    mock_df.select = MagicMock(return_value=mock_df)
-                    mock_df.limit = MagicMock(return_value=mock_df)
-                    mock_df.isEmpty = MagicMock(return_value=True)
-                    mock_df.first = MagicMock(return_value=None)
-                    mock_df.withColumn = MagicMock(return_value=mock_df)
-                    mock_df.transform = MagicMock(return_value=mock_df)
-                    return mock_df
-    
+
             globals()['EntityProvider'] = MockEntityProvider
+
+        if 'FileIngestionRegistry' not in globals():
+            class MockFileIngestionRegistry:
+                def __init__(self):
+                    self.register_entry = MagicMock()
+                    self.get_entry_ids = MagicMock(return_value=[])
+                    self.get_entry_definition = MagicMock(return_value=MagicMock())
+            
+            globals()['FileIngestionRegistry'] = MockFileIngestionRegistry
         
-        # REVISED: WatermarkEntityFinder - now provides implementation like MockWatermarkManager
+        # Mock FileIngestionProcessor interface  
+        if 'FileIngestionProcessor' not in globals():
+            class MockFileIngestionProcessor:
+                def __init__(self):
+                    self.process_path = MagicMock()
+            
+            globals()['FileIngestionProcessor'] = MockFileIngestionProcessor
+
         if 'WatermarkEntityFinder' not in globals():
             class MockWatermarkEntityFinder:
                 def __init__(self, logger_provider=None):
@@ -264,9 +269,15 @@ class NotebookTestEnvironment:
                     else:
                         self.logger = MagicMock()
                     
-                    # Provide MagicMock methods instead of abstract methods
-                    self.get_watermark_entity_for_entity = MagicMock(return_value="watermark_entity_for_entity")
-                    self.get_watermark_entity_for_layer = MagicMock(return_value="watermark_entity_for_layer")
+                    # REPLACE these lines:
+                    # self.get_watermark_entity_for_entity = MagicMock(return_value="watermark_entity_for_entity")
+                    # self.get_watermark_entity_for_layer = MagicMock(return_value="watermark_entity_for_layer")
+                    
+                    # WITH these lines:
+                    mock_entity = MagicMock()
+                    mock_entity.entityid = "default_watermark_entity"
+                    self.get_watermark_entity_for_entity = MagicMock(return_value=mock_entity)
+                    self.get_watermark_entity_for_layer = MagicMock(return_value=mock_entity)
             
             globals()['WatermarkEntityFinder'] = MockWatermarkEntityFinder
 
@@ -290,7 +301,6 @@ class NotebookTestEnvironment:
             # Add alias for test compatibility
             globals()['MockWatermarkService'] = MockWatermarkManager
 
-        # REVISED: SparkTraceProvider - ensure all expected methods are available
         if 'SparkTraceProvider' not in globals():
             class MockSparkTraceProvider:
                 def __init__(self, logger_provider=None):
@@ -300,7 +310,6 @@ class NotebookTestEnvironment:
                     else:
                         self.logger = MagicMock()
                     
-                    # Enhanced methods with better defaults
                     self.create_span = MagicMock(return_value=self._create_mock_span())
                     self.get_current_trace_id = MagicMock(return_value="test-trace-id")
                     self.set_trace_context = MagicMock()
@@ -325,8 +334,10 @@ class NotebookTestEnvironment:
                     self.entity_registry = entity_registry or MagicMock()
                     self.pipes_registry = pipes_registry or MagicMock()
                     read_persist_strategy = read_persist_strategy or MagicMock()
-                def run_datapipes(self, pipes):
-                    return MagicMock()
+                    
+                    # REPLACE: def run_datapipes(self, pipes): return MagicMock()
+                    # WITH:
+                    self.run_datapipes = MagicMock()  # ← REPLACE with this line
 
             globals()['DataPipesExecution'] = MockDataPipesExecution
 
@@ -347,6 +358,15 @@ class NotebookTestEnvironment:
                     return MagicMock()
             
             globals()['SimpleReadPersistStrategy'] = MockSimpleReadPersistStrategy
+
+        if 'StageProcessingService' not in globals():
+            class StageProcessingService:
+                """Interface for stage processing services"""
+                def execute(self, stage: str, stage_description: str, stage_details: dict, layer: str):
+                    """Execute stage processing"""
+                    pass
+            
+            globals()['StageProcessingService'] = StageProcessingService
 
         # REVISED: PipeMetadata - now matches constructor patterns with optional parameters
         if 'PipeMetadata' not in globals():

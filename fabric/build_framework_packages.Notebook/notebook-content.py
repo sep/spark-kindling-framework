@@ -23,10 +23,12 @@
 # CELL ********************
 
 BOOTSTRAP_CONFIG = {
+    'log_level': 'DEBUG',
     'is_interactive': False,
     'use_lake_packages' : False,
     'load_local_packages' : False,
     'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
+    'platform_environment': 'fabric',
     'package_storage_path': "Files/artifacts/packages/latest",
     'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
     'ignored_folders': ['utilities'],
