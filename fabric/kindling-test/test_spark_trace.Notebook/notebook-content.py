@@ -100,7 +100,7 @@ class TestSparkTraceComponents(SynapseNotebookTestCase):
         notebook_runner.prepare_test_environment(basic_test_config)
         
         event_emitter = notebook_runner.get_mock('event_emitter')
-        trace = SynapseSparkTrace(event_emitter)
+        trace = EventBasedSparkTrace(event_emitter)
         
         # Actually use the span context to generate START/END events
         with trace.span("TestOp", "TestComp"):
@@ -114,7 +114,7 @@ class TestSparkTraceComponents(SynapseNotebookTestCase):
         notebook_runner.prepare_test_environment(basic_test_config)
         
         event_emitter = notebook_runner.get_mock('event_emitter')
-        trace = SynapseSparkTrace(event_emitter)
+        trace = EventBasedSparkTrace(event_emitter)
         
         # Actually use the span context which should set up MDC
         with trace.span("TestOp", "TestComp"):
@@ -125,7 +125,7 @@ class TestSparkTraceComponents(SynapseNotebookTestCase):
         notebook_runner.prepare_test_environment(basic_test_config)
         
         event_emitter = notebook_runner.get_mock('event_emitter')
-        trace = SynapseSparkTrace(event_emitter)
+        trace = EventBasedSparkTrace(event_emitter)
         
         # Actually trigger an exception in span context
         try:
@@ -142,8 +142,8 @@ class TestSparkTraceComponents(SynapseNotebookTestCase):
         
         event_emitter = notebook_runner.get_mock('event_emitter')
         
-        # Create and test the actual SynapseSparkTrace
-        trace = SynapseSparkTrace(event_emitter)
+        # Create and test the actual SparkTrace
+        trace = EventBasedSparkTrace(event_emitter)
         
         # Use the actual span context manager
         with trace.span("TestOp", "TestComp", {"test": "data"}):

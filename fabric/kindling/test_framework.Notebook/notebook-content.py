@@ -107,7 +107,7 @@ class NotebookTestEnvironment:
         
     def _setup_injection_mocks(self):
         """Setup dependency injection mocks - MUST BE CALLED FIRST"""
-        # Store original values if they exist
+        # Store original values if they existinjection
         if 'GlobalInjector' in globals():
             self.original_globals['GlobalInjector'] = globals()['GlobalInjector']
             
@@ -119,6 +119,10 @@ class NotebookTestEnvironment:
                 def decorator(target_class):
                     return target_class
                 return decorator
+            
+            @classmethod
+            def get(cls, iface):
+                return globals().get( iface.__name__, None )
                 
         # Make GlobalInjector available globally
         globals()['GlobalInjector'] = MockGlobalInjector
@@ -527,6 +531,135 @@ class NotebookTestRunner:
         """Cleanup test environment"""
         self.test_env.cleanup()
 
+def run_tests_in_folder(folder_name, test_config=None):
+    """Run pytest test classes from notebooks in the specified folder"""
+    if test_config is None:
+        test_config = {'use_real_spark': False}
+    
+    # Get notebooks from folder
+    try:
+        notebooks = get_all_notebooks_for_folder(folder_name)
+    except Exception as e:
+        print(f"Error accessing folder '{folder_name}': {e}")
+        return {"success": False, "error": str(e)}
+    
+    if not notebooks:
+        print(f"No notebooks found in folder '{folder_name}'")
+        return {"success": True, "passed": 0, "failed": 0}
+    
+    test_classes = []
+
+    # Extract pytest test classes from each notebook
+    for notebook in notebooks:
+        try:
+            pytest_cell_code = extract_pytest_cell(notebook.name)
+            if pytest_cell_code:
+                classes = execute_test_cell_with_imports(pytest_cell_code, notebook.name)
+                test_classes.extend(classes)
+                print(f"Found {len(classes)} test classes in {notebook.name}")
+        except Exception as e:
+            print(f"Failed to process {notebook.name}: {e}")
+            continue
+    
+    if not test_classes:
+        print(f"No pytest test classes found in folder '{folder_name}'")
+        return {"success": True, "passed": 0, "failed": 0}
+    
+    # Run tests using existing framework
+    print(f"Running tests from {len(test_classes)} test classes...")
+    return run_notebook_tests(*test_classes, test_config=test_config)
+
+
+def extract_pytest_cell(notebook_name):
+    """Extract the cell that starts with 'import pytest' from a notebook"""
+    client = get_synapse_client()
+    notebook = client.notebook.get_notebook(notebook_name)
+    
+    code = ""
+
+    for cell in notebook.properties.cells:
+        if cell.cell_type == "code":
+            if isinstance(cell.source, list):
+                cell_code = "".join(str(line) for line in cell.source)
+            else:
+                cell_code = str(cell.source)
+            
+            # Check if cell starts with 'import pytest'
+            if cell_code.strip().startswith('import pytest'):
+                code = code + "\n" + cell_code
+
+            if cell_code.strip().startswith('%run') and not 'environment_bootstrap' in cell_code and not 'test_framework' in cell_code:
+                code = code + "\n" + cell_code
+
+    return None if code == "" else code
+
+
+def execute_test_cell_with_imports(code, notebook_name):
+    """Execute pytest cell code after handling %run imports"""
+    import re
+    
+    # Find %run commands and convert to imports
+    run_pattern = r'%run\s+([^"\'\s]+)'
+    run_matches = re.findall(run_pattern, code)
+    
+    print(f"run_matches = {run_matches}")
+
+    # Setup module globals
+    module_globals = globals().copy()
+    
+    import_code = ""
+    # Import notebooks referenced by %run commands
+    for notebook_to_run in run_matches:
+        try:
+            print(f"Importing notebook {notebook_to_run} for test {notebook_name}")
+            nb_code, _ = load_notebook_code(notebook_to_run)
+            import_code = import_code + "\n" + nb_code      
+        except Exception as e:
+            print(f"Failed to import {notebook_to_run}: {e}")
+
+    # Remove %run lines from the code before executing
+    cleaned_code = import_code + "\n" + re.sub(run_pattern, '', code)
+    
+    # Execute the cleaned pytest cell code
+    test_classes = []
+    try:
+        exec(compile(cleaned_code, notebook_name, 'exec'), module_globals)
+        
+        # Find test classes
+        for name, obj in module_globals.items():
+            if (inspect.isclass(obj) and 
+                (name.startswith('Test') or name.endswith('Test') or 
+                 any(method.startswith('test_') for method in dir(obj)))):
+                test_classes.append(obj)
+                
+    except Exception as e:
+        print(f"Error executing pytest cell from {notebook_name}: {e}")
+    
+    return test_classes
+
+
+# Usage:
+# results = run_tests_in_folder("test_folder")
+# results = run_tests_in_folder("test_folder", {'use_real_spark': True})
+
+
+# Usage:
+# results = run_tests_in_folder("test_folder")
+# results = run_tests_in_folder("test_folder", {'use_real_spark': True})
+
+
+# Quick usage examples:
+#
+# # Basic usage:
+# results = run_tests_in_folder("my_test_folder")
+#
+# # With custom config:
+# config = {'use_real_spark': True, 'test_data': {'key': 'value'}}
+# results = run_tests_in_folder("integration_tests", config)
+#
+# # With automatic setup:
+# results = run_tests_in_folder_with_setup("unit_tests")
+
 
 # Test utilities and fixtures
 class SynapseNotebookTestCase:
@@ -884,6 +1017,8 @@ class TestSparkTraceComponents(SynapseNotebookTestCase):
         assert span.reraise is True
         assert span.start_time is not None
         assert span.end_time is None
+
+
 
 # METADATA ********************
 

@@ -119,7 +119,6 @@ class DataEntityRegistry(ABC):
 class DataEntityManager(BaseServiceProvider, DataEntityRegistry):
     @inject
     def __init__(self):
-        print("Data entity manager initialized ...")
         self.registry = {}
 
     def register_entity(self, entityid, **decorator_params):

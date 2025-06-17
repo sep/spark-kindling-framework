@@ -42,8 +42,9 @@ class CustomEventEmitter(ABC):
 class AzureEventEmitter(BaseServiceProvider, CustomEventEmitter):
 
     @inject
-    def __init__(self):
-        self.logger = GlobalInjector.get(PythonLoggerProvider).get_logger('EventEmitter')
+    def __init__(self, plp: PythonLoggerProvider):
+        self.super()
+        self.logger = plp.get_logger('EventEmitter')
 
     # Keep the original helper functions
     def emit_custom_event(self,
@@ -107,23 +108,10 @@ class SparkSpan:
     start_time: datetime = None
     end_time: datetime = None
 
-
 class SparkTraceProvider(ABC):
     @abstractmethod
     def span(self, operation: str = None, component: str = None, details: dict = None, reraise: bool = False):
         pass  
-
-class SparkTrace():
-    def __init__(self, *args, **kwargs):
-        pass
-
-    @staticmethod
-    def current():
-        return SparkTrace()
-
-    def span(self, *args, **kwargs):
-        spt = GlobalInjector.get(SparkTraceProvider)
-        return spt.span(*args, **kwargs)
 
 @GlobalInjector.singleton_autobind()
 class EventBasedSparkTrace(BaseServiceProvider, SparkTraceProvider):

@@ -36,6 +36,10 @@ def execute_remote_py_files(abfss_paths, **kwargs):
     exec(compile(full_content, "concatenated_files", 'exec'), current_globals)
 
 def bootstrap_environment():
+
+    if BOOTSTRAP_CONFIG.get('package_storage_path', None) != None:
+        BOOTSTRAP_CONFIG['artifacts_storage_path'] = BOOTSTRAP_CONFIG.get('package_storage_path').rsplit('/', 2)[0]
+
     execute_remote_py_files([
         f"{BOOTSTRAP_CONFIG['artifacts_storage_path']}/scripts/bootstrap_base.py",
         f"{BOOTSTRAP_CONFIG['artifacts_storage_path']}/scripts/bootstrap_fabric.py",   
