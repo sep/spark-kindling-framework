@@ -41,9 +41,11 @@ class SimpleReadPersistStrategy(BaseServiceProvider, EntityReadPersistStrategy):
 
             if( pipe.input_entity_ids and len(pipe.input_entity_ids) > 0 ):
                 
-                src_input_entity_id = self.der.get_entity_definition(pipe.input_entity_ids[0])
+                src_input_entity = self.der.get_entity_definition(pipe.input_entity_ids[0])
 
-                src_read_version = self.ep.get_entity_version(src_input_entity_id)
+                src_input_entity_id = src_input_entity.entityid
+
+                src_read_version = self.ep.get_entity_version(src_input_entity)
 
                 self.logger.debug(f"read_version - pipe = {pipe.pipeid} - ver = {src_read_version}") 
 

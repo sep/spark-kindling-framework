@@ -39,7 +39,7 @@ class CustomEventEmitter(ABC):
             pass
 
 @GlobalInjector.singleton_autobind()
-class SynapseEventEmitter(BaseServiceProvider, CustomEventEmitter):
+class AzureEventEmitter(BaseServiceProvider, CustomEventEmitter):
 
     @inject
     def __init__(self):
@@ -126,7 +126,7 @@ class SparkTrace():
         return spt.span(*args, **kwargs)
 
 @GlobalInjector.singleton_autobind()
-class SynapseSparkTrace(BaseServiceProvider, SparkTraceProvider):
+class EventBasedSparkTrace(BaseServiceProvider, SparkTraceProvider):
     # Static instance to maintain session trace
     _instance = None
     

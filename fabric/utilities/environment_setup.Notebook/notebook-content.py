@@ -22,16 +22,26 @@
 
 # CELL ********************
 
-def execute_remote_py_file(abfss_path, **kwargs):
-    """Execute a Python file directly from ABFSS with parameters"""
-    content = mssparkutils.fs.head(abfss_path, max_bytes=1000000)
+def execute_remote_py_files(abfss_paths, **kwargs):
+    """Execute multiple Python files by concatenating them first"""
+    combined_content = []
+    
+    for abfss_path in abfss_paths:
+        content = mssparkutils.fs.head(abfss_path, max_bytes=1000000)
+        combined_content.append(content)
+    
+    full_content = "\n\n".join(combined_content)
     current_globals = globals()
     current_globals.update(kwargs)
-    exec(compile(content, abfss_path, 'exec'), current_globals)
+    exec(compile(full_content, "concatenated_files", 'exec'), current_globals)
 
 def bootstrap_environment():
-    execute_remote_py_file(f"{BOOTSTRAP_CONFIG['package_storage_path']}/kindling-bootstrap.py", bootstrap_config=BOOTSTRAP_CONFIG)   
-
+    execute_remote_py_files([
+        f"{BOOTSTRAP_CONFIG['artifacts_storage_path']}/scripts/bootstrap_base.py",
+        f"{BOOTSTRAP_CONFIG['artifacts_storage_path']}/scripts/bootstrap_fabric.py",   
+        f"{BOOTSTRAP_CONFIG['artifacts_storage_path']}/scripts/bootstrap_kindling.py"
+    ], bootstrap_config=BOOTSTRAP_CONFIG)
+                          
 bootstrap_environment()
 
 # METADATA ********************
