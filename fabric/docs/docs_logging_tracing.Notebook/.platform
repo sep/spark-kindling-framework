@@ -1,0 +1,15 @@
+{
+    "name": "Logging and Tracing Documentation",
+    "type": "notebooks",
+    "extensions": [
+        "ipynb"
+    ],
+    "properties": {
+        "lastModifiedTime": "2025-06-20T10:00:00.000Z",
+        "createdTime": "2025-06-20T10:00:00.000Z",
+        "version": "1.0",
+        "description": "Documentation for Kindling Framework's logging and distributed tracing capabilities",
+        "intellisenseLanguage": "python",
+        "language": "python"
+    }
+}

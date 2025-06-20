@@ -1,0 +1,15 @@
+{
+    "name": "Entity Providers Documentation",
+    "type": "notebooks",
+    "extensions": [
+        "ipynb"
+    ],
+    "properties": {
+        "lastModifiedTime": "2025-06-20T10:05:00.000Z",
+        "createdTime": "2025-06-20T10:05:00.000Z",
+        "version": "1.0",
+        "description": "Documentation for Kindling Framework's entity provider system for storage abstraction",
+        "intellisenseLanguage": "python",
+        "language": "python"
+    }
+}

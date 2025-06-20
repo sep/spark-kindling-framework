@@ -1,0 +1,15 @@
+{
+    "name": "Watermarking Documentation",
+    "type": "notebooks",
+    "extensions": [
+        "ipynb"
+    ],
+    "properties": {
+        "lastModifiedTime": "2025-06-20T10:25:00.000Z",
+        "createdTime": "2025-06-20T10:25:00.000Z",
+        "version": "1.0",
+        "description": "Documentation for Kindling Framework's watermarking system for change tracking and incremental processing",
+        "intellisenseLanguage": "python",
+        "language": "python"
+    }
+}
