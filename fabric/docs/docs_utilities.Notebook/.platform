@@ -1,15 +1,12 @@
 {
-    "name": "Common Transforms Documentation",
-    "type": "notebooks",
-    "extensions": [
-        "ipynb"
-    ],
-    "properties": {
-        "lastModifiedTime": "2025-06-20T10:10:00.000Z",
-        "createdTime": "2025-06-20T10:10:00.000Z",
-        "version": "1.0",
-        "description": "Documentation for Kindling Framework's common transformation utilities",
-        "intellisenseLanguage": "python",
-        "language": "python"
-    }
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "docs_utilities",
+    "description": "Documentation for Kindling Framework's common transformation utilities"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "6d9a34fe-f021-bc81-4521-9c021bf626a6"
+  }
 }
