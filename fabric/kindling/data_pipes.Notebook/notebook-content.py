@@ -67,7 +67,7 @@ class DataPipes:
 class DataPipesRegistry(ABC):
     @abstractmethod
     def register_pipe(self, pipeid, **decorator_params):
-        pass
+        passabstractmethod
 
     @abstractmethod
     def get_pipe_ids(self):
@@ -103,19 +103,20 @@ class DataPipesManager(BaseServiceProvider, DataPipesRegistry):
 @GlobalInjector.singleton_autobind()
 class DataPipesExecuter(BaseServiceProvider, DataPipesExecution):
     @inject
-    def __init__(self, lp: PythonLoggerProvider, dpe: DataEntityRegistry, dpr: DataPipesRegistry, erps: EntityReadPersistStrategy):
+    def __init__(self, lp: PythonLoggerProvider, dpe: DataEntityRegistry, dpr: DataPipesRegistry, erps: EntityReadPersistStrategy, tp: SparkTraceProvider):
         self.erps = erps
         self.dpr = dpr
         self.dpe = dpe
         self.data_pipes_logger = lp.get_logger("data_pipes_executer") 
+        self.tp = tp
 
     def run_datapipes(self, pipes):
         pipe_entity_reader = self.erps.create_pipe_entity_reader
         pipe_activator = self.erps.create_pipe_persist_activator
 
-        with SparkTrace.current().span(component="data_pipes_executer", operation="execute_all_datapipes"):
+        with self.tp.span(component="data_pipes_executer", operation="execute_all_datapipes"):
             for pipeid in pipes:
-                with SparkTrace.current().span(operation="execute_datapipe", component=f"pipe-{pipeid}"):
+                with self.tp.span(operation="execute_datapipe", component=f"pipe-{pipeid}"):
                     pipe = self.dpr.get_pipe_definition(pipeid)
                     self._execute_datapipe(pipe_entity_reader(pipe), pipe_activator(pipe), pipe )
 

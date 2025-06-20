@@ -49,8 +49,6 @@ class DynaconfConfig(ConfigInterface):
         adls_config_path: Optional[str] = None,
         **dynaconf_kwargs
     ):
-        super().__init__()
-
         self.spark = spark_session
         self.initial_config = initial_config or {}
         
@@ -62,8 +60,8 @@ class DynaconfConfig(ConfigInterface):
         server = dynaconf_kwargs["SYNAPSE_STORAGE_SERVER"]
         account = dynaconf_kwargs["SYNAPSE_STORAGE_ACCOUNT"]
 
-        logger.debug(f"Synapse storage server: {server}")
-        logger.debug(f"Synapse storage account: {account}")
+        #logger.debug(f"Synapse storage server: {server}")
+        #logger.debug(f"Synapse storage account: {account}")
 
         if adls_enabled and adls_account and adls_container:
             try:
@@ -76,7 +74,8 @@ class DynaconfConfig(ConfigInterface):
                 if adls_config_path:
                     dynaconf_kwargs["ADLS_CONFIG_PATH_FOR_DYNACONF"] = adls_config_path
             except ImportError:
-                logger.warn("Warning: ADLS loader not found. ADLS config loading disabled.")
+                pass
+                #logger.warn("Warning: ADLS loader not found. ADLS config loading disabled.")
         
         loaders.append("dynaconf.loaders.env_loader")
         

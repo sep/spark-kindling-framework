@@ -43,7 +43,6 @@ class AzureEventEmitter(BaseServiceProvider, CustomEventEmitter):
 
     @inject
     def __init__(self, plp: PythonLoggerProvider):
-        self.super()
         self.logger = plp.get_logger('EventEmitter')
 
     # Keep the original helper functions

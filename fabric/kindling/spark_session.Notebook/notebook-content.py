@@ -33,10 +33,10 @@ def get_or_create_spark_session():
             
             # Add to globals so code can access it as 'spark'
             globals()['spark'] = spark_session
-            logger.debug("SparkSession created and assigned to global 'spark' variable")
+            #logger.debug("SparkSession created and assigned to global 'spark' variable")
             
         except ImportError:
-            logger.error("PySpark not installed. Please install with: pip install pyspark")
+            #logger.error("PySpark not installed. Please install with: pip install pyspark")
             sys.exit(1)
     else:
         pass
