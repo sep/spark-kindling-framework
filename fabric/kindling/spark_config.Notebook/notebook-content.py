@@ -62,8 +62,8 @@ class DynaconfConfig(ConfigInterface):
         server = dynaconf_kwargs["SYNAPSE_STORAGE_SERVER"]
         account = dynaconf_kwargs["SYNAPSE_STORAGE_ACCOUNT"]
 
-        print(f"DEBUG: Synapse storage server: {server}")
-        print(f"DEBUG: Synapse storage account: {account}")
+        logger.debug(f"Synapse storage server: {server}")
+        logger.debug(f"Synapse storage account: {account}")
 
         if adls_enabled and adls_account and adls_container:
             try:
@@ -76,7 +76,7 @@ class DynaconfConfig(ConfigInterface):
                 if adls_config_path:
                     dynaconf_kwargs["ADLS_CONFIG_PATH_FOR_DYNACONF"] = adls_config_path
             except ImportError:
-                print("Warning: ADLS loader not found. ADLS config loading disabled.")
+                logger.warn("Warning: ADLS loader not found. ADLS config loading disabled.")
         
         loaders.append("dynaconf.loaders.env_loader")
         

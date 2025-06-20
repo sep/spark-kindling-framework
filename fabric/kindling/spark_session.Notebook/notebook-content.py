@@ -20,7 +20,7 @@ def get_or_create_spark_session():
   
     # Check if spark variable exists in globals
     if 'spark' not in globals():
-        # Not in Synapse, need to create our own session
+        # Not in managed environment, need to create our own session
         try:
             from pyspark.sql import SparkSession
             
@@ -33,10 +33,10 @@ def get_or_create_spark_session():
             
             # Add to globals so code can access it as 'spark'
             globals()['spark'] = spark_session
-            print("SparkSession created and assigned to global 'spark' variable")
+            logger.debug("SparkSession created and assigned to global 'spark' variable")
             
         except ImportError:
-            print("PySpark not installed. Please install with: pip install pyspark")
+            logger.error("PySpark not installed. Please install with: pip install pyspark")
             sys.exit(1)
     else:
         pass

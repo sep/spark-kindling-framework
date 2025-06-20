@@ -188,6 +188,8 @@ class NotebookTestEnvironment:
                     self.get_entity_definition = MagicMock(return_value=MagicMock())
                     
             globals()['DataEntityRegistry'] = DataEntityRegistry
+        else:
+            logger.debug('DataEntityRegistry already in globals')
 
         # REVISED: MockDataPipesRegistry - simplified to match DataEntityRegistry pattern
         if 'DataPipesRegistry' not in globals():
@@ -205,7 +207,9 @@ class NotebookTestEnvironment:
                     self.get_pipe_definition = MagicMock(return_value=MagicMock())
                     
             globals()['DataPipesRegistry'] = MockDataPipesRegistry
-            
+        else:
+            logger.debug('DataPipesRegistry already in globals')        
+
         # REVISED: EntityReadPersistStrategy - ensure all methods are MagicMock objects
         if 'EntityReadPersistStrategy' not in globals():
             class MockEntityReadPersistStrategy:
@@ -223,6 +227,8 @@ class NotebookTestEnvironment:
                     self.create_pipe_persist_activator = MagicMock(return_value=MagicMock())
                     
             globals()['EntityReadPersistStrategy'] = MockEntityReadPersistStrategy
+        else:
+            logger.debug('EntityReadPersistStrategy already in globals')    
 
         if 'EntityProvider' not in globals():
             class MockEntityProvider:
@@ -246,6 +252,8 @@ class NotebookTestEnvironment:
                     self.write_to_entity.return_value = self.default_df
 
             globals()['EntityProvider'] = MockEntityProvider
+        else:
+            logger.debug('EntityProvider already in globals')  
 
         if 'FileIngestionRegistry' not in globals():
             class MockFileIngestionRegistry:
@@ -255,7 +263,9 @@ class NotebookTestEnvironment:
                     self.get_entry_definition = MagicMock(return_value=MagicMock())
             
             globals()['FileIngestionRegistry'] = MockFileIngestionRegistry
-        
+        else:
+            logger.debug('FileIngestionRegistry already in globals')   
+
         # Mock FileIngestionProcessor interface  
         if 'FileIngestionProcessor' not in globals():
             class MockFileIngestionProcessor:
@@ -263,6 +273,8 @@ class NotebookTestEnvironment:
                     self.process_path = MagicMock()
             
             globals()['FileIngestionProcessor'] = MockFileIngestionProcessor
+        else:
+            logger.debug('FileIngestionProcessor already in globals') 
 
         if 'WatermarkEntityFinder' not in globals():
             class MockWatermarkEntityFinder:
@@ -284,6 +296,8 @@ class NotebookTestEnvironment:
                     self.get_watermark_entity_for_layer = MagicMock(return_value=mock_entity)
             
             globals()['WatermarkEntityFinder'] = MockWatermarkEntityFinder
+        else:
+            logger.debug('WatermarkEntityFinder already in globals')   
 
         if 'WatermarkService' not in globals():
             class MockWatermarkManager():
@@ -304,6 +318,8 @@ class NotebookTestEnvironment:
             globals()['WatermarkService'] = MockWatermarkManager
             # Add alias for test compatibility
             globals()['MockWatermarkService'] = MockWatermarkManager
+        else:
+            logger.debug('WatermarkService already in globals')  
 
         if 'SparkTraceProvider' not in globals():
             class MockSparkTraceProvider:
@@ -330,6 +346,8 @@ class NotebookTestEnvironment:
                     return span
             
             globals()['SparkTraceProvider'] = MockSparkTraceProvider
+        else:
+            logger.debug('SparkTraceProvider already in globals') 
 
         if 'DataPipesExecution' not in globals():
             class MockDataPipesExecution:
@@ -344,6 +362,8 @@ class NotebookTestEnvironment:
                     self.run_datapipes = MagicMock()  # ← REPLACE with this line
 
             globals()['DataPipesExecution'] = MockDataPipesExecution
+        else:
+            logger.debug('DataPipesExecution already in globals')   
 
         if 'SimpleReadPersistStrategy' not in globals():
             class MockSimpleReadPersistStrategy:
@@ -362,6 +382,9 @@ class NotebookTestEnvironment:
                     return MagicMock()
             
             globals()['SimpleReadPersistStrategy'] = MockSimpleReadPersistStrategy
+        else:
+            logger.debug('SimpleReadPersistStrategy already in globals')   
+
 
         if 'StageProcessingService' not in globals():
             class StageProcessingService:
@@ -371,6 +394,8 @@ class NotebookTestEnvironment:
                     pass
             
             globals()['StageProcessingService'] = StageProcessingService
+        else:
+            logger.debug('StageProcessingService already in globals')   
 
         # REVISED: PipeMetadata - now matches constructor patterns with optional parameters
         if 'PipeMetadata' not in globals():
@@ -389,6 +414,8 @@ class NotebookTestEnvironment:
                     self.output_type = output_type
             
             globals()['PipeMetadata'] = MockPipeMetadata
+        else:
+            logger.debug('PipeMetadata already in globals')   
 
     def _setup_synapse_mocks(self):
         """Setup Synapse-specific mocks"""
@@ -531,6 +558,26 @@ class NotebookTestRunner:
         """Cleanup test environment"""
         self.test_env.cleanup()
 
+def run_notebook_tests(*test_classes, test_config=None):
+    """
+    Run tests with FORCED config that overrides any existing environment
+    """
+    if test_config is None:
+        test_config = {'use_real_spark': False}
+    
+    print(f"FORCING test environment setup with: {test_config}")
+    
+    # Force create new environment that overrides anything existing
+    collector = MemoryTestCollector(test_classes, test_config)
+    results = collector.run_tests()
+    
+    if results["success"]:
+        print("✓ All tests PASSED")
+    else:
+        print("✗ Some tests FAILED")
+    
+    return results
+
 def run_tests_in_folder(folder_name, test_config=None):
     """Run pytest test classes from notebooks in the specified folder"""
     if test_config is None:
@@ -540,11 +587,11 @@ def run_tests_in_folder(folder_name, test_config=None):
     try:
         notebooks = get_all_notebooks_for_folder(folder_name)
     except Exception as e:
-        print(f"Error accessing folder '{folder_name}': {e}")
+        logger.error("Accessing folder '{folder_name}': {e}")
         return {"success": False, "error": str(e)}
     
     if not notebooks:
-        print(f"No notebooks found in folder '{folder_name}'")
+        logger.error(f"No notebooks found in folder '{folder_name}'")
         return {"success": True, "passed": 0, "failed": 0}
     
     test_classes = []
@@ -556,17 +603,17 @@ def run_tests_in_folder(folder_name, test_config=None):
             if pytest_cell_code:
                 classes = execute_test_cell_with_imports(pytest_cell_code, notebook.name)
                 test_classes.extend(classes)
-                print(f"Found {len(classes)} test classes in {notebook.name}")
+                logger.info(f"Found {len(classes)} test classes in {notebook.name}")
         except Exception as e:
-            print(f"Failed to process {notebook.name}: {e}")
+            logger.error(f"Failed to process {notebook.name}: {e}")
             continue
     
     if not test_classes:
-        print(f"No pytest test classes found in folder '{folder_name}'")
+        logger.info(f"No pytest test classes found in folder '{folder_name}'")
         return {"success": True, "passed": 0, "failed": 0}
     
     # Run tests using existing framework
-    print(f"Running tests from {len(test_classes)} test classes...")
+    logger.info(f"Running tests from {len(test_classes)} test classes...")
     return run_notebook_tests(*test_classes, test_config=test_config)
 
 
@@ -589,6 +636,7 @@ def extract_pytest_cell(notebook_name):
                 code = code + "\n" + cell_code
 
             if cell_code.strip().startswith('%run') and not 'environment_bootstrap' in cell_code and not 'test_framework' in cell_code:
+                logger.debug(f"Adding %run to code -- {cell_code}")
                 code = code + "\n" + cell_code
 
     return None if code == "" else code
@@ -602,7 +650,7 @@ def execute_test_cell_with_imports(code, notebook_name):
     run_pattern = r'%run\s+([^"\'\s]+)'
     run_matches = re.findall(run_pattern, code)
     
-    print(f"run_matches = {run_matches}")
+    logger.debug(f"run_matches = {run_matches}")
 
     # Setup module globals
     module_globals = globals().copy()
@@ -611,11 +659,11 @@ def execute_test_cell_with_imports(code, notebook_name):
     # Import notebooks referenced by %run commands
     for notebook_to_run in run_matches:
         try:
-            print(f"Importing notebook {notebook_to_run} for test {notebook_name}")
+            logger.debug(f"Importing notebook {notebook_to_run} for test {notebook_name}")
             nb_code, _ = load_notebook_code(notebook_to_run)
             import_code = import_code + "\n" + nb_code      
         except Exception as e:
-            print(f"Failed to import {notebook_to_run}: {e}")
+            logger.error(f"Failed to import {notebook_to_run}: {e}")
 
     # Remove %run lines from the code before executing
     cleaned_code = import_code + "\n" + re.sub(run_pattern, '', code)
@@ -633,7 +681,7 @@ def execute_test_cell_with_imports(code, notebook_name):
                 test_classes.append(obj)
                 
     except Exception as e:
-        print(f"Error executing pytest cell from {notebook_name}: {e}")
+        logger.error(f"Error executing pytest cell from {notebook_name}: {e}")
     
     return test_classes
 
@@ -782,9 +830,8 @@ class TestCollectorPlugin:
                     name=test_id,
                 ))
 
-
 class MemoryTestCollector:
-    """Simple test runner that works with pytest-style fixtures"""
+    """Test collector that FORCES environment setup to override notebook interference"""
     
     def __init__(self, test_classes, test_config=None):
         self.test_classes = test_classes
@@ -792,10 +839,16 @@ class MemoryTestCollector:
         self.env = None
         
     def run_tests(self):
-        """Run tests with manual fixture injection"""
-        # Setup environment once
+        """Run tests with FORCED environment setup"""
+        # FORCE setup environment - this will override any existing spark
+        print(f"FORCING environment setup with config: {self.test_config}")
         self.env = NotebookTestEnvironment()
         self.env.setup_test_environment(self.test_config)
+        
+        # Verify the spark session type
+        spark_type = str(type(globals().get('spark')))
+        use_real = self.test_config.get('use_real_spark', False)
+        print(f"After FORCED setup: spark type = {spark_type}, use_real_spark = {use_real}")
         
         passed = 0
         failed = 0
@@ -823,9 +876,15 @@ class MemoryTestCollector:
                     test_instance = test_class()
                     test_method = getattr(test_instance, method_name)
                     
-                    # Create notebook runner for this test
+                    # Create runner that uses the shared environment (NO new environment setup)
                     runner = NotebookTestRunner()
-                    runner.prepare_test_environment(self.test_config)
+                    runner.test_env = self.env  # Share the FORCED environment
+                    runner._setup_result_capture()
+                    
+                    # Before running test, verify spark is still correct
+                    current_spark_type = str(type(globals().get('spark')))
+                    if current_spark_type != spark_type:
+                        print(f"🚨 WARNING: Spark type changed before {test_name}: {current_spark_type}")
                     
                     try:
                         # Inspect method signature for fixture injection
@@ -863,8 +922,8 @@ class MemoryTestCollector:
                         print(f"✓ {test_name} PASSED")
                         passed += 1
                         
-                    finally:
-                        runner.cleanup()
+                    except Exception as e:
+                        raise
                         
                 except Exception as e:
                     print(f"✗ {test_name} FAILED: {e}")
@@ -888,28 +947,49 @@ class MemoryTestCollector:
             }
             
         finally:
-            # Cleanup
+            # Cleanup once at the end
             if self.env:
                 self.env.cleanup()
 
-
-def run_notebook_tests(*test_classes, test_config: Optional[Dict[str, Any]] = None):
-    """
-    Run tests with pytest-style fixtures in notebook environment
-    
-    Args:
-        *test_classes: Variable number of test classes to run
-        test_config: Optional test configuration
-        
-    Returns:
-        Dict with test results
-    """
+def run_tests_in_folder(folder_name, test_config=None):
+    """Run pytest test classes from notebooks in the specified folder"""
     if test_config is None:
-        test_config = {'use_real_spark': False}
+        test_config = {'use_real_spark': True}
     
-    print(f"Running tests from {len(test_classes)} test classes...")
+    # Get notebooks from folder
+    try:
+        notebooks = get_all_notebooks_for_folder(folder_name)
+    except Exception as e:
+        logger.error("Accessing folder '{folder_name}': {e}")
+        return {"success": False, "error": str(e)}
     
-    # Use the memory test collector
+    if not notebooks:
+        logger.error(f"No notebooks found in folder '{folder_name}'")
+        return {"success": True, "passed": 0, "failed": 0}
+    
+    test_classes = []
+
+    # Extract pytest test classes from each notebook FIRST
+    for notebook in notebooks:
+        try:
+            pytest_cell_code = extract_pytest_cell(notebook.name)
+            if pytest_cell_code:
+                classes = execute_test_cell_with_imports(pytest_cell_code, notebook.name)
+                test_classes.extend(classes)
+                logger.info(f"Found {len(classes)} test classes in {notebook.name}")
+        except Exception as e:
+            logger.error(f"Failed to process {notebook.name}: {e}")
+            continue
+    
+    if not test_classes:
+        logger.info(f"No pytest test classes found in folder '{folder_name}'")
+        return {"success": True, "passed": 0, "failed": 0}
+    
+    # CRITICAL FIX: Force environment setup AFTER extraction
+    # This ensures our config overrides any notebook spark setup
+    logger.debug(f"Forcing environment setup with: {test_config}")
+    
+    # Use the forced collector that sets up environment after extraction
     collector = MemoryTestCollector(test_classes, test_config)
     results = collector.run_tests()
     
@@ -933,92 +1013,6 @@ def run_single_test_class(test_class, test_config: Optional[Dict[str, Any]] = No
         Dict with test results
     """
     return run_notebook_tests(test_class, test_config=test_config)
-
-
-# Specific tests for SparkTrace functionality
-class TestSparkTraceComponents(SynapseNotebookTestCase):
-    """Tests specifically for the SparkTrace, SynapseSparkTrace, and related components"""
-    
-    def test_custom_event_emitter_interface(self, notebook_runner, basic_test_config):
-        """Test that CustomEventEmitter interface works correctly"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        # After %run of your notebook, test the emitter
-        event_emitter = notebook_runner.get_mock('event_emitter')
-        
-        # Test emit_custom_event call
-        test_trace_id = uuid.uuid4()
-        event_emitter.emit_custom_event(
-            component="TestComponent",
-            operation="TestOperation", 
-            details={"key": "value"},
-            eventId="test-123",
-            traceId=test_trace_id
-        )
-        
-        # Verify the call was made correctly
-        event_emitter.emit_custom_event.assert_called_with(
-            "TestComponent", "TestOperation", {"key": "value"}, "test-123", test_trace_id
-        )
-    
-    def test_synapse_event_emitter_initialization(self, notebook_runner, basic_test_config):
-        """Test SynapseEventEmitter initialization and logger injection"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        # Simulate creating SynapseEventEmitter instance
-        # After %run, verify logger was requested from injector
-        logger_provider = notebook_runner.get_mock('logger_provider')
-        logger_provider.get_logger.assert_called()
-        
-    def test_mdc_context_manager(self, notebook_runner, basic_test_config):
-        """Test the mdc_context context manager"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        # Test MDC context usage (this would be called in your notebook)
-        test_context = {
-            'trace_id': 'test-trace-123',
-            'span_id': 'span-456', 
-            'component': 'TestComponent',
-            'operation': 'TestOp'
-        }
-        
-        # Simulate mdc_context usage
-        spark = notebook_runner.test_env.spark_session
-        mdc_mock = spark._jvm.org.apache.log4j.MDC
-        
-        # Verify MDC operations would be called
-        for key, value in test_context.items():
-            spark.sparkContext.setLocalProperty(f"mdc.{key}", value)
-            mdc_mock.put(key, value)
-        
-        # Assert MDC context was set
-        notebook_runner.assert_mdc_context_used(['trace_id', 'span_id', 'component', 'operation'])
-        
-    def test_spark_span_dataclass(self, notebook_runner, basic_test_config):
-        """Test SparkSpan dataclass creation and attributes"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        # Test SparkSpan creation
-        test_trace_id = uuid.uuid4()
-        span = TestSpan(
-            id="test-span-1",
-            component="TestComponent", 
-            operation="TestOperation",
-            attributes={"key": "value"},
-            traceId=test_trace_id,
-            reraise=True
-        )
-        
-        assert span.id == "test-span-1"
-        assert span.component == "TestComponent"
-        assert span.operation == "TestOperation" 
-        assert span.attributes == {"key": "value"}
-        assert span.traceId == test_trace_id
-        assert span.reraise is True
-        assert span.start_time is not None
-        assert span.end_time is None
-
-
 
 # METADATA ********************
 

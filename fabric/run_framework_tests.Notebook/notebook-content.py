@@ -23,7 +23,7 @@
 # CELL ********************
 
 BOOTSTRAP_CONFIG = {
-    'log_level': 'INFO',
+    'log_level': 'DEBUG',
     'is_interactive': True,
     'use_lake_packages' : False,
     'load_local_packages' : False,
@@ -69,8 +69,9 @@ BOOTSTRAP_CONFIG = {
 # CELL ********************
 
 test_env = setup_global_test_environment()
-run_tests_in_folder('kindling-test',     test_config={
-        'use_real_spark': False,
+run_tests_in_folder('kindling-test',     
+    test_config={
+        'use_real_spark': True,
         'test_data': {
             'test_entity_data': [
                 {'id': 1, 'name': 'Entity1', 'version': 1},

@@ -23,7 +23,7 @@
 # CELL ********************
 
 BOOTSTRAP_CONFIG = {
-    'log_level': 'DEBUG',
+    'log_level': 'INFO',
     'is_interactive': False,
     'use_lake_packages' : False,
     'load_local_packages' : False,

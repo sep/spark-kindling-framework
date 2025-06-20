@@ -88,11 +88,11 @@ class DataPipesManager(BaseServiceProvider, DataPipesRegistry):
     def __init__(self, lp: PythonLoggerProvider):
         self.registry = {}
         self.data_pipes_logger = lp.get_logger("data_pipes_manager") 
-        print("Data pipes manager initialized ...")
+        self.data_pipes_logger.debug("Data pipes manager initialized ...")
 
     def register_pipe(self, pipeid, **decorator_params):
         self.registry[pipeid] = PipeMetadata(pipeid, **decorator_params)
-        self.data_pipes_logger.info(f"Pipe registered: {pipeid}")
+        self.data_pipes_logger.debug(f"Pipe registered: {pipeid}")
 
     def get_pipe_ids(self):
         return self.registry.keys()

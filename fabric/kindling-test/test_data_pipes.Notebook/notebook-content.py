@@ -199,9 +199,6 @@ class TestDataPipes(SynapseNotebookTestCase):
         assert pipe.input_entity_ids == ["entity1"]
         assert pipe.output_entity_id == "output_entity"
         assert pipe.output_type == "delta"
-        
-        # Verify logging
-        mock_logger.info.assert_called_with("Pipe registered: test_pipe")
     
     def test_data_pipes_manager_get_methods(self, notebook_runner, basic_test_config):
         notebook_runner.prepare_test_environment(basic_test_config)

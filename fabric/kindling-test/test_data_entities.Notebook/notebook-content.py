@@ -304,6 +304,7 @@ class TestDataEntities(SynapseNotebookTestCase):
         
         # Mock GlobalInjector.get to return a mock registry
         mock_registry = MagicMock()
+        mock_registry.register_entity = MagicMock()
         
         with patch.object(DataEntities, 'deregistry', None):
             with patch('__main__.GlobalInjector') as mock_gi:
@@ -321,6 +322,8 @@ class TestDataEntities(SynapseNotebookTestCase):
                 
                 # Should have called GlobalInjector.get
                 mock_gi.get.assert_called_once()
+
+                mock_registry.register_entity.assert_called_once()
     
     def test_entity_interfaces_are_abstract(self, notebook_runner, basic_test_config):
         notebook_runner.prepare_test_environment(basic_test_config)

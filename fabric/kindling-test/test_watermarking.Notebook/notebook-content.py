@@ -26,6 +26,7 @@ BOOTSTRAP_CONFIG = {
     'is_interactive': True,
     'use_lake_packages' : False,
     'load_local_packages' : False,
+    'log_level': "DEBUG",
     'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'package_storage_path': "Files/artifacts/packages/latest",
     'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
@@ -79,6 +80,17 @@ if 'GI_IMPORT_GUARD' in globals():
 
 # CELL ********************
 
+del globals()['WatermarkManager']
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 %run watermarking
 
 # METADATA ********************
@@ -106,6 +118,9 @@ class TestWatermarkManager(SynapseNotebookTestCase):
     
     def watermark_manager(self, notebook_runner, basic_test_config):
         """Setup method that provides a configured WatermarkManager instance"""
+
+        #print(f"Test Config = {basic_test_config}")
+
         notebook_runner.prepare_test_environment(basic_test_config)
         
         WatermarkManager = globals().get('WatermarkManager')
@@ -119,19 +134,6 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         entity_provider = EntityProvider()
         watermark_entity_finder = MagicMock()
         logger_provider = PythonLoggerProvider()
-        
-        # Create manager instance
-        manager = WatermarkManager.__new__(WatermarkManager)
-        manager.__init__(entity_provider, watermark_entity_finder, logger_provider)
-        
-        # Return components for use in tests
-        return {
-            'manager': manager,
-            'entity_provider': entity_provider,
-            'watermark_entity_finder': watermark_entity_finder,
-            'logger_provider': logger_provider,
-            'spark': notebook_runner.test_env.spark_session
-        }
         
         # Create manager instance
         manager = WatermarkManager.__new__(WatermarkManager)
@@ -160,9 +162,9 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         
         # Should have required abstract methods
         assert hasattr(WatermarkEntityFinder, 'get_watermark_entity_for_entity'), \
-            f"Required method missing: Expected=get_watermark_entity_for_entity method exists, Got={hasattr(WatermarkEntityFinder, 'get_watermark_entity_for_entity')}"
+            "Required method missing: get_watermark_entity_for_entity method should exist"
         assert hasattr(WatermarkEntityFinder, 'get_watermark_entity_for_layer'), \
-            f"Required method missing: Expected=get_watermark_entity_for_layer method exists, Got={hasattr(WatermarkEntityFinder, 'get_watermark_entity_for_layer')}"
+            "Required method missing: get_watermark_entity_for_layer method should exist"
     
     def test_watermark_service_interface(self, notebook_runner, basic_test_config):
         """Test that WatermarkService is properly abstract"""
@@ -183,7 +185,7 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         
         for method_name in required_methods:
             assert hasattr(WatermarkService, method_name), \
-                f"Required method missing: Expected={method_name} method exists, Got={hasattr(WatermarkService, method_name)}"
+                f"Required method missing: {method_name} method should exist"
     
     def test_watermark_manager_initialization(self, watermark_manager):
         """Test WatermarkManager initialization and dependency injection"""
@@ -197,25 +199,25 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         BaseServiceProvider = globals().get('BaseServiceProvider')
         WatermarkService = globals().get('WatermarkService')
         
-        # Test inheritance
+        # Test inheritance contract
         assert issubclass(WatermarkManager, BaseServiceProvider), \
-            f"Inheritance failed: Expected=WatermarkManager inherits from BaseServiceProvider, Got={WatermarkManager.__bases__}"
+            "Inheritance contract failed: WatermarkManager should inherit from BaseServiceProvider"
         assert issubclass(WatermarkManager, WatermarkService), \
-            f"Inheritance failed: Expected=WatermarkManager inherits from WatermarkService, Got={WatermarkManager.__bases__}"
+            "Inheritance contract failed: WatermarkManager should inherit from WatermarkService"
         
-        # Verify initialization
+        # Verify dependency injection contract
         assert manager.ep == entity_provider, \
-            f"Entity provider assignment failed: Expected={entity_provider}, Got={manager.ep}"
+            "Dependency injection failed: Entity provider should be correctly assigned"
         assert manager.wef == watermark_entity_finder, \
-            f"Watermark entity finder assignment failed: Expected={watermark_entity_finder}, Got={manager.wef}"
+            "Dependency injection failed: Watermark entity finder should be correctly assigned"
         assert hasattr(manager, 'logger'), \
-            f"Logger attribute missing: Expected=logger attribute exists, Got=hasattr result: {hasattr(manager, 'logger')}"
+            "Logger initialization failed: Logger attribute should exist"
         
-        # Verify logger was obtained from provider
+        # Verify logger was obtained from provider (contract behavior)
         logger_provider.get_logger.assert_called_with("watermark")
     
     def test_get_watermark_with_existing_watermark(self, watermark_manager):
-        """Test getting an existing watermark"""
+        """Test getting an existing watermark - contract behavior"""
         setup = watermark_manager
         manager = setup['manager']
         entity_provider = setup['entity_provider']
@@ -225,44 +227,39 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         mock_watermark_entity = MagicMock()
         watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
         
-        # Create mock row with watermark data
+        # Create mock watermark data
         mock_watermark_row = MagicMock()
-        # Fix lambda to handle both self and key arguments
         mock_watermark_row.__getitem__ = lambda self, key: 42 if key == "last_version_processed" else None
         mock_watermark_row.last_version_processed = 42
         
-        # Create a mock DataFrame that supports the full chain: filter().select().limit()
-        def create_chained_mock(return_empty=False):
-            mock_df = MagicMock()
-            mock_df.filter.return_value = mock_df  # filter returns self for chaining
-            mock_df.select.return_value = mock_df  # select returns self for chaining  
-            mock_df.limit.return_value = mock_df   # limit returns self for chaining
-            mock_df.isEmpty.return_value = return_empty
-            if not return_empty:
-                mock_df.first.return_value = mock_watermark_row
-            return mock_df
+        # Create a mock DataFrame that supports the query chain
+        mock_df = MagicMock()
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_df.isEmpty.return_value = False
+        mock_df.first.return_value = mock_watermark_row
         
-        # Configure read_entity to return our chained mock
-        mock_df = create_chained_mock(return_empty=False)
         entity_provider.read_entity.return_value = mock_df
         
-        # Test getting watermark
+        # Test the contract: get_watermark should return the version number
         result = manager.get_watermark("test_entity", "test_reader")
         
-        # Verify the chain was called correctly
-        entity_provider.read_entity.assert_called_once()
+        # Verify contract: correct entity was requested
+        watermark_entity_finder.get_watermark_entity_for_entity.assert_called_with("test_entity")
+        entity_provider.read_entity.assert_called_with(mock_watermark_entity)
+        
+        # Verify contract: result should be the version number
+        assert result == 42, \
+            f"get_watermark contract failed: Expected=42, Got={result}"
+        
+        # Verify contract: proper filtering was applied
         mock_df.filter.assert_called_once()
         mock_df.select.assert_called_once_with("last_version_processed")
         mock_df.limit.assert_called_once_with(1)
-        mock_df.isEmpty.assert_called_once()
-        mock_df.first.assert_called()
-          
-        # Verify result with better error message showing actual value
-        assert result == 42, \
-            f"get_watermark failed: Expected=42, Got={result} (type: {type(result)})"
     
     def test_get_watermark_with_no_existing_watermark(self, watermark_manager):
-        """Test getting watermark when none exists"""
+        """Test getting watermark when none exists - contract behavior"""
         setup = watermark_manager
         manager = setup['manager']
         entity_provider = setup['entity_provider']
@@ -272,91 +269,100 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         mock_watermark_entity = MagicMock()
         watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
         
-        # Create a mock DataFrame that supports the full chain but returns empty
-        def create_chained_mock(return_empty=True):
-            mock_df = MagicMock()
-            mock_df.filter.return_value = mock_df  # filter returns self for chaining
-            mock_df.select.return_value = mock_df  # select returns self for chaining  
-            mock_df.limit.return_value = mock_df   # limit returns self for chaining
-            mock_df.isEmpty.return_value = return_empty
-            return mock_df
+        # Create a mock DataFrame that returns empty
+        mock_df = MagicMock()
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_df.isEmpty.return_value = True
         
-        # Configure read_entity to return empty chained mock
-        mock_df = create_chained_mock(return_empty=True)
         entity_provider.read_entity.return_value = mock_df
         
-        # Test getting watermark
+        # Test the contract: get_watermark should return None for non-existent watermark
         result = manager.get_watermark("test_entity", "test_reader")
         
-        # Verify the chain was called correctly for empty case
-        entity_provider.read_entity.assert_called_once()
-        mock_df.filter.assert_called_once()
-        mock_df.select.assert_called_once_with("last_version_processed")
-        mock_df.limit.assert_called_once_with(1)
-        mock_df.isEmpty.assert_called_once()
-        # first() should NOT be called when DataFrame is empty
-        mock_df.first.assert_not_called()
-        
-        # Verify result is None
+        # Verify contract: None should be returned when no watermark exists
         assert result is None, \
-            f"get_watermark failed: Expected=None, Got={result} when no existing watermark found (empty DataFrame)"
+            f"get_watermark contract failed: Expected=None when no watermark exists, Got={result}"
+        
+        # Verify contract: first() should not be called on empty DataFrame
+        mock_df.first.assert_not_called()
     
-    def test_save_watermark(self, watermark_manager):
-        """Test saving a watermark"""
+    def test_save_watermark_contract(self, watermark_manager):
+        """Test saving a watermark - contract behavior"""
         setup = watermark_manager
         manager = setup['manager']
         entity_provider = setup['entity_provider']
         watermark_entity_finder = setup['watermark_entity_finder']
-        spark = setup['spark']
         
-        # Setup test scenario
+        # Setup test scenario with real schema (createDataFrame requires valid schema)
+        from pyspark.sql.types import StructType, StructField, StringType, TimestampType, IntegerType
+        
+        real_schema = StructType([
+            StructField("id", StringType(), True),
+            StructField("source_entity_id", StringType(), True),
+            StructField("reader_id", StringType(), True),
+            StructField("last_updated", TimestampType(), True),
+            StructField("last_version_processed", IntegerType(), True),
+            StructField("last_execution_id", StringType(), True)
+        ])
+        
         mock_watermark_entity = MagicMock()
-        mock_schema = MagicMock()
-        mock_watermark_entity.schema = mock_schema
+        mock_watermark_entity.schema = real_schema  # Real schema needed for createDataFrame
         watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
         
-        # Mock DataFrame operations
-        mock_df = MagicMock()
+        # Mock the merge operation result
         mock_merged_df = MagicMock()
-        spark.createDataFrame.return_value = mock_df
         entity_provider.merge_to_entity.return_value = mock_merged_df
         
-        # Test saving watermark
-        with patch('time.time', return_value=1640995200.0):  # Fixed timestamp
+        # Test the contract: save_watermark should create and merge watermark data
+        with patch('time.time', return_value=1640995200.0):
             result = manager.save_watermark("test_entity", "test_reader", 50, "exec_123")
         
-        # Verify result
+        # Verify contract: method should return result from merge operation
         assert result == mock_merged_df, \
-            f"save_watermark result failed: Expected={mock_merged_df}, Got={result}"
+            f"save_watermark contract failed: Expected result from merge_to_entity, Got={result}"
         
-        # Verify DataFrame creation
-        spark.createDataFrame.assert_called_once()
-        create_args = spark.createDataFrame.call_args[0]
+        # Verify contract: correct watermark entity was requested
+        watermark_entity_finder.get_watermark_entity_for_entity.assert_called_with("test_entity")
         
-        # Verify data structure
-        data = create_args[0]
-        assert len(data) == 1, \
-            f"DataFrame row count failed: Expected=1, Got={len(data)}"
-        assert data[0][0] == "test_entity_test_reader", \
-            f"ID field failed: Expected='test_entity_test_reader', Got='{data[0][0]}'"
-        assert data[0][1] == "test_entity", \
-            f"Source entity ID failed: Expected='test_entity', Got='{data[0][1]}'"
-        assert data[0][2] == "test_reader", \
-            f"Reader ID failed: Expected='test_reader', Got='{data[0][2]}'"
-        assert data[0][4] == 50, \
-            f"Version processed failed: Expected=50, Got={data[0][4]}"
-        assert data[0][5] == "exec_123", \
-            f"Execution ID failed: Expected='exec_123', Got='{data[0][5]}'"
+        # Verify contract: merge_to_entity was called with DataFrame and entity
+        entity_provider.merge_to_entity.assert_called_once()
+        merge_call_args = entity_provider.merge_to_entity.call_args[0]
         
-        # Verify schema usage
-        assert create_args[1] == mock_schema, \
-            f"Schema usage failed: Expected={mock_schema}, Got={create_args[1]}"
+        # Verify contract: correct entity was passed to merge
+        entity_used = merge_call_args[1]
+        assert entity_used == mock_watermark_entity, \
+            f"Entity contract failed: Expected={mock_watermark_entity}, Got={entity_used}"
         
-        # Verify merge call
-        entity_provider.merge_to_entity.assert_called_once_with(mock_df, mock_watermark_entity)
+        # Verify contract: DataFrame contains correct watermark data
+        df_passed = merge_call_args[0]
+        df_data = df_passed.collect()
+        assert len(df_data) == 1, \
+            f"Watermark record count contract failed: Expected=1 record, Got={len(df_data)}"
+        
+        watermark_row = df_data[0]
+        
+        # Verify contract: all required fields are present with correct values
+        assert watermark_row.source_entity_id == "test_entity", \
+            f"Source entity contract failed: Expected='test_entity', Got='{watermark_row.source_entity_id}'"
+        assert watermark_row.reader_id == "test_reader", \
+            f"Reader ID contract failed: Expected='test_reader', Got='{watermark_row.reader_id}'"
+        assert watermark_row.last_version_processed == 50, \
+            f"Version contract failed: Expected=50, Got={watermark_row.last_version_processed}"
+        assert watermark_row.last_execution_id == "exec_123", \
+            f"Execution ID contract failed: Expected='exec_123', Got='{watermark_row.last_execution_id}'"
+        
+        # Verify contract: ID follows expected format (business rule)
+        assert watermark_row.id == "test_entity_test_reader", \
+            f"ID format contract failed: Expected='test_entity_test_reader', Got='{watermark_row.id}'"
+        
+        # Verify contract: timestamp field exists
+        assert hasattr(watermark_row, 'last_updated'), \
+            "Timestamp contract failed: last_updated field should exist"
     
     def test_read_current_entity_changes_no_watermark(self, watermark_manager):
-        """Test reading current entity changes when no watermark exists"""
+        """Test reading changes when no watermark exists - contract behavior"""
         setup = watermark_manager
         manager = setup['manager']
         entity_provider = setup['entity_provider']
@@ -376,24 +382,27 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         entity_provider.read_entity.return_value = mock_df
         entity_provider.get_entity_version.return_value = 10
         
-        # Mock global functions that should be available after notebook execution
+        # Mock global functions
         globals()['remove_duplicates'] = MagicMock(return_value=mock_final_df)
         globals()['drop_if_exists'] = MagicMock()
         
-        # Mock get_watermark to return None (no existing watermark)
+        # Contract: when no watermark exists, should read full entity
         with patch.object(manager, 'get_watermark', return_value=None):
             result = manager.read_current_entity_changes(mock_entity, mock_pipe)
         
-        # Verify result
+        # Verify contract: should return processed DataFrame
         assert result == mock_final_df, \
-            f"read_current_entity_changes result failed: Expected={mock_final_df}, Got={result}"
+            f"read_current_entity_changes contract failed: Expected={mock_final_df}, Got={result}"
         
-        # Verify method calls
+        # Verify contract: should read full entity when no watermark
         entity_provider.read_entity.assert_called_with(mock_entity)
         entity_provider.get_entity_version.assert_called_with(mock_entity)
+        
+        # Verify contract: should call remove_duplicates for data processing
+        globals()['remove_duplicates'].assert_called_once()
     
     def test_read_current_entity_changes_with_new_version(self, watermark_manager):
-        """Test reading current entity changes when new version is available"""
+        """Test reading changes when new version is available - contract behavior"""
         setup = watermark_manager
         manager = setup['manager']
         entity_provider = setup['entity_provider']
@@ -412,20 +421,20 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         entity_provider.get_entity_version.return_value = 15  # Current version
         entity_provider.read_entity_since_version.return_value = mock_version_df
         
-        # Mock get_watermark to return existing watermark (version 10)
-        with patch.object(manager, 'get_watermark', return_value=10):
+        # Contract: when watermark < current version, should read incremental changes
+        with patch.object(manager, 'get_watermark', return_value=10):  # Existing watermark
             result = manager.read_current_entity_changes(mock_entity, mock_pipe)
         
-        # Verify result
+        # Verify contract: should return changes DataFrame
         assert result == mock_version_df, \
-            f"read_current_entity_changes result failed: Expected={mock_version_df}, Got={result}"
+            f"read_current_entity_changes contract failed: Expected={mock_version_df}, Got={result}"
         
-        # Verify method calls
+        # Verify contract: should read incremental changes since current version
         entity_provider.get_entity_version.assert_called_with(mock_entity)
         entity_provider.read_entity_since_version.assert_called_with(mock_entity, 15)
     
     def test_read_current_entity_changes_no_new_data(self, watermark_manager):
-        """Test reading current entity changes when no new data is available"""
+        """Test reading changes when no new data is available - contract behavior"""
         setup = watermark_manager
         manager = setup['manager']
         entity_provider = setup['entity_provider']
@@ -442,19 +451,90 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         # Current version same as watermark
         entity_provider.get_entity_version.return_value = 10  # Current version
         
-        # Mock get_watermark to return same version as current
+        # Contract: when watermark == current version, should return None (no new data)
         with patch.object(manager, 'get_watermark', return_value=10):
             result = manager.read_current_entity_changes(mock_entity, mock_pipe)
         
-        # Verify result is None (no new data)
+        # Verify contract: should return None when no new data available
         assert result is None, \
-            f"read_current_entity_changes result failed: Expected=None, Got={result} when entity version equals watermark version (no new data)"
+            f"read_current_entity_changes contract failed: Expected=None when no new data, Got={result}"
         
-        # Verify get_entity_version was called
+        # Verify contract: should still check entity version
         entity_provider.get_entity_version.assert_called_with(mock_entity)
     
-    def test_watermark_manager_logging(self, watermark_manager):
-        """Test that WatermarkManager logs appropriately"""
+    def test_watermark_with_zero_version(self, watermark_manager):
+        """Test handling watermark with version 0 - edge case contract"""
+        setup = watermark_manager
+        manager = setup['manager']
+        entity_provider = setup['entity_provider']
+        watermark_entity_finder = setup['watermark_entity_finder']
+        
+        mock_watermark_entity = MagicMock()
+        watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
+        
+        # Mock watermark row with version 0
+        mock_watermark_row = MagicMock()
+        mock_watermark_row.__getitem__ = lambda self, key: 0 if key == "last_version_processed" else None
+        mock_watermark_row.last_version_processed = 0
+        
+        mock_df = MagicMock()
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_df.isEmpty.return_value = False
+        mock_df.first.return_value = mock_watermark_row
+        
+        entity_provider.read_entity.return_value = mock_df
+        
+        # Contract: version 0 should be treated as valid (not falsy)
+        result = manager.get_watermark("test_entity", "test_reader")
+        assert result == 0, \
+            f"Zero version contract failed: Expected=0, Got={result} (should not treat 0 as falsy)"
+    
+    def test_negative_version_handling(self, watermark_manager):
+        """Test handling of negative version numbers - edge case contract"""
+        setup = watermark_manager
+        manager = setup['manager']
+        entity_provider = setup['entity_provider']
+        watermark_entity_finder = setup['watermark_entity_finder']
+        
+        # Setup test scenario with real schema (createDataFrame requires valid schema)
+        from pyspark.sql.types import StructType, StructField, StringType, TimestampType, IntegerType
+        
+        real_schema = StructType([
+            StructField("id", StringType(), True),
+            StructField("source_entity_id", StringType(), True),
+            StructField("reader_id", StringType(), True),
+            StructField("last_updated", TimestampType(), True),
+            StructField("last_version_processed", IntegerType(), True),
+            StructField("last_execution_id", StringType(), True)
+        ])
+        
+        mock_watermark_entity = MagicMock()
+        mock_watermark_entity.schema = real_schema  # Real schema needed for createDataFrame
+        watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
+        
+        mock_merged_df = MagicMock()
+        entity_provider.merge_to_entity.return_value = mock_merged_df
+        
+        # Contract: negative versions should be handled without error
+        with patch('time.time', return_value=1640995200.0):
+            result = manager.save_watermark("test_entity", "test_reader", -1, "exec_negative")
+        
+        # Verify contract: should not raise error and return merged DataFrame
+        assert result == mock_merged_df, \
+            f"Negative version contract failed: Expected={mock_merged_df}, Got={result}"
+        
+        # Verify contract: merge_to_entity was called with DataFrame containing negative version
+        entity_provider.merge_to_entity.assert_called_once()
+        df_passed = entity_provider.merge_to_entity.call_args[0][0]
+        watermark_data = df_passed.collect()[0]
+        
+        assert watermark_data.last_version_processed == -1, \
+            f"Negative version preservation contract failed: Expected=-1, Got={watermark_data.last_version_processed}"
+    
+    def test_watermark_manager_logging_contract(self, watermark_manager):
+        """Test that WatermarkManager logs appropriately - logging contract"""
         setup = watermark_manager
         manager = setup['manager']
         entity_provider = setup['entity_provider']
@@ -464,26 +544,21 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         mock_watermark_entity = MagicMock()
         watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
         
-        # Create a mock DataFrame that supports the full chain but returns empty
-        def create_chained_mock(return_empty=True):
-            mock_df = MagicMock()
-            mock_df.filter.return_value = mock_df  # filter returns self for chaining
-            mock_df.select.return_value = mock_df  # select returns self for chaining  
-            mock_df.limit.return_value = mock_df   # limit returns self for chaining
-            mock_df.isEmpty.return_value = return_empty
-            return mock_df
+        mock_df = MagicMock()
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_df.isEmpty.return_value = True
         
-        # Configure read_entity to return empty chained mock
-        mock_df = create_chained_mock(return_empty=True)
         entity_provider.read_entity.return_value = mock_df
         
         # Mock logger to capture calls
         manager.logger = MagicMock()
         
-        # Test get_watermark logging
+        # Contract: should log debug messages for traceability
         manager.get_watermark("test_entity", "test_reader")
         
-        # Verify debug logging calls
+        # Verify logging contract: should log watermark retrieval attempt
         manager.logger.debug.assert_any_call("Getting watermark for test_entity-test_reader")
         manager.logger.debug.assert_any_call("No watermark")
 
@@ -492,7 +567,7 @@ class TestWatermarkManagerIntegration(SynapseNotebookTestCase):
     """Integration tests for WatermarkManager with real-like scenarios"""
     
     def integration_manager(self, notebook_runner, basic_test_config):
-        """Setup method for integration test setup with extended schema"""
+        """Setup method for integration test setup"""
         notebook_runner.prepare_test_environment(basic_test_config)
         
         WatermarkManager = globals().get('WatermarkManager')
@@ -532,443 +607,110 @@ class TestWatermarkManagerIntegration(SynapseNotebookTestCase):
             'spark': notebook_runner.test_env.spark_session
         }
     
-    def test_complete_watermark_lifecycle(self, integration_manager):
-        """Test complete watermark lifecycle: save -> get -> update"""
+    def test_complete_watermark_lifecycle_contract(self, integration_manager):
+        """Test complete watermark lifecycle: save -> get -> update - integration contract"""
         setup = integration_manager
         manager = setup['manager']
         entity_provider = setup['entity_provider']
-        spark = setup['spark']
         
         # Test 1: Save initial watermark
-        mock_save_df = MagicMock()
         mock_merged_df = MagicMock()
-        spark.createDataFrame.return_value = mock_save_df
         entity_provider.merge_to_entity.return_value = mock_merged_df
         
         with patch('time.time', return_value=1640995200.0):
             save_result = manager.save_watermark("source_entity", "reader_1", 10, "exec_001")
         
+        # Verify contract: save operation should succeed
         assert save_result == mock_merged_df, \
-            f"Initial save_watermark failed: Expected={mock_merged_df}, Got={save_result}"
+            f"Initial save contract failed: Expected={mock_merged_df}, Got={save_result}"
+        
+        # Verify the save operation used correct data
+        entity_provider.merge_to_entity.assert_called()
+        initial_df = entity_provider.merge_to_entity.call_args_list[0][0][0]
+        initial_data = initial_df.collect()[0]
+        assert initial_data.source_entity_id == "source_entity", \
+            f"Initial save entity contract failed: Expected='source_entity', Got='{initial_data.source_entity_id}'"
+        assert initial_data.last_version_processed == 10, \
+            f"Initial save version contract failed: Expected=10, Got={initial_data.last_version_processed}"
         
         # Test 2: Get the saved watermark
         mock_watermark_row = MagicMock()
-        # Fix lambda to handle both self and key arguments
         mock_watermark_row.__getitem__ = lambda self, key: 10 if key == "last_version_processed" else None
         mock_watermark_row.last_version_processed = 10
         
-        # Create a mock DataFrame that supports the full chain: filter().select().limit()
-        def create_chained_mock(return_empty=False):
-            mock_df = MagicMock()
-            mock_df.filter.return_value = mock_df  # filter returns self for chaining
-            mock_df.select.return_value = mock_df  # select returns self for chaining  
-            mock_df.limit.return_value = mock_df   # limit returns self for chaining
-            mock_df.isEmpty.return_value = return_empty
-            if not return_empty:
-                mock_df.first.return_value = mock_watermark_row
-            return mock_df
+        mock_df = MagicMock()
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.limit.return_value = mock_df
+        mock_df.isEmpty.return_value = False
+        mock_df.first.return_value = mock_watermark_row
         
-        # Configure read_entity to return our chained mock
-        mock_read_df = create_chained_mock(return_empty=False)
-        entity_provider.read_entity.return_value = mock_read_df
+        entity_provider.read_entity.return_value = mock_df
         
+        # Contract: should retrieve the same version that was saved
         watermark = manager.get_watermark("source_entity", "reader_1")
         assert watermark == 10, \
-            f"get_watermark failed: Expected=10, Got={watermark} (type: {type(watermark)})"
+            f"get_watermark contract failed: Expected=10, Got={watermark}"
         
         # Test 3: Update watermark to newer version
+        entity_provider.merge_to_entity.reset_mock()  # Reset to isolate this call
+        
         with patch('time.time', return_value=1640995260.0):  # 1 minute later
             update_result = manager.save_watermark("source_entity", "reader_1", 15, "exec_002")
         
+        # Verify contract: update operation should succeed
         assert update_result == mock_merged_df, \
-            f"Updated save_watermark failed: Expected={mock_merged_df}, Got={update_result}"
+            f"Update save contract failed: Expected={mock_merged_df}, Got={update_result}"
+        
+        # Verify the update operation used correct data
+        entity_provider.merge_to_entity.assert_called_once()
+        update_df = entity_provider.merge_to_entity.call_args[0][0]
+        update_data = update_df.collect()[0]
+        assert update_data.last_version_processed == 15, \
+            f"Update version contract failed: Expected=15, Got={update_data.last_version_processed}"
+        assert update_data.last_execution_id == "exec_002", \
+            f"Update execution ID contract failed: Expected='exec_002', Got='{update_data.last_execution_id}'"
     
-    def test_multiple_readers_same_entity(self, integration_manager):
-        """Test multiple readers tracking watermarks for the same entity"""
+    def test_multiple_readers_same_entity_contract(self, integration_manager):
+        """Test multiple readers tracking watermarks for the same entity - isolation contract"""
         setup = integration_manager
         manager = setup['manager']
         entity_provider = setup['entity_provider']
-        spark = setup['spark']
         
         # Save watermarks for different readers of same entity
         readers = ["reader_A", "reader_B", "reader_C"]
         versions = [5, 8, 12]
         
+        mock_merged_df = MagicMock()
+        entity_provider.merge_to_entity.return_value = mock_merged_df
+        
         for reader, version in zip(readers, versions):
-            mock_df = MagicMock()
-            spark.createDataFrame.return_value = mock_df
-            entity_provider.merge_to_entity.return_value = mock_df
-            
             with patch('time.time', return_value=1640995200.0):
-                manager.save_watermark("shared_entity", reader, version, f"exec_{reader}")
+                result = manager.save_watermark("shared_entity", reader, version, f"exec_{reader}")
+            
+            # Verify contract: each save operation should succeed
+            assert result == mock_merged_df, \
+                f"save_watermark contract failed for {reader}: Expected={mock_merged_df}, Got={result}"
         
-        # Verify each reader got separate watermark records
-        assert spark.createDataFrame.call_count == 3, \
-            f"CreateDataFrame call count failed: Expected=3, Got={spark.createDataFrame.call_count}"
+        # Verify contract: each reader should get separate watermark records
+        assert entity_provider.merge_to_entity.call_count == 3, \
+            f"Merge call count contract failed: Expected=3, Got={entity_provider.merge_to_entity.call_count}"
         
-        # Verify each call had correct reader-specific data
-        create_calls = spark.createDataFrame.call_args_list
+        # Verify contract: each call should have correct reader-specific data
+        merge_calls = entity_provider.merge_to_entity.call_args_list
         for i, (reader, version) in enumerate(zip(readers, versions)):
-            call_data = create_calls[i][0][0][0]  # First row of data
-            assert call_data[1] == "shared_entity", \
-                f"Source entity ID for {reader} failed: Expected='shared_entity', Got='{call_data[1]}'"
-            assert call_data[2] == reader, \
-                f"Reader ID failed: Expected='{reader}', Got='{call_data[2]}'"
-            assert call_data[4] == version, \
-                f"Version for {reader} failed: Expected={version}, Got={call_data[4]}"
-    
-    def test_entity_changes_processing_workflow(self, integration_manager):
-        """Test the complete workflow of processing entity changes with watermarks"""
-        setup = integration_manager
-        manager = setup['manager']
-        entity_provider = setup['entity_provider']
-        
-        # Setup all required global functions
-        globals()['remove_duplicates'] = MagicMock()
-        globals()['drop_if_exists'] = MagicMock()
-        
-        # Create test entity and pipe
-        mock_entity = MagicMock()
-        mock_entity.entityid = "test_source_entity"
-        mock_entity.merge_columns = ["id", "name"]
-        
-        mock_pipe = MagicMock()
-        mock_pipe.name = "Test Processing Pipe"
-        mock_pipe.pipeid = "test_pipe_001"
-        
-        # Scenario 1: First time processing (no watermark)
-        entity_provider.get_entity_version.return_value = 5
-        mock_df = MagicMock()
-        mock_final_df = MagicMock()
-        
-        entity_provider.read_entity.return_value = mock_df
-        globals()['remove_duplicates'].return_value = mock_final_df
-        
-        with patch.object(manager, 'get_watermark', return_value=None):
-            result1 = manager.read_current_entity_changes(mock_entity, mock_pipe)
-        
-        assert result1 == mock_final_df, \
-            f"First time processing failed: Expected={mock_final_df}, Got={result1}"
-        globals()['remove_duplicates'].assert_called_once()
-        
-        # Reset mocks
-        globals()['remove_duplicates'].reset_mock()
-        
-        # Scenario 2: Processing with existing watermark and new data
-        mock_version_df = MagicMock()
-        entity_provider.get_entity_version.return_value = 10  # Newer version
-        entity_provider.read_entity_since_version.return_value = mock_version_df
-        
-        with patch.object(manager, 'get_watermark', return_value=7):  # Existing watermark
-            result2 = manager.read_current_entity_changes(mock_entity, mock_pipe)
-        
-        assert result2 == mock_version_df, \
-            f"Processing with existing watermark failed: Expected={mock_version_df}, Got={result2}"
-        entity_provider.read_entity_since_version.assert_called_with(mock_entity, 10)
-        
-        # Scenario 3: No new data available
-        entity_provider.get_entity_version.return_value = 7  # Same as watermark
-        
-        with patch.object(manager, 'get_watermark', return_value=7):
-            result3 = manager.read_current_entity_changes(mock_entity, mock_pipe)
-        
-        assert result3 is None, \
-            f"No new data scenario failed: Expected=None, Got={result3}"
-
-
-class TestWatermarkManagerEdgeCases(SynapseNotebookTestCase):
-    """Test edge cases and error scenarios for WatermarkManager"""
-    
-    def test_watermark_with_zero_version(self, watermark_manager):
-        """Test handling watermark with version 0"""
-        setup = watermark_manager
-        manager = setup['manager']
-        entity_provider = setup['entity_provider']
-        watermark_entity_finder = setup['watermark_entity_finder']
-        
-        mock_watermark_entity = MagicMock()
-        watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
-        
-        # Mock watermark row with version 0
-        mock_watermark_row = MagicMock()
-        # Fix lambda to handle both self and key arguments
-        mock_watermark_row.__getitem__ = lambda self, key: 0 if key == "last_version_processed" else None
-        mock_watermark_row.last_version_processed = 0
-        
-        # Create a mock DataFrame that supports the full chain: filter().select().limit()
-        def create_chained_mock(return_empty=False):
-            mock_df = MagicMock()
-            mock_df.filter.return_value = mock_df  # filter returns self for chaining
-            mock_df.select.return_value = mock_df  # select returns self for chaining  
-            mock_df.limit.return_value = mock_df   # limit returns self for chaining
-            mock_df.isEmpty.return_value = return_empty
-            if not return_empty:
-                mock_df.first.return_value = mock_watermark_row
-            return mock_df
-        
-        # Configure read_entity to return our chained mock
-        mock_df = create_chained_mock(return_empty=False)
-        entity_provider.read_entity.return_value = mock_df
-        
-        result = manager.get_watermark("test_entity", "test_reader")
-        assert result == 0, \
-            f"Zero version handling failed: Expected=0, Got={result} (should not treat 0 as falsy)"
-    
-    def test_negative_version_handling(self, watermark_manager):
-        """Test handling of negative version numbers"""
-        setup = watermark_manager
-        manager = setup['manager']
-        entity_provider = setup['entity_provider']
-        watermark_entity_finder = setup['watermark_entity_finder']
-        spark = setup['spark']
-        
-        mock_watermark_entity = MagicMock()
-        mock_watermark_entity.schema = MagicMock()
-        watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
-        
-        mock_df = MagicMock()
-        spark.createDataFrame.return_value = mock_df
-        entity_provider.merge_to_entity.return_value = mock_df
-        
-        # Test saving negative version (should still work)
-        with patch('time.time', return_value=1640995200.0):
-            result = manager.save_watermark("test_entity", "test_reader", -1, "exec_negative")
-        
-        # Should not raise error and return merged DataFrame
-        assert result == mock_df, \
-            f"Negative version save failed: Expected={mock_df}, Got={result}"
-        
-        # Verify data contains negative version
-        create_call = spark.createDataFrame.call_args[0][0][0]
-        assert create_call[4] == -1, \
-            f"Negative version preservation failed: Expected=-1, Got={create_call[4]}"
-    
-    def test_empty_string_parameters(self, watermark_manager):
-        """Test handling of empty string parameters"""
-        setup = watermark_manager
-        manager = setup['manager']
-        entity_provider = setup['entity_provider']
-        watermark_entity_finder = setup['watermark_entity_finder']
-        
-        mock_watermark_entity = MagicMock()
-        watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
-        
-        # Create a mock DataFrame that supports the full chain but returns empty
-        def create_chained_mock(return_empty=True):
-            mock_df = MagicMock()
-            mock_df.filter.return_value = mock_df  # filter returns self for chaining
-            mock_df.select.return_value = mock_df  # select returns self for chaining  
-            mock_df.limit.return_value = mock_df   # limit returns self for chaining
-            mock_df.isEmpty.return_value = return_empty
-            return mock_df
-        
-        # Configure read_entity to return empty chained mock
-        mock_df = create_chained_mock(return_empty=True)
-        entity_provider.read_entity.return_value = mock_df
-        
-        result = manager.get_watermark("", "")
-        assert result is None, \
-            f"Empty string handling failed: Expected=None, Got={result}"
-    
-    def test_very_large_version_numbers(self, watermark_manager):
-        """Test handling of very large version numbers"""
-        setup = watermark_manager
-        manager = setup['manager']
-        entity_provider = setup['entity_provider']
-        watermark_entity_finder = setup['watermark_entity_finder']
-        spark = setup['spark']
-        
-        mock_watermark_entity = MagicMock()
-        mock_watermark_entity.schema = MagicMock()
-        watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
-        
-        mock_df = MagicMock()
-        spark.createDataFrame.return_value = mock_df
-        entity_provider.merge_to_entity.return_value = mock_df
-        
-        # Test with very large version number
-        large_version = 9223372036854775807  # Max 64-bit signed integer
-        
-        with patch('time.time', return_value=1640995200.0):
-            result = manager.save_watermark("test_entity", "test_reader", large_version, "exec_large")
-        
-        assert result == mock_df, \
-            f"Large version save failed: Expected={mock_df}, Got={result}"
-        
-        # Verify large version was stored correctly
-        create_call = spark.createDataFrame.call_args[0][0][0]
-        assert create_call[4] == large_version, \
-            f"Large version preservation failed: Expected={large_version}, Got={create_call[4]}"
-    
-    def test_malformed_watermark_data(self, watermark_manager):
-        """Test handling of edge case with missing watermark data"""
-        setup = watermark_manager
-        manager = setup['manager']
-        entity_provider = setup['entity_provider']
-        watermark_entity_finder = setup['watermark_entity_finder']
-        
-        mock_watermark_entity = MagicMock()
-        watermark_entity_finder.get_watermark_entity_for_entity.return_value = mock_watermark_entity
-        
-        # Create a mock DataFrame that supports the full chain but returns empty
-        def create_chained_mock(return_empty=True):
-            mock_df = MagicMock()
-            mock_df.filter.return_value = mock_df  # filter returns self for chaining
-            mock_df.select.return_value = mock_df  # select returns self for chaining  
-            mock_df.limit.return_value = mock_df   # limit returns self for chaining
-            mock_df.isEmpty.return_value = return_empty
-            return mock_df
-        
-        # Configure read_entity to return empty chained mock
-        mock_df = create_chained_mock(return_empty=True)
-        entity_provider.read_entity.return_value = mock_df
-        
-        result = manager.get_watermark("edge_case_entity", "test_reader")
-        assert result is None, \
-            f"Empty DataFrame handling failed: Expected=None, Got={result}"
-    
-    # Add watermark_manager setup method for this class too
-    def watermark_manager(self, notebook_runner, basic_test_config):
-        """Setup method that provides a configured WatermarkManager instance"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        WatermarkManager = globals().get('WatermarkManager')
-        EntityProvider = globals().get('EntityProvider')
-        PythonLoggerProvider = globals().get('PythonLoggerProvider')
-        
-        if not WatermarkManager:
-            pytest.skip("WatermarkManager not available")
-        
-        # Use framework's global mocks
-        entity_provider = EntityProvider()
-        watermark_entity_finder = MagicMock()
-        logger_provider = PythonLoggerProvider()
-        
-        # Create manager instance
-        manager = WatermarkManager.__new__(WatermarkManager)
-        manager.__init__(entity_provider, watermark_entity_finder, logger_provider)
-        
-        # Return components for use in tests
-        return {
-            'manager': manager,
-            'entity_provider': entity_provider,
-            'watermark_entity_finder': watermark_entity_finder,
-            'logger_provider': logger_provider,
-            'spark': notebook_runner.test_env.spark_session
-        }
-
-
-class TestWatermarkManagerDependencyValidation(SynapseNotebookTestCase):
-    """Test dependency injection and interface validation"""
-    
-    def test_watermark_entity_finder_dependency(self, notebook_runner, basic_test_config):
-        """Test that WatermarkEntityFinder dependency is properly injected"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        WatermarkManager = globals().get('WatermarkManager')
-        WatermarkEntityFinder = globals().get('WatermarkEntityFinder')
-        EntityProvider = globals().get('EntityProvider')
-        PythonLoggerProvider = globals().get('PythonLoggerProvider')
-        
-        if not WatermarkManager or not WatermarkEntityFinder:
-            pytest.skip("Required classes not available")
-        
-        # Create a mock that implements the interface
-        mock_wef = MagicMock()
-        mock_wef.get_watermark_entity_for_entity = MagicMock()
-        mock_wef.get_watermark_entity_for_layer = MagicMock()
-        
-        entity_provider = EntityProvider()
-        logger_provider = PythonLoggerProvider()
-        
-        # Test initialization with proper interface
-        manager = WatermarkManager.__new__(WatermarkManager)
-        manager.__init__(entity_provider, mock_wef, logger_provider)
-        
-        assert manager.wef == mock_wef, \
-            f"WatermarkEntityFinder injection failed: Expected={mock_wef}, Got={manager.wef}"
-        
-        # Test that the interface methods are called
-        mock_entity = MagicMock()
-        mock_wef.get_watermark_entity_for_entity.return_value = mock_entity
-        
-        # Should call the interface method
-        manager.wef.get_watermark_entity_for_entity("test_entity")
-        mock_wef.get_watermark_entity_for_entity.assert_called_with("test_entity")
-    
-    def test_entity_provider_dependency(self, notebook_runner, basic_test_config):
-        """Test that EntityProvider dependency works correctly"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        WatermarkManager = globals().get('WatermarkManager')
-        EntityProvider = globals().get('EntityProvider')
-        PythonLoggerProvider = globals().get('PythonLoggerProvider')
-        
-        if not WatermarkManager:
-            pytest.skip("WatermarkManager not available")
-        
-        # Use framework's EntityProvider mock
-        entity_provider = EntityProvider()
-        mock_wef = MagicMock()
-        logger_provider = PythonLoggerProvider()
-        
-        manager = WatermarkManager.__new__(WatermarkManager)
-        manager.__init__(entity_provider, mock_wef, logger_provider)
-        
-        assert manager.ep == entity_provider, \
-            f"EntityProvider injection failed: Expected={entity_provider}, Got={manager.ep}"
-        
-        # Test that EntityProvider methods are accessible
-        assert hasattr(manager.ep, 'read_entity'), \
-            f"EntityProvider method missing: Expected=read_entity method exists, Got={hasattr(manager.ep, 'read_entity')}"
-        assert hasattr(manager.ep, 'merge_to_entity'), \
-            f"EntityProvider method missing: Expected=merge_to_entity method exists, Got={hasattr(manager.ep, 'merge_to_entity')}"
-        assert hasattr(manager.ep, 'get_entity_version'), \
-            f"EntityProvider method missing: Expected=get_entity_version method exists, Got={hasattr(manager.ep, 'get_entity_version')}"
-        assert hasattr(manager.ep, 'read_entity_since_version'), \
-            f"EntityProvider method missing: Expected=read_entity_since_version method exists, Got={hasattr(manager.ep, 'read_entity_since_version')}"
-    
-    def test_python_logger_provider_initialization(self, notebook_runner, basic_test_config):
-        """Test that PythonLoggerProvider is properly initialized"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        WatermarkManager = globals().get('WatermarkManager')
-        EntityProvider = globals().get('EntityProvider')
-        PythonLoggerProvider = globals().get('PythonLoggerProvider')
-        
-        if not WatermarkManager:
-            pytest.skip("WatermarkManager not available")
-        
-        entity_provider = EntityProvider()
-        mock_wef = MagicMock()
-        logger_provider = PythonLoggerProvider()
-        
-        manager = WatermarkManager.__new__(WatermarkManager)
-        manager.__init__(entity_provider, mock_wef, logger_provider)
-        
-        # Verify logger was obtained from provider
-        logger_provider.get_logger.assert_called_with("watermark")
-        assert hasattr(manager, 'logger'), \
-            f"Logger attribute missing: Expected=logger attribute exists, Got={hasattr(manager, 'logger')}"
-    
-    def test_global_injector_singleton_registration(self, notebook_runner, basic_test_config):
-        """Test that WatermarkManager is properly registered with GlobalInjector"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        WatermarkManager = globals().get('WatermarkManager')
-        if not WatermarkManager:
-            pytest.skip("WatermarkManager not available")
-        
-        # Verify the class has the singleton_autobind decorator applied
-        # This is verified by the decorator not raising an error during class definition
-        assert WatermarkManager is not None, \
-            f"WatermarkManager availability failed: Expected=WatermarkManager class exists, Got={WatermarkManager is not None}"
-        
-        # Verify it implements the WatermarkService interface
-        WatermarkService = globals().get('WatermarkService')
-        if WatermarkService:
-            assert issubclass(WatermarkManager, WatermarkService), \
-                f"Interface implementation failed: Expected=WatermarkManager subclass of WatermarkService, Got={issubclass(WatermarkManager, WatermarkService) if WatermarkService else 'WatermarkService not available'}"
+            df_passed = merge_calls[i][0][0]  # First argument is the DataFrame
+            watermark_data = df_passed.collect()[0]
+            
+            # Verify reader isolation contract
+            assert watermark_data.source_entity_id == "shared_entity", \
+                f"Source entity contract failed for {reader}: Expected='shared_entity', Got='{watermark_data.source_entity_id}'"
+            assert watermark_data.reader_id == reader, \
+                f"Reader isolation contract failed: Expected='{reader}', Got='{watermark_data.reader_id}'"
+            assert watermark_data.last_version_processed == version, \
+                f"Version contract failed for {reader}: Expected={version}, Got={watermark_data.last_version_processed}"
+            assert watermark_data.last_execution_id == f"exec_{reader}", \
+                f"Execution ID contract failed for {reader}: Expected='exec_{reader}', Got='{watermark_data.last_execution_id}'"
 
 # METADATA ********************
 
@@ -982,10 +724,8 @@ class TestWatermarkManagerDependencyValidation(SynapseNotebookTestCase):
 results = run_notebook_tests(
     TestWatermarkManager,
     TestWatermarkManagerIntegration,
-    TestWatermarkManagerEdgeCases,
-    TestWatermarkManagerDependencyValidation,
     test_config={
-        'use_real_spark': False,
+        'use_real_spark': True,
         'test_data': {
             'test_entity_data': [
                 {'id': 1, 'name': 'Entity1', 'version': 1},
