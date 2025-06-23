@@ -26,7 +26,7 @@ Default implementation of PythonLoggerProvider that creates SparkLogger instance
 
 ```python
 @GlobalInjector.singleton_autobind()
-class SparkLoggerProvider(BaseServiceProvider, PythonLoggerProvider):
+class SparkLoggerProvider(PythonLoggerProvider):
     def get_logger(self, name: str):
         return SparkLogger(name)
 ```
@@ -121,7 +121,7 @@ Default implementation of CustomEventEmitter that emits events to Azure's monito
 
 ```python
 @GlobalInjector.singleton_autobind()
-class AzureEventEmitter(BaseServiceProvider, CustomEventEmitter):
+class AzureEventEmitter(CustomEventEmitter):
     # Implementation of event emission
     pass
 ```

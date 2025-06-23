@@ -178,7 +178,7 @@ class DataEntityRegistry(ABC):
 
 ```python
 @GlobalInjector.singleton_autobind()
-class DataEntityManager(BaseServiceProvider, DataEntityRegistry):
+class DataEntityManager(DataEntityRegistry):
     def get_entity_ids(self):
         """Returns all registered entity IDs"""
         

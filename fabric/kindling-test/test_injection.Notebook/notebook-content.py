@@ -293,22 +293,22 @@ class TestGlobalInjector(SynapseNotebookTestCase):
         
         # Test the principle that services should depend on interfaces, not implementations
         
-        class ConfigInterface(ABC):
+        class ConfigService(ABC):
             @abstractmethod
             def get(self, key: str) -> str:
                 pass
         
-        class DatabaseConfigImplementation(ConfigInterface):
+        class DatabaseConfigImplementation(ConfigService):
             def get(self, key: str) -> str:
                 return f"db_{key}"
         
-        class FileConfigImplementation(ConfigInterface):
+        class FileConfigImplementation(ConfigService):
             def get(self, key: str) -> str:
                 return f"file_{key}"
         
         # Service depends on interface, not implementation
         class MyService:
-            def __init__(self, config: ConfigInterface):
+            def __init__(self, config: ConfigService):
                 self.config = config
             
             def get_database_url(self):

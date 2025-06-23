@@ -20,7 +20,7 @@ import uuid
 from functools import reduce
 
 @GlobalInjector.singleton_autobind()
-class SimpleReadPersistStrategy(BaseServiceProvider, EntityReadPersistStrategy):
+class SimpleReadPersistStrategy(EntityReadPersistStrategy):
 
     @inject
     def __init__(self, wms: WatermarkService, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider, lp: PythonLoggerProvider ):

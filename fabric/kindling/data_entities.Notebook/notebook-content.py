@@ -116,7 +116,7 @@ class DataEntityRegistry(ABC):
         pass
 
 @GlobalInjector.singleton_autobind()
-class DataEntityManager(BaseServiceProvider, DataEntityRegistry):
+class DataEntityManager(DataEntityRegistry):
     @inject
     def __init__(self):
         self.registry = {}

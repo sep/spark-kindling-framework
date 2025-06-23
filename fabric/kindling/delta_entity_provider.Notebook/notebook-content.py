@@ -59,13 +59,14 @@ class DeltaTableReference:
             return self.table_path
 
 @GlobalInjector.singleton_autobind()
-class DeltaEntityProvider(BaseServiceProvider, EntityProvider):
+class DeltaEntityProvider(EntityProvider):
     
     @inject
     def __init__(self, 
+                 config: ConfigService,
                  entity_name_mapper: EntityNameMapper, 
                  path_locator: EntityPathLocator):
-        super().__init__()
+        self.config = config
         self.epl = path_locator
         self.enm = entity_name_mapper
         self.access_mode = self.config.get("DELTA_TABLE_ACCESS_MODE") or "AUTO"

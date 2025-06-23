@@ -62,7 +62,7 @@ class WatermarkService(ABC):
         pass
 
 @GlobalInjector.singleton_autobind()
-class WatermarkManager(BaseServiceProvider, WatermarkService):
+class WatermarkManager(WatermarkService):
     @inject
     def __init__(self, ep: EntityProvider, wef: WatermarkEntityFinder, lp: PythonLoggerProvider ):
         self.wef = wef

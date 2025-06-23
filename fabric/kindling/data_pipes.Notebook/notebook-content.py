@@ -83,7 +83,7 @@ class DataPipesExecution(ABC):
         pass
 
 @GlobalInjector.singleton_autobind()
-class DataPipesManager(BaseServiceProvider, DataPipesRegistry):
+class DataPipesManager(DataPipesRegistry):
     @inject
     def __init__(self, lp: PythonLoggerProvider):
         self.registry = {}
@@ -101,7 +101,7 @@ class DataPipesManager(BaseServiceProvider, DataPipesRegistry):
         return self.registry.get(name)
 
 @GlobalInjector.singleton_autobind()
-class DataPipesExecuter(BaseServiceProvider, DataPipesExecution):
+class DataPipesExecuter(DataPipesExecution):
     @inject
     def __init__(self, lp: PythonLoggerProvider, dpe: DataEntityRegistry, dpr: DataPipesRegistry, erps: EntityReadPersistStrategy, tp: SparkTraceProvider):
         self.erps = erps

@@ -42,7 +42,7 @@ Default implementation of the StageProcessingService.
 
 ```python
 @GlobalInjector.singleton_autobind()
-class StageProcessor(BaseServiceProvider, StageProcessingService):
+class StageProcessor(StageProcessingService):
     @inject
     def __init__(self, dpr: DataPipesRegistry, ep: EntityProvider, 
                 dep: DataPipesExecution, wef: WatermarkEntityFinder, 

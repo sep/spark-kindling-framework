@@ -83,7 +83,7 @@ The default implementation for Delta Lake storage.
 
 ```python
 @GlobalInjector.singleton_autobind()
-class DeltaEntityProvider(BaseServiceProvider, EntityProvider):
+class DeltaEntityProvider(EntityProvider):
     @inject
     def __init__(self, entity_name_mapper: EntityNameMapper, 
                  path_locator: EntityPathLocator):
@@ -302,7 +302,7 @@ Example:
 
 ```python
 @GlobalInjector.singleton_autobind()
-class CustomEntityProvider(BaseServiceProvider, EntityProvider):
+class CustomEntityProvider(EntityProvider):
     # Implement all required methods
     
     def ensure_entity_table(self, entity):

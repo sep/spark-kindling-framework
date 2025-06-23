@@ -142,7 +142,7 @@
 # 
 # ```python
 # @GlobalInjector.singleton_autobind()
-# class DataPipesManager(BaseServiceProvider, DataPipesRegistry):
+# class DataPipesManager(DataPipesRegistry):
 #     def get_pipe_ids(self):
 #         """Returns all registered pipe IDs"""
 #         
@@ -161,7 +161,7 @@
 # 
 # ```python
 # @GlobalInjector.singleton_autobind()
-# class DataPipesExecuter(BaseServiceProvider, DataPipesExecution):
+# class DataPipesExecuter(DataPipesExecution):
 #     def run_datapipes(self, pipes):
 #         """Execute a list of pipes in order"""
 # ```

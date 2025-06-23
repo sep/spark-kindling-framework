@@ -18,7 +18,7 @@ from pyspark.sql import SparkSession
 notebook_import('.injection')
 notebook_import(".spark_session")
 
-class ConfigInterface(ABC):
+class ConfigService(ABC):
     @abstractmethod
     def get(self, key: str, default: Any = None) -> Any:
         pass
@@ -36,7 +36,7 @@ class ConfigInterface(ABC):
         pass
 
 @GlobalInjector.singleton_autobind()
-class DynaconfConfig(ConfigInterface):
+class DynaconfConfig(ConfigService):
     def __init__(
         self,
         spark_session: Optional[SparkSession] = get_or_create_spark_session(),
@@ -156,12 +156,12 @@ class BaseServiceProvider:
     @inject
     def __init__(self):
         #print("DEBUG: BaseServiceProvider init called")
-        self.config = GlobalInjector.get(ConfigInterface)
+        self.config = GlobalInjector.get(ConfigService)
 
 class ConfigModule(Module):
     @singleton
     @provider
-    def provide_config(self) -> ConfigInterface:
+    def provide_config(self) -> ConfigService:
         return DynaconfConfig(
             env="development",
             initial_config={

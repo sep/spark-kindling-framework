@@ -39,7 +39,7 @@ class CustomEventEmitter(ABC):
             pass
 
 @GlobalInjector.singleton_autobind()
-class AzureEventEmitter(BaseServiceProvider, CustomEventEmitter):
+class AzureEventEmitter(CustomEventEmitter):
 
     @inject
     def __init__(self, plp: PythonLoggerProvider):
@@ -113,7 +113,7 @@ class SparkTraceProvider(ABC):
         pass  
 
 @GlobalInjector.singleton_autobind()
-class EventBasedSparkTrace(BaseServiceProvider, SparkTraceProvider):
+class EventBasedSparkTrace(SparkTraceProvider):
     # Static instance to maintain session trace
     _instance = None
     

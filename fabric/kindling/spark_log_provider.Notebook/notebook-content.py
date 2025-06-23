@@ -20,7 +20,7 @@ class PythonLoggerProvider(ABC):
         pass
  
 @GlobalInjector.singleton_autobind()
-class SparkLoggerProvider(BaseServiceProvider, PythonLoggerProvider):
+class SparkLoggerProvider(PythonLoggerProvider):
     def get_logger(self, name: str):
         return SparkLogger(name)
 

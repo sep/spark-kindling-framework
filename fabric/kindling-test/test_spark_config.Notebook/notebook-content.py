@@ -382,7 +382,7 @@ class TestDynaconfConfigService(SynapseNotebookTestCase):
         if not DynaconfConfig:
             pytest.skip("DynaconfConfig not available")
         
-        # Test that our service implements the ConfigInterface contract
+        # Test that our service implements the ConfigService contract
         mock_spark = MagicMock()
         mock_dynaconf = MagicMock()
         
@@ -414,7 +414,7 @@ class TestDynaconfConfigService(SynapseNotebookTestCase):
         
         # Simulate what BaseServiceProvider.__init__ does
         # The key insight: it should request an interface, not a concrete implementation
-        config_interface_type = type('ConfigInterface', (), {})  # Mock interface type
+        config_interface_type = type('ConfigService', (), {})  # Mock interface type
         
         # This is the pattern our service follows
         retrieved_config = mock_global_injector.get(config_interface_type)

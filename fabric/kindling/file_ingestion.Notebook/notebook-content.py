@@ -79,7 +79,7 @@ class FileIngestionRegistry(ABC):
         pass
 
 @GlobalInjector.singleton_autobind()
-class FileIngestionManager(BaseServiceProvider, FileIngestionRegistry):
+class FileIngestionManager(FileIngestionRegistry):
     @inject
     def __init__(self):
         print("File ingestion manager initialized ...")
@@ -102,10 +102,10 @@ class FileIngestionProcessor(ABC):
 import notebookutils
 
 @GlobalInjector.singleton_autobind()
-class SimpleFileIngestionProcessor(BaseServiceProvider, FileIngestionProcessor):
+class SimpleFileIngestionProcessor(FileIngestionProcessor):
     @inject
-    def __init__(self, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider, lp: PythonLoggerProvider ):
-        super().__init__()
+    def __init__(self, config: ConfigService, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider, lp: PythonLoggerProvider ):
+        self.config = config
         self.fir = fir
         self.ep = ep
         self.der = der
