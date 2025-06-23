@@ -1,13 +1,5 @@
 # Fabric notebook source
 
-# METADATA ********************
-
-# META {
-# META   "kernel_info": {
-# META     "name": "synapse_pyspark"
-# META   },
-# META   "dependencies": {}
-# META }
 
 # MARKDOWN ********************
 
@@ -34,12 +26,6 @@
 # 1. Tracking the last processed version for each source-consumer pair
 # 2. Reading only changes since the last processed version
 # 3. Updating watermarks after successful processing
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
 
 # MARKDOWN ********************
 
@@ -89,12 +75,6 @@
 # 
 # Default implementation of the WatermarkService that uses Delta Lake's version history capabilities.
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ## Usage Examples
@@ -138,12 +118,6 @@
 #         return "system.watermarks"
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ## Best Practices
@@ -157,9 +131,3 @@
 # 4. **Handle schema evolution**: Consider how schema changes affect incremental processing.
 # 
 # 5. **Monitor watermark drift**: Large gaps between current versions and watermarks may indicate processing backlogs.
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }

@@ -1,13 +1,5 @@
 # Fabric notebook source
 
-# METADATA ********************
-
-# META {
-# META   "kernel_info": {
-# META     "name": "synapse_pyspark"
-# META   },
-# META   "dependencies": {}
-# META }
 
 # MARKDOWN ********************
 
@@ -40,12 +32,6 @@
 # - Time travel
 # - Merge operations
 # - Partitioning
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
 
 # MARKDOWN ********************
 
@@ -123,12 +109,6 @@
 #     # Additional methods...
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ### DeltaTableReference
@@ -184,12 +164,6 @@
 # entity_provider.append_to_entity(new_records_df, entity)
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ### Merge Operations
@@ -242,12 +216,6 @@
 #         .partitionBy(*entity.partition_columns) \
 #         .save(table_path)
 # ```
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
 
 # MARKDOWN ********************
 
@@ -306,12 +274,6 @@
 #     self.spark.sql(optimize_cmd)
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ### Vacuum Operations
@@ -364,9 +326,3 @@
 #     
 #     # ... other methods
 # ```
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }

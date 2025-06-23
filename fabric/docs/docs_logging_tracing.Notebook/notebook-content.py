@@ -1,13 +1,5 @@
 # Fabric notebook source
 
-# METADATA ********************
-
-# META {
-# META   "kernel_info": {
-# META     "name": "synapse_pyspark"
-# META   },
-# META   "dependencies": {}
-# META }
 
 # MARKDOWN ********************
 
@@ -106,12 +98,6 @@
 # )
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ## Distributed Tracing
@@ -181,12 +167,6 @@
 #     error: Optional[Exception] = None
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ### Usage Examples
@@ -249,12 +229,6 @@
 #     pass
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ## Configuration
@@ -312,9 +286,3 @@
 #    with trace_provider.span(component="Processing", operation="TransformData", reraise=True):
 #        # With reraise=True, exceptions will be captured in the trace and then re-thrown
 #    ```
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }

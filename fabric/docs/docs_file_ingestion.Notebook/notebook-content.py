@@ -1,13 +1,5 @@
 # Fabric notebook source
 
-# METADATA ********************
-
-# META {
-# META   "kernel_info": {
-# META     "name": "synapse_pyspark"
-# META   },
-# META   "dependencies": {}
-# META }
 
 # MARKDOWN ********************
 
@@ -32,12 +24,6 @@
 # 2. Data is read according to file format
 # 3. Schemas are validated or inferred
 # 4. Data is written to the destination entity
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
 
 # MARKDOWN ********************
 
@@ -92,12 +78,6 @@
 #         pass
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ### FileIngestionProcessor
@@ -150,12 +130,6 @@
 # - ORC
 # - Avro (with appropriate Spark extensions)
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ## Advanced Configuration
@@ -205,12 +179,6 @@
 # )
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ## Best Practices
@@ -224,9 +192,3 @@
 # 4. **Error handling**: Configure appropriate error handling for malformed records.
 # 
 # 5. **Metadata enrichment**: Consider adding ingestion metadata like source file and timestamp.
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }

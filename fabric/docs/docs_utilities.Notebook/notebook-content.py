@@ -1,13 +1,5 @@
 # Fabric notebook source
 
-# METADATA ********************
-
-# META {
-# META   "kernel_info": {
-# META     "name": "synapse_pyspark"
-# META   },
-# META   "dependencies": {}
-# META }
 
 # MARKDOWN ********************
 
@@ -44,12 +36,6 @@
 # # Keep only the latest customer record per customer_id
 # customer_df = remove_duplicates(customer_df, ["customer_id"])
 # ```
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
 
 # MARKDOWN ********************
 
@@ -90,12 +76,6 @@
 # 
 # 4. **Testing**: All common transforms should have comprehensive unit tests to verify correct behavior across edge cases.
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ## Adding New Transforms
@@ -107,9 +87,3 @@
 # 3. Implement error handling for common edge cases
 # 4. Write unit tests covering normal usage and edge cases
 # 5. Document the new function in this guide
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }

@@ -1,13 +1,5 @@
 # Fabric notebook source
 
-# METADATA ********************
-
-# META {
-# META   "kernel_info": {
-# META     "name": "synapse_pyspark"
-# META   },
-# META   "dependencies": {}
-# META }
 
 # MARKDOWN ********************
 
@@ -34,12 +26,6 @@
 # - Unified error handling
 # - Comprehensive tracing
 # - Watermark management
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
 
 # MARKDOWN ********************
 
@@ -96,12 +82,6 @@
 #     )
 # ```
 
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
-
 # MARKDOWN ********************
 
 # ## Usage Examples
@@ -145,12 +125,6 @@
 # # Inside StageProcessor.execute
 # self.ep.ensure_entity_table(self.wef.get_watermark_entity_for_layer(layer))
 # ```
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
 
 # MARKDOWN ********************
 
@@ -205,9 +179,3 @@
 # 5. **Naming Convention**: Use a consistent prefix naming convention for pipes within stages.
 # 
 # 6. **Documentation**: Document stage dependencies and execution order requirements.
-
-# METADATA ********************
-
-# META {
-# META   "language": "markdown"
-# META }
