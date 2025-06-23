@@ -145,11 +145,6 @@ class NotebookTestEnvironment:
         
     def _setup_base_classes(self):
         """Setup base classes and dependencies"""
-        # Mock BaseServiceProvider before any classes try to inherit from it
-        if 'BaseServiceProvider' not in globals():
-            class MockBaseServiceProvider:
-                pass
-            globals()['BaseServiceProvider'] = MockBaseServiceProvider
             
         # Mock PythonLoggerProvider
         if 'PythonLoggerProvider' not in globals():
@@ -416,6 +411,32 @@ class NotebookTestEnvironment:
             globals()['PipeMetadata'] = MockPipeMetadata
         else:
             logger.debug('PipeMetadata already in globals')   
+
+    mocked_globals = [
+        'BaseServiceProvider',
+        'PythonLoggerProvider', 
+        'inject',
+        'DataEntityRegistry',
+        'DataPipesRegistry',
+        'EntityReadPersistStrategy',
+        'EntityProvider',
+        'FileIngestionRegistry',
+        'FileIngestionProcessor',
+        'WatermarkEntityFinder',
+        'WatermarkService',
+        'SparkTraceProvider',
+        'DataPipesExecution',
+        'SimpleReadPersistStrategy',
+        'StageProcessingService',
+        'PipeMetadata'
+    ]
+
+    def reset_mocked_globals(self):
+        """Delete all mocked globals from the global namespace"""
+        for global_name in self.mocked_globals:
+            if global_name in globals():
+                del globals()[global_name]
+        self._setup_base_classes()
 
     def _setup_synapse_mocks(self):
         """Setup Synapse-specific mocks"""
@@ -878,7 +899,8 @@ class MemoryTestCollector:
                     
                     # Create runner that uses the shared environment (NO new environment setup)
                     runner = NotebookTestRunner()
-                    runner.test_env = self.env  # Share the FORCED environment
+                    runner.test_env = self.env
+                    self.env.reset_mocked_globals()
                     runner._setup_result_capture()
                     
                     # Before running test, verify spark is still correct

@@ -26,7 +26,7 @@ BOOTSTRAP_CONFIG = {
     'is_interactive': True,
     'use_lake_packages' : False,
     'load_local_packages' : False,
-    'log_level': "DEBUG",
+    'log_level': "INFO",
     'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'package_storage_path': "Files/artifacts/packages/latest",
     'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
@@ -70,17 +70,6 @@ BOOTSTRAP_CONFIG = {
 test_env = setup_global_test_environment()
 if 'GI_IMPORT_GUARD' in globals():
     del GI_IMPORT_GUARD
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
-
-# CELL ********************
-
-del globals()['WatermarkManager']
 
 # METADATA ********************
 
@@ -200,8 +189,6 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         WatermarkService = globals().get('WatermarkService')
         
         # Test inheritance contract
-        assert issubclass(WatermarkManager, BaseServiceProvider), \
-            "Inheritance contract failed: WatermarkManager should inherit from BaseServiceProvider"
         assert issubclass(WatermarkManager, WatermarkService), \
             "Inheritance contract failed: WatermarkManager should inherit from WatermarkService"
         

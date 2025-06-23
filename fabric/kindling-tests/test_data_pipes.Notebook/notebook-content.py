@@ -323,10 +323,11 @@ class TestDataPipes(SynapseNotebookTestCase):
         mock_entity_registry = MagicMock()
         mock_pipes_registry = MagicMock()
         mock_erps = MagicMock()
-        
+        mock_trace_provider = MagicMock()
+
         # Test initialization
         executer = DataPipesExecuter.__new__(DataPipesExecuter)
-        executer.__init__(mock_logger_provider, mock_entity_registry, mock_pipes_registry, mock_erps)
+        executer.__init__(mock_logger_provider, mock_entity_registry, mock_pipes_registry, mock_erps, mock_trace_provider)
         
         assert executer.erps == mock_erps
         assert executer.dpr == mock_pipes_registry
@@ -352,9 +353,10 @@ class TestDataPipes(SynapseNotebookTestCase):
         mock_entity_registry = MagicMock()
         mock_pipes_registry = MagicMock()
         mock_erps = MagicMock()
-        
+        mock_trace_provider = MagicMock()
+
         executer = DataPipesExecuter.__new__(DataPipesExecuter)
-        executer.__init__(mock_logger_provider, mock_entity_registry, mock_pipes_registry, mock_erps)
+        executer.__init__(mock_logger_provider, mock_entity_registry, mock_pipes_registry, mock_erps, mock_trace_provider)
         
         # Create test pipe
         def dummy_execute(**kwargs):
@@ -416,9 +418,10 @@ class TestDataPipes(SynapseNotebookTestCase):
         mock_entity_registry = MagicMock()
         mock_pipes_registry = MagicMock()
         mock_erps = MagicMock()
+        mock_trace_provider = MagicMock()
         
         executer = DataPipesExecuter.__new__(DataPipesExecuter)
-        executer.__init__(mock_logger_provider, mock_entity_registry, mock_pipes_registry, mock_erps)
+        executer.__init__(mock_logger_provider, mock_entity_registry, mock_pipes_registry, mock_erps, mock_trace_provider)
         
         # Create test pipe
         mock_processed_df = MagicMock()
@@ -471,9 +474,10 @@ class TestDataPipes(SynapseNotebookTestCase):
         mock_entity_registry = MagicMock()
         mock_pipes_registry = MagicMock()
         mock_erps = MagicMock()
+        mock_trace_provider = MagicMock()
         
         executer = DataPipesExecuter.__new__(DataPipesExecuter)
-        executer.__init__(mock_logger_provider, mock_entity_registry, mock_pipes_registry, mock_erps)
+        executer.__init__(mock_logger_provider, mock_entity_registry, mock_pipes_registry, mock_erps, mock_trace_provider)
         
         # Create test pipe
         def test_execute(**kwargs):

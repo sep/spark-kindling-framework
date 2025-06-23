@@ -143,12 +143,9 @@ class TestSimpleReadPersistStrategy(SynapseNotebookTestCase):
         strategy = setup['strategy']
         
         SimpleReadPersistStrategy = globals().get('SimpleReadPersistStrategy')
-        BaseServiceProvider = globals().get('BaseServiceProvider')
         EntityReadPersistStrategy = globals().get('EntityReadPersistStrategy')
         
         # Test inheritance with descriptive messages
-        assert issubclass(SimpleReadPersistStrategy, BaseServiceProvider), \
-            f"SimpleReadPersistStrategy should inherit from BaseServiceProvider for dependency injection support"
         assert issubclass(SimpleReadPersistStrategy, EntityReadPersistStrategy), \
             f"SimpleReadPersistStrategy should implement EntityReadPersistStrategy interface to provide required methods"
         

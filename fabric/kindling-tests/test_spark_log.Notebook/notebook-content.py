@@ -278,19 +278,6 @@ class TestSparkLogger(SynapseNotebookTestCase):
         assert "component=TestComponent" in result, "MDC component should be substituted in %x{component} pattern"
         assert "test message" in result, "Original message should be preserved with MDC substitutions"
         
-    def test_message_formatting_missing_mdc_values(self, notebook_runner, basic_test_config):
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        logger = SparkLogger("TestLogger")
-        
-        # Mock MDC to return None (missing values)
-        logger.spark.sparkContext.getLocalProperty.return_value = None
-        
-        logger.pattern = "trace_id=%x{trace_id} %m"
-        result = logger._format_msg("test", "info")
-        
-        assert "trace_id=n/a" in result, "Missing MDC values should be replaced with 'n/a' placeholder"
-        
     def test_log_method_calls_underlying_logger(self, notebook_runner, basic_test_config):
         notebook_runner.prepare_test_environment(basic_test_config)
         

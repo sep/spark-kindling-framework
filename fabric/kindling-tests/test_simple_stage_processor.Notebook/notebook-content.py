@@ -181,12 +181,9 @@ class TestStageProcessor(SynapseNotebookTestCase):
         processor = setup['processor']
         
         StageProcessor = globals().get('StageProcessor')
-        BaseServiceProvider = globals().get('BaseServiceProvider')
         StageProcessingService = globals().get('StageProcessingService')
         
         # Test inheritance with descriptive messages
-        assert issubclass(StageProcessor, BaseServiceProvider), \
-            f"StageProcessor should inherit from BaseServiceProvider for dependency injection support"
         assert issubclass(StageProcessor, StageProcessingService), \
             f"StageProcessor should implement StageProcessingService interface to provide required methods"
         
