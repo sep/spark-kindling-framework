@@ -43,8 +43,12 @@ class NotebookTestEnvironment:
         
     def setup_test_environment(self, test_config: Optional[Dict[str, Any]] = None):
         """Setup the test environment before notebook execution"""
+        #print("Setup test env called")
+
         config = test_config or {}
         
+        self._delete_global_mocks()
+
         # CRITICAL: Setup GlobalInjector FIRST before anything else
         self._setup_injection_mocks()
         
@@ -431,12 +435,11 @@ class NotebookTestEnvironment:
         'PipeMetadata'
     ]
 
-    def reset_mocked_globals(self):
+    def _delete_global_mocks(self):
         """Delete all mocked globals from the global namespace"""
         for global_name in self.mocked_globals:
             if global_name in globals():
                 del globals()[global_name]
-        self._setup_base_classes()
 
     def _setup_synapse_mocks(self):
         """Setup Synapse-specific mocks"""
@@ -512,8 +515,8 @@ class NotebookTestRunner:
     Test runner that coordinates the %run strategy for notebook testing.
     """
     
-    def __init__(self):
-        self.test_env = NotebookTestEnvironment()
+    def __init__(self, env=None):
+        self.test_env = env or NotebookTestEnvironment()
         self.execution_results = {}
         
     def prepare_test_environment(self, test_config: Optional[Dict[str, Any]] = None):
@@ -579,17 +582,24 @@ class NotebookTestRunner:
         """Cleanup test environment"""
         self.test_env.cleanup()
 
-def run_notebook_tests(*test_classes, test_config=None):
+def run_notebook_suites(test_suites, test_config=None):
+    for key in test_suites.keys():
+        print(f"Running test suite: {key}")
+        env = setup_global_test_environment(test_config)
+        run_notebook_tests(*test_suites[key], test_config=test_config, env=env)
+
+
+def run_notebook_tests(*test_classes, test_config=None, env=None):
     """
     Run tests with FORCED config that overrides any existing environment
     """
     if test_config is None:
         test_config = {'use_real_spark': False}
     
-    print(f"FORCING test environment setup with: {test_config}")
+    #print(f"FORCING test environment setup with: {test_config}")
     
     # Force create new environment that overrides anything existing
-    collector = MemoryTestCollector(test_classes, test_config)
+    collector = MemoryTestCollector(test_classes, test_config=test_config, env=env)
     results = collector.run_tests()
     
     if results["success"]:
@@ -615,27 +625,26 @@ def run_tests_in_folder(folder_name, test_config=None):
         logger.error(f"No notebooks found in folder '{folder_name}'")
         return {"success": True, "passed": 0, "failed": 0}
     
-    test_classes = []
+    test_suites = {}
 
     # Extract pytest test classes from each notebook
     for notebook in notebooks:
         try:
             pytest_cell_code = extract_pytest_cell(notebook.name)
             if pytest_cell_code:
-                classes = execute_test_cell_with_imports(pytest_cell_code, notebook.name)
-                test_classes.extend(classes)
-                logger.info(f"Found {len(classes)} test classes in {notebook.name}")
+                test_suites[notebook.name] = execute_test_cell_with_imports(pytest_cell_code, notebook.name)
+                logger.info(f"Found {len(test_suites[notebook.name])} tests in suite {notebook.name}")
         except Exception as e:
             logger.error(f"Failed to process {notebook.name}: {e}")
             continue
     
-    if not test_classes:
+    if not test_suites:
         logger.info(f"No pytest test classes found in folder '{folder_name}'")
         return {"success": True, "passed": 0, "failed": 0}
     
     # Run tests using existing framework
-    logger.info(f"Running tests from {len(test_classes)} test classes...")
-    return run_notebook_tests(*test_classes, test_config=test_config)
+    logger.info(f"Running tests from {len(test_suites)} test suites...")
+    return run_notebook_suites(test_suites, test_config=test_config)
 
 
 def extract_pytest_cell(notebook_name):
@@ -854,23 +863,29 @@ class TestCollectorPlugin:
 class MemoryTestCollector:
     """Test collector that FORCES environment setup to override notebook interference"""
     
-    def __init__(self, test_classes, test_config=None):
+    def __init__(self, test_classes, test_config=None, env=None):
         self.test_classes = test_classes
         self.test_config = test_config or {}
-        self.env = None
-        
-    def run_tests(self):
+        self.env = env
+        #print(f"memory test collector config: {self.test_config}")
+
+    def run_tests(self, env=None):
         """Run tests with FORCED environment setup"""
         # FORCE setup environment - this will override any existing spark
-        print(f"FORCING environment setup with config: {self.test_config}")
-        self.env = NotebookTestEnvironment()
-        self.env.setup_test_environment(self.test_config)
-        
+        #print(f"FORCING environment setup with config: {self.test_config}")
+
+
         # Verify the spark session type
         spark_type = str(type(globals().get('spark')))
         use_real = self.test_config.get('use_real_spark', False)
-        print(f"After FORCED setup: spark type = {spark_type}, use_real_spark = {use_real}")
+        #print(f"After FORCED setup: spark type = {spark_type}, use_real_spark = {use_real}")
+      
+        self.env = env or self.env or NotebookTestEnvironment()
         
+        runner = NotebookTestRunner()
+        runner.test_env = self.env
+        runner._setup_result_capture()
+
         passed = 0
         failed = 0
         failures = []
@@ -888,6 +903,7 @@ class MemoryTestCollector:
             print(f"Running {len(all_tests)} tests...")
             print("=" * 80)
             
+
             # Run each test
             for test_class, method_name in all_tests:
                 test_name = f"{test_class.__name__}::{method_name}"
@@ -898,13 +914,13 @@ class MemoryTestCollector:
                     test_method = getattr(test_instance, method_name)
                     
                     # Create runner that uses the shared environment (NO new environment setup)
-                    runner = NotebookTestRunner()
-                    runner.test_env = self.env
-                    self.env.reset_mocked_globals()
-                    runner._setup_result_capture()
                     
+
                     # Before running test, verify spark is still correct
                     current_spark_type = str(type(globals().get('spark')))
+
+                    #print(f"curr spark type = {current_spark_type} old type = {spark_type}")
+
                     if current_spark_type != spark_type:
                         print(f"🚨 WARNING: Spark type changed before {test_name}: {current_spark_type}")
                     
@@ -973,7 +989,7 @@ class MemoryTestCollector:
             if self.env:
                 self.env.cleanup()
 
-def run_tests_in_folder(folder_name, test_config=None):
+'''def run_tests_in_folder(folder_name, test_config=None):
     """Run pytest test classes from notebooks in the specified folder"""
     if test_config is None:
         test_config = {'use_real_spark': True}
@@ -998,7 +1014,7 @@ def run_tests_in_folder(folder_name, test_config=None):
             if pytest_cell_code:
                 classes = execute_test_cell_with_imports(pytest_cell_code, notebook.name)
                 test_classes.extend(classes)
-                logger.info(f"Found {len(classes)} test classes in {notebook.name}")
+                logger.info(f"Found {len(classes)} test classes in suite {notebook.name}")
         except Exception as e:
             logger.error(f"Failed to process {notebook.name}: {e}")
             continue
@@ -1020,7 +1036,7 @@ def run_tests_in_folder(folder_name, test_config=None):
     else:
         print("✗ Some tests FAILED")
     
-    return results
+    return results'''
 
 
 def run_single_test_class(test_class, test_config: Optional[Dict[str, Any]] = None):

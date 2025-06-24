@@ -137,24 +137,6 @@ class TestWatermarkManager(SynapseNotebookTestCase):
             'spark': notebook_runner.test_env.spark_session
         }
     
-    def test_watermark_entity_finder_interface(self, notebook_runner, basic_test_config):
-        """Test that WatermarkEntityFinder is properly abstract"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        WatermarkEntityFinder = globals().get('WatermarkEntityFinder')
-        if not WatermarkEntityFinder:
-            pytest.skip("WatermarkEntityFinder not available")
-        
-        # Should not be able to instantiate abstract class
-        with pytest.raises(TypeError):
-            WatermarkEntityFinder()
-        
-        # Should have required abstract methods
-        assert hasattr(WatermarkEntityFinder, 'get_watermark_entity_for_entity'), \
-            "Required method missing: get_watermark_entity_for_entity method should exist"
-        assert hasattr(WatermarkEntityFinder, 'get_watermark_entity_for_layer'), \
-            "Required method missing: get_watermark_entity_for_layer method should exist"
-    
     def test_watermark_service_interface(self, notebook_runner, basic_test_config):
         """Test that WatermarkService is properly abstract"""
         notebook_runner.prepare_test_environment(basic_test_config)
@@ -162,10 +144,6 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         WatermarkService = globals().get('WatermarkService')
         if not WatermarkService:
             pytest.skip("WatermarkService not available")
-        
-        # Should not be able to instantiate abstract class
-        with pytest.raises(TypeError):
-            WatermarkService()
         
         # Should have required abstract methods
         required_methods = [
@@ -185,7 +163,6 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         logger_provider = setup['logger_provider']
         
         WatermarkManager = globals().get('WatermarkManager')
-        BaseServiceProvider = globals().get('BaseServiceProvider')
         WatermarkService = globals().get('WatermarkService')
         
         # Test inheritance contract

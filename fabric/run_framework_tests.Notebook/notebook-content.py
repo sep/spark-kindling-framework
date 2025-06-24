@@ -79,7 +79,9 @@ run_tests_in_folder('kindling-tests',
             ],
             'test_watermark_data': [
                 {'source_entity_id': 'test_entity', 'reader_id': 'test_reader', 'last_version_processed': 5}
-            ]
+            ],
+            'test_path': '/test/data/path',
+            'sample_files': ['sales_west_20240315.csv', 'sales_east_20240316.json']
         }
     })
 

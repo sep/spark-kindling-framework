@@ -101,9 +101,6 @@ if 'GI_IMPORT_GUARD' in globals():
 
 # CELL ********************
 
-# File Ingestion Test Suite
-# Tests for the file ingestion functionality
-
 import pytest
 import uuid
 from unittest.mock import MagicMock, patch
@@ -319,8 +316,11 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mock_logger_provider = MagicMock()
         mock_logger = MagicMock()
         mock_logger_provider.get_logger.return_value = mock_logger
+
+        mock_config = MagicMock()
         
         return {
+            'c': mock_config,
             'fir': mock_registry,
             'ep': mock_entity_provider, 
             'der': mock_entity_registry,
@@ -336,6 +336,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         
         # Create processor with mocked dependencies
         processor = SimpleFileIngestionProcessor(
+            config=mocks['c'],
             fir=mocks['fir'],
             ep=mocks['ep'],
             der=mocks['der'], 
@@ -384,6 +385,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mocks = self.setup_file_processor_mocks(notebook_runner)
         
         processor = SimpleFileIngestionProcessor(
+            config=mocks['c'],
             fir=mocks['fir'],
             ep=mocks['ep'],
             der=mocks['der'],
@@ -411,6 +413,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mocks = self.setup_file_processor_mocks(notebook_runner)
         
         processor = SimpleFileIngestionProcessor(
+            config=mocks['c'],
             fir=mocks['fir'],
             ep=mocks['ep'],
             der=mocks['der'],
@@ -463,6 +466,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mocks['fir'].get_entry_definition.return_value = mock_entry
         
         processor = SimpleFileIngestionProcessor(
+            config=mocks['c'],
             fir=mocks['fir'],
             ep=mocks['ep'],
             der=mocks['der'],
@@ -499,6 +503,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mocks = self.setup_file_processor_mocks(notebook_runner)
         
         processor = SimpleFileIngestionProcessor(
+            config=mocks['c'],
             fir=mocks['fir'],
             ep=mocks['ep'],
             der=mocks['der'],
@@ -577,8 +582,11 @@ class TestFileIngestionIntegration(SynapseNotebookTestCase):
         mock_logger = MagicMock()
         mock_logger_provider.get_logger.return_value = mock_logger
         
+        mock_config = MagicMock()
+
         # Step 4: Create processor and process files
         processor = SimpleFileIngestionProcessor(
+            config=mock_config,
             fir=manager,  # Use real manager
             ep=mock_entity_provider,
             der=mock_entity_registry,
