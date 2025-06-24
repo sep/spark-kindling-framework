@@ -59,7 +59,7 @@ class FileIngestionEntries:
 
         del decorator_params['entry_id']
 
-        print(decorator_params)
+        print(f"deregistry: {cls.deregistry}")
 
         cls.deregistry.register_entry(destEntityId, **decorator_params)
 
@@ -82,7 +82,7 @@ class FileIngestionRegistry(ABC):
 class FileIngestionManager(FileIngestionRegistry):
     @inject
     def __init__(self):
-        print("File ingestion manager initialized ...")
+        logger.debug("File ingestion manager initialized ...")
         self.registry = {}
 
     def register_entry(self, entryId, **decorator_params):
@@ -133,7 +133,7 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
                         with self.tp.span(operation="ingest_on_match"):   
                             named_groups = match.groupdict()
                             dest_entity_id = fe.dest_entity_id.format(**named_groups)
-                            print(f"Filename: {fn} Pattern: {fe.patterns[0]} Matched: {matched} Matches: {named_groups} DestEntityId: {dest_entity_id}")
+                            logger.debug(f"Filename: {fn} Pattern: {fe.patterns[0]} Matched: {matched} Matches: {named_groups} DestEntityId: {dest_entity_id}")
 
                             filetype = named_groups['filetype']
 

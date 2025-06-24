@@ -177,6 +177,8 @@ class TestFileIngestionEntries(SynapseNotebookTestCase):
         # Set up GlobalInjector to return our mock
         globals()['GlobalInjector'].get = MagicMock(return_value=mock_registry)
         
+        FileIngestionEntries.deregistry = None
+
         # After %run, test the decorator
         FileIngestionEntries.entry(
             entry_id="sales_files",
@@ -218,6 +220,7 @@ class TestFileIngestionEntries(SynapseNotebookTestCase):
         mock_registry = MagicMock()
         globals()['GlobalInjector'].get = MagicMock(return_value=mock_registry)
         
+        FileIngestionEntries.deregistry = None
         # Test with infer_schema=False
         FileIngestionEntries.entry(
             entry_id="test_entry",
@@ -290,35 +293,9 @@ class TestFileIngestionManager(SynapseNotebookTestCase):
 class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
     """Tests for SimpleFileIngestionProcessor file processing logic"""
     
-    def setup_file_processor_mocks(self, notebook_runner):
-        """Setup mocks specific to file processor testing"""
-        # Mock notebookutils.fs.ls to return test file list
-        mock_file1 = MagicMock()
-        mock_file1.name = "sales_west_20240315.csv"
-        mock_file1.isFile = True
-        
-        mock_file2 = MagicMock()
-        mock_file2.name = "sales_east_20240316.json" 
-        mock_file2.isFile = True
-        
-        mock_dir = MagicMock()
-        mock_dir.name = "archive"
-        mock_dir.isFile = False  # Directory
-        
-        # Configure notebookutils mock
-        globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file1, mock_file2, mock_dir])
-        
-        # Setup file ingestion registry mock
+    def create_fresh_mocks(self):
+        """Create fresh mock instances for each test"""
         mock_registry = MagicMock()
-        mock_entry = MagicMock()
-        mock_entry.patterns = ["sales_(?P<region>\\w+)_(?P<date>\\d{8})\\.(?P<filetype>csv|json)"]
-        mock_entry.dest_entity_id = "sales_{region}_{date}"
-        mock_entry.infer_schema = True
-        
-        mock_registry.get_entry_ids.return_value = ["sales_pattern"]
-        mock_registry.get_entry_definition.return_value = mock_entry
-        
-        # Setup other required mocks
         mock_entity_provider = MagicMock()
         mock_entity_registry = MagicMock()
         mock_entity_def = MagicMock()
@@ -349,7 +326,33 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         """Test processing path with files that match ingestion patterns"""
         notebook_runner.prepare_test_environment(basic_test_config)
         
-        mocks = self.setup_file_processor_mocks(notebook_runner)
+        # Create fresh mocks for this test
+        mocks = self.create_fresh_mocks()
+        
+        # Setup file list for this test only
+        mock_file1 = MagicMock()
+        mock_file1.name = "sales_west_20240315.csv"
+        mock_file1.isFile = True
+        
+        mock_file2 = MagicMock()
+        mock_file2.name = "sales_east_20240316.json" 
+        mock_file2.isFile = True
+        
+        mock_dir = MagicMock()
+        mock_dir.name = "archive"
+        mock_dir.isFile = False  # Directory
+        
+        # Configure notebookutils mock for this test
+        globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file1, mock_file2, mock_dir])
+        
+        # Setup registry mock
+        mock_entry = MagicMock()
+        mock_entry.patterns = ["sales_(?P<region>\\w+)_(?P<date>\\d{8})\\.(?P<filetype>csv|json)"]
+        mock_entry.dest_entity_id = "sales_{region}_{date}"
+        mock_entry.infer_schema = True
+        
+        mocks['fir'].get_entry_ids.return_value = ["sales_pattern"]
+        mocks['fir'].get_entry_definition.return_value = mock_entry
         
         # Create processor with mocked dependencies
         processor = SimpleFileIngestionProcessor(
@@ -378,7 +381,8 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         globals()['notebookutils'].fs.ls.assert_called_once_with("/test/path")
         
         # Verify file ingestion registry was queried
-        mocks['fir'].get_entry_ids.assert_called_once()
+        # Should be called once for each matching file
+        assert mocks['fir'].get_entry_ids.call_count == 2
         mocks['fir'].get_entry_definition.assert_called()
         
         # Verify spark read was called for matching files
@@ -392,6 +396,9 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         """Test processing path with no files matching patterns"""
         notebook_runner.prepare_test_environment(basic_test_config)
         
+        # Create fresh mocks for this test
+        mocks = self.create_fresh_mocks()
+        
         # Setup non-matching files
         mock_file = MagicMock()
         mock_file.name = "random_file.txt"
@@ -399,7 +406,14 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         
         globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
         
-        mocks = self.setup_file_processor_mocks(notebook_runner)
+        # Setup registry mock with pattern that won't match
+        mock_entry = MagicMock()
+        mock_entry.patterns = ["sales_(?P<region>\\w+)_(?P<date>\\d{8})\\.(?P<filetype>csv|json)"]
+        mock_entry.dest_entity_id = "sales_{region}_{date}"
+        mock_entry.infer_schema = True
+        
+        mocks['fir'].get_entry_ids.return_value = ["sales_pattern"]
+        mocks['fir'].get_entry_definition.return_value = mock_entry
         
         processor = SimpleFileIngestionProcessor(
             config=mocks['c'],
@@ -420,6 +434,9 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         """Test detailed pattern matching and entity ID formatting"""
         notebook_runner.prepare_test_environment(basic_test_config)
         
+        # Create fresh mocks for this test
+        mocks = self.create_fresh_mocks()
+        
         # Setup specific test file
         mock_file = MagicMock()
         mock_file.name = "sales_northeast_20240401.csv"
@@ -427,7 +444,14 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         
         globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
         
-        mocks = self.setup_file_processor_mocks(notebook_runner)
+        # Setup registry mock
+        mock_entry = MagicMock()
+        mock_entry.patterns = ["sales_(?P<region>\\w+)_(?P<date>\\d{8})\\.(?P<filetype>csv|json)"]
+        mock_entry.dest_entity_id = "sales_{region}_{date}"
+        mock_entry.infer_schema = True
+        
+        mocks['fir'].get_entry_ids.return_value = ["sales_pattern"]
+        mocks['fir'].get_entry_definition.return_value = mock_entry
         
         processor = SimpleFileIngestionProcessor(
             config=mocks['c'],
@@ -467,19 +491,22 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         """Test processing with infer_schema=False"""
         notebook_runner.prepare_test_environment(basic_test_config)
         
+        # Create fresh mocks for this test
+        mocks = self.create_fresh_mocks()
+        
         mock_file = MagicMock()
         mock_file.name = "sales_west_20240315.csv"
         mock_file.isFile = True
         
         globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
         
-        mocks = self.setup_file_processor_mocks(notebook_runner)
-        
         # Override entry to have infer_schema=False
         mock_entry = MagicMock()
         mock_entry.patterns = ["sales_(?P<region>\\w+)_(?P<date>\\d{8})\\.(?P<filetype>csv)"]
         mock_entry.dest_entity_id = "sales_{region}_{date}"
         mock_entry.infer_schema = False
+        
+        mocks['fir'].get_entry_ids.return_value = ["sales_pattern"]
         mocks['fir'].get_entry_definition.return_value = mock_entry
         
         processor = SimpleFileIngestionProcessor(
@@ -511,13 +538,23 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         """Test that trace spans are created during processing"""
         notebook_runner.prepare_test_environment(basic_test_config)
         
+        # Create fresh mocks for this test
+        mocks = self.create_fresh_mocks()
+        
         mock_file = MagicMock()
         mock_file.name = "sales_west_20240315.csv"
         mock_file.isFile = True
         
         globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
         
-        mocks = self.setup_file_processor_mocks(notebook_runner)
+        # Setup registry mock
+        mock_entry = MagicMock()
+        mock_entry.patterns = ["sales_(?P<region>\\w+)_(?P<date>\\d{8})\\.(?P<filetype>csv|json)"]
+        mock_entry.dest_entity_id = "sales_{region}_{date}"
+        mock_entry.infer_schema = True
+        
+        mocks['fir'].get_entry_ids.return_value = ["sales_pattern"]
+        mocks['fir'].get_entry_definition.return_value = mock_entry
         
         processor = SimpleFileIngestionProcessor(
             config=mocks['c'],

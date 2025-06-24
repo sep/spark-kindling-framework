@@ -30,7 +30,7 @@ BOOTSTRAP_CONFIG = {
     'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'platform_environment': 'fabric',
     'artifacts_storage_path': "Files/artifacts",
-    'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
+    'required_packages': ["injector", "dynaconf", "pytest"],
     'ignored_folders': ['utilities'],
     'spark_configs': {
         'spark.databricks.delta.schema.autoMerge.enabled': 'true'
@@ -69,21 +69,7 @@ BOOTSTRAP_CONFIG = {
 # CELL ********************
 
 test_env = setup_global_test_environment()
-run_tests_in_folder('kindling-tests',     
-    test_config={
-        'use_real_spark': True,
-        'test_data': {
-            'test_entity_data': [
-                {'id': 1, 'name': 'Entity1', 'version': 1},
-                {'id': 2, 'name': 'Entity2', 'version': 2}
-            ],
-            'test_watermark_data': [
-                {'source_entity_id': 'test_entity', 'reader_id': 'test_reader', 'last_version_processed': 5}
-            ],
-            'test_path': '/test/data/path',
-            'sample_files': ['sales_west_20240315.csv', 'sales_east_20240316.json']
-        }
-    })
+run_tests_in_folder('kindling-tests')
 
 # METADATA ********************
 

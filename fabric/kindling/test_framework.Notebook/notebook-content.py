@@ -582,12 +582,12 @@ class NotebookTestRunner:
         """Cleanup test environment"""
         self.test_env.cleanup()
 
-def run_notebook_suites(test_suites, test_config=None):
+def run_notebook_suites(test_suites, test_suite_configs=None):
     for key in test_suites.keys():
         print(f"Running test suite: {key}")
-        env = setup_global_test_environment(test_config)
-        run_notebook_tests(*test_suites[key], test_config=test_config, env=env)
-
+        current_config = test_suite_configs.get(key, None) if test_suite_configs else None
+        env = setup_global_test_environment(current_config)
+        run_notebook_tests(*test_suites[key], env=env)
 
 def run_notebook_tests(*test_classes, test_config=None, env=None):
     """
@@ -614,23 +614,30 @@ def run_tests_in_folder(folder_name, test_config=None):
     if test_config is None:
         test_config = {'use_real_spark': False}
     
-    # Get notebooks from folder
-    try:
-        notebooks = get_all_notebooks_for_folder(folder_name)
-    except Exception as e:
-        logger.error("Accessing folder '{folder_name}': {e}")
-        return {"success": False, "error": str(e)}
-    
+    notebooks = get_all_notebooks_for_folder(folder_name)
+
     if not notebooks:
         logger.error(f"No notebooks found in folder '{folder_name}'")
         return {"success": True, "passed": 0, "failed": 0}
     
     test_suites = {}
+    test_suite_configs = {}
 
     # Extract pytest test classes from each notebook
     for notebook in notebooks:
         try:
-            pytest_cell_code = extract_pytest_cell(notebook.name)
+            client = get_synapse_client()
+            notebook_with_code = client.notebook.get_notebook(notebook.name)
+
+            pytest_cell_config = extract_config_cell(notebook_with_code)
+            #logger.debug(f"Notebook: {notebook.name} Pytest cell config: {pytest_cell_config}")
+            if pytest_cell_config :
+                temp_globals = {}
+                exec(compile(pytest_cell_config, notebook.name, 'exec'), temp_globals)
+                test_suite_configs[notebook.name] = temp_globals.get('test_config', None)
+
+            pytest_cell_code = extract_pytest_cell(notebook_with_code)
+            #logger.debug(f"Notebook: {notebook.name} Pytest cell code: {pytest_cell_code}")
             if pytest_cell_code:
                 test_suites[notebook.name] = execute_test_cell_with_imports(pytest_cell_code, notebook.name)
                 logger.info(f"Found {len(test_suites[notebook.name])} tests in suite {notebook.name}")
@@ -644,14 +651,31 @@ def run_tests_in_folder(folder_name, test_config=None):
     
     # Run tests using existing framework
     logger.info(f"Running tests from {len(test_suites)} test suites...")
-    return run_notebook_suites(test_suites, test_config=test_config)
+    return run_notebook_suites(test_suites, test_suite_configs=test_suite_configs)
 
-
-def extract_pytest_cell(notebook_name):
+def extract_config_cell(notebook):
     """Extract the cell that starts with 'import pytest' from a notebook"""
-    client = get_synapse_client()
-    notebook = client.notebook.get_notebook(notebook_name)
-    
+    code = ""
+
+    for cell in notebook.properties.cells:
+        if cell.cell_type == "code":
+            if isinstance(cell.source, list):
+                cell_code = "".join(str(line) for line in cell.source)
+            else:
+                cell_code = str(cell.source)
+            
+            # Check if cell starts with 'test_config'
+            if cell_code.strip().startswith('test_config'):
+                return cell_code
+
+    return None
+
+#    client = get_synapse_client()
+#    notebook = client.notebook.get_notebook(notebook_name)
+
+def extract_pytest_cell(notebook):
+    """Extract the cell that starts with 'import pytest' from a notebook"""
+
     code = ""
 
     for cell in notebook.properties.cells:
@@ -714,30 +738,6 @@ def execute_test_cell_with_imports(code, notebook_name):
         logger.error(f"Error executing pytest cell from {notebook_name}: {e}")
     
     return test_classes
-
-
-# Usage:
-# results = run_tests_in_folder("test_folder")
-# results = run_tests_in_folder("test_folder", {'use_real_spark': True})
-
-
-# Usage:
-# results = run_tests_in_folder("test_folder")
-# results = run_tests_in_folder("test_folder", {'use_real_spark': True})
-
-
-# Quick usage examples:
-#
-# # Basic usage:
-# results = run_tests_in_folder("my_test_folder")
-#
-# # With custom config:
-# config = {'use_real_spark': True, 'test_data': {'key': 'value'}}
-# results = run_tests_in_folder("integration_tests", config)
-#
-# # With automatic setup:
-# results = run_tests_in_folder_with_setup("unit_tests")
-
 
 # Test utilities and fixtures
 class SynapseNotebookTestCase:
@@ -988,56 +988,6 @@ class MemoryTestCollector:
             # Cleanup once at the end
             if self.env:
                 self.env.cleanup()
-
-'''def run_tests_in_folder(folder_name, test_config=None):
-    """Run pytest test classes from notebooks in the specified folder"""
-    if test_config is None:
-        test_config = {'use_real_spark': True}
-    
-    # Get notebooks from folder
-    try:
-        notebooks = get_all_notebooks_for_folder(folder_name)
-    except Exception as e:
-        logger.error("Accessing folder '{folder_name}': {e}")
-        return {"success": False, "error": str(e)}
-    
-    if not notebooks:
-        logger.error(f"No notebooks found in folder '{folder_name}'")
-        return {"success": True, "passed": 0, "failed": 0}
-    
-    test_classes = []
-
-    # Extract pytest test classes from each notebook FIRST
-    for notebook in notebooks:
-        try:
-            pytest_cell_code = extract_pytest_cell(notebook.name)
-            if pytest_cell_code:
-                classes = execute_test_cell_with_imports(pytest_cell_code, notebook.name)
-                test_classes.extend(classes)
-                logger.info(f"Found {len(classes)} test classes in suite {notebook.name}")
-        except Exception as e:
-            logger.error(f"Failed to process {notebook.name}: {e}")
-            continue
-    
-    if not test_classes:
-        logger.info(f"No pytest test classes found in folder '{folder_name}'")
-        return {"success": True, "passed": 0, "failed": 0}
-    
-    # CRITICAL FIX: Force environment setup AFTER extraction
-    # This ensures our config overrides any notebook spark setup
-    logger.debug(f"Forcing environment setup with: {test_config}")
-    
-    # Use the forced collector that sets up environment after extraction
-    collector = MemoryTestCollector(test_classes, test_config)
-    results = collector.run_tests()
-    
-    if results["success"]:
-        print("✓ All tests PASSED")
-    else:
-        print("✗ Some tests FAILED")
-    
-    return results'''
-
 
 def run_single_test_class(test_class, test_config: Optional[Dict[str, Any]] = None):
     """
