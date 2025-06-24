@@ -88,6 +88,17 @@ test_env = setup_global_test_environment()
 
 # CELL ********************
 
+test_config = None
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 import pytest
 from unittest.mock import patch, MagicMock, call
 from typing import Dict, Any

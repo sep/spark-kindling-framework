@@ -90,6 +90,17 @@ if 'GI_IMPORT_GUARD' in globals():
 
 # CELL ********************
 
+test_config = None
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 import pytest
 from unittest.mock import patch, MagicMock, call
 from dataclasses import dataclass, fields

@@ -91,6 +91,28 @@ if 'GI_IMPORT_GUARD' in globals():
 
 # CELL ********************
 
+test_config={
+    'use_real_spark': True,
+    'test_data': {
+        'test_entity_data': [
+            {'id': 1, 'name': 'Entity1', 'version': 1},
+            {'id': 2, 'name': 'Entity2', 'version': 2}
+        ],
+        'test_watermark_data': [
+            {'source_entity_id': 'test_entity', 'reader_id': 'test_reader', 'last_version_processed': 5}
+        ]
+    }
+}
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 import pytest
 from unittest.mock import patch, MagicMock, call
 from typing import List, Dict, Any, Optional

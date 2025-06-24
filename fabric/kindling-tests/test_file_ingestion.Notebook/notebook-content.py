@@ -101,6 +101,23 @@ if 'GI_IMPORT_GUARD' in globals():
 
 # CELL ********************
 
+test_config = {
+    'use_real_spark': False,
+    'test_data': {
+        'test_path': '/test/data/path',
+        'sample_files': ['sales_west_20240315.csv', 'sales_east_20240316.json']
+    }
+}
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 import pytest
 import uuid
 from unittest.mock import MagicMock, patch
@@ -625,14 +642,6 @@ class TestFileIngestionIntegration(SynapseNotebookTestCase):
 # META }
 
 # CELL ********************
-
-test_config = {
-    'use_real_spark': False,
-    'test_data': {
-        'test_path': '/test/data/path',
-        'sample_files': ['sales_west_20240315.csv', 'sales_east_20240316.json']
-    }
-}
 
 results = run_notebook_tests(
     TestFileIngestionMetadata,

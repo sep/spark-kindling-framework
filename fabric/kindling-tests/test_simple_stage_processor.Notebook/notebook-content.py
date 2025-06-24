@@ -90,6 +90,25 @@ if 'GI_IMPORT_GUARD' in globals():
 
 # CELL ********************
 
+test_config={
+        'use_real_spark': False,
+        'test_data': {
+            'test_input_entities': [
+                {'id': 1, 'name': 'Entity1', 'data': 'test1'},
+                {'id': 2, 'name': 'Entity2', 'data': 'test2'}
+            ]
+        }
+    }
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 import pytest
 from unittest.mock import patch, MagicMock, call
 from typing import List, Dict, Any, Optional
@@ -941,15 +960,7 @@ results = run_notebook_tests(
     TestStageProcessor,
     TestStageProcessorIntegration,
     TestStageProcessorEdgeCases,
-    test_config={
-        'use_real_spark': False,
-        'test_data': {
-            'test_input_entities': [
-                {'id': 1, 'name': 'Entity1', 'data': 'test1'},
-                {'id': 2, 'name': 'Entity2', 'data': 'test2'}
-            ]
-        }
-    }
+    test_config=test_config
 )
 print(results)
 
