@@ -587,7 +587,7 @@ def run_notebook_suites(test_suites, test_suite_configs=None):
         print(f"Running test suite: {key}")
         current_config = test_suite_configs.get(key, None) if test_suite_configs else None
         env = setup_global_test_environment(current_config)
-        run_notebook_tests(*test_suites[key], env=env)
+        run_notebook_tests(*test_suites[key], test_config=current_config, env=env)
 
 def run_notebook_tests(*test_classes, test_config=None, env=None):
     """
@@ -596,7 +596,7 @@ def run_notebook_tests(*test_classes, test_config=None, env=None):
     if test_config is None:
         test_config = {'use_real_spark': False}
     
-    #print(f"FORCING test environment setup with: {test_config}")
+    #print(f"test environment setup with: {test_config}")
     
     # Force create new environment that overrides anything existing
     collector = MemoryTestCollector(test_classes, test_config=test_config, env=env)
@@ -630,11 +630,13 @@ def run_tests_in_folder(folder_name, test_config=None):
             notebook_with_code = client.notebook.get_notebook(notebook.name)
 
             pytest_cell_config = extract_config_cell(notebook_with_code)
-            #logger.debug(f"Notebook: {notebook.name} Pytest cell config: {pytest_cell_config}")
+            #print(f"Notebook: {notebook.name} Pytest cell config: {pytest_cell_config}")
             if pytest_cell_config :
                 temp_globals = {}
                 exec(compile(pytest_cell_config, notebook.name, 'exec'), temp_globals)
                 test_suite_configs[notebook.name] = temp_globals.get('test_config', None)
+
+            #print(f"{notebook.name} = cell config = {test_suite_configs[notebook.name]}")
 
             pytest_cell_code = extract_pytest_cell(notebook_with_code)
             #logger.debug(f"Notebook: {notebook.name} Pytest cell code: {pytest_cell_code}")
@@ -876,7 +878,7 @@ class MemoryTestCollector:
 
 
         # Verify the spark session type
-        spark_type = str(type(globals().get('spark')))
+
         use_real = self.test_config.get('use_real_spark', False)
         #print(f"After FORCED setup: spark type = {spark_type}, use_real_spark = {use_real}")
       
@@ -891,6 +893,8 @@ class MemoryTestCollector:
         failures = []
         all_tests = []
         
+        spark_type = str(type(globals().get('spark')))
+
         try:
             # Collect all tests
             for test_class in self.test_classes:

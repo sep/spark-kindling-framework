@@ -123,15 +123,12 @@ from pyspark.sql.types import (
     StructType, StructField
 )
 
-
 class TestWatermarkManager(SynapseNotebookTestCase):
     """Test suite for WatermarkManager and related watermark functionality"""
     
     def watermark_manager(self, notebook_runner, basic_test_config):
         """Setup method that provides a configured WatermarkManager instance"""
-
-        #print(f"Test Config = {basic_test_config}")
-
+        
         notebook_runner.prepare_test_environment(basic_test_config)
         
         WatermarkManager = globals().get('WatermarkManager')

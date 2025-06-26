@@ -22,12 +22,23 @@
 
 # CELL ********************
 
+%pip install injector
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 BOOTSTRAP_CONFIG = {
-    'log_level': 'INFO',
+    'log_level': 'DEBUG',
     'is_interactive': False,
     'use_lake_packages' : False,
     'load_local_packages' : False,
-    'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
+    'workspace_id': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'platform_environment': 'fabric',
     'artifacts_storage_path': "Files/artifacts",
     'required_packages': ["injector", "dynaconf", "pytest"],
@@ -46,7 +57,7 @@ BOOTSTRAP_CONFIG = {
 
 # CELL ********************
 
-%run environment_bootstrap
+%run injection
 
 # METADATA ********************
 
@@ -57,7 +68,43 @@ BOOTSTRAP_CONFIG = {
 
 # CELL ********************
 
-publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/latest" )#
+%run notebook_framework
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+%run backend_fabric
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+es = FabricService(create_console_logger(), BOOTSTRAP_CONFIG)
+print(es)
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+nm = NotebookLoader(es)
+nm.publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/latest" )#
 
 # METADATA ********************
 
