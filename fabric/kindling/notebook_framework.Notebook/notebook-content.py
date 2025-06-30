@@ -18,7 +18,6 @@ import types
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
-from injector import Injector, inject, singleton, Binder
 
 from typing import Dict, List, Optional, Any, Union
 import sys
@@ -40,25 +39,57 @@ level_hierarchy = {
 
 currentLevel = "INFO"
 
+globals()["kindling_environment_factories"] = {}
+
+def get_or_create_spark_session():
+    """
+    Ensures a SparkSession is available as a global 'spark' variable.
+    - If running in Synapse, uses the existing 'spark' variable
+    - If running standalone, creates a new SparkSession
+    """
+    import sys
+  
+    # Check if spark variable exists in globals
+    if 'spark' not in globals():
+        # Not in managed environment, need to create our own session
+        try:
+            from pyspark.sql import SparkSession
+            
+            # Create and configure a new SparkSession
+            print("Creating new SparkSession...")
+            spark_session = SparkSession.builder \
+                .appName("ExportedSynapseCode") \
+                .config("spark.driver.memory", "2g") \
+                .getOrCreate()
+            
+            # Add to globals so code can access it as 'spark'
+            globals()['spark'] = spark_session
+            #logger.debug("SparkSession created and assigned to global 'spark' variable")
+            
+        except ImportError:
+            #logger.error("PySpark not installed. Please install with: pip install pyspark")
+            sys.exit(1)
+    else:
+        pass
+
+    return globals()['spark']
+
 def get_spark_log_level():
-    return spark.sparkContext._jvm.org.apache.log4j.LogManager.getRootLogger().getLevel()
+    return get_or_create_spark_session().sparkContext._jvm.org.apache.log4j.LogManager.getRootLogger().getLevel()
 
 
-def create_console_logger():
+def create_console_logger(config):
     """Create a simple console logger for bootstrap process that respects Spark log level"""
     from pyspark.sql import SparkSession
 
-    print(f"create_console_logger")    
-    
-    if spark:
-            currentLevel = BOOTSTRAP_CONFIG.get("log_level", None) or get_spark_log_level()
+    currentLevel = config.get("log_level", None) or get_spark_log_level()
     
     def should_log(level):
         level_log_rank = level_hierarchy.get(level.upper(), 2)
         current_log_rank = level_hierarchy.get(currentLevel, 2)
         return level_log_rank >= current_log_rank
     
-    print(f"Current log level = {currentLevel}")
+    #print(f"Current log level = {currentLevel}")
  
     return type('ConsoleLogger', (), {
         'debug': lambda self, *args, **kwargs: print("DEBUG:", *args) if should_log("DEBUG") else None,
@@ -68,6 +99,10 @@ def create_console_logger():
     })()
 
 class EnvironmentService:
+    @abstractmethod
+    def initialize(self):
+        pass
+
     @abstractmethod
     def get_token(self, audience: str) -> str:
         pass
@@ -352,19 +387,18 @@ from typing import List, Tuple, Dict, Any, Optional
 from importlib.machinery import ModuleSpec
 
 class NotebookLoader:
-    @inject
-    def __init__(self, backend: EnvironmentService):
+    def __init__(self, backend: EnvironmentService, config, logger = None ):
         self.backend = backend
         self.es = backend
-        self.logger = create_console_logger()
+        self.logger = logger or create_console_logger(config)
         self._loaded_modules: Dict[str, types.ModuleType] = {}
         self._notebook_cache = None
-    
+        self._folder_cache = None
+
     def get_all_notebooks(self, force_refresh: bool = False) -> List[NotebookResource]:
         """Get all notebooks from the backend"""
         if self._notebook_cache is None or force_refresh:
             try:
-                print(self.es)
                 self._notebook_cache = self.es.get_notebooks()
                 self.logger.debug(f"Discovered {len(self._notebook_cache)} notebooks")
             except Exception as e:
@@ -406,8 +440,11 @@ class NotebookLoader:
             top_level = self._get_top_level_folder(folder)
             if top_level and top_level not in ignored_folders:
                 # Check if this folder actually contains notebooks
-                if self._folder_has_notebooks(top_level):
-                    packages.add(top_level)
+                if self._folder_has_notebooks(folder):
+                    nbs = [folder.name for folder in self.get_notebooks_for_folder(folder)]
+                    self.logger.debug(f"nbs in {folder} = {nbs}")
+                    if f"{folder}_init" in nbs:
+                        packages.add(folder)
         
         package_list = sorted(list(packages))
         self.logger.debug(f"Discovered {len(package_list)} packages: {package_list}")
@@ -491,9 +528,6 @@ class NotebookLoader:
         return sorted(list(dependencies))
     
     def _extract_folder_path(self, notebook) -> Optional[str]:
-        """Extract folder path from notebook name"""
-        self.logger.debug(f"Notebook = {notebook}")
-
         return notebook.properties.folder.path
     
     def _get_parent_folders(self, folder_path: str) -> List[str]:
@@ -547,7 +581,11 @@ class NotebookLoader:
         self._folder_cache = None
         self.logger.info("Discovery cache refreshed")
 
-    def load_notebook_code(self, notebook_name: str) -> Tuple[str, List[str]]:
+    def _execute_notebook_code( self, notebook_name ):
+        code, _ = self.load_notebook_code(notebook_name)
+        self.import_notebook_as_module(notebook_name, code)
+
+    def load_notebook_code(self, notebook_name: str, suppress_nbimports = False) -> Tuple[str, List[str]]:
         try:
             self.logger.debug(f"Loading notebook code for: {notebook_name}")
             notebook = self.es.get_notebook(notebook_name)
@@ -562,12 +600,12 @@ class NotebookLoader:
             if len(code_blocks) > 0:
                 self.logger.debug(f"Found code for: {notebook_name}")
 
-            processed_blocks, imported_modules = self._process_code_blocks(code_blocks)
+            processed_blocks, imported_modules = self._process_code_blocks(code_blocks, suppress_nbimports)
             final_code = "\n\n# ---- Next Cell ----\n\n".join(processed_blocks)
             
             return final_code, imported_modules
         except Exception as e:
-            raise NotebookError(f"Failed to load notebook {notebook_name}: {str(e)}") from e
+            self.logger.error(f"Failed to load notebook {notebook_name}: {str(e)}")
     
     def _extract_cell_code(self, cell) -> str:
         if isinstance(cell.source, list):
@@ -584,7 +622,7 @@ class NotebookLoader:
         else:
             return str(cell.source)
     
-    def _process_code_blocks(self, code_blocks: List[str]) -> Tuple[List[str], List[str]]:
+    def _process_code_blocks(self, code_blocks: List[str], suppress_nbimports = False) -> Tuple[List[str], List[str]]:
         processed_blocks = []
         all_imported_modules = []
         
@@ -600,7 +638,7 @@ class NotebookLoader:
                 notebook_import_pattern, 
                 self._create_import_replacement(),
                 block
-            )
+            ) if not suppress_nbimports else block
             
             processed_blocks.append(modified_block)
         
@@ -608,11 +646,11 @@ class NotebookLoader:
     
     def _create_import_replacement(self):
         def replacement(match):
-            if not is_interactive_session():
-                package_name = match.group(1)
-                module_name = match.group(2)
-                return f"from {package_name}.{module_name} import *"
-            return ""
+            package_name = match.group(1)
+            module_name = match.group(2)
+            importrepl = f"from {package_name}.{module_name} import *"
+            self.logger.debug(f"import replacement = {importrepl}")
+            return importrepl
         
         return replacement
     
@@ -659,7 +697,7 @@ class NotebookLoader:
         except Exception as e:
             if effective_module_name in sys.modules:
                 del sys.modules[effective_module_name]
-            raise NotebookError(f"Failed to create module {effective_module_name}: {str(e)}") from e
+            self.logger.error(f"Failed to create module {effective_module_name}: {str(e)}")
     
     def _setup_dynamic_package(self, package_name: str) -> types.ModuleType:
         if package_name not in sys.modules:
@@ -692,10 +730,13 @@ class NotebookLoader:
                 notebook_code[nb_name] = code
                 notebook_dependencies[nb_name] = dependencies
             except Exception as e:
+                self.logger.error(f"Exception loading notebook code for {nb_name}: {e}")
                 continue
         
         load_order = self._resolve_notebook_dependencies(notebook_dependencies)
         
+        self.logger.debug(f"Load order = {load_order}")
+
         imported_modules = {}
         for nb_name in load_order:
             if nb_name in notebook_code:
@@ -703,22 +744,22 @@ class NotebookLoader:
                     module = self.import_notebook_as_module(nb_name, notebook_code[nb_name], package_name)
                     imported_modules[nb_name] = module
                 except Exception as e:
+                    self.logger.error(f"Exception importing notebook as module for {nb_name}: {e}")
                     pass
         
         return imported_modules
     
-    def _resolve_notebook_dependencies(self, dependencies: Dict[str, List[str]]) -> List[str]:
-        from ..dependencies.resolver import DependencyResolver
-        
+    def _resolve_notebook_dependencies(self, dependencies: Dict[str, List[str]]) -> List[str]:      
         try:
-            resolver = DependencyResolver(self.logger)
-            return resolver.topological_sort(dependencies)
+            from graphlib import TopologicalSorter
+            return list(TopologicalSorter(dependencies).static_order())   
         except Exception as e:
+            self.logger.error(f"Dependency resolution error: {e}")
             return list(dependencies.keys())
     
-    def notebook_import(self, notebook_ref: str, is_interactive: Optional[bool] = None) -> Optional[types.ModuleType]:
-        if is_interactive is None:
-            is_interactive = is_interactive_session()
+    def notebook_import(self, notebook_ref: str) -> Optional[types.ModuleType]:
+        
+        is_interactive = is_interactive_session()
         
         if is_interactive:
             return None
@@ -743,94 +784,115 @@ class NotebookLoader:
         else:
             return None
     
-    def publish_notebook_folder_as_package(self, folder_name: str, package_name: str, 
-                                         location: str):
-        storage_provider = self.es
+    def _generate_python_dependency_block(self, package_definition):
+        output = ""
+        for dep in package_definition.dependencies:
+            output += f'        "{dep}",\n'
+        return output
+
+    def publish_notebook_folder_as_package(self, folder_name, package_name, location):
+        import os
+        import uuid
+        import shutil
+        from setuptools import setup, find_packages
+
+        # Create a temporary folder with a unique name
         temp_folder_path = f"/tmp/dist_{uuid.uuid4().hex}"
         os.makedirs(temp_folder_path, exist_ok=True)
         
-        try:
-            discovery = self
-            notebooks = discovery.get_notebooks_for_folder(folder_name)
-            
-            filtered_modules = [nb.name for nb in notebooks if '_init' not in nb.name]
-            
-            self.logger.debug(f"filtered modules = {filtered_modules}")
+        # Get all notebooks from the folder
+        nbs = self.get_notebooks_for_folder(folder_name)
 
-            package_dir = os.path.join(temp_folder_path, package_name)
-            os.makedirs(package_dir, exist_ok=True)
-            
-            import_lines = [f"from . import {nb_name}" for nb_name in filtered_modules]
-            init_content = "\n".join(import_lines) + "\n" if import_lines else ""
-            
-            with open(f"{package_dir}/__init__.py", "w") as f:
-                f.write(init_content)
-            
-            for nb_name in filtered_modules:
-                try:
-                    code, _ = self.load_notebook_code(nb_name)
-                    with open(f"{package_dir}/{nb_name}.py", "w") as f:
-                        f.write(code)
-                except Exception as e:
-                    pass
-            
-            self._create_package_metadata(temp_folder_path, package_name, folder_name)
-            wheel_path = self._build_package(temp_folder_path, package_name)
-            self._upload_package(wheel_path, location, storage_provider)
-            
-        finally:
-            shutil.rmtree(temp_folder_path, ignore_errors=True)
-    
-    def _create_package_metadata(self, temp_dir: str, package_name: str, folder_name: str):
+        # Filter modules and create package structure
+        filtered_modules = [nb.name for nb in nbs if '_init' not in nb.name]
+        import_lines = [f"from . import {nb_name}" for nb_name in filtered_modules]
+        init_content = "\n".join(import_lines)
+        if init_content:
+            init_content += "\n"
+
+        self._execute_notebook_code( f"{folder_name}_init" )
+        regentry = NotebookPackages.get_package_definition(folder_name)
+        dependency_block = self._generate_python_dependency_block(regentry)
+
+        # Create pyproject.toml file in the temp_folder_path
         pyproject_content = f"""[build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
+    requires = ["setuptools>=42", "wheel"]
+    build-backend = "setuptools.build_meta"
 
-[project]
-name = "{package_name}"
-version = "0.1.0"
-description = "Package created from notebooks in {folder_name}"
-readme = "README.md"
-authors = [{{"name" = "Notebook Framework"}}]
-license = {{"text" = "MIT"}}
-requires-python = ">=3.7"
-"""
+    [project]
+    name = "{package_name}"
+    version = "0.1.0"
+    description = "Package created from notebooks in {folder_name}"
+    readme = "README.md"
+    authors = [{{"name" = "Author"}}]
+    license = {{"text" = "MIT"}}
+    classifiers = [
+        "Programming Language :: Python :: 3",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+    ]
+    dependencies = [
+{dependency_block}    ]
+    requires-python = ">=3.7"
+    """
+
+        package_dir = os.path.join(temp_folder_path, package_name)
+        os.makedirs(package_dir, exist_ok=True)
         
-        readme_content = f"# {package_name}\n\nA package created from notebooks in folder `{folder_name}`.\n"
+        # Write __init__.py file
+        with open(f"{package_dir}/__init__.py", "w") as f:
+            f.write(init_content)
+
+        # Write each notebook as a Python module
+        for nb_name in filtered_modules:
+            code, _ = self.load_notebook_code(nb_name)
+            with open(f"{package_dir}/{nb_name}.py", "w") as f:
+                f.write(code)
+
+        # Create a minimal README.md
+        readme_content = f"""# {package_name}
+
+    A package created from notebooks in {folder_name}.
+    """
         
-        with open(os.path.join(temp_dir, "pyproject.toml"), "w") as f:
+        # Write pyproject.toml to the root directory
+        with open(os.path.join(temp_folder_path, "pyproject.toml"), "w") as f:
             f.write(pyproject_content)
-        
-        with open(os.path.join(temp_dir, "README.md"), "w") as f:
+            
+        # Write README.md to the root directory
+        with open(os.path.join(temp_folder_path, "README.md"), "w") as f:
             f.write(readme_content)
-    
-    def _build_package(self, temp_dir: str, package_name: str) -> str:
+        
+        # Build the wheel package
         current_dir = os.getcwd()
         try:
-            os.chdir(temp_dir)
+            # Change to the temporary directory
+            os.chdir(temp_folder_path)
+            
+            # Build the wheel
             subprocess.check_call(["pip", "wheel", ".", "--no-deps", "-w", "dist/"])
             
-            dist_dir = os.path.join(temp_dir, "dist")
-            wheel_files = [f for f in os.listdir(dist_dir) if f.endswith('.whl')]
+            # Find the built wheel file
+            wheel_files = os.listdir("dist/")
+            wheel_file = wheel_files[0]
+            wheel_path = os.path.join(temp_folder_path, "dist", wheel_file)
             
-            if not wheel_files:
-                raise NotebookError("No wheel file was created")
+            # For local file system destination
+            if location.startswith("/"):
+                os.makedirs(os.path.dirname(location), exist_ok=True)
+                shutil.copy2(wheel_path, location)
+            else:
+                # For ABFSS or other remote storage in Synapse
+                # Use mssparkutils.fs.cp directly with the file path
+                local_path = f"file:///{wheel_path}"
+                self.es.copy(local_path, f"{location}/{wheel_file}", True)
             
-            wheel_path = os.path.join(dist_dir, wheel_files[0])
-            return wheel_path
+            print(f"Package {package_name} successfully built and saved to {location}")
+            
         finally:
             os.chdir(current_dir)
-    
-    def _upload_package(self, wheel_path: str, location: str, storage_provider):
-        wheel_filename = os.path.basename(wheel_path)
-        
-        if location.startswith("/"):
-            os.makedirs(os.path.dirname(location), exist_ok=True)
-            shutil.copy2(wheel_path, location)
-        else:
-            local_uri = f"file://{wheel_path}"
-            remote_path = f"{location}/{wheel_filename}"
-            storage_provider.copy(local_uri, remote_path, overwrite=True)
+            # Clean up temporary files
+            shutil.rmtree(temp_folder_path)
 
 import sys
 import types
@@ -947,6 +1009,8 @@ class NotebookPackages:
 def notebook_import(notebook_ref: str) -> Optional[types.ModuleType]:
     is_interactive = is_interactive_session()
     
+    #print(f"is_interactive = {is_interactive}")
+
     if is_interactive:
         return None
     
@@ -977,102 +1041,45 @@ def notebook_import(notebook_ref: str) -> Optional[types.ModuleType]:
 
 from typing import Dict, List, Set, Optional, Tuple
 
-class DependencyResolver:
-    def __init__(self):
-        self.logger = create_console_logger()
-    
-    def topological_sort(self, graph: Dict[str, List[str]]) -> List[str]:
-        graph_copy = {node: deps.copy() for node, deps in graph.items()}
-        
-        all_nodes = set(graph_copy.keys())
-        for deps in graph_copy.values():
-            for dep in deps:
-                if dep not in all_nodes:
-                    graph_copy[dep] = []
-                    all_nodes.add(dep)
-        
-        in_degree = {node: 0 for node in all_nodes}
-        for node, deps in graph_copy.items():
-            for dep in deps:
-                in_degree[node] += 1
-        
-        queue = [node for node, degree in in_degree.items() if degree == 0]
-        result = []
-        
-        while queue:
-            current = queue.pop(0)
-            result.append(current)
-            
-            for node, deps in graph_copy.items():
-                if current in deps:
-                    deps.remove(current)
-                    in_degree[node] -= 1
-                    
-                    if in_degree[node] == 0:
-                        queue.append(node)
-        
-        if len(result) != len(all_nodes):
-            remaining_nodes = all_nodes - set(result)
-            raise Exception(f"Circular dependency detected involving: {remaining_nodes}")
-        
-        return result
-    
-    def find_circular_dependencies(self, graph: Dict[str, List[str]]) -> List[List[str]]:
-        cycles = []
-        visited = set()
-        rec_stack = set()
-        
-        def dfs(node: str, path: List[str]) -> bool:
-            if node in rec_stack:
-                cycle_start = path.index(node)
-                cycle = path[cycle_start:] + [node]
-                cycles.append(cycle)
-                return True
-            
-            if node in visited:
-                return False
-            
-            visited.add(node)
-            rec_stack.add(node)
-            path.append(node)
-            
-            for dep in graph.get(node, []):
-                if dfs(dep, path):
-                    pass
-            
-            rec_stack.remove(node)
-            path.pop()
-            return False
-        
-        for node in graph:
-            if node not in visited:
-                dfs(node, [])
-        
-        return cycles
-    
-    def validate_dependencies(self, graph: Dict[str, List[str]]) -> Tuple[bool, List[str]]:
-        errors = []
-        
-        for node, deps in graph.items():
-            if node in deps:
-                errors.append(f"Node '{node}' depends on itself")
-        
+def install_bootstrap_dependencies(bootstrap_config):
+    """Install packages needed for bootstrap process"""
+    import sys
+    import subprocess
+    import importlib.util
+
+    def is_package_installed(package_name):
         try:
-            self.topological_sort(graph)
-        except DependencyError as e:
-            errors.append(str(e))
-        
-        is_valid = len(errors) == 0
-        return is_valid, errors
+            spec = importlib.util.find_spec(package_name)
+            return spec is not None
+        except ValueError as e:
+            if ".__spec__ is None" in str(e):
+                return False
+            return False
+
+    def load_if_needed(package_name):
+        if not is_package_installed(package_name):
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+                logger.debug(f"Installed package: {package_name}")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to install {package_name}: {e}")
+                # Don't raise - let it continue
+        else:
+            logger.debug(f"Package already installed: {package_name}")
+
+    for package in bootstrap_config.get('required_packages', []):
+        load_if_needed(package)
 
 from typing import Optional, Dict, Any
-
+import types
 class BootstrapStateMachine:
-    @inject
-    def __init__(self, es:EnvironmentService):
+    def __init__(self, config, es, logger = None):
         self.es = es
-        self.logger = create_console_logger()
-        self.nl = NotebookLoader(es)
+        self.logger = logger or create_console_logger(config)
+        self.nl = NotebookLoader(es,config,self.logger)
+        self.framework = types.SimpleNamespace()
+        self.framework.state = FrameworkState()
+        self.config = types.SimpleNamespace(**config)
 
     def bootstrap(self):
         try:
@@ -1088,10 +1095,12 @@ class BootstrapStateMachine:
         except Exception as e:
             self.framework.state.add_error(f"Bootstrap failed: {str(e)}")
             self.logger.error(f"Bootstrap failed: {str(e)}")
-            raise FrameworkError(f"Bootstrap failed: {str(e)}") from e
+            raise Exception(f"Bootstrap failed: {str(e)}") from e
         
         return self.es
     
+
+
     def _execute_discovery_phase(self):
         self.logger.info("Starting discovery phase")
         self.framework.state.advance_phase(BootstrapPhase.DISCOVERY)
@@ -1099,7 +1108,7 @@ class BootstrapStateMachine:
         try:
             platform_name = self._detect_platform()
             self.framework.state.platform_name = platform_name
-            self.framework.state.backend_name = self.config.backend_name or platform_name
+            self.framework.state.backend_name = self.config.platform_environment or platform_name
             
             is_interactive = self._detect_interactive_mode()
             self.framework.state.is_interactive = is_interactive
@@ -1108,30 +1117,26 @@ class BootstrapStateMachine:
             self.logger.info(f"Interactive mode: {is_interactive}")
             
         except Exception as e:
-            raise FrameworkError(f"Discovery phase failed: {str(e)}") from e
+            raise Exception(f"Discovery phase failed: {str(e)}") from e
     
     def _execute_backend_phase(self):
         self.logger.info("Starting backend initialization phase")
         self.framework.state.advance_phase(BootstrapPhase.BACKEND_INIT)
         
         try:
-            backend_config = BackendConfig(
+            backend_config = types.SimpleNamespace(
                 workspace_id=self.config.workspace_id,
                 endpoint=self.config.workspace_endpoint,
                 spark_configs=self.config.spark_configs
             )
             
-            backend_class = BackendFactory.get_backend(self.framework.state.backend_name)
-            self.framework.backend = backend_class(backend_config)
-            
-            if not self.framework.backend.validate_environment():
-                raise BackendError(f"Environment validation failed for {self.framework.state.backend_name}")
-            
+            self.framework.backend = self.es
+        
             self.framework.backend.initialize()
             self.framework.state.backend_initialized = True
             
-            workspace_info = self.framework.backend.environment_provider.get_workspace_info()
-            cluster_info = self.framework.backend.environment_provider.get_cluster_info()
+            workspace_info = self.framework.backend.get_workspace_info()
+            cluster_info = self.framework.backend.get_cluster_info()
             
             self.framework.state.workspace_info = workspace_info
             self.framework.state.cluster_info = cluster_info
@@ -1140,7 +1145,7 @@ class BootstrapStateMachine:
             self.logger.info(f"Backend initialized: {self.framework.state.backend_name}")
             
         except Exception as e:
-            raise FrameworkError(f"Backend initialization failed: {str(e)}") from e
+            raise Exception(f"Backend initialization failed: {str(e)}") from e
     
     def _execute_package_discovery_phase(self):
         self.logger.info("Starting package discovery phase")
@@ -1164,12 +1169,12 @@ class BootstrapStateMachine:
                 self.logger.debug(f"Packages: {discovered_packages}")
             
         except Exception as e:
-            raise FrameworkError(f"Package discovery failed: {str(e)}") from e
+            raise Exception(f"Package discovery failed: {str(e)}") from e
     
     def _execute_package_loading_phase(self):
         self.logger.info("Starting package loading phase")
         self.framework.state.advance_phase(BootstrapPhase.PACKAGE_LOADING)
-        
+
         try:
             if self.config.load_local_packages and self.framework.state.discovered_packages:
                 for package_name in self.framework.state.discovered_packages:
@@ -1198,7 +1203,7 @@ class BootstrapStateMachine:
             self.logger.info(f"Package loading completed: {len(self.framework.state.loaded_packages)} modules loaded")
             
         except Exception as e:
-            raise FrameworkError(f"Package loading failed: {str(e)}") from e
+            raise Exception(f"Package loading failed: {str(e)}") from e
     
     def _execute_finalization_phase(self):
         self.logger.info("Starting finalization phase")
@@ -1217,7 +1222,7 @@ class BootstrapStateMachine:
             self.logger.info("Framework finalization completed")
             
         except Exception as e:
-            raise FrameworkError(f"Finalization failed: {str(e)}") from e
+            raise Exception(f"Finalization failed: {str(e)}") from e
     
     def _detect_platform(self) -> str:
         try:
@@ -1258,9 +1263,26 @@ class BootstrapStateMachine:
         except Exception:
             return False
 
-def bootstrap_framework():
-    state_machine = BootstrapStateMachine(config)
-    return state_machine.bootstrap()
+def bootstrap_framework(config, logger):
+    import types
+    objconfig = types.SimpleNamespace(**config)
+    env = globals()["kindling_environment_factories"][objconfig.platform_environment](config, logger)
+
+    state_machine = BootstrapStateMachine(config, env)
+
+    bootstrap = state_machine.bootstrap()
+    
+    globals()["is_interactive_session"] = lambda: objconfig.is_interactive if (objconfig.is_interactive is not None) else state_machine.es.is_interactive_session() 
+    
+    if is_interactive_session():
+        globals()["get_all_notebooks_for_folder"] = state_machine.nl.get_notebooks_for_folder
+        globals()["logger"] = create_console_logger(config)
+        client = types.SimpleNamespace()
+        client.notebook = state_machine.es
+        globals()["get_synapse_client"] = lambda: client
+        globals()["load_notebook_code"] = state_machine.nl.load_notebook_code
+
+    return bootstrap
 
 # METADATA ********************
 

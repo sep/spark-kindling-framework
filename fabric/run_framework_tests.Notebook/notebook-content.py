@@ -28,10 +28,11 @@ BOOTSTRAP_CONFIG = {
     'use_lake_packages' : False,
     'load_local_packages' : False,
     'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
+    'workspace_id': "059d44a0-c01e-4491-beed-b528c9eca9e8",    
     'platform_environment': 'fabric',
     'artifacts_storage_path': "Files/artifacts",
     'required_packages': ["injector", "dynaconf", "pytest"],
-    'ignored_folders': ['utilities'],
+    'ignored_folders': [],
     'spark_configs': {
         'spark.databricks.delta.schema.autoMerge.enabled': 'true'
     }
@@ -69,7 +70,28 @@ BOOTSTRAP_CONFIG = {
 # CELL ********************
 
 test_env = setup_global_test_environment()
-run_tests_in_folder('kindling-tests')
+results = run_tests_in_folder('kindling-tests')
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+max_key_length = max(len(key) for key in results.keys())
+max_result_length = max(len(f"[{suite['passed']}/{suite['passed'] + suite['failed']}]") for suite in results.values())
+total_width = max_key_length + 2 + max_result_length  # +2 for ": "
+
+for key, suite in results.items():
+    passed = suite['passed']
+    failed = suite['failed']
+    total = passed + failed
+    marker = "" if failed == 0 else " *"
+    result = f"[{passed}/{total}]"
+    print(f"{key}: {result:>{total_width - len(key) - 2}}{marker}")
 
 # METADATA ********************
 

@@ -21,11 +21,9 @@ from datetime import datetime, timedelta
 from azure.core.exceptions import *
 
 notebook_import(".notebook_framework")
-notebook_import(".injection")
 
-@GlobalInjector.singleton_autobind()
 class FabricService(EnvironmentService):
-    def __init__(self, logger, config):
+    def __init__(self, config, logger):
         self.config = types.SimpleNamespace(**config)
         self.logger = logger
         self._base_url = self._build_base_url()
@@ -195,7 +193,7 @@ class FabricService(EnvironmentService):
         
         if not re.match(guid_pattern, workspace_id):
             self.logger.warning(f"Workspace ID '{workspace_id}' doesn't appear to be a valid GUID format")
-            print("Expected format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+            self.logger.warning("Expected format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
         
         return workspace_id
     
@@ -686,6 +684,8 @@ class FabricService(EnvironmentService):
         except Exception:
             pass
         return {}
+
+globals()["kindling_environment_factories"]["fabric"] = lambda config, logger: FabricService(config,logger)
 
 # METADATA ********************
 

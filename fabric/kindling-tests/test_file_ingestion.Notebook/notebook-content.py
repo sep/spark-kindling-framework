@@ -27,6 +27,7 @@ BOOTSTRAP_CONFIG = {
     'use_lake_packages' : False,
     'load_local_packages' : False,
     'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
+    'workspace_id': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'package_storage_path': "Files/artifacts/packages/latest",
     'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
     'ignored_folders': ['utilities'],
@@ -242,8 +243,10 @@ class TestFileIngestionManager(SynapseNotebookTestCase):
         """Test FileIngestionManager can register and retrieve entries"""
         notebook_runner.prepare_test_environment(basic_test_config)
         
-        # After %run, create manager instance
-        manager = FileIngestionManager()
+        mock_logger_provider = MagicMock()
+        mock_logger = MagicMock()
+        mock_logger_provider.get_logger.return_value = mock_logger
+        manager = FileIngestionManager(mock_logger_provider)
         
         # Register an entry
         manager.register_entry(
@@ -269,8 +272,11 @@ class TestFileIngestionManager(SynapseNotebookTestCase):
     def test_get_nonexistent_entry(self, notebook_runner, basic_test_config):
         """Test getting definition for non-existent entry returns None"""
         notebook_runner.prepare_test_environment(basic_test_config)
-        
-        manager = FileIngestionManager()
+
+        mock_logger_provider = MagicMock()
+        mock_logger = MagicMock()
+        mock_logger_provider.get_logger.return_value = mock_logger
+        manager = FileIngestionManager(mock_logger_provider)
         definition = manager.get_entry_definition("nonexistent")
         assert definition is None
         
@@ -278,7 +284,10 @@ class TestFileIngestionManager(SynapseNotebookTestCase):
         """Test multiple entries can be registered and retrieved"""
         notebook_runner.prepare_test_environment(basic_test_config)
         
-        manager = FileIngestionManager()
+        mock_logger_provider = MagicMock()
+        mock_logger = MagicMock()
+        mock_logger_provider.get_logger.return_value = mock_logger        
+        manager = FileIngestionManager(mock_logger_provider)
         
         # Register multiple entries
         manager.register_entry("entry1", name="Entry 1", patterns=["pattern1"], dest_entity_id="entity1", tags={})
@@ -602,25 +611,12 @@ class TestFileIngestionIntegration(SynapseNotebookTestCase):
         """Test complete file ingestion from registration to processing"""
         notebook_runner.prepare_test_environment(basic_test_config)
         
-        # Step 1: Register file ingestion entry
-        manager = FileIngestionManager()
-        manager.register_entry(
-            "sales_files",
-            name="Sales File Ingestion",
-            patterns=["sales_(?P<region>\\w+)_(?P<date>\\d{8})\\.(?P<filetype>csv)"],
-            dest_entity_id="sales_{region}_{date}",
-            tags={"category": "sales"},
-            infer_schema=True
-        )
-        
-        # Step 2: Setup file system mock
         mock_file = MagicMock()
         mock_file.name = "sales_west_20240315.csv"
         mock_file.isFile = True
         
         globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
         
-        # Step 3: Setup other mocks
         mock_entity_provider = MagicMock()
         mock_entity_registry = MagicMock()
         mock_entity_def = MagicMock()
@@ -638,7 +634,16 @@ class TestFileIngestionIntegration(SynapseNotebookTestCase):
         
         mock_config = MagicMock()
 
-        # Step 4: Create processor and process files
+        manager = FileIngestionManager(mock_logger_provider)
+        manager.register_entry(
+            "sales_files",
+            name="Sales File Ingestion",
+            patterns=["sales_(?P<region>\\w+)_(?P<date>\\d{8})\\.(?P<filetype>csv)"],
+            dest_entity_id="sales_{region}_{date}",
+            tags={"category": "sales"},
+            infer_schema=True
+        )
+        
         processor = SimpleFileIngestionProcessor(
             config=mock_config,
             fir=manager,  # Use real manager

@@ -39,7 +39,7 @@ class ConfigService(ABC):
 class DynaconfConfig(ConfigService):
     def __init__(
         self,
-        spark_session: Optional[SparkSession] = get_or_create_spark_session(),
+        spark_session: Optional[SparkSession] = None,
         initial_config: Optional[Dict[str, Any]] = None,
         config_files: Optional[List[str]] = None,
         env: str = "development",
@@ -49,7 +49,7 @@ class DynaconfConfig(ConfigService):
         adls_config_path: Optional[str] = None,
         **dynaconf_kwargs
     ):
-        self.spark = spark_session
+        self.spark = spark_session or get_or_create_spark_session()
         self.initial_config = initial_config or {}
         
         loaders = []
@@ -152,12 +152,6 @@ class DynaconfConfig(ConfigService):
 from injector import inject, Injector, Module, singleton, provider
 from typing import Any, Type
 
-class BaseServiceProvider:
-    @inject
-    def __init__(self):
-        #print("DEBUG: BaseServiceProvider init called")
-        self.config = GlobalInjector.get(ConfigService)
-
 class ConfigModule(Module):
     @singleton
     @provider
@@ -167,7 +161,8 @@ class ConfigModule(Module):
             initial_config={
                 "default_timeout": 30,
                 "log_level": "INFO"
-            }
+            },
+            spark_session=get_or_create_spark_session()          
         )
 
 def configure_injector():

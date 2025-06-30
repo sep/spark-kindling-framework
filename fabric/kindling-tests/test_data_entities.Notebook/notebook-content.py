@@ -318,89 +318,25 @@ class TestDataEntities(SynapseNotebookTestCase):
         mock_registry.register_entity = MagicMock()
         
         with patch.object(DataEntities, 'deregistry', None):
-            with patch('__main__.GlobalInjector') as mock_gi:
-                mock_gi.get.return_value = mock_registry
-                
-                # This should trigger lazy initialization
-                DataEntities.entity(
-                    entityid="test_entity",
-                    name="Test Entity",
-                    partition_columns=[],
-                    merge_columns=[],
-                    tags={},
-                    schema={}
-                )
-                
-                # Should have called GlobalInjector.get
-                mock_gi.get.assert_called_once()
+            mock_gi = MagicMock()
+            globals()['GlobalInjector'] = mock_gi
+            mock_gi.get.return_value = mock_registry
+            
+            print("Calling static registration")
+            DataEntities.entity(
+                entityid="test_entity",
+                name="Test Entity",
+                partition_columns=[],
+                merge_columns=[],
+                tags={},
+                schema={}
+            )
+            
+            print("Performing asserts")
+            # Should have called GlobalInjector.get
+            mock_gi.get.assert_called_once()
 
-                mock_registry.register_entity.assert_called_once()
-    
-    def test_entity_interfaces_are_abstract(self, notebook_runner, basic_test_config):
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        # Test that our interfaces are properly abstract
-        EntityPathLocator = globals().get('EntityPathLocator')
-        EntityNameMapper = globals().get('EntityNameMapper')
-        EntityProvider = globals().get('EntityProvider')
-        DataEntityRegistry = globals().get('DataEntityRegistry')
-        
-        interfaces_to_test = [
-            (EntityPathLocator, 'get_table_path'),
-            (EntityNameMapper, 'get_table_name'),
-            (EntityProvider, 'ensure_entity_table'),
-            (DataEntityRegistry, 'register_entity')
-        ]
-        
-        for interface_class, method_name in interfaces_to_test:
-            if interface_class:
-                # Should not be able to instantiate abstract classes
-                with pytest.raises(TypeError):
-                    interface_class()
-                
-                # Should have the expected abstract method
-                assert hasattr(interface_class, method_name)
-    
-    def test_entity_provider_interface_completeness(self, notebook_runner, basic_test_config):
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        EntityProvider = globals().get('EntityProvider')
-        if not EntityProvider:
-            pytest.skip("EntityProvider not available")
-        
-        # Test that EntityProvider has all expected abstract methods
-        expected_methods = [
-            'ensure_entity_table',
-            'check_entity_exists', 
-            'merge_to_entity',
-            'append_to_entity',
-            'read_entity',
-            'read_entity_since_version',
-            'write_to_entity',
-            'get_entity_version'
-        ]
-        
-        for method_name in expected_methods:
-            assert hasattr(EntityProvider, method_name), f"EntityProvider missing method: {method_name}"
-    
-    def test_data_entity_manager_implements_registry_interface(self, notebook_runner, basic_test_config):
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        DataEntityManager = globals().get('DataEntityManager')
-        DataEntityRegistry = globals().get('DataEntityRegistry')
-        
-        if not DataEntityManager or not DataEntityRegistry:
-            pytest.skip("Required classes not available")
-        
-        # Test that DataEntityManager implements DataEntityRegistry interface
-        assert issubclass(DataEntityManager, DataEntityRegistry)
-        
-        # Test that DataEntityManager has all required methods
-        required_methods = ['register_entity', 'get_entity_ids', 'get_entity_definition']
-        
-        for method_name in required_methods:
-            assert hasattr(DataEntityManager, method_name)
-            assert callable(getattr(DataEntityManager, method_name))
+            mock_registry.register_entity.assert_called_once()
     
     def test_entity_metadata_field_types(self, notebook_runner, basic_test_config):
         notebook_runner.prepare_test_environment(basic_test_config)

@@ -32,8 +32,6 @@ notebook_import(".spark_session")
 notebook_import(".common_transforms")
 notebook_import(".spark_config")
 
-spark = get_or_create_spark_session()
-
 from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder
 
@@ -68,6 +66,8 @@ class WatermarkManager(WatermarkService):
         self.wef = wef
         self.ep = ep
         self.logger = lp.get_logger("watermark")
+        self.spark = get_or_create_spark_session()
+
 
     def get_watermark(self, source_entity_id: str, reader_id: str) -> Optional[int]:
         self.logger.debug(f"Getting watermark for {source_entity_id}-{reader_id}")
@@ -98,7 +98,7 @@ class WatermarkManager(WatermarkService):
             last_execution_id
         )]
 
-        df = (spark.createDataFrame(data, self.wef.get_watermark_entity_for_entity(source_entity_id).schema))
+        df = (self.spark.createDataFrame(data, self.wef.get_watermark_entity_for_entity(source_entity_id).schema))
 
         return self.ep.merge_to_entity(df,self.wef.get_watermark_entity_for_entity(source_entity_id))
 

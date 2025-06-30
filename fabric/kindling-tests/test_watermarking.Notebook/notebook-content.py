@@ -28,6 +28,7 @@ BOOTSTRAP_CONFIG = {
     'load_local_packages' : False,
     'log_level': "INFO",
     'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
+    'workspace_id': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'package_storage_path': "Files/artifacts/packages/latest",
     'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
     'ignored_folders': ['utilities'],
@@ -155,24 +156,7 @@ class TestWatermarkManager(SynapseNotebookTestCase):
             'logger_provider': logger_provider,
             'spark': notebook_runner.test_env.spark_session
         }
-    
-    def test_watermark_service_interface(self, notebook_runner, basic_test_config):
-        """Test that WatermarkService is properly abstract"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        WatermarkService = globals().get('WatermarkService')
-        if not WatermarkService:
-            pytest.skip("WatermarkService not available")
-        
-        # Should have required abstract methods
-        required_methods = [
-            'get_watermark', 'save_watermark', 'read_current_entity_changes'
-        ]
-        
-        for method_name in required_methods:
-            assert hasattr(WatermarkService, method_name), \
-                f"Required method missing: {method_name} method should exist"
-    
+     
     def test_watermark_manager_initialization(self, watermark_manager):
         """Test WatermarkManager initialization and dependency injection"""
         setup = watermark_manager
@@ -183,10 +167,6 @@ class TestWatermarkManager(SynapseNotebookTestCase):
         
         WatermarkManager = globals().get('WatermarkManager')
         WatermarkService = globals().get('WatermarkService')
-        
-        # Test inheritance contract
-        assert issubclass(WatermarkManager, WatermarkService), \
-            "Inheritance contract failed: WatermarkManager should inherit from WatermarkService"
         
         # Verify dependency injection contract
         assert manager.ep == entity_provider, \

@@ -583,11 +583,13 @@ class NotebookTestRunner:
         self.test_env.cleanup()
 
 def run_notebook_suites(test_suites, test_suite_configs=None):
+    results = {}
     for key in test_suites.keys():
         print(f"Running test suite: {key}")
         current_config = test_suite_configs.get(key, None) if test_suite_configs else None
         env = setup_global_test_environment(current_config)
-        run_notebook_tests(*test_suites[key], test_config=current_config, env=env)
+        results[key] = run_notebook_tests(*test_suites[key], test_config=current_config, env=env)
+    return results
 
 def run_notebook_tests(*test_classes, test_config=None, env=None):
     """
@@ -639,7 +641,7 @@ def run_tests_in_folder(folder_name, test_config=None):
             #print(f"{notebook.name} = cell config = {test_suite_configs[notebook.name]}")
 
             pytest_cell_code = extract_pytest_cell(notebook_with_code)
-            #logger.debug(f"Notebook: {notebook.name} Pytest cell code: {pytest_cell_code}")
+           # print(f"Notebook: {notebook.name} Pytest cell code: {pytest_cell_code}")
             if pytest_cell_code:
                 test_suites[notebook.name] = execute_test_cell_with_imports(pytest_cell_code, notebook.name)
                 logger.info(f"Found {len(test_suites[notebook.name])} tests in suite {notebook.name}")
@@ -692,7 +694,6 @@ def extract_pytest_cell(notebook):
                 code = code + "\n" + cell_code
 
             if cell_code.strip().startswith('%run') and not 'environment_bootstrap' in cell_code and not 'test_framework' in cell_code:
-                logger.debug(f"Adding %run to code -- {cell_code}")
                 code = code + "\n" + cell_code
 
     return None if code == "" else code
@@ -702,7 +703,6 @@ def execute_test_cell_with_imports(code, notebook_name):
     """Execute pytest cell code after handling %run imports"""
     import re
     
-    # Find %run commands and convert to imports
     run_pattern = r'%run\s+([^"\'\s]+)'
     run_matches = re.findall(run_pattern, code)
     
@@ -716,7 +716,7 @@ def execute_test_cell_with_imports(code, notebook_name):
     for notebook_to_run in run_matches:
         try:
             logger.debug(f"Importing notebook {notebook_to_run} for test {notebook_name}")
-            nb_code, _ = load_notebook_code(notebook_to_run)
+            nb_code, _ = load_notebook_code(notebook_to_run, True)
             import_code = import_code + "\n" + nb_code      
         except Exception as e:
             logger.error(f"Failed to import {notebook_to_run}: {e}")
@@ -738,6 +738,7 @@ def execute_test_cell_with_imports(code, notebook_name):
                 
     except Exception as e:
         logger.error(f"Error executing pytest cell from {notebook_name}: {e}")
+        logger.error(f"Code: {cleaned_code}")
     
     return test_classes
 

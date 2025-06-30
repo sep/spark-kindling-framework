@@ -10,38 +10,25 @@
 
 # CELL ********************
 
-def get_or_create_spark_session():
-    """
-    Ensures a SparkSession is available as a global 'spark' variable.
-    - If running in Synapse, uses the existing 'spark' variable
-    - If running standalone, creates a new SparkSession
-    """
-    import sys
-  
-    # Check if spark variable exists in globals
-    if 'spark' not in globals():
-        # Not in managed environment, need to create our own session
-        try:
-            from pyspark.sql import SparkSession
-            
-            # Create and configure a new SparkSession
-            print("Creating new SparkSession...")
-            spark_session = SparkSession.builder \
-                .appName("ExportedSynapseCode") \
-                .config("spark.driver.memory", "2g") \
-                .getOrCreate()
-            
-            # Add to globals so code can access it as 'spark'
-            globals()['spark'] = spark_session
-            #logger.debug("SparkSession created and assigned to global 'spark' variable")
-            
-        except ImportError:
-            #logger.error("PySpark not installed. Please install with: pip install pyspark")
-            sys.exit(1)
-    else:
-        pass
+# Can't use DI at this point as this is needed before DI is available
 
-    return globals()['spark']
+def safe_get_global(var_name: str, default = None):
+    try:
+        import __main__
+        return getattr(__main__, var_name, default)
+    except Exception:
+        return default
+
+def create_session():
+    print("Creating new spark session ...")
+
+    return SparkSession.builder \
+        .appName("kindling") \
+        .config("spark.driver.memory", "2g") \
+        .getOrCreate()
+
+def get_or_create_spark_session():
+    return safe_get_global('spark') or create_session()
 
 # METADATA ********************
 

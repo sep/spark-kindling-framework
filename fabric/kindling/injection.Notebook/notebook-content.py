@@ -37,6 +37,10 @@ if 'GI_IMPORT_GUARD' not in globals():
             _instance = None
 
         @classmethod
+        def add_global(cls, key, value):
+            globals()[key] = value
+
+        @classmethod
         def get(cls, interface):
             #print(f"Injector ID: {id(cls.get_injector())}")
             return cls.get_injector().get(interface)

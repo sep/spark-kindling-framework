@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder
 
 notebook_import(".injection")
+notebook_import(".spark_session")
 notebook_import(".spark_config")
 notebook_import(".spark_log_provider")
 notebook_import(".data_entities")
@@ -59,8 +60,6 @@ class FileIngestionEntries:
 
         del decorator_params['entry_id']
 
-        print(f"deregistry: {cls.deregistry}")
-
         cls.deregistry.register_entry(destEntityId, **decorator_params)
 
         return None
@@ -81,8 +80,9 @@ class FileIngestionRegistry(ABC):
 @GlobalInjector.singleton_autobind()
 class FileIngestionManager(FileIngestionRegistry):
     @inject
-    def __init__(self):
-        logger.debug("File ingestion manager initialized ...")
+    def __init__(self, lp: PythonLoggerProvider):
+        self.logger = lp.get_logger("FileIngestionManager")
+        self.logger.debug("File ingestion manager initialized ...")
         self.registry = {}
 
     def register_entry(self, entryId, **decorator_params):
@@ -112,6 +112,7 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
         self.tp = tp
         self.server = self.config.get("SYNAPSE_STORAGE_SERVER")
         self.logger = lp.get_logger("SimpleFileIngestionProcessor")
+        self.spark = get_or_create_spark_session()
 
     def process_path(self, path: str ):
         with self.tp.span(component="SimpleFileIngestionProcessor", operation="process_path",details={},reraise=True ):        
@@ -133,13 +134,13 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
                         with self.tp.span(operation="ingest_on_match"):   
                             named_groups = match.groupdict()
                             dest_entity_id = fe.dest_entity_id.format(**named_groups)
-                            logger.debug(f"Filename: {fn} Pattern: {fe.patterns[0]} Matched: {matched} Matches: {named_groups} DestEntityId: {dest_entity_id}")
+                            self.logger.debug(f"Filename: {fn} Pattern: {fe.patterns[0]} Matched: {matched} Matches: {named_groups} DestEntityId: {dest_entity_id}")
 
                             filetype = named_groups['filetype']
 
                             de = self.der.get_entity_definition(dest_entity_id)
 
-                            df = spark.read.format(filetype) \
+                            df = self.spark.read.format(filetype) \
                                 .option("header", "true") \
                                 .option("inferSchema", "true" if fe.infer_schema else "false" ) \
                                 .load(f"{path}/{fn}")

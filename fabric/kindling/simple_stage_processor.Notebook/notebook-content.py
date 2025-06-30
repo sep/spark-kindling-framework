@@ -17,16 +17,13 @@ from typing import Dict
   
 notebook_import(".spark_config")
 notebook_import(".spark_trace")
-notebook_import(".spark_session")
 notebook_import(".simple_read_persist_strategy")
 notebook_import(".data_pipes")
 notebook_import(".data_entities")
 notebook_import(".injection")
 
-spark = get_or_create_spark_session()
-
 def execute_process_stage( stage: str, stage_description:str, stage_details: Dict, layer: str ):
-    print(f"GlobalInjector ID = {GlobalInjector.get_instance_id()}")
+    #print(f"GlobalInjector ID = {GlobalInjector.get_instance_id()}")
     GlobalInjector.get(StageProcessingService).execute(stage, stage_description, stage_details, layer)
     
 class StageProcessingService(ABC):

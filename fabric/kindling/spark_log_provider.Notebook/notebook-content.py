@@ -16,13 +16,13 @@ notebook_import('.spark_log')
 
 class PythonLoggerProvider(ABC):
     @abstractmethod
-    def get_logger(self, name: str):
+    def get_logger(self, name: str, session = None):
         pass
  
 @GlobalInjector.singleton_autobind()
 class SparkLoggerProvider(PythonLoggerProvider):
-    def get_logger(self, name: str):
-        return SparkLogger(name)
+    def get_logger(self, name: str, session = None):
+        return SparkLogger(name, session = session)
 
 # METADATA ********************
 
