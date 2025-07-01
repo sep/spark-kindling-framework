@@ -111,9 +111,18 @@ class DatabricksService(EnvironmentService):
 
     def _populate_subdirectories(self):
         """Recursively populate cache with items from subdirectories"""
+        processed_directories = set()
         directories_to_process = [item['path'] for item in self._items_cache if item.get('object_type') == 'DIRECTORY']
         
-        for directory_path in directories_to_process:
+        while directories_to_process:
+            directory_path = directories_to_process.pop(0)
+            
+            # Skip if already processed (avoid infinite loops)
+            if directory_path in processed_directories:
+                continue
+                
+            processed_directories.add(directory_path)
+            
             try:
                 url = f"{self._base_url}/api/2.0/workspace/list"
                 params = {"path": directory_path, "fmt": "SOURCE"}
@@ -131,11 +140,18 @@ class DatabricksService(EnvironmentService):
                         elif item_type == 'DIRECTORY':
                             folder_path = item.get('path')
                             folder_name = folder_path.split('/')[-1] if folder_path else ''
+                            self.logger.debug(f"Found nested folder - Path: {folder_path}, Name: {folder_name}")
                             if folder_path:
                                 self._folders_cache[folder_path] = folder_name
+                                # Add newly discovered directory to processing queue
+                                if folder_path not in processed_directories:
+                                    directories_to_process.append(folder_path)
                     
                     # Add sub-items to main cache
                     self._items_cache.extend(sub_items)
+                    
+                else:
+                    self.logger.debug(f"Failed to access directory {directory_path}: HTTP {response.status_code}")
                     
             except Exception as e:
                 self.logger.debug(f"Failed to process directory {directory_path}: {e}")
@@ -329,6 +345,15 @@ class DatabricksService(EnvironmentService):
             objects = data.get('objects', [])
             notebooks = [obj for obj in objects if obj.get('object_type') == 'NOTEBOOK']
         
+        #nbnames = [obj.name for obj in objects if obj.get('object_type') == 'NOTEBOOK']
+        #print("Notebooks before rename {nbnames}")
+
+        #for nb in notebooks:
+        #    nb.name = nb.name.split('/')[-1]
+
+        #nbnames =  [nb.name for nb in notebooks]
+        #print("Notebooks post rename {nbnames}")
+
         return notebooks
     
     def get_notebook_by_path(self, notebook_path: str) -> Optional[Dict[str, Any]]:
@@ -343,8 +368,20 @@ class DatabricksService(EnvironmentService):
         """Get all notebooks as NotebookResource objects"""
         return [self._convert_to_notebook_resource(d) for d in self.list_notebooks()] 
 
-    def get_notebook(self, notebook_path: str, include_content: bool = True):
-        """Get a specific notebook by path"""
+    def get_notebook(self, notebook_identifier: str, include_content: bool = True):
+        """Get a specific notebook by name or path"""
+        # Determine if this is already a full path or just a name
+        if notebook_identifier.startswith('/'):
+            # Already a full path
+            notebook_path = notebook_identifier
+        else:
+            # Need to resolve the name using cache
+            notebook_path = self._resolve_notebook_path(notebook_identifier)
+            if not notebook_path:
+                raise Exception(f"Notebook '{notebook_identifier}' not found in workspace")
+        
+        self.logger.debug(f"Resolved notebook identifier '{notebook_identifier}' to path '{notebook_path}'")
+        
         # Get notebook info
         url = f"{self._base_url}/api/2.0/workspace/get-status"
         params = {"path": notebook_path}
@@ -352,13 +389,16 @@ class DatabricksService(EnvironmentService):
         
         if response.status_code == 404:
             raise Exception(f"Notebook '{notebook_path}' not found")
+        elif response.status_code != 200:
+            self.logger.error(f"Failed to get notebook status: {response.status_code} - {response.text}")
+            raise Exception(f"Failed to get notebook '{notebook_path}': HTTP {response.status_code}")
         
         notebook_data = self._handle_response(response)
         
         if include_content:
             # Get notebook content
             content_url = f"{self._base_url}/api/2.0/workspace/export"
-            content_params = {"path": notebook_path, "format": "JUPYTER"}
+            content_params = {"path": notebook_path, "format": "SOURCE"}
             
             self.logger.debug(f"Getting notebook content: {content_url}")
             content_response = requests.get(content_url, headers=self._get_headers(), params=content_params)
@@ -366,22 +406,87 @@ class DatabricksService(EnvironmentService):
             if content_response.status_code == 200:
                 content_data = content_response.json()
                 
-                # Decode base64 content if present
+                # Handle different response formats
                 if 'content' in content_data:
                     import base64
-                    decoded_content = base64.b64decode(content_data['content']).decode('utf-8')
                     try:
-                        notebook_json = json.loads(decoded_content)
-                        notebook_data['content'] = notebook_json
+                        decoded_content = base64.b64decode(content_data['content']).decode('utf-8')
+                        # For SOURCE format, content is raw Python/SQL code, not JSON
+                        notebook_data['content'] = {
+                            'nbformat': 4,
+                            'nbformat_minor': 2,
+                            'metadata': {},
+                            'cells': [{
+                                'cell_type': 'code',
+                                'source': decoded_content.split('\n'),
+                                'metadata': {},
+                                'outputs': [],
+                                'execution_count': None
+                            }]
+                        }
                         self.logger.debug("Successfully got notebook content")
-                    except json.JSONDecodeError as e:
-                        self.logger.debug(f"Failed to parse notebook JSON: {e}")
-                        notebook_data['content'] = decoded_content
+                    except Exception as e:
+                        self.logger.debug(f"Failed to decode content: {e}")
+                        notebook_data['content'] = {'cells': []}
+                else:
+                    self.logger.debug("No content field in response")
+                    notebook_data['content'] = {'cells': []}
             else:
-                self.logger.debug(f"Failed to get notebook content: {content_response.text}")
+                self.logger.debug(f"Failed to get notebook content: Status {content_response.status_code}, Response: {content_response.text}")
+                notebook_data['content'] = {'cells': []}
         
         return self._convert_to_notebook_resource(notebook_data)
-    
+
+    def _resolve_notebook_path(self, notebook_name: str) -> Optional[str]:
+        """Resolve a notebook name to its full workspace path using the cache"""
+        if not hasattr(self, '_notebooks_cache') or not self._notebooks_cache:
+            self.logger.debug("Cache not available, trying to initialize...")
+            self._initialize_cache()
+        
+        # Search through cached notebooks
+        for notebook in self._notebooks_cache:
+            notebook_path = notebook.get('path', '')
+            if not notebook_path:
+                continue
+                
+            # Extract the base name from the path
+            base_name = notebook_path.split('/')[-1] if '/' in notebook_path else notebook_path
+            
+            # Check for exact match
+            if base_name == notebook_name:
+                self.logger.debug(f"Found exact match: '{notebook_name}' -> '{notebook_path}'")
+                return notebook_path
+            
+            # Check for match without extension
+            base_name_no_ext = base_name.replace('.ipynb', '').replace('.py', '')
+            notebook_name_no_ext = notebook_name.replace('.ipynb', '').replace('.py', '')
+            if base_name_no_ext == notebook_name_no_ext:
+                self.logger.debug(f"Found match without extension: '{notebook_name}' -> '{notebook_path}'")
+                return notebook_path
+        
+        # Log available notebooks for debugging
+        available_notebooks = [nb.get('path', 'no-path') for nb in self._notebooks_cache[:10]]
+        self.logger.debug(f"Could not resolve '{notebook_name}'. Available notebooks (first 10): {available_notebooks}")
+        
+        return None
+
+    def get_notebook_by_path(self, notebook_path: str) -> Optional[Dict[str, Any]]:
+        """Get notebook by its workspace path"""
+        if not hasattr(self, '_notebooks_cache') or not self._notebooks_cache:
+            self._initialize_cache()
+        
+        for notebook in self._notebooks_cache:
+            if notebook.get('path') == notebook_path:
+                return notebook
+        return None
+
+    def get_notebook_by_name(self, notebook_name: str) -> Optional[Dict[str, Any]]:
+        """Get notebook by its base name (searches cache)"""
+        resolved_path = self._resolve_notebook_path(notebook_name)
+        if resolved_path:
+            return self.get_notebook_by_path(resolved_path)
+        return None
+
     def create_or_update_notebook(self, notebook_path: str, notebook_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create or update a notebook"""
         url = f"{self._base_url}/api/2.0/workspace/import"
@@ -474,7 +579,7 @@ class DatabricksService(EnvironmentService):
                             'source': content.split('\n') if isinstance(content, str) else [],
                             'metadata': {},
                             'outputs': [],
-                            'execution_count': None
+                            'execution_count': Noneinfo
                         }]
                     }
             

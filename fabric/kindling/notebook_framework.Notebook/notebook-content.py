@@ -395,7 +395,7 @@ class NotebookLoader:
         if self._notebook_cache is None or force_refresh:
             try:
                 self._notebook_cache = self.es.get_notebooks()
-                self.logger.debug(f"Discovered {len(self._notebook_cache)} notebooks {self._notebook_cache}")
+                self.logger.debug(f"Discovered {len(self._notebook_cache)} notebooks")
             except Exception as e:
                 self.logger.error(f"Failed to discover notebooks: {str(e)}")
                 raise e
@@ -418,29 +418,41 @@ class NotebookLoader:
                         folders.update(self._get_parent_folders(folder_path))
             
             self._folder_cache = folders
-            self.logger.debug(f"Discovered {len(folders)} folders {folders}")
+            self.logger.debug(f"Discovered {len(folders)} folders")
         
         return self._folder_cache
     
     def get_all_packages(self, ignored_folders: Optional[List[str]] = None) -> List[str]:
-        """Get all package names (top-level folders with notebooks)"""
+        self.logger.debug(f"Getting all packages ...")
+
         if ignored_folders is None:
             ignored_folders = []
         
         folders = self.get_all_folders()
         packages = set()
         
+        self.logger.debug(f"Searching folders {folders} for packages ...")        
         for folder in folders:
             # Get top-level folder name
-            top_level = self._get_top_level_folder(folder)
-            if top_level and top_level not in ignored_folders:
+            self.logger.debug(f"Searching folders {folder} for packages ...")   
+            if folder not in ignored_folders:
                 # Check if this folder actually contains notebooks
                 if self._folder_has_notebooks(folder):
-                    nbs = [folder.name for folder in self.get_notebooks_for_folder(folder)]
+                    nbs_in_folder = self.get_notebooks_for_folder(folder)
+                    nbs = [nb.name for nb in nbs_in_folder]
                     self.logger.debug(f"nbs in {folder} = {nbs}")
-                    if f"{folder}_init" in nbs:
+
+                    init_nb_name = f"{folder.split('/')[-1]}_init"
+
+                    if init_nb_name in nbs:
                         packages.add(folder)
-        
+                    else:
+                        self.logger.debug(f"{init_nb_name} not in folder {folder}")
+                else:
+                    self.logger.debug(f"Folder ({folder}) has notebooks returned false")
+            else:
+                self.logger.debug(f"{folder} in ignored folders ...")  
+
         package_list = sorted(list(packages))
         self.logger.debug(f"Discovered {len(package_list)} packages: {package_list}")
         return package_list
@@ -1282,6 +1294,16 @@ def bootstrap_framework(config, logger):
         globals()["load_notebook_code"] = state_machine.nl.load_notebook_code
 
     return bootstrap
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 
 # METADATA ********************
 
