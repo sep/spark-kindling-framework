@@ -53,12 +53,6 @@ class DynaconfConfig(ConfigService):
         self.initial_config = initial_config or {}
         
         loaders = []
-        
-        dynaconf_kwargs["SYNAPSE_STORAGE_SERVER"] = self.spark.conf.get("spark.sql.warehouse.dir").split("@")[1].split("/")[0]
-        dynaconf_kwargs["SYNAPSE_STORAGE_ACCOUNT"] = self.spark.conf.get("spark.sql.warehouse.dir").split("@")[0].replace("abfss://", "")
-
-        server = dynaconf_kwargs["SYNAPSE_STORAGE_SERVER"]
-        account = dynaconf_kwargs["SYNAPSE_STORAGE_ACCOUNT"]
 
         #logger.debug(f"Synapse storage server: {server}")
         #logger.debug(f"Synapse storage account: {account}")

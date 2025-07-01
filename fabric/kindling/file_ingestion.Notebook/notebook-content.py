@@ -109,7 +109,6 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
         self.ep = ep
         self.der = der
         self.tp = tp
-        self.server = self.config.get("SYNAPSE_STORAGE_SERVER")
         self.logger = lp.get_logger("SimpleFileIngestionProcessor")
         self.spark = get_or_create_spark_session()
         self.env = pep.get_service()

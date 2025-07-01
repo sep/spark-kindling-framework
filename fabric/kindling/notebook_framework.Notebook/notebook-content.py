@@ -42,11 +42,6 @@ currentLevel = "INFO"
 globals()["kindling_environment_factories"] = {}
 
 def get_or_create_spark_session():
-    """
-    Ensures a SparkSession is available as a global 'spark' variable.
-    - If running in Synapse, uses the existing 'spark' variable
-    - If running standalone, creates a new SparkSession
-    """
     import sys
   
     # Check if spark variable exists in globals
@@ -58,7 +53,7 @@ def get_or_create_spark_session():
             # Create and configure a new SparkSession
             print("Creating new SparkSession...")
             spark_session = SparkSession.builder \
-                .appName("ExportedSynapseCode") \
+                .appName("KindlingSession") \
                 .config("spark.driver.memory", "2g") \
                 .getOrCreate()
             
@@ -400,7 +395,7 @@ class NotebookLoader:
         if self._notebook_cache is None or force_refresh:
             try:
                 self._notebook_cache = self.es.get_notebooks()
-                self.logger.debug(f"Discovered {len(self._notebook_cache)} notebooks")
+                self.logger.debug(f"Discovered {len(self._notebook_cache)} notebooks {self._notebook_cache}")
             except Exception as e:
                 self.logger.error(f"Failed to discover notebooks: {str(e)}")
                 raise e
@@ -423,7 +418,7 @@ class NotebookLoader:
                         folders.update(self._get_parent_folders(folder_path))
             
             self._folder_cache = folders
-            self.logger.debug(f"Discovered {len(folders)} folders")
+            self.logger.debug(f"Discovered {len(folders)} folders {folders}")
         
         return self._folder_cache
     
@@ -882,8 +877,6 @@ class NotebookLoader:
                 os.makedirs(os.path.dirname(location), exist_ok=True)
                 shutil.copy2(wheel_path, location)
             else:
-                # For ABFSS or other remote storage in Synapse
-                # Use mssparkutils.fs.cp directly with the file path
                 local_path = f"file:///{wheel_path}"
                 self.es.copy(local_path, f"{location}/{wheel_file}", True)
             
@@ -1266,7 +1259,11 @@ class BootstrapStateMachine:
 def bootstrap_framework(config, logger):
     import types
     objconfig = types.SimpleNamespace(**config)
-    env = globals()["kindling_environment_factories"][objconfig.platform_environment](config, logger)
+    envfact = globals()["kindling_environment_factories"].get(objconfig.platform_environment, None)
+    
+    env = None
+    if envfact:
+        env = envfact(config, logger)
 
     globals()["platform_environment_service"] = env
 

@@ -30,7 +30,7 @@ BOOTSTRAP_CONFIG = {
     'workspace_id': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'platform_environment': 'fabric',
     'artifacts_storage_path': "Files/artifacts",
-    'required_packages': [],
+    'required_packages': ['pytest'],
     'ignored_folders': [],
     'spark_configs': {
         'spark.databricks.delta.schema.autoMerge.enabled': 'true'
