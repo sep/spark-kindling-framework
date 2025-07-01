@@ -190,6 +190,14 @@ class NotebookTestEnvironment:
         else:
             logger.debug('DataEntityRegistry already in globals')
 
+        if 'PlatformEnvironmentProvider' not in globals():
+            class MockPlatformEnvironmentProvider:
+                def __init__(self):
+                    # Pure MagicMock methods - tests can override these
+                    pes = MagicMock()
+                    self.get_service = MagicMock(return_value=pes)
+            globals()['PlatformEnvironmentProvider'] = MockPlatformEnvironmentProvider
+
         # REVISED: MockDataPipesRegistry - simplified to match DataEntityRegistry pattern
         if 'DataPipesRegistry' not in globals():
             class MockDataPipesRegistry:

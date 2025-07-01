@@ -1,0 +1,579 @@
+# Fabric notebook source
+
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   },
+# META   "dependencies": {}
+# META }
+
+# CELL ********************
+
+import time
+import subprocess
+import sys
+from typing import Dict, List, Optional, Any, Union
+import types
+import requests 
+import json
+import re
+from datetime import datetime, timedelta
+from urllib.parse import quote
+
+notebook_import(".notebook_framework")
+
+class DatabricksService(EnvironmentService):
+    def __init__(self, config, logger):
+        self.config = types.SimpleNamespace(**config)
+        self.logger = logger
+        self._base_url = self._build_base_url()
+
+        # Cache system from original code
+        self._token_cache = {}
+        self._items_cache = []
+        self._folders_cache = {}
+        self._notebooks_cache = []
+        self.credential = self
+
+        self._initialize_cache()
+
+    def _initialize_cache(self):
+        """Initialize the cache with all workspace items and folders"""
+        try:
+            self.logger.debug("Initializing workspace cache...")
+            
+            # Get all items in the workspace using the workspace list API
+            url = f"{self._base_url}/api/2.0/workspace/list"
+            params = {"path": "/", "fmt": "SOURCE"}
+            self.logger.debug(f"Fetching items from: {url}")
+            response = requests.get(url, headers=self._get_headers(), params=params)
+            
+            if response.status_code == 200:
+                data = self._handle_response(response)
+                
+                if isinstance(data, dict):
+                    self._items_cache = data.get('objects', [])
+                elif isinstance(data, list):
+                    self._items_cache = data
+                else:
+                    self._items_cache = []
+                
+                # Debug: Print all item types found
+                item_types = {}
+                for item in self._items_cache:
+                    item_type = item.get('object_type', 'Unknown')
+                    if item_type not in item_types:
+                        item_types[item_type] = 0
+                    item_types[item_type] += 1
+                
+                self.logger.debug(f"Item types found: {item_types}")
+                
+                # Separate items by type 
+                self._notebooks_cache = []
+                self._folders_cache = {}
+                
+                for item in self._items_cache:
+                    item_type = item.get('object_type', '').upper()
+                    
+                    if item_type == 'NOTEBOOK':
+                        self._notebooks_cache.append(item)
+                    elif item_type == 'DIRECTORY':
+                        folder_path = item.get('path')
+                        folder_name = folder_path.split('/')[-1] if folder_path else ''
+                        self.logger.debug(f"Found folder - Path: {folder_path}, Name: {folder_name}")
+                        if folder_path:
+                            self._folders_cache[folder_path] = folder_name
+                
+                # Recursively get items from subdirectories
+                self._populate_subdirectories()
+                
+                self._cache_initialized = True
+                self.logger.debug(f"Cache initialized with {len(self._items_cache)} total items")
+                self.logger.debug(f"Found {len(self._notebooks_cache)} notebooks")
+                self.logger.debug(f"Found {len(self._folders_cache)} folders")
+                
+                # Debug: Print folder cache contents
+                if self._folders_cache:
+                    self.logger.debug(f"Folder cache: {self._folders_cache}")
+                
+            else:
+                self.logger.warning(f"Failed to initialize cache. Status: {response.status_code}")
+                self.logger.debug(f"Response text: {response.text}")
+                self._cache_initialized = False
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize cache: {e}")
+            import traceback
+            traceback.print_exc()
+            self._cache_initialized = False
+
+    def _populate_subdirectories(self):
+        """Recursively populate cache with items from subdirectories"""
+        directories_to_process = [item['path'] for item in self._items_cache if item.get('object_type') == 'DIRECTORY']
+        
+        for directory_path in directories_to_process:
+            try:
+                url = f"{self._base_url}/api/2.0/workspace/list"
+                params = {"path": directory_path, "fmt": "SOURCE"}
+                response = requests.get(url, headers=self._get_headers(), params=params)
+                
+                if response.status_code == 200:
+                    data = self._handle_response(response)
+                    sub_items = data.get('objects', [])
+                    
+                    for item in sub_items:
+                        item_type = item.get('object_type', '').upper()
+                        
+                        if item_type == 'NOTEBOOK':
+                            self._notebooks_cache.append(item)
+                        elif item_type == 'DIRECTORY':
+                            folder_path = item.get('path')
+                            folder_name = folder_path.split('/')[-1] if folder_path else ''
+                            if folder_path:
+                                self._folders_cache[folder_path] = folder_name
+                    
+                    # Add sub-items to main cache
+                    self._items_cache.extend(sub_items)
+                    
+            except Exception as e:
+                self.logger.debug(f"Failed to process directory {directory_path}: {e}")
+
+    def get_token(self, audience: str = None) -> str:
+        """Get Databricks authentication token using dbutils"""
+        try:
+            # Try to get dbutils from the global namespace
+            import __main__
+            dbutils = getattr(__main__, 'dbutils', None)
+            if dbutils:
+                # Get the current notebook context token
+                return dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+            else:
+                # Fallback: try to access dbutils directly
+                try:
+                    from pyspark.dbutils import DBUtils
+                    from pyspark.sql import SparkSession
+                    spark = SparkSession.getActiveSession()
+                    if spark:
+                        dbutils = DBUtils(spark)
+                        return dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+                except ImportError:
+                    pass
+                
+                raise Exception("dbutils not available - not running in Databricks environment")
+        except Exception as e:
+            # If dbutils token fails, try environment variable
+            import os
+            token = os.getenv('DATABRICKS_TOKEN')
+            if token:
+                return token
+            raise Exception(f"Failed to get Databricks token: {e}")
+
+    def exists(self, path: str) -> bool:
+        """Check if file/path exists using dbutils"""
+        import __main__
+        dbutils = getattr(__main__, 'dbutils', None)
+        if not dbutils:
+            raise Exception("dbutils not available")
+        
+        try:
+            dbutils.fs.ls(path)
+            return True
+        except:
+            return False
+
+    def copy(self, source: str, destination: str, overwrite: bool = False) -> None:
+        """Copy file using dbutils"""
+        import __main__
+        dbutils = getattr(__main__, 'dbutils', None)
+        if not dbutils:
+            raise Exception("dbutils not available")
+        
+        dbutils.fs.cp(source, destination, overwrite)
+
+    def read(self, path: str, encoding: str = 'utf-8') -> Union[str, bytes]:
+        """Read file content"""
+        if path.startswith('/dbfs/') or path.startswith('dbfs:/'):
+            # Use dbutils for DBFS paths
+            import __main__
+            dbutils = getattr(__main__, 'dbutils', None)
+            if dbutils:
+                return dbutils.fs.head(path)
+        
+        # For local paths, use standard file operations
+        with open(path, 'r' if encoding else 'rb') as f:
+            return f.read()
+
+    def write(self, path: str, content: Union[str, bytes], overwrite: bool = False) -> None:
+        """Write file content"""
+        if path.startswith('/dbfs/') or path.startswith('dbfs:/'):
+            # Use dbutils for DBFS paths
+            import __main__
+            dbutils = getattr(__main__, 'dbutils', None)
+            if dbutils:
+                # For DBFS, we need to write to a temp file first then copy
+                temp_path = f"/tmp/{path.split('/')[-1]}"
+                mode = 'w' if isinstance(content, str) else 'wb'
+                with open(temp_path, mode) as f:
+                    f.write(content)
+                dbutils.fs.cp(f"file://{temp_path}", path, overwrite)
+                return
+        
+        # For local paths, use standard file operations
+        mode = 'w' if isinstance(content, str) else 'wb'
+        with open(path, mode) as f:
+            f.write(content)
+
+    def list(self, path: str) -> List[str]:
+        """List files in directory"""
+        import __main__
+        dbutils = getattr(__main__, 'dbutils', None)
+        if not dbutils:
+            raise Exception("dbutils not available")
+        
+        files = dbutils.fs.ls(path)
+        return [f.name for f in files]
+
+    def _build_base_url(self) -> str:
+        """Build Databricks API base URL"""
+        if hasattr(self.config, 'workspace_url') and self.config.workspace_url:
+            # Remove trailing slash if present
+            return self.config.workspace_url.rstrip('/')
+        elif hasattr(self.config, 'endpoint') and self.config.endpoint:
+            return self.config.endpoint.rstrip('/')
+        else:
+            # Try to detect from current environment
+            try:
+                import __main__
+                dbutils = getattr(__main__, 'dbutils', None)
+                if dbutils:
+                    # Get workspace URL from notebook context
+                    context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+                    browser_host_name = context.browserHostName().get()
+                    return f"https://{browser_host_name}"
+            except:
+                pass
+            
+            raise Exception("No workspace_url or endpoint provided and unable to detect from environment")
+
+    def _get_token(self) -> str:
+        """Get access token for Databricks API with caching"""
+        current_time = time.time()
+        
+        # Check if we have a valid cached token
+        if ('token' in self._token_cache and 
+            'expires_at' in self._token_cache and 
+            current_time < self._token_cache['expires_at']):
+            return self._token_cache['token']
+        
+        # Get new token
+        token = self.get_token()
+        
+        # Cache the token (Databricks tokens typically last 24 hours)
+        self._token_cache = {
+            'token': token,
+            'expires_at': (datetime.now() + timedelta(hours=23)).timestamp()  # Refresh an hour early
+        }
+        
+        return token
+    
+    def _get_headers(self) -> Dict[str, str]:
+        """Get request headers with authorization"""
+        return {
+            'Authorization': f'Bearer {self._get_token()}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'databricks-notebooks/1.0.0'
+        }
+    
+    def _handle_response(self, response: requests.Response) -> Any:
+        """Handle HTTP response and convert to appropriate exceptions"""
+        if 200 <= response.status_code < 300:
+            try:
+                return response.json() if response.content else None
+            except json.JSONDecodeError:
+                return response.text if response.content else None
+        
+        # Convert HTTP errors to appropriate exceptions
+        error_map = {
+            401: Exception,  # ClientAuthenticationError
+            404: Exception,  # ResourceNotFoundError
+            409: Exception   # ResourceExistsError
+        }
+        
+        exception_class = error_map.get(response.status_code, Exception)
+        
+        try:
+            error_data = response.json()
+            message = error_data.get('error_code', error_data.get('message', response.text))
+        except:
+            message = response.text or f"HTTP {response.status_code}"
+        
+        raise exception_class(message)
+    
+    def list_notebooks(self) -> List[Dict[str, Any]]:
+        """List all notebooks in the workspace"""
+        if hasattr(self, '_notebooks_cache'):
+            return self._notebooks_cache
+        
+        # If cache not available, fetch directly
+        url = f"{self._base_url}/api/2.0/workspace/list"
+        params = {"path": "/", "fmt": "SOURCE"}
+        
+        response = requests.get(url, headers=self._get_headers(), params=params)
+        data = self._handle_response(response)
+        
+        notebooks = []
+        if isinstance(data, dict):
+            objects = data.get('objects', [])
+            notebooks = [obj for obj in objects if obj.get('object_type') == 'NOTEBOOK']
+        
+        return notebooks
+    
+    def get_notebook_by_path(self, notebook_path: str) -> Optional[Dict[str, Any]]:
+        """Get notebook by its workspace path"""
+        notebooks = self.list_notebooks()
+        for notebook in notebooks:
+            if notebook.get('path') == notebook_path:
+                return notebook
+        return None
+    
+    def get_notebooks(self):
+        """Get all notebooks as NotebookResource objects"""
+        return [self._convert_to_notebook_resource(d) for d in self.list_notebooks()] 
+
+    def get_notebook(self, notebook_path: str, include_content: bool = True):
+        """Get a specific notebook by path"""
+        # Get notebook info
+        url = f"{self._base_url}/api/2.0/workspace/get-status"
+        params = {"path": notebook_path}
+        response = requests.get(url, headers=self._get_headers(), params=params)
+        
+        if response.status_code == 404:
+            raise Exception(f"Notebook '{notebook_path}' not found")
+        
+        notebook_data = self._handle_response(response)
+        
+        if include_content:
+            # Get notebook content
+            content_url = f"{self._base_url}/api/2.0/workspace/export"
+            content_params = {"path": notebook_path, "format": "JUPYTER"}
+            
+            self.logger.debug(f"Getting notebook content: {content_url}")
+            content_response = requests.get(content_url, headers=self._get_headers(), params=content_params)
+            
+            if content_response.status_code == 200:
+                content_data = content_response.json()
+                
+                # Decode base64 content if present
+                if 'content' in content_data:
+                    import base64
+                    decoded_content = base64.b64decode(content_data['content']).decode('utf-8')
+                    try:
+                        notebook_json = json.loads(decoded_content)
+                        notebook_data['content'] = notebook_json
+                        self.logger.debug("Successfully got notebook content")
+                    except json.JSONDecodeError as e:
+                        self.logger.debug(f"Failed to parse notebook JSON: {e}")
+                        notebook_data['content'] = decoded_content
+            else:
+                self.logger.debug(f"Failed to get notebook content: {content_response.text}")
+        
+        return self._convert_to_notebook_resource(notebook_data)
+    
+    def create_or_update_notebook(self, notebook_path: str, notebook_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or update a notebook"""
+        url = f"{self._base_url}/api/2.0/workspace/import"
+        
+        # Convert notebook content to base64
+        import base64
+        if isinstance(notebook_data.get('content'), dict):
+            content_str = json.dumps(notebook_data['content'])
+        else:
+            content_str = str(notebook_data.get('content', ''))
+        
+        content_base64 = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
+        
+        payload = {
+            "path": notebook_path,
+            "format": "JUPYTER",
+            "content": content_base64,
+            "overwrite": True
+        }
+        
+        try:
+            self.logger.debug(f"Creating/updating notebook - URL: {url}")
+            self.logger.debug(f"Notebook path: {notebook_path}")
+            
+            response = requests.post(url, headers=self._get_headers(), json=payload)
+            self.logger.debug(f"Response Status: {response.status_code}")
+            
+            if response.status_code not in [200, 201]:
+                self.logger.debug(f"Response Text: {response.text}")
+            
+            return self._handle_response(response)
+        except Exception as e:
+            self.logger.debug(f"Exception in create_or_update_notebook: {e}")
+            raise
+    
+    def delete_notebook(self, notebook_path: str) -> None:
+        """Delete a notebook"""
+        url = f"{self._base_url}/api/2.0/workspace/delete"
+        payload = {"path": notebook_path}
+        
+        response = requests.post(url, headers=self._get_headers(), json=payload)
+        self._handle_response(response)
+    
+    def get_folder_name(self, folder_path: str) -> str:
+        """Get folder name from folder path"""
+        if not folder_path:
+            return ""
+        
+        # Extract folder name from path
+        return folder_path.split('/')[-1] if folder_path else ""
+    
+    def _convert_to_notebook_resource(self, databricks_data: Dict[str, Any], include_content: bool = True) -> 'NotebookResource':
+        """Convert Databricks workspace object to NotebookResource"""
+        
+        notebook_path = databricks_data.get('path', '')
+        notebook_name = notebook_path.split('/')[-1] if notebook_path else ''
+        
+        notebook_data = {
+            'id': databricks_data.get('object_id', notebook_path),
+            'name': notebook_name,
+            'type': 'Microsoft.Synapse/workspaces/notebooks',  # Keep compatible format
+            'etag': str(databricks_data.get('modified_at', '')),
+            'properties': {}
+        }
+        
+        # Extract folder information from path
+        folder_path = '/'.join(notebook_path.split('/')[:-1]) if '/' in notebook_path else ''
+        folder_info = {
+            'name': self.get_folder_name(folder_path),
+            'path': folder_path
+        }
+        
+        if include_content and 'content' in databricks_data:
+            # Parse notebook content
+            content = databricks_data['content']
+            if isinstance(content, dict):
+                notebook_content = content
+            else:
+                # If content is string, try to parse as JSON
+                try:
+                    notebook_content = json.loads(content) if isinstance(content, str) else {}
+                except json.JSONDecodeError:
+                    # Create basic notebook structure
+                    notebook_content = {
+                        'nbformat': 4,
+                        'nbformat_minor': 2,
+                        'metadata': {},
+                        'cells': [{
+                            'cell_type': 'code',
+                            'source': content.split('\n') if isinstance(content, str) else [],
+                            'metadata': {},
+                            'outputs': [],
+                            'execution_count': None
+                        }]
+                    }
+            
+            # Add folder information
+            notebook_content['folder'] = folder_info
+            notebook_data['properties'] = notebook_content
+        else:
+            # Even without content, always add folder info
+            notebook_data['properties'] = {'folder': folder_info}
+        
+        return NotebookResource(**notebook_data)
+
+    def _convert_from_notebook_resource(self, notebook: 'NotebookResource') -> Dict[str, Any]:
+        """Convert NotebookResource to Databricks format"""
+        return {
+            "name": notebook.name,
+            "content": {
+                "cells": [
+                    {
+                        "cell_type": getattr(cell, 'cell_type', 'code'),
+                        "source": getattr(cell, 'source', [])
+                    } for cell in getattr(notebook.properties, 'cells', [])
+                ]
+            }
+        }
+
+    def is_interactive_session(self) -> bool:
+        """Check if running in interactive Databricks session"""
+        try:
+            # Check for Databricks environment
+            import __main__
+            dbutils = getattr(__main__, 'dbutils', None)
+            if dbutils:
+                return True
+                
+            # Check for IPython/Jupyter
+            if 'get_ipython' not in globals():
+                try:
+                    from IPython import get_ipython
+                except ImportError:
+                    return False
+            else:
+                get_ipython = globals()['get_ipython']
+                
+            ipython = get_ipython()
+            return ipython is not None
+        except:
+            return False
+
+    def get_workspace_info(self) -> Dict[str, Any]:
+        """Get Databricks workspace information"""
+        try:
+            import __main__
+            dbutils = getattr(__main__, 'dbutils', None)
+            if dbutils:
+                context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+                return {
+                    'workspace_id': context.workspaceId().get(),
+                    'workspace_url': context.browserHostName().get(),
+                    'cluster_id': context.clusterId().get(),
+                    'environment': 'databricks'
+                }
+        except Exception:
+            pass
+        return {'environment': 'databricks'}
+
+    def get_cluster_info(self) -> Dict[str, Any]:
+        """Get Databricks cluster information"""
+        try:
+            import __main__
+            spark = getattr(__main__, 'spark', None)
+            if spark:
+                cluster_info = {
+                    'app_name': spark.sparkContext.appName,
+                    'spark_version': spark.version,
+                    'master': spark.sparkContext.master
+                }
+                
+                # Try to get cluster ID from dbutils
+                dbutils = getattr(__main__, 'dbutils', None)
+                if dbutils:
+                    try:
+                        context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+                        cluster_info['cluster_id'] = context.clusterId().get()
+                        cluster_info['cluster_name'] = context.clusterName().get()
+                    except:
+                        pass
+                
+                return cluster_info
+        except Exception:
+            pass
+        return {}
+
+# Register the factory function
+globals()["kindling_environment_factories"]["databricks"] = lambda config, logger: DatabricksService(config, logger)
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }

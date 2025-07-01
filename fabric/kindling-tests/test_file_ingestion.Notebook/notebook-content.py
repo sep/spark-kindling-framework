@@ -322,13 +322,17 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
 
         mock_config = MagicMock()
         
+        pes = MagicMock()
+        mock_pep = MagicMock(return_value=pes)
+
         return {
             'c': mock_config,
             'fir': mock_registry,
             'ep': mock_entity_provider, 
             'der': mock_entity_registry,
             'tp': mock_trace_provider,
-            'lp': mock_logger_provider
+            'lp': mock_logger_provider,
+            'pep': mock_pep
         }
     
     def test_process_path_with_matching_files(self, notebook_runner, basic_test_config):
@@ -352,8 +356,10 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mock_dir.isFile = False  # Directory
         
         # Configure notebookutils mock for this test
-        globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file1, mock_file2, mock_dir])
-        
+        mock_pes = MagicMock()
+        mock_pes.list = MagicMock(return_value=[mock_file1, mock_file2, mock_dir])
+        mocks["pep"].get_service = MagicMock(return_value=mock_pes)
+
         # Setup registry mock
         mock_entry = MagicMock()
         mock_entry.patterns = ["sales_(?P<region>\\w+)_(?P<date>\\d{8})\\.(?P<filetype>csv|json)"]
@@ -370,7 +376,8 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
             ep=mocks['ep'],
             der=mocks['der'], 
             tp=mocks['tp'],
-            lp=mocks['lp']
+            lp=mocks['lp'],
+            pep=mocks['pep']
         )
         
         # Mock spark read operations
@@ -387,7 +394,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         processor.process_path("/test/path")
         
         # Verify notebookutils.fs.ls was called
-        globals()['notebookutils'].fs.ls.assert_called_once_with("/test/path")
+        mock_pes.list.assert_called_once_with("/test/path")
         
         # Verify file ingestion registry was queried
         # Should be called once for each matching file
@@ -413,7 +420,9 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mock_file.name = "random_file.txt"
         mock_file.isFile = True
         
-        globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
+        mock_pes = MagicMock()
+        mock_pes.list = MagicMock(return_value=[mock_file])
+        mocks["pep"].get_service = MagicMock(return_value=mock_pes)
         
         # Setup registry mock with pattern that won't match
         mock_entry = MagicMock()
@@ -430,7 +439,8 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
             ep=mocks['ep'],
             der=mocks['der'],
             tp=mocks['tp'], 
-            lp=mocks['lp']
+            lp=mocks['lp'],
+            pep=mocks['pep']
         )
         
         # Process the path
@@ -451,7 +461,9 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mock_file.name = "sales_northeast_20240401.csv"
         mock_file.isFile = True
         
-        globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
+        mock_pes = MagicMock()
+        mock_pes.list = MagicMock(return_value=[mock_file])
+        mocks["pep"].get_service = MagicMock(return_value=mock_pes)
         
         # Setup registry mock
         mock_entry = MagicMock()
@@ -468,7 +480,8 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
             ep=mocks['ep'],
             der=mocks['der'],
             tp=mocks['tp'],
-            lp=mocks['lp']
+            lp=mocks['lp'],
+            pep=mocks['pep']
         )
         
         # Mock spark read chain
@@ -507,7 +520,9 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mock_file.name = "sales_west_20240315.csv"
         mock_file.isFile = True
         
-        globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
+        mock_pes = MagicMock()
+        mock_pes.list = MagicMock(return_value=[mock_file])
+        mocks["pep"].get_service = MagicMock(return_value=mock_pes)
         
         # Override entry to have infer_schema=False
         mock_entry = MagicMock()
@@ -524,7 +539,8 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
             ep=mocks['ep'],
             der=mocks['der'],
             tp=mocks['tp'],
-            lp=mocks['lp']
+            lp=mocks['lp'],
+            pep=mocks['pep']
         )
         
         # Mock spark read
@@ -554,7 +570,9 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mock_file.name = "sales_west_20240315.csv"
         mock_file.isFile = True
         
-        globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
+        mock_pes = MagicMock()
+        mock_pes.list = MagicMock(return_value=[mock_file])
+        mocks["pep"].get_service = MagicMock(return_value=mock_pes)
         
         # Setup registry mock
         mock_entry = MagicMock()
@@ -571,7 +589,8 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
             ep=mocks['ep'],
             der=mocks['der'],
             tp=mocks['tp'],
-            lp=mocks['lp']
+            lp=mocks['lp'],
+            pep=mocks['pep']
         )
         
         # Mock spark read
@@ -613,9 +632,12 @@ class TestFileIngestionIntegration(SynapseNotebookTestCase):
         
         mock_file = MagicMock()
         mock_file.name = "sales_west_20240315.csv"
-        mock_file.isFile = True
+        mock_file.isFile = True  
         
-        globals()['notebookutils'].fs.ls = MagicMock(return_value=[mock_file])
+        mock_pes = MagicMock()
+        mock_pes.list = MagicMock(return_value=[mock_file])
+        mock_pep_provider = MagicMock()        
+        mock_pep_provider.get_service = MagicMock(return_value=mock_pes)
         
         mock_entity_provider = MagicMock()
         mock_entity_registry = MagicMock()
@@ -650,7 +672,8 @@ class TestFileIngestionIntegration(SynapseNotebookTestCase):
             ep=mock_entity_provider,
             der=mock_entity_registry,
             tp=mock_trace_provider,
-            lp=mock_logger_provider
+            lp=mock_logger_provider,
+            pep=mock_pep_provider
         )
         
         # Mock spark read

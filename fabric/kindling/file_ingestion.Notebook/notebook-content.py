@@ -29,6 +29,7 @@ notebook_import(".spark_config")
 notebook_import(".spark_log_provider")
 notebook_import(".data_entities")
 notebook_import(".spark_trace")
+notebook_import(".platform_provider")
 
 @dataclass
 class FileIngestionMetadata:
@@ -80,7 +81,7 @@ class FileIngestionRegistry(ABC):
 @GlobalInjector.singleton_autobind()
 class FileIngestionManager(FileIngestionRegistry):
     @inject
-    def __init__(self, lp: PythonLoggerProvider):
+    def __init__(self, lp: PythonLoggerProvider ):
         self.logger = lp.get_logger("FileIngestionManager")
         self.logger.debug("File ingestion manager initialized ...")
         self.registry = {}
@@ -99,12 +100,10 @@ class FileIngestionProcessor(ABC):
     def process_path(self, path: str ):
         pass
 
-import notebookutils
-
 @GlobalInjector.singleton_autobind()
 class SimpleFileIngestionProcessor(FileIngestionProcessor):
     @inject
-    def __init__(self, config: ConfigService, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider, lp: PythonLoggerProvider ):
+    def __init__(self, config: ConfigService, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider, lp: PythonLoggerProvider, pep: PlatformEnvironmentProvider ):
         self.config = config
         self.fir = fir
         self.ep = ep
@@ -113,11 +112,11 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
         self.server = self.config.get("SYNAPSE_STORAGE_SERVER")
         self.logger = lp.get_logger("SimpleFileIngestionProcessor")
         self.spark = get_or_create_spark_session()
+        self.env = pep.get_service()
 
     def process_path(self, path: str ):
-        with self.tp.span(component="SimpleFileIngestionProcessor", operation="process_path",details={},reraise=True ):        
-            file_list = notebookutils.fs.ls(path)
-
+        with self.tp.span(component="SimpleFileIngestionProcessor", operation="process_path",details={},reraise=True ): 
+            file_list = self.env.list(path)
             filenames = [file.name for file in file_list if file.isFile]
 
             import re

@@ -790,7 +790,7 @@ class NotebookLoader:
             output += f'        "{dep}",\n'
         return output
 
-    def publish_notebook_folder_as_package(self, folder_name, package_name, location):
+    def publish_notebook_folder_as_package(self, folder_name, package_name, location, version = "0.1.0"):
         import os
         import uuid
         import shutil
@@ -821,7 +821,7 @@ class NotebookLoader:
 
     [project]
     name = "{package_name}"
-    version = "0.1.0"
+    version = "{version}"
     description = "Package created from notebooks in {folder_name}"
     readme = "README.md"
     authors = [{{"name" = "Author"}}]
@@ -1267,6 +1267,8 @@ def bootstrap_framework(config, logger):
     import types
     objconfig = types.SimpleNamespace(**config)
     env = globals()["kindling_environment_factories"][objconfig.platform_environment](config, logger)
+
+    globals()["platform_environment_service"] = env
 
     state_machine = BootstrapStateMachine(config, env)
 
