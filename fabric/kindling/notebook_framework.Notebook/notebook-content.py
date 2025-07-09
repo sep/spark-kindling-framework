@@ -1270,14 +1270,15 @@ class BootstrapStateMachine:
 
 def bootstrap_framework(config, logger):
     import types
+    import __main__
     objconfig = types.SimpleNamespace(**config)
-    envfact = globals()["kindling_environment_factories"].get(objconfig.platform_environment, None)
+    envfact = getattr(__main__,"kindling_environment_factories", None).get(objconfig.platform_environment, None)
     
     env = None
     if envfact:
         env = envfact(config, logger)
 
-    globals()["platform_environment_service"] = env
+    setattr( __main__, 'platform_environment_service', env )
 
     state_machine = BootstrapStateMachine(config, env)
 
@@ -1294,6 +1295,9 @@ def bootstrap_framework(config, logger):
         globals()["load_notebook_code"] = state_machine.nl.load_notebook_code
 
     return bootstrap
+
+import __main__
+setattr( __main__, 'kindling_environment_factories', {} )
 
 # METADATA ********************
 

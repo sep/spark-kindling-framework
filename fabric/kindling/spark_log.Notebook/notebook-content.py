@@ -12,7 +12,8 @@
 
 import re
 from datetime import datetime
- 
+import logging
+
 notebook_import(".spark_session")
 notebook_import('.injection')
 notebook_import('.spark_config')
@@ -22,7 +23,13 @@ class SparkLogger:
         self.name = name
         self.pattern = "%m%ntrace_id=%x{trace_id} span_id=%x{span_id} component=%x{component} operation=%x{operation}"
         self.spark = session or get_or_create_spark_session()
-        self.logger = baselogger or self.spark._jvm.org.apache.log4j.LogManager.getLogger(name)
+
+        try:
+            baselogger = baselogger or self.spark._jvm.org.apache.log4j.LogManager.getLogger(name)
+        except:
+            baselogger = None
+
+        self.logger = baselogger or logging.getLogger(name)
         
         # Log level hierarchy (lower numbers = higher priority)
         self._level_hierarchy = {
@@ -61,8 +68,8 @@ class SparkLogger:
         current_level = self.logger.getEffectiveLevel()
         
         # Convert Log4j level to string and compare
-        current_level_str = current_level.toString().lower()
-        
+        current_level_str = str(current_level).lower()
+    
         # If current level is not in our hierarchy, default to allowing all
         if current_level_str not in self._level_hierarchy:
             return True
@@ -131,7 +138,12 @@ class SparkLogger:
         # Handle MDC values 
         mdc_matches = re.findall(r'%x{([^}]+)}', result)
         for mdc_key in mdc_matches:
-            mdc_value = self.spark.sparkContext.getLocalProperty("mdc." + mdc_key)  
+            mdc_value = None
+            try:
+                mdc_value = self.spark.sparkContext.getLocalProperty("mdc." + mdc_key)  
+            except:
+                mdc_value = None
+
             result = result.replace(f'%x{{{mdc_key}}}', mdc_value or "n/a")
         
         # Handle simple replacements

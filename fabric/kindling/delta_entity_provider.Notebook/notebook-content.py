@@ -107,34 +107,40 @@ class DeltaEntityProvider(EntityProvider):
             # Create table using appropriate method
             if self.access_mode == DeltaAccessMode.FOR_NAME:
                 # Synapse style - create registered table
-                DeltaTable.createIfNotExists(self.spark) \
+                dt = DeltaTable.createIfNotExists(self.spark) \
                     .tableName(table_ref.table_name) \
                     .location(table_ref.table_path) \
                     .property("delta.columnMapping.mode", "name") \
                     .property("delta.enableChangeDataFeed", "true") \
                     .partitionedBy(*entity.partition_columns) \
-                    .addColumns(entity.schema) \
-                    .execute()
+
+                if entity.schema:    
+                    dt = dt.addColumns(entity.schema) \
+                
+                dt.execute()
             else:
                 # Fabric style - create via path then register if needed
-                DeltaTable.createIfNotExists(self.spark) \
+                dt = DeltaTable.createIfNotExists(self.spark) \
                     .location(table_ref.table_path) \
                     .property("delta.columnMapping.mode", "name") \
                     .property("delta.enableChangeDataFeed", "true") \
                     .partitionedBy(*entity.partition_columns) \
-                    .addColumns(entity.schema) \
-                    .execute()
+
+                if entity.schema:    
+                    dt = dt.addColumns(entity.schema) \
                 
-                # Register in catalog if table name provided
-                if table_ref.table_name and "." in table_ref.table_name:
-                    try:
-                        self.spark.sql(f"""
-                            CREATE TABLE IF NOT EXISTS {table_ref.table_name} 
-                            USING DELTA 
-                            LOCATION '{table_ref.table_path}'
-                        """)
-                    except Exception as e:
-                        self.logger.warning(f"Could not register table in catalog: {e}")
+                dt.execute()
+                
+            # Register in catalog if table name provided
+            if table_ref.table_name and "." in table_ref.table_name:
+                try:
+                    self.spark.sql(f"""
+                        CREATE TABLE IF NOT EXISTS {table_ref.table_name} 
+                        USING DELTA 
+                        LOCATION '{table_ref.table_path}'
+                    """)
+                except Exception as e:
+                    self.logger.warning(f"Could not register table in catalog: {e}")
                         
         except Exception as e:
             self.logger.error(f"Failed to create Delta table: {e}")

@@ -47,17 +47,6 @@ BOOTSTRAP_CONFIG = {
 
 # CELL ********************
 
-%pip show pytest
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
-
-# CELL ********************
-
 %run environment_bootstrap
 
 # METADATA ********************

@@ -343,21 +343,12 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mocks = self.create_fresh_mocks()
         
         # Setup file list for this test only
-        mock_file1 = MagicMock()
-        mock_file1.name = "sales_west_20240315.csv"
-        mock_file1.isFile = True
-        
-        mock_file2 = MagicMock()
-        mock_file2.name = "sales_east_20240316.json" 
-        mock_file2.isFile = True
-        
-        mock_dir = MagicMock()
-        mock_dir.name = "archive"
-        mock_dir.isFile = False  # Directory
+        mock_file1 = "sales_west_20240315.csv"
+        mock_file2 = "sales_east_20240316.json"
         
         # Configure notebookutils mock for this test
         mock_pes = MagicMock()
-        mock_pes.list = MagicMock(return_value=[mock_file1, mock_file2, mock_dir])
+        mock_pes.list = MagicMock(return_value=[mock_file1, mock_file2])
         mocks["pep"].get_service = MagicMock(return_value=mock_pes)
 
         # Setup registry mock
@@ -394,20 +385,22 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         processor.process_path("/test/path")
         
         # Verify notebookutils.fs.ls was called
-        mock_pes.list.assert_called_once_with("/test/path")
+        mock_pes.list.assert_called_once_with("/test/path"), "The platform environment service list() method should be called exactly once with the test path"
         
         # Verify file ingestion registry was queried
         # Should be called once for each matching file
-        assert mocks['fir'].get_entry_ids.call_count == 2
-        mocks['fir'].get_entry_definition.assert_called()
+        assert mocks['fir'].get_entry_ids.call_count == 2, f"get_entry_ids should be called twice (once per file), but was called {mocks['fir'].get_entry_ids.call_count} times"
+        
+        mocks['fir'].get_entry_definition.assert_called(), "get_entry_definition should be called at least once to retrieve entry metadata"
         
         # Verify spark read was called for matching files
-        assert spark_read_mock.format.call_count == 2  # 2 matching files
-        assert spark_read_mock.load.call_count == 2
+        assert spark_read_mock.format.call_count == 2, f"Spark read format() should be called twice (once per matching file), but was called {spark_read_mock.format.call_count} times"
+        
+        assert spark_read_mock.load.call_count == 2, f"Spark read load() should be called twice (once per matching file), but was called {spark_read_mock.load.call_count} times"
         
         # Verify entity merge was called
-        assert mocks['ep'].merge_to_entity.call_count == 2
-        
+        assert mocks['ep'].merge_to_entity.call_count == 2, f"Entity provider merge_to_entity should be called twice (once per matching file), but was called {mocks['ep'].merge_to_entity.call_count} times"        
+
     def test_process_path_with_no_matching_files(self, notebook_runner, basic_test_config):
         """Test processing path with no files matching patterns"""
         notebook_runner.prepare_test_environment(basic_test_config)
@@ -417,8 +410,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         
         # Setup non-matching files
         mock_file = MagicMock()
-        mock_file.name = "random_file.txt"
-        mock_file.isFile = True
+        mock_file = "random_file.txt"
         
         mock_pes = MagicMock()
         mock_pes.list = MagicMock(return_value=[mock_file])
@@ -458,8 +450,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         
         # Setup specific test file
         mock_file = MagicMock()
-        mock_file.name = "sales_northeast_20240401.csv"
-        mock_file.isFile = True
+        mock_file = "sales_northeast_20240401.csv"
         
         mock_pes = MagicMock()
         mock_pes.list = MagicMock(return_value=[mock_file])
@@ -517,8 +508,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mocks = self.create_fresh_mocks()
         
         mock_file = MagicMock()
-        mock_file.name = "sales_west_20240315.csv"
-        mock_file.isFile = True
+        mock_file = "sales_west_20240315.csv"
         
         mock_pes = MagicMock()
         mock_pes.list = MagicMock(return_value=[mock_file])
@@ -567,8 +557,7 @@ class TestSimpleFileIngestionProcessor(SynapseNotebookTestCase):
         mocks = self.create_fresh_mocks()
         
         mock_file = MagicMock()
-        mock_file.name = "sales_west_20240315.csv"
-        mock_file.isFile = True
+        mock_file = "sales_west_20240315.csv"
         
         mock_pes = MagicMock()
         mock_pes.list = MagicMock(return_value=[mock_file])
@@ -631,8 +620,7 @@ class TestFileIngestionIntegration(SynapseNotebookTestCase):
         notebook_runner.prepare_test_environment(basic_test_config)
         
         mock_file = MagicMock()
-        mock_file.name = "sales_west_20240315.csv"
-        mock_file.isFile = True  
+        mock_file = "sales_west_20240315.csv"
         
         mock_pes = MagicMock()
         mock_pes.list = MagicMock(return_value=[mock_file])

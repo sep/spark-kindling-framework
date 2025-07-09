@@ -14,6 +14,8 @@
 notebook_import('.injection')
 notebook_import(".notebook_framework")
 
+import __main__
+
 class PlatformEnvironmentProvider(ABC):
     @abstractmethod
     def get_service(self):
@@ -22,7 +24,7 @@ class PlatformEnvironmentProvider(ABC):
 @GlobalInjector.singleton_autobind()
 class SparkPlatformEnvironmentProvider(PlatformEnvironmentProvider):
     def get_service(self):
-        return globals().get("platform_environment_service", None)
+        return getattr(__main__, "platform_environment_service", None)
 
 # METADATA ********************
 

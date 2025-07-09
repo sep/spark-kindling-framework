@@ -115,8 +115,7 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
 
     def process_path(self, path: str ):
         with self.tp.span(component="SimpleFileIngestionProcessor", operation="process_path",details={},reraise=True ): 
-            file_list = self.env.list(path)
-            filenames = [file.name for file in file_list if file.isFile]
+            filenames = self.env.list(path)
 
             import re
 
@@ -129,6 +128,7 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
                     matched = not match is None
 
                     if matched:
+                        self.logger.debug("Match, processing ")
                         with self.tp.span(operation="ingest_on_match"):   
                             named_groups = match.groupdict()
                             dest_entity_id = fe.dest_entity_id.format(**named_groups)
@@ -144,6 +144,8 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
                                 .load(f"{path}/{fn}")
                             with self.tp.span(operation="merge_to_entity"):   
                                 self.ep.merge_to_entity( df, de )
+                    else:
+                        self.logger.debug("No matches")
 
 
 # METADATA ********************

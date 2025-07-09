@@ -684,8 +684,10 @@ class FabricService(EnvironmentService):
         except Exception:
             pass
         return {}
-
-globals()["kindling_environment_factories"]["fabric"] = lambda config, logger: FabricService(config,logger)
+        
+import __main__
+kef = getattr(__main__,"kindling_environment_factories", None)
+kef["fabric"] = lambda config, logger: FabricService(config, logger)
 
 # METADATA ********************
 

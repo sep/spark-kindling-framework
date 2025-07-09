@@ -673,8 +673,10 @@ class DatabricksService(EnvironmentService):
             pass
         return {}
 
+import __main__
 # Register the factory function
-globals()["kindling_environment_factories"]["databricks"] = lambda config, logger: DatabricksService(config, logger)
+kef = getattr(__main__,"kindling_environment_factories", None)
+kef["databricks"] = lambda config, logger: DatabricksService(config, logger)
 
 # METADATA ********************
 

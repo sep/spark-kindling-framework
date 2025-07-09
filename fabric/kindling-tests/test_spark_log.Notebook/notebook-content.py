@@ -149,6 +149,7 @@ class TestSparkLogger(SynapseNotebookTestCase):
         # Mock the effective level to INFO
         mock_level = MagicMock()
         mock_level.toString.return_value = "INFO"
+        mock_level.__str__.return_value = "INFO"
         mock_base_logger.getEffectiveLevel.return_value = mock_level
         
         # Test level checking
@@ -337,6 +338,7 @@ class TestSparkLogger(SynapseNotebookTestCase):
         
         # Test unknown log level in _is_level_enabled
         mock_level = MagicMock()
+        mock_level.__str__.return_value = "UNKNOWN_LEVEL"
         mock_level.toString.return_value = "UNKNOWN_LEVEL"
         logger.logger.getEffectiveLevel.return_value = mock_level
         
