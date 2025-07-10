@@ -1046,7 +1046,7 @@ def notebook_import(notebook_ref: str) -> Optional[types.ModuleType]:
 
 from typing import Dict, List, Set, Optional, Tuple
 
-def install_bootstrap_dependencies(bootstrap_config):
+def install_bootstrap_dependencies(logger, bootstrap_config):
     """Install packages needed for bootstrap process"""
     import sys
     import subprocess
@@ -1085,9 +1085,11 @@ class BootstrapStateMachine:
         self.framework = types.SimpleNamespace()
         self.framework.state = FrameworkState()
         self.config = types.SimpleNamespace(**config)
+        self.rawconfig = config
 
     def bootstrap(self):
         try:
+            install_bootstrap_dependencies(self.logger, self.rawconfig)         
             self._execute_discovery_phase()
             self._execute_backend_phase()
             self._execute_package_discovery_phase()

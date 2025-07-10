@@ -17,10 +17,14 @@ import types
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, timedelta
 from urllib.parse import quote
-from azure.core.exceptions import *
-from azure.synapse.artifacts import ArtifactsClient
-from azure.synapse.artifacts.models import *
-from azure.core.credentials import TokenCredential, AccessToken
+
+try:
+    from azure.core.exceptions import *
+    from azure.synapse.artifacts import ArtifactsClient
+    from azure.synapse.artifacts.models import *
+    from azure.core.credentials import TokenCredential, AccessToken
+except:
+    print("Unable to import azure synapse libraries, synapse will not be a valid environment for this session")
 
 notebook_import(".notebook_framework")
 
@@ -286,8 +290,10 @@ class SynapseService(EnvironmentService):
             return {}
 
     def _convert_metadata_to_dict(self, metadata) -> Dict[str, Any]:
-        """Convert metadata object to dictionary"""
-        if isinstance(metadata, dict):
+        """Convert metadata object to dictionary, ensuring it's never None"""
+        if metadata is None:
+            return {}
+        elif isinstance(metadata, dict):
             return metadata
         elif hasattr(metadata, '__dict__'):
             return metadata.__dict__
@@ -295,22 +301,35 @@ class SynapseService(EnvironmentService):
             return {}
 
     def _convert_cells_to_dict(self, cells) -> List[Dict[str, Any]]:
-        """Convert cells to list of dictionaries"""
+        """Convert cells to list of dictionaries with safe metadata handling"""
         if not cells:
             return []
         
         result = []
         for cell in cells:
             if isinstance(cell, dict):
-                result.append(cell)
+                # Ensure metadata is not None
+                cell_copy = cell.copy()
+                if 'metadata' not in cell_copy or cell_copy['metadata'] is None:
+                    cell_copy['metadata'] = {}
+                result.append(cell_copy)
             elif hasattr(cell, '__dict__'):
                 cell_dict = cell.__dict__.copy()
                 # Ensure metadata is a dictionary
                 if 'metadata' in cell_dict:
-                    cell_dict['metadata'] = self._convert_metadata_to_dict(cell_dict['metadata'])
+                    metadata = self._convert_metadata_to_dict(cell_dict['metadata'])
+                    cell_dict['metadata'] = metadata
+                else:
+                    cell_dict['metadata'] = {}
                 result.append(cell_dict)
             else:
-                result.append({})
+                # Empty cell - ensure it has empty metadata
+                result.append({
+                    'cell_type': 'code',
+                    'source': [],
+                    'metadata': {},
+                    'outputs': []
+                })
         
         return result
 
@@ -397,7 +416,7 @@ class SynapseService(EnvironmentService):
         return self._folders_cache.get(folder_id, folder_id)
 
     def _convert_to_notebook_resource(self, synapse_data: Dict[str, Any], include_content: bool = True) -> NotebookResource:
-        """Convert Synapse notebook to NotebookResource"""
+        """Convert Synapse notebook to NotebookResource with safe metadata handling"""
         
         notebook_data = {
             'id': synapse_data.get('id'),
@@ -424,11 +443,13 @@ class SynapseService(EnvironmentService):
         if include_content and 'definition' in synapse_data:
             # Use the definition as notebook content
             notebook_content = synapse_data['definition']
+            notebook_content = self._ensure_safe_notebook_content(notebook_content)
             notebook_content['folder'] = folder_info
             notebook_data['properties'] = notebook_content
         elif include_content and properties:
             # Extract content from properties
             notebook_content = self._extract_notebook_content_from_synapse(properties)
+            notebook_content = self._ensure_safe_notebook_content(notebook_content)
             notebook_content['folder'] = folder_info
             notebook_data['properties'] = notebook_content
         else:
@@ -436,14 +457,36 @@ class SynapseService(EnvironmentService):
         
         return NotebookResource(**notebook_data)
 
+    def _ensure_safe_notebook_content(self, content: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure notebook content has safe metadata values"""
+        content = content.copy()
+        
+        if 'metadata' not in content or content['metadata'] is None:
+            content['metadata'] = {}
+        
+        if 'cells' in content and isinstance(content['cells'], list):
+            safe_cells = []
+            for cell in content['cells']:
+                if isinstance(cell, dict):
+                    cell_copy = cell.copy()
+                    if 'metadata' not in cell_copy or cell_copy['metadata'] is None:
+                        cell_copy['metadata'] = {}
+                    safe_cells.append(cell_copy)
+                else:
+                    safe_cells.append({
+                        'cell_type': 'code',
+                        'source': [],
+                        'metadata': {},
+                        'outputs': []
+                    })
+            content['cells'] = safe_cells
+        
+        return content
+
     def _extract_notebook_content_from_synapse(self, properties: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract notebook content from Synapse properties"""
+        """Extract notebook content from Synapse properties with safe metadata handling"""
         # Extract metadata and ensure it's a dictionary
-        metadata = properties.get('metadata', {})
-        if hasattr(metadata, '__dict__'):
-            metadata = metadata.__dict__
-        elif not isinstance(metadata, dict):
-            metadata = {}
+        metadata = self._convert_metadata_to_dict(properties.get('metadata', {}))
         
         content = {
             'nbformat': properties.get('nbformat', 4),
@@ -458,16 +501,28 @@ class SynapseService(EnvironmentService):
             if isinstance(cells, list):
                 for cell in cells:
                     if isinstance(cell, dict):
-                        content['cells'].append(cell)
+                        # Ensure metadata exists and is not None
+                        cell_copy = cell.copy()
+                        if 'metadata' not in cell_copy or cell_copy['metadata'] is None:
+                            cell_copy['metadata'] = {}
+                        content['cells'].append(cell_copy)
                     elif hasattr(cell, '__dict__'):
                         # Convert cell objects to dictionaries
                         cell_dict = cell.__dict__.copy()
                         # Ensure metadata is a dictionary
-                        if 'metadata' in cell_dict and hasattr(cell_dict['metadata'], '__dict__'):
-                            cell_dict['metadata'] = cell_dict['metadata'].__dict__
+                        if 'metadata' in cell_dict:
+                            cell_dict['metadata'] = self._convert_metadata_to_dict(cell_dict['metadata'])
+                        else:
+                            cell_dict['metadata'] = {}
                         content['cells'].append(cell_dict)
                     else:
-                        content['cells'].append({})
+                        # Fallback for unknown cell types
+                        content['cells'].append({
+                            'cell_type': 'code',
+                            'source': [],
+                            'metadata': {},
+                            'outputs': []
+                        })
         
         return content
 
@@ -480,7 +535,7 @@ class SynapseService(EnvironmentService):
         # Create notebook properties
         notebook_props = {
             'cells': [],
-            'metadata': properties.get('metadata', {}),
+            'metadata': self._convert_metadata_to_dict(properties.get('metadata', {})),
             'nbformat': properties.get('nbformat', 4),
             'nbformat_minor': properties.get('nbformat_minor', 2)
         }
@@ -491,7 +546,10 @@ class SynapseService(EnvironmentService):
             if isinstance(cells, list):
                 for cell in cells:
                     if isinstance(cell, dict):
-                        notebook_props['cells'].append(cell)
+                        cell_copy = cell.copy()
+                        if 'metadata' not in cell_copy or cell_copy['metadata'] is None:
+                            cell_copy['metadata'] = {}
+                        notebook_props['cells'].append(cell_copy)
         
         # Handle folder information
         folder_info = properties.get('folder', {})
