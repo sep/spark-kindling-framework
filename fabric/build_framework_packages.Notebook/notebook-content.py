@@ -70,7 +70,7 @@ BOOTSTRAP_CONFIG = {
 
 es = FabricService(BOOTSTRAP_CONFIG, create_console_logger(BOOTSTRAP_CONFIG))
 nm = NotebookLoader(es, BOOTSTRAP_CONFIG)
-nm.publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/latest", "0.5.0" )#
+nm.publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/latest", "0.6.0" )#
 
 # METADATA ********************
 

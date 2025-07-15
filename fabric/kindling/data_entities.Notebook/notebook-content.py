@@ -59,6 +59,10 @@ class EntityProvider(ABC):
         pass
 
     @abstractmethod
+    def read_entity_as_stream(self, entity):
+        pass
+
+    @abstractmethod
     def read_entity_since_version(self, entity, since_version):
         pass
 
