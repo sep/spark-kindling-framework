@@ -50,14 +50,25 @@ class DeltaTableReference:
                 return DeltaTable.forName(self.spark, self.get_read_path())
             except Exception:
                 return DeltaTable.forPath(self.spark, self.get_read_path())
-    
-    def get_spark_read_stream(self, spark):
+
+    def get_spark_read_stream(self, spark, format = None, options = None):
+        strmformat = format or "delta"
+        base = spark.readStream.format(strmformat)
+
+        if options is not None:
+            path = options.get("path", None)
+            if path is not None:
+                del options["path"]
+            base = base.options(**options)
+
         if self.access_mode == DeltaAccessMode.FOR_NAME:
-            return spark.readStream.format("delta").table(self.table_name)
+            base = base.table(self.table_name)
         elif self.access_mode == DeltaAccessMode.FOR_PATH:
-            return spark.readStream.format("delta").load(self.table_path)
+            base = base.load(self.table_path)
         else:
-            return spark.readStream.format("delta").table(self.table_name)
+            base = base.table(self.table_name)
+
+        return base
 
     def get_read_path(self) -> str:
         """Get path for spark.read operations"""
@@ -101,7 +112,7 @@ class DeltaEntityProvider(EntityProvider):
                 self.spark.read.format("delta").load(table_ref.get_read_path())
                 return True
             except Exception:
-                return False
+                return Falsemethod
     
     def _ensure_table_exists(self, entity, table_ref: DeltaTableReference):
         """Ensure table exists, create if needed"""
@@ -261,6 +272,15 @@ class DeltaEntityProvider(EntityProvider):
         table_ref = self._get_table_reference(entity)
         return self._check_table_exists(table_ref)
     
+    def append_as_stream(entity, df, checkpointLocation, format=None, options=None):
+        epl = GlobalInjector.get(EntityPathLocator)
+        streamFormat = format or "delta"
+
+        return df.writeStream \
+            .outputMode("append") \
+            .format(streamFormat) \
+            .option("checkpointLocation", checkpointLocation)
+
     def merge_to_entity(self, df: DataFrame, entity):
         """Merge DataFrame to entity table"""
         table_ref = self._get_table_reference(entity)
@@ -288,10 +308,10 @@ class DeltaEntityProvider(EntityProvider):
         table_ref = self._get_table_reference(entity)
         return self._read_delta_table(table_ref)
     
-    def read_entity_as_stream(self, entity) -> DataFrame:
+    def read_entity_as_stream(self, entity, format=None, options=None) -> DataFrame:
         """Read full entity table"""
         table_ref = self._get_table_reference(entity)
-        return table_ref.get_spark_read_stream(self.spark)
+        return table_ref.get_spark_read_stream(self.spark, format, options)
 
     def write_to_entity(self, df: DataFrame, entity):
         """Write DataFrame to entity table"""

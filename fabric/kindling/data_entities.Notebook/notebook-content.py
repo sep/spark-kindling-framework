@@ -73,6 +73,10 @@ class EntityProvider(ABC):
     @abstractmethod
     def get_entity_version(self, entity):
         pass
+    
+    @abstractmethod
+    def append_as_stream(entity, df, checkpointLocation, format=None, options=None):
+        pass
 
 @dataclass
 class EntityMetadata:
