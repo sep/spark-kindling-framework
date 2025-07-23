@@ -75,7 +75,7 @@ class EntityProvider(ABC):
         pass
     
     @abstractmethod
-    def append_as_stream(entity, df, checkpointLocation, format=None, options=None):
+    def append_as_stream(self, entity, df, checkpointLocation, format=None, options=None):
         pass
 
 @dataclass

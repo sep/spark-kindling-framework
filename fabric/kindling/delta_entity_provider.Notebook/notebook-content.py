@@ -25,7 +25,7 @@ notebook_import(".spark_config")
 notebook_import(".data_entities")
 notebook_import(".common_transforms")
 
-class DeltaAccessMode(Enum):
+class DeltaAccessMode:
     """Defines how Delta tables are accessed"""
     FOR_NAME = "forName"     # Synapse style - tables registered in catalog
     FOR_PATH = "forPath"     # Fabric style - direct path access
@@ -61,7 +61,9 @@ class DeltaTableReference:
                 del options["path"]
             base = base.options(**options)
 
-        if self.access_mode == DeltaAccessMode.FOR_NAME:
+        if strmformat != "delta":
+            base = base.load()
+        elif self.access_mode == DeltaAccessMode.FOR_NAME:
             base = base.table(self.table_name)
         elif self.access_mode == DeltaAccessMode.FOR_PATH:
             base = base.load(self.table_path)
@@ -272,7 +274,7 @@ class DeltaEntityProvider(EntityProvider):
         table_ref = self._get_table_reference(entity)
         return self._check_table_exists(table_ref)
     
-    def append_as_stream(entity, df, checkpointLocation, format=None, options=None):
+    def append_as_stream(self, entity, df, checkpointLocation, format=None, options=None):
         epl = GlobalInjector.get(EntityPathLocator)
         streamFormat = format or "delta"
 

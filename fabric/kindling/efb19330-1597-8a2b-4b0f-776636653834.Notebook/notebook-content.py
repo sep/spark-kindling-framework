@@ -18,13 +18,19 @@ from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
+add_to_registry = False
 try:
     from azure.core.exceptions import *
     from azure.synapse.artifacts import ArtifactsClient
     from azure.synapse.artifacts.models import *
     from azure.core.credentials import TokenCredential, AccessToken
+    add_to_registry = True
 except:
     print("Unable to import azure synapse libraries, synapse will not be a valid environment for this session")
+    add_to_registry = False
+    class TokenCredential:
+        def __init__():
+            pass
 
 notebook_import(".notebook_framework")
 
@@ -637,10 +643,11 @@ class SynapseService(EnvironmentService):
         
         return {'environment': 'synapse'}
 
-# Register the factory
-import __main__
-kef = getattr(__main__, "kindling_environment_factories", None)
-kef["synapse"] = lambda config, logger: SynapseService(config, logger)
+if add_to_registry:
+    # Register the factory
+    import __main__
+    kef = getattr(__main__, "kindling_environment_factories", None)
+    kef["synapse"] = lambda config, logger: SynapseService(config, logger)
 
 # METADATA ********************
 
