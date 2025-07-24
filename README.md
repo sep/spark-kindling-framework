@@ -34,7 +34,9 @@ The framework consists of several modular components:
 
 ```python
 # Import Kindling framework
-import kindling
+from kindling.data_entities import *
+from kindling.data_pipes import *
+from kindling.injection import *
 
 # Define data entity
 @DataEntities.entity(
