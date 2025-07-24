@@ -10,6 +10,8 @@
 
 # CELL ********************
 
+from pyspark.sql import SparkSession
+
 # Can't use DI at this point as this is needed before DI is available
 
 def safe_get_global(var_name: str, default = None):
@@ -21,6 +23,8 @@ def safe_get_global(var_name: str, default = None):
 
 def create_session():
     print("Creating new spark session ...")
+
+    #TODO -- should be configurable and should be done early, and should set as global
 
     return SparkSession.builder \
         .appName("kindling") \
