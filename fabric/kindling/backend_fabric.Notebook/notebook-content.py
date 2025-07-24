@@ -27,7 +27,10 @@ class FabricService(EnvironmentService):
         self.config = types.SimpleNamespace(**config)
         self.logger = logger
         self._base_url = self._build_base_url()
-
+        
+        # Get and validate the workspace ID
+        self.workspace_id = self._get_workspace_id()
+        
         # Cache system from original code
         self._token_cache = {}
         self._items_cache = []
@@ -43,7 +46,7 @@ class FabricService(EnvironmentService):
             self.logger.debug("Initializing workspace cache...")
             
             # Get all items in the workspace using the items endpoint
-            url = f"{self._base_url}/workspaces/{self.config.workspace_id}/items"
+            url = f"{self._base_url}/workspaces/{self.workspace_id}/items"
             self.logger.debug(f"Fetching items from: {url}")
             response = requests.get(url, headers=self._get_headers())
             
@@ -85,7 +88,7 @@ class FabricService(EnvironmentService):
                 
                 # Since /items doesn't return folders, fetch them separately
                 self.logger.debug("Items endpoint didn't return folders, fetching from /folders endpoint...")
-                folders_url = f"{self._base_url}/workspaces/{self.config.workspace_id}/folders"
+                folders_url = f"{self._base_url}/workspaces/{self.workspace_id}/folders"
                 self.logger.debug(f"Fetching folders from: {folders_url}")
                 
                 folders_response = requests.get(folders_url, headers=self._get_headers())
@@ -167,23 +170,43 @@ class FabricService(EnvironmentService):
         return [f.name for f in files]
 
     def _build_base_url(self) -> str:
-        if self.config.workspace_id:
-            return f"https://api.fabric.microsoft.com/v1/"
-        elif self.config.endpoint:
-            return self.config.endpoint
-        else:
-            raise Exception("No workspace_id or endpoint provided")
-
-    def _validate_workspace_id(self, workspace_id: str) -> str:
-        """Validate and clean workspace ID"""
-        # Remove common URL patterns
+        """Build base URL for Fabric API endpoints"""
+        # Default API base URL for commercial cloud
+        return "https://api.fabric.microsoft.com/v1/"
+        
+    def _get_workspace_id(self) -> str:
+        """Get workspace GUID from config workspace_id
+        
+        Extracts the GUID from workspace_id which could be:
+        - Direct GUID format: "ab18d43b-50de-4b41-b44b-f513a6731b99"
+        - Fabric URL: "https://app.fabric.microsoft.com/groups/{id}"
+        - Fabric URL: "https://app.fabric.microsoft.com/workspaces/{id}"
+        """
+        workspace_id = getattr(self.config, 'workspace_id', None)
+        if not workspace_id:
+            raise Exception("No workspace_id provided")
+            
+        # Check if it's a URL and extract the GUID if needed
         if workspace_id.startswith('https://'):
-            # Extract from URL like https://app.fabric.microsoft.com/groups/{id}
             if '/groups/' in workspace_id:
                 workspace_id = workspace_id.split('/groups/')[-1].split('/')[0]
+            elif '/workspaces/' in workspace_id:
+                workspace_id = workspace_id.split('/workspaces/')[-1].split('/')[0]
             else:
-                # Remove https:// prefix
-                workspace_id = workspace_id.replace('https://', '')
+                # Not a recognized URL format
+                raise Exception(f"Invalid Fabric URL format: {workspace_id}")
+                
+        # Validate GUID format
+        self._validate_workspace_id(workspace_id)
+        return workspace_id
+        
+    def _validate_workspace_id(self, workspace_id: str) -> str:
+        """Validate and clean workspace ID"""
+        import re
+        # Validate GUID format
+        guid_pattern = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+        if not re.match(guid_pattern, workspace_id):
+            raise Exception(f"Invalid workspace ID format: {workspace_id}. Expected GUID format.")
         
         # Clean up workspace ID
         workspace_id = workspace_id.strip()
@@ -254,7 +277,7 @@ class FabricService(EnvironmentService):
     
     def list_notebooks(self) -> List[Dict[str, Any]]:
         """List all notebooks in the workspace"""
-        url = f"{self._base_url}/workspaces/{self.config.workspace_id}/notebooks"
+        url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks"
         
         response = requests.get(url, headers=self._get_headers())
         data = self._handle_response(response)
@@ -286,13 +309,13 @@ class FabricService(EnvironmentService):
             raise ResourceNotFoundError(f"Notebook '{notebook_name}' not found")
         
         # Get basic notebook info first
-        url = f"{self._base_url}/workspaces/{self.config.workspace_id}/notebooks/{notebook_id}"
+        url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks/{notebook_id}"
         response = requests.get(url, headers=self._get_headers())
         notebook_data = self._handle_response(response)
         
         if include_content:
             # Use the correct Fabric API endpoint for getting definition
-            definition_url = f"{self._base_url}/workspaces/{self.config.workspace_id}/items/{notebook_id}/getDefinition"
+            definition_url = f"{self._base_url}/workspaces/{self.workspace_id}/items/{notebook_id}/getDefinition"
             definition_url += "?format=ipynb"
             
             self.logger.debug(f"Getting definition via POST: {definition_url}")
@@ -405,7 +428,7 @@ class FabricService(EnvironmentService):
         """Create or update a notebook"""
         encoded_name = quote(notebook_name, safe='')
         
-        url = f"{self._base_url}/workspaces/{self.config.workspace_id}/notebooks/{encoded_name}"
+        url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks/{encoded_name}"
         
         try:
             self.logger.debug(f"Creating/updating notebook - URL: {url}")
@@ -436,7 +459,7 @@ class FabricService(EnvironmentService):
     def delete_notebook(self, notebook_name: str) -> None:
         """Delete a notebook"""
         encoded_name = quote(notebook_name, safe='')
-        url = f"{self._base_url}/workspaces/{self.config.workspace_id}/notebooks/{encoded_name}"
+        url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks/{encoded_name}"
         response = requests.delete(url, headers=self._get_headers())
         
         if response.status_code == 202:
@@ -454,7 +477,7 @@ class FabricService(EnvironmentService):
         
         try:
             # Try the folders endpoint first
-            url = f"{self._base_url}/workspaces/{self.config.workspace_id}/folders/{folder_id}"
+            url = f"{self._base_url}/workspaces/{self.workspace_id}/folders/{folder_id}"
             response = requests.get(url, headers=self._get_headers())
             
             if response.status_code == 200:

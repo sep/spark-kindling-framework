@@ -165,15 +165,25 @@ class SynapseService(EnvironmentService):
             raise NotImplementedError("Directory listing not available without mssparkutils")
 
     def _build_base_url(self) -> str:
-        """Build base URL for Synapse workspace"""
-        if hasattr(self.config, 'workspace_url'):
-            return self.config.workspace_url
-        elif hasattr(self.config, 'workspace_name'):
-            return f"https://{self.config.workspace_name}.dev.azuresynapse.net"
-        elif hasattr(self.config, 'endpoint'):
-            return self.config.endpoint
+        """Build base URL for Synapse workspace from workspace_id
+        
+        workspace_id can be:
+        1. A workspace name: "mysynapseworkspace" 
+        2. A full URL: "https://mysynapseworkspace.dev.azuresynapse.net"
+        3. A custom domain URL for gov/private clouds
+        """
+        workspace_id = getattr(self.config, 'workspace_id', None)
+        
+        if not workspace_id:
+            raise Exception("No workspace_id provided")
+            
+        # If it's already a URL, use it directly
+        if workspace_id.startswith('https://') or workspace_id.startswith('http://'):
+            return workspace_id
         else:
-            raise Exception("No workspace_url, workspace_name, or endpoint provided")
+            # Assume it's a workspace name and construct the URL
+            # Default to commercial cloud pattern
+            return f"https://{workspace_id}.dev.azuresynapse.net"
 
     def _get_token(self) -> str:
         """Get access token for Synapse API"""

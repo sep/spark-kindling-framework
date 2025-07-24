@@ -252,26 +252,34 @@ class DatabricksService(EnvironmentService):
         return [f.name for f in files]
 
     def _build_base_url(self) -> str:
-        """Build Databricks API base URL"""
-        if hasattr(self.config, 'workspace_url') and self.config.workspace_url:
-            # Remove trailing slash if present
-            return self.config.workspace_url.rstrip('/')
-        elif hasattr(self.config, 'endpoint') and self.config.endpoint:
-            return self.config.endpoint.rstrip('/')
-        else:
-            # Try to detect from current environment
-            try:
-                import __main__
-                dbutils = getattr(__main__, 'dbutils', None)
-                if dbutils:
-                    # Get workspace URL from notebook context
-                    context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
-                    browser_host_name = context.browserHostName().get()
-                    return f"https://{browser_host_name}"
-            except:
-                pass
-            
-            raise Exception("No workspace_url or endpoint provided and unable to detect from environment")
+        """Build Databricks API base URL from workspace_id"""
+        workspace_id = getattr(self.config, 'workspace_id', None)
+        
+        # Parse workspace_id which could be:
+        # 1. Full URL: https://adb-123456789.4.azuredatabricks.net
+        # 2. Just hostname: adb-123456789.4.azuredatabricks.net
+        # 3. Custom domain URL for gov/private clouds
+        if workspace_id:
+            # If it's already a URL, use it directly
+            if workspace_id.startswith('https://') or workspace_id.startswith('http://'):
+                return workspace_id.rstrip('/')
+            else:
+                # Assume it's just the hostname
+                return f"https://{workspace_id}"
+        
+        # Auto-detect from environment as fallback
+        try:
+            import __main__
+            dbutils = getattr(__main__, 'dbutils', None)
+            if dbutils:
+                # Get workspace URL from notebook context
+                context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+                browser_host_name = context.browserHostName().get()
+                return f"https://{browser_host_name}"
+        except:
+            pass
+        
+        raise Exception("No workspace_id provided and unable to detect from environment")
 
     def _get_token(self) -> str:
         """Get access token for Databricks API with caching"""
