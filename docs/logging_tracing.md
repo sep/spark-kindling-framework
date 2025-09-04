@@ -1,6 +1,6 @@
 # Logging and Tracing
 
-The Kindling Framework provides comprehensive logging and distributed tracing capabilities to enable full observability of data pipelines. These features help with debugging, performance monitoring, and operational insights.
+The Kindling Framework provides comprehensive logging and distributed tracing capabilities to enable full observability of data pipelines. These features help with debugging, performance monitoring, and operational insights. Tracing semantics have been intentionally similar to the OpenTelemetry framework. Logging semantics have been designed to be semantically similar to log4j.
 
 ## Logging System
 
