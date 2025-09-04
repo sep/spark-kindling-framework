@@ -197,18 +197,6 @@ with mdc_context(
     logger.info("Loading customer data")
 ```
 
-## Integration with Entity Operations
-
-The logging and tracing systems are fully integrated with entity operations. For example, when using the DeltaEntityProvider:
-
-```python
-# Automatically captures entity operations in traces
-@trace_operation(component="EntityProvider", operation="MergeData")
-def merge_to_entity(self, df, entity):
-    # Operation is traced with timing and metadata
-    pass
-```
-
 ## Configuration
 
 ### Log Levels
