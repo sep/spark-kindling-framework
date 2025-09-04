@@ -101,7 +101,7 @@ The tracing system provides distributed tracing capabilities to track operations
 
 #### CustomEventEmitter
 
-Interface for emitting custom events to be collected by monitoring systems.
+The tracing system is built upon the existing Spark event infrastructure using a custom event emitter. Events are emitted based on the creation of Microsoft's custom event class that is part of the Fabric and Synapse spark runtime and passing the custom event to the underlying Spark emitter.
 
 ```python
 class CustomEventEmitter(ABC):
@@ -113,17 +113,6 @@ class CustomEventEmitter(ABC):
         eventId: str,
         traceId: uuid ) -> None:
             pass
-```
-
-#### AzureEventEmitter
-
-Default implementation of CustomEventEmitter that emits events to Azure's monitoring infrastructure.
-
-```python
-@GlobalInjector.singleton_autobind()
-class AzureEventEmitter(CustomEventEmitter):
-    # Implementation of event emission
-    pass
 ```
 
 #### SparkTraceProvider
@@ -233,21 +222,6 @@ spark.sparkContext.setLogLevel("INFO")  # Set Spark's log level
 config.set("LOG_LEVEL", "DEBUG")
 ```
 
-### Event Destinations
-
-The tracing system can be configured to emit events to various destinations:
-
-- Azure Application Insights
-- Custom event collectors
-- Log files
-
-Configure the destination in your environment setup:
-
-```python
-# Example configuration for Azure App Insights
-config.set("TRACE_DESTINATION", "azure_app_insights")
-config.set("APP_INSIGHTS_CONNECTION_STRING", "InstrumentationKey=...")
-```
 
 ## Best Practices
 
