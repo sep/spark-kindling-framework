@@ -24,6 +24,7 @@ notebook_import(".injection")
 notebook_import(".spark_config") 
 notebook_import(".data_entities")
 notebook_import(".common_transforms")
+notebook_import(".spark_log_provider")
 
 class DeltaAccessMode:
     """Defines how Delta tables are accessed"""
@@ -86,13 +87,14 @@ class DeltaEntityProvider(EntityProvider):
     def __init__(self, 
                  config: ConfigService,
                  entity_name_mapper: EntityNameMapper, 
-                 path_locator: EntityPathLocator):
+                 path_locator: EntityPathLocator,
+                 tp: PythonLoggerProvider):
         self.config = config
         self.epl = path_locator
         self.enm = entity_name_mapper
         self.access_mode = self.config.get("DELTA_TABLE_ACCESS_MODE") or "AUTO"
         self.spark = get_or_create_spark_session()
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = tp.get_logger("DeltaEntityProvider")
         
     def _get_table_reference(self, entity) -> DeltaTableReference:
         """Create table reference for entity"""
@@ -114,7 +116,7 @@ class DeltaEntityProvider(EntityProvider):
                 self.spark.read.format("delta").load(table_ref.get_read_path())
                 return True
             except Exception:
-                return Falsemethod
+                return False
     
     def _ensure_table_exists(self, entity, table_ref: DeltaTableReference):
         """Ensure table exists, create if needed"""
@@ -210,6 +212,7 @@ class DeltaEntityProvider(EntityProvider):
             .merge(source=df.alias("new"), condition=merge_condition)
             .whenMatchedUpdateAll()
             .whenNotMatchedInsertAll()
+            .withSchemaEvolution()
             .execute())
     
     def _append_to_delta_table(self, df: DataFrame, table_ref: DeltaTableReference):
@@ -218,6 +221,7 @@ class DeltaEntityProvider(EntityProvider):
             .alias("target")
             .merge(df.alias("source"), "1=0")
             .whenNotMatchedInsertAll()
+            .withSchemaEvolution()
             .execute())
     
     def _get_table_version(self, table_ref: DeltaTableReference) -> int:

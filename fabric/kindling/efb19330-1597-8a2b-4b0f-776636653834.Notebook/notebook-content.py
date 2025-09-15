@@ -32,7 +32,7 @@ except:
         def __init__():
             pass
 
-notebook_import(".notebook_framework")
+from .notebook_framework import *
 
 from notebookutils import mssparkutils
 

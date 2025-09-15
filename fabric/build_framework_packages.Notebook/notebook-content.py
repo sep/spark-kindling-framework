@@ -23,15 +23,15 @@
 # CELL ********************
 
 BOOTSTRAP_CONFIG = {
-    'log_level': 'INFO',
+    'log_level': 'DEBUG',
     'is_interactive': False,
     'use_lake_packages' : False,
     'load_local_packages' : False,
     'workspace_id': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'platform_environment': 'fabric',
     'artifacts_storage_path': "Files/artifacts",
-    'required_packages': ['pytest'],
-    'ignored_folders': [],
+    'required_packages': [],
+    'ignored_folders': ["test-package-one", "test-package-two", "test-package-three"],
     'spark_configs': {
         'spark.databricks.delta.schema.autoMerge.enabled': 'true'
     }
@@ -70,7 +70,11 @@ BOOTSTRAP_CONFIG = {
 
 es = FabricService(BOOTSTRAP_CONFIG, create_console_logger(BOOTSTRAP_CONFIG))
 nm = NotebookLoader(es, BOOTSTRAP_CONFIG)
-nm.publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/latest", "0.8.0" )#
+#print(NotebookPackages.registry.keys())
+#print(NotebookPackages.get_package_names())
+#print(nm.get_all_packages())
+print(nm)
+nm.publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/latest", "0.20.1", ["azure-synapse-artifacts"] )#
 
 # METADATA ********************
 

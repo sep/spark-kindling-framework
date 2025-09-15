@@ -429,7 +429,7 @@ class NotebookLoader:
             ignored_folders = []
         
         folders = self.get_all_folders()
-        packages = set()
+        packages = {}
         
         self.logger.debug(f"Searching folders {folders} for packages ...")        
         for folder in folders:
@@ -445,7 +445,8 @@ class NotebookLoader:
                     init_nb_name = f"{folder.split('/')[-1]}_init"
 
                     if init_nb_name in nbs:
-                        packages.add(folder)
+                        self.logger.debug(f"{init_nb_name} in folder {folder}")
+                        packages[folder] = self.get_package_dependencies(folder)
                     else:
                         self.logger.debug(f"{init_nb_name} not in folder {folder}")
                 else:
@@ -453,9 +454,12 @@ class NotebookLoader:
             else:
                 self.logger.debug(f"{folder} in ignored folders ...")  
 
-        package_list = sorted(list(packages))
-        self.logger.debug(f"Discovered {len(package_list)} packages: {package_list}")
-        return package_list
+        package_list = self._resolve_dependency_order(packages)
+
+        filtered_package_list = [pkg for pkg in package_list if pkg in packages.keys()]
+
+        self.logger.debug(f"Discovered {len(filtered_package_list)} packages: {filtered_package_list}")
+        return filtered_package_list
     
     def get_notebooks_for_folder(self, folder_path: str) -> List[NotebookResource]:
         """Get all notebooks in a specific folder (including subfolders)"""
@@ -521,18 +525,18 @@ class NotebookLoader:
     
     def get_package_dependencies(self, package_name: str) -> List[str]:
         """Analyze package dependencies (basic implementation)"""
-        notebooks = self.get_notebooks_for_package(package_name)
-        dependencies = set()
-        
-        for notebook in notebooks:
-            try:
-                # This would need actual notebook content analysis
-                # For now, return empty dependencies
-                pass
-            except Exception as e:
-                self.logger.warning(f"Failed to analyze dependencies for {notebook.name}: {str(e)}")
-        
-        return sorted(list(dependencies))
+        self.logger.debug(f"Getting package dependencies for {package_name}")
+
+        code, _ = self.load_notebook_code(f"{package_name}_init")
+        if not code:
+            self.logger.error(f"No code loaded from notebook {package_name}")
+            return
+
+        # Execute directly in main namespace instead of creating a module
+        import __main__
+        exec(compile(code, f"{package_name}_init", 'exec'), __main__.__dict__)
+
+        return NotebookPackages.get_package_definition(package_name).dependencies
     
     def _extract_folder_path(self, notebook) -> Optional[str]:
         return notebook.properties.folder.path
@@ -588,9 +592,22 @@ class NotebookLoader:
         self._folder_cache = None
         self.logger.info("Discovery cache refreshed")
 
-    def _execute_notebook_code( self, notebook_name ):
-        code, _ = self.load_notebook_code(notebook_name)
-        self.import_notebook_as_module(notebook_name, code)
+    def _execute_notebook_code(self, notebook_name):
+        self.logger.debug(f"Attempting to execute notebook: {notebook_name}")
+        try:
+            code, _ = self.load_notebook_code(notebook_name)
+            if not code:
+                self.logger.error(f"No code loaded from notebook {notebook_name}")
+                return
+            
+            self.logger.debug(f"Loaded code length: {len(code)} characters")
+            self.logger.debug(f"Code preview: {code[:200]}...")
+
+            self.import_notebook_as_module(notebook_name, code)
+            self.logger.debug(f"Successfully executed notebook {notebook_name}")
+        except Exception as e:
+            self.logger.error(f"Failed to execute notebook {notebook_name}: {str(e)}")
+            raise
 
     def load_notebook_code(self, notebook_name: str, suppress_nbimports = False) -> Tuple[str, List[str]]:
         try:
@@ -740,7 +757,7 @@ class NotebookLoader:
                 self.logger.error(f"Exception loading notebook code for {nb_name}: {e}")
                 continue
         
-        load_order = self._resolve_notebook_dependencies(notebook_dependencies)
+        load_order = self._resolve_dependency_order(notebook_dependencies)
         
         self.logger.debug(f"Load order = {load_order}")
 
@@ -756,7 +773,7 @@ class NotebookLoader:
         
         return imported_modules
     
-    def _resolve_notebook_dependencies(self, dependencies: Dict[str, List[str]]) -> List[str]:      
+    def _resolve_dependency_order(self, dependencies: Dict[str, List[str]]) -> List[str]:      
         try:
             from graphlib import TopologicalSorter
             return list(TopologicalSorter(dependencies).static_order())   
@@ -791,13 +808,18 @@ class NotebookLoader:
         else:
             return None
     
-    def _generate_python_dependency_block(self, package_definition):
+    def _generate_python_dependency_block(self, dependencies):
         output = ""
-        for dep in package_definition.dependencies:
+        for dep in dependencies:
             output += f'        "{dep}",\n'
         return output
 
-    def publish_notebook_folder_as_package(self, folder_name, package_name, location, version = "0.1.0"):
+    def publish_all_notebook_folders_as_packages(self, location, version = "0.1.0"):
+        pkgs = self.get_all_packages()
+        for pkg in pkgs:
+            publish_notebook_folder_as_package(pkg, pkg, location)
+
+    def publish_notebook_folder_as_package(self, folder_name, package_name, location, version, extra_dependencies = None):
         import os
         import uuid
         import shutil
@@ -818,8 +840,10 @@ class NotebookLoader:
             init_content += "\n"
 
         self._execute_notebook_code( f"{folder_name}_init" )
-        regentry = NotebookPackages.get_package_definition(folder_name)
-        dependency_block = self._generate_python_dependency_block(regentry)
+        deps = NotebookPackages.get_package_definition(folder_name).dependencies
+        if extra_dependencies:
+            deps.extend(extra_dependencies)
+        dependency_block = self._generate_python_dependency_block(deps)
 
         # Create pyproject.toml file in the temp_folder_path
         pyproject_content = f"""[build-system]
@@ -1133,7 +1157,6 @@ class BootstrapStateMachine:
         try:
             backend_config = types.SimpleNamespace(
                 workspace_id=self.config.workspace_id,
-                endpoint=self.config.workspace_endpoint,
                 spark_configs=self.config.spark_configs
             )
             
