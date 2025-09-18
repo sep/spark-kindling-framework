@@ -105,6 +105,7 @@ class MyWatermarkEntityFinder(WatermarkEntityFinder):
 
 ## Directory Structure
 
+TODO: Rewrite this hallucination
 For optimal organization, structure your notebooks following this pattern:
 
 ```
