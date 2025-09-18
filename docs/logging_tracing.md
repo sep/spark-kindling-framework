@@ -115,6 +115,17 @@ class CustomEventEmitter(ABC):
             pass
 ```
 
+#### AzureEventEmitter
+
+Default implementation of CustomEventEmitter based on Microsoft Synapse runtime components that emits to Spark's event ingestion.
+
+```python
+@GlobalInjector.singleton_autobind()
+class AzureEventEmitter(CustomEventEmitter):
+    # Implementation of event emission
+    pass
+```
+
 #### SparkTraceProvider
 
 Provider for creating and managing trace spans.
