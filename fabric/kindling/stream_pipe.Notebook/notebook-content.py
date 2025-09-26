@@ -19,6 +19,8 @@ from kindling.spark_config import ConfigService
 
 from abc import ABC, abstractmethod
 
+notebook_import(".data_entities")
+
 class PipeStreamOrchestrator(ABC):
     @abstractmethod
     def start_pipe_as_stream_processor(self, pipeid, options = {}) -> object:

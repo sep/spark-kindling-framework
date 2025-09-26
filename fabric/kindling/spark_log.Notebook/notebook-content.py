@@ -19,11 +19,13 @@ notebook_import('.injection')
 notebook_import('.spark_config')
 
 class SparkLogger:
-    def __init__(self, name: str, baselogger = None, session = None): 
+    def __init__(self, name: str, baselogger = None, session = None, config = None): 
         self.name = name
-        self.pattern = "%m%ntrace_id=%x{trace_id} span_id=%x{span_id} component=%x{component} operation=%x{operation}"
+        self.pattern = "%p: (%c) %m [trace_id=%x{trace_id} span_id=%x{span_id} component=%x{component} operation=%x{operation}]"
         self.spark = session or get_or_create_spark_session()
-
+        self.config = config or {}
+        self.log_level = self.config.get("log_level", "").lower()
+        self.print_logging = self.config.get("print_logging", False)
         try:
             baselogger = baselogger or self.spark._jvm.org.apache.log4j.LogManager.getLogger(name)
         except:
@@ -65,10 +67,13 @@ class SparkLogger:
     def _is_level_enabled(self, level: str) -> bool:
         """Check if the given log level should be logged based on current logger level"""
         # Get the effective level (handles inheritance from parent loggers)
-        current_level = self.logger.getEffectiveLevel()
-        
-        # Convert Log4j level to string and compare
-        current_level_str = str(current_level).lower()
+        current_level_str = "info"
+
+        if self.log_level != "":
+            current_level_str = self.log_level
+        else:
+            current_level = self.logger.getEffectiveLevel()
+            current_level_str = str(current_level).lower()
     
         # If current level is not in our hierarchy, default to allowing all
         if current_level_str not in self._level_hierarchy:
@@ -84,11 +89,9 @@ class SparkLogger:
             self._log_methods[level](formatted_msg)
             
             # Print respects the same log level - only print for debug and info levels
-            if level in ['debug', 'info']:
-                print(f"Logger: {formatted_msg}")
-            else:
+            if self.print_logging:
                 print(formatted_msg)
-    
+
     def with_pattern(self, pattern: str):
         self.pattern = pattern + "%ntrace_id=%x{trace_id} span_id=%x{span_id} component=%x{component} operation=%x{operation}"
         return self

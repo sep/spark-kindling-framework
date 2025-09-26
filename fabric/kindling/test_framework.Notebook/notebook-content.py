@@ -624,7 +624,7 @@ def run_tests_in_folder(folder_name, test_config=None):
     if test_config is None:
         test_config = {'use_real_spark': False}
     
-    notebooks = get_all_notebooks_for_folder(folder_name)
+    notebooks = framework.notebook_loader.get_notebooks_for_folder(folder_name)
 
     if not notebooks:
         logger.error(f"No notebooks found in folder '{folder_name}'")
@@ -637,7 +637,7 @@ def run_tests_in_folder(folder_name, test_config=None):
     for notebook in notebooks:
         try:
             client = get_synapse_client()
-            notebook_with_code = client.notebook.get_notebook(notebook.name)
+            notebook_with_code = client.get_notebook(notebook.name)
 
             pytest_cell_config = extract_config_cell(notebook_with_code)
             #print(f"Notebook: {notebook.name} Pytest cell config: {pytest_cell_config}")
@@ -685,6 +685,27 @@ def extract_config_cell(notebook):
 #    client = get_synapse_client()
 #    notebook = client.notebook.get_notebook(notebook_name)
 
+class CombinedFramework:
+    def __init__(self, environment_service, notebook_loader, config):
+        self.environment_service = environment_service
+        self.notebook_loader = notebook_loader
+        self.config = config
+        
+    def __getattr__(self, name):
+        # Try environment_service first
+        if hasattr(self.environment_service, name):
+            return getattr(self.environment_service, name)
+        # Then notebook_loader
+        elif hasattr(self.notebook_loader, name):
+            return getattr(self.notebook_loader, name)
+        else:
+            raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+
+def get_synapse_client():
+    return CombinedFramework(framework.environment_service, 
+        framework.notebook_loader, 
+        framework.config)
+
 def extract_pytest_cell(notebook):
     """Extract the cell that starts with 'import pytest' from a notebook"""
 
@@ -724,7 +745,7 @@ def execute_test_cell_with_imports(code, notebook_name):
     for notebook_to_run in run_matches:
         try:
             logger.debug(f"Importing notebook {notebook_to_run} for test {notebook_name}")
-            nb_code, _ = load_notebook_code(notebook_to_run, True)
+            nb_code, _ = get_synapse_client().load_notebook_code(notebook_to_run, True)
             import_code = import_code + "\n" + nb_code      
         except Exception as e:
             logger.error(f"Failed to import {notebook_to_run}: {e}")

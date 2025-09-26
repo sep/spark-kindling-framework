@@ -12,6 +12,7 @@
 
 notebook_import(".spark_log")
 notebook_import(".data_pipes")
+notebook_import(".data_entities")
 notebook_import(".injection")
 notebook_import(".watermarking")
  

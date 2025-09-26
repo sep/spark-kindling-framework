@@ -152,7 +152,7 @@ class ConfigModule(Module):
     def provide_config(self) -> ConfigService:
         return DynaconfConfig(
             env="development",
-            initial_config={
+            initial_config= BOOTSTRAP_CONFIG or {
                 "default_timeout": 30,
                 "log_level": "INFO"
             },

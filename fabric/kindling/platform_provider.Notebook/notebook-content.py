@@ -11,8 +11,9 @@
 
 # CELL ********************
 
+from abc import ABC, abstractmethod
+
 notebook_import('.injection')
-notebook_import(".notebook_framework")
 
 import __main__
 
@@ -20,7 +21,7 @@ class PlatformEnvironmentProvider(ABC):
     @abstractmethod
     def get_service(self):
         pass
- 
+
 @GlobalInjector.singleton_autobind()
 class SparkPlatformEnvironmentProvider(PlatformEnvironmentProvider):
     def get_service(self):

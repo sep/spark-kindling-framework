@@ -27,12 +27,11 @@ BOOTSTRAP_CONFIG = {
     'is_interactive': True,
     'use_lake_packages' : False,
     'load_local_packages' : False,
-    'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
-    'workspace_id': "059d44a0-c01e-4491-beed-b528c9eca9e8",    
+    'workspace_id': "059d44a0-c01e-4491-beed-b528c9eca9e8",
     'platform_environment': 'fabric',
     'artifacts_storage_path': "Files/artifacts",
-    'required_packages': ["injector", "dynaconf", "pytest"],
-    'ignored_folders': [],
+    'ignored_folders': ["test-package-one", "test-package-two", "test-package-three"],
+    'required_packages': ["injector ~= 0.22.0","dynaconf ~= 3.2.11", "pytest ~= 7.4.0"],
     'spark_configs': {
         'spark.databricks.delta.schema.autoMerge.enabled': 'true'
     }

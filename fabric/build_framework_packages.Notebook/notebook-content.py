@@ -23,7 +23,7 @@
 # CELL ********************
 
 BOOTSTRAP_CONFIG = {
-    'log_level': 'DEBUG',
+    'log_level': 'INFO',
     'is_interactive': False,
     'use_lake_packages' : False,
     'load_local_packages' : False,
@@ -46,7 +46,7 @@ BOOTSTRAP_CONFIG = {
 
 # CELL ********************
 
-%run notebook_framework
+%run environment_bootstrap
 
 # METADATA ********************
 
@@ -57,24 +57,7 @@ BOOTSTRAP_CONFIG = {
 
 # CELL ********************
 
-%run backend_fabric
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
-
-# CELL ********************
-
-es = FabricService(BOOTSTRAP_CONFIG, create_console_logger(BOOTSTRAP_CONFIG))
-nm = NotebookLoader(es, BOOTSTRAP_CONFIG)
-#print(NotebookPackages.registry.keys())
-#print(NotebookPackages.get_package_names())
-#print(nm.get_all_packages())
-print(nm)
-nm.publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/latest", "0.20.1", ["azure-synapse-artifacts"] )#
+framework.notebook_loader.publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/", "0.22.0" )
 
 # METADATA ********************
 

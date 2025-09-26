@@ -156,6 +156,9 @@ class DatabricksService(EnvironmentService):
             except Exception as e:
                 self.logger.debug(f"Failed to process directory {directory_path}: {e}")
 
+    def get_platform_name(self):
+        return "databricks"
+
     def get_token(self, audience: str = None) -> str:
         """Get Databricks authentication token using dbutils"""
         try:

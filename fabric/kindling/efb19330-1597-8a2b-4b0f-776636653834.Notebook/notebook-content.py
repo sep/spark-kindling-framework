@@ -32,7 +32,7 @@ except:
         def __init__():
             pass
 
-from .notebook_framework import *
+notebook_import(".notebook_framework")
 
 from notebookutils import mssparkutils
 
@@ -114,6 +114,9 @@ class SynapseService(EnvironmentService):
         if not self._cache_initialized:
             self._initialize_cache()
         return True
+
+    def get_platform_name(self):
+        return "synapse"
 
     def get_token(self, audience: str) -> str:
         """Get access token for the specified audience"""

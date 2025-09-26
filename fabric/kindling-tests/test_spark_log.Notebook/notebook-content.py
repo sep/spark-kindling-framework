@@ -27,9 +27,9 @@ BOOTSTRAP_CONFIG = {
     'use_lake_packages' : False,
     'load_local_packages' : False,
     'workspace_endpoint': "059d44a0-c01e-4491-beed-b528c9eca9e8",
-    'package_storage_path': "Files/artifacts/packages/latest",
-    'required_packages': ["azure.identity", "injector", "dynaconf", "pytest"],
-    'ignored_folders': ['utilities'],
+    'artifacts_storage_path': "Files/artifacts",
+    'required_packages': ["injector ~= 0.22.0","dynaconf ~= 3.2.11", "pytest ~= 7.4.0"],
+    'ignored_folders': ['utilities', "test-package-one", "test-package-two", "test-package-three"],
     'spark_configs': {
         'spark.databricks.delta.schema.autoMerge.enabled': 'true'
     }

@@ -135,6 +135,8 @@ class FabricService(EnvironmentService):
             traceback.print_exc()
             self._cache_initialized = False
     
+    def get_platform_name(self):
+        return "fabric"
 
     def get_token(self, audience: str) -> str:
         import __main__
@@ -399,7 +401,7 @@ class FabricService(EnvironmentService):
     
     def _poll_operation_completion(self, operation_url: str) -> bool:
         """Poll operation until completion, return True if succeeded"""
-        max_attempts = 30
+        max_attempts = 60
         delay = 1
         
         for attempt in range(max_attempts):
@@ -490,9 +492,9 @@ class FabricService(EnvironmentService):
             return ""
     
     def _poll_operation(self, operation_url: str, notebook_name: str = None) -> Any:
-        """Poll async operation until completion"""
+        # TODO: MAKE THIS CONFIGURABLE
         max_attempts = 60
-        delay = 2
+        delay = 1
         
         for attempt in range(max_attempts):
             response = requests.get(operation_url, headers=self._get_headers())
