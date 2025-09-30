@@ -156,6 +156,10 @@ class FabricService(EnvironmentService):
         mssparkutils = getattr(__main__, 'mssparkutils', None)
         mssparkutils.fs.cp(source, destination, overwrite)
 
+    def move(self, source: str, dest: str) -> Union[str, bytes]:
+        mssparkutils = getattr(__main__, 'mssparkutils', None)
+        mssparkutils.fs.mv(source, dest)
+
     def read(self, path: str, encoding: str = 'utf-8') -> Union[str, bytes]:
         with open(path, 'r' if encoding else 'rb') as f:
             return f.read()
@@ -170,6 +174,14 @@ class FabricService(EnvironmentService):
         mssparkutils = getattr(__main__, 'mssparkutils', None)
         files = mssparkutils.fs.ls(path)
         return [f.name for f in files]
+
+    def delete(self, path: str, recurse = False) -> None:
+        import __main__
+        mssparkutils = getattr(__main__, 'mssparkutils', None)
+        if mssparkutils:
+            mssparkutils.fs.rm(path, recurse)
+        else:
+            raise NotImplementedError("File delete not available without mssparkutils")   
 
     def _build_base_url(self) -> str:
         """Build base URL for Fabric API endpoints"""

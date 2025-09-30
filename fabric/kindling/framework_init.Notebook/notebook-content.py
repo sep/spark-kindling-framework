@@ -12,7 +12,7 @@
 
 NotebookPackages.register(
     name = "kindling",
-    dependencies = ["injector ~= 0.22.0","dynaconf ~= 3.2.11", "pytest ~= 7.4.0"],
+    dependencies = ["injector==0.22.0","dynaconf==3.2.11", "pytest==7.4.0"],
     tags = {}
 )  
 

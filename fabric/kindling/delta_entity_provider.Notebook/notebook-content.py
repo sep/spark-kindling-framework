@@ -212,7 +212,6 @@ class DeltaEntityProvider(EntityProvider):
             .merge(source=df.alias("new"), condition=merge_condition)
             .whenMatchedUpdateAll()
             .whenNotMatchedInsertAll()
-            .withSchemaEvolution()
             .execute())
     
     def _append_to_delta_table(self, df: DataFrame, table_ref: DeltaTableReference):
@@ -221,7 +220,6 @@ class DeltaEntityProvider(EntityProvider):
             .alias("target")
             .merge(df.alias("source"), "1=0")
             .whenNotMatchedInsertAll()
-            .withSchemaEvolution()
             .execute())
     
     def _get_table_version(self, table_ref: DeltaTableReference) -> int:

@@ -146,10 +146,24 @@ class SynapseService(EnvironmentService):
         else:
             raise NotImplementedError("File copy not available without mssparkutils")
 
+    def delete(self, path: str, recurse = False) -> None:
+        import __main__
+        mssparkutils = getattr(__main__, 'mssparkutils', None)
+        if mssparkutils:
+            mssparkutils.fs.rm(path, recurse)
+        else:
+            raise NotImplementedError("File delete not available without mssparkutils")   
+
     def read(self, path: str, encoding: str = 'utf-8') -> Union[str, bytes]:
         """Read file content"""
         with open(path, 'r' if encoding else 'rb') as f:
             return f.read()
+
+    def move(self, path: str, dest: str) -> Union[str, bytes]:
+        if mssparkutils:
+            mssparkutils.fs.mv(path, dest)
+        else:
+            raise NotImplementedError("File delete not available without mssparkutils")       
 
     def write(self, path: str, content: Union[str, bytes], overwrite: bool = False) -> None:
         """Write content to file"""

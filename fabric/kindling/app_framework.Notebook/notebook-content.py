@@ -137,7 +137,7 @@ class AppManager(AppRunner):
                 if line and not line.startswith('#'):
                     lake_requirements.append(line)
             
-            self.logger.info(f"Parsed {len(lake_requirements)} lake requirements for {app_name}")
+            self.logger.debug(f"Parsed {len(lake_requirements)} lake requirements for {app_name}")
             return lake_requirements
             
         except Exception as e:
@@ -161,7 +161,7 @@ class AppManager(AppRunner):
                 pypi_dependencies = [line.strip() for line in content.split('\n') 
                                    if line.strip() and not line.startswith('#') and not line.startswith('-')]
                 
-                self.logger.info(f"Loaded {len(pypi_dependencies)} PyPI requirements for {app_name}")
+                self.logger.debug(f"Loaded {len(pypi_dependencies)} PyPI requirements for {app_name}")
                 
             except Exception as e:
                 self.logger.debug(f"No requirements.txt found for {app_name}: {str(e)}")
@@ -278,7 +278,7 @@ class AppManager(AppRunner):
 
                 downloaded_wheels.append(wheel_name)
                 
-                self.logger.info(f"Downloaded {wheel_name} ({file_size/1024/1024:.1f}MB)")
+                self.logger.debug(f"Downloaded {wheel_name} ({file_size/1024/1024:.1f}MB)")
                 
             except Exception as e:
                 self.logger.error(f"Failed to download {wheel_name}: {str(e)}")
@@ -306,7 +306,7 @@ class AppManager(AppRunner):
                 else:
                     overridden.append(dep)
             
-            self.logger.info(f"Workspace override: {len(dependencies) - len(overridden)} packages from workspace")
+            self.logger.debug(f"Workspace override: {len(dependencies) - len(overridden)} packages from workspace")
             return overridden
             
         except Exception as e:
@@ -335,7 +335,20 @@ class AppManager(AppRunner):
                     
                     result = subprocess.run(pip_args, capture_output=True, text=True)
                     
-                    if result.returncode != 0:
+                    if result.returncode == 0:
+                        self.logger.info("Datalake wheels installed successfully")
+                        
+                        # Import packages to execute @singleton_autobind decorators
+                        for package_spec in lake_requirements:
+                            package_name = package_spec.split('==')[0].strip()
+                            try:
+                                # This import will execute the class definitions and register bindings
+                                __import__(package_name)
+                                self.logger.info(f"Imported {package_name} - decorators executed")
+                            except ImportError as e:
+                                self.logger.error(f"Failed to import {package_name}: {e}")
+                                return False
+                    else:
                         self.logger.error(f"Datalake wheel installation failed: {result.stderr}")
                         return False
                     
@@ -372,7 +385,7 @@ class AppManager(AppRunner):
                 return False
         
         if not pypi_dependencies and not lake_requirements:
-            self.logger.info("No dependencies to install")
+            self.logger.debug("No dependencies to install")
         
         return True
     
@@ -411,7 +424,7 @@ class AppManager(AppRunner):
             compiled_code = compile(code, f'{app_name}/main.py', 'exec')
             exec(compiled_code, exec_globals)
             
-            self.logger.info(f"App {app_name} executed successfully")
+            self.logger.debug(f"App {app_name} executed successfully")
             return exec_globals.get('result')
             
         except Exception as e:

@@ -88,7 +88,7 @@ class DynaconfConfig(ConfigService):
     def get(self, key: str, default: Any = None) -> Any:
         if self.spark:
             try:
-                spark_value = self.spark.conf.get(key)
+                spark_value = self.spark.conf.get(key.upper())
                 if spark_value is not None:
                     return spark_value
             except:
@@ -96,13 +96,7 @@ class DynaconfConfig(ConfigService):
         
         return self.dynaconf.get(key, default)
     
-    def set(self, key: str, value: Any) -> None:
-        if self.spark:
-            try:
-                self.spark.conf.set(key, value)
-            except:
-                pass
-        
+    def set(self, key: str, value: Any) -> None:        
         self.dynaconf.set(key, value)
     
     def get_all(self) -> Dict[str, Any]:

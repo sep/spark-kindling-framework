@@ -25,7 +25,7 @@ class SparkLogger:
         self.spark = session or get_or_create_spark_session()
         self.config = config or {}
         self.log_level = self.config.get("log_level", "").lower()
-        self.print_logging = self.config.get("print_logging", False)
+
         try:
             baselogger = baselogger or self.spark._jvm.org.apache.log4j.LogManager.getLogger(name)
         except:
@@ -48,6 +48,9 @@ class SparkLogger:
             'warn': self.logger.warn,
             'error': self.logger.error
         }
+
+    def should_print(self):
+        return self.config.get("print_logging", False)
 
     def debug(self, msg: str):
         self._log('debug', msg)
@@ -83,13 +86,11 @@ class SparkLogger:
     
     def _log(self, level: str, msg: str):
         """Central logging method that respects log levels and eliminates redundancy"""
-        # Only format message, log, and print if the level is enabled
         if self._is_level_enabled(level):
             formatted_msg = self._format_msg(msg, level)
             self._log_methods[level](formatted_msg)
             
-            # Print respects the same log level - only print for debug and info levels
-            if self.print_logging:
+            if self.should_print():
                 print(formatted_msg)
 
     def with_pattern(self, pattern: str):

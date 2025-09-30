@@ -40,12 +40,15 @@ class CustomEventEmitter(ABC):
 
 @GlobalInjector.singleton_autobind()
 class AzureEventEmitter(CustomEventEmitter):
-
     @inject
-    def __init__(self, plp: PythonLoggerProvider):
+    def __init__(self, plp: PythonLoggerProvider, cs: ConfigService):
         self.logger = plp.get_logger('EventEmitter')
+        self.config = cs
 
-    # Keep the original helper functions
+    def should_print(self):
+        should_print = self.config.get("print_trace", False) or self.config.get("print_tracing", False)
+        return should_print
+
     def emit_custom_event(self,
         component: str,
         operation: str,
@@ -64,7 +67,6 @@ class AzureEventEmitter(CustomEventEmitter):
         ScalaNone = ScalaOption.empty()
         JavaUUID = spark._jvm.java.util.UUID.fromString(str(traceId))
 
-        # Create the ComponentSparkEvent
         event = spark._jvm.com.microsoft.spark.metricevents.ComponentSparkEvent(
             spark.sparkContext.appName,                         # String appName
             component,                                          # String module
@@ -76,7 +78,8 @@ class AzureEventEmitter(CustomEventEmitter):
             spark._jvm.org.slf4j.event.Level.INFO               # Level logLevel
         )
 
-        print(f"Tracer: {spark.sparkContext.appName} Component: {component} Op: {operation} Msg: {custom_message} Id: {eventId} trace_id:{str(traceId)}")
+        if self.should_print():
+            print(f"TRACE: ({spark.sparkContext.appName}) Component: {component} Op: {operation} Msg: {custom_message} Id: {eventId} trace_id:{str(traceId)}")
 
         # Get the SparkListener manager and post the event
         listener_bus = spark.sparkContext._jsc.sc().listenerBus()

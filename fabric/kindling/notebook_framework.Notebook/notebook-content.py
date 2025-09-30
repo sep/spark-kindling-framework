@@ -175,7 +175,15 @@ class EnvironmentService:
     @abstractmethod
     def write(self, path: str, content: Union[str, bytes], overwrite: bool = False) -> None:
         pass
-    
+
+    @abstractmethod
+    def move(self, path: str, dest: str) -> None:
+        pass    
+
+    @abstractmethod
+    def delete(self, path: str, recurse = False) -> None:
+        pass    
+
     @abstractmethod
     def list(self, path: str) -> List[str]:
         pass
