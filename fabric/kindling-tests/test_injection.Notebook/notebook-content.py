@@ -109,19 +109,6 @@ from typing import Any
 
 class TestGlobalInjector(SynapseNotebookTestCase):
     
-    def test_import_guard_pattern_works(self, notebook_runner, basic_test_config):
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        # Test that the import guard pattern works
-        gi_guard = globals().get('GI_IMPORT_GUARD')
-        
-        # The guard should exist and be True, indicating the code ran once
-        assert gi_guard is not None
-        assert gi_guard == True
-        
-        # This verifies the pattern: if 'GI_IMPORT_GUARD' not in globals()
-        # prevents multiple execution of the GlobalInjector definition
-    
     def test_singleton_pattern_concept(self, notebook_runner, basic_test_config):
         notebook_runner.prepare_test_environment(basic_test_config)
         

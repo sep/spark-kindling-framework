@@ -809,7 +809,7 @@ class NotebookLoader(NotebookManager):
         effective_module_name = module_name or f"{pkg_name}.{notebook_name}" if pkg_name else notebook_name
         
         if effective_module_name in sys.modules:
-            return sys.modules[effective_module_name]
+            del sys.modules[effective_module_name]
         
         module = types.ModuleType(effective_module_name)
         module.__spec__ = ModuleSpec(
@@ -865,6 +865,11 @@ class NotebookLoader(NotebookManager):
         return package
     
     def import_notebooks_into_module(self, package_name: str, notebook_names: List[str]) -> Dict[str, types.ModuleType]:
+        # Check if package already exists and prepare for reload if so
+        if package_name in sys.modules:
+            self.logger.info(f"Package {package_name} already loaded - preparing reload")
+            self._prepare_package_reload(package_name)
+        
         # First, check if this package has dependencies that need to be installed
         try:
             init_notebook_name = f"{package_name}_init"
@@ -878,7 +883,7 @@ class NotebookLoader(NotebookManager):
         
         notebook_code = {}
         notebook_dependencies = {}
-        package_pip_dependencies = []
+        package_pip_dependencies = []        
         
         for nb_name in notebook_names:
             try:
@@ -926,6 +931,76 @@ class NotebookLoader(NotebookManager):
                     pass
         
         return imported_modules
+
+    def _prepare_package_reload(self, package_name: str) -> None:
+        self.logger.debug(f"Clearing bindings for package: {package_name}")
+        
+        modules_to_remove = []
+        if package_name in sys.modules:
+            modules_to_remove.append(package_name)
+        
+        for module_name in list(sys.modules.keys()):
+            if module_name.startswith(f"{package_name}."):
+                modules_to_remove.append(module_name)
+
+        classes_to_unbind = set()
+        for module_name in modules_to_remove:
+            module = sys.modules.get(module_name)
+            if module:
+                for name in dir(module):
+                    obj = getattr(module, name, None)
+                    if obj is not None and isinstance(obj, type):
+                        if self._is_class_from_package(obj, package_name):
+                            classes_to_unbind.add(obj)
+        
+        injector = GlobalInjector.get_injector()
+        for cls in classes_to_unbind:
+            self._unbind_class_and_interfaces(cls)
+
+        for module_name in modules_to_remove:
+            del sys.modules[module_name]
+            self.logger.debug(f"Removed module from sys.modules: {module_name}")
+
+    def _unbind_classes_from_module(self, module, package_name: str):
+        """Unbind only classes that are defined in this module, not imported ones"""
+        for name in dir(module):
+            obj = getattr(module, name, None)
+            if obj is not None and isinstance(obj, type):
+                if self._is_class_from_package(obj, package_name):
+                    self._unbind_class_and_interfaces(obj)
+
+    def _is_class_from_package(self, cls, package_name: str) -> bool:
+        """Check if a class is actually defined in the given package"""
+        try:
+            class_module = cls.__module__
+            return (class_module == package_name or 
+                    class_module.startswith(f"{package_name}."))
+        except AttributeError:
+            return False
+
+    def _unbind_class_and_interfaces(self, cls):
+        """Unbind a class and all its abstract base classes from the injector"""
+        import inspect
+        
+        injector = GlobalInjector.get_injector()
+        
+        for base in cls.__bases__:
+            if inspect.isabstract(base):
+                self._clear_binding(injector, base)
+        
+        self._clear_binding(injector, cls)
+
+    def _clear_binding(self, injector, interface):
+        """Clear both binding and singleton cache for an interface"""
+        if hasattr(injector.binder, '_bindings') and interface in injector.binder._bindings:
+            del injector.binder._bindings[interface]
+            self.logger.debug(f"Unbound: {interface.__name__}")
+        
+        if hasattr(injector, '_stack') and len(injector._stack) > 0:
+            scope = injector._stack[0]
+            if hasattr(scope, '_cache') and interface in scope._cache:
+                del scope._cache[interface]
+                self.logger.debug(f"Cleared singleton cache: {interface.__name__}")
 
     def _install_package_dependencies(self, package_name: str, dependencies: List[str]) -> bool:
         """Install pip dependencies for a notebook package"""

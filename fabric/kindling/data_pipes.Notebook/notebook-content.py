@@ -139,6 +139,11 @@ class DataPipesExecuter(DataPipesExecution):
             result[key] = entity_reader(self.dpe.get_entity_definition(entity_id), is_first)
         return result
 
+class StageProcessingService(ABC):
+    @abstractmethod
+    def execute( self, stage: str, stage_description:str, stage_details: Dict, layer: str, preprocessor: Callable ):
+        pass
+
 
 
 # METADATA ********************

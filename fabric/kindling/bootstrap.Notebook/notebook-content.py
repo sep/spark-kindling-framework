@@ -208,6 +208,7 @@ def initialize_backend_services(platform, config, logger):
     [cfg.set(key, value) for key, value in config.items()]
 
     if 'spark_configs' in config:
+        spark = get_or_create_spark_session()
         for key, value in config['spark_configs'].items():
             try:
                 spark.conf.set(key, value)

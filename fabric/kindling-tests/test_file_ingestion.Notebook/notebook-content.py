@@ -91,6 +91,17 @@ if 'GI_IMPORT_GUARD' in globals():
 
 # CELL ********************
 
+%run simple_file_ingestion_processor
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 %run file_ingestion
 
 # METADATA ********************
