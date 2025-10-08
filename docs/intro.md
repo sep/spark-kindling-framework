@@ -28,7 +28,7 @@ Kindling follows a layered architecture built on dependency injection principles
 │                 Dependency Injection Layer                  │
 │              (GlobalInjector & Service Providers)           │
 ├─────────────────────────────────────────────────────────────┤
-│     Storage Layer              │    Infrastructure Layer     │
+│     Storage Layer             │    Infrastructure Layer     │
 │     • Delta Lake              │    • Logging                │
 │     • Entity Providers        │    • Tracing                │
 │     • Path Locators           │    • Configuration          │
