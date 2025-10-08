@@ -103,9 +103,9 @@ class InjectorServiceWrapper:
     def _get_framework_via_di() -> CombinedFramework:
         """Get framework using dependency injection"""
         from kindling.injection import get_kindling_service
-        from platform_provider import PlatformEnvironmentProvider
-        from notebook_framework import NotebookManager
-        from spark_config import ConfigService
+        from kindling.platform_provider import PlatformEnvironmentProvider
+        from kindling.notebook_framework import NotebookManager
+        from kindling.spark_config import ConfigService
         
         return CombinedFramework(
             get_kindling_service(NotebookManager),

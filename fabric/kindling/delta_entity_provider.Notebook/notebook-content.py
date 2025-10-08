@@ -110,13 +110,26 @@ class DeltaEntityProvider(EntityProvider):
             # Try to get the Delta table
             table_ref.get_delta_table()
             return True
-        except Exception:
-            try:
-                # Fallback: try to read as DataFrame
-                self.spark.read.format("delta").load(table_ref.get_read_path())
-                return True
-            except Exception:
-                return False
+        except Exception as e1:
+            self.logger.debug(f"get_delta_table failed: {e1}")
+            
+            # For FOR_NAME mode, only check catalog (don't check path)
+            if table_ref.access_mode == DeltaAccessMode.FOR_NAME:
+                try:
+                    self.spark.read.table(table_ref.table_name)
+                    return True
+                except Exception as e2:
+                    self.logger.debug(f"Table not in catalog: {e2}")
+                    return False
+            
+            # For FOR_PATH mode, check if path has Delta files
+            else:
+                try:
+                    self.spark.read.format("delta").load(table_ref.table_path)
+                    return True
+                except Exception as e2:
+                    self.logger.debug(f"Path check failed: {e2}")
+                    return False
     
     def _ensure_table_exists(self, entity, table_ref: DeltaTableReference):
         """Ensure table exists, create if needed"""
@@ -134,27 +147,37 @@ class DeltaEntityProvider(EntityProvider):
                     .tableName(table_ref.table_name) \
                     .location(table_ref.table_path) \
                     .property("delta.columnMapping.mode", "name") \
-                    .property("delta.enableChangeDataFeed", "true") \
-                    .partitionedBy(*entity.partition_columns) \
-
-                if entity.schema:    
-                    dt = dt.addColumns(entity.schema) \
+                    .property("delta.enableChangeDataFeed", "true")
                 
+                # Add columns FIRST
+                if entity.schema:    
+                    dt = dt.addColumns(entity.schema)
+                
+                # Then partition by them
+                if entity.partition_columns:
+                    dt = dt.partitionedBy(*entity.partition_columns)
+                
+                self.logger.debug(f"Executing FOR_NAME create {table_ref.table_name} if not exists at {table_ref.table_path}")
                 dt.execute()
             else:
-                # Fabric style - create via path then register if needed
+                # Fabric style - create via path
                 dt = DeltaTable.createIfNotExists(self.spark) \
                     .location(table_ref.table_path) \
                     .property("delta.columnMapping.mode", "name") \
-                    .property("delta.enableChangeDataFeed", "true") \
-                    .partitionedBy(*entity.partition_columns) \
-
+                    .property("delta.enableChangeDataFeed", "true")
+                
+                # Add columns FIRST
                 if entity.schema:    
-                    dt = dt.addColumns(entity.schema) \
+                    dt = dt.addColumns(entity.schema)
                 
+                # Then partition by them
+                if entity.partition_columns:
+                    dt = dt.partitionedBy(*entity.partition_columns)
+                
+                self.logger.debug("Executing FOR_PATH create {table_ref.table_name} if not exists at {table_ref.table_path}")
                 dt.execute()
-                
-            # Register in catalog if table name provided
+            
+            self.logger.debug("Registering table with SQL to create {table_ref.table_name} at {table_ref.table_path}")
             if table_ref.table_name and "." in table_ref.table_name:
                 try:
                     self.spark.sql(f"""
@@ -188,6 +211,7 @@ class DeltaEntityProvider(EntityProvider):
         """Write DataFrame to Delta table"""
         df_writer = df.write.format("delta") \
             .option("delta.enableChangeDataFeed", "true") \
+            .option("mergeSchema", "true") \
             .option("path", table_ref.table_path)
         
         if entity.partition_columns:
@@ -214,14 +238,17 @@ class DeltaEntityProvider(EntityProvider):
             .whenNotMatchedInsertAll()
             .execute())
     
-    def _append_to_delta_table(self, df: DataFrame, table_ref: DeltaTableReference):
+
+    def _append_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Append DataFrame to existing Delta table"""
-        (table_ref.get_delta_table()
-            .alias("target")
-            .merge(df.alias("source"), "1=0")
-            .whenNotMatchedInsertAll()
-            .execute())
-    
+        writer = df.write.format("delta").mode("append")
+        
+        if entity.partition_columns:
+            writer = writer.partitionBy(*entity.partition_columns)
+        
+        writer.option("mergeSchema", "true")  # Schema evolution
+        writer.save(table_ref.table_path)
+        
     def _get_table_version(self, table_ref: DeltaTableReference) -> int:
         """Get current version of Delta table"""
         if not self._check_table_exists(table_ref):
@@ -286,7 +313,6 @@ class DeltaEntityProvider(EntityProvider):
             .option("checkpointLocation", checkpointLocation)
 
     def merge_to_entity(self, df: DataFrame, entity):
-        """Merge DataFrame to entity table"""
         table_ref = self._get_table_reference(entity)
         if self._check_table_exists(table_ref):
             self._merge_to_delta_table(df, entity, table_ref)
@@ -294,10 +320,9 @@ class DeltaEntityProvider(EntityProvider):
             self.write_to_entity(df, entity)
     
     def append_to_entity(self, df: DataFrame, entity):
-        """Append DataFrame to entity table"""
         table_ref = self._get_table_reference(entity)
         if self._check_table_exists(table_ref):
-            self._append_to_delta_table(df, table_ref)
+            self._append_to_delta_table(df, entity, table_ref)
         else:
             self.write_to_entity(df, entity)
     
