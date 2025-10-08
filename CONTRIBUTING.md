@@ -1,3 +1,5 @@
+TODO: Needs thorough review/revise
+
 # Contributing to Kindling
 We welcome contributions from the community!
 
