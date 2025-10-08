@@ -45,7 +45,7 @@ class SynapseTokenCredential(TokenCredential):
     def get_token(self, *scopes, **kwargs):
         return AccessToken(self.token, self.expires_on)
 
-class SynapseService(EnvironmentService):
+class SynapseService(PlatformService):
     def __init__(self, config, logger):
         self.config = types.SimpleNamespace(**config)
         self.logger = logger

@@ -118,7 +118,7 @@ def load_bootstrap_config() -> Dict[str, Any]:
     config = getattr(__main__, 'bootstrap_config', {})
     
     defaults = {
-        'backend_name': None,
+        'platform_name': None,
         'log_level': 'INFO',
         'load_local_packages': True,
         'use_lake_packages': True,

@@ -147,7 +147,7 @@ def create_console_logger(config):
         'warning': lambda self, *args, **kwargs: print("WARNING:", *args) if should_log("WARNING") else None,
     })()
 
-class EnvironmentService:
+class PlatformService:
     @abstractmethod
     def get_platform_name(self):
         pass

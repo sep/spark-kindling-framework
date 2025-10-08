@@ -44,7 +44,7 @@
 
 # CELL ********************
 
-%run backend_fabric
+%run platform_fabric
 
 # METADATA ********************
 
@@ -56,7 +56,7 @@
 # CELL ********************
 
 # %run notebook_framework
-# %run backend_fabric
+# %run platform_fabric
 
 def get_storage_utils():
     """Get platform storage utilities"""
@@ -146,7 +146,7 @@ def load_kindling_from_notebooks(config):
     print("Loading kindling from local notebook packages...")
     
     try:
-        # notebook_framework and backend_fabric are already loaded via %run at top
+        # notebook_framework and platform_fabric are already loaded via %run at top
         # Create environment service and notebook loader
         es = FabricService(config, create_console_logger(config))
         nm = create_notebook_loader(es, config)

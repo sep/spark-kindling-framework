@@ -24,7 +24,7 @@ from urllib.parse import quote
 
 notebook_import(".notebook_framework")
 
-class DatabricksService(EnvironmentService):
+class DatabricksService(PlatformService):
     def __init__(self, config, logger):
         self.config = types.SimpleNamespace(**config)
         self.logger = logger

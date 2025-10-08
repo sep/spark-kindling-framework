@@ -22,7 +22,7 @@ from azure.core.exceptions import *
 
 notebook_import(".notebook_framework")
 
-class FabricService(EnvironmentService):
+class FabricService(PlatformService):
     def __init__(self, config, logger):
         self.config = types.SimpleNamespace(**config)
         self.logger = logger

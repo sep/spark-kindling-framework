@@ -186,36 +186,27 @@ def install_bootstrap_dependencies(logger, bootstrap_config):
     for package in bootstrap_config.get('required_packages', []):
         load_if_needed(package)
 
-def initialize_backend_services(platform, config, logger):
-    """Initialize platform-specific backend services"""
-    import __main__
-
-    env_factory = getattr(__main__, 'kindling_environment_factories').get(
-        config.get('platform_environment') or platform
-    )
+def initialize_platform_services(platform, config, logger):
+    """Initialize platform-specific services"""
     
-    if not env_factory:
-        raise Exception(f"No environment factory found for platform: {platform}")
-    
-    backend = env_factory(config, logger)
-    backend.initialize()
-    
-    setattr(__main__, "platform_environment_service", backend)
-    setattr(__main__, "platform_environment", config.get('platform_environment') or platform)
-
-    cfg = get_kindling_service(ConfigService)
-
-    [cfg.set(key, value) for key, value in config.items()]
-
-    if 'spark_configs' in config:
-        spark = get_or_create_spark_session()
-        for key, value in config['spark_configs'].items():
-            try:
-                spark.conf.set(key, value)
-            except Exception as e:
-                print(f"Failed to set Spark config {key}: {e}")
-
-    return backend
+    if platform.lower() == 'fabric':
+        # Import Fabric platform service
+        notebook_import(".platform_fabric")
+        return FabricService(config, logger)
+    elif platform.lower() == 'databricks':
+        # Import Databricks platform service
+        notebook_import(".platform_databricks") 
+        return DatabricksService(config, logger)
+    elif platform.lower() == 'synapse':
+        # Import Synapse platform service
+        notebook_import(".platform_synapse")
+        return SynapseService(config, logger)
+    elif platform.lower() == 'local':
+        # Import Local platform service
+        notebook_import(".platform_local")
+        return LocalService(config, logger)
+    else:
+        raise ValueError(f"Unsupported platform: {platform}")
 
 def load_workspace_packages(backend, packages, logger):
     """Load workspace packages using existing NotebookLoader"""
@@ -249,7 +240,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         is_interactive = is_interactive_session(config.get('is_interactive'))
         logger.info(f"Platform: {platform}, Interactive: {is_interactive}")
         
-        backend = initialize_backend_services(platform, config, logger)
+        backend = initialize_platform_services(platform, config, logger)
         logger.info("Backend services initialized")
         
         if config.get('load_local_packages', True):

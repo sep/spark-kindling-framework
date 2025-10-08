@@ -21,15 +21,15 @@ Integration example showing how to use DatabricksBackend with the existing Noteb
 class NotebookOperations:
     """Operations for managing notebooks - semantically compatible with Fabric and Databricks"""
     
-    def __init__(self, client, config, serializer, deserializer, backend_type="fabric"):
+    def __init__(self, client, config, serializer, deserializer, platform_type="fabric"):
         self._client = client
         self._config = config
         self._serialize = serializer
         self._deserialize = deserializer
         
-        self.backend_type = backend_type
+        self.platform_type = platform_type
         
-        if backend_type.lower() == "databricks":
+        if platform_type.lower() == "databricks":
             # Extract host and token for Databricks
             endpoint = getattr(config, 'endpoint', '')
             workspace_host = None
@@ -121,19 +121,19 @@ class ArtifactsClient:
     Now supports both Fabric and Databricks backends
     """
     
-    def __init__(self, endpoint: str, credential, backend_type: str = "fabric", **kwargs):
+    def __init__(self, endpoint: str, credential, platform_type: str = "fabric", **kwargs):
         """
         Initialize the Artifacts Client
         
         Args:
             endpoint: The workspace endpoint URL or ID
             credential: Authentication credential
-            backend_type: "fabric" or "databricks"
+            platform_type: "fabric" or "databricks"
             **kwargs: Additional configuration options
         """
         self._credential = credential
         self._config = ArtifactsClientConfiguration(endpoint, **kwargs)
-        self.backend_type = backend_type
+        self.platform_type = platform_type
         
         # Initialize operations with backend type
         self.notebook = NotebookOperations(
@@ -141,7 +141,7 @@ class ArtifactsClient:
             config=self._config,
             serializer=self._serialize,
             deserializer=self._deserialize,
-            backend_type=backend_type
+            platform_type=platform_type
         )
     
     def _serialize(self, obj, data_type):
@@ -215,7 +215,7 @@ This means existing bootstrap code requires ZERO changes!
 """
 # In a Databricks notebook - just this!
 bootstrap_config = BOOTSTRAP_CONFIG_DATABRICKS
-bootstrap_notebook_framework(backend_type="databricks")
+bootstrap_notebook_framework(platform_type="databricks")
 
 # All existing bootstrap functions work unchanged:
 client = get_synapse_client()  # Returns DatabricksBackend client
@@ -237,7 +237,7 @@ credential = DatabricksCredentialAdapter(
 client = ArtifactsClient(
     endpoint="https://your-workspace.cloud.databricks.com",
     credential=credential,
-    backend_type="databricks"
+    platform_type="databricks"
 )
 
 # Identical API to Fabric version
@@ -245,12 +245,12 @@ notebooks = client.notebook.get_notebooks_by_workspace()
 my_notebook = client.notebook.get_notebook("my-analytics-notebook")
 
 # Bootstrap process works the same
-bootstrap_config['backend_type'] = 'databricks' 
-bootstrap_notebook_framework(backend_type="databricks")
+bootstrap_config['platform_type'] = 'databricks' 
+bootstrap_notebook_framework(platform_type="databricks")
 """
 
 # Modified bootstrap function with backend selection
-def bootstrap_notebook_framework(backend_type="fabric"):
+def bootstrap_notebook_framework(platform_type="fabric"):
     """
     Main entry point for bootstrap process.
     Now supports both 'fabric' and 'databricks' backends
@@ -261,7 +261,7 @@ def bootstrap_notebook_framework(backend_type="fabric"):
         logger.info("Framework already bootstrapped, skipping...")
         return
     
-    logger.info(f"=== Starting Notebook Framework Bootstrap (Backend: {backend_type}) ===")
+    logger.info(f"=== Starting Notebook Framework Bootstrap (Platform: {platform_type}) ===")
     
     try:
         # Phase 1: Environment Setup
@@ -274,7 +274,7 @@ def bootstrap_notebook_framework(backend_type="fabric"):
         logger.info(f"Execution mode: {'Interactive' if bootstrap_state.execution_mode else 'Job'}")
         
         # Phase 3: Client Initialization (backend-specific)
-        if backend_type.lower() == "databricks":
+        if platform_type.lower() == "databricks":
             safe_bootstrap_operation("Databricks Client Initialization", initialize_databricks_client)
         else:
             safe_bootstrap_operation("Synapse Client Initialization", initialize_synapse_client)
@@ -290,7 +290,7 @@ def bootstrap_notebook_framework(backend_type="fabric"):
         globals()['framework_bootstrapped'] = True
         bootstrap_state.framework_initialized = True
         
-        logger.info(f"=== Bootstrap Complete - Framework Ready ({backend_type}) ===")
+        logger.info(f"=== Bootstrap Complete - Framework Ready ({platform_type}) ===")
         
     except BootstrapException:
         logger.error("Bootstrap failed - framework not available")
@@ -302,7 +302,7 @@ def bootstrap_notebook_framework(backend_type="fabric"):
 
 # Add to bootstrap config for Databricks
 BOOTSTRAP_CONFIG_DATABRICKS = {
-    'backend_type': 'databricks',
+    'platform_type': 'databricks',
     'use_lake_packages': False,  # Databricks uses different package management
     'load_local_packages': True,  # This still works - discovers from notebooks
     'required_packages': ['databricks-sdk'],  # Only SDK requirement!
@@ -322,7 +322,7 @@ BOOTSTRAP_CONFIG_DATABRICKS = {
 bootstrap_config = BOOTSTRAP_CONFIG_DATABRICKS
 
 # 3. Bootstrap with Databricks backend - automatic authentication!
-bootstrap_notebook_framework(backend_type="databricks")
+bootstrap_notebook_framework(platform_type="databricks")
 
 # 4. Everything else works identically:
 # - Package discovery from notebook folders
