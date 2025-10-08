@@ -1,10 +1,29 @@
-# Databricks notebook source
+# Fabric notebook source
+
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   },
+# META   "dependencies": {}
+# META }
+
+# CELL ********************
+
 # MAGIC %md
 # MAGIC # Local Platform Service
 # MAGIC 
 # MAGIC This notebook provides a local platform implementation for development and testing purposes.
 
-# COMMAND ----------
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
 
 import os
 import sys
@@ -45,6 +64,15 @@ class LocalService(PlatformService):
         self._cache_initialized = False
         
         self._initialize_cache()
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
 
     def _initialize_cache(self):
         """Initialize cache with local filesystem content"""
@@ -297,9 +325,16 @@ class LocalService(PlatformService):
 # MAGIC 
 # MAGIC This is a local notebook.
 
-# COMMAND ----------
+# CELL ********************
 
 print("Hello from {notebook_name}!")
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
 """
             
             with open(notebook_path, 'w', encoding='utf-8') as f:
