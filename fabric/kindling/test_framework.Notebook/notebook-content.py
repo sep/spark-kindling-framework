@@ -690,13 +690,13 @@ class NotebookTestEnvironment:
             globals()['SimpleReadPersistStrategy'] = MockSimpleReadPersistStrategy
 
         if 'StageProcessingService' not in globals():
-            class StageProcessingService:
+            class MockStageProcessingService:
                 """Interface for stage processing services"""
                 def execute(self, stage: str, stage_description: str, stage_details: dict, layer: str):
                     """Execute stage processing"""
                     pass
             
-            globals()['StageProcessingService'] = StageProcessingService
+            globals()['StageProcessingService'] = MockStageProcessingService
 
         if 'PipeMetadata' not in globals():
             class MockPipeMetadata:
@@ -714,6 +714,24 @@ class NotebookTestEnvironment:
             
             globals()['PipeMetadata'] = MockPipeMetadata
 
+        if 'ConfigService' not in globals():
+            class MockConfigService:
+                def __init__(self, config_data=None, logger_provider=None):
+                    self.config_data = config_data or {}
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("ConfigService")
+                    else:
+                        self.logger = MagicMock()
+                    
+                    # Example mocked methods (customize with actual method names if needed)
+                    self.get = MagicMock(side_effect=lambda key, default=None: self.config_data.get(key, default))
+                    self.set = MagicMock(side_effect=lambda key, value: self.config_data.__setitem__(key, value))
+                    self.to_dict = MagicMock(return_value=self.config_data.copy())
+                    # Add other methods or behaviors as needed for your use-case
+
+            globals()['ConfigService'] = MockConfigService
+            globals()['MockConfigService'] = MockConfigService
+
     mocked_globals = [
         'BaseServiceProvider',
         'PythonLoggerProvider', 
@@ -730,7 +748,8 @@ class NotebookTestEnvironment:
         'DataPipesExecution',
         'SimpleReadPersistStrategy',
         'StageProcessingService',
-        'PipeMetadata'
+        'PipeMetadata',
+        'ConfigService'
     ]
 
     def _delete_global_mocks(self):

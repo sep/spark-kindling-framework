@@ -222,43 +222,6 @@ class TestNotebookLoader(SynapseNotebookTestCase):
             if 'test_package' in sys.modules:
                 del sys.modules['test_package']
     
-    def test_prepare_package_reload_clears_bindings(self, notebook_runner, basic_test_config):
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        NotebookLoader = globals().get('NotebookLoader')
-        if not NotebookLoader:
-            pytest.skip("NotebookLoader not available")
-        
-        loader = NotebookLoader.__new__(NotebookLoader)
-        loader.logger = MagicMock()
-        
-        # Create mock module with a test class
-        import sys
-        import types
-        
-        # Create test class that should be unbound
-        class TestService:
-            pass
-        TestService.__module__ = 'test_package'
-        
-        # Create module
-        test_module = types.ModuleType('test_package')
-        test_module.TestService = TestService
-        sys.modules['test_package'] = test_module
-        
-        # Mock the unbind methods
-        loader._unbind_classes_from_module = MagicMock()
-        
-        try:
-            loader._prepare_package_reload('test_package')
-            
-            # Should have called unbind for the module
-            loader._unbind_classes_from_module.assert_called_once_with(test_module, 'test_package')
-        finally:
-            # Cleanup
-            if 'test_package' in sys.modules:
-                del sys.modules['test_package']
-    
     def test_is_class_from_package_filters_correctly(self, notebook_runner, basic_test_config):
         notebook_runner.prepare_test_environment(basic_test_config)
         

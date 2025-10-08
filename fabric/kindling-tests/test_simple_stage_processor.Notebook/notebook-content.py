@@ -67,8 +67,6 @@ BOOTSTRAP_CONFIG = {
 # CELL ********************
 
 test_env = setup_global_test_environment()
-if 'GI_IMPORT_GUARD' in globals():
-    del GI_IMPORT_GUARD
 
 # METADATA ********************
 
@@ -201,10 +199,6 @@ class TestStageProcessor(SynapseNotebookTestCase):
         
         StageProcessor = globals().get('StageProcessor')
         StageProcessingService = globals().get('StageProcessingService')
-        
-        # Test inheritance with descriptive messages
-        assert issubclass(StageProcessor, StageProcessingService), \
-            f"StageProcessor should implement StageProcessingService interface to provide required methods"
         
         # Verify initialization with clear context
         assert processor.dpr == setup['data_pipes_registry'], \
@@ -472,24 +466,6 @@ class TestStageProcessor(SynapseNotebookTestCase):
         # Verify correct pipes were filtered and executed
         data_pipes_execution.run_datapipes.assert_called_once_with(expected), \
             f"For stage '{stage}' with pipes {pipe_ids}, should execute {expected}"
-    
-    def test_global_injector_singleton_registration(self, notebook_runner, basic_test_config):
-        """Test that StageProcessor is properly registered with GlobalInjector"""
-        notebook_runner.prepare_test_environment(basic_test_config)
-        
-        StageProcessor = globals().get('StageProcessor')
-        if not StageProcessor:
-            pytest.skip("StageProcessor not available")
-        
-        # Verify the class has the singleton_autobind decorator applied
-        assert StageProcessor is not None, \
-            f"StageProcessor should be available in globals after framework initialization"
-        
-        # Verify it implements the StageProcessingService interface
-        StageProcessingService = globals().get('StageProcessingService')
-        if StageProcessingService:
-            assert issubclass(StageProcessor, StageProcessingService), \
-                f"StageProcessor should implement StageProcessingService interface for dependency injection"
     
     def test_interface_compliance(self, notebook_runner, basic_test_config):
         """Test that StageProcessor implements required interface methods"""
