@@ -81,33 +81,36 @@ Python 3.8+
 Apache Spark 3.x
 Azure Synapse Artifacts SDK (for use with Synapse)
 
-Dependencies
-This framework leverages several excellent open source projects:
+## Dependencies
+This framework builds upon several excellent open source projects:
 
-Apache Spark - Unified analytics engine for large-scale data processing (Apache 2.0)
-inject - Python dependency injection framework (Apache 2.0)
-dynaconf - Configuration management for Python (MIT)
-pytest - Testing framework (MIT)
-azure.synapse.artifacts - Azure Synapse SDK (MIT)
+- **Apache Spark** - Unified analytics engine for large-scale data processing (Apache 2.0)
+- **inject** - Python dependency injection framework (Apache 2.0)
+- **dynaconf** - Configuration management for Python (MIT)
+- **pytest** - Testing framework (MIT)
+- **azure.synapse.artifacts** - Azure Synapse SDK (MIT)
 
-Contributing
-We welcome contributions! Please see CONTRIBUTING.md for guidelines.
 
-Support
-This is open source software provided without warranty or guaranteed support.
+## Contributing
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-Commercial Support: Professional support, training, and consulting services are available from Software Engineering Professionals, Inc. Contact us at [contact information].
+## Support
+This is open source software provided without warranty or guaranteed support. 
 
-License
-This project is licensed under the MIT License - see the LICENSE file for details.
+**Commercial Support:** Professional support, training, and consulting services are available from Software Engineering Professionals, Inc. Contact us at [contact information].
 
-Developed By
-Software Engineering Professionals, Inc.
-16080 Westfield Blvd.
-Carmel, IN 46033
-www.sep.com
+## License
 
-Acknowledgments
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Developed By
+**Software Engineering Professionals, Inc.**  
+16080 Westfield Blvd.  
+Carmel, IN 46033  
+[www.sep.com](https://www.sep.com)
+
+## Acknowledgments
 This framework was developed to solve real-world data processing challenges encountered across multiple enterprise engagements. We're grateful to our clients who have helped shape the requirements and validate the approach.
 
-Note: This framework is maintained by SEP and used across multiple projects. If you're using this framework and encounter issues or have suggestions, please open an issue or submit a pull request.
+---
+**Note:** This framework is maintained by SEP and used across multiple projects. If you're using this framework and encounter issues or have suggestions, please open an issue or submit a pull request.
