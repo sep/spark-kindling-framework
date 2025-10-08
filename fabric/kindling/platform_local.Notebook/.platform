@@ -3,10 +3,10 @@
   "metadata": {
     "type": "Notebook",
     "displayName": "platform_local",
-    "description": "Local platform service implementation"
+    "description": "New notebook"
   },
   "config": {
     "version": "2.0",
-    "logicalId": "12345678-1234-1234-1234-123456789abc"
+    "logicalId": "12345678-1234-5678-9abc-def012345678"
   }
 }

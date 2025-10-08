@@ -3,10 +3,10 @@
   "metadata": {
     "type": "Notebook",
     "displayName": "platform_refactor_summary",
-    "description": "Summary of backend to platform refactor"
+    "description": "New notebook"
   },
   "config": {
     "version": "2.0",
-    "logicalId": "summary-1234-5678-9abc-def012345678"
+    "logicalId": "a1b2c3d4-5678-9abc-def0-123456789abc"
   }
 }
