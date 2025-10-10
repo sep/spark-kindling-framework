@@ -55,9 +55,6 @@
 
 # CELL ********************
 
-# %run notebook_framework
-# %run platform_fabric
-
 def get_storage_utils():
     """Get platform storage utilities"""
     import __main__

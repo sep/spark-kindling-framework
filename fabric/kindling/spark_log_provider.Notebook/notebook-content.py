@@ -14,6 +14,9 @@
 notebook_import('.injection')
 notebook_import('.spark_log')
 
+from abc import ABC, abstractmethod
+from injector import Injector, inject, singleton, Binder
+
 class PythonLoggerProvider(ABC):
     @abstractmethod
     def get_logger(self, name: str, session = None):

@@ -33,6 +33,7 @@ except:
             pass
 
 notebook_import(".notebook_framework")
+notebook_import(".spark_session")
 
 from notebookutils import mssparkutils
 
@@ -47,7 +48,7 @@ class SynapseTokenCredential(TokenCredential):
 
 class SynapseService(PlatformService):
     def __init__(self, config, logger):
-        self.config = types.SimpleNamespace(**config)
+        self.config = config
         self.logger = logger
         self._base_url = self._build_base_url()
         
@@ -182,25 +183,13 @@ class SynapseService(PlatformService):
             raise NotImplementedError("Directory listing not available without mssparkutils")
 
     def _build_base_url(self) -> str:
-        """Build base URL for Synapse workspace from workspace_id
+        spark = get_or_create_spark_session()
+        idkey = "spark.synapse.workspace.name"
+        hostkey ="spark.synapse.gatewayHost"
+        workspace_id = self.config.get(idkey, spark.conf.get(idkey))
+        workspace_host = self.config.get(hostkey, spark.conf.get(hostkey))
         
-        workspace_id can be:
-        1. A workspace name: "mysynapseworkspace" 
-        2. A full URL: "https://mysynapseworkspace.dev.azuresynapse.net"
-        3. A custom domain URL for gov/private clouds
-        """
-        workspace_id = getattr(self.config, 'workspace_id', None)
-        
-        if not workspace_id:
-            raise Exception("No workspace_id provided")
-            
-        # If it's already a URL, use it directly
-        if workspace_id.startswith('https://') or workspace_id.startswith('http://'):
-            return workspace_id
-        else:
-            # Assume it's a workspace name and construct the URL
-            # Default to commercial cloud pattern
-            return f"https://{workspace_id}.dev.azuresynapse.net"
+        return f"https://{workspace_id}.{workspace_host}"
 
     def _get_token(self) -> str:
         """Get access token for Synapse API"""
@@ -670,11 +659,12 @@ class SynapseService(PlatformService):
         
         return {'environment': 'synapse'}
 
-if add_to_registry:
-    # Register the factory
-    import __main__
-    kef = getattr(__main__, "kindling_environment_factories", None)
-    kef["synapse"] = lambda config, logger: SynapseService(config, logger)
+if add_to_registry:    
+    @PlatformServices.register(
+        name="synapse", 
+        description="Synapse platform service")
+    def create_platform_service(config, logger):
+        return SynapseService(config, logger)
 
 # METADATA ********************
 

@@ -103,13 +103,13 @@ class InjectorServiceWrapper:
     def _get_framework_via_di() -> CombinedFramework:
         """Get framework using dependency injection"""
         from kindling.injection import get_kindling_service
-        from kindling.platform_provider import PlatformEnvironmentProvider
+        from kindling.platform_provider import PlatformServiceProvider
         from kindling.notebook_framework import NotebookManager
         from kindling.spark_config import ConfigService
         
         return CombinedFramework(
             get_kindling_service(NotebookManager),
-            get_kindling_service(PlatformEnvironmentProvider).get_service(),
+            get_kindling_service(PlatformServiceProvider).get_service(),
             get_kindling_service(ConfigService)
         )
 
@@ -529,12 +529,12 @@ class NotebookTestEnvironment:
                     
             globals()['DataEntityRegistry'] = DataEntityRegistry
 
-        if 'PlatformEnvironmentProvider' not in globals():
-            class MockPlatformEnvironmentProvider:
+        if 'PlatformServiceProvider' not in globals():
+            class MockPlatformServiceProvider:
                 def __init__(self):
                     pes = MagicMock()
                     self.get_service = MagicMock(return_value=pes)
-            globals()['PlatformEnvironmentProvider'] = MockPlatformEnvironmentProvider
+            globals()['PlatformServiceProvider'] = MockPlatformServiceProvider
 
         if 'DataPipesRegistry' not in globals():
             class MockDataPipesRegistry:

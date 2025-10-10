@@ -15,17 +15,24 @@ from abc import ABC, abstractmethod
 
 notebook_import('.injection')
 
-import __main__
-
 class PlatformServiceProvider(ABC):
+    @abstractmethod
+    def set_service(self, svc):
+        pass
+
     @abstractmethod
     def get_service(self):
         pass
 
 @GlobalInjector.singleton_autobind()
 class SparkPlatformServiceProvider(PlatformServiceProvider):
+    svc = None
+
+    def set_service(self, svc):
+        self.svc = svc
+
     def get_service(self):
-        return getattr(__main__, "platform_service", None)
+        return self.svc
 
 # METADATA ********************
 

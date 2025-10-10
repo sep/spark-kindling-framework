@@ -106,7 +106,6 @@ class TestNotebookLoader(SynapseNotebookTestCase):
         # Create instance
         loader = NotebookLoader(mock_platform_provider, mock_logger_provider)
         
-        assert loader.es == mock_env_service
         assert loader.logger == mock_logger
         assert loader._loaded_modules == {}
         assert loader._notebook_cache is None

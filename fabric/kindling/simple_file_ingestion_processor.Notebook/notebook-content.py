@@ -36,7 +36,7 @@ notebook_import(".file_ingestion")
 @GlobalInjector.singleton_autobind()
 class SimpleFileIngestionProcessor(FileIngestionProcessor):
     @inject
-    def __init__(self, config: ConfigService, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider, lp: PythonLoggerProvider, pep: PlatformEnvironmentProvider ):
+    def __init__(self, config: ConfigService, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider, lp: PythonLoggerProvider, pep: PlatformServiceProvider ):
         self.config = config
         self.fir = fir
         self.ep = ep

@@ -57,7 +57,7 @@ BOOTSTRAP_CONFIG = {
 
 # CELL ********************
 
-framework.notebook_loader.publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/", "0.26.0" )
+framework.notebook_loader.publish_notebook_folder_as_package( "kindling", "kindling", "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/packages/", "0.27.0" )
 
 # METADATA ********************
 

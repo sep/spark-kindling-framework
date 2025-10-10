@@ -14,6 +14,7 @@
 import time
 import subprocess
 import sys
+import __main__
 from typing import Dict, List, Optional, Any, Union
 import types
 import requests 
@@ -24,7 +25,7 @@ notebook_import(".notebook_framework")
 
 class FabricService(PlatformService):
     def __init__(self, config, logger):
-        self.config = types.SimpleNamespace(**config)
+        self.config = config
         self.logger = logger
         self._base_url = self._build_base_url()
         
@@ -147,12 +148,10 @@ class FabricService(PlatformService):
         return mssparkutils.credentials.getToken(audience)
 
     def exists(self, path: str) -> bool:
-        import __main__
         mssparkutils = getattr(__main__, 'mssparkutils', None)
         return mssparkutils.fs.exists(path)
 
     def copy(self, source: str, destination: str, overwrite: bool = False) -> None:
-        import __main__
         mssparkutils = getattr(__main__, 'mssparkutils', None)
         mssparkutils.fs.cp(source, destination, overwrite)
 
@@ -160,23 +159,20 @@ class FabricService(PlatformService):
         mssparkutils = getattr(__main__, 'mssparkutils', None)
         mssparkutils.fs.mv(source, dest)
 
-    def read(self, path: str, encoding: str = 'utf-8') -> Union[str, bytes]:
-        with open(path, 'r' if encoding else 'rb') as f:
-            return f.read()
+    def read(self, path: str, max_bytes = 1024*1024) -> Union[str, bytes]:
+        mssparkutils = getattr(__main__, 'mssparkutils', None)
+        return mssparkutils.fs.head(path, max_bytes)
 
-    def write(self, path: str, content: Union[str, bytes], overwrite: bool = False) -> None:
-        mode = 'w' if isinstance(content, str) else 'wb'
-        with open(path, mode) as f:
-            f.write(content)
+    def write(self, path: str, content: str, overwrite: bool = False) -> None:
+        mssparkutils = getattr(__main__, 'mssparkutils', None)
+        mssparkutils.fs.put(path, content, overwrite)
 
     def list(self, path: str) -> List[str]:
-        import __main__
         mssparkutils = getattr(__main__, 'mssparkutils', None)
         files = mssparkutils.fs.ls(path)
         return [f.name for f in files]
 
     def delete(self, path: str, recurse = False) -> None:
-        import __main__
         mssparkutils = getattr(__main__, 'mssparkutils', None)
         if mssparkutils:
             mssparkutils.fs.rm(path, recurse)
@@ -184,54 +180,11 @@ class FabricService(PlatformService):
             raise NotImplementedError("File delete not available without mssparkutils")   
 
     def _build_base_url(self) -> str:
-        """Build base URL for Fabric API endpoints"""
-        # Default API base URL for commercial cloud
         return "https://api.fabric.microsoft.com/v1/"
         
     def _get_workspace_id(self) -> str:
-        """Get workspace GUID from config workspace_id
-        
-        Extracts the GUID from workspace_id which could be:
-        - Direct GUID format: "ab18d43b-50de-4b41-b44b-f513a6731b99"
-        - Fabric URL: "https://app.fabric.microsoft.com/groups/{id}"
-        - Fabric URL: "https://app.fabric.microsoft.com/workspaces/{id}"
-        """
-        workspace_id = getattr(self.config, 'workspace_id', None)
-        if not workspace_id:
-            raise Exception("No workspace_id provided")
-            
-        # Check if it's a URL and extract the GUID if needed
-        if workspace_id.startswith('https://'):
-            if '/groups/' in workspace_id:
-                workspace_id = workspace_id.split('/groups/')[-1].split('/')[0]
-            elif '/workspaces/' in workspace_id:
-                workspace_id = workspace_id.split('/workspaces/')[-1].split('/')[0]
-            else:
-                # Not a recognized URL format
-                raise Exception(f"Invalid Fabric URL format: {workspace_id}")
-                
-        # Validate GUID format
-        self._validate_workspace_id(workspace_id)
-        return workspace_id
-        
-    def _validate_workspace_id(self, workspace_id: str) -> str:
-        """Validate and clean workspace ID"""
-        import re
-        # Validate GUID format
-        guid_pattern = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-        if not re.match(guid_pattern, workspace_id):
-            raise Exception(f"Invalid workspace ID format: {workspace_id}. Expected GUID format.")
-        
-        # Clean up workspace ID
-        workspace_id = workspace_id.strip()
-        
-        # Validate GUID format (Fabric workspace IDs are GUIDs)
-        guid_pattern = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-        
-        if not re.match(guid_pattern, workspace_id):
-            self.logger.warning(f"Workspace ID '{workspace_id}' doesn't appear to be a valid GUID format")
-            self.logger.warning("Expected format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
-        
+        import notebookutils
+        workspace_id = self.config.get('workspace_id', notebookutils.runtime.context.get("currentWorkspaceId"))
         return workspace_id
     
     def _get_token(self) -> str:
@@ -722,9 +675,11 @@ class FabricService(PlatformService):
             pass
         return {}
         
-import __main__
-kef = getattr(__main__,"kindling_environment_factories", None)
-kef["fabric"] = lambda config, logger: FabricService(config, logger)
+@PlatformServices.register(
+    name="fabric", 
+    description="Fabric platform service")
+def create_platform_service(config, logger):
+    return FabricService(config, logger)
 
 # METADATA ********************
 

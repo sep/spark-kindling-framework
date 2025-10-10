@@ -490,10 +490,13 @@ except (ImportError, ModuleNotFoundError):
         return func
 
 try:
-    from kindling.platform_provider import PlatformEnvironmentProvider
+    from kindling.platform_provider import PlatformServiceProvider
 except (ImportError, ModuleNotFoundError):
     # kindling.platform_provider module is not available, define interface locally
-    class PlatformEnvironmentProvider:
+    class PlatformServiceProvider:
+        def set_service(self):
+            pass
+
         def get_service(self):
             pass
 
@@ -521,17 +524,23 @@ def create_notebook_loader(es, config):
 @GlobalInjector.singleton_autobind()
 class NotebookLoader(NotebookManager):
     @inject
-    def __init__(self, psp: PlatformEnvironmentProvider, plp: PythonLoggerProvider):
-        self.es = psp.get_service()
+    def __init__(self, psp: PlatformServiceProvider, plp: PythonLoggerProvider):
+        self.es = None
+        self.psp = psp
         self.logger = plp.get_logger("NotebookLoader")
         self._loaded_modules: Dict[str, types.ModuleType] = {}
         self._notebook_cache = None
         self._folder_cache = None
 
+    def get_platform_service(self):
+        if not self.es:
+            self.es = self.psp.get_service()
+        return self.es
+
     def get_all_notebooks(self, force_refresh: bool = False) -> List[NotebookResource]:
         if self._notebook_cache is None or force_refresh:
             try:
-                self._notebook_cache = self.es.get_notebooks()
+                self._notebook_cache = self.get_platform_service().get_notebooks()
                 self.logger.debug(f"Discovered {len(self._notebook_cache)} notebooks")
             except Exception as e:
                 self.logger.error(f"Failed to discover notebooks: {str(e)}")
@@ -732,7 +741,7 @@ class NotebookLoader(NotebookManager):
     def load_notebook_code(self, notebook_name: str, suppress_nbimports = False) -> Tuple[str, List[str]]:
         try:
             self.logger.debug(f"Loading notebook code for: {notebook_name}")
-            notebook = self.es.get_notebook(notebook_name)
+            notebook = self.get_platform_service().get_notebook(notebook_name)
             
             code_blocks = []
             for cell in notebook.properties.cells:
@@ -1158,7 +1167,7 @@ class NotebookLoader(NotebookManager):
                 shutil.copy2(wheel_path, location)
             else:
                 local_path = f"file:///{wheel_path}"
-                self.es.copy(local_path, f"{location}/{wheel_file}", True)
+                self.get_platform_service().copy(local_path, f"{location}/{wheel_file}", True)
             
             print(f"Package {package_name} successfully built and saved to {location}")
             
@@ -1280,9 +1289,85 @@ class NotebookPackages:
 class DependencyError(Exception):
     pass
 
-import __main__
-if not hasattr(__main__, 'kindling_environment_factories'):
-    setattr(__main__, 'kindling_environment_factories', {})
+from typing import Callable, Dict, Optional, Any
+from dataclasses import dataclass
+
+@dataclass
+class PlatformServiceDefinition:
+    name: str
+    factory: Callable[[], Any]
+    description: Optional[str] = None
+
+
+class PlatformServices:
+    registry: Dict[str, PlatformServiceDefinition] = {}
+
+    @classmethod
+    def register(cls, name: str, description: Optional[str] = None):
+        """
+        Decorator to register a platform service factory function.
+        
+        Usage:
+            @PlatformServices.register(name="spark_session")
+            def create_spark():
+                return SparkSession.builder.getOrCreate()
+        """
+        def decorator(factory_func: Callable[[], Any]):
+            cls.register_service(
+                name=name,
+                factory=factory_func,
+                description=description
+            )
+            return factory_func
+        return decorator
+    
+    @classmethod
+    def register_service(
+        cls, 
+        name: str, 
+        factory: Callable[[], Any],
+        description: Optional[str] = None
+    ):
+        """
+        Register a platform service with its factory function.
+        
+        Args:
+            name: Unique service name
+            factory: Callable that returns the service instance
+            description: Optional description
+        """
+        if name in cls.registry:
+            raise ValueError(f"Platform service '{name}' is already registered")
+        
+        service_def = PlatformServiceDefinition(
+            name=name,
+            factory=factory,
+            description=description or f"Platform service: {name}"
+        )
+        cls.registry[name] = service_def
+        print(f"✓ Registered platform service: {name}")
+    
+    @classmethod
+    def has_service(cls, name: str) -> bool:
+        """Check if a service is registered"""
+        return name in cls.registry
+    
+    @classmethod
+    def get_service_names(cls) -> list[str]:
+        """Get all registered service names"""
+        return list(cls.registry.keys())
+    
+    @classmethod
+    def get_service_definition(cls, name: str) -> Optional[PlatformServiceDefinition]:
+        """Get the service definition without instantiating"""
+        return cls.registry.get(name)
+    
+    @classmethod
+    def clear_registry(cls):
+        """Clear all registered services (useful for testing)"""
+        cls.registry.clear()
+        print("✓ Platform services registry cleared")
+
 
 # METADATA ********************
 

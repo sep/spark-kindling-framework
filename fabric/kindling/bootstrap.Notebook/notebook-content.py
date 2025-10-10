@@ -21,6 +21,10 @@ notebook_import(".app_framework")
 notebook_import(".injection")
 notebook_import(".spark_config")
 notebook_import(".spark_session")
+notebook_import(".platform_fabric")
+notebook_import(".platform_synapse")
+notebook_import(".platform_databricks")
+notebook_import(".platform_local")
 
 # Spark session and logging utilities
 level_hierarchy = { 
@@ -34,28 +38,17 @@ level_hierarchy = {
     "OFF": 6
 }
 
-def get_or_create_spark_session():
-    """Get or create Spark session"""
-    import sys
-  
-    if 'spark' not in globals():
-        try:
-            from pyspark.sql import SparkSession
-            
-            print("Creating new SparkSession...")
-            spark_session = SparkSession.builder \
-                .appName("KindlingSession") \
-                .config("spark.driver.memory", "2g") \
-                .getOrCreate()
-            
-            globals()['spark'] = spark_session
-            
-        except ImportError:
-            sys.exit(1)
-    else:
-        pass
+def flatten_dynaconf(data: Dict[str, Any], parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
+    """Flatten a nested Dynaconf config into dot-notation keys."""
+    items = []
+    for key, value in data.items():
+        new_key = f"{parent_key}{sep}{key}" if parent_key else key
+        if isinstance(value, dict):
+            items.extend(flatten_dynaconf(value, new_key.lower(), sep=sep).items())
+        else:
+            items.append((new_key.lower(), value))
+    return dict(items)
 
-    return globals()['spark']
 
 def get_spark_log_level():
     """Get current Spark log level"""
@@ -81,80 +74,35 @@ def create_console_logger(config):
 
 logger = create_console_logger({"log_level":"debug"})
 
-def detect_platform(config = None) -> str:
-    if config:
-        if config.get("platform_environment", None) != None:
-            return config.get("platform_environment")
-
-    import os
-    import sys
-    import __main__
-    
-    has_dbutils = hasattr(__main__, 'dbutils') and getattr(__main__, 'dbutils') is not None
-
-    if has_dbutils or 'DATABRICKS_RUNTIME_VERSION' in os.environ:
-        return 'databricks'
-    
-    if not (hasattr(__main__, 'mssparkutils') and getattr(__main__, 'mssparkutils') is not None):
-        return 'local'
-    
-    mssparkutils = getattr(__main__, 'mssparkutils')
-    
-    # Environment variable checks (most reliable)
-    synapse_env_indicators = [
-        'SYNAPSE_WORKSPACE_NAME',
-        'SYNAPSE_POOL_NAME', 
-        'AZURE_SYNAPSE_WORKSPACE_NAME',
-        'SYNAPSE_SERVER_NAME'
-    ]
-    
-    fabric_env_indicators = [
-        'FABRIC_WORKSPACE_ID',
-        'FABRIC_CAPACITY_ID',
-        'POWERBI_WORKSPACE_ID'
-    ]
-    
-    # Check for Synapse environment variables
-    if any(os.environ.get(var) for var in synapse_env_indicators):
-        return 'synapse'
-    
-    # Check for Fabric environment variables  
-    if any(os.environ.get(var) for var in fabric_env_indicators):
-        return 'fabric'
-    
-    # API capability checks
+def detect_platform(config = None) -> str:       
+    # Check for Databricks first - most distinctive
     try:
-        # Check for Synapse-specific mssparkutils methods
-        if (hasattr(mssparkutils, 'credentials') and 
-            hasattr(mssparkutils.credentials, 'getConnectionStringOrCreds')):
-            # Try to access it - if it works, likely Synapse
-            getattr(mssparkutils.credentials, 'getConnectionStringOrCreds')
-            return 'synapse'
+        # Databricks always has this config
+        if spark.conf.get("spark.databricks.clusterUsageTags.sparkVersion", None):
+            return "databricks"
     except:
         pass
     
-    # Spark configuration check
-    spark = get_or_create_spark_session()
-    if spark:
-        try:
-            app_name = spark.sparkContext.appName.lower()
-            master = spark.sparkContext.master.lower()
-            
-            # Check master URL patterns
-            if 'synapse' in master:
-                return 'synapse'
-            elif 'fabric' in master:
-                return 'fabric'
-            
-            # Check app name patterns
-            if 'synapse' in app_name and 'fabric' not in app_name:
-                return 'synapse'
-                
-        except:
-            pass
+    # Check for Synapse-specific config
+    try:
+        # This is unique to Synapse
+        if spark.conf.get("spark.synapse.workspace.name", None):
+            return "synapse"
+    except:
+        pass
     
-    # Default to fabric if we have mssparkutils but no clear Synapse indicators
-    return 'fabric'
+    # Check for Fabric - notebookutils with specific context
+    try:
+        import notebookutils
+        # Fabric has workspaceId in context
+        workspace_id = notebookutils.runtime.context.get("currentWorkspaceId")
+        if workspace_id:
+            return "fabric"
+    except (ImportError, Exception):
+        pass
+    
+    raise RuntimeError("Unable to detect platform (not Synapse, Fabric, or Databricks)")
+
 
 def safe_get_global(var_name: str, default: Any = None) -> Any:
     """Safely get a global variable"""
@@ -187,28 +135,11 @@ def install_bootstrap_dependencies(logger, bootstrap_config):
         load_if_needed(package)
 
 def initialize_platform_services(platform, config, logger):
-    """Initialize platform-specific services"""
-    
-    if platform.lower() == 'fabric':
-        # Import Fabric platform service
-        notebook_import(".platform_fabric")
-        return FabricService(config, logger)
-    elif platform.lower() == 'databricks':
-        # Import Databricks platform service
-        notebook_import(".platform_databricks") 
-        return DatabricksService(config, logger)
-    elif platform.lower() == 'synapse':
-        # Import Synapse platform service
-        notebook_import(".platform_synapse")
-        return SynapseService(config, logger)
-    elif platform.lower() == 'local':
-        # Import Local platform service
-        notebook_import(".platform_local")
-        return LocalService(config, logger)
-    else:
-        raise ValueError(f"Unsupported platform: {platform}")
+    svc = PlatformServices.get_service_definition(platform).factory(config,logger)
+    get_kindling_service(PlatformServiceProvider).set_service(svc)
+    return svc
 
-def load_workspace_packages(backend, packages, logger):
+def load_workspace_packages(platform, packages, logger):
     """Load workspace packages using existing NotebookLoader"""
     try:
         loader = get_kindling_service(NotebookManager)
@@ -229,54 +160,64 @@ def load_workspace_packages(backend, packages, logger):
         logger.warning(f"Workspace package loading failed: {str(e)}")
 
 def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None):
-    """Linear framework initialization with optional app execution"""
+    """Linear framework initialization with Dynaconf config loading"""
+
+    print(f"initialize_framework: initial_config = {config}")
+
+    # Extract bootstrap settings
+    artifacts_storage_path = config.get('artifacts_storage_path')
+    use_lake_packages = config.get('use_lake_packages', True)
+    environment = config.get('environment', 'development')
+    
+    config_files = None
+    if use_lake_packages and artifacts_storage_path:
+        config_files = download_config_files(
+            artifacts_storage_path=artifacts_storage_path,
+            environment=environment,
+            app_name=app_name
+        )
+    
+    from kindling.spark_config import configure_injector_with_config
+    injector = configure_injector_with_config(
+        config_files=config_files,
+        initial_config=config,  # BOOTSTRAP_CONFIG as overrides
+        environment=environment,
+        artifacts_storage_path=artifacts_storage_path
+    )
+    
+    config_service = get_kindling_service(ConfigService)
+    
     logger = get_kindling_service(PythonLoggerProvider).get_logger("KindlingBootstrap")
     logger.info("Starting framework initialization")
     
     try:
-        install_bootstrap_dependencies(logger, config)
+        required_packages = config_service.get('kindling.bootstrap.required_packages', [])
+        install_bootstrap_dependencies(logger, {'required_packages': required_packages})
         
-        platform = detect_platform()
-        is_interactive = is_interactive_session(config.get('is_interactive'))
-        logger.info(f"Platform: {platform}, Interactive: {is_interactive}")
+        platform = detect_platform(config={'platform_service': config_service.get('kindling.platform.environment')})
+        logger.info(f"Platform: {platform}")
         
-        backend = initialize_platform_services(platform, config, logger)
-        logger.info("Backend services initialized")
+        platformservice = initialize_platform_services(platform, config_service, logger)
+        logger.info("Platform services initialized")
         
-        if config.get('load_local_packages', True):
-            # Import here to avoid circular dependency
-            from kindling.notebook_framework import NotebookLoader
-            
-            if hasattr(backend, 'notebook_loader'):
-                loader = backend.notebook_loader
-            else:
-                loader = create_notebook_loader(backend, config)
-                            
-            workspace_packages = loader.get_all_packages(
-                ignored_folders=config.get('ignored_folders', [])
-            )
-            load_workspace_packages(backend, workspace_packages, logger)
+        if config_service.get('kindling.bootstrap.load_local', True):
+            ignored_folders = config_service.get('kindling.bootstrap.ignored_folders', [])
+            workspace_packages = get_kindling_service(NotebookManager).get_all_packages(ignored_folders=ignored_folders)
+            load_workspace_packages(platformservice, workspace_packages, logger)
             logger.info(f"Loaded {len(workspace_packages)} workspace packages")
-    
         
         logger.info("Framework initialization complete")
         
         if app_name:
-            # Import here to avoid circular dependency
-            try:
-                logger.info(f"Auto-running app: {app_name}")
-
-                runner = get_kindling_service(AppRunner)
-                runner.run_app(app_name)
-
-            except ImportError as e:
-                logger.warning(f"Could not run app {app_name}: app framework not available ({e})")
+            logger.info(f"Auto-running app: {app_name}")
+            runner = get_kindling_service(AppRunner)
+            runner.run_app(app_name)
         
-        return backend
+        return platformservice
         
     except Exception as e:
         logger.error(f"Framework initialization failed: {str(e)}")
-        raise Exception(f"Framework initialization failed: {str(e)}") from e
+        raise
 
 def bootstrap_framework(config: Dict[str, Any], logger=None):
     """Backward compatibility wrapper"""

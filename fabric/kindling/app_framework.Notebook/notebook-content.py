@@ -20,6 +20,7 @@ import tempfile
 from typing import Dict, List, Any, Optional, Union, Tuple
 from dataclasses import dataclass
 from pathlib import Path
+from abc import ABC, abstractmethod
 
 notebook_import(".injection")
 notebook_import(".spark_config")
@@ -45,38 +46,76 @@ class AppConfig:
 @GlobalInjector.singleton_autobind()
 class AppManager(AppRunner):
     @inject   
-    def __init__(self, nm: NotebookManager, pp: PlatformEnvironmentProvider, config: ConfigService, tp: SparkTraceProvider, lp: PythonLoggerProvider):
+    def __init__(self, nm: NotebookManager, pp: PlatformServiceProvider, 
+                 config: ConfigService, tp: SparkTraceProvider, lp: PythonLoggerProvider):
         self.config = config
-        self.pp = pp
-        self.es = pp.get_service()
+        self.psp = pp
+        self.es = None
         self.tp = tp
         self.framework = nm
         self.logger = lp.get_logger("AppManager")
-        self.storage_utils = self._get_storage_utils()
-        self.temp_dir = None  # For downloading files locally
         self.artifacts_path = config.get("artifacts_storage_path")
     
-    def _get_storage_utils(self):
-        """Get platform storage utilities"""
-        import __main__
-        return getattr(__main__, 'mssparkutils', None) or getattr(__main__, 'dbutils', None)
-    
-    def _get_env_name(self) -> str:
-        return self.es.get_platform_name()
+    def get_platform_service(self):
+        if not self.es:
+            self.es = self.psp.get_service()
+        return self.es
     
     def discover_apps(self) -> List[str]:
-        """Discover all available apps in the datalake"""
         try:
             apps_dir = f"{self.artifacts_path}/apps/"
-            apps = self.storage_utils.fs.ls(apps_dir)
-            app_names = [app.name for app in apps if app.isDir]
+            apps = self.get_platform_service().list(apps_dir)
+            app_names = []
+            for app_path in apps:
+                app_name = app_path.rstrip('/').split('/')[-1]
+                if app_name and not app_name.startswith('.'):
+                    app_names.append(app_name)
             self.logger.info(f"Discovered {len(app_names)} apps: {app_names}")
             return app_names
         except Exception as e:
             self.logger.error(f"Failed to discover apps: {str(e)}")
             return []
     
-    def load_app_config(self, app_name: str, environment: str = None) -> AppConfig:
+    def run_app(self, app_name: str) -> Any:
+        with self.tp.span(component=f"kindling-app-{app_name}", operation="running", 
+                         details={}, reraise=True):   
+            temp_dir = None
+            try:
+                environment = self.config.get('environment')
+                app_config = self._load_app_config(app_name, environment)
+                
+                pypi_dependencies, lake_requirements = self._resolve_app_dependencies(
+                    app_name, self.config
+                )
+                
+                pypi_dependencies = self._override_with_workspace_packages(
+                    pypi_dependencies, self.config
+                )
+                
+                with self.tp.span(component=f"kindling-app-{app_name}", 
+                                operation="loading_dependencies", details={}, reraise=True):
+                    temp_dir = self._install_app_dependencies(
+                        app_name, pypi_dependencies, lake_requirements
+                    )
+                
+                with self.tp.span(component=f"kindling-app-{app_name}", 
+                                operation="loading_code", details={}, reraise=True):
+                    code = self._load_app_code(app_name, app_config.entry_point)
+                
+                with self.tp.span(component=f"kindling-app-{app_name}", 
+                                operation="executing_code", details={}, reraise=True):
+                    result = self._execute_app(app_name, code)
+                
+                return result
+            
+            finally:
+                if temp_dir:
+                    self._cleanup_temp_files(temp_dir)
+    
+    def _get_env_name(self) -> str:
+        return self.get_platform_service().get_platform_name()
+    
+    def _load_app_config(self, app_name: str, environment: str = None) -> AppConfig:
         self.logger.debug(f"Loading config for {app_name}")        
         app_dir = f"{self.artifacts_path}/apps/{app_name}/"
         
@@ -85,10 +124,10 @@ class AppManager(AppRunner):
         
         if environment:
             env_config_file = f"app.{environment}.yaml"
-            try:     
-                self.logger.debug(f"Loading config: {app_dir}{env_config_file}")
-                raw_content = self.storage_utils.fs.head(f"{app_dir}{env_config_file}", max_bytes=1024*1024)
-                config_content = raw_content.decode('utf-8') if isinstance(raw_content, bytes) else raw_content
+            env_config_path = f"{app_dir}{env_config_file}"
+            try:
+                self.logger.debug(f"Loading config: {env_config_path}")
+                config_content = self.get_platform_service().read(env_config_path)
                 config_file = env_config_file
                 self.logger.info(f"Loaded environment config: {env_config_file}")
             except Exception:
@@ -99,9 +138,7 @@ class AppManager(AppRunner):
                 config_file = "app.yaml"
                 config_file_path = f"{app_dir}app.yaml"
                 self.logger.debug(f"Loading config: {config_file_path}")
-                raw_content = self.storage_utils.fs.head(config_file_path, max_bytes=1024*1024)
-                config_content = raw_content.decode('utf-8') if isinstance(raw_content, bytes) else raw_content
-                config_file = "app.yaml"
+                config_content = self.get_platform_service().read(config_file_path)
             except Exception as e:
                 raise Exception(f"Failed to load app config for {app_name}: {str(e)}")
         
@@ -121,16 +158,40 @@ class AppManager(AppRunner):
             metadata=config_data.get('metadata', {})
         )
     
-    def parse_lake_requirements(self, app_name: str) -> List[str]:
-        """Parse lake-reqs.txt file to get package specifications"""
+    def _resolve_app_dependencies(self, app_name: str, config: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+        pypi_dependencies = []
+        lake_requirements = []
+        
+        try:
+            app_dir = f"{self.artifacts_path}/apps/{app_name}/"
+            
+            try:
+                requirements_path = f"{app_dir}requirements.txt"
+                content = self.get_platform_service().read(requirements_path)
+                
+                pypi_dependencies = [line.strip() for line in content.split('\n') 
+                                   if line.strip() and not line.startswith('#') and not line.startswith('-')]
+                
+                self.logger.debug(f"Loaded {len(pypi_dependencies)} PyPI requirements for {app_name}")
+                
+            except Exception as e:
+                self.logger.debug(f"No requirements.txt found for {app_name}: {str(e)}")
+            
+            lake_requirements = self._parse_lake_requirements(app_name)
+            
+            return pypi_dependencies, lake_requirements
+            
+        except Exception as e:
+            self.logger.error(f"Failed to resolve dependencies for {app_name}: {str(e)}")
+            return [], []
+    
+    def _parse_lake_requirements(self, app_name: str) -> List[str]:
         try:
             app_dir = f"{self.artifacts_path}/apps/{app_name}/"
             lake_reqs_path = f"{app_dir}lake-reqs.txt"
             
-            raw_content = self.storage_utils.fs.head(lake_reqs_path, max_bytes=1024*1024)
-            content = raw_content.decode('utf-8') if isinstance(raw_content, bytes) else raw_content
+            content = self.get_platform_service().read(lake_reqs_path)
             
-            # Parse package specifications (package name with optional version)
             lake_requirements = []
             for line in content.split('\n'):
                 line = line.strip()
@@ -144,150 +205,7 @@ class AppManager(AppRunner):
             self.logger.debug(f"No lake-reqs.txt found for {app_name}: {str(e)}")
             return []
     
-    def resolve_app_dependencies(self, app_name: str, config: Dict[str, Any]) -> Tuple[List[str], List[str]]:
-        """Load requirements.txt (PyPI) and lake-reqs.txt (datalake) separately"""
-        pypi_dependencies = []
-        lake_requirements = []
-        
-        try:
-            app_dir = f"{self.artifacts_path}/apps/{app_name}/"
-            
-            # Load requirements.txt (PyPI packages)
-            try:
-                requirements_path = f"{app_dir}requirements.txt"
-                raw_content = self.storage_utils.fs.head(requirements_path, max_bytes=1024*1024)
-                content = raw_content.decode('utf-8') if isinstance(raw_content, bytes) else raw_content
-                
-                pypi_dependencies = [line.strip() for line in content.split('\n') 
-                                   if line.strip() and not line.startswith('#') and not line.startswith('-')]
-                
-                self.logger.debug(f"Loaded {len(pypi_dependencies)} PyPI requirements for {app_name}")
-                
-            except Exception as e:
-                self.logger.debug(f"No requirements.txt found for {app_name}: {str(e)}")
-            
-            # Load lake-reqs.txt (datalake packages)
-            lake_requirements = self.parse_lake_requirements(app_name)
-            
-            return pypi_dependencies, lake_requirements
-            
-        except Exception as e:
-            self.logger.error(f"Failed to resolve dependencies for {app_name}: {str(e)}")
-            return [], []
-    
-    def find_best_wheel(self, package_spec: str) -> Optional[str]:
-        """Find the best matching wheel for a package specification considering environment"""
-        current_env = self._get_env_name()
-        
-        # Parse package spec (e.g., "my-framework==1.0.0" or "my-framework")
-        if '==' in package_spec:
-            package_name, version = package_spec.split('==', 1)
-            package_name = package_name.strip()
-            version = version.strip()
-        else:
-            package_name = package_spec.strip()
-            version = None
-        
-        try:
-            packages_dir = f"{self.artifacts_path}/packages/"
-            all_files = self.storage_utils.fs.ls(packages_dir)
-            
-            # Find all wheels that match the package name
-            matching_wheels = []
-            for file_info in all_files:
-                if not file_info.name.endswith('.whl'):
-                    continue
-                
-                # Extract package name from wheel filename
-                wheel_parts = file_info.name.split('-')
-                if len(wheel_parts) < 2:
-                    continue
-                
-                wheel_package_name = wheel_parts[0].replace('_', '-')
-                wheel_version = wheel_parts[1] if len(wheel_parts) > 1 else None
-                
-                # Check if package name matches
-                if wheel_package_name.lower() != package_name.lower().replace('_', '-'):
-                    continue
-                
-                # Check version if specified
-                if version and wheel_version != version:
-                    continue
-                
-                # Determine priority based on environment match
-                priority = 3  # Default priority
-                if f"-{current_env}.whl" in file_info.name:
-                    priority = 1  # Environment-specific wheel (highest priority)
-                elif "-any.whl" in file_info.name:
-                    priority = 2  # Generic wheel (medium priority)
-                
-                matching_wheels.append((file_info.path, file_info.name, priority, wheel_version))
-            
-            if not matching_wheels:
-                self.logger.warning(f"No wheel found for package: {package_spec}")
-                return None
-            
-            # Sort by priority (1=best), then by version (newest first)
-            matching_wheels.sort(key=lambda x: (x[2], x[3] or '0'), reverse=False)
-            
-            best_wheel = matching_wheels[0]
-            self.logger.info(f"Selected wheel for {package_spec}: {best_wheel[1]}")
-            
-            return best_wheel[0]  # Return path
-            
-        except Exception as e:
-            self.logger.error(f"Failed to find wheel for {package_spec}: {str(e)}")
-            return None
-    
-    def download_lake_wheels(self, app_name: str, lake_requirements: List[str]) -> str:
-        """Download required wheels from datalake to local cache"""
-        if not lake_requirements:
-            return ""
-        
-        if not self.temp_dir:
-            self.temp_dir = tempfile.mkdtemp(prefix=f"app_{app_name}_")
-        
-        wheels_dir = Path(self.temp_dir) / "wheels"
-        wheels_dir.mkdir(parents=True, exist_ok=True)
-        
-        downloaded_wheels = []
-        total_size = 0
-        
-        for package_spec in lake_requirements:
-            wheel_path = self.find_best_wheel(package_spec)
-            
-            if not wheel_path:
-                self.logger.warning(f"Skipping missing wheel: {package_spec}")
-                continue
-            
-            wheel_name = wheel_path.split('/')[-1]
-            local_wheel_path = wheels_dir / wheel_name
-            
-            # Skip if already downloaded
-            if local_wheel_path.exists():
-                self.logger.debug(f"Wheel already cached: {wheel_name}")
-                continue
-            
-            try:
-                self.logger.debug(f"Downloading wheel: {wheel_name}")
-                
-                self.storage_utils.fs.cp(wheel_path, f"file://{local_wheel_path}")
-
-                file_size = local_wheel_path.stat().st_size
-                total_size += file_size
-
-                downloaded_wheels.append(wheel_name)
-                
-                self.logger.debug(f"Downloaded {wheel_name} ({file_size/1024/1024:.1f}MB)")
-                
-            except Exception as e:
-                self.logger.error(f"Failed to download {wheel_name}: {str(e)}")
-        
-        self.logger.info(f"Downloaded {len(downloaded_wheels)} wheels, total size: {total_size/1024/1024:.1f}MB")
-        return str(wheels_dir)
-    
-    def override_with_workspace_packages(self, dependencies: List[str], config: Dict[str, Any]) -> List[str]:
-        """Override dependencies with workspace versions if available and configured"""
+    def _override_with_workspace_packages(self, dependencies: List[str], config: Dict[str, Any]) -> List[str]:
         if not config.get('load_local_packages', False):
             return dependencies
         
@@ -313,19 +231,19 @@ class AppManager(AppRunner):
             self.logger.warning(f"Failed to override with workspace packages: {str(e)}")
             return dependencies
     
-    def install_app_dependencies(self, app_name: str, pypi_dependencies: List[str], lake_requirements: List[str]) -> bool:
-
-        # Download wheels from datalake
+    def _install_app_dependencies(self, app_name: str, pypi_dependencies: List[str], 
+                                  lake_requirements: List[str]) -> Optional[str]:
+        temp_dir = None
         wheels_cache_dir = ""
-        if lake_requirements:
-            wheels_cache_dir = self.download_lake_wheels(app_name, lake_requirements)
         
-        # Install datalake wheels first (they may be dependencies for PyPI packages)
+        if lake_requirements:
+            temp_dir = tempfile.mkdtemp(prefix=f"app_{app_name}_")
+            wheels_cache_dir = self._download_lake_wheels(app_name, lake_requirements, temp_dir)
+        
         if wheels_cache_dir and lake_requirements:
             try:
                 self.logger.info(f"Installing {len(lake_requirements)} datalake packages")
                 
-                # Install wheels directly
                 wheel_files = list(Path(wheels_cache_dir).glob("*.whl"))
                 if wheel_files:
                     pip_args = [sys.executable, "-m", "pip", "install"] + [str(wf) for wf in wheel_files] + [
@@ -338,27 +256,22 @@ class AppManager(AppRunner):
                     if result.returncode == 0:
                         self.logger.info("Datalake wheels installed successfully")
                         
-                        # Import packages to execute @singleton_autobind decorators
                         for package_spec in lake_requirements:
                             package_name = package_spec.split('==')[0].strip()
                             try:
-                                # This import will execute the class definitions and register bindings
                                 __import__(package_name)
                                 self.logger.info(f"Imported {package_name} - decorators executed")
                             except ImportError as e:
                                 self.logger.error(f"Failed to import {package_name}: {e}")
-                                return False
+                                raise
                     else:
                         self.logger.error(f"Datalake wheel installation failed: {result.stderr}")
-                        return False
+                        raise Exception("Datalake wheel installation failed")
                     
-                    self.logger.info("Datalake wheels installed successfully")
-                
             except Exception as e:
                 self.logger.error(f"Failed to install datalake wheels: {str(e)}")
-                return False
+                raise
         
-        # Install PyPI dependencies
         if pypi_dependencies:
             try:
                 self.logger.info(f"Installing {len(pypi_dependencies)} PyPI packages")
@@ -368,7 +281,6 @@ class AppManager(AppRunner):
                     "--no-warn-conflicts"
                 ]
                 
-                # Add find-links if we have local wheels (in case PyPI packages depend on our wheels)
                 if wheels_cache_dir:
                     pip_args.extend(["--find-links", wheels_cache_dir])
                 
@@ -376,27 +288,126 @@ class AppManager(AppRunner):
                 
                 if result.returncode != 0:
                     self.logger.error(f"PyPI dependency installation failed: {result.stderr}")
-                    return False
+                    raise Exception("PyPI dependency installation failed")
                 
                 self.logger.info("PyPI dependencies installed successfully")
                 
             except Exception as e:
                 self.logger.error(f"Failed to install PyPI dependencies: {str(e)}")
-                return False
+                raise
         
         if not pypi_dependencies and not lake_requirements:
             self.logger.debug("No dependencies to install")
         
-        return True
+        return temp_dir
     
-    def load_app_code(self, app_name: str, entry_point: str) -> str:
-        """Load app code from datalake"""
+    def _download_lake_wheels(self, app_name: str, lake_requirements: List[str], temp_dir: str) -> str:
+        if not lake_requirements:
+            return ""
+        
+        wheels_dir = Path(temp_dir) / "wheels"
+        wheels_dir.mkdir(parents=True, exist_ok=True)
+        
+        downloaded_wheels = []
+        total_size = 0
+        
+        for package_spec in lake_requirements:
+            wheel_path = self._find_best_wheel(package_spec)
+            
+            if not wheel_path:
+                self.logger.warning(f"Skipping missing wheel: {package_spec}")
+                continue
+            
+            wheel_name = wheel_path.split('/')[-1]
+            local_wheel_path = wheels_dir / wheel_name
+            remote_wheel_path = f"{self.artifacts_path}/packages/{wheel_name}"
+            
+            if local_wheel_path.exists():
+                self.logger.debug(f"Wheel already cached: {wheel_name}")
+                continue
+            
+            try:
+                self.logger.debug(f"Downloading wheel: {wheel_name} from {remote_wheel_path}")
+
+                self.get_platform_service().copy( remote_wheel_path, f"file://{local_wheel_path}", overwrite=True )
+
+                file_size = local_wheel_path.stat().st_size
+                total_size += file_size
+                
+                downloaded_wheels.append(wheel_name)
+                
+                self.logger.debug(f"Downloaded {wheel_name} ({file_size/1024/1024:.1f}MB)")
+                
+            except Exception as e:
+                self.logger.error(f"Failed to download {wheel_name}: {str(e)}")
+        
+        self.logger.info(f"Downloaded {len(downloaded_wheels)} wheels, total size: {total_size/1024/1024:.1f}MB")
+        return str(wheels_dir)
+    
+    def _find_best_wheel(self, package_spec: str) -> Optional[str]:
+        current_env = self._get_env_name()
+        
+        if '==' in package_spec:
+            package_name, version = package_spec.split('==', 1)
+            package_name = package_name.strip()
+            version = version.strip()
+        else:
+            package_name = package_spec.strip()
+            version = None
+        
+        try:
+            packages_dir = f"{self.artifacts_path}/packages/"
+            all_files = self.get_platform_service().list(packages_dir)
+            
+            matching_wheels = []
+            for file_path in all_files:
+                file_name = file_path.split('/')[-1]
+                
+                if not file_name.endswith('.whl'):
+                    continue
+                
+                wheel_parts = file_name.split('-')
+                if len(wheel_parts) < 2:
+                    continue
+                
+                wheel_package_name = wheel_parts[0].replace('_', '-')
+                wheel_version = wheel_parts[1] if len(wheel_parts) > 1 else None
+                
+                if wheel_package_name.lower() != package_name.lower().replace('_', '-'):
+                    continue
+                
+                if version and wheel_version != version:
+                    continue
+                
+                priority = 3
+                if f"-{current_env}.whl" in file_name:
+                    priority = 1
+                elif "-any.whl" in file_name:
+                    priority = 2
+                
+                matching_wheels.append((file_path, file_name, priority, wheel_version))
+            
+            if not matching_wheels:
+                self.logger.warning(f"No wheel found for package: {package_spec}")
+                return None
+            
+            matching_wheels.sort(key=lambda x: (x[2], x[3] or '0'), reverse=False)
+            
+            best_wheel = matching_wheels[0]
+            self.logger.info(f"Selected wheel for {package_spec}: {best_wheel[1]}")
+            
+            return best_wheel[0]
+            
+        except Exception as e:
+            self.logger.error(f"Failed to find wheel for {package_spec}: {str(e)}")
+            return None
+    
+    def _load_app_code(self, app_name: str, entry_point: str) -> str:
         try:
             app_dir = f"{self.artifacts_path}/apps/{app_name}/"
             code_path = f"{app_dir}{entry_point}"
             
-            raw_content = self.storage_utils.fs.head(code_path, max_bytes=10*1024*1024)
-            code_content = raw_content.decode('utf-8') if isinstance(raw_content, bytes) else raw_content
+            code_content = self.get_platform_service().read(code_path)
             self.logger.debug(f"Loaded app code from {entry_point} ({len(code_content)} chars)")
             
             return code_content
@@ -404,11 +415,8 @@ class AppManager(AppRunner):
         except Exception as e:
             raise Exception(f"Failed to load app code for {app_name}: {str(e)}")
     
-    def execute_app(self, app_name: str, code: str) -> Any:
-        """Execute app code in the current environment"""
+    def _execute_app(self, app_name: str, code: str) -> Any:
         try:
-
-
             self.logger.info(f"Executing app: {app_name}")
             
             exec_globals = {
@@ -431,47 +439,13 @@ class AppManager(AppRunner):
             self.logger.error(f"Failed to execute app {app_name}: {str(e)}")
             raise
     
-    def cleanup_temp_files(self):
-        """Clean up temporary wheel cache"""
-        if self.temp_dir and os.path.exists(self.temp_dir):
+    def _cleanup_temp_files(self, temp_dir: str):
+        if temp_dir and os.path.exists(temp_dir):
             try:
-                shutil.rmtree(self.temp_dir)
-                self.logger.debug(f"Cleaned up temp directory: {self.temp_dir}")
+                shutil.rmtree(temp_dir)
+                self.logger.debug(f"Cleaned up temp directory: {temp_dir}")
             except Exception as e:
                 self.logger.warning(f"Failed to cleanup temp directory: {str(e)}")
-    
-    def __del__(self):
-        """Cleanup on destruction"""
-        self.cleanup_temp_files()
-
-
-    def run_app(self, app_name: str) -> Any:
-        artifacts_path = self.config.get('artifacts_storage_path')
-        with self.tp.span(component=f"kindling-app-{app_name}",operation="running",details={},reraise=True ):   
-            try:
-                environment = self.config.get('environment')
-                app_config = self.load_app_config(app_name, environment)
-                
-                pypi_dependencies, lake_requirements = self.resolve_app_dependencies(app_name, self.config)
-                
-                pypi_dependencies = self.override_with_workspace_packages(pypi_dependencies, self.config)
-                
-                with self.tp.span(component=f"kindling-app-{app_name}",operation="loading_dependencies",details={},reraise=True ):  
-                    if not self.install_app_dependencies(app_name, pypi_dependencies, lake_requirements):
-                        raise Exception("Failed to install app dependencies")
-                
-                with self.tp.span(component=f"kindling-app-{app_name}",operation="loading_code",details={},reraise=True ):  
-                    code = self.load_app_code(app_name, app_config.entry_point)
-
-                with self.tp.span(component=f"kindling-app-{app_name}",operation="executing_code",details={},reraise=True ):                   
-                    result = self.execute_app(app_name, code)
-                
-                return result
-            
-            finally:
-                # Cleanup temp files
-                self.cleanup_temp_files()
-
 
 # METADATA ********************
 
