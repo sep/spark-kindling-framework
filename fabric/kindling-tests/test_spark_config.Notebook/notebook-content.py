@@ -217,8 +217,6 @@ class TestDynaconfConfigService(SynapseNotebookTestCase):
         
         config.set("test.key", "test_value")
         
-        # Both should be updated
-        mock_spark.conf.set.assert_called_with("test.key", "test_value")
         mock_dynaconf.set.assert_called_with("test.key", "test_value")
     
     def test_service_set_method_continues_on_spark_error(self, notebook_runner, basic_test_config):

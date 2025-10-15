@@ -1,5 +1,12 @@
 # Fabric notebook source
 
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   }
+# META }
 
 # CELL ********************
 
@@ -77,3 +84,10 @@ def create_view(
     {view_statement}
     """
     execute_ddl( connection, create_view_statement )
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }

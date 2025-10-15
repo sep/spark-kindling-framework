@@ -26,7 +26,7 @@ notebook_import(".notebook_framework")
 
 class DatabricksService(PlatformService):
     def __init__(self, config, logger):
-        self.config = types.SimpleNamespace(**config)
+        self.config = config
         self.logger = logger
         self._base_url = self._build_base_url()
 
@@ -684,10 +684,12 @@ class DatabricksService(PlatformService):
             pass
         return {}
 
-import __main__
-# Register the factory function
-kef = getattr(__main__,"kindling_environment_factories", None)
-kef["databricks"] = lambda config, logger: DatabricksService(config, logger)
+        
+@PlatformServices.register(
+    name="databricks", 
+    description="Databricks platform service")
+def create_platform_service(config, logger):
+    return DatabricksService(config, logger)
 
 # METADATA ********************
 

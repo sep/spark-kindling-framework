@@ -103,13 +103,13 @@ class InjectorServiceWrapper:
     def _get_framework_via_di() -> CombinedFramework:
         """Get framework using dependency injection"""
         from kindling.injection import get_kindling_service
-        from kindling.platform_provider import PlatformEnvironmentProvider
+        from kindling.platform_provider import PlatformServiceProvider
         from kindling.notebook_framework import NotebookManager
         from kindling.spark_config import ConfigService
         
         return CombinedFramework(
             get_kindling_service(NotebookManager),
-            get_kindling_service(PlatformEnvironmentProvider).get_service(),
+            get_kindling_service(PlatformServiceProvider).get_service(),
             get_kindling_service(ConfigService)
         )
 
@@ -529,12 +529,12 @@ class NotebookTestEnvironment:
                     
             globals()['DataEntityRegistry'] = DataEntityRegistry
 
-        if 'PlatformEnvironmentProvider' not in globals():
-            class MockPlatformEnvironmentProvider:
+        if 'PlatformServiceProvider' not in globals():
+            class MockPlatformServiceProvider:
                 def __init__(self):
                     pes = MagicMock()
                     self.get_service = MagicMock(return_value=pes)
-            globals()['PlatformEnvironmentProvider'] = MockPlatformEnvironmentProvider
+            globals()['PlatformServiceProvider'] = MockPlatformServiceProvider
 
         if 'DataPipesRegistry' not in globals():
             class MockDataPipesRegistry:
@@ -690,13 +690,13 @@ class NotebookTestEnvironment:
             globals()['SimpleReadPersistStrategy'] = MockSimpleReadPersistStrategy
 
         if 'StageProcessingService' not in globals():
-            class StageProcessingService:
+            class MockStageProcessingService:
                 """Interface for stage processing services"""
                 def execute(self, stage: str, stage_description: str, stage_details: dict, layer: str):
                     """Execute stage processing"""
                     pass
             
-            globals()['StageProcessingService'] = StageProcessingService
+            globals()['StageProcessingService'] = MockStageProcessingService
 
         if 'PipeMetadata' not in globals():
             class MockPipeMetadata:
@@ -714,6 +714,24 @@ class NotebookTestEnvironment:
             
             globals()['PipeMetadata'] = MockPipeMetadata
 
+        if 'ConfigService' not in globals():
+            class MockConfigService:
+                def __init__(self, config_data=None, logger_provider=None):
+                    self.config_data = config_data or {}
+                    if logger_provider:
+                        self.logger = logger_provider.get_logger("ConfigService")
+                    else:
+                        self.logger = MagicMock()
+                    
+                    # Example mocked methods (customize with actual method names if needed)
+                    self.get = MagicMock(side_effect=lambda key, default=None: self.config_data.get(key, default))
+                    self.set = MagicMock(side_effect=lambda key, value: self.config_data.__setitem__(key, value))
+                    self.to_dict = MagicMock(return_value=self.config_data.copy())
+                    # Add other methods or behaviors as needed for your use-case
+
+            globals()['ConfigService'] = MockConfigService
+            globals()['MockConfigService'] = MockConfigService
+
     mocked_globals = [
         'BaseServiceProvider',
         'PythonLoggerProvider', 
@@ -730,7 +748,8 @@ class NotebookTestEnvironment:
         'DataPipesExecution',
         'SimpleReadPersistStrategy',
         'StageProcessingService',
-        'PipeMetadata'
+        'PipeMetadata',
+        'ConfigService'
     ]
 
     def _delete_global_mocks(self):
