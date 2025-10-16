@@ -1,8 +1,8 @@
-from .spark_log import *
-from .data_pipes import *
-from .data_entities import *
-from .injection import *
-from .watermarking import *
+from kindling.spark_log import *
+from kindling.data_pipes import *
+from kindling.data_entities import *
+from kindling.injection import *
+from kindling.watermarking import *
  
 from pyspark.sql.functions import col
 import uuid

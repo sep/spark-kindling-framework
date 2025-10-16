@@ -11,13 +11,13 @@ from typing import Any
 from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder
 
-from .injection import *
-from .spark_session import *
-from .spark_config import *
-from .spark_log_provider import *
-from .data_entities import *
-from .spark_trace import *
-from .platform_provider import *
+from kindling.injection import *
+from kindling.spark_session import *
+from kindling.spark_config import *
+from kindling.spark_log_provider import *
+from kindling.data_entities import *
+from kindling.spark_trace import *
+from kindling.platform_provider import *
 
 @dataclass
 class FileIngestionMetadata:

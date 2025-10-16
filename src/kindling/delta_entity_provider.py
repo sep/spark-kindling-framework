@@ -8,11 +8,11 @@ from enum import Enum
 import logging
 
 # Import your existing modules
-from .injection import *
-from .spark_config import * 
+from kindling.injection import *
+from kindling.spark_config import * 
 from .data_entities import *
-from .common_transforms import *
-from .spark_log_provider import *
+from kindling.common_transforms import *
+from kindling.spark_log_provider import *
 
 class DeltaAccessMode:
     """Defines how Delta tables are accessed"""

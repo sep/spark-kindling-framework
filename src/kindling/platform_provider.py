@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from .injection import *
+from kindling.injection import *
 
 class PlatformServiceProvider(ABC):
     @abstractmethod

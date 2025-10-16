@@ -73,10 +73,10 @@ def notebook_import(notebook_ref: str) -> Optional[types.ModuleType]:
     else:
         return None
 
-from .injection import *
-from .spark_config import *
-from .platform_provider import *
-from .spark_log_provider import *
+from kindling.injection import *
+from kindling.spark_config import *
+from kindling.platform_provider import *
+from kindling.spark_log_provider import *
 
 level_hierarchy = { 
     "ALL": 0,

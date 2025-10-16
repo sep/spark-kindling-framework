@@ -58,3 +58,8 @@ derby.log
 *.tmp
 *.bak
 *.log
+
+# Environment files
+.env
+.env.local
+.env.*.local

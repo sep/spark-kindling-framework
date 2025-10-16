@@ -2,9 +2,9 @@ import re
 from datetime import datetime
 import logging
 
-from .spark_session import *
-from .injection import *
-from .spark_config import *
+from kindling.spark_session import *
+from kindling.injection import *
+from kindling.spark_config import *
 
 class SparkLogger:
     def __init__(self, name: str, baselogger = None, session = None, config = None): 

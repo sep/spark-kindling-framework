@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
 
 # Import the base PlatformService
-from .notebook_framework import *
+from kindling.notebook_framework import *
 
 
 class LocalService(PlatformService):

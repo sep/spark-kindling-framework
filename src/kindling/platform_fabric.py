@@ -8,7 +8,7 @@ import requests
 from datetime import datetime, timedelta
 from azure.core.exceptions import *
 
-from .notebook_framework import *
+from kindling.notebook_framework import *
 
 class FabricService(PlatformService):
     def __init__(self, config, logger):

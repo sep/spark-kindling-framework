@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 
-from .injection import *
-from .data_entities import *
-from .spark_log_provider import *
-from .data_pipes import *
-from .injection import *
-from .spark_config import *
-from .spark_trace import *
+from kindling.injection import *
+from kindling.data_entities import *
+from kindling.spark_log_provider import *
+from kindling.data_pipes import *
+from kindling.injection import *
+from kindling.spark_config import *
+from kindling.spark_trace import *
 
 class PipeStreamOrchestrator(ABC):
     @abstractmethod

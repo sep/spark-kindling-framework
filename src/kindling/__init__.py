@@ -15,15 +15,9 @@ from . import watermarking
 from . import spark_log_provider
 from . import test_framework
 from . import notebook_framework
-from . import platform_fabric
-from . import platform_databricks
 from . import platform_provider
-try:
-    from . import platform_synapse
-except ImportError as e:
-    print(f"Skipping platform_synapse: {e}")
 from . import pipe_streaming
 from . import app_framework
-from . import bootstrap
+from . import bootstrap  # This imports all platform modules
 from . import simple_file_ingestion_processor
-from . import platform_local
+from . import pip_manager

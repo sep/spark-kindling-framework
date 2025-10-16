@@ -1,5 +1,5 @@
-from .spark_session import *
-from .notebook_framework import *
+from kindling.spark_session import *
+from kindling.notebook_framework import *
 import time
 import json
 import types

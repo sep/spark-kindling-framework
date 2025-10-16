@@ -1,4 +1,4 @@
-from .injection import *
+from kindling.injection import *
 from .spark_log import *
 
 from abc import ABC, abstractmethod

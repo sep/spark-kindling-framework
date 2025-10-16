@@ -7,9 +7,9 @@ from delta.tables import DeltaTable
 from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder
 
-from .injection import *
-from .spark_log_provider import *
-from .spark_trace import *
+from kindling.injection import *
+from kindling.spark_log_provider import *
+from kindling.spark_trace import *
 from .data_entities import *
 
 @dataclass

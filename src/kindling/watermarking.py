@@ -13,12 +13,12 @@ from pyspark.sql.types import (
     StructField
 )
   
-from .spark_log_provider import *
+from kindling.spark_log_provider import *
 from .data_entities import *
-from .injection import *
-from .spark_session import *
-from .common_transforms import *
-from .spark_config import *
+from kindling.injection import *
+from kindling.spark_session import *
+from kindling.common_transforms import *
+from kindling.spark_config import *
 
 from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder

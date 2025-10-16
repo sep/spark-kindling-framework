@@ -5,13 +5,13 @@ from typing import Dict, Any, Optional, Union
 
 from .notebook_framework import *
 from .app_framework import *
-from .injection import *
-from .spark_config import *
-from .spark_session import *
-from .platform_fabric import *
-from .platform_synapse import *
-from .platform_databricks import *
-from .platform_local import *
+from kindling.injection import *
+from kindling.spark_config import *
+from kindling.spark_session import *
+from kindling.platform_fabric import *
+from kindling.platform_synapse import *
+from kindling.platform_databricks import *
+from kindling.platform_local import *
 
 # Spark session and logging utilities
 level_hierarchy = { 

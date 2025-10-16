@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
-from .notebook_framework import *
+from kindling.notebook_framework import *
 
 class DatabricksService(PlatformService):
     def __init__(self, config, logger):

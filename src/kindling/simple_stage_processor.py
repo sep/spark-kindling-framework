@@ -5,12 +5,12 @@ from typing import Dict
 from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder
 
-from .spark_config import *
-from .spark_trace import *
+from kindling.spark_config import *
+from kindling.spark_trace import *
 from .simple_read_persist_strategy import *
-from .data_pipes import *
-from .data_entities import *
-from .injection import *
+from kindling.data_pipes import *
+from kindling.data_entities import *
+from kindling.injection import *
 
 def execute_process_stage( stage: str, stage_description:str, stage_details: Dict, layer: str ):
     #print(f"GlobalInjector ID = {GlobalInjector.get_instance_id()}")

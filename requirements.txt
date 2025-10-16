@@ -1,0 +1,19 @@
+# Core dependencies
+injector>=0.20.1
+dynaconf>=3.2.0
+
+# Spark and Delta dependencies
+pyspark>=3.4.0
+delta-spark>=2.4.0
+
+# Azure dependencies (optional for Synapse support)
+azure-synapse-artifacts>=0.17.0
+azure-core>=1.29.0
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Optional: For development
+notebook>=6.5.0
+jupyterlab>=4.0.0
