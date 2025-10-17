@@ -7,7 +7,7 @@ import time
 import logging
 from typing import Callable
 from typing import Any
- 
+
 from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder
 
@@ -15,15 +15,18 @@ from kindling.injection import *
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 
+
 class EntityPathLocator(ABC):
     @abstractmethod
     def get_table_path(self, entity):
         pass
 
+
 class EntityNameMapper(ABC):
     @abstractmethod
     def get_table_name(self, entity):
         pass
+
 
 class EntityProvider(ABC):
     @abstractmethod
@@ -61,10 +64,11 @@ class EntityProvider(ABC):
     @abstractmethod
     def get_entity_version(self, entity):
         pass
-    
+
     @abstractmethod
     def append_as_stream(self, entity, df, checkpointLocation, format=None, options=None):
         pass
+
 
 @dataclass
 class EntityMetadata:
@@ -75,28 +79,30 @@ class EntityMetadata:
     tags: Dict[str, str]
     schema: Any
 
+
 class DataEntities:
 
     deregistry = None
-    
+
     @classmethod
     def entity(cls, **decorator_params):
-        if(cls.deregistry is None):
+        if cls.deregistry is None:
             cls.deregistry = GlobalInjector.get(DataEntityRegistry)
         # Check all required fields are provided
         required_fields = {field.name for field in fields(EntityMetadata)}
         missing_fields = required_fields - decorator_params.keys()
-        
+
         if missing_fields:
             raise ValueError(f"Missing required fields in entity decorator: {missing_fields}")
-        
-        entityid = decorator_params['entityid']
 
-        del decorator_params['entityid']
+        entityid = decorator_params["entityid"]
+
+        del decorator_params["entityid"]
 
         cls.deregistry.register_entity(entityid, **decorator_params)
 
         return None
+
 
 class DataEntityRegistry(ABC):
     @abstractmethod
@@ -110,6 +116,7 @@ class DataEntityRegistry(ABC):
     @abstractmethod
     def get_entity_definition(self, name):
         pass
+
 
 @GlobalInjector.singleton_autobind()
 class DataEntityManager(DataEntityRegistry):

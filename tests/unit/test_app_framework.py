@@ -17,7 +17,7 @@ from kindling.data_apps import (
     DataAppConfig,
     DataAppContext,
     DataAppConstants,
-    WheelCandidate
+    WheelCandidate,
 )
 
 
@@ -52,7 +52,7 @@ class TestWheelCandidate:
             file_path="/path/to/wheel.whl",
             file_name="package-1.0.0-py3-none-any.whl",
             priority=2,
-            version="1.0.0"
+            version="1.0.0",
         )
 
         assert candidate.file_path == "/path/to/wheel.whl"
@@ -83,15 +83,9 @@ class TestAppManagerHelpers:
         # Mock the methods we need to access from the real class
         # This allows us to test the real method logic on a mock instance
         manager._get_app_dir = DataAppManager._get_app_dir.__get__(manager)
-        manager._get_packages_dir = DataAppManager._get_packages_dir.__get__(
-            manager
-        )
-        manager._extract_package_name = DataAppManager._extract_package_name.__get__(
-            manager
-        )
-        manager._parse_package_spec = DataAppManager._parse_package_spec.__get__(
-            manager
-        )
+        manager._get_packages_dir = DataAppManager._get_packages_dir.__get__(manager)
+        manager._extract_package_name = DataAppManager._extract_package_name.__get__(manager)
+        manager._parse_package_spec = DataAppManager._parse_package_spec.__get__(manager)
 
         return manager
 

@@ -22,6 +22,7 @@ from kindling.injection import GlobalInjector
 
 class PipCommand(Enum):
     """Pip command types"""
+
     INSTALL = "install"
     WHEEL = "wheel"
     UNINSTALL = "uninstall"
@@ -32,6 +33,7 @@ class PipCommand(Enum):
 @dataclass
 class PipResult:
     """Result of a pip operation"""
+
     success: bool
     return_code: int
     stdout: str
@@ -70,15 +72,13 @@ class PipManager:
     - Timeout protection
     """
 
-    DEFAULT_COMMON_ARGS = [
-        "--disable-pip-version-check",
-        "--no-warn-conflicts"
-    ]
+    DEFAULT_COMMON_ARGS = ["--disable-pip-version-check", "--no-warn-conflicts"]
 
     DEFAULT_TIMEOUT_SECONDS = 300  # 5 minutes
 
-    def __init__(self, logger=None, common_args: List[str] = None,
-                 timeout: int = DEFAULT_TIMEOUT_SECONDS):
+    def __init__(
+        self, logger=None, common_args: List[str] = None, timeout: int = DEFAULT_TIMEOUT_SECONDS
+    ):
         """
         Initialize PipManager
 
@@ -91,11 +91,14 @@ class PipManager:
         self.common_args = common_args or self.DEFAULT_COMMON_ARGS
         self.timeout = timeout
 
-    def install_packages(self, packages: List[str],
-                         find_links: Optional[str] = None,
-                         upgrade: bool = False,
-                         no_deps: bool = False,
-                         extra_args: List[str] = None) -> PipResult:
+    def install_packages(
+        self,
+        packages: List[str],
+        find_links: Optional[str] = None,
+        upgrade: bool = False,
+        no_deps: bool = False,
+        extra_args: List[str] = None,
+    ) -> PipResult:
         """
         Install packages via pip
 
@@ -127,12 +130,12 @@ class PipManager:
             args.extend(extra_args)
 
         self._log_info(
-            f"Installing {len(packages)} packages: {', '.join(packages[:3])}{'...' if len(packages) > 3 else ''}")
+            f"Installing {len(packages)} packages: {', '.join(packages[:3])}{'...' if len(packages) > 3 else ''}"
+        )
 
         return self._execute_pip(args)
 
-    def install_wheels(self, wheel_paths: List[Path],
-                       force_reinstall: bool = False) -> PipResult:
+    def install_wheels(self, wheel_paths: List[Path], force_reinstall: bool = False) -> PipResult:
         """
         Install wheel files
 
@@ -156,8 +159,7 @@ class PipManager:
 
         return self._execute_pip(args)
 
-    def build_wheel(self, source_dir: str, output_dir: str,
-                    no_deps: bool = True) -> PipResult:
+    def build_wheel(self, source_dir: str, output_dir: str, no_deps: bool = True) -> PipResult:
         """
         Build a wheel from source
 
@@ -178,8 +180,7 @@ class PipManager:
 
         return self._execute_pip(args, use_common_args=False)
 
-    def uninstall_packages(self, packages: List[str],
-                           yes: bool = True) -> PipResult:
+    def uninstall_packages(self, packages: List[str], yes: bool = True) -> PipResult:
         """
         Uninstall packages
 
@@ -210,8 +211,7 @@ class PipManager:
         """Show package details"""
         return self._execute_pip(["show", package_name], use_common_args=False)
 
-    def _execute_pip(self, args: List[str],
-                     use_common_args: bool = True) -> PipResult:
+    def _execute_pip(self, args: List[str], use_common_args: bool = True) -> PipResult:
         """
         Execute pip command
 
@@ -231,12 +231,7 @@ class PipManager:
         start_time = time.time()
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
 
             duration = time.time() - start_time
             success = result.returncode == 0
@@ -247,12 +242,11 @@ class PipManager:
                 stdout=result.stdout,
                 stderr=result.stderr,
                 command=cmd,
-                duration_seconds=duration
+                duration_seconds=duration,
             )
 
             if success:
-                self._log_info(
-                    f"Pip command completed successfully in {duration:.1f}s")
+                self._log_info(f"Pip command completed successfully in {duration:.1f}s")
             else:
                 self._log_error(f"Pip command failed: {result.stderr}")
 
@@ -267,7 +261,7 @@ class PipManager:
                 stdout="",
                 stderr=f"Command timed out after {self.timeout}s",
                 command=cmd,
-                duration_seconds=duration
+                duration_seconds=duration,
             )
 
         except Exception as e:
@@ -279,18 +273,13 @@ class PipManager:
                 stdout="",
                 stderr=str(e),
                 command=cmd,
-                duration_seconds=duration
+                duration_seconds=duration,
             )
 
     def _empty_result(self, message: str) -> PipResult:
         """Create empty result for no-op operations"""
         return PipResult(
-            success=True,
-            return_code=0,
-            stdout=message,
-            stderr="",
-            command=[],
-            duration_seconds=0.0
+            success=True, return_code=0, stdout=message, stderr="", command=[], duration_seconds=0.0
         )
 
     def _log_info(self, message: str):

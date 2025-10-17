@@ -2,6 +2,7 @@
 
 Tests the pipe registration system, metadata handling, and the DataPipesManager.
 """
+
 import pytest
 from unittest.mock import MagicMock, Mock, patch, call
 from dataclasses import fields
@@ -15,7 +16,7 @@ from kindling.data_pipes import (
     DataPipesExecution,
     DataPipesExecuter,
     EntityReadPersistStrategy,
-    StageProcessingService
+    StageProcessingService,
 )
 from kindling.injection import GlobalInjector
 
@@ -27,33 +28,39 @@ class TestPipeMetadata:
         """Test that PipeMetadata has all required fields"""
         metadata_fields = {field.name for field in fields(PipeMetadata)}
         expected_fields = {
-            'pipeid', 'name', 'execute', 'tags',
-            'input_entity_ids', 'output_entity_id', 'output_type'
+            "pipeid",
+            "name",
+            "execute",
+            "tags",
+            "input_entity_ids",
+            "output_entity_id",
+            "output_type",
         }
 
-        assert metadata_fields == expected_fields, (
-            f"PipeMetadata fields mismatch. Expected: {expected_fields}, Got: {metadata_fields}"
-        )
+        assert (
+            metadata_fields == expected_fields
+        ), f"PipeMetadata fields mismatch. Expected: {expected_fields}, Got: {metadata_fields}"
 
     def test_pipe_metadata_field_types(self):
         """Test that PipeMetadata fields have correct type annotations"""
         field_annotations = PipeMetadata.__annotations__
 
-        assert 'pipeid' in field_annotations
-        assert 'name' in field_annotations
-        assert 'execute' in field_annotations
-        assert 'tags' in field_annotations
-        assert 'input_entity_ids' in field_annotations
-        assert 'output_entity_id' in field_annotations
-        assert 'output_type' in field_annotations
+        assert "pipeid" in field_annotations
+        assert "name" in field_annotations
+        assert "execute" in field_annotations
+        assert "tags" in field_annotations
+        assert "input_entity_ids" in field_annotations
+        assert "output_entity_id" in field_annotations
+        assert "output_type" in field_annotations
 
         # Check collection types
-        assert field_annotations['execute'] == Callable
-        assert field_annotations['tags'] == Dict[str, str]
-        assert field_annotations['input_entity_ids'] == List[str]
+        assert field_annotations["execute"] == Callable
+        assert field_annotations["tags"] == Dict[str, str]
+        assert field_annotations["input_entity_ids"] == List[str]
 
     def test_pipe_metadata_creation(self):
         """Test creating a PipeMetadata instance with all fields"""
+
         def sample_func(df1, df2):
             return df1
 
@@ -64,7 +71,7 @@ class TestPipeMetadata:
             tags={"env": "test", "version": "1.0"},
             input_entity_ids=["entity1", "entity2"],
             output_entity_id="output_entity",
-            output_type="delta"
+            output_type="delta",
         )
 
         assert metadata.pipeid == "test_pipe"
@@ -77,7 +84,9 @@ class TestPipeMetadata:
 
     def test_pipe_metadata_with_lambda(self):
         """Test PipeMetadata with lambda function"""
-        def lambda_func(x): return x
+
+        def lambda_func(x):
+            return x
 
         metadata = PipeMetadata(
             pipeid="lambda_pipe",
@@ -86,7 +95,7 @@ class TestPipeMetadata:
             tags={},
             input_entity_ids=["input"],
             output_entity_id="output",
-            output_type="parquet"
+            output_type="parquet",
         )
 
         assert callable(metadata.execute)
@@ -94,6 +103,7 @@ class TestPipeMetadata:
 
     def test_pipe_metadata_empty_collections(self):
         """Test PipeMetadata with empty lists and dicts"""
+
         def empty_func():
             pass
 
@@ -104,7 +114,7 @@ class TestPipeMetadata:
             tags={},
             input_entity_ids=[],
             output_entity_id="",
-            output_type=""
+            output_type="",
         )
 
         assert metadata.tags == {}
@@ -122,12 +132,11 @@ class TestDataPipesManager:
 
         manager = DataPipesManager(mock_logger_provider)
 
-        assert hasattr(manager, 'registry')
+        assert hasattr(manager, "registry")
         assert isinstance(manager.registry, dict)
         assert len(manager.registry) == 0
-        assert hasattr(manager, 'logger')
-        mock_logger_provider.get_logger.assert_called_once_with(
-            "data_pipes_manager")
+        assert hasattr(manager, "logger")
+        mock_logger_provider.get_logger.assert_called_once_with("data_pipes_manager")
         mock_logger.debug.assert_called()
 
     def test_register_pipe(self):
@@ -148,7 +157,7 @@ class TestDataPipesManager:
             tags={"env": "test"},
             input_entity_ids=["input1"],
             output_entity_id="output1",
-            output_type="delta"
+            output_type="delta",
         )
 
         assert "test_pipe" in manager.registry
@@ -175,7 +184,7 @@ class TestDataPipesManager:
                 tags={},
                 input_entity_ids=[],
                 output_entity_id=f"output{i}",
-                output_type="delta"
+                output_type="delta",
             )
 
         assert len(manager.registry) == 3
@@ -199,7 +208,7 @@ class TestDataPipesManager:
             tags={"version": "1"},
             input_entity_ids=["input1"],
             output_entity_id="output1",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Register second version
@@ -210,7 +219,7 @@ class TestDataPipesManager:
             tags={"version": "2"},
             input_entity_ids=["input2"],
             output_entity_id="output2",
-            output_type="parquet"
+            output_type="parquet",
         )
 
         assert len(manager.registry) == 1
@@ -245,7 +254,7 @@ class TestDataPipesManager:
                 tags={},
                 input_entity_ids=[],
                 output_entity_id="",
-                output_type=""
+                output_type="",
             )
 
         pipe_ids = list(manager.get_pipe_ids())
@@ -283,7 +292,7 @@ class TestDataPipesManager:
             tags={"env": "test"},
             input_entity_ids=["input"],
             output_entity_id="output",
-            output_type="delta"
+            output_type="delta",
         )
 
         pipe = manager.get_pipe_definition("test_pipe")
@@ -321,6 +330,7 @@ class TestDataPipesDecorator:
 
         # Missing all fields except pipeid
         with pytest.raises(ValueError) as exc_info:
+
             @DataPipes.pipe(pipeid="test_pipe")
             def test_func():
                 pass
@@ -339,11 +349,8 @@ class TestDataPipesDecorator:
         DataPipes.dpregistry = mock_registry
 
         with pytest.raises(ValueError) as exc_info:
-            @DataPipes.pipe(
-                pipeid="test_pipe",
-                name="Test Pipe",
-                tags={}
-            )
+
+            @DataPipes.pipe(pipeid="test_pipe", name="Test Pipe", tags={})
             def test_func():
                 pass
 
@@ -363,7 +370,7 @@ class TestDataPipesDecorator:
             tags={"env": "test"},
             input_entity_ids=["entity1", "entity2"],
             output_entity_id="output_entity",
-            output_type="delta"
+            output_type="delta",
         )
         def test_func(entity1, entity2):
             return entity1
@@ -372,8 +379,8 @@ class TestDataPipesDecorator:
         mock_registry.register_pipe.assert_called_once()
         call_args = mock_registry.register_pipe.call_args
         assert call_args[0][0] == "test_pipe"
-        assert call_args[1]['name'] == "Test Pipe"
-        assert call_args[1]['execute'] == test_func
+        assert call_args[1]["name"] == "Test Pipe"
+        assert call_args[1]["execute"] == test_func
 
     def test_decorator_returns_original_function(self):
         """Test that decorator returns the original function"""
@@ -386,7 +393,7 @@ class TestDataPipesDecorator:
             tags={},
             input_entity_ids=[],
             output_entity_id="output",
-            output_type="delta"
+            output_type="delta",
         )
         def test_func(x):
             return x * 2
@@ -409,12 +416,12 @@ class TestDataPipesDecorator:
             tags={},
             input_entity_ids=[],
             output_entity_id="output",
-            output_type="delta"
+            output_type="delta",
         )(my_function)
 
         call_kwargs = mock_registry.register_pipe.call_args[1]
-        assert 'execute' in call_kwargs
-        assert call_kwargs['execute'] == my_function
+        assert "execute" in call_kwargs
+        assert call_kwargs["execute"] == my_function
 
     def test_decorator_removes_pipeid_from_params(self):
         """Test that decorator removes pipeid before passing to register_pipe"""
@@ -427,28 +434,29 @@ class TestDataPipesDecorator:
             tags={},
             input_entity_ids=[],
             output_entity_id="output",
-            output_type="delta"
+            output_type="delta",
         )
         def test_func():
             pass
 
         call_args = mock_registry.register_pipe.call_args
         assert call_args[0][0] == "test_pipe"
-        assert 'pipeid' not in call_args[1]
+        assert "pipeid" not in call_args[1]
 
     def test_decorator_lazy_initializes_registry(self):
         """Test that decorator lazily initializes registry from GlobalInjector"""
         DataPipes.dpregistry = None
 
         mock_registry = MagicMock()
-        with patch.object(GlobalInjector, 'get', return_value=mock_registry):
+        with patch.object(GlobalInjector, "get", return_value=mock_registry):
+
             @DataPipes.pipe(
                 pipeid="test_pipe",
                 name="Test Pipe",
                 tags={},
                 input_entity_ids=[],
                 output_entity_id="output",
-                output_type="delta"
+                output_type="delta",
             )
             def test_func():
                 pass
@@ -460,14 +468,15 @@ class TestDataPipesDecorator:
         mock_registry = MagicMock()
         DataPipes.dpregistry = mock_registry
 
-        with patch.object(GlobalInjector, 'get') as mock_get:
+        with patch.object(GlobalInjector, "get") as mock_get:
+
             @DataPipes.pipe(
                 pipeid="test_pipe",
                 name="Test Pipe",
                 tags={},
                 input_entity_ids=[],
                 output_entity_id="output",
-                output_type="delta"
+                output_type="delta",
             )
             def test_func():
                 pass
@@ -490,8 +499,7 @@ class TestDataPipesExecuter:
         self.mock_erps = Mock()
         self.mock_trace_provider = Mock()
         self.mock_trace_provider.span.return_value.__enter__ = Mock()
-        self.mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        self.mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
     def test_initialization(self):
         """Test DataPipesExecuter initialization"""
@@ -500,16 +508,15 @@ class TestDataPipesExecuter:
             self.mock_entity_registry,
             self.mock_pipes_registry,
             self.mock_erps,
-            self.mock_trace_provider
+            self.mock_trace_provider,
         )
 
         assert executer.erps == self.mock_erps
         assert executer.dpr == self.mock_pipes_registry
         assert executer.dpe == self.mock_entity_registry
         assert executer.tp == self.mock_trace_provider
-        assert hasattr(executer, 'logger')
-        self.mock_logger_provider.get_logger.assert_called_once_with(
-            "data_pipes_executer")
+        assert hasattr(executer, "logger")
+        self.mock_logger_provider.get_logger.assert_called_once_with("data_pipes_executer")
 
     def test_run_datapipes_single_pipe(self):
         """Test running a single data pipe"""
@@ -518,7 +525,7 @@ class TestDataPipesExecuter:
             self.mock_entity_registry,
             self.mock_pipes_registry,
             self.mock_erps,
-            self.mock_trace_provider
+            self.mock_trace_provider,
         )
 
         # Mock pipe metadata
@@ -544,8 +551,7 @@ class TestDataPipesExecuter:
         executer.run_datapipes(["test_pipe"])
 
         # Verify pipe was retrieved
-        self.mock_pipes_registry.get_pipe_definition.assert_called_once_with(
-            "test_pipe")
+        self.mock_pipes_registry.get_pipe_definition.assert_called_once_with("test_pipe")
 
         # Verify trace spans were created
         assert self.mock_trace_provider.span.call_count >= 2
@@ -557,7 +563,7 @@ class TestDataPipesExecuter:
             self.mock_entity_registry,
             self.mock_pipes_registry,
             self.mock_erps,
-            self.mock_trace_provider
+            self.mock_trace_provider,
         )
 
         # Mock pipe metadata
@@ -592,7 +598,7 @@ class TestDataPipesExecuter:
             self.mock_entity_registry,
             self.mock_pipes_registry,
             self.mock_erps,
-            self.mock_trace_provider
+            self.mock_trace_provider,
         )
 
         # Mock pipe
@@ -611,8 +617,7 @@ class TestDataPipesExecuter:
         self.mock_entity_registry.get_entity_definition.return_value = mock_entity
 
         # Execute
-        result = executer._execute_datapipe(
-            mock_entity_reader, mock_activator, mock_pipe)
+        result = executer._execute_datapipe(mock_entity_reader, mock_activator, mock_pipe)
 
         # Verify execute was called
         mock_pipe.execute.assert_called_once()
@@ -625,7 +630,7 @@ class TestDataPipesExecuter:
             self.mock_entity_registry,
             self.mock_pipes_registry,
             self.mock_erps,
-            self.mock_trace_provider
+            self.mock_trace_provider,
         )
 
         # Mock pipe
@@ -642,18 +647,16 @@ class TestDataPipesExecuter:
         mock_activator = Mock()
 
         # Mock entity definitions
-        self.mock_entity_registry.get_entity_definition.side_effect = [
-            Mock(), Mock()]
+        self.mock_entity_registry.get_entity_definition.side_effect = [Mock(), Mock()]
 
         # Execute
-        result = executer._execute_datapipe(
-            mock_entity_reader, mock_activator, mock_pipe)
+        result = executer._execute_datapipe(mock_entity_reader, mock_activator, mock_pipe)
 
         # Verify execute was called with both entities
         mock_pipe.execute.assert_called_once()
         call_kwargs = mock_pipe.execute.call_args[1]
-        assert 'entity1' in call_kwargs
-        assert 'entity2' in call_kwargs
+        assert "entity1" in call_kwargs
+        assert "entity2" in call_kwargs
 
     def test_execute_datapipe_skips_when_first_source_is_none(self):
         """Test _execute_datapipe skips execution when first source is None"""
@@ -662,7 +665,7 @@ class TestDataPipesExecuter:
             self.mock_entity_registry,
             self.mock_pipes_registry,
             self.mock_erps,
-            self.mock_trace_provider
+            self.mock_trace_provider,
         )
 
         # Mock pipe
@@ -679,8 +682,7 @@ class TestDataPipesExecuter:
         self.mock_entity_registry.get_entity_definition.return_value = Mock()
 
         # Execute
-        executer._execute_datapipe(
-            mock_entity_reader, mock_activator, mock_pipe)
+        executer._execute_datapipe(mock_entity_reader, mock_activator, mock_pipe)
 
         # Verify execute was NOT called
         mock_pipe.execute.assert_not_called()
@@ -694,13 +696,12 @@ class TestDataPipesExecuter:
             self.mock_entity_registry,
             self.mock_pipes_registry,
             self.mock_erps,
-            self.mock_trace_provider
+            self.mock_trace_provider,
         )
 
         # Mock pipe
         mock_pipe = Mock(spec=PipeMetadata)
-        mock_pipe.input_entity_ids = [
-            "entity.one", "entity.two", "entity.three"]
+        mock_pipe.input_entity_ids = ["entity.one", "entity.two", "entity.three"]
 
         # Mock DataFrames
         mock_df1 = Mock()
@@ -729,7 +730,7 @@ class TestDataPipesExecuter:
         # Verify entity_reader was called with correct parameters
         calls = mock_entity_reader.call_args_list
         assert len(calls) == 3
-        assert calls[0][0][1] == True   # First entity, is_first=True
+        assert calls[0][0][1] == True  # First entity, is_first=True
         assert calls[1][0][1] == False  # Second entity, is_first=False
         assert calls[2][0][1] == False  # Third entity, is_first=False
 
@@ -742,7 +743,7 @@ class TestDataPipesExecuter:
             self.mock_entity_registry,
             self.mock_pipes_registry,
             self.mock_erps,
-            self.mock_trace_provider
+            self.mock_trace_provider,
         )
         assert callable(executer.run_datapipes)
 
@@ -760,12 +761,12 @@ class TestAbstractBaseClasses:
             EntityReadPersistStrategy()
 
         # Check required methods exist
-        assert hasattr(EntityReadPersistStrategy, 'create_pipe_entity_reader')
-        assert hasattr(EntityReadPersistStrategy,
-                       'create_pipe_persist_activator')
+        assert hasattr(EntityReadPersistStrategy, "create_pipe_entity_reader")
+        assert hasattr(EntityReadPersistStrategy, "create_pipe_persist_activator")
 
     def test_entity_read_persist_strategy_complete_implementation(self):
         """Test that a complete EntityReadPersistStrategy implementation can be instantiated"""
+
         class CompleteStrategy(EntityReadPersistStrategy):
             def create_pipe_entity_reader(self, pipe: str):
                 return lambda entity, is_first: None
@@ -787,9 +788,9 @@ class TestAbstractBaseClasses:
         with pytest.raises(TypeError, match=".*abstract.*"):
             DataPipesRegistry()
 
-        assert hasattr(DataPipesRegistry, 'register_pipe')
-        assert hasattr(DataPipesRegistry, 'get_pipe_ids')
-        assert hasattr(DataPipesRegistry, 'get_pipe_definition')
+        assert hasattr(DataPipesRegistry, "register_pipe")
+        assert hasattr(DataPipesRegistry, "get_pipe_ids")
+        assert hasattr(DataPipesRegistry, "get_pipe_definition")
 
     def test_data_pipes_execution_interface(self):
         """Test DataPipesExecution has required abstract methods"""
@@ -800,7 +801,7 @@ class TestAbstractBaseClasses:
         with pytest.raises(TypeError, match=".*abstract.*"):
             DataPipesExecution()
 
-        assert hasattr(DataPipesExecution, 'run_datapipes')
+        assert hasattr(DataPipesExecution, "run_datapipes")
 
     def test_stage_processing_service_interface(self):
         """Test StageProcessingService has required abstract methods"""
@@ -811,7 +812,7 @@ class TestAbstractBaseClasses:
         with pytest.raises(TypeError, match=".*abstract.*"):
             StageProcessingService()
 
-        assert hasattr(StageProcessingService, 'execute')
+        assert hasattr(StageProcessingService, "execute")
 
 
 class TestPipeMetadataEdgeCases:
@@ -825,6 +826,7 @@ class TestPipeMetadataEdgeCases:
 
     def test_pipe_metadata_equality(self):
         """Test that PipeMetadata instances can be compared for equality"""
+
         def func1():
             pass
 
@@ -838,7 +840,7 @@ class TestPipeMetadataEdgeCases:
             tags={"key": "value"},
             input_entity_ids=["input1"],
             output_entity_id="output",
-            output_type="delta"
+            output_type="delta",
         )
 
         metadata2 = PipeMetadata(
@@ -848,7 +850,7 @@ class TestPipeMetadataEdgeCases:
             tags={"key": "value"},
             input_entity_ids=["input1"],
             output_entity_id="output",
-            output_type="delta"
+            output_type="delta",
         )
 
         metadata3 = PipeMetadata(
@@ -858,7 +860,7 @@ class TestPipeMetadataEdgeCases:
             tags={},
             input_entity_ids=[],
             output_entity_id="other",
-            output_type="parquet"
+            output_type="parquet",
         )
 
         assert metadata1 == metadata2
@@ -873,7 +875,7 @@ class TestPipeMetadataEdgeCases:
             tags={"env": "test"},
             input_entity_ids=["input"],
             output_entity_id="output",
-            output_type="delta"
+            output_type="delta",
         )
 
         repr_str = repr(metadata)
@@ -910,7 +912,7 @@ class TestDataPipesIntegration:
                 "tags": {"layer": "silver", "domain": "sales"},
                 "input_entity_ids": ["bronze.sales"],
                 "output_entity_id": "silver.sales",
-                "output_type": "delta"
+                "output_type": "delta",
             },
             {
                 "pipeid": "silver_to_gold",
@@ -919,7 +921,7 @@ class TestDataPipesIntegration:
                 "tags": {"layer": "gold", "domain": "sales"},
                 "input_entity_ids": ["silver.sales", "silver.customers"],
                 "output_entity_id": "gold.sales_summary",
-                "output_type": "delta"
+                "output_type": "delta",
             },
             {
                 "pipeid": "incremental_load",
@@ -928,8 +930,8 @@ class TestDataPipesIntegration:
                 "tags": {"layer": "bronze", "type": "incremental"},
                 "input_entity_ids": ["raw.data"],
                 "output_entity_id": "bronze.data",
-                "output_type": "delta"
-            }
+                "output_type": "delta",
+            },
         ]
 
         # Register all pipes
@@ -957,14 +959,15 @@ class TestDataPipesIntegration:
 
         mock_registry = MagicMock()
 
-        with patch.object(GlobalInjector, 'get', return_value=mock_registry):
+        with patch.object(GlobalInjector, "get", return_value=mock_registry):
+
             @DataPipes.pipe(
                 pipeid="real_pipe",
                 name="Real Pipe",
                 tags={"version": "1.0"},
                 input_entity_ids=["input"],
                 output_entity_id="output",
-                output_type="delta"
+                output_type="delta",
             )
             def real_transform(input):
                 """Actual transformation logic"""

@@ -3,6 +3,7 @@ Pytest configuration and shared fixtures for Kindling tests.
 
 This file provides common fixtures and configuration for all tests.
 """
+
 import pytest
 import tempfile
 import shutil
@@ -83,10 +84,7 @@ def basic_config():
     # Make get() return appropriate defaults based on key
 
     def config_get(key, default=None):
-        defaults = {
-            "log_level": "",
-            "print_logging": False
-        }
+        defaults = {"log_level": "", "print_logging": False}
         return defaults.get(key, default)
 
     config.get = Mock(side_effect=config_get)
@@ -101,17 +99,15 @@ def sample_dataframe(spark_session):
     """
     from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 
-    schema = StructType([
-        StructField("id", IntegerType(), True),
-        StructField("name", StringType(), True),
-        StructField("value", IntegerType(), True)
-    ])
+    schema = StructType(
+        [
+            StructField("id", IntegerType(), True),
+            StructField("name", StringType(), True),
+            StructField("value", IntegerType(), True),
+        ]
+    )
 
-    data = [
-        (1, "Alice", 100),
-        (2, "Bob", 200),
-        (3, "Charlie", 300)
-    ]
+    data = [(1, "Alice", 100), (2, "Bob", 200), (3, "Charlie", 300)]
 
     return spark_session.createDataFrame(data, schema)
 
@@ -246,8 +242,7 @@ def mock_spark_for_trace():
     spark._jvm.org.slf4j.event.Level.INFO = Mock()
 
     # Mock ComponentSparkEvent
-    spark._jvm.com.microsoft.spark.metricevents.ComponentSparkEvent = Mock(
-        return_value=Mock())
+    spark._jvm.com.microsoft.spark.metricevents.ComponentSparkEvent = Mock(return_value=Mock())
 
     # Mock listener bus
     listener_bus = Mock()

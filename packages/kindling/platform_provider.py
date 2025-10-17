@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 from kindling.injection import *
 
+
 class PlatformServiceProvider(ABC):
     @abstractmethod
     def set_service(self, svc):
@@ -10,6 +11,7 @@ class PlatformServiceProvider(ABC):
     @abstractmethod
     def get_service(self):
         pass
+
 
 @GlobalInjector.singleton_autobind()
 class SparkPlatformServiceProvider(PlatformServiceProvider):

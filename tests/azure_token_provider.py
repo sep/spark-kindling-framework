@@ -20,4 +20,5 @@ class SimpleAzureTokenProvider:
     def getExpiry(self):
         """Return token expiry time (far future for testing)."""
         import time
+
         return str(int(time.time()) + 3600)  # 1 hour from now

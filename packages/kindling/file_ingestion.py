@@ -2,12 +2,12 @@ from dataclasses import dataclass, fields
 from typing import Callable, List, Dict
 from pyspark.sql import DataFrame
 from delta.tables import DeltaTable
- 
+
 import time
 import logging
 from typing import Callable
 from typing import Any
- 
+
 from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder
 
@@ -19,6 +19,7 @@ from kindling.data_entities import *
 from kindling.spark_trace import *
 from kindling.platform_provider import *
 
+
 @dataclass
 class FileIngestionMetadata:
     entry_id: str
@@ -28,31 +29,39 @@ class FileIngestionMetadata:
     tags: Dict[str, str]
     infer_schema: bool = True
     filetype: str = "csv"
- 
+
+
 class FileIngestionEntries:
     deregistry = None
-    
+
     @classmethod
     def entry(cls, **decorator_params):
-        if(cls.deregistry is None):
+        if cls.deregistry is None:
             cls.deregistry = GlobalInjector.get(FileIngestionRegistry)
         # Check all required fields are provided
         required_fields = {field.name for field in fields(FileIngestionMetadata)}
 
-        decorator_params['infer_schema'] = decorator_params['infer_schema'] if ('infer_schema' in decorator_params.keys()) else True
+        decorator_params["infer_schema"] = (
+            decorator_params["infer_schema"]
+            if ("infer_schema" in decorator_params.keys())
+            else True
+        )
 
-        missing_fields = required_fields - decorator_params.keys() 
+        missing_fields = required_fields - decorator_params.keys()
 
         if missing_fields:
-            raise ValueError(f"Missing required fields in file ingestion decorator: {missing_fields}")
-        
-        destEntityId = decorator_params['entry_id']
+            raise ValueError(
+                f"Missing required fields in file ingestion decorator: {missing_fields}"
+            )
 
-        del decorator_params['entry_id']
+        destEntityId = decorator_params["entry_id"]
+
+        del decorator_params["entry_id"]
 
         cls.deregistry.register_entry(destEntityId, **decorator_params)
 
         return None
+
 
 class FileIngestionRegistry(ABC):
     @abstractmethod
@@ -67,10 +76,11 @@ class FileIngestionRegistry(ABC):
     def get_entry_definition(self, entryId):
         pass
 
+
 @GlobalInjector.singleton_autobind()
 class FileIngestionManager(FileIngestionRegistry):
     @inject
-    def __init__(self, lp: PythonLoggerProvider ):
+    def __init__(self, lp: PythonLoggerProvider):
         self.logger = lp.get_logger("FileIngestionManager")
         self.logger.debug("File ingestion manager initialized ...")
         self.registry = {}
@@ -84,12 +94,14 @@ class FileIngestionManager(FileIngestionRegistry):
     def get_entry_definition(self, entryId):
         return self.registry.get(entryId)
 
+
 class FileIngestionProcessor(ABC):
     @abstractmethod
-    def process_path(self, path: str ):
+    def process_path(self, path: str):
         pass
+
 
 class FileIngestionProcessorProvider(ABC):
     @abstractmethod
-    def get_file_processor(self, path: str ):
+    def get_file_processor(self, path: str):
         pass

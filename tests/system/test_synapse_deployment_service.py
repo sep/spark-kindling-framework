@@ -4,7 +4,7 @@ Integration test showing how SynapseAppDeploymentService works with KDA packages
 
 This test demonstrates the integration between:
 1. KDA packaging system
-2. SynapseAppDeploymentService 
+2. SynapseAppDeploymentService
 3. Synapse platform execution
 
 In a real Synapse environment, this would actually deploy and run the app.
@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 # Add the src directory to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
 
 
 class MockSynapseService:
@@ -39,7 +39,7 @@ class MockSynapseService:
     def read(self, path):
         if path in self.temp_storage:
             return self.temp_storage[path]
-        return open(path, 'r').read()
+        return open(path, "r").read()
 
 
 class MockLogger:
@@ -66,36 +66,36 @@ class SynapseAppDeploymentServiceDemo:
         # Import and create the SynapseAppDeploymentService
         try:
             from kindling.platform_synapse import SynapseAppDeploymentService
+
             self.deployment_service = SynapseAppDeploymentService(
-                synapse_service=self.synapse_service,
-                logger=self.logger
+                synapse_service=self.synapse_service, logger=self.logger
             )
             self.has_deployment_service = True
         except ImportError:
-            self.logger.warning(
-                "SynapseAppDeploymentService not available - using mock")
+            self.logger.warning("SynapseAppDeploymentService not available - using mock")
             self.deployment_service = self._create_mock_deployment_service()
             self.has_deployment_service = False
 
     def _create_mock_deployment_service(self):
         """Create a mock deployment service for testing"""
+
         class MockSynapseAppDeploymentService:
             def __init__(self, synapse_service, logger):
                 self.synapse_service = synapse_service
                 self.logger = logger
 
             def submit_spark_job(self, job_config):
-                script_path = job_config.get('script_path')
-                app_name = job_config.get('app_name', 'unknown-app')
+                script_path = job_config.get("script_path")
+                app_name = job_config.get("app_name", "unknown-app")
 
                 job_id = f"synapse-{app_name}-{int(time.time())}"
 
                 try:
                     if script_path and os.path.exists(script_path):
                         # Validate script
-                        with open(script_path, 'r') as f:
+                        with open(script_path, "r") as f:
                             script_content = f.read()
-                        compile(script_content, script_path, 'exec')
+                        compile(script_content, script_path, "exec")
 
                         status = "SUCCEEDED"
                         message = f"Mock job {job_id} completed successfully"
@@ -111,7 +111,7 @@ class SynapseAppDeploymentServiceDemo:
                     "job_id": job_id,
                     "status": status,
                     "message": message,
-                    "submission_time": time.time()
+                    "submission_time": time.time(),
                 }
 
             def create_job_config(self, app_name, app_path, environment_vars=None):
@@ -121,7 +121,7 @@ class SynapseAppDeploymentServiceDemo:
                     "script_path": main_script,
                     "environment_vars": environment_vars or {},
                     "platform": "synapse",
-                    "execution_mode": "notebook"
+                    "execution_mode": "notebook",
                 }
 
             def get_job_status(self, job_id):
@@ -154,7 +154,8 @@ class SynapseAppDeploymentServiceDemo:
             print("🎯 Synapse App Deployment Service Integration Demo")
             print("=" * 70)
             print(
-                f"Using {'Real' if self.has_deployment_service else 'Mock'} SynapseAppDeploymentService")
+                f"Using {'Real' if self.has_deployment_service else 'Mock'} SynapseAppDeploymentService"
+            )
             print("=" * 70)
 
             # Step 1: Create KDA package
@@ -175,7 +176,7 @@ class SynapseAppDeploymentServiceDemo:
 
             # Step 5: Monitor job
             self.logger.info("👀 Step 5: Monitoring job status...")
-            job_status = self._monitor_job(job_result['job_id'])
+            job_status = self._monitor_job(job_result["job_id"])
 
             print("\\n" + "=" * 70)
             print("✅ DEMO COMPLETED SUCCESSFULLY!")
@@ -186,14 +187,14 @@ class SynapseAppDeploymentServiceDemo:
             print("  3. ⚙️  Configure Spark job parameters")
             print("  4. ⚡ Submit job via SynapseAppDeploymentService")
             print("  5. 👀 Monitor execution and collect results")
-            print(
-                "\\nIn a real Synapse environment, this would execute on actual compute!")
+            print("\\nIn a real Synapse environment, this would execute on actual compute!")
 
             return True
 
         except Exception as e:
             print(f"❌ Demo failed: {e}")
             import traceback
+
             traceback.print_exc()
             return False
         finally:
@@ -207,35 +208,33 @@ class SynapseAppDeploymentServiceDemo:
             raise FileNotFoundError(f"Test app not found: {app_path}")
 
         # Read app config
-        app_config_path = os.path.join(app_path, 'app.yaml')
-        with open(app_config_path, 'r') as f:
+        app_config_path = os.path.join(app_path, "app.yaml")
+        with open(app_config_path, "r") as f:
             import yaml
+
             base_config = yaml.safe_load(f)
 
         # Merge Synapse config
-        synapse_config_path = os.path.join(app_path, 'app.synapse.yaml')
+        synapse_config_path = os.path.join(app_path, "app.synapse.yaml")
         if os.path.exists(synapse_config_path):
-            with open(synapse_config_path, 'r') as f:
+            with open(synapse_config_path, "r") as f:
                 synapse_config = yaml.safe_load(f)
             merged_config = {**base_config, **synapse_config}
         else:
             merged_config = base_config
 
         # Create manifest
-        app_name = merged_config.get('name', 'azure-storage-test')
+        app_name = merged_config.get("name", "azure-storage-test")
         manifest = KDAManifest(
             name=app_name,
             version="1.0",
             description="Azure Storage Test App for Synapse",
             entry_point="main.py",
-            dependencies=merged_config.get('dependencies', []),
-            lake_requirements=merged_config.get('lake_requirements', []),
+            dependencies=merged_config.get("dependencies", []),
+            lake_requirements=merged_config.get("lake_requirements", []),
             environment="synapse",
-            metadata={
-                "demo": True,
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
-            },
-            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            metadata={"demo": True, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")},
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
         # Create KDA package
@@ -245,19 +244,17 @@ class SynapseAppDeploymentServiceDemo:
         kda_filename = f"{app_name}-synapse-demo-v{manifest.version}.kda"
         kda_path = os.path.join(output_dir, kda_filename)
 
-        with zipfile.ZipFile(kda_path, 'w', zipfile.ZIP_DEFLATED) as kda:
+        with zipfile.ZipFile(kda_path, "w", zipfile.ZIP_DEFLATED) as kda:
             # Add manifest
-            kda.writestr('manifest.json', json.dumps(
-                manifest.__dict__, indent=2))
+            kda.writestr("manifest.json", json.dumps(manifest.__dict__, indent=2))
 
             # Add merged config
-            kda.writestr('app.yaml', yaml.dump(
-                merged_config, default_flow_style=False))
+            kda.writestr("app.yaml", yaml.dump(merged_config, default_flow_style=False))
 
             # Add all app files
             for root, dirs, files in os.walk(app_path):
                 for file in files:
-                    if file.startswith('app.') and file.endswith('.yaml') and file != 'app.yaml':
+                    if file.startswith("app.") and file.endswith(".yaml") and file != "app.yaml":
                         continue  # Skip platform configs in single-platform mode
 
                     file_path = os.path.join(root, file)
@@ -269,12 +266,11 @@ class SynapseAppDeploymentServiceDemo:
 
     def _deploy_kda_package(self, kda_path):
         """Deploy KDA package (simulate extracting to platform storage)"""
-        deployment_dir = os.path.join(
-            self.temp_dir, "deployed", "azure-storage-test")
+        deployment_dir = os.path.join(self.temp_dir, "deployed", "azure-storage-test")
         os.makedirs(deployment_dir, exist_ok=True)
 
         # Extract KDA
-        with zipfile.ZipFile(kda_path, 'r') as kda:
+        with zipfile.ZipFile(kda_path, "r") as kda:
             kda.extractall(deployment_dir)
 
         self.logger.info(f"✅ KDA deployed to: {deployment_dir}")
@@ -286,13 +282,11 @@ class SynapseAppDeploymentServiceDemo:
         environment_vars = {
             "AZURE_STORAGE_ACCOUNT": "demodatalake",
             "AZURE_STORAGE_KEY": "demo-key-for-testing",
-            "SYNAPSE_WORKSPACE": "demo-workspace"
+            "SYNAPSE_WORKSPACE": "demo-workspace",
         }
 
         job_config = self.deployment_service.create_job_config(
-            app_name=app_name,
-            app_path=deployment_dir,
-            environment_vars=environment_vars
+            app_name=app_name, app_path=deployment_dir, environment_vars=environment_vars
         )
 
         self.logger.info(f"✅ Job configuration created")

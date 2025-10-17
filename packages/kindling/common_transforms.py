@@ -6,9 +6,10 @@ def remove_duplicates(df, keycolumns):
     df_with_row_num = df.withColumn("row_num", row_number().over(window_spec))
     return df_with_row_num.filter(col("row_num") == 1).drop("row_num")
 
+
 def drop_if_exists(df, column_name):
     """Drop a column if it exists, otherwise return the original DataFrame."""
     if column_name in df.columns:
         return df.drop(column_name)
-    else: 
+    else:
         return df

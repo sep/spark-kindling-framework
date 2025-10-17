@@ -22,14 +22,12 @@ level_hierarchy = {
     "WARNING": 3,
     "ERROR": 4,
     "FATAL": 5,
-    "OFF": 6
+    "OFF": 6,
 }
 
 
 def download_config_files(
-    artifacts_storage_path: str,
-    environment: str,
-    app_name: Optional[str] = None
+    artifacts_storage_path: str, environment: str, app_name: Optional[str] = None
 ) -> List[str]:
     """
     Download config files from lake to temp location for Dynaconf.
@@ -44,7 +42,7 @@ def download_config_files(
 
     print(f"Using artifacts path: {artifacts_storage_path}")
 
-    temp_dir = tempfile.mkdtemp(prefix='kindling_config_')
+    temp_dir = tempfile.mkdtemp(prefix="kindling_config_")
     temp_path = Path(temp_dir)
 
     config_files = []
@@ -55,7 +53,7 @@ def download_config_files(
     ]
 
     for remote_path in files_to_download:
-        filename = remote_path.split('/')[-1]
+        filename = remote_path.split("/")[-1]
         local_path = temp_path / f"{len(config_files)}_{filename}"
 
         try:
@@ -68,7 +66,7 @@ def download_config_files(
 
     if not config_files:
         print("No YAML config files found")
-        default_config = temp_path / 'default_settings.yaml'
+        default_config = temp_path / "default_settings.yaml"
         default_config.write_text(_get_minimal_default_config())
         config_files.append(str(default_config))
         print("✓ Using built-in default config (can be overridden by bootstrap)")
@@ -79,7 +77,8 @@ def download_config_files(
 def _get_storage_utils():
     """Get platform storage utilities"""
     import __main__
-    return getattr(__main__, 'mssparkutils', None) or getattr(__main__, 'dbutils', None)
+
+    return getattr(__main__, "mssparkutils", None) or getattr(__main__, "dbutils", None)
 
 
 def _get_minimal_default_config() -> str:
@@ -108,14 +107,13 @@ default:
 """
 
 
-def flatten_dynaconf(data: Dict[str, Any], parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
+def flatten_dynaconf(data: Dict[str, Any], parent_key: str = "", sep: str = ".") -> Dict[str, Any]:
     """Flatten a nested Dynaconf config into dot-notation keys."""
     items = []
     for key, value in data.items():
         new_key = f"{parent_key}{sep}{key}" if parent_key else key
         if isinstance(value, dict):
-            items.extend(flatten_dynaconf(
-                value, new_key.lower(), sep=sep).items())
+            items.extend(flatten_dynaconf(value, new_key.lower(), sep=sep).items())
         else:
             items.append((new_key.lower(), value))
     return dict(items)
@@ -123,7 +121,11 @@ def flatten_dynaconf(data: Dict[str, Any], parent_key: str = '', sep: str = '.')
 
 def get_spark_log_level():
     """Get current Spark log level"""
-    return get_or_create_spark_session().sparkContext._jvm.org.apache.log4j.LogManager.getRootLogger().getLevel()
+    return (
+        get_or_create_spark_session()
+        .sparkContext._jvm.org.apache.log4j.LogManager.getRootLogger()
+        .getLevel()
+    )
 
 
 def create_console_logger(config):
@@ -137,12 +139,24 @@ def create_console_logger(config):
         current_log_rank = level_hierarchy.get(currentLevel, 2)
         return level_log_rank >= current_log_rank
 
-    return type('ConsoleLogger', (), {
-        'debug': lambda self, *args, **kwargs: print("DEBUG:", *args) if should_log("DEBUG") else None,
-        'info': lambda self, *args, **kwargs: print("INFO:", *args) if should_log("INFO") else None,
-        'error': lambda self, *args, **kwargs: print("ERROR:", *args) if should_log("ERROR") else None,
-        'warning': lambda self, *args, **kwargs: print("WARNING:", *args) if should_log("WARNING") else None,
-    })()
+    return type(
+        "ConsoleLogger",
+        (),
+        {
+            "debug": lambda self, *args, **kwargs: (
+                print("DEBUG:", *args) if should_log("DEBUG") else None
+            ),
+            "info": lambda self, *args, **kwargs: (
+                print("INFO:", *args) if should_log("INFO") else None
+            ),
+            "error": lambda self, *args, **kwargs: (
+                print("ERROR:", *args) if should_log("ERROR") else None
+            ),
+            "warning": lambda self, *args, **kwargs: (
+                print("WARNING:", *args) if should_log("WARNING") else None
+            ),
+        },
+    )()
 
 
 logger = create_console_logger({"log_level": "debug"})
@@ -152,10 +166,10 @@ def detect_platform_from_utils():
     try:
         import __main__
 
-        if hasattr(__main__, 'dbutils') and getattr(__main__, 'dbutils') is not None:
-            return 'databricks'
+        if hasattr(__main__, "dbutils") and getattr(__main__, "dbutils") is not None:
+            return "databricks"
 
-        if hasattr(__main__, 'mssparkutils') and getattr(__main__, 'mssparkutils') is not None:
+        if hasattr(__main__, "mssparkutils") and getattr(__main__, "mssparkutils") is not None:
             return None
     except Exception:
         return None
@@ -187,6 +201,7 @@ def detect_platform(config=None) -> str:
     # Check for Fabric - notebookutils with specific context
     try:
         import notebookutils
+
         # Fabric has workspaceId in context
         workspace_id = notebookutils.runtime.context.get("currentWorkspaceId")
         if workspace_id:
@@ -194,14 +209,14 @@ def detect_platform(config=None) -> str:
     except (ImportError, Exception):
         pass
 
-    raise RuntimeError(
-        "Unable to detect platform (not Synapse, Fabric, or Databricks)")
+    raise RuntimeError("Unable to detect platform (not Synapse, Fabric, or Databricks)")
 
 
 def safe_get_global(var_name: str, default: Any = None) -> Any:
     """Safely get a global variable"""
     try:
         import __main__
+
         return getattr(__main__, var_name, default)
     except Exception:
         return default
@@ -209,6 +224,7 @@ def safe_get_global(var_name: str, default: Any = None) -> Any:
 
 def install_bootstrap_dependencies(logger, bootstrap_config):
     """Install packages needed for framework bootstrap"""
+
     def is_package_installed(package_name):
         try:
             spec = importlib.util.find_spec(package_name)
@@ -221,19 +237,17 @@ def install_bootstrap_dependencies(logger, bootstrap_config):
     def load_if_needed(package_name):
         if not is_package_installed(package_name):
             try:
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", package_name])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
                 logger.debug(f"Installed package: {package_name}")
             except subprocess.CalledProcessError as e:
                 logger.error(f"Failed to install {package_name}: {e}")
 
-    for package in bootstrap_config.get('required_packages', []):
+    for package in bootstrap_config.get("required_packages", []):
         load_if_needed(package)
 
 
 def initialize_platform_services(platform, config, logger):
-    svc = PlatformServices.get_service_definition(
-        platform).factory(config, logger)
+    svc = PlatformServices.get_service_definition(platform).factory(config, logger)
     get_kindling_service(PlatformServiceProvider).set_service(svc)
     return svc
 
@@ -246,18 +260,18 @@ def load_workspace_packages(platform, packages, logger):
         for package_name in packages:
             try:
                 notebooks = loader.get_notebooks_for_folder(package_name)
-                notebook_names = [
-                    nb.name for nb in notebooks if '_init' not in nb.name]
+                notebook_names = [nb.name for nb in notebooks if "_init" not in nb.name]
 
                 if notebook_names:
                     loaded_modules = loader.import_notebooks_into_module(
-                        package_name, notebook_names)
+                        package_name, notebook_names
+                    )
                     logger.info(
-                        f"Loaded workspace package: {package_name} ({len(loaded_modules)} modules)")
+                        f"Loaded workspace package: {package_name} ({len(loaded_modules)} modules)"
+                    )
 
             except Exception as e:
-                logger.warning(
-                    f"Failed to load workspace package {package_name}: {str(e)}")
+                logger.warning(f"Failed to load workspace package {package_name}: {str(e)}")
 
     except Exception as e:
         logger.warning(f"Workspace package loading failed: {str(e)}")
@@ -269,53 +283,50 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     print(f"initialize_framework: initial_config = {config}")
 
     # Extract bootstrap settings
-    artifacts_storage_path = config.get('artifacts_storage_path')
-    use_lake_packages = config.get('use_lake_packages', True)
-    environment = config.get('environment', 'development')
+    artifacts_storage_path = config.get("artifacts_storage_path")
+    use_lake_packages = config.get("use_lake_packages", True)
+    environment = config.get("environment", "development")
 
     config_files = None
     if use_lake_packages and artifacts_storage_path:
         config_files = download_config_files(
             artifacts_storage_path=artifacts_storage_path,
             environment=environment,
-            app_name=app_name
+            app_name=app_name,
         )
 
     from kindling.spark_config import configure_injector_with_config
+
     injector = configure_injector_with_config(
         config_files=config_files,
         initial_config=config,  # BOOTSTRAP_CONFIG as overrides
         environment=environment,
-        artifacts_storage_path=artifacts_storage_path
+        artifacts_storage_path=artifacts_storage_path,
     )
 
     config_service = get_kindling_service(ConfigService)
 
-    logger = get_kindling_service(
-        PythonLoggerProvider).get_logger("KindlingBootstrap")
+    logger = get_kindling_service(PythonLoggerProvider).get_logger("KindlingBootstrap")
     logger.info("Starting framework initialization")
 
     try:
-        required_packages = config_service.get(
-            'kindling.bootstrap.required_packages', [])
-        install_bootstrap_dependencies(
-            logger, {'required_packages': required_packages})
+        required_packages = config_service.get("kindling.bootstrap.required_packages", [])
+        install_bootstrap_dependencies(logger, {"required_packages": required_packages})
 
         platform = detect_platform(
-            config={'platform_service': config_service.get('kindling.platform.environment')})
+            config={"platform_service": config_service.get("kindling.platform.environment")}
+        )
         logger.info(f"Platform: {platform}")
 
-        platformservice = initialize_platform_services(
-            platform, config_service, logger)
+        platformservice = initialize_platform_services(platform, config_service, logger)
         logger.info("Platform services initialized")
 
-        if config_service.get('kindling.bootstrap.load_local', True):
-            ignored_folders = config_service.get(
-                'kindling.bootstrap.ignored_folders', [])
-            workspace_packages = get_kindling_service(
-                NotebookManager).get_all_packages(ignored_folders=ignored_folders)
-            load_workspace_packages(
-                platformservice, workspace_packages, logger)
+        if config_service.get("kindling.bootstrap.load_local", True):
+            ignored_folders = config_service.get("kindling.bootstrap.ignored_folders", [])
+            workspace_packages = get_kindling_service(NotebookManager).get_all_packages(
+                ignored_folders=ignored_folders
+            )
+            load_workspace_packages(platformservice, workspace_packages, logger)
             logger.info(f"Loaded {len(workspace_packages)} workspace packages")
 
         logger.info("Framework initialization complete")

@@ -18,14 +18,13 @@ class StreamingKDARunner:
         """Run a KDA as a streaming DLT pipeline"""
 
         streaming_config = {
-            'name': f"{app_name}-streaming",
-            'mode': 'continuous',
-            'source': config.get('source', 'delta-table'),
-            'target': config.get('target', 'delta-table'),
-            **config
+            "name": f"{app_name}-streaming",
+            "mode": "continuous",
+            "source": config.get("source", "delta-table"),
+            "target": config.get("target", "delta-table"),
+            **config,
         }
 
         return self.dlt_manager.deploy_streaming_kda(
-            kda_path=f"apps/{app_name}/",
-            pipeline_config=streaming_config
+            kda_path=f"apps/{app_name}/", pipeline_config=streaming_config
         )

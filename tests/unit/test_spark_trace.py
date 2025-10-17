@@ -12,14 +12,16 @@ from kindling.spark_trace import (
     SparkSpan,
     SparkTraceProvider,
     EventBasedSparkTrace,
-    mdc_context
+    mdc_context,
 )
 
 
 @pytest.fixture(autouse=True)
 def mock_spark_session_for_mdc(mock_spark_for_trace):
     """Automatically mock get_or_create_spark_session for all tests."""
-    with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
+    with patch(
+        "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+    ):
         yield
 
 
@@ -33,6 +35,7 @@ class TestCustomEventEmitter:
 
     def test_custom_event_emitter_requires_emit_method(self):
         """Subclasses must implement emit_custom_event method."""
+
         class IncompleteEmitter(CustomEventEmitter):
             pass
 
@@ -50,12 +53,14 @@ class TestAzureEventEmitter:
         assert emitter.logger is not None, "Logger should be initialized from provider"
         assert emitter.config == mock_config, "Config should be stored during initialization"
         mock_logger_provider.get_logger.assert_called_once_with(
-            'EventEmitter'), "Should request EventEmitter logger"
+            "EventEmitter"
+        ), "Should request EventEmitter logger"
 
     def test_should_print_when_print_trace_enabled(self, mock_logger_provider, mock_config):
         """should_print() should return True when print_trace is enabled."""
-        mock_config.get = Mock(side_effect=lambda key,
-                               default: True if key == "print_trace" else False)
+        mock_config.get = Mock(
+            side_effect=lambda key, default: True if key == "print_trace" else False
+        )
         emitter = AzureEventEmitter(mock_logger_provider, mock_config)
 
         result = emitter.should_print()
@@ -65,7 +70,8 @@ class TestAzureEventEmitter:
     def test_should_print_when_print_tracing_enabled(self, mock_logger_provider, mock_config):
         """should_print() should return True when print_tracing is enabled."""
         mock_config.get = Mock(
-            side_effect=lambda key, default: True if key == "print_tracing" else False)
+            side_effect=lambda key, default: True if key == "print_tracing" else False
+        )
         emitter = AzureEventEmitter(mock_logger_provider, mock_config)
 
         result = emitter.should_print()
@@ -81,67 +87,85 @@ class TestAzureEventEmitter:
 
         assert result is False, "should_print should return False when both flags are disabled"
 
-    def test_emit_custom_event_creates_spark_event(self, mock_logger_provider, mock_config, mock_spark_for_trace):
+    def test_emit_custom_event_creates_spark_event(
+        self, mock_logger_provider, mock_config, mock_spark_for_trace
+    ):
         """emit_custom_event should create and post ComponentSparkEvent."""
         emitter = AzureEventEmitter(mock_logger_provider, mock_config)
         test_trace_id = uuid.uuid4()
         details = {"key": "value", "count": 42}
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
             emitter.emit_custom_event(
-                "TestComponent", "TestOperation", details, "event-123", test_trace_id)
+                "TestComponent", "TestOperation", details, "event-123", test_trace_id
+            )
 
         # Verify ComponentSparkEvent was created with correct parameters
         mock_spark_for_trace._jvm.com.microsoft.spark.metricevents.ComponentSparkEvent.assert_called_once()
-        call_args = mock_spark_for_trace._jvm.com.microsoft.spark.metricevents.ComponentSparkEvent.call_args
+        call_args = (
+            mock_spark_for_trace._jvm.com.microsoft.spark.metricevents.ComponentSparkEvent.call_args
+        )
 
         assert call_args[0][0] == "TestApp", "App name should be from Spark context"
         assert call_args[0][1] == "TestComponent", "Component should be passed correctly"
         assert call_args[0][2] == "TestOperation", "Operation should be passed correctly"
 
-    def test_emit_custom_event_posts_to_listener_bus(self, mock_logger_provider, mock_config, mock_spark_for_trace):
+    def test_emit_custom_event_posts_to_listener_bus(
+        self, mock_logger_provider, mock_config, mock_spark_for_trace
+    ):
         """emit_custom_event should post event to Spark listener bus."""
         emitter = AzureEventEmitter(mock_logger_provider, mock_config)
         test_trace_id = uuid.uuid4()
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
-            emitter.emit_custom_event(
-                "TestComp", "TestOp", {}, "event-1", test_trace_id)
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
+            emitter.emit_custom_event("TestComp", "TestOp", {}, "event-1", test_trace_id)
 
         # Verify event was posted to listener bus
         mock_listener_bus = mock_spark_for_trace.sparkContext._jsc.sc().listenerBus()
-        mock_listener_bus.post.assert_called_once(
-        ), "Event should be posted to listener bus"
+        mock_listener_bus.post.assert_called_once(), "Event should be posted to listener bus"
 
-    def test_emit_custom_event_serializes_details_to_json(self, mock_logger_provider, mock_config, mock_spark_for_trace):
+    def test_emit_custom_event_serializes_details_to_json(
+        self, mock_logger_provider, mock_config, mock_spark_for_trace
+    ):
         """emit_custom_event should serialize details dict to JSON."""
         emitter = AzureEventEmitter(mock_logger_provider, mock_config)
         test_trace_id = uuid.uuid4()
         details = {"nested": {"data": "value"}, "list": [1, 2, 3]}
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
-            emitter.emit_custom_event(
-                "TestComp", "TestOp", details, "event-1", test_trace_id)
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
+            emitter.emit_custom_event("TestComp", "TestOp", details, "event-1", test_trace_id)
 
         # Verify details were serialized to JSON
-        call_args = mock_spark_for_trace._jvm.com.microsoft.spark.metricevents.ComponentSparkEvent.call_args
+        call_args = (
+            mock_spark_for_trace._jvm.com.microsoft.spark.metricevents.ComponentSparkEvent.call_args
+        )
         custom_message_option = call_args[0][6]  # customMessage parameter
 
         # The custom message should be wrapped in Scala Option
         assert custom_message_option is not None, "Custom message should be provided"
 
-    def test_emit_custom_event_prints_when_enabled(self, mock_logger_provider, mock_config, mock_spark_for_trace):
+    def test_emit_custom_event_prints_when_enabled(
+        self, mock_logger_provider, mock_config, mock_spark_for_trace
+    ):
         """emit_custom_event should print trace when print_trace is enabled."""
-        mock_config.get = Mock(side_effect=lambda key,
-                               default: True if key == "print_trace" else False)
+        mock_config.get = Mock(
+            side_effect=lambda key, default: True if key == "print_trace" else False
+        )
         emitter = AzureEventEmitter(mock_logger_provider, mock_config)
         test_trace_id = uuid.uuid4()
         details = {"test": "data"}
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
-            with patch('builtins.print') as mock_print:
-                emitter.emit_custom_event(
-                    "TestComp", "TestOp", details, "event-1", test_trace_id)
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
+            with patch("builtins.print") as mock_print:
+                emitter.emit_custom_event("TestComp", "TestOp", details, "event-1", test_trace_id)
 
         mock_print.assert_called_once(), "Should print trace when print_trace is enabled"
         printed_msg = mock_print.call_args[0][0]
@@ -149,27 +173,33 @@ class TestAzureEventEmitter:
         assert "TestComp" in printed_msg, "Printed message should contain component"
         assert "TestOp" in printed_msg, "Printed message should contain operation"
 
-    def test_emit_custom_event_does_not_print_when_disabled(self, mock_logger_provider, mock_config, mock_spark_for_trace):
+    def test_emit_custom_event_does_not_print_when_disabled(
+        self, mock_logger_provider, mock_config, mock_spark_for_trace
+    ):
         """emit_custom_event should not print when print_trace is disabled."""
         mock_config.get = Mock(return_value=False)
         emitter = AzureEventEmitter(mock_logger_provider, mock_config)
         test_trace_id = uuid.uuid4()
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
-            with patch('builtins.print') as mock_print:
-                emitter.emit_custom_event(
-                    "TestComp", "TestOp", {}, "event-1", test_trace_id)
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
+            with patch("builtins.print") as mock_print:
+                emitter.emit_custom_event("TestComp", "TestOp", {}, "event-1", test_trace_id)
 
         mock_print.assert_not_called(), "Should not print trace when print_trace is disabled"
 
-    def test_emit_custom_event_handles_none_details(self, mock_logger_provider, mock_config, mock_spark_for_trace):
+    def test_emit_custom_event_handles_none_details(
+        self, mock_logger_provider, mock_config, mock_spark_for_trace
+    ):
         """emit_custom_event should handle None details gracefully."""
         emitter = AzureEventEmitter(mock_logger_provider, mock_config)
         test_trace_id = uuid.uuid4()
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
-            emitter.emit_custom_event(
-                "TestComp", "TestOp", None, "event-1", test_trace_id)
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
+            emitter.emit_custom_event("TestComp", "TestOp", None, "event-1", test_trace_id)
 
         # Should not raise exception
         mock_spark_for_trace._jvm.com.microsoft.spark.metricevents.ComponentSparkEvent.assert_called_once()
@@ -180,30 +210,37 @@ class TestMdcContext:
 
     def test_mdc_context_sets_spark_local_properties(self, mock_spark_for_trace):
         """mdc_context should set Spark local properties for each key."""
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
             with mdc_context(trace_id="trace-123", span_id="span-456", component="TestComp"):
                 pass
 
         # Verify setLocalProperty was called for each MDC key
         set_calls = [
-            call for call in mock_spark_for_trace.sparkContext.setLocalProperty.call_args_list]
-        assert len(
-            set_calls) >= 6, "Should set and clear local properties for each key"
+            call for call in mock_spark_for_trace.sparkContext.setLocalProperty.call_args_list
+        ]
+        assert len(set_calls) >= 6, "Should set and clear local properties for each key"
 
         # Check that properties were set with mdc. prefix
         set_with_values = [c for c in set_calls if c[0][1] and c[0][1] != ""]
-        assert any("mdc.trace_id" in str(c)
-                   for c in set_with_values), "Should set mdc.trace_id property"
-        assert any("mdc.span_id" in str(c)
-                   for c in set_with_values), "Should set mdc.span_id property"
-        assert any("mdc.component" in str(c)
-                   for c in set_with_values), "Should set mdc.component property"
+        assert any(
+            "mdc.trace_id" in str(c) for c in set_with_values
+        ), "Should set mdc.trace_id property"
+        assert any(
+            "mdc.span_id" in str(c) for c in set_with_values
+        ), "Should set mdc.span_id property"
+        assert any(
+            "mdc.component" in str(c) for c in set_with_values
+        ), "Should set mdc.component property"
 
     def test_mdc_context_sets_log4j_mdc(self, mock_spark_for_trace):
         """mdc_context should set Log4j MDC values."""
         mock_mdc = mock_spark_for_trace._jvm.org.apache.log4j.MDC
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
             with mdc_context(trace_id="trace-123", span_id="span-456"):
                 pass
 
@@ -213,16 +250,16 @@ class TestMdcContext:
 
         # Verify the keys and values
         call_dict = {c[0][0]: c[0][1] for c in put_calls}
-        assert call_dict.get(
-            "trace_id") == "trace-123", "Should set trace_id in MDC"
-        assert call_dict.get(
-            "span_id") == "span-456", "Should set span_id in MDC"
+        assert call_dict.get("trace_id") == "trace-123", "Should set trace_id in MDC"
+        assert call_dict.get("span_id") == "span-456", "Should set span_id in MDC"
 
     def test_mdc_context_clears_on_exit(self, mock_spark_for_trace):
         """mdc_context should clear MDC values on exit."""
         mock_mdc = mock_spark_for_trace._jvm.org.apache.log4j.MDC
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
             with mdc_context(trace_id="trace-123", operation="TestOp"):
                 pass
 
@@ -236,20 +273,27 @@ class TestMdcContext:
 
     def test_mdc_context_clears_spark_properties_on_exit(self, mock_spark_for_trace):
         """mdc_context should clear Spark local properties on exit."""
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
             with mdc_context(trace_id="trace-123"):
                 pass
 
         # Verify setLocalProperty was called to clear (set to empty string)
-        clear_calls = [c for c in mock_spark_for_trace.sparkContext.setLocalProperty.call_args_list
-                       if c[0][1] == ""]
+        clear_calls = [
+            c
+            for c in mock_spark_for_trace.sparkContext.setLocalProperty.call_args_list
+            if c[0][1] == ""
+        ]
         assert len(clear_calls) >= 1, "Should clear local properties on exit"
 
     def test_mdc_context_clears_even_on_exception(self, mock_spark_for_trace):
         """mdc_context should clear MDC even when exception occurs."""
         mock_mdc = mock_spark_for_trace._jvm.org.apache.log4j.MDC
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
             try:
                 with mdc_context(trace_id="trace-123"):
                     raise ValueError("Test error")
@@ -258,8 +302,7 @@ class TestMdcContext:
 
         # Verify MDC.remove was still called
         remove_calls = [call for call in mock_mdc.remove.call_args_list]
-        assert len(
-            remove_calls) >= 1, "Should clear MDC even when exception occurs"
+        assert len(remove_calls) >= 1, "Should clear MDC even when exception occurs"
 
 
 class TestSparkSpan:
@@ -274,14 +317,13 @@ class TestSparkSpan:
             operation="TestOp",
             attributes={"key": "value"},
             traceId=test_trace_id,
-            reraise=True
+            reraise=True,
         )
 
         assert span.id == "1", "Span ID should be set correctly"
         assert span.component == "TestComp", "Component should be set correctly"
         assert span.operation == "TestOp", "Operation should be set correctly"
-        assert span.attributes == {
-            "key": "value"}, "Attributes should be set correctly"
+        assert span.attributes == {"key": "value"}, "Attributes should be set correctly"
         assert span.traceId == test_trace_id, "Trace ID should be set correctly"
         assert span.reraise is True, "Reraise flag should be set correctly"
 
@@ -293,7 +335,7 @@ class TestSparkSpan:
             operation="TestOp",
             attributes={},
             traceId=uuid.uuid4(),
-            reraise=False
+            reraise=False,
         )
 
         assert span.start_time is None, "Start time should default to None"
@@ -312,7 +354,7 @@ class TestSparkSpan:
             traceId=uuid.uuid4(),
             reraise=False,
             start_time=start,
-            end_time=end
+            end_time=end,
         )
 
         assert span.start_time == start, "Start time should be set correctly"
@@ -349,12 +391,13 @@ class TestEventBasedSparkTrace:
         test_dict = {"existing": "value"}
         test_time = datetime(2025, 10, 15, 14, 30, 45, 123456)
 
-        result = trace._add_timestamp_to_dict(
-            test_dict, "timestamp", test_time)
+        result = trace._add_timestamp_to_dict(test_dict, "timestamp", test_time)
 
         assert "existing" in result, "Existing keys should be preserved"
         assert "timestamp" in result, "New timestamp key should be added"
-        assert result["timestamp"] == "2025-10-15 14:30:45.123", "Timestamp should be formatted correctly"
+        assert (
+            result["timestamp"] == "2025-10-15 14:30:45.123"
+        ), "Timestamp should be formatted correctly"
 
     def test_add_timestamp_handles_none_dict(self, mock_emitter):
         """_add_timestamp_to_dict should handle None input dict."""
@@ -374,8 +417,7 @@ class TestEventBasedSparkTrace:
 
         result = trace._merge_dict(dict1, dict2)
 
-        assert result == {"a": 1, "b": 2, "c": 3,
-                          "d": 4}, "Dictionaries should be merged"
+        assert result == {"a": 1, "b": 2, "c": 3, "d": 4}, "Dictionaries should be merged"
 
     def test_merge_dict_overwrites_duplicate_keys(self, mock_emitter):
         """_merge_dict should let second dict overwrite first dict keys."""
@@ -416,7 +458,8 @@ class TestEventBasedSparkTrace:
 
         # Verify START event was emitted
         start_calls = [
-            c for c in mock_emitter.emit_custom_event.call_args_list if "START" in c[0][1]]
+            c for c in mock_emitter.emit_custom_event.call_args_list if "START" in c[0][1]
+        ]
         assert len(start_calls) == 1, "Should emit one START event"
 
         start_call = start_calls[0]
@@ -432,8 +475,7 @@ class TestEventBasedSparkTrace:
             pass
 
         # Verify END event was emitted
-        end_calls = [
-            c for c in mock_emitter.emit_custom_event.call_args_list if "END" in c[0][1]]
+        end_calls = [c for c in mock_emitter.emit_custom_event.call_args_list if "END" in c[0][1]]
         assert len(end_calls) == 1, "Should emit one END event"
 
         end_call = end_calls[0]
@@ -468,7 +510,8 @@ class TestEventBasedSparkTrace:
 
         # Verify ERROR event was emitted
         error_calls = [
-            c for c in mock_emitter.emit_custom_event.call_args_list if "ERROR" in c[0][1]]
+            c for c in mock_emitter.emit_custom_event.call_args_list if "ERROR" in c[0][1]
+        ]
         assert len(error_calls) == 1, "Should emit one ERROR event"
 
         error_call = error_calls[0]
@@ -485,9 +528,9 @@ class TestEventBasedSparkTrace:
 
         # ERROR event should still be emitted
         error_calls = [
-            c for c in mock_emitter.emit_custom_event.call_args_list if "ERROR" in c[0][1]]
-        assert len(
-            error_calls) == 1, "Should emit ERROR event even when reraising"
+            c for c in mock_emitter.emit_custom_event.call_args_list if "ERROR" in c[0][1]
+        ]
+        assert len(error_calls) == 1, "Should emit ERROR event even when reraising"
 
     def test_span_does_not_reraise_when_reraise_false(self, mock_emitter):
         """span should swallow exception when reraise=False."""
@@ -500,8 +543,7 @@ class TestEventBasedSparkTrace:
         # Verify execution continued after exception
         calls = mock_emitter.emit_custom_event.call_args_list
         operations = [c[0][1] for c in calls]
-        assert any(
-            "END" in op for op in operations), "Should emit END event even after exception"
+        assert any("END" in op for op in operations), "Should emit END event even after exception"
 
     def test_span_emits_end_after_error(self, mock_emitter):
         """span should emit END event even after ERROR event."""
@@ -510,8 +552,7 @@ class TestEventBasedSparkTrace:
         with trace.span(operation="TestOp", component="TestComp", reraise=False):
             raise ValueError("Test error")
 
-        operations = [c[0][1]
-                      for c in mock_emitter.emit_custom_event.call_args_list]
+        operations = [c[0][1] for c in mock_emitter.emit_custom_event.call_args_list]
         assert "TestOp_START" in operations, "Should have START event"
         assert "TestOp_ERROR" in operations, "Should have ERROR event"
         assert "TestOp_END" in operations, "Should have END event"
@@ -603,8 +644,9 @@ class TestEventBasedSparkTrace:
 
         assert len(child_calls) >= 2, "Should have events for child span"
         # Operation name from events should contain ParentOp
-        assert any("ParentOp" in c[0][1]
-                   for c in child_calls), "Should inherit operation from parent"
+        assert any(
+            "ParentOp" in c[0][1] for c in child_calls
+        ), "Should inherit operation from parent"
 
     def test_span_calculates_timing_correctly(self, mock_emitter):
         """span should calculate elapsed time between start and end."""
@@ -644,7 +686,9 @@ class TestEventBasedSparkTrace:
         """span should set up MDC context during execution."""
         trace = EventBasedSparkTrace(mock_emitter)
 
-        with patch('kindling.spark_trace.get_or_create_spark_session', return_value=mock_spark_for_trace):
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
+        ):
             with trace.span(operation="TestOp", component="TestComp"):
                 # MDC should be set during span execution
                 pass
@@ -653,8 +697,7 @@ class TestEventBasedSparkTrace:
         mock_mdc = mock_spark_for_trace._jvm.org.apache.log4j.MDC
         put_calls = mock_mdc.put.call_args_list
 
-        assert len(
-            put_calls) >= 4, "Should set MDC for trace_id, span_id, component, operation"
+        assert len(put_calls) >= 4, "Should set MDC for trace_id, span_id, component, operation"
 
         # Verify MDC keys
         mdc_keys = [c[0][0] for c in put_calls]
@@ -674,6 +717,7 @@ class TestSparkTraceProvider:
 
     def test_spark_trace_provider_requires_span_method(self):
         """Subclasses must implement span method."""
+
         class IncompleteTrace(SparkTraceProvider):
             pass
 

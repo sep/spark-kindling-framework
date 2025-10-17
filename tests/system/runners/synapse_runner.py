@@ -32,8 +32,9 @@ except ImportError as e:
 class SynapseTestRunner:
     """Runner for deploying and executing system tests on Synapse Analytics"""
 
-    def __init__(self, workspace_name: str, spark_pool_name: str,
-                 subscription_id: str, resource_group: str):
+    def __init__(
+        self, workspace_name: str, spark_pool_name: str, subscription_id: str, resource_group: str
+    ):
         self.workspace_name = workspace_name
         self.spark_pool_name = spark_pool_name
         self.subscription_id = subscription_id
@@ -42,8 +43,7 @@ class SynapseTestRunner:
         # Initialize Azure clients
         self.credential = self._get_azure_credential()
         self.synapse_client = SynapseManagementClient(
-            credential=self.credential,
-            subscription_id=self.subscription_id
+            credential=self.credential, subscription_id=self.subscription_id
         )
 
         # Synapse workspace endpoint
@@ -63,20 +63,19 @@ class SynapseTestRunner:
             print(f"⚠️ DefaultAzureCredential failed: {e}")
 
             # Fallback to service principal if available
-            client_id = os.getenv('AZURE_CLIENT_ID')
-            client_secret = os.getenv('AZURE_CLIENT_SECRET')
-            tenant_id = os.getenv('AZURE_TENANT_ID')
+            client_id = os.getenv("AZURE_CLIENT_ID")
+            client_secret = os.getenv("AZURE_CLIENT_SECRET")
+            tenant_id = os.getenv("AZURE_TENANT_ID")
 
             if client_id and client_secret and tenant_id:
                 print("🔑 Using service principal authentication")
                 return ClientSecretCredential(
-                    tenant_id=tenant_id,
-                    client_id=client_id,
-                    client_secret=client_secret
+                    tenant_id=tenant_id, client_id=client_id, client_secret=client_secret
                 )
 
             raise Exception(
-                "No valid Azure credentials found. Set up managed identity or service principal.")
+                "No valid Azure credentials found. Set up managed identity or service principal."
+            )
 
     def deploy_test_app(self, app_name: str, app_directory: str) -> bool:
         """Deploy test app to Synapse workspace"""
@@ -87,12 +86,10 @@ class SynapseTestRunner:
             app_path = Path(app_directory)
 
             if not app_path.exists():
-                raise FileNotFoundError(
-                    f"App directory not found: {app_directory}")
+                raise FileNotFoundError(f"App directory not found: {app_directory}")
 
             # Create deployment package
-            deployment_path = self._create_deployment_package(
-                app_name, app_path)
+            deployment_path = self._create_deployment_package(app_name, app_path)
 
             # Upload to Synapse workspace file system
             upload_success = self._upload_to_synapse(app_name, deployment_path)
@@ -124,8 +121,7 @@ class SynapseTestRunner:
             shutil.copytree(app_path, app_deploy_dir)
 
             # Copy Kindling framework (from src/)
-            framework_src = Path(
-                __file__).parent.parent.parent.parent / "src" / "kindling"
+            framework_src = Path(__file__).parent.parent.parent.parent / "src" / "kindling"
             if framework_src.exists():
                 framework_deploy_dir = temp_dir / "kindling"
                 shutil.copytree(framework_src, framework_deploy_dir)
@@ -134,13 +130,11 @@ class SynapseTestRunner:
                 print(f"⚠️ Kindling framework not found at: {framework_src}")
 
             # Copy test utilities
-            test_utils_src = Path(
-                __file__).parent.parent.parent / "spark_test_helper.py"
+            test_utils_src = Path(__file__).parent.parent.parent / "spark_test_helper.py"
             if test_utils_src.exists():
                 test_utils_dir = temp_dir / "tests"
                 test_utils_dir.mkdir()
-                shutil.copy2(test_utils_src, test_utils_dir /
-                             "spark_test_helper.py")
+                shutil.copy2(test_utils_src, test_utils_dir / "spark_test_helper.py")
                 print("🧪 Copied test utilities")
 
             return temp_dir
@@ -160,7 +154,7 @@ class SynapseTestRunner:
             # Create blob service client
             blob_service_client = BlobServiceClient(
                 account_url=f"https://{storage_account}.blob.core.windows.net",
-                credential=self.credential
+                credential=self.credential,
             )
 
             # Upload files to workspace file system container
@@ -170,16 +164,14 @@ class SynapseTestRunner:
                 if file_path.is_file():
                     # Calculate relative path for blob name
                     relative_path = file_path.relative_to(deployment_path)
-                    blob_name = f"system-tests/{app_name}/{relative_path}".replace(
-                        "\\", "/")
+                    blob_name = f"system-tests/{app_name}/{relative_path}".replace("\\", "/")
 
                     # Upload file
                     blob_client = blob_service_client.get_blob_client(
-                        container=container_name,
-                        blob=blob_name
+                        container=container_name, blob=blob_name
                     )
 
-                    with open(file_path, 'rb') as data:
+                    with open(file_path, "rb") as data:
                         blob_client.upload_blob(data, overwrite=True)
 
                     print(f"📤 Uploaded: {blob_name}")
@@ -190,14 +182,15 @@ class SynapseTestRunner:
             print(f"❌ Upload failed: {str(e)}")
             return False
 
-    def run_test_app(self, app_name: str, environment_vars: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    def run_test_app(
+        self, app_name: str, environment_vars: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         """Execute test app as Spark job on Synapse"""
         try:
             print(f"🚀 Starting test app '{app_name}' on Synapse...")
 
             # Prepare Spark job configuration
-            job_config = self._create_spark_job_config(
-                app_name, environment_vars)
+            job_config = self._create_spark_job_config(app_name, environment_vars)
 
             # Submit Spark job
             job_result = self._submit_spark_job(job_config)
@@ -206,29 +199,23 @@ class SynapseTestRunner:
                 print(f"✅ Test app '{app_name}' completed successfully")
 
                 # Collect results
-                results = self._collect_test_results(
-                    app_name, job_result["job_id"])
-                return {
-                    "success": True,
-                    "job_id": job_result["job_id"],
-                    "results": results
-                }
+                results = self._collect_test_results(app_name, job_result["job_id"])
+                return {"success": True, "job_id": job_result["job_id"], "results": results}
             else:
                 print(f"❌ Test app '{app_name}' failed")
                 return {
                     "success": False,
                     "error": job_result.get("error", "Unknown error"),
-                    "job_id": job_result.get("job_id")
+                    "job_id": job_result.get("job_id"),
                 }
 
         except Exception as e:
             print(f"❌ Test execution failed: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return {"success": False, "error": str(e)}
 
-    def _create_spark_job_config(self, app_name: str, environment_vars: Optional[Dict[str, str]]) -> Dict[str, Any]:
+    def _create_spark_job_config(
+        self, app_name: str, environment_vars: Optional[Dict[str, str]]
+    ) -> Dict[str, Any]:
         """Create Synapse Spark job configuration"""
 
         # Default environment variables
@@ -238,7 +225,7 @@ class SynapseTestRunner:
             "AZURE_CLOUD": os.getenv("AZURE_CLOUD", "AZURE_PUBLIC_CLOUD"),
             "SYNAPSE_WORKSPACE_NAME": self.workspace_name,
             "AZURE_SUBSCRIPTION_ID": self.subscription_id,
-            "AZURE_RESOURCE_GROUP": self.resource_group
+            "AZURE_RESOURCE_GROUP": self.resource_group,
         }
 
         # Merge with provided environment variables
@@ -254,7 +241,7 @@ class SynapseTestRunner:
             "jars": [],
             "pyFiles": [
                 f"abfss://workspace@{self.workspace_name}storage.dfs.core.windows.net/system-tests/{app_name}/kindling.zip",
-                f"abfss://workspace@{self.workspace_name}storage.dfs.core.windows.net/system-tests/{app_name}/tests.zip"
+                f"abfss://workspace@{self.workspace_name}storage.dfs.core.windows.net/system-tests/{app_name}/tests.zip",
             ],
             "files": [],
             "driverMemory": "4g",
@@ -265,16 +252,19 @@ class SynapseTestRunner:
             "conf": {
                 "spark.sql.adaptive.enabled": "true",
                 "spark.sql.adaptive.coalescePartitions.enabled": "true",
-                "spark.synapse.linkedService.useDefaultCredential": "true"
-            }
+                "spark.synapse.linkedService.useDefaultCredential": "true",
+            },
         }
 
         # Add environment variables
         if default_env_vars:
-            job_config["conf"].update({
-                f"spark.kubernetes.driverEnv.{k}": v
-                for k, v in default_env_vars.items() if v is not None
-            })
+            job_config["conf"].update(
+                {
+                    f"spark.kubernetes.driverEnv.{k}": v
+                    for k, v in default_env_vars.items()
+                    if v is not None
+                }
+            )
 
         return job_config
 
@@ -286,18 +276,17 @@ class SynapseTestRunner:
 
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._get_access_token()}"
+                "Authorization": f"Bearer {self._get_access_token()}",
             }
 
             print(f"🎯 Submitting Spark job: {job_config['name']}")
 
-            response = requests.post(
-                submit_url, headers=headers, json=job_config)
+            response = requests.post(submit_url, headers=headers, json=job_config)
 
             if response.status_code not in [200, 201]:
                 return {
                     "success": False,
-                    "error": f"Job submission failed: {response.status_code} {response.text}"
+                    "error": f"Job submission failed: {response.status_code} {response.text}",
                 }
 
             job_info = response.json()
@@ -309,15 +298,11 @@ class SynapseTestRunner:
             return self._wait_for_job_completion(job_id)
 
         except Exception as e:
-            return {
-                "success": False,
-                "error": f"Job submission failed: {str(e)}"
-            }
+            return {"success": False, "error": f"Job submission failed: {str(e)}"}
 
     def _get_access_token(self) -> str:
         """Get access token for Synapse REST API"""
-        token = self.credential.get_token(
-            "https://dev.azuresynapse.net/.default")
+        token = self.credential.get_token("https://dev.azuresynapse.net/.default")
         return token.token
 
     def _wait_for_job_completion(self, job_id: str, timeout_minutes: int = 30) -> Dict[str, Any]:
@@ -327,9 +312,7 @@ class SynapseTestRunner:
             timeout_seconds = timeout_minutes * 60
 
             status_url = f"{self.workspace_endpoint}/sparkJobs/{job_id}"
-            headers = {
-                "Authorization": f"Bearer {self._get_access_token()}"
-            }
+            headers = {"Authorization": f"Bearer {self._get_access_token()}"}
 
             while time.time() - start_time < timeout_seconds:
                 response = requests.get(status_url, headers=headers)
@@ -338,7 +321,7 @@ class SynapseTestRunner:
                     return {
                         "success": False,
                         "job_id": job_id,
-                        "error": f"Failed to get job status: {response.status_code}"
+                        "error": f"Failed to get job status: {response.status_code}",
                     }
 
                 job_info = response.json()
@@ -347,17 +330,13 @@ class SynapseTestRunner:
                 print(f"🔄 Job {job_id} state: {state}")
 
                 if state in ["success", "succeeded"]:
-                    return {
-                        "success": True,
-                        "job_id": job_id,
-                        "job_info": job_info
-                    }
+                    return {"success": True, "job_id": job_id, "job_info": job_info}
                 elif state in ["failed", "error", "cancelled"]:
                     return {
                         "success": False,
                         "job_id": job_id,
                         "error": f"Job failed with state: {state}",
-                        "job_info": job_info
+                        "job_info": job_info,
                     }
 
                 # Wait before next status check
@@ -367,15 +346,11 @@ class SynapseTestRunner:
             return {
                 "success": False,
                 "job_id": job_id,
-                "error": f"Job timeout after {timeout_minutes} minutes"
+                "error": f"Job timeout after {timeout_minutes} minutes",
             }
 
         except Exception as e:
-            return {
-                "success": False,
-                "job_id": job_id,
-                "error": f"Job monitoring failed: {str(e)}"
-            }
+            return {"success": False, "job_id": job_id, "error": f"Job monitoring failed: {str(e)}"}
 
     def _collect_test_results(self, app_name: str, job_id: str) -> Optional[Dict[str, Any]]:
         """Collect test results from Azure storage"""
@@ -393,12 +368,11 @@ class SynapseTestRunner:
             # Create blob service client
             blob_service_client = BlobServiceClient(
                 account_url=f"https://{storage_account}.blob.core.windows.net",
-                credential=self.credential
+                credential=self.credential,
             )
 
             # Look for results files (app saves with timestamp)
-            container_client = blob_service_client.get_container_client(
-                container)
+            container_client = blob_service_client.get_container_client(container)
 
             results_prefix = "system-test-results/azure-storage-test/synapse_"
 
@@ -413,8 +387,7 @@ class SynapseTestRunner:
 
             if recent_blob:
                 # Download and parse results
-                blob_client = container_client.get_blob_client(
-                    recent_blob.name)
+                blob_client = container_client.get_blob_client(recent_blob.name)
                 results_content = blob_client.download_blob().readall()
                 results_data = json.loads(results_content.decode())
 
@@ -428,18 +401,16 @@ class SynapseTestRunner:
             print(f"❌ Failed to collect test results: {str(e)}")
             return None
 
-    def run_system_test(self, app_name: str, app_directory: str,
-                        environment_vars: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    def run_system_test(
+        self, app_name: str, app_directory: str, environment_vars: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         """Complete system test workflow: deploy and run"""
         try:
             print(f"🚀 Running complete system test: {app_name}")
 
             # Step 1: Deploy app
             if not self.deploy_test_app(app_name, app_directory):
-                return {
-                    "success": False,
-                    "error": "Deployment failed"
-                }
+                return {"success": False, "error": "Deployment failed"}
 
             # Step 2: Run test
             result = self.run_test_app(app_name, environment_vars)
@@ -447,28 +418,24 @@ class SynapseTestRunner:
             return result
 
         except Exception as e:
-            return {
-                "success": False,
-                "error": f"System test failed: {str(e)}"
-            }
+            return {"success": False, "error": f"System test failed: {str(e)}"}
 
 
 def main():
     """CLI entry point for Synapse test runner"""
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Run system tests on Azure Synapse Analytics")
+    parser = argparse.ArgumentParser(description="Run system tests on Azure Synapse Analytics")
     parser.add_argument("app_name", help="Name of the test app to run")
-    parser.add_argument("--workspace", required=True,
-                        help="Synapse workspace name")
+    parser.add_argument("--workspace", required=True, help="Synapse workspace name")
     parser.add_argument("--pool", required=True, help="Spark pool name")
-    parser.add_argument("--subscription", required=True,
-                        help="Azure subscription ID")
-    parser.add_argument("--resource-group", required=True,
-                        help="Azure resource group")
-    parser.add_argument("--app-dir", help="Test app directory",
-                        default=lambda: str(Path(__file__).parent.parent / "apps"))
+    parser.add_argument("--subscription", required=True, help="Azure subscription ID")
+    parser.add_argument("--resource-group", required=True, help="Azure resource group")
+    parser.add_argument(
+        "--app-dir",
+        help="Test app directory",
+        default=lambda: str(Path(__file__).parent.parent / "apps"),
+    )
 
     args = parser.parse_args()
 
@@ -477,7 +444,7 @@ def main():
         workspace_name=args.workspace,
         spark_pool_name=args.pool,
         subscription_id=args.subscription,
-        resource_group=args.resource_group
+        resource_group=args.resource_group,
     )
 
     # Run test
@@ -497,7 +464,8 @@ def main():
                 for step in test_results["test_steps"]:
                     status_emoji = "✅" if step["status"] == "passed" else "❌"
                     print(
-                        f"  {status_emoji} {step['step']}: {step['status']} ({step['duration']}s)")
+                        f"  {status_emoji} {step['step']}: {step['status']} ({step['duration']}s)"
+                    )
 
         sys.exit(0)
     else:

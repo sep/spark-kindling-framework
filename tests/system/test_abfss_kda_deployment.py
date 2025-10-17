@@ -7,7 +7,7 @@ It can be used in CI/CD pipelines to validate the complete workflow on real infr
 
 Environment variables required:
 - AZURE_STORAGE_ACCOUNT: Storage account name
-- AZURE_CONTAINER: Container name  
+- AZURE_CONTAINER: Container name
 - AZURE_BASE_PATH: Base path for test artifacts
 - TARGET_PLATFORM: Platform to test (synapse, databricks, fabric)
 """
@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 # Add the src directory to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
 
 
 class RealABFSSKDATest:
@@ -31,20 +31,23 @@ class RealABFSSKDATest:
 
     def __init__(self):
         self.temp_dir = None
-        self.storage_account = os.environ.get('AZURE_STORAGE_ACCOUNT')
-        self.container = os.environ.get('AZURE_CONTAINER', 'test-data')
-        self.base_path = os.environ.get('AZURE_BASE_PATH', 'kindling/ci-tests')
-        self.target_platform = os.environ.get('TARGET_PLATFORM', 'synapse')
+        self.storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT")
+        self.container = os.environ.get("AZURE_CONTAINER", "test-data")
+        self.base_path = os.environ.get("AZURE_BASE_PATH", "kindling/ci-tests")
+        self.target_platform = os.environ.get("TARGET_PLATFORM", "synapse")
         self.test_run_id = f"test-{int(time.time())}"
 
         if not self.storage_account:
-            raise ValueError(
-                "AZURE_STORAGE_ACCOUNT environment variable is required")
+            raise ValueError("AZURE_STORAGE_ACCOUNT environment variable is required")
 
         # Construct ABFSS paths
         self.abfss_base = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
-        self.kda_storage_path = f"{self.abfss_base}/{self.base_path}/kda-packages/{self.test_run_id}"
-        self.deployment_path = f"{self.abfss_base}/{self.base_path}/deployed-apps/{self.test_run_id}"
+        self.kda_storage_path = (
+            f"{self.abfss_base}/{self.base_path}/kda-packages/{self.test_run_id}"
+        )
+        self.deployment_path = (
+            f"{self.abfss_base}/{self.base_path}/deployed-apps/{self.test_run_id}"
+        )
 
         print(f"ℹ️  Test Configuration:")
         print(f"   Storage Account: {self.storage_account}")
@@ -55,8 +58,7 @@ class RealABFSSKDATest:
 
     def setup(self):
         """Set up test environment"""
-        self.temp_dir = tempfile.mkdtemp(
-            prefix=f"abfss_kda_test_{self.target_platform}_")
+        self.temp_dir = tempfile.mkdtemp(prefix=f"abfss_kda_test_{self.target_platform}_")
         print(f"ℹ️  Local temp directory: {self.temp_dir}")
 
     def teardown(self):
@@ -68,8 +70,7 @@ class RealABFSSKDATest:
     def test_kda_packaging_for_abfss(self):
         """Test KDA packaging for ABFSS deployment"""
         try:
-            print(
-                f"🧪 Testing KDA packaging for {self.target_platform} with ABFSS storage...")
+            print(f"🧪 Testing KDA packaging for {self.target_platform} with ABFSS storage...")
 
             # Use the existing test app
             app_path = "/workspace/tests/system/apps/azure-storage-test"
@@ -80,8 +81,7 @@ class RealABFSSKDATest:
             # Create KDA package locally first
             kda_path = self._create_kda_package(app_path)
 
-            print(
-                f"✅ KDA package created locally: {os.path.basename(kda_path)}")
+            print(f"✅ KDA package created locally: {os.path.basename(kda_path)}")
 
             # Simulate uploading to ABFSS storage
             uploaded_path = self._simulate_abfss_upload(kda_path)
@@ -103,11 +103,9 @@ class RealABFSSKDATest:
             deployment_dir = self._simulate_abfss_deployment(kda_abfss_path)
 
             # Create deployment configuration for the platform
-            deployment_config = self._create_platform_deployment_config(
-                deployment_dir)
+            deployment_config = self._create_platform_deployment_config(deployment_dir)
 
-            print(
-                f"✅ Deployment configuration created for {self.target_platform}")
+            print(f"✅ Deployment configuration created for {self.target_platform}")
             print(f"Config: {json.dumps(deployment_config, indent=2)}")
 
             return deployment_config
@@ -137,38 +135,38 @@ class RealABFSSKDATest:
         """Create KDA package locally"""
 
         # Read app configuration
-        app_config_path = os.path.join(app_path, 'app.yaml')
-        with open(app_config_path, 'r') as f:
+        app_config_path = os.path.join(app_path, "app.yaml")
+        with open(app_config_path, "r") as f:
             import yaml
+
             base_config = yaml.safe_load(f)
 
         # Merge platform-specific config
-        platform_config_path = os.path.join(
-            app_path, f'app.{self.target_platform}.yaml')
+        platform_config_path = os.path.join(app_path, f"app.{self.target_platform}.yaml")
         if os.path.exists(platform_config_path):
-            with open(platform_config_path, 'r') as f:
+            with open(platform_config_path, "r") as f:
                 platform_config = yaml.safe_load(f)
             merged_config = {**base_config, **platform_config}
         else:
             merged_config = base_config
 
         # Create manifest
-        app_name = merged_config.get('name', 'azure-storage-test')
+        app_name = merged_config.get("name", "azure-storage-test")
         manifest = KDAManifest(
             name=app_name,
             version="1.0",
             description=f"Azure Storage Test App for {self.target_platform}",
             entry_point="main.py",
-            dependencies=merged_config.get('dependencies', []),
-            lake_requirements=merged_config.get('lake_requirements', []),
+            dependencies=merged_config.get("dependencies", []),
+            lake_requirements=merged_config.get("lake_requirements", []),
             environment=self.target_platform,
             metadata={
                 "test_run_id": self.test_run_id,
                 "abfss_storage": True,
                 "storage_account": self.storage_account,
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
-            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
         # Create KDA package
@@ -178,19 +176,17 @@ class RealABFSSKDATest:
         kda_filename = f"{app_name}-{self.target_platform}-abfss-v{manifest.version}.kda"
         kda_path = os.path.join(output_dir, kda_filename)
 
-        with zipfile.ZipFile(kda_path, 'w', zipfile.ZIP_DEFLATED) as kda:
+        with zipfile.ZipFile(kda_path, "w", zipfile.ZIP_DEFLATED) as kda:
             # Add manifest
-            kda.writestr('manifest.json', json.dumps(
-                manifest.__dict__, indent=2))
+            kda.writestr("manifest.json", json.dumps(manifest.__dict__, indent=2))
 
             # Add merged config
-            kda.writestr('app.yaml', yaml.dump(
-                merged_config, default_flow_style=False))
+            kda.writestr("app.yaml", yaml.dump(merged_config, default_flow_style=False))
 
             # Add all app files
             for root, dirs, files in os.walk(app_path):
                 for file in files:
-                    if file.startswith('app.') and file.endswith('.yaml') and file != 'app.yaml':
+                    if file.startswith("app.") and file.endswith(".yaml") and file != "app.yaml":
                         continue  # Skip platform configs in merged mode
 
                     file_path = os.path.join(root, file)
@@ -222,8 +218,7 @@ class RealABFSSKDATest:
     def _simulate_abfss_deployment(self, kda_abfss_path):
         """Simulate downloading and deploying KDA from ABFSS"""
 
-        deployment_dir = os.path.join(
-            self.temp_dir, "deployed", "azure-storage-test")
+        deployment_dir = os.path.join(self.temp_dir, "deployed", "azure-storage-test")
         os.makedirs(deployment_dir, exist_ok=True)
 
         # In a real implementation, this would download from ABFSS and extract:
@@ -243,7 +238,7 @@ class RealABFSSKDATest:
         app_path = "/workspace/tests/system/apps/azure-storage-test"
         for root, dirs, files in os.walk(app_path):
             for file in files:
-                if not file.startswith('app.') or file == 'app.yaml':
+                if not file.startswith("app.") or file == "app.yaml":
                     src_path = os.path.join(root, file)
                     rel_path = os.path.relpath(src_path, app_path)
                     dst_path = os.path.join(deployment_dir, rel_path)
@@ -273,12 +268,12 @@ class RealABFSSKDATest:
                 "AZURE_STORAGE_ACCOUNT": self.storage_account,
                 "AZURE_CONTAINER": self.container,
                 "TEST_RUN_ID": self.test_run_id,
-                "DEPLOYMENT_PATH": abfss_app_path
+                "DEPLOYMENT_PATH": abfss_app_path,
             },
             "platform": self.target_platform,
             "execution_mode": "abfss",
             "storage_account": self.storage_account,
-            "container": self.container
+            "container": self.container,
         }
 
         return config
@@ -288,8 +283,9 @@ class RealABFSSKDATest:
 
         try:
             # Try to import the real deployment service
-            if self.target_platform == 'synapse':
+            if self.target_platform == "synapse":
                 from kindling.platform_synapse import SynapseAppDeploymentService
+
                 # In real Synapse environment, would initialize with actual service
                 deployment_service = SynapseAppDeploymentService(None, None)
             else:
@@ -302,21 +298,23 @@ class RealABFSSKDATest:
 
         # Create job config
         job_config = deployment_service.create_job_config(
-            app_name=deployment_config['app_name'],
-            app_path=deployment_config['abfss_path'],
-            environment_vars=deployment_config['environment_vars']
+            app_name=deployment_config["app_name"],
+            app_path=deployment_config["abfss_path"],
+            environment_vars=deployment_config["environment_vars"],
         )
 
         # Submit job
         job_result = deployment_service.submit_spark_job(job_config)
 
         # Add ABFSS-specific metadata
-        job_result.update({
-            "abfss_deployment": True,
-            "storage_account": self.storage_account,
-            "deployment_path": deployment_config['abfss_path'],
-            "test_run_id": self.test_run_id
-        })
+        job_result.update(
+            {
+                "abfss_deployment": True,
+                "storage_account": self.storage_account,
+                "deployment_path": deployment_config["abfss_path"],
+                "test_run_id": self.test_run_id,
+            }
+        )
 
         return job_result
 
@@ -330,7 +328,7 @@ class RealABFSSKDATest:
                     "script_path": f"{app_path}/main.py",
                     "environment_vars": environment_vars or {},
                     "platform": self.target_platform,
-                    "execution_mode": "abfss-mock"
+                    "execution_mode": "abfss-mock",
                 }
 
             def submit_spark_job(self, job_config):
@@ -340,7 +338,7 @@ class RealABFSSKDATest:
                     "status": "SUCCEEDED",
                     "message": f"Mock ABFSS job {job_id} completed successfully",
                     "submission_time": time.time(),
-                    "mock": True
+                    "mock": True,
                 }
 
         return MockDeploymentService()
@@ -357,8 +355,7 @@ class RealABFSSKDATest:
             kda_abfss_path = self.test_kda_packaging_for_abfss()
 
             # Test 2: Deploy from ABFSS
-            deployment_config = self.test_abfss_deployment_simulation(
-                kda_abfss_path)
+            deployment_config = self.test_abfss_deployment_simulation(kda_abfss_path)
 
             # Test 3: Execute platform job
             job_result = self.test_platform_job_execution(deployment_config)
@@ -379,6 +376,7 @@ class RealABFSSKDATest:
         except Exception as e:
             print(f"❌ ABFSS KDA deployment test failed: {e}")
             import traceback
+
             traceback.print_exc()
             return False
 

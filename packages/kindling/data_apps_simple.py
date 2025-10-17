@@ -30,12 +30,13 @@ from .notebook_framework import *
 from .platform_provider_simple import (
     get_platform_provider,
     get_available_platforms,
-    PlatformProvider
+    PlatformProvider,
 )
 
 
 class DataAppConstants:
     """Configuration constants for data app framework"""
+
     REQUIREMENTS_FILE = "requirements.txt"
     LAKE_REQUIREMENTS_FILE = "lake-reqs.txt"
     BASE_CONFIG_FILE = "app.yaml"
@@ -53,10 +54,7 @@ class DataAppConstants:
     WHEEL_PRIORITY_FALLBACK = 3
 
     # Pip common arguments
-    PIP_COMMON_ARGS = [
-        "--disable-pip-version-check",
-        "--no-warn-conflicts"
-    ]
+    PIP_COMMON_ARGS = ["--disable-pip-version-check", "--no-warn-conflicts"]
 
 
 class DataAppRunner(ABC):
@@ -69,6 +67,7 @@ class DataAppRunner(ABC):
 @dataclass
 class DataAppConfig:
     """Configuration for a data application"""
+
     name: str
     version: str = "1.0.0"
     description: str = ""
@@ -92,6 +91,7 @@ class DataAppConfig:
 @dataclass
 class KDAManifest:
     """KDA package manifest"""
+
     version: str
     created_at: str
     app_config: DataAppConfig
@@ -122,8 +122,7 @@ class DataAppManager:
         self.platform_provider = get_platform_provider(platform_name)
         self.platform_name = self.platform_provider.get_platform_name()
 
-        print(
-            f"🎯 DataAppManager initialized for platform: {self.platform_name}")
+        print(f"🎯 DataAppManager initialized for platform: {self.platform_name}")
         print(f"📋 Available platforms: {get_available_platforms()}")
 
     def load_app_config(self, app_path: str, environment: str = None) -> DataAppConfig:
@@ -133,45 +132,45 @@ class DataAppManager:
         # Load base configuration
         base_config_path = app_path / DataAppConstants.BASE_CONFIG_FILE
         if not base_config_path.exists():
-            raise FileNotFoundError(
-                f"Base configuration file not found: {base_config_path}")
+            raise FileNotFoundError(f"Base configuration file not found: {base_config_path}")
 
-        with open(base_config_path, 'r') as f:
+        with open(base_config_path, "r") as f:
             config_data = yaml.safe_load(f)
 
         # Load environment-specific configuration if specified
         if environment:
-            env_config_path = app_path / \
-                DataAppConstants.ENV_CONFIG_TEMPLATE.format(
-                    environment=environment)
+            env_config_path = app_path / DataAppConstants.ENV_CONFIG_TEMPLATE.format(
+                environment=environment
+            )
             if env_config_path.exists():
-                with open(env_config_path, 'r') as f:
+                with open(env_config_path, "r") as f:
                     env_config = yaml.safe_load(f)
                     # Merge environment config into base config
                     config_data = self._merge_config(config_data, env_config)
 
         # Load requirements files
-        requirements = self._load_requirements(
-            app_path / DataAppConstants.REQUIREMENTS_FILE)
+        requirements = self._load_requirements(app_path / DataAppConstants.REQUIREMENTS_FILE)
         lake_requirements = self._load_requirements(
-            app_path / DataAppConstants.LAKE_REQUIREMENTS_FILE)
+            app_path / DataAppConstants.LAKE_REQUIREMENTS_FILE
+        )
 
         # Create DataAppConfig
         app_config = DataAppConfig(
-            name=config_data.get('name', app_path.name),
-            version=config_data.get('version', '1.0.0'),
-            description=config_data.get('description', ''),
-            entry_point=config_data.get(
-                'entry_point', DataAppConstants.DEFAULT_ENTRY_POINT),
+            name=config_data.get("name", app_path.name),
+            version=config_data.get("version", "1.0.0"),
+            description=config_data.get("description", ""),
+            entry_point=config_data.get("entry_point", DataAppConstants.DEFAULT_ENTRY_POINT),
             requirements=requirements,
             lake_requirements=lake_requirements,
-            environment_configs=config_data.get('environments', {}),
-            platform_specific=config_data.get('platforms', {})
+            environment_configs=config_data.get("environments", {}),
+            platform_specific=config_data.get("platforms", {}),
         )
 
         return app_config
 
-    def _merge_config(self, base_config: Dict[str, Any], env_config: Dict[str, Any]) -> Dict[str, Any]:
+    def _merge_config(
+        self, base_config: Dict[str, Any], env_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Recursively merge environment configuration into base configuration"""
         merged = base_config.copy()
 
@@ -188,11 +187,16 @@ class DataAppManager:
         if not requirements_path.exists():
             return []
 
-        with open(requirements_path, 'r') as f:
-            return [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        with open(requirements_path, "r") as f:
+            return [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
-    def package_app(self, app_path: str, target_platform: str = None, environment: str = None,
-                    output_dir: str = "dist") -> str:
+    def package_app(
+        self,
+        app_path: str,
+        target_platform: str = None,
+        environment: str = None,
+        output_dir: str = "dist",
+    ) -> str:
         """
         Package application as KDA (Kindling Data App) for deployment.
 
@@ -222,27 +226,26 @@ class DataAppManager:
         if target_platform in app_config.platform_specific:
             platform_config = app_config.platform_specific[target_platform]
             # Merge platform-specific config
-            app_config = self._apply_platform_config(
-                app_config, platform_config)
+            app_config = self._apply_platform_config(app_config, platform_config)
 
-        print(
-            f"📦 Packaging {app_config.name} v{app_config.version} for {target_platform}")
+        print(f"📦 Packaging {app_config.name} v{app_config.version} for {target_platform}")
 
         # Create output directory
         output_dir.mkdir(exist_ok=True)
 
         # Create KDA package
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        kda_filename = f"{app_config.name}_{target_platform}_{timestamp}{DataAppConstants.KDA_EXTENSION}"
+        kda_filename = (
+            f"{app_config.name}_{target_platform}_{timestamp}{DataAppConstants.KDA_EXTENSION}"
+        )
         kda_path = output_dir / kda_filename
 
-        with zipfile.ZipFile(kda_path, 'w', zipfile.ZIP_DEFLATED) as kda_zip:
+        with zipfile.ZipFile(kda_path, "w", zipfile.ZIP_DEFLATED) as kda_zip:
             # Add application files
             package_files = self._add_app_files(kda_zip, app_path)
 
             # Add wheel files if needed
-            wheel_files = self._add_wheel_files(
-                kda_zip, app_config, target_platform)
+            wheel_files = self._add_wheel_files(kda_zip, app_config, target_platform)
 
             # Create and add manifest
             manifest = KDAManifest(
@@ -251,7 +254,7 @@ class DataAppManager:
                 app_config=app_config,
                 platform=target_platform,
                 package_files=package_files,
-                wheel_files=wheel_files
+                wheel_files=wheel_files,
             )
 
             manifest_json = json.dumps(asdict(manifest), indent=2)
@@ -260,22 +263,21 @@ class DataAppManager:
         print(f"✅ KDA package created: {kda_path}")
         return str(kda_path)
 
-    def _apply_platform_config(self, app_config: DataAppConfig, platform_config: Dict[str, Any]) -> DataAppConfig:
+    def _apply_platform_config(
+        self, app_config: DataAppConfig, platform_config: Dict[str, Any]
+    ) -> DataAppConfig:
         """Apply platform-specific configuration to app config"""
         # Create a copy of the config
         updated_config = DataAppConfig(
             name=app_config.name,
             version=app_config.version,
-            description=platform_config.get(
-                'description', app_config.description),
-            entry_point=platform_config.get(
-                'entry_point', app_config.entry_point),
-            requirements=app_config.requirements +
-            platform_config.get('requirements', []),
-            lake_requirements=app_config.lake_requirements +
-            platform_config.get('lake_requirements', []),
+            description=platform_config.get("description", app_config.description),
+            entry_point=platform_config.get("entry_point", app_config.entry_point),
+            requirements=app_config.requirements + platform_config.get("requirements", []),
+            lake_requirements=app_config.lake_requirements
+            + platform_config.get("lake_requirements", []),
             environment_configs=app_config.environment_configs,
-            platform_specific=app_config.platform_specific
+            platform_specific=app_config.platform_specific,
         )
 
         return updated_config
@@ -284,18 +286,18 @@ class DataAppManager:
         """Add application files to KDA package"""
         package_files = []
 
-        for file_path in app_path.rglob('*'):
+        for file_path in app_path.rglob("*"):
             if file_path.is_file():
                 # Skip hidden files and directories
-                if any(part.startswith('.') for part in file_path.parts):
+                if any(part.startswith(".") for part in file_path.parts):
                     continue
 
                 # Skip __pycache__ directories
-                if '__pycache__' in file_path.parts:
+                if "__pycache__" in file_path.parts:
                     continue
 
                 # Skip .pyc files
-                if file_path.suffix == '.pyc':
+                if file_path.suffix == ".pyc":
                     continue
 
                 # Add file to package
@@ -305,21 +307,22 @@ class DataAppManager:
 
         return package_files
 
-    def _add_wheel_files(self, kda_zip: zipfile.ZipFile, app_config: DataAppConfig,
-                         target_platform: str) -> List[str]:
+    def _add_wheel_files(
+        self, kda_zip: zipfile.ZipFile, app_config: DataAppConfig, target_platform: str
+    ) -> List[str]:
         """Add wheel files to KDA package if needed"""
         wheel_files = []
 
         # Check if we need to include wheels for offline deployment
         # This could be controlled by app configuration
-        include_wheels = app_config.platform_specific.get(
-            target_platform, {}).get('include_wheels', False)
+        include_wheels = app_config.platform_specific.get(target_platform, {}).get(
+            "include_wheels", False
+        )
 
         if include_wheels:
             # In a real implementation, this would download and include required wheels
             # For now, just log the intention
-            print(
-                f"📦 Including wheels for offline deployment (platform: {target_platform})")
+            print(f"📦 Including wheels for offline deployment (platform: {target_platform})")
 
         return wheel_files
 
@@ -338,21 +341,20 @@ class DataAppManager:
         print(f"🎯 Target platform: {self.platform_name}")
 
         # Get platform-specific deployment service
-        deployment_service = self._get_deployment_service(
-            deployment_config or {})
+        deployment_service = self._get_deployment_service(deployment_config or {})
 
         if not deployment_service:
             raise RuntimeError(
-                f"No deployment service available for platform: {self.platform_name}")
+                f"No deployment service available for platform: {self.platform_name}"
+            )
 
         # Deploy using platform service
         result = deployment_service.deploy_kda(kda_path)
 
-        if result.get('status') == 'success':
+        if result.get("status") == "success":
             print(f"✅ Deployment successful!")
         else:
-            print(
-                f"❌ Deployment failed: {result.get('error', 'Unknown error')}")
+            print(f"❌ Deployment failed: {result.get('error', 'Unknown error')}")
 
         return result
 
@@ -363,33 +365,34 @@ class DataAppManager:
         try:
             if platform_name == "synapse":
                 from .platform_synapse_simple import SynapseAppDeploymentService
+
                 return SynapseAppDeploymentService(
-                    workspace_name=deployment_config.get(
-                        'workspace_name', 'default'),
-                    subscription_id=deployment_config.get(
-                        'subscription_id', ''),
-                    resource_group=deployment_config.get('resource_group', '')
+                    workspace_name=deployment_config.get("workspace_name", "default"),
+                    subscription_id=deployment_config.get("subscription_id", ""),
+                    resource_group=deployment_config.get("resource_group", ""),
                 )
 
             elif platform_name == "fabric":
                 from .platform_fabric_simple import FabricAppDeploymentService
+
                 return FabricAppDeploymentService(
-                    workspace_id=deployment_config.get('workspace_id', ''),
-                    tenant_id=deployment_config.get('tenant_id')
+                    workspace_id=deployment_config.get("workspace_id", ""),
+                    tenant_id=deployment_config.get("tenant_id"),
                 )
 
             elif platform_name == "databricks":
                 from .platform_databricks_simple import DatabricksAppDeploymentService
+
                 return DatabricksAppDeploymentService(
-                    workspace_url=deployment_config.get('workspace_url', ''),
-                    token=deployment_config.get('token')
+                    workspace_url=deployment_config.get("workspace_url", ""),
+                    token=deployment_config.get("token"),
                 )
 
             elif platform_name == "local":
                 from .platform_local_simple import LocalAppDeploymentService
+
                 return LocalAppDeploymentService(
-                    workspace_dir=deployment_config.get(
-                        'workspace_dir', './workspace')
+                    workspace_dir=deployment_config.get("workspace_dir", "./workspace")
                 )
 
             else:
@@ -417,7 +420,7 @@ class DataAppManager:
         extract_path.mkdir(exist_ok=True)
 
         # Extract KDA package
-        with zipfile.ZipFile(kda_path, 'r') as kda_zip:
+        with zipfile.ZipFile(kda_path, "r") as kda_zip:
             kda_zip.extractall(extract_path)
 
         # Load manifest
@@ -425,11 +428,11 @@ class DataAppManager:
         if not manifest_path.exists():
             raise ValueError(f"Invalid KDA package: missing manifest file")
 
-        with open(manifest_path, 'r') as f:
+        with open(manifest_path, "r") as f:
             manifest_data = json.load(f)
 
         # Convert manifest to objects
-        app_config_data = manifest_data['app_config']
+        app_config_data = manifest_data["app_config"]
         app_config = DataAppConfig(**app_config_data)
 
         print(f"📂 Extracted KDA: {app_config.name} v{app_config.version}")
@@ -469,36 +472,31 @@ class KDARunner:
             app_config, extract_path = self._extract_kda(kda_path)
 
             # Setup execution environment
-            self._setup_execution_environment(
-                app_config, extract_path, execution_config)
+            self._setup_execution_environment(app_config, extract_path, execution_config)
 
             # Execute the application
-            result = self._execute_app(
-                app_config, extract_path, execution_config)
+            result = self._execute_app(app_config, extract_path, execution_config)
 
             return {
-                'status': 'success',
-                'app_name': app_config.name,
-                'app_version': app_config.version,
-                'platform': self.platform_name,
-                'result': result
+                "status": "success",
+                "app_name": app_config.name,
+                "app_version": app_config.version,
+                "platform": self.platform_name,
+                "result": result,
             }
 
         except Exception as e:
             print(f"❌ KDA execution failed: {e}")
-            return {
-                'status': 'error',
-                'error': str(e),
-                'platform': self.platform_name
-            }
+            return {"status": "error", "error": str(e), "platform": self.platform_name}
 
     def _extract_kda(self, kda_path: str) -> Tuple[DataAppConfig, str]:
         """Extract KDA package"""
         manager = DataAppManager(self.platform_name)
         return manager.extract_kda(kda_path)
 
-    def _setup_execution_environment(self, app_config: DataAppConfig, extract_path: str,
-                                     execution_config: Dict[str, Any]):
+    def _setup_execution_environment(
+        self, app_config: DataAppConfig, extract_path: str, execution_config: Dict[str, Any]
+    ):
         """Setup execution environment for the app"""
 
         # Install requirements if needed
@@ -507,20 +505,20 @@ class KDARunner:
             # In a real implementation, this would install packages
 
         # Setup Spark session with platform-specific configuration
-        spark_config = execution_config.get('spark_config', {})
-        platform_config = app_config.platform_specific.get(
-            self.platform_name, {})
+        spark_config = execution_config.get("spark_config", {})
+        platform_config = app_config.platform_specific.get(self.platform_name, {})
 
         # Merge configurations
-        final_config = {**platform_config.get('spark', {}), **spark_config}
+        final_config = {**platform_config.get("spark", {}), **spark_config}
 
         # Create Spark session through platform provider
         if final_config:
             spark = self.platform_provider.create_spark_session(final_config)
             print(f"✨ Created Spark session for {self.platform_name}")
 
-    def _execute_app(self, app_config: DataAppConfig, extract_path: str,
-                     execution_config: Dict[str, Any]) -> Any:
+    def _execute_app(
+        self, app_config: DataAppConfig, extract_path: str, execution_config: Dict[str, Any]
+    ) -> Any:
         """Execute the application"""
 
         app_path = Path(extract_path) / "app"
@@ -535,13 +533,11 @@ class KDARunner:
         # In a real implementation, this would execute the Python script
         # For now, just simulate execution
         import time
+
         time.sleep(1)  # Simulate execution time
 
-        return {
-            'entry_point': app_config.entry_point,
-            'execution_time': 1.0,
-            'status': 'completed'
-        }
+        return {"entry_point": app_config.entry_point, "execution_time": 1.0, "status": "completed"}
+
 
 # Convenience functions for backward compatibility
 

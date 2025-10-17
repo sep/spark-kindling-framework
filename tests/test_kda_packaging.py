@@ -22,19 +22,31 @@ def test_kda_packaging():
 
     # Mock components for standalone testing
     class MockLogger:
-        def info(self, msg): print(f"INFO: {msg}")
-        def debug(self, msg): print(f"DEBUG: {msg}")
-        def error(self, msg): print(f"ERROR: {msg}")
-        def warning(self, msg): print(f"WARNING: {msg}")
+        def info(self, msg):
+            print(f"INFO: {msg}")
+
+        def debug(self, msg):
+            print(f"DEBUG: {msg}")
+
+        def error(self, msg):
+            print(f"ERROR: {msg}")
+
+        def warning(self, msg):
+            print(f"WARNING: {msg}")
 
     class MockLoggerProvider:
-        def get_logger(self, name): return MockLogger()
+        def get_logger(self, name):
+            return MockLogger()
 
     class MockTraceProvider:
         def span(self, **kwargs):
             class MockSpan:
-                def __enter__(self): return self
-                def __exit__(self, *args): pass
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
             return MockSpan()
 
     class MockConfigService:
@@ -47,13 +59,21 @@ def test_kda_packaging():
         pass
 
     class MockPlatformService:
-        def list(self, path): return []
-        def read(self, path): return ""
-        def write(self, path, content): pass
-        def delete(self, path): pass
+        def list(self, path):
+            return []
+
+        def read(self, path):
+            return ""
+
+        def write(self, path, content):
+            pass
+
+        def delete(self, path):
+            pass
 
     class MockPlatformServiceProvider:
-        def get_service(self): return MockPlatformService()
+        def get_service(self):
+            return MockPlatformService()
 
     # Create data app manager with mocks
     app_manager = DataAppManager.__new__(DataAppManager)
@@ -66,8 +86,7 @@ def test_kda_packaging():
     app_manager.artifacts_path = "/tmp/kindling-test-artifacts"
 
     # Test 1: Package the azure-storage-test app
-    test_app_dir = Path(__file__).parent / "system" / \
-        "apps" / "azure-storage-test"
+    test_app_dir = Path(__file__).parent / "system" / "apps" / "azure-storage-test"
 
     if not test_app_dir.exists():
         print(f"❌ Test app directory not found: {test_app_dir}")
@@ -86,7 +105,7 @@ def test_kda_packaging():
                 output_path=str(output_path),
                 version="1.0.0",
                 target_platform="synapse",
-                merge_platform_config=True
+                merge_platform_config=True,
             )
 
             print(f"✅ Successfully packaged KDA: {result_path}")
@@ -94,42 +113,35 @@ def test_kda_packaging():
             # Test 2: Validate KDA contents
             print("🔍 Validating KDA contents...")
 
-            with zipfile.ZipFile(result_path, 'r') as kda_file:
+            with zipfile.ZipFile(result_path, "r") as kda_file:
                 file_list = kda_file.namelist()
                 print(f"📁 KDA contains {len(file_list)} files:")
                 for filename in sorted(file_list):
                     print(f"   - {filename}")
 
                 # Check for required files
-                required_files = [
-                    "app.yaml",
-                    "main.py",
-                    DataAppConstants.KDA_MANIFEST_FILE
-                ]
+                required_files = ["app.yaml", "main.py", DataAppConstants.KDA_MANIFEST_FILE]
 
-                missing_files = [
-                    f for f in required_files if f not in file_list]
+                missing_files = [f for f in required_files if f not in file_list]
                 if missing_files:
                     print(f"❌ Missing required files: {missing_files}")
                     return False
 
                 # Validate manifest
-                manifest_content = kda_file.read(
-                    DataAppConstants.KDA_MANIFEST_FILE)
+                manifest_content = kda_file.read(DataAppConstants.KDA_MANIFEST_FILE)
                 manifest_data = json.loads(manifest_content)
 
                 print(f"📋 Manifest data:")
                 print(f"   - Name: {manifest_data['name']}")
                 print(f"   - Version: {manifest_data['version']}")
                 print(f"   - Entry Point: {manifest_data['entry_point']}")
-                print(
-                    f"   - Dependencies: {len(manifest_data['dependencies'])}")
+                print(f"   - Dependencies: {len(manifest_data['dependencies'])}")
 
-                if manifest_data['name'] != 'azure-storage-test':
+                if manifest_data["name"] != "azure-storage-test":
                     print(f"❌ Unexpected app name: {manifest_data['name']}")
                     return False
 
-                if manifest_data['version'] != '1.0.0':
+                if manifest_data["version"] != "1.0.0":
                     print(f"❌ Unexpected version: {manifest_data['version']}")
                     return False
 
@@ -137,30 +149,30 @@ def test_kda_packaging():
 
             # Test 3: Multi-platform KDA (includes all platform configs)
             print("\n🔄 Testing multi-platform KDA...")
-            multi_platform_path = Path(temp_dir) / \
-                "azure-storage-test-multi-v1.0.kda"
+            multi_platform_path = Path(temp_dir) / "azure-storage-test-multi-v1.0.kda"
 
             multi_result_path = app_manager.package_app(
                 app_directory=str(test_app_dir),
                 output_path=str(multi_platform_path),
                 version="1.0.0",
                 target_platform=None,
-                merge_platform_config=False
+                merge_platform_config=False,
             )
 
-            with zipfile.ZipFile(multi_result_path, 'r') as multi_kda:
+            with zipfile.ZipFile(multi_result_path, "r") as multi_kda:
                 multi_files = multi_kda.namelist()
-                print(
-                    f"📁 Multi-platform KDA contains {len(multi_files)} files:")
+                print(f"📁 Multi-platform KDA contains {len(multi_files)} files:")
                 for filename in sorted(multi_files):
                     print(f"   - {filename}")
 
                 # Should include platform-specific configs
-                platform_configs = [f for f in multi_files if f.startswith(
-                    'app.') and f.endswith('.yaml') and f != 'app.yaml']
+                platform_configs = [
+                    f
+                    for f in multi_files
+                    if f.startswith("app.") and f.endswith(".yaml") and f != "app.yaml"
+                ]
                 if platform_configs:
-                    print(
-                        f"✅ Multi-platform KDA includes platform configs: {platform_configs}")
+                    print(f"✅ Multi-platform KDA includes platform configs: {platform_configs}")
                 else:
                     print("⚠️ No platform-specific configs found in multi-platform KDA")
 
@@ -170,6 +182,7 @@ def test_kda_packaging():
         except Exception as e:
             print(f"❌ Test failed with error: {str(e)}")
             import traceback
+
             traceback.print_exc()
             return False
 

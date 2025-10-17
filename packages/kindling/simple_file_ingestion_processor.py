@@ -2,12 +2,12 @@ from dataclasses import dataclass, fields
 from typing import Callable, List, Dict
 from pyspark.sql import DataFrame
 from delta.tables import DeltaTable
- 
+
 import time
 import logging
 from typing import Callable
 from typing import Any
- 
+
 from abc import ABC, abstractmethod
 from injector import Injector, inject, singleton, Binder
 
@@ -20,10 +20,20 @@ from kindling.spark_trace import *
 from kindling.platform_provider import *
 from kindling.file_ingestion import *
 
+
 @GlobalInjector.singleton_autobind()
 class SimpleFileIngestionProcessor(FileIngestionProcessor):
     @inject
-    def __init__(self, config: ConfigService, fir: FileIngestionRegistry, ep: EntityProvider, der: DataEntityRegistry, tp: SparkTraceProvider, lp: PythonLoggerProvider, pep: PlatformServiceProvider ):
+    def __init__(
+        self,
+        config: ConfigService,
+        fir: FileIngestionRegistry,
+        ep: EntityProvider,
+        der: DataEntityRegistry,
+        tp: SparkTraceProvider,
+        lp: PythonLoggerProvider,
+        pep: PlatformServiceProvider,
+    ):
         self.config = config
         self.fir = fir
         self.ep = ep
@@ -33,8 +43,13 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
         self.spark = get_or_create_spark_session()
         self.env = pep.get_service()
 
-    def process_path(self, path: str ):
-        with self.tp.span(component="SimpleFileIngestionProcessor", operation="process_path",details={},reraise=True ): 
+    def process_path(self, path: str):
+        with self.tp.span(
+            component="SimpleFileIngestionProcessor",
+            operation="process_path",
+            details={},
+            reraise=True,
+        ):
             filenames = self.env.list(path)
 
             import re
@@ -49,20 +64,24 @@ class SimpleFileIngestionProcessor(FileIngestionProcessor):
 
                     if matched:
                         self.logger.debug("Match, processing ")
-                        with self.tp.span(operation="ingest_on_match"):   
+                        with self.tp.span(operation="ingest_on_match"):
                             named_groups = match.groupdict()
                             dest_entity_id = fe.dest_entity_id.format(**named_groups)
-                            self.logger.debug(f"Filename: {fn} Pattern: {fe.patterns[0]} Matched: {matched} Matches: {named_groups} DestEntityId: {dest_entity_id}")
+                            self.logger.debug(
+                                f"Filename: {fn} Pattern: {fe.patterns[0]} Matched: {matched} Matches: {named_groups} DestEntityId: {dest_entity_id}"
+                            )
 
-                            filetype = named_groups['filetype']
+                            filetype = named_groups["filetype"]
 
                             de = self.der.get_entity_definition(dest_entity_id)
 
-                            df = self.spark.read.format(filetype) \
-                                .option("header", "true") \
-                                .option("inferSchema", "true" if fe.infer_schema else "false" ) \
+                            df = (
+                                self.spark.read.format(filetype)
+                                .option("header", "true")
+                                .option("inferSchema", "true" if fe.infer_schema else "false")
                                 .load(f"{path}/{fn}")
-                            with self.tp.span(operation="merge_to_entity"):   
-                                self.ep.merge_to_entity( df, de )
+                            )
+                            with self.tp.span(operation="merge_to_entity"):
+                                self.ep.merge_to_entity(df, de)
                     else:
                         self.logger.debug("No matches")

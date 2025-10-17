@@ -6,7 +6,7 @@ the complete KDA deployment and execution workflow.
 
 In a real Synapse environment, you would:
 1. Install the Kindling framework
-2. Package your data apps as KDA files  
+2. Package your data apps as KDA files
 3. Deploy and execute them via SynapseAppDeploymentService
 
 This example shows what the notebook code would look like.
@@ -17,6 +17,7 @@ import json
 import tempfile
 import sys
 import os
+
 print("🚀 Setting up Kindling Framework in Synapse...")
 
 # In a real Synapse environment, you would install Kindling:
@@ -25,8 +26,8 @@ print("🚀 Setting up Kindling Framework in Synapse...")
 # For demo purposes, we'll simulate the environment
 
 # Simulate Synapse environment variables
-os.environ['AZURE_STORAGE_ACCOUNT'] = 'synapsedemolake'
-os.environ['AZURE_STORAGE_KEY'] = 'demo-storage-key-12345'
+os.environ["AZURE_STORAGE_ACCOUNT"] = "synapsedemolake"
+os.environ["AZURE_STORAGE_KEY"] = "demo-storage-key-12345"
 
 print("✅ Environment configured")
 
@@ -76,16 +77,17 @@ else:
                 "app_name": app_name,
                 "script_path": f"{app_path}/main.py",
                 "environment_vars": environment_vars or {},
-                "platform": "synapse"
+                "platform": "synapse",
             }
 
         def submit_spark_job(self, job_config):
             import time
+
             job_id = f"synapse-{job_config['app_name']}-{int(time.time())}"
             return {
                 "job_id": job_id,
                 "status": "SUCCEEDED",
-                "message": "Demo job completed successfully"
+                "message": "Demo job completed successfully",
             }
 
         def get_job_status(self, job_id):
@@ -112,10 +114,10 @@ job_config = deployment_service.create_job_config(
     app_name=app_name,
     app_path=deployment_path,
     environment_vars={
-        "AZURE_STORAGE_ACCOUNT": os.environ.get('AZURE_STORAGE_ACCOUNT'),
-        "AZURE_STORAGE_KEY": os.environ.get('AZURE_STORAGE_KEY'),
-        "SYNAPSE_WORKSPACE": "demo-workspace"
-    }
+        "AZURE_STORAGE_ACCOUNT": os.environ.get("AZURE_STORAGE_ACCOUNT"),
+        "AZURE_STORAGE_KEY": os.environ.get("AZURE_STORAGE_KEY"),
+        "SYNAPSE_WORKSPACE": "demo-workspace",
+    },
 )
 
 print("✅ Job configuration created:")
@@ -133,7 +135,7 @@ print(json.dumps(job_result, indent=2))
 # Cell 6: Monitor and Results
 print("👀 Monitoring job execution...")
 
-job_id = job_result.get('job_id')
+job_id = job_result.get("job_id")
 if job_id:
     # In real Synapse, you would monitor the job
     if kindling_available:
@@ -157,9 +159,9 @@ if job_id:
 print("🎉 Synapse KDA deployment and execution completed!")
 
 # Cell 7: Summary
-print("\\n" + "="*60)
+print("\\n" + "=" * 60)
 print("📋 SYNAPSE KDA DEPLOYMENT SUMMARY")
-print("="*60)
+print("=" * 60)
 print("This notebook demonstrated:")
 print("  1. 🔧 Setting up Kindling in Synapse environment")
 print("  2. 📦 Deploying KDA packages to workspace storage")
@@ -172,11 +174,12 @@ print("  • 🔄 Automated deployment of data processing apps")
 print("  • 📊 Scalable execution on Synapse compute pools")
 print("  • 🔍 Centralized monitoring and logging")
 print("  • 🛠️  Integration with CI/CD pipelines")
-print("="*60)
+print("=" * 60)
 
 # Cell 8: Production Usage Example
 print("\\n💡 PRODUCTION USAGE EXAMPLE:")
-print("""
+print(
+    """
 # Real production code in Synapse notebook:
 
 from kindling.platform_synapse import SynapseAppDeploymentService, SynapseService
@@ -205,4 +208,5 @@ job_config = deployment_service.create_job_config(
 # Execute on Synapse compute
 result = deployment_service.submit_spark_job(job_config)
 print(f"Production job submitted: {result['job_id']}")
-""")
+"""
+)

@@ -4,6 +4,7 @@ Unit tests for kindling.injection module.
 Tests the dependency injection system including GlobalInjector,
 singleton patterns, auto-binding, and interface resolution.
 """
+
 import pytest
 from abc import ABC, abstractmethod
 from unittest.mock import MagicMock, patch
@@ -83,6 +84,7 @@ class TestGlobalInjectorBasicOperations:
 
     def test_bind_registers_interface_implementation(self):
         """Test that bind registers an interface to implementation mapping"""
+
         class TestInterface(ABC):
             @abstractmethod
             def test_method(self):
@@ -99,11 +101,13 @@ class TestGlobalInjectorBasicOperations:
         instance = GlobalInjector.get(TestInterface)
 
         assert isinstance(
-            instance, TestImplementation), "Should retrieve instance of bound implementation"
+            instance, TestImplementation
+        ), "Should retrieve instance of bound implementation"
         assert instance.test_method() == "test_result", "Instance method should work correctly"
 
     def test_get_retrieves_bound_instance(self):
         """Test that get retrieves instances of bound interfaces"""
+
         class SimpleService:
             def get_name(self):
                 return "SimpleService"
@@ -112,12 +116,12 @@ class TestGlobalInjectorBasicOperations:
 
         service = GlobalInjector.get(SimpleService)
 
-        assert isinstance(
-            service, SimpleService), "Should retrieve bound service"
+        assert isinstance(service, SimpleService), "Should retrieve bound service"
         assert service.get_name() == "SimpleService", "Service should function correctly"
 
     def test_get_raises_error_for_unbound_interface(self):
         """Test that get raises error for interfaces that aren't bound"""
+
         class UnboundInterface(ABC):
             @abstractmethod
             def unbound_method(self):
@@ -140,6 +144,7 @@ class TestGlobalInjectorAutobind:
 
     def test_autobind_with_explicit_interface(self):
         """Test autobind decorator with explicitly provided interface"""
+
         class ExplicitInterface(ABC):
             @abstractmethod
             def get_value(self):
@@ -153,11 +158,13 @@ class TestGlobalInjectorAutobind:
         instance = GlobalInjector.get(ExplicitInterface)
 
         assert isinstance(
-            instance, ExplicitImplementation), "Should retrieve the explicitly bound implementation"
+            instance, ExplicitImplementation
+        ), "Should retrieve the explicitly bound implementation"
         assert instance.get_value() == "explicit_value", "Method should return expected value"
 
     def test_autobind_with_multiple_interfaces(self):
         """Test autobind with multiple interfaces"""
+
         class InterfaceA(ABC):
             @abstractmethod
             def method_a(self):
@@ -179,15 +186,14 @@ class TestGlobalInjectorAutobind:
         instance_a = GlobalInjector.get(InterfaceA)
         instance_b = GlobalInjector.get(InterfaceB)
 
-        assert isinstance(
-            instance_a, MultiImplementation), "Should bind to InterfaceA"
-        assert isinstance(
-            instance_b, MultiImplementation), "Should bind to InterfaceB"
+        assert isinstance(instance_a, MultiImplementation), "Should bind to InterfaceA"
+        assert isinstance(instance_b, MultiImplementation), "Should bind to InterfaceB"
         assert instance_a.method_a() == "a", "Method A should work"
         assert instance_b.method_b() == "b", "Method B should work"
 
     def test_autobind_without_interface_finds_abstract_parent(self):
         """Test autobind without args automatically finds abstract parent"""
+
         class AutoInterface(ABC):
             @abstractmethod
             def auto_method(self):
@@ -201,11 +207,13 @@ class TestGlobalInjectorAutobind:
         instance = GlobalInjector.get(AutoInterface)
 
         assert isinstance(
-            instance, AutoImplementation), "Should automatically bind to abstract parent"
+            instance, AutoImplementation
+        ), "Should automatically bind to abstract parent"
         assert instance.auto_method() == "auto_value", "Method should return expected value"
 
     def test_autobind_ignores_non_abstract_parents(self):
         """Test that autobind only binds to abstract (ABC) parents"""
+
         class ConcreteParent:
             def concrete_method(self):
                 return "concrete"
@@ -222,8 +230,7 @@ class TestGlobalInjectorAutobind:
 
         # Should be bound to AbstractParent but not ConcreteParent
         instance = GlobalInjector.get(AbstractParent)
-        assert isinstance(
-            instance, MixedImplementation), "Should bind to abstract parent"
+        assert isinstance(instance, MixedImplementation), "Should bind to abstract parent"
 
         # ConcreteParent is not bound explicitly, but injector's auto_bind=True
         # might still allow getting it, so we just check AbstractParent works
@@ -231,6 +238,7 @@ class TestGlobalInjectorAutobind:
 
     def test_autobind_returns_decorated_class(self):
         """Test that autobind decorator returns the class (for chaining)"""
+
         class TestInterface(ABC):
             @abstractmethod
             def test_method(self):
@@ -262,6 +270,7 @@ class TestGlobalInjectorSingletonAutobind:
 
     def test_singleton_autobind_creates_singleton(self):
         """Test that singleton_autobind creates a true singleton"""
+
         class SingletonInterface(ABC):
             @abstractmethod
             def get_id(self):
@@ -271,6 +280,7 @@ class TestGlobalInjectorSingletonAutobind:
         class SingletonImplementation(SingletonInterface):
             def __init__(self):
                 import uuid
+
                 self.id = str(uuid.uuid4())
 
             def get_id(self):
@@ -284,6 +294,7 @@ class TestGlobalInjectorSingletonAutobind:
 
     def test_singleton_autobind_with_multiple_interfaces(self):
         """Test singleton_autobind with multiple interfaces creates singleton per interface"""
+
         class InterfaceX(ABC):
             @abstractmethod
             def method_x(self):
@@ -298,6 +309,7 @@ class TestGlobalInjectorSingletonAutobind:
         class SharedSingleton:
             def __init__(self):
                 import uuid
+
                 self.id = str(uuid.uuid4())
                 self.counter = 0
 
@@ -322,6 +334,7 @@ class TestGlobalInjectorSingletonAutobind:
 
     def test_singleton_autobind_without_interface_finds_abstract_parent(self):
         """Test singleton_autobind without args finds abstract parent"""
+
         class AutoSingletonInterface(ABC):
             @abstractmethod
             def get_value(self):
@@ -343,6 +356,7 @@ class TestGlobalInjectorSingletonAutobind:
 
     def test_singleton_autobind_binds_class_to_itself(self):
         """Test that singleton_autobind also binds the class to itself as singleton"""
+
         class SelfBoundInterface(ABC):
             @abstractmethod
             def test_method(self):
@@ -357,7 +371,9 @@ class TestGlobalInjectorSingletonAutobind:
         instance_via_interface1 = GlobalInjector.get(SelfBoundInterface)
         instance_via_interface2 = GlobalInjector.get(SelfBoundInterface)
 
-        assert instance_via_interface1 is instance_via_interface2, "Interface should return singleton"
+        assert (
+            instance_via_interface1 is instance_via_interface2
+        ), "Interface should return singleton"
 
         # Should also be able to get via class itself (as singleton)
         instance_via_class1 = GlobalInjector.get(SelfBoundClass)
@@ -367,6 +383,7 @@ class TestGlobalInjectorSingletonAutobind:
 
     def test_singleton_autobind_state_persists(self):
         """Test that singleton state persists across multiple get calls"""
+
         class StatefulInterface(ABC):
             @abstractmethod
             def increment(self):
@@ -416,6 +433,7 @@ class TestGetKindlingService:
 
     def test_get_kindling_service_retrieves_bound_service(self):
         """Test that get_kindling_service is a convenience wrapper for GlobalInjector.get"""
+
         class TestService(ABC):
             @abstractmethod
             def serve(self):
@@ -429,11 +447,13 @@ class TestGetKindlingService:
         service = get_kindling_service(TestService)
 
         assert isinstance(
-            service, TestServiceImpl), "get_kindling_service should retrieve bound service"
+            service, TestServiceImpl
+        ), "get_kindling_service should retrieve bound service"
         assert service.serve() == "serving", "Service should function correctly"
 
     def test_get_kindling_service_equivalent_to_global_injector_get(self):
         """Test that get_kindling_service is equivalent to GlobalInjector.get"""
+
         class EquivService:
             pass
 
@@ -443,8 +463,7 @@ class TestGetKindlingService:
         service2 = GlobalInjector.get(EquivService)
 
         # Both should return instances of the same class
-        assert type(service1) == type(
-            service2), "Both methods should return same type"
+        assert type(service1) == type(service2), "Both methods should return same type"
 
 
 class TestAbstractClassDetection:
@@ -452,6 +471,7 @@ class TestAbstractClassDetection:
 
     def test_inspect_isabstract_detects_abc_classes(self):
         """Test that inspect.isabstract correctly identifies ABC classes"""
+
         class AbstractClass(ABC):
             @abstractmethod
             def abstract_method(self):
@@ -461,13 +481,12 @@ class TestAbstractClassDetection:
             def concrete_method(self):
                 pass
 
-        assert inspect.isabstract(
-            AbstractClass), "Should detect ABC as abstract"
-        assert not inspect.isabstract(
-            ConcreteClass), "Should not detect concrete class as abstract"
+        assert inspect.isabstract(AbstractClass), "Should detect ABC as abstract"
+        assert not inspect.isabstract(ConcreteClass), "Should not detect concrete class as abstract"
 
     def test_autobind_filters_abstract_bases_correctly(self):
         """Test that autobind correctly filters for abstract base classes"""
+
         class ConcreteBase1:
             pass
 
@@ -496,10 +515,8 @@ class TestAbstractClassDetection:
         instance1 = GlobalInjector.get(AbstractBase1)
         instance2 = GlobalInjector.get(AbstractBase2)
 
-        assert isinstance(
-            instance1, MultipleInheritance), "Should bind to AbstractBase1"
-        assert isinstance(
-            instance2, MultipleInheritance), "Should bind to AbstractBase2"
+        assert isinstance(instance1, MultipleInheritance), "Should bind to AbstractBase1"
+        assert isinstance(instance2, MultipleInheritance), "Should bind to AbstractBase2"
 
         # Concrete bases are not explicitly bound
         # (injector's auto_bind might resolve them, but that's library behavior)
@@ -518,6 +535,7 @@ class TestInjectionIntegration:
 
     def test_layered_service_dependencies(self):
         """Test multiple services depending on each other"""
+
         class ConfigService(ABC):
             @abstractmethod
             def get_config(self, key):
@@ -573,6 +591,7 @@ class TestInjectionIntegration:
 
     def test_real_world_service_pattern(self):
         """Test a realistic service pattern with repositories and services"""
+
         class Repository(ABC):
             @abstractmethod
             def find_by_id(self, id):

@@ -3,6 +3,7 @@
 These tests verify end-to-end workflows with real Spark DataFrames and
 actual implementations of strategies, registries, and executors.
 """
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 from pyspark.sql import SparkSession, DataFrame
@@ -16,25 +17,21 @@ from kindling.data_pipes import (
     DataPipesManager,
     DataPipesExecuter,
     EntityReadPersistStrategy,
-    PipeMetadata
+    PipeMetadata,
 )
-from kindling.data_entities import (
-    DataEntities,
-    DataEntityManager,
-    EntityMetadata,
-    EntityProvider
-)
+from kindling.data_entities import DataEntities, DataEntityManager, EntityMetadata, EntityProvider
 
 
 @pytest.fixture(scope="module")
 def spark():
     """Create a SparkSession for integration tests"""
-    spark = SparkSession.builder \
-        .appName("DataPipesIntegrationTest") \
-        .master("local[2]") \
-        .config("spark.sql.shuffle.partitions", "2") \
-        .config("spark.default.parallelism", "2") \
+    spark = (
+        SparkSession.builder.appName("DataPipesIntegrationTest")
+        .master("local[2]")
+        .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.default.parallelism", "2")
         .getOrCreate()
+    )
 
     yield spark
 
@@ -70,12 +67,14 @@ def entity_registry(mock_logger_provider):
         partition_columns=["date"],
         merge_columns=["id"],
         tags={"layer": "bronze"},
-        schema=StructType([
-            StructField("id", IntegerType(), False),
-            StructField("product", StringType(), True),
-            StructField("amount", IntegerType(), True),
-            StructField("date", StringType(), True)
-        ])
+        schema=StructType(
+            [
+                StructField("id", IntegerType(), False),
+                StructField("product", StringType(), True),
+                StructField("amount", IntegerType(), True),
+                StructField("date", StringType(), True),
+            ]
+        ),
     )
 
     registry.register_entity(
@@ -84,11 +83,13 @@ def entity_registry(mock_logger_provider):
         partition_columns=[],
         merge_columns=["customer_id"],
         tags={"layer": "bronze"},
-        schema=StructType([
-            StructField("customer_id", IntegerType(), False),
-            StructField("name", StringType(), True),
-            StructField("region", StringType(), True)
-        ])
+        schema=StructType(
+            [
+                StructField("customer_id", IntegerType(), False),
+                StructField("name", StringType(), True),
+                StructField("region", StringType(), True),
+            ]
+        ),
     )
 
     registry.register_entity(
@@ -97,14 +98,16 @@ def entity_registry(mock_logger_provider):
         partition_columns=["date"],
         merge_columns=["id"],
         tags={"layer": "silver"},
-        schema=StructType([
-            StructField("id", IntegerType(), False),
-            StructField("product", StringType(), True),
-            StructField("amount", IntegerType(), True),
-            StructField("customer_name", StringType(), True),
-            StructField("region", StringType(), True),
-            StructField("date", StringType(), True)
-        ])
+        schema=StructType(
+            [
+                StructField("id", IntegerType(), False),
+                StructField("product", StringType(), True),
+                StructField("amount", IntegerType(), True),
+                StructField("customer_name", StringType(), True),
+                StructField("region", StringType(), True),
+                StructField("date", StringType(), True),
+            ]
+        ),
     )
 
     return registry
@@ -126,20 +129,24 @@ class TestEntityReadPersistStrategy(EntityReadPersistStrategy):
 
     def create_pipe_entity_reader(self, pipe: str):
         """Create an entity reader function"""
+
         def reader(entity: EntityMetadata, is_first: bool):
             entity_id = entity.entityid
             # Return data from the data store, or None if not available
             return self.data_store.get(entity_id)
+
         return reader
 
     def create_pipe_persist_activator(self, pipe: PipeMetadata):
         """Create a persist activator function"""
+
         def activator(df: DataFrame):
             # Store the result in memory for verification
             output_entity_id = pipe.output_entity_id
             self.written_data[output_entity_id] = df
             # Trigger action to execute the pipeline
             df.count()
+
         return activator
 
 
@@ -151,11 +158,14 @@ class TestDataPipesRegistrationAndExecution:
     ):
         """Test registering a pipe and executing it with real data"""
         # Create test data
-        sales_data = spark.createDataFrame([
-            (1, "Widget", 100, "2024-01-01"),
-            (2, "Gadget", 200, "2024-01-01"),
-            (3, "Widget", 150, "2024-01-02")
-        ], ["id", "product", "amount", "date"])
+        sales_data = spark.createDataFrame(
+            [
+                (1, "Widget", 100, "2024-01-01"),
+                (2, "Gadget", 200, "2024-01-01"),
+                (3, "Widget", 150, "2024-01-02"),
+            ],
+            ["id", "product", "amount", "date"],
+        )
 
         # Create data store
         data_store = {"bronze.sales": sales_data}
@@ -169,8 +179,7 @@ class TestDataPipesRegistrationAndExecution:
             from pyspark.sql.functions import sum as spark_sum, count
 
             return bronze_sales.groupBy("product").agg(
-                spark_sum("amount").alias("total_amount"),
-                count("*").alias("count")
+                spark_sum("amount").alias("total_amount"), count("*").alias("count")
             )
 
         # Register the pipe
@@ -181,22 +190,17 @@ class TestDataPipesRegistrationAndExecution:
             tags={"type": "aggregation"},
             input_entity_ids=["bronze.sales"],
             output_entity_id="silver.aggregated_sales",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Create trace provider mock
         mock_trace_provider = Mock()
         mock_trace_provider.span.return_value.__enter__ = Mock()
-        mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
         # Create executor
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         # Execute the pipe
@@ -210,8 +214,7 @@ class TestDataPipesRegistrationAndExecution:
         assert len(result_data) == 2, "Should have 2 products"
 
         # Verify aggregation results
-        results_dict = {row["product"]: row["total_amount"]
-                        for row in result_data}
+        results_dict = {row["product"]: row["total_amount"] for row in result_data}
         assert results_dict["Widget"] == 250, "Widget total should be 250"
         assert results_dict["Gadget"] == 200, "Gadget total should be 200"
 
@@ -220,22 +223,21 @@ class TestDataPipesRegistrationAndExecution:
     ):
         """Test executing a pipe with multiple input entities"""
         # Create test data
-        sales_data = spark.createDataFrame([
-            (1, "Widget", 100, 101, "2024-01-01"),
-            (2, "Gadget", 200, 102, "2024-01-01"),
-            (3, "Widget", 150, 101, "2024-01-02")
-        ], ["id", "product", "amount", "customer_id", "date"])
+        sales_data = spark.createDataFrame(
+            [
+                (1, "Widget", 100, 101, "2024-01-01"),
+                (2, "Gadget", 200, 102, "2024-01-01"),
+                (3, "Widget", 150, 101, "2024-01-02"),
+            ],
+            ["id", "product", "amount", "customer_id", "date"],
+        )
 
-        customers_data = spark.createDataFrame([
-            (101, "Alice", "North"),
-            (102, "Bob", "South")
-        ], ["customer_id", "name", "region"])
+        customers_data = spark.createDataFrame(
+            [(101, "Alice", "North"), (102, "Bob", "South")], ["customer_id", "name", "region"]
+        )
 
         # Create data store
-        data_store = {
-            "bronze.sales": sales_data,
-            "bronze.customers": customers_data
-        }
+        data_store = {"bronze.sales": sales_data, "bronze.customers": customers_data}
 
         # Create strategy
         strategy = TestEntityReadPersistStrategy(spark, data_store)
@@ -243,11 +245,7 @@ class TestDataPipesRegistrationAndExecution:
         # Define a join pipe
         def enrich_sales_with_customers(bronze_sales, bronze_customers):
             """Join sales with customer information"""
-            return bronze_sales.join(
-                bronze_customers,
-                on="customer_id",
-                how="left"
-            ).select(
+            return bronze_sales.join(bronze_customers, on="customer_id", how="left").select(
                 "id", "product", "amount", "name", "region", "date"
             )
 
@@ -259,22 +257,17 @@ class TestDataPipesRegistrationAndExecution:
             tags={"type": "enrichment"},
             input_entity_ids=["bronze.sales", "bronze.customers"],
             output_entity_id="silver.enriched_sales",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Create trace provider mock
         mock_trace_provider = Mock()
         mock_trace_provider.span.return_value.__enter__ = Mock()
-        mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
         # Create executor
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         # Execute the pipe
@@ -297,11 +290,14 @@ class TestDataPipesRegistrationAndExecution:
     ):
         """Test executing a chain of pipes where output of one feeds into another"""
         # Create initial test data
-        raw_data = spark.createDataFrame([
-            (1, "WIDGET", 100, "2024-01-01"),
-            (2, "gadget", 200, "2024-01-01"),
-            (3, "Widget", 150, "2024-01-02")
-        ], ["id", "product", "amount", "date"])
+        raw_data = spark.createDataFrame(
+            [
+                (1, "WIDGET", 100, "2024-01-01"),
+                (2, "gadget", 200, "2024-01-01"),
+                (3, "Widget", 150, "2024-01-02"),
+            ],
+            ["id", "product", "amount", "date"],
+        )
 
         # Create data store - starts with raw data
         data_store = {"bronze.sales": raw_data}
@@ -316,24 +312,28 @@ class TestDataPipesRegistrationAndExecution:
             partition_columns=["date"],
             merge_columns=["id"],
             tags={"layer": "silver"},
-            schema=StructType([
-                StructField("id", IntegerType(), False),
-                StructField("product", StringType(), True),
-                StructField("amount", IntegerType(), True),
-                StructField("date", StringType(), True)
-            ])
+            schema=StructType(
+                [
+                    StructField("id", IntegerType(), False),
+                    StructField("product", StringType(), True),
+                    StructField("amount", IntegerType(), True),
+                    StructField("date", StringType(), True),
+                ]
+            ),
         )
 
         # Define first pipe: cleansing
         def cleanse_data(bronze_sales):
             """Clean and standardize product names"""
             from pyspark.sql.functions import lower, initcap
+
             return bronze_sales.withColumn("product", initcap(lower("product")))
 
         # Define second pipe: aggregation
         def aggregate_by_product(silver_clean_sales):
             """Aggregate cleaned sales by product"""
             from pyspark.sql.functions import sum as spark_sum
+
             return silver_clean_sales.groupBy("product").agg(
                 spark_sum("amount").alias("total_amount")
             )
@@ -346,7 +346,7 @@ class TestDataPipesRegistrationAndExecution:
             tags={"layer": "silver", "type": "cleansing"},
             input_entity_ids=["bronze.sales"],
             output_entity_id="silver.clean_sales",
-            output_type="delta"
+            output_type="delta",
         )
 
         pipes_registry.register_pipe(
@@ -356,22 +356,17 @@ class TestDataPipesRegistrationAndExecution:
             tags={"layer": "gold", "type": "aggregation"},
             input_entity_ids=["silver.clean_sales"],
             output_entity_id="gold.sales_summary",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Create trace provider mock
         mock_trace_provider = Mock()
         mock_trace_provider.span.return_value.__enter__ = Mock()
-        mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
         # Create executor
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         # Execute first pipe
@@ -388,12 +383,10 @@ class TestDataPipesRegistrationAndExecution:
         assert result_df is not None
 
         result_data = result_df.collect()
-        assert len(
-            result_data) == 2, "Should have 2 unique products after cleansing"
+        assert len(result_data) == 2, "Should have 2 unique products after cleansing"
 
         # All "widget" variants should be consolidated
-        results_dict = {row["product"]: row["total_amount"]
-                        for row in result_data}
+        results_dict = {row["product"]: row["total_amount"] for row in result_data}
         assert results_dict["Widget"] == 250, "All widget variants should sum to 250"
         assert results_dict["Gadget"] == 200
 
@@ -405,10 +398,10 @@ class TestDataPipesRegistrationAndExecution:
         DataPipes.dpregistry = pipes_registry
 
         # Create test data
-        sales_data = spark.createDataFrame([
-            (1, "Widget", 100, "2024-01-01"),
-            (2, "Gadget", 200, "2024-01-01")
-        ], ["id", "product", "amount", "date"])
+        sales_data = spark.createDataFrame(
+            [(1, "Widget", 100, "2024-01-01"), (2, "Gadget", 200, "2024-01-01")],
+            ["id", "product", "amount", "date"],
+        )
 
         data_store = {"bronze.sales": sales_data}
         strategy = TestEntityReadPersistStrategy(spark, data_store)
@@ -420,31 +413,25 @@ class TestDataPipesRegistrationAndExecution:
             tags={"type": "filter"},
             input_entity_ids=["bronze.sales"],
             output_entity_id="silver.high_value_sales",
-            output_type="delta"
+            output_type="delta",
         )
         def filter_high_value(bronze_sales):
             """Filter sales above threshold"""
             return bronze_sales.filter("amount >= 150")
 
         # Verify pipe was registered
-        pipe_def = pipes_registry.get_pipe_definition(
-            "filter_high_value_sales")
+        pipe_def = pipes_registry.get_pipe_definition("filter_high_value_sales")
         assert pipe_def is not None
         assert pipe_def.name == "Filter High Value Sales"
 
         # Create trace provider mock
         mock_trace_provider = Mock()
         mock_trace_provider.span.return_value.__enter__ = Mock()
-        mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
         # Execute the pipe
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         executor.run_datapipes(["filter_high_value_sales"])
@@ -481,22 +468,17 @@ class TestPipeExecutionEdgeCases:
             tags={},
             input_entity_ids=["bronze.sales"],
             output_entity_id="silver.sales",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Create trace provider mock
         mock_trace_provider = Mock()
         mock_trace_provider.span.return_value.__enter__ = Mock()
-        mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
         # Create executor
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         # Execute - should skip due to missing data
@@ -506,8 +488,7 @@ class TestPipeExecutionEdgeCases:
         assert "silver.sales" not in strategy.written_data
 
         # Verify logger was called with skip message
-        calls = [str(call)
-                 for call in mock_logger_provider.get_logger().debug.call_args_list]
+        calls = [str(call) for call in mock_logger_provider.get_logger().debug.call_args_list]
         skip_messages = [c for c in calls if "Skipping" in c]
         assert len(skip_messages) > 0, "Should log skipping message"
 
@@ -516,8 +497,7 @@ class TestPipeExecutionEdgeCases:
     ):
         """Test pipe execution when input DataFrame is empty"""
         # Create empty DataFrame
-        empty_df = spark.createDataFrame(
-            [], "id INT, product STRING, amount INT, date STRING")
+        empty_df = spark.createDataFrame([], "id INT, product STRING, amount INT, date STRING")
 
         data_store = {"bronze.sales": empty_df}
         strategy = TestEntityReadPersistStrategy(spark, data_store)
@@ -525,6 +505,7 @@ class TestPipeExecutionEdgeCases:
         # Define a pipe
         def transform_sales(bronze_sales):
             from pyspark.sql.functions import upper
+
             return bronze_sales.withColumn("product", upper("product"))
 
         pipes_registry.register_pipe(
@@ -534,22 +515,17 @@ class TestPipeExecutionEdgeCases:
             tags={},
             input_entity_ids=["bronze.sales"],
             output_entity_id="silver.sales",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Create trace provider mock
         mock_trace_provider = Mock()
         mock_trace_provider.span.return_value.__enter__ = Mock()
-        mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
         # Create executor
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         # Execute - should handle empty DataFrame
@@ -565,10 +541,10 @@ class TestPipeExecutionEdgeCases:
     ):
         """Test executing multiple independent pipes in one call"""
         # Create test data
-        sales_data = spark.createDataFrame([
-            (1, "Widget", 100, "2024-01-01"),
-            (2, "Gadget", 200, "2024-01-01")
-        ], ["id", "product", "amount", "date"])
+        sales_data = spark.createDataFrame(
+            [(1, "Widget", 100, "2024-01-01"), (2, "Gadget", 200, "2024-01-01")],
+            ["id", "product", "amount", "date"],
+        )
 
         data_store = {"bronze.sales": sales_data}
         strategy = TestEntityReadPersistStrategy(spark, data_store)
@@ -587,7 +563,7 @@ class TestPipeExecutionEdgeCases:
             tags={"product": "widget"},
             input_entity_ids=["bronze.sales"],
             output_entity_id="silver.widgets",
-            output_type="delta"
+            output_type="delta",
         )
 
         pipes_registry.register_pipe(
@@ -597,22 +573,17 @@ class TestPipeExecutionEdgeCases:
             tags={"product": "gadget"},
             input_entity_ids=["bronze.sales"],
             output_entity_id="silver.gadgets",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Create trace provider mock
         mock_trace_provider = Mock()
         mock_trace_provider.span.return_value.__enter__ = Mock()
-        mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
         # Create executor
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         # Execute both pipes
@@ -637,9 +608,9 @@ class TestTraceIntegration:
     ):
         """Test that pipe execution creates appropriate trace spans"""
         # Create test data
-        sales_data = spark.createDataFrame([
-            (1, "Widget", 100, "2024-01-01")
-        ], ["id", "product", "amount", "date"])
+        sales_data = spark.createDataFrame(
+            [(1, "Widget", 100, "2024-01-01")], ["id", "product", "amount", "date"]
+        )
 
         data_store = {"bronze.sales": sales_data}
         strategy = TestEntityReadPersistStrategy(spark, data_store)
@@ -655,7 +626,7 @@ class TestTraceIntegration:
             tags={"env": "test"},
             input_entity_ids=["bronze.sales"],
             output_entity_id="silver.sales",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Create trace provider mock
@@ -665,11 +636,7 @@ class TestTraceIntegration:
 
         # Create executor
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         # Execute
@@ -680,14 +647,14 @@ class TestTraceIntegration:
 
         # Verify outer span for overall execution
         first_call = mock_trace_provider.span.call_args_list[0]
-        assert first_call[1]['component'] == "data_pipes_executer"
-        assert first_call[1]['operation'] == "execute_datapipes"
+        assert first_call[1]["component"] == "data_pipes_executer"
+        assert first_call[1]["operation"] == "execute_datapipes"
 
         # Verify inner span for specific pipe
         second_call = mock_trace_provider.span.call_args_list[1]
-        assert second_call[1]['operation'] == "execute_datapipe"
-        assert second_call[1]['component'] == "pipe-test_pipe"
-        assert second_call[1]['details'] == {"env": "test"}
+        assert second_call[1]["operation"] == "execute_datapipe"
+        assert second_call[1]["component"] == "pipe-test_pipe"
+        assert second_call[1]["details"] == {"env": "test"}
 
 
 class TestComplexTransformations:
@@ -701,13 +668,16 @@ class TestComplexTransformations:
         from pyspark.sql.functions import row_number, desc
 
         # Create test data with timestamps
-        sales_data = spark.createDataFrame([
-            (1, "Widget", 100, "2024-01-01", "North"),
-            (2, "Widget", 150, "2024-01-02", "North"),
-            (3, "Widget", 120, "2024-01-03", "North"),
-            (4, "Gadget", 200, "2024-01-01", "South"),
-            (5, "Gadget", 250, "2024-01-02", "South")
-        ], ["id", "product", "amount", "date", "region"])
+        sales_data = spark.createDataFrame(
+            [
+                (1, "Widget", 100, "2024-01-01", "North"),
+                (2, "Widget", 150, "2024-01-02", "North"),
+                (3, "Widget", 120, "2024-01-03", "North"),
+                (4, "Gadget", 200, "2024-01-01", "South"),
+                (5, "Gadget", 250, "2024-01-02", "South"),
+            ],
+            ["id", "product", "amount", "date", "region"],
+        )
 
         data_store = {"bronze.sales": sales_data}
         strategy = TestEntityReadPersistStrategy(spark, data_store)
@@ -717,9 +687,9 @@ class TestComplexTransformations:
             """Get top 2 sales per region"""
             window_spec = Window.partitionBy("region").orderBy(desc("amount"))
 
-            return bronze_sales.withColumn(
-                "rank", row_number().over(window_spec)
-            ).filter("rank <= 2")
+            return bronze_sales.withColumn("rank", row_number().over(window_spec)).filter(
+                "rank <= 2"
+            )
 
         pipes_registry.register_pipe(
             "top_sales",
@@ -728,22 +698,17 @@ class TestComplexTransformations:
             tags={"type": "ranking"},
             input_entity_ids=["bronze.sales"],
             output_entity_id="silver.top_sales",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Create trace provider mock
         mock_trace_provider = Mock()
         mock_trace_provider.span.return_value.__enter__ = Mock()
-        mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
         # Create executor
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         # Execute
@@ -758,14 +723,12 @@ class TestComplexTransformations:
 
         # Verify North region top sales
         north_sales = [row for row in result_data if row["region"] == "North"]
-        north_amounts = sorted([row["amount"]
-                               for row in north_sales], reverse=True)
+        north_amounts = sorted([row["amount"] for row in north_sales], reverse=True)
         assert north_amounts == [150, 120], "Should have top 2 North sales"
 
         # Verify South region top sales
         south_sales = [row for row in result_data if row["region"] == "South"]
-        south_amounts = sorted([row["amount"]
-                               for row in south_sales], reverse=True)
+        south_amounts = sorted([row["amount"] for row in south_sales], reverse=True)
         assert south_amounts == [250, 200], "Should have top 2 South sales"
 
 
@@ -784,7 +747,8 @@ class TestEntityKeyTransformation:
             merge_columns=["id"],
             tags={},
             schema=StructType(
-                [StructField("id", IntegerType()), StructField("value", IntegerType())])
+                [StructField("id", IntegerType()), StructField("value", IntegerType())]
+            ),
         )
 
         entity_registry.register_entity(
@@ -794,19 +758,15 @@ class TestEntityKeyTransformation:
             merge_columns=["id"],
             tags={},
             schema=StructType(
-                [StructField("id", IntegerType()), StructField("info", StringType())])
+                [StructField("id", IntegerType()), StructField("info", StringType())]
+            ),
         )
 
         # Create test data
-        sales_data = spark.createDataFrame(
-            [(1, 100), (2, 200)], ["id", "value"])
-        metadata_data = spark.createDataFrame(
-            [(1, "info1"), (2, "info2")], ["id", "info"])
+        sales_data = spark.createDataFrame([(1, 100), (2, 200)], ["id", "value"])
+        metadata_data = spark.createDataFrame([(1, "info1"), (2, "info2")], ["id", "info"])
 
-        data_store = {
-            "bronze.raw.sales": sales_data,
-            "bronze.raw.metadata": metadata_data
-        }
+        data_store = {"bronze.raw.sales": sales_data, "bronze.raw.metadata": metadata_data}
         strategy = TestEntityReadPersistStrategy(spark, data_store)
 
         # Track function parameters
@@ -816,10 +776,7 @@ class TestEntityKeyTransformation:
             """Join sales with metadata - capture parameter names"""
             captured_params.update(kwargs)
             # Parameters should be bronze_raw_sales and bronze_raw_metadata
-            return kwargs["bronze_raw_sales"].join(
-                kwargs["bronze_raw_metadata"],
-                on="id"
-            )
+            return kwargs["bronze_raw_sales"].join(kwargs["bronze_raw_metadata"], on="id")
 
         pipes_registry.register_pipe(
             "join_sales_metadata",
@@ -828,22 +785,17 @@ class TestEntityKeyTransformation:
             tags={},
             input_entity_ids=["bronze.raw.sales", "bronze.raw.metadata"],
             output_entity_id="silver.joined",
-            output_type="delta"
+            output_type="delta",
         )
 
         # Create trace provider mock
         mock_trace_provider = Mock()
         mock_trace_provider.span.return_value.__enter__ = Mock()
-        mock_trace_provider.span.return_value.__exit__ = Mock(
-            return_value=False)
+        mock_trace_provider.span.return_value.__exit__ = Mock(return_value=False)
 
         # Create executor and execute
         executor = DataPipesExecuter(
-            mock_logger_provider,
-            entity_registry,
-            pipes_registry,
-            strategy,
-            mock_trace_provider
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
         )
 
         executor.run_datapipes(["join_sales_metadata"])

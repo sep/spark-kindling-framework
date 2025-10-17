@@ -1,10 +1,11 @@
 from abc import ABC
 from injector import Injector, singleton
-import inspect 
+import inspect
+
 
 class GlobalInjector:
     _instance = None
-    
+
     @classmethod
     def get_instance_id(cls):
         return id(cls.get_injector())
@@ -12,10 +13,10 @@ class GlobalInjector:
     @classmethod
     def get_injector(cls):
         if cls._instance is None:
-            #print("Creating a new global injector instance ...")
+            # print("Creating a new global injector instance ...")
             cls._instance = Injector(auto_bind=True)
         return cls._instance
-    
+
     @classmethod
     def clear(cls):
         _instance = None
@@ -26,14 +27,14 @@ class GlobalInjector:
 
     @classmethod
     def get(cls, interface):
-        #print(f"Injector ID: {id(cls.get_injector())}")
+        # print(f"Injector ID: {id(cls.get_injector())}")
         return cls.get_injector().get(interface)
 
     @classmethod
     def bind(cls, interface, implementation):
-        #print("Calling bind on GI ...")
+        # print("Calling bind on GI ...")
         cls.get_injector().binder.bind(interface, to=implementation)
-    
+
     @classmethod
     def autobind(cls, *interfaces):
         def decorator(cls_to_bind):
@@ -49,35 +50,35 @@ class GlobalInjector:
                 # Bind to explicitly provided interfaces
                 for interface in interfaces:
                     cls.bind(interface, cls_to_bind)
-            
+
             return cls_to_bind
+
         return decorator
 
     @classmethod
     def singleton_autobind(cls, *interfaces):
-        #print("singleton_autobind invoked ...")
+        # print("singleton_autobind invoked ...")
         def decorator(cls_to_bind):
             # First apply singleton to create a singleton-wrapped class
             singleton_cls = singleton(cls_to_bind)
-            
+
             # Then bind the singleton-wrapped class to each interface with explicit scope
-            for interface in interfaces or [base for base in cls_to_bind.__bases__ 
-                                        if inspect.isabstract(base)]:
+            for interface in interfaces or [
+                base for base in cls_to_bind.__bases__ if inspect.isabstract(base)
+            ]:
                 cls.get_injector().binder.bind(
-                    interface, 
+                    interface,
                     to=singleton_cls,
-                    scope=singleton  # Explicitly setting singleton scope
+                    scope=singleton,  # Explicitly setting singleton scope
                 )
-            
+
             # Also bind the class to itself with explicit scope
-            cls.get_injector().binder.bind(
-                cls_to_bind, 
-                to=singleton_cls,
-                scope=singleton
-            )
-            
+            cls.get_injector().binder.bind(cls_to_bind, to=singleton_cls, scope=singleton)
+
             return singleton_cls
+
         return decorator
+
 
 def get_kindling_service(iface):
     return GlobalInjector.get(iface)

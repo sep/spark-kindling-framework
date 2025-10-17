@@ -17,8 +17,7 @@ try:
     from tests.system.runners.synapse_runner import SynapseTestRunner
 except ImportError:
     # Skip if Azure SDK not available
-    pytestmark = pytest.mark.skip(
-        "Azure SDK not available for Synapse system tests")
+    pytestmark = pytest.mark.skip("Azure SDK not available for Synapse system tests")
 
 
 class TestSynapseSystemTests:
@@ -31,7 +30,7 @@ class TestSynapseSystemTests:
             "workspace_name": os.getenv("SYNAPSE_WORKSPACE_NAME"),
             "spark_pool_name": os.getenv("SYNAPSE_SPARK_POOL_NAME"),
             "subscription_id": os.getenv("AZURE_SUBSCRIPTION_ID"),
-            "resource_group": os.getenv("AZURE_RESOURCE_GROUP")
+            "resource_group": os.getenv("AZURE_RESOURCE_GROUP"),
         }
 
         # Validate required configuration
@@ -48,7 +47,7 @@ class TestSynapseSystemTests:
             workspace_name=synapse_config["workspace_name"],
             spark_pool_name=synapse_config["spark_pool_name"],
             subscription_id=synapse_config["subscription_id"],
-            resource_group=synapse_config["resource_group"]
+            resource_group=synapse_config["resource_group"],
         )
 
     @pytest.fixture
@@ -56,8 +55,9 @@ class TestSynapseSystemTests:
         """Path to Azure storage test app"""
         return str(Path(__file__).parent / "apps" / "azure-storage-test")
 
-    def test_azure_storage_connectivity(self, synapse_runner: SynapseTestRunner,
-                                        azure_storage_app_dir: str):
+    def test_azure_storage_connectivity(
+        self, synapse_runner: SynapseTestRunner, azure_storage_app_dir: str
+    ):
         """Test Azure storage connectivity on Synapse"""
 
         # Run the system test
@@ -66,8 +66,8 @@ class TestSynapseSystemTests:
             app_directory=azure_storage_app_dir,
             environment_vars={
                 "TEST_DATA_ROWS": "5000",  # Smaller dataset for pytest
-                "CLEANUP_ON_SUCCESS": "true"
-            }
+                "CLEANUP_ON_SUCCESS": "true",
+            },
         )
 
         # Validate results
@@ -77,29 +77,30 @@ class TestSynapseSystemTests:
         if "results" in result and result["results"]:
             test_results = result["results"]
 
-            assert test_results[
-                "status"] == "passed", f"Test app reported failure: {test_results}"
+            assert test_results["status"] == "passed", f"Test app reported failure: {test_results}"
 
             # Validate performance metrics
             metrics = test_results.get("metrics", {})
             if "perf_write_throughput_mbps" in metrics:
                 # Should meet minimum throughput requirements
-                assert metrics["perf_write_throughput_mbps"] >= 10.0, \
-                    f"Write throughput too low: {metrics['perf_write_throughput_mbps']} MB/s"
+                assert (
+                    metrics["perf_write_throughput_mbps"] >= 10.0
+                ), f"Write throughput too low: {metrics['perf_write_throughput_mbps']} MB/s"
 
             if "perf_read_throughput_mbps" in metrics:
-                assert metrics["perf_read_throughput_mbps"] >= 30.0, \
-                    f"Read throughput too low: {metrics['perf_read_throughput_mbps']} MB/s"
+                assert (
+                    metrics["perf_read_throughput_mbps"] >= 30.0
+                ), f"Read throughput too low: {metrics['perf_read_throughput_mbps']} MB/s"
 
             # Validate that all test steps passed
             test_steps = test_results.get("test_steps", [])
-            failed_steps = [
-                step for step in test_steps if step["status"] != "passed"]
+            failed_steps = [step for step in test_steps if step["status"] != "passed"]
 
             assert not failed_steps, f"Test steps failed: {failed_steps}"
 
-    def test_synapse_platform_integration(self, synapse_runner: SynapseTestRunner,
-                                          azure_storage_app_dir: str):
+    def test_synapse_platform_integration(
+        self, synapse_runner: SynapseTestRunner, azure_storage_app_dir: str
+    ):
         """Test Synapse platform-specific features"""
 
         # Run with Synapse-specific configuration
@@ -111,8 +112,8 @@ class TestSynapseSystemTests:
                 "TEST_PARTITIONS": "8",
                 "CLEANUP_ON_SUCCESS": "true",
                 # Test managed identity authentication
-                "AUTH_TYPE": "managed_identity"
-            }
+                "AUTH_TYPE": "managed_identity",
+            },
         )
 
         assert result["success"], f"Synapse integration test failed: {result.get('error')}"
@@ -135,7 +136,7 @@ def test_synapse_azure_storage_standalone():
         "AZURE_SUBSCRIPTION_ID",
         "AZURE_RESOURCE_GROUP",
         "AZURE_STORAGE_ACCOUNT",
-        "AZURE_CONTAINER"
+        "AZURE_CONTAINER",
     ]
 
     missing = [env for env in required_env if not os.getenv(env)]
@@ -147,7 +148,7 @@ def test_synapse_azure_storage_standalone():
         workspace_name=os.getenv("SYNAPSE_WORKSPACE_NAME"),
         spark_pool_name=os.getenv("SYNAPSE_SPARK_POOL_NAME"),
         subscription_id=os.getenv("AZURE_SUBSCRIPTION_ID"),
-        resource_group=os.getenv("AZURE_RESOURCE_GROUP")
+        resource_group=os.getenv("AZURE_RESOURCE_GROUP"),
     )
 
     # Run test

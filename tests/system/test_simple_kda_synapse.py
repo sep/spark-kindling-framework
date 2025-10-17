@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 # Add the src directory to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
 
 
 class SimpleKDATest:
@@ -81,24 +81,20 @@ class SimpleKDATest:
             deployment_dir = os.path.join(self.temp_dir, "deployed")
             os.makedirs(deployment_dir, exist_ok=True)
 
-            app_name = self._extract_kda_for_deployment(
-                kda_path, deployment_dir)
+            app_name = self._extract_kda_for_deployment(kda_path, deployment_dir)
 
             # Simulate creating a deployment service (like SynapseAppDeploymentService would do)
-            deployment_config = self._create_synapse_deployment_config(
-                app_name, deployment_dir)
+            deployment_config = self._create_synapse_deployment_config(app_name, deployment_dir)
 
             print(f"✅ Deployment configuration created for: {app_name}")
-            print(
-                f"Deployment config: {json.dumps(deployment_config, indent=2)}")
+            print(f"Deployment config: {json.dumps(deployment_config, indent=2)}")
 
             self.test_results.append(("KDA Deployment Simulation", "PASSED"))
             return deployment_config
 
         except Exception as e:
             print(f"❌ KDA deployment simulation failed: {e}")
-            self.test_results.append(
-                ("KDA Deployment Simulation", "FAILED", str(e)))
+            self.test_results.append(("KDA Deployment Simulation", "FAILED", str(e)))
             raise
 
     def test_synapse_job_simulation(self, deployment_config):
@@ -107,8 +103,7 @@ class SimpleKDATest:
             print("⚡ Testing Synapse job execution simulation...")
 
             # Simulate what SynapseAppDeploymentService.submit_spark_job would do
-            job_result = self._simulate_synapse_job_execution(
-                deployment_config)
+            job_result = self._simulate_synapse_job_execution(deployment_config)
 
             print(f"✅ Job simulation completed: {job_result['status']}")
             print(f"Job details: {json.dumps(job_result, indent=2)}")
@@ -118,23 +113,23 @@ class SimpleKDATest:
 
         except Exception as e:
             print(f"❌ Synapse job simulation failed: {e}")
-            self.test_results.append(
-                ("Synapse Job Simulation", "FAILED", str(e)))
+            self.test_results.append(("Synapse Job Simulation", "FAILED", str(e)))
             raise
 
     def _create_synapse_kda_manually(self, app_path, output_dir):
         """Manually create a KDA package for Synapse (simulating DataAppManager.package_app)"""
 
         # Read the base app config
-        app_config_path = os.path.join(app_path, 'app.yaml')
-        with open(app_config_path, 'r') as f:
+        app_config_path = os.path.join(app_path, "app.yaml")
+        with open(app_config_path, "r") as f:
             import yaml
+
             base_config = yaml.safe_load(f)
 
         # Read and merge Synapse-specific config
-        synapse_config_path = os.path.join(app_path, 'app.synapse.yaml')
+        synapse_config_path = os.path.join(app_path, "app.synapse.yaml")
         if os.path.exists(synapse_config_path):
-            with open(synapse_config_path, 'r') as f:
+            with open(synapse_config_path, "r") as f:
                 synapse_config = yaml.safe_load(f)
             # Simple merge (in real implementation, this would be more sophisticated)
             merged_config = {**base_config, **synapse_config}
@@ -142,41 +137,38 @@ class SimpleKDATest:
             merged_config = base_config
 
         # Create KDA manifest
-        app_name = merged_config.get('name', 'unknown-app')
+        app_name = merged_config.get("name", "unknown-app")
         manifest = KDAManifest(
             name=app_name,
             version="1.0",
-            description=merged_config.get(
-                'description', 'Test app for Synapse'),
+            description=merged_config.get("description", "Test app for Synapse"),
             entry_point="main.py",
-            dependencies=merged_config.get('dependencies', []),
-            lake_requirements=merged_config.get('lake_requirements', []),
+            dependencies=merged_config.get("dependencies", []),
+            lake_requirements=merged_config.get("lake_requirements", []),
             environment="synapse",
             metadata={
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "source_path": app_path,
-                "target_platform": "synapse"
+                "target_platform": "synapse",
             },
-            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
         # Create KDA package
         kda_filename = f"{app_name}-synapse-v{manifest.version}.kda"
         kda_path = os.path.join(output_dir, kda_filename)
 
-        with zipfile.ZipFile(kda_path, 'w', zipfile.ZIP_DEFLATED) as kda:
+        with zipfile.ZipFile(kda_path, "w", zipfile.ZIP_DEFLATED) as kda:
             # Add manifest
-            kda.writestr('manifest.json', json.dumps(
-                manifest.__dict__, indent=2))
+            kda.writestr("manifest.json", json.dumps(manifest.__dict__, indent=2))
 
             # Add merged app config (single-platform mode)
-            kda.writestr('app.yaml', yaml.dump(
-                merged_config, default_flow_style=False))
+            kda.writestr("app.yaml", yaml.dump(merged_config, default_flow_style=False))
 
             # Add all other files except platform-specific configs
             for root, dirs, files in os.walk(app_path):
                 for file in files:
-                    if file.startswith('app.') and file.endswith('.yaml') and file != 'app.yaml':
+                    if file.startswith("app.") and file.endswith(".yaml") and file != "app.yaml":
                         continue  # Skip platform-specific configs in merged mode
 
                     file_path = os.path.join(root, file)
@@ -187,61 +179,60 @@ class SimpleKDATest:
 
     def _validate_synapse_kda(self, kda_path):
         """Validate KDA package contents for Synapse"""
-        with zipfile.ZipFile(kda_path, 'r') as kda:
+        with zipfile.ZipFile(kda_path, "r") as kda:
             files = kda.namelist()
 
             # Check for required files
-            required_files = ['manifest.json', 'main.py', 'app.yaml']
+            required_files = ["manifest.json", "main.py", "app.yaml"]
             for required_file in required_files:
                 if required_file not in files:
-                    raise ValueError(
-                        f"Required file missing from KDA: {required_file}")
+                    raise ValueError(f"Required file missing from KDA: {required_file}")
 
             # Validate manifest
-            manifest_content = kda.read('manifest.json').decode('utf-8')
+            manifest_content = kda.read("manifest.json").decode("utf-8")
             manifest = json.loads(manifest_content)
 
-            if manifest.get('environment') != 'synapse':
+            if manifest.get("environment") != "synapse":
                 raise ValueError(
-                    f"Expected environment 'synapse', got: {manifest.get('environment')}")
+                    f"Expected environment 'synapse', got: {manifest.get('environment')}"
+                )
 
             # Check that platform-specific config was merged
-            if 'app.synapse.yaml' in files:
-                raise ValueError(
-                    "app.synapse.yaml should not exist in single-platform package")
+            if "app.synapse.yaml" in files:
+                raise ValueError("app.synapse.yaml should not exist in single-platform package")
 
             print("✅ KDA validation passed - all required files present")
 
     def _extract_kda_for_deployment(self, kda_path, deployment_dir):
         """Extract KDA for deployment simulation"""
-        with zipfile.ZipFile(kda_path, 'r') as kda:
+        with zipfile.ZipFile(kda_path, "r") as kda:
             # Extract all files
             kda.extractall(deployment_dir)
 
             # Read manifest to get app name
-            manifest_path = os.path.join(deployment_dir, 'manifest.json')
-            with open(manifest_path, 'r') as f:
+            manifest_path = os.path.join(deployment_dir, "manifest.json")
+            with open(manifest_path, "r") as f:
                 manifest = json.load(f)
 
-            app_name = manifest.get('name', 'unknown-app')
+            app_name = manifest.get("name", "unknown-app")
 
             print(f"KDA extracted to: {deployment_dir}")
             return app_name
 
     def _create_synapse_deployment_config(self, app_name, deployment_dir):
         """Create Synapse-specific deployment configuration"""
-        main_script = os.path.join(deployment_dir, 'main.py')
+        main_script = os.path.join(deployment_dir, "main.py")
 
         config = {
             "app_name": app_name,
             "script_path": main_script,
             "environment_vars": {
                 "AZURE_STORAGE_ACCOUNT": "testaccount",
-                "AZURE_STORAGE_KEY": "fake-key-for-testing"
+                "AZURE_STORAGE_KEY": "fake-key-for-testing",
             },
             "platform": "synapse",
             "execution_mode": "notebook",
-            "deployment_time": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            "deployment_time": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
 
         return config
@@ -252,18 +243,18 @@ class SimpleKDATest:
         # Generate job ID
         job_id = f"synapse-{deployment_config['app_name']}-{int(time.time())}"
 
-        script_path = deployment_config['script_path']
+        script_path = deployment_config["script_path"]
 
         try:
             # Validate script exists and is syntactically correct
             if not os.path.exists(script_path):
                 raise FileNotFoundError(f"Script not found: {script_path}")
 
-            with open(script_path, 'r') as f:
+            with open(script_path, "r") as f:
                 script_content = f.read()
 
             # Basic Python syntax validation
-            compile(script_content, script_path, 'exec')
+            compile(script_content, script_path, "exec")
 
             print(f"Script content preview:")
             print(f"```python\\n{script_content[:300]}...\\n```")
@@ -276,7 +267,7 @@ class SimpleKDATest:
                 "submission_time": time.time(),
                 "execution_time": 0.5,
                 "platform": "synapse",
-                "script_validated": True
+                "script_validated": True,
             }
 
         except SyntaxError as e:
@@ -285,7 +276,7 @@ class SimpleKDATest:
                 "status": "FAILED",
                 "message": f"Script syntax error: {str(e)}",
                 "submission_time": time.time(),
-                "platform": "synapse"
+                "platform": "synapse",
             }
         except Exception as e:
             result = {
@@ -293,7 +284,7 @@ class SimpleKDATest:
                 "status": "FAILED",
                 "message": f"Job execution failed: {str(e)}",
                 "submission_time": time.time(),
-                "platform": "synapse"
+                "platform": "synapse",
             }
 
         return result
