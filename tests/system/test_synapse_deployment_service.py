@@ -202,7 +202,8 @@ class SynapseAppDeploymentServiceDemo:
 
     def _create_kda_package(self):
         """Create a KDA package"""
-        app_path = "/workspace/tests/system/apps/azure-storage-test"
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        app_path = os.path.join(test_dir, "apps", "azure-storage-test")
 
         if not os.path.exists(app_path):
             raise FileNotFoundError(f"Test app not found: {app_path}")

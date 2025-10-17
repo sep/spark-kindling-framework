@@ -42,8 +42,9 @@ class SimpleKDATest:
         try:
             print("🧪 Testing manual KDA creation for Synapse...")
 
-            # Use the existing test app
-            app_path = "/workspace/tests/system/apps/azure-storage-test"
+            # Use the existing test app - calculate path relative to this script
+            test_dir = os.path.dirname(os.path.abspath(__file__))
+            app_path = os.path.join(test_dir, "apps", "azure-storage-test")
 
             if not os.path.exists(app_path):
                 raise FileNotFoundError(f"Test app not found: {app_path}")
