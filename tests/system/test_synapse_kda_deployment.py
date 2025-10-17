@@ -28,7 +28,8 @@ class SimpleLogger:
     """Simple logger for testing"""
 
     def __init__(self):
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+        logging.basicConfig(level=logging.INFO,
+                            format="%(asctime)s - %(levelname)s - %(message)s")
         self.logger = logging.getLogger("SynapseKDATest")
 
     def info(self, message):
@@ -69,7 +70,8 @@ class SynapseKDADeploymentTest:
     def test_kda_packaging_for_synapse(self):
         """Test KDA packaging with Synapse-specific configuration"""
         try:
-            self.logger.info("🧪 Testing KDA packaging for Synapse deployment...")
+            self.logger.info(
+                "🧪 Testing KDA packaging for Synapse deployment...")
 
             # Use the existing test app - calculate path relative to this script
             test_dir = os.path.dirname(os.path.abspath(__file__))
@@ -95,7 +97,8 @@ class SynapseKDADeploymentTest:
             trace_provider = SparkTraceProvider(logger_provider)
 
             # Create a platform service (local for testing)
-            platform_service = LocalService(config, logger_provider.get_logger("LocalService"))
+            platform_service = LocalService(
+                config, logger_provider.get_logger("LocalService"))
             platform_provider = SparkPlatformServiceProvider()
             platform_provider.set_service(platform_service)
 
@@ -128,7 +131,8 @@ class SynapseKDADeploymentTest:
             if not os.path.exists(kda_path):
                 raise FileNotFoundError(f"KDA package not created: {kda_path}")
 
-            self.logger.info(f"✅ KDA package created: {os.path.basename(kda_path)}")
+            self.logger.info(
+                f"✅ KDA package created: {os.path.basename(kda_path)}")
 
             # Validate the KDA contents
             self._validate_synapse_kda(kda_path)
@@ -138,7 +142,8 @@ class SynapseKDADeploymentTest:
 
         except Exception as e:
             self.logger.error(f"❌ KDA packaging test failed: {e}")
-            self.test_results.append(("KDA Packaging for Synapse", "FAILED", str(e)))
+            self.test_results.append(
+                ("KDA Packaging for Synapse", "FAILED", str(e)))
             raise
 
     def test_kda_deployment_simulation(self, kda_path):
@@ -150,20 +155,25 @@ class SynapseKDADeploymentTest:
             deployment_dir = os.path.join(self.temp_dir, "deployed")
             os.makedirs(deployment_dir, exist_ok=True)
 
-            app_name = self._extract_kda_for_deployment(kda_path, deployment_dir)
+            app_name = self._extract_kda_for_deployment(
+                kda_path, deployment_dir)
 
             # Simulate creating a deployment service
-            deployment_config = self._create_synapse_deployment_config(app_name, deployment_dir)
+            deployment_config = self._create_synapse_deployment_config(
+                app_name, deployment_dir)
 
-            self.logger.info(f"✅ Deployment configuration created for: {app_name}")
-            self.logger.info(f"Deployment config: {json.dumps(deployment_config, indent=2)}")
+            self.logger.info(
+                f"✅ Deployment configuration created for: {app_name}")
+            self.logger.info(
+                f"Deployment config: {json.dumps(deployment_config, indent=2)}")
 
             self.test_results.append(("KDA Deployment Simulation", "PASSED"))
             return deployment_config
 
         except Exception as e:
             self.logger.error(f"❌ KDA deployment simulation failed: {e}")
-            self.test_results.append(("KDA Deployment Simulation", "FAILED", str(e)))
+            self.test_results.append(
+                ("KDA Deployment Simulation", "FAILED", str(e)))
             raise
 
     def test_app_execution_simulation(self, deployment_config):
@@ -175,7 +185,8 @@ class SynapseKDADeploymentTest:
             app_name = deployment_config.get("app_name")
 
             if not os.path.exists(script_path):
-                raise FileNotFoundError(f"Main script not found: {script_path}")
+                raise FileNotFoundError(
+                    f"Main script not found: {script_path}")
 
             # Read and validate the main script
             with open(script_path, "r") as f:
@@ -185,16 +196,19 @@ class SynapseKDADeploymentTest:
             self.logger.info(f"```python\n{script_content[:500]}...\n```")
 
             # Simulate job submission
-            job_result = self._simulate_synapse_job_submission(deployment_config)
+            job_result = self._simulate_synapse_job_submission(
+                deployment_config)
 
-            self.logger.info(f"✅ Job simulation completed: {job_result['status']}")
+            self.logger.info(
+                f"✅ Job simulation completed: {job_result['status']}")
 
             self.test_results.append(("App Execution Simulation", "PASSED"))
             return job_result
 
         except Exception as e:
             self.logger.error(f"❌ App execution simulation failed: {e}")
-            self.test_results.append(("App Execution Simulation", "FAILED", str(e)))
+            self.test_results.append(
+                ("App Execution Simulation", "FAILED", str(e)))
             raise
 
     def _validate_synapse_kda(self, kda_path):
@@ -206,20 +220,24 @@ class SynapseKDADeploymentTest:
             required_files = ["manifest.json", "main.py", "app.yaml"]
             for required_file in required_files:
                 if required_file not in files:
-                    raise ValueError(f"Required file missing from KDA: {required_file}")
+                    raise ValueError(
+                        f"Required file missing from KDA: {required_file}")
 
             # Validate manifest
             manifest_content = kda.read("manifest.json").decode("utf-8")
             manifest = json.loads(manifest_content)
 
             if manifest.get("platform") != "synapse":
-                raise ValueError(f"Expected platform 'synapse', got: {manifest.get('platform')}")
+                raise ValueError(
+                    f"Expected platform 'synapse', got: {manifest.get('platform')}")
 
             # Check that platform-specific config was merged
             if "app.synapse.yaml" in files:
-                raise ValueError("app.synapse.yaml should not exist in single-platform package")
+                raise ValueError(
+                    "app.synapse.yaml should not exist in single-platform package")
 
-            self.logger.info("✅ KDA validation passed - all required files present")
+            self.logger.info(
+                "✅ KDA validation passed - all required files present")
 
     def _extract_kda_for_deployment(self, kda_path, deployment_dir):
         """Extract KDA for deployment simulation"""

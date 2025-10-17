@@ -82,20 +82,24 @@ class SimpleKDATest:
             deployment_dir = os.path.join(self.temp_dir, "deployed")
             os.makedirs(deployment_dir, exist_ok=True)
 
-            app_name = self._extract_kda_for_deployment(kda_path, deployment_dir)
+            app_name = self._extract_kda_for_deployment(
+                kda_path, deployment_dir)
 
             # Simulate creating a deployment service (like SynapseAppDeploymentService would do)
-            deployment_config = self._create_synapse_deployment_config(app_name, deployment_dir)
+            deployment_config = self._create_synapse_deployment_config(
+                app_name, deployment_dir)
 
             print(f"✅ Deployment configuration created for: {app_name}")
-            print(f"Deployment config: {json.dumps(deployment_config, indent=2)}")
+            print(
+                f"Deployment config: {json.dumps(deployment_config, indent=2)}")
 
             self.test_results.append(("KDA Deployment Simulation", "PASSED"))
             return deployment_config
 
         except Exception as e:
             print(f"❌ KDA deployment simulation failed: {e}")
-            self.test_results.append(("KDA Deployment Simulation", "FAILED", str(e)))
+            self.test_results.append(
+                ("KDA Deployment Simulation", "FAILED", str(e)))
             raise
 
     def test_synapse_job_simulation(self, deployment_config):
@@ -104,7 +108,8 @@ class SimpleKDATest:
             print("⚡ Testing Synapse job execution simulation...")
 
             # Simulate what SynapseAppDeploymentService.submit_spark_job would do
-            job_result = self._simulate_synapse_job_execution(deployment_config)
+            job_result = self._simulate_synapse_job_execution(
+                deployment_config)
 
             print(f"✅ Job simulation completed: {job_result['status']}")
             print(f"Job details: {json.dumps(job_result, indent=2)}")
@@ -114,7 +119,8 @@ class SimpleKDATest:
 
         except Exception as e:
             print(f"❌ Synapse job simulation failed: {e}")
-            self.test_results.append(("Synapse Job Simulation", "FAILED", str(e)))
+            self.test_results.append(
+                ("Synapse Job Simulation", "FAILED", str(e)))
             raise
 
     def _create_synapse_kda_manually(self, app_path, output_dir):
@@ -142,7 +148,8 @@ class SimpleKDATest:
         manifest = KDAManifest(
             name=app_name,
             version="1.0",
-            description=merged_config.get("description", "Test app for Synapse"),
+            description=merged_config.get(
+                "description", "Test app for Synapse"),
             entry_point="main.py",
             dependencies=merged_config.get("dependencies", []),
             lake_requirements=merged_config.get("lake_requirements", []),
@@ -161,10 +168,12 @@ class SimpleKDATest:
 
         with zipfile.ZipFile(kda_path, "w", zipfile.ZIP_DEFLATED) as kda:
             # Add manifest
-            kda.writestr("manifest.json", json.dumps(manifest.__dict__, indent=2))
+            kda.writestr("manifest.json", json.dumps(
+                manifest.__dict__, indent=2))
 
             # Add merged app config (single-platform mode)
-            kda.writestr("app.yaml", yaml.dump(merged_config, default_flow_style=False))
+            kda.writestr("app.yaml", yaml.dump(
+                merged_config, default_flow_style=False))
 
             # Add all other files except platform-specific configs
             for root, dirs, files in os.walk(app_path):
@@ -187,7 +196,8 @@ class SimpleKDATest:
             required_files = ["manifest.json", "main.py", "app.yaml"]
             for required_file in required_files:
                 if required_file not in files:
-                    raise ValueError(f"Required file missing from KDA: {required_file}")
+                    raise ValueError(
+                        f"Required file missing from KDA: {required_file}")
 
             # Validate manifest
             manifest_content = kda.read("manifest.json").decode("utf-8")
@@ -200,7 +210,8 @@ class SimpleKDATest:
 
             # Check that platform-specific config was merged
             if "app.synapse.yaml" in files:
-                raise ValueError("app.synapse.yaml should not exist in single-platform package")
+                raise ValueError(
+                    "app.synapse.yaml should not exist in single-platform package")
 
             print("✅ KDA validation passed - all required files present")
 

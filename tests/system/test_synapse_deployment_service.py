@@ -72,7 +72,8 @@ class SynapseAppDeploymentServiceDemo:
             )
             self.has_deployment_service = True
         except ImportError:
-            self.logger.warning("SynapseAppDeploymentService not available - using mock")
+            self.logger.warning(
+                "SynapseAppDeploymentService not available - using mock")
             self.deployment_service = self._create_mock_deployment_service()
             self.has_deployment_service = False
 
@@ -187,7 +188,8 @@ class SynapseAppDeploymentServiceDemo:
             print("  3. ⚙️  Configure Spark job parameters")
             print("  4. ⚡ Submit job via SynapseAppDeploymentService")
             print("  5. 👀 Monitor execution and collect results")
-            print("\\nIn a real Synapse environment, this would execute on actual compute!")
+            print(
+                "\\nIn a real Synapse environment, this would execute on actual compute!")
 
             return True
 
@@ -234,7 +236,8 @@ class SynapseAppDeploymentServiceDemo:
             dependencies=merged_config.get("dependencies", []),
             lake_requirements=merged_config.get("lake_requirements", []),
             environment="synapse",
-            metadata={"demo": True, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")},
+            metadata={"demo": True, "created_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ")},
             created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
@@ -247,10 +250,12 @@ class SynapseAppDeploymentServiceDemo:
 
         with zipfile.ZipFile(kda_path, "w", zipfile.ZIP_DEFLATED) as kda:
             # Add manifest
-            kda.writestr("manifest.json", json.dumps(manifest.__dict__, indent=2))
+            kda.writestr("manifest.json", json.dumps(
+                manifest.__dict__, indent=2))
 
             # Add merged config
-            kda.writestr("app.yaml", yaml.dump(merged_config, default_flow_style=False))
+            kda.writestr("app.yaml", yaml.dump(
+                merged_config, default_flow_style=False))
 
             # Add all app files
             for root, dirs, files in os.walk(app_path):
@@ -267,7 +272,8 @@ class SynapseAppDeploymentServiceDemo:
 
     def _deploy_kda_package(self, kda_path):
         """Deploy KDA package (simulate extracting to platform storage)"""
-        deployment_dir = os.path.join(self.temp_dir, "deployed", "azure-storage-test")
+        deployment_dir = os.path.join(
+            self.temp_dir, "deployed", "azure-storage-test")
         os.makedirs(deployment_dir, exist_ok=True)
 
         # Extract KDA
