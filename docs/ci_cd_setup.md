@@ -35,75 +35,57 @@ Configure these in: **Repository Settings** → **Secrets and variables** → **
 
 ### Secrets (Sensitive)
 ```
-AZURE_CREDENTIALS_TEST     - Service principal for testing environment
-AZURE_CREDENTIALS_STAGING  - Service principal for staging environment
+AZURE_STORAGE_KEY_TEST     - Storage account key for testing
+AZURE_STORAGE_KEY_STAGING  - Storage account key for staging (optional)
 ```
 
 ### Variables (Non-sensitive)
 ```
-TEST_STORAGE_ACCOUNT       - Azure storage account for tests
-TEST_CONTAINER             - Azure container for tests
-STAGING_STORAGE_ACCOUNT    - Azure storage account for staging
-STAGING_CONTAINER          - Azure container for staging
+TEST_STORAGE_ACCOUNT       - Azure storage account name for tests
+TEST_CONTAINER             - Azure container name for tests
+STAGING_STORAGE_ACCOUNT    - Azure storage account name for staging (optional)
+STAGING_CONTAINER          - Azure container name for staging (optional)
 ```
 
-## 🌍 GitHub Environments Setup
+## 🔑 Azure Storage Authentication Setup
 
-Create these environments in: **Repository Settings** → **Environments**
+### Get Storage Account Key
 
-### 1. Testing Environment
-- **Name**: `testing`
-- **Protection**: None (auto-deploys)
-- **Secrets**: Link `AZURE_CREDENTIALS_TEST`
-- **Variables**: Link `TEST_STORAGE_ACCOUNT`, `TEST_CONTAINER`
+#### Option 1: Azure Portal
+1. Navigate to your Storage Account
+2. Go to **Security + networking** → **Access keys**
+3. Copy **key1** or **key2** value
 
-### 2. Staging Environment
-- **Name**: `staging`
-- **Protection**: Optional approval for system tests
-- **Secrets**: Link `AZURE_CREDENTIALS_STAGING`
-- **Variables**: Link `STAGING_STORAGE_ACCOUNT`, `STAGING_CONTAINER`
-
-## 🔑 Azure Service Principal Setup
-
-### Create Service Principal
-
+#### Option 2: Azure CLI
 ```bash
-# For Testing Environment
-az ad sp create-for-rbac \
-  --name "kindling-ci-test" \
-  --role "Storage Blob Data Contributor" \
-  --scopes /subscriptions/{subscription-id}/resourceGroups/{test-rg} \
-  --sdk-auth
-
-# For Staging Environment
-az ad sp create-for-rbac \
-  --name "kindling-ci-staging" \
-  --role "Storage Blob Data Contributor" \
-  --scopes /subscriptions/{subscription-id}/resourceGroups/{staging-rg} \
-  --sdk-auth
+# Get storage account key
+az storage account keys list \
+  --account-name YOUR-STORAGE-ACCOUNT \
+  --resource-group YOUR-RESOURCE-GROUP \
+  --query '[0].value' -o tsv
 ```
 
-### Add Service Principal JSON to GitHub
+### Add to GitHub Secrets
 
-The output will be JSON like:
-```json
-{
-  "clientId": "...",
-  "clientSecret": "...",
-  "subscriptionId": "...",
-  "tenantId": "...",
-  "activeDirectoryEndpointUrl": "...",
-  "resourceManagerEndpointUrl": "...",
-  "activeDirectoryGraphResourceId": "...",
-  "sqlManagementEndpointUrl": "...",
-  "galleryEndpointUrl": "...",
-  "managementEndpointUrl": "..."
-}
-```
+1. Go to **Repository Settings** → **Secrets and variables** → **Actions**
+2. Click **New repository secret**
+3. Add secrets:
+   - Name: `AZURE_STORAGE_KEY_TEST`
+   - Value: (paste your storage account key)
+   - Name: `AZURE_STORAGE_KEY_STAGING` (optional, for system tests)
+   - Value: (paste your staging storage account key)
 
-Copy this entire JSON output and paste it as:
-- `AZURE_CREDENTIALS_TEST` secret
-- `AZURE_CREDENTIALS_STAGING` secret
+### Add to GitHub Variables
+
+1. Go to **Repository Settings** → **Secrets and variables** → **Actions** → **Variables** tab
+2. Click **New repository variable**
+3. Add variables:
+   - `TEST_STORAGE_ACCOUNT`: Your storage account name (e.g., "mystorageacct")
+   - `TEST_CONTAINER`: Your container name (e.g., "kindling-tests")
+   - `STAGING_STORAGE_ACCOUNT`: (optional) Staging storage account name
+   - `STAGING_CONTAINER`: (optional) Staging container name
+
+> **Note**: Storage account key authentication is simpler than Service Principal and sufficient for storage-only access. It doesn't require Azure Active Directory setup or RBAC permissions.
 
 ## �� Usage
 
@@ -212,22 +194,23 @@ ls -lh dist/
 ### Integration Tests Fail
 
 **Common issues:**
-- ❌ Azure credentials not configured → Add `AZURE_CREDENTIALS_TEST` secret
-- ❌ Storage account not accessible → Check service principal permissions
-- ❌ Network/firewall issues → Verify GitHub Actions can reach Azure
+- ❌ Azure storage key not configured → Add `AZURE_STORAGE_KEY_TEST` secret
+- ❌ Storage account/container variables missing → Add `TEST_STORAGE_ACCOUNT` and `TEST_CONTAINER` variables
+- ❌ Storage account not accessible → Check firewall rules or network restrictions
+- ❌ Container doesn't exist → Create the container in your storage account
 
 **Debug:**
 ```bash
-# Test Azure login locally
-az login --service-principal \
-  --username {clientId} \
-  --password {clientSecret} \
-  --tenant {tenantId}
-
-# Test storage access
+# Test storage access with key
 az storage container list \
-  --account-name {storage-account} \
-  --auth-mode login
+  --account-name YOUR-STORAGE-ACCOUNT \
+  --account-key YOUR-STORAGE-KEY
+
+# Create container if needed
+az storage container create \
+  --name kindling-tests \
+  --account-name YOUR-STORAGE-ACCOUNT \
+  --account-key YOUR-STORAGE-KEY
 ```
 
 ### Build Wheels Fail
