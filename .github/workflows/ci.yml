@@ -18,10 +18,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
@@ -48,7 +48,7 @@ jobs:
         run: mkdir -p output && cp -r htmlcov test-results/unit-test-results.xml output/ 2>/dev/null || true
 
       - name: Upload test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: unit-test-results
@@ -57,9 +57,9 @@ jobs:
             htmlcov/
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
         with:
-          file: ./coverage.xml
+          files: ./coverage.xml
           flags: unittests
           name: codecov-umbrella
 
@@ -69,10 +69,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
@@ -100,7 +100,7 @@ jobs:
           poetry run mypy packages/kindling/ --html-report output/mypy-report || true
 
       - name: Upload code quality reports
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: code-quality-reports
@@ -115,10 +115,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
@@ -133,7 +133,7 @@ jobs:
           poetry install --with dev
 
       - name: Azure CLI Login
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS_TEST }}
 
@@ -148,7 +148,7 @@ jobs:
             -v
 
       - name: Upload integration test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: integration-test-results
@@ -161,10 +161,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
@@ -188,7 +188,7 @@ jobs:
           poetry run python tests/system/test_simple_kda_synapse.py
 
       - name: Upload KDA test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: kda-test-results
@@ -208,10 +208,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
@@ -226,7 +226,7 @@ jobs:
           poetry install --with dev
 
       - name: Azure CLI Login
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS_STAGING }}
 
@@ -244,7 +244,7 @@ jobs:
             -v || true
 
       - name: Upload system test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: system-test-results-${{ matrix.platform }}
@@ -257,10 +257,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
@@ -285,7 +285,7 @@ jobs:
           bandit -r packages/ -f json -o output/bandit-report.json || true
 
       - name: Upload security reports
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: security-reports
@@ -298,10 +298,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
@@ -322,7 +322,7 @@ jobs:
           ls -lh dist/
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: platform-wheels
           path: dist/*.whl
@@ -337,13 +337,13 @@ jobs:
 
     steps:
       - name: Download wheel artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v5
         with:
           name: platform-wheels
           path: dist/
 
       - name: Attach wheels to release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/*.whl
         env:
@@ -378,7 +378,7 @@ jobs:
 
     steps:
       - name: Download all test results
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v5
 
       - name: Generate test summary
         run: |
