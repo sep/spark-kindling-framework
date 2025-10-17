@@ -1,0 +1,47 @@
+# Synapse Analytics-specific configuration overrides
+environment: synapse
+
+parameters:
+  # Synapse uses workspace managed identity or service principal
+  auth_type: managed_identity
+
+  # Synapse-specific paths
+  test_path_prefix: "system-tests/synapse/azure-storage"
+
+  # Synapse performance expectations (typically lower than Databricks)
+  min_write_throughput_mbps: 15.0
+  min_read_throughput_mbps: 60.0
+  max_execution_time_minutes: 20 # Allow more time for Synapse startup
+
+synapse_config:
+  # Synapse Spark pool requirements
+  spark_pool_name: "${SYNAPSE_SPARK_POOL_NAME}"
+  executor_size: "Medium" # Small, Medium, Large, XLarge, XXLarge
+  min_executors: 3
+  max_executors: 10
+  auto_scale_enabled: true
+  auto_pause_delay_minutes: 15
+
+  # Synapse-specific Spark configuration
+  spark_config:
+    "spark.sql.adaptive.enabled": "true"
+    "spark.sql.adaptive.coalescePartitions.enabled": "true"
+    "spark.synapse.linkedService.useDefaultCredential": "true"
+
+libraries:
+  # Synapse-compatible library versions
+  - pypi:
+      package: "delta-spark==2.3.0" # Synapse has specific version compatibility
+  - pypi:
+      package: "azure-storage-blob>=12.14.0"
+
+authentication:
+  # Synapse authentication options
+  primary: managed_identity
+  fallback: service_principal
+
+workspace:
+  # Synapse workspace configuration
+  workspace_name: "${SYNAPSE_WORKSPACE_NAME}"
+  resource_group: "${AZURE_RESOURCE_GROUP}"
+  subscription_id: "${AZURE_SUBSCRIPTION_ID}"

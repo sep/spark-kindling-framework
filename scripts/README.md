@@ -2,6 +2,49 @@
 
 This directory contains helper scripts for development workflows.
 
+## Platform Wheel Building
+
+### `build_platform_wheels.sh`
+
+Builds platform-specific wheels using Poetry for each supported platform (Synapse, Databricks, Fabric).
+
+**Features:**
+- ✅ Creates single wheel per platform containing core + platform-specific code
+- ✅ Uses standard Poetry build system (replaces custom 400+ line script)
+- ✅ Maintains platform tag naming for app_framework.py compatibility
+- ✅ Excludes other platform files to reduce wheel size
+- ✅ Clean, maintainable 89-line shell script
+
+**Usage:**
+
+```bash
+# Build all platform wheels
+./scripts/build_platform_wheels.sh
+```
+
+**Output:**
+```
+output/wheels/
+├── kindling-0.1.0-py3-none-synapse.whl      # Core + Synapse platform
+├── kindling-0.1.0-py3-none-databricks.whl   # Core + Databricks platform  
+└── kindling-0.1.0-py3-none-fabric.whl       # Core + Fabric platform
+```
+
+**Each wheel contains:**
+- Core kindling framework (data_apps.py, bootstrap.py, etc.)
+- Single platform implementation (platform_synapse.py OR platform_databricks.py OR platform_fabric.py)
+- Platform-specific dependencies (Azure SDKs, Databricks SDK, etc.)
+
+**Requirements:**
+- Poetry installed (`curl -sSL https://install.python-poetry.org | python3 -`)
+- Platform-specific pyproject.toml files (pyproject-synapse.toml, etc.)
+
+**Installation:**
+```bash
+# Install platform-specific wheel
+pip install output/wheels/kindling-0.1.0-py3-none-synapse.whl
+```
+
 ## Azure Development Environment Setup
 
 ### `init_azure_dev.sh`

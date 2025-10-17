@@ -26,11 +26,13 @@ env/
 ENV/
 env.bak/
 venv.bak/
+test_env/
 
 # Testing
 .pytest_cache/
 .coverage
 .coverage.*
+htmlcov/
 
 # Output directory - all generated artifacts
 output/

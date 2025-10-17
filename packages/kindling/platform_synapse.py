@@ -1,5 +1,6 @@
 from kindling.spark_session import *
 from kindling.notebook_framework import *
+from kindling.data_apps import AppDeploymentService
 import time
 import json
 import types
@@ -27,6 +28,90 @@ except Exception as e:
             pass
 
 
+# Always available mock/test version of SynapseAppDeploymentService
+class MockSynapseAppDeploymentService(AppDeploymentService):
+    """Mock implementation of SynapseAppDeploymentService for testing"""
+
+    def __init__(self, synapse_service=None, logger=None):
+        self.synapse_service = synapse_service
+        self.logger = logger or self._create_mock_logger()
+
+    def _create_mock_logger(self):
+        class MockLogger:
+            def info(self, msg): print(f"ℹ️  {msg}")
+            def error(self, msg): print(f"❌ {msg}")
+            def warning(self, msg): print(f"⚠️  {msg}")
+        return MockLogger()
+
+    def submit_spark_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Mock implementation that simulates job submission"""
+        script_path = job_config.get('script_path')
+        app_name = job_config.get('app_name', 'unknown-app')
+
+        self.logger.info(f"Mock: Executing Synapse job for app: {app_name}")
+
+        # Generate job ID
+        import time
+        job_id = f"mock-synapse-{app_name}-{int(time.time())}"
+
+        try:
+            # Validate script exists and is syntactically correct
+            if script_path and os.path.exists(script_path):
+                with open(script_path, 'r') as f:
+                    script_content = f.read()
+                compile(script_content, script_path, 'exec')
+                status = "SUCCEEDED"
+                message = f"Mock job {job_id} completed successfully"
+            else:
+                status = "FAILED"
+                message = f"Script not found: {script_path}"
+
+        except Exception as e:
+            status = "FAILED"
+            message = f"Mock job execution failed: {str(e)}"
+
+        return {
+            "job_id": job_id,
+            "status": status,
+            "message": message,
+            "submission_time": time.time(),
+            "mock": True
+        }
+
+    def get_job_status(self, job_id: str) -> Dict[str, Any]:
+        return {
+            "job_id": job_id,
+            "status": "COMPLETED",
+            "message": "Mock job status",
+            "mock": True
+        }
+
+    def cancel_job(self, job_id: str) -> bool:
+        self.logger.info(f"Mock: Cancelled job {job_id}")
+        return True
+
+    def get_job_logs(self, job_id: str) -> str:
+        return f"Mock logs for {job_id}"
+
+    def create_job_config(self, app_name: str, app_path: str,
+                          environment_vars: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        main_script = f"{app_path}/main.py"
+        return {
+            "app_name": app_name,
+            "script_path": main_script,
+            "environment_vars": environment_vars or {},
+            "platform": "synapse",
+            "execution_mode": "mock",
+            "mock": True
+        }
+
+
+# Export the appropriate class based on environment
+if not add_to_registry:
+    # Testing/development environment - use mock
+    SynapseAppDeploymentService = MockSynapseAppDeploymentService
+
+
 if add_to_registry:
     class SynapseTokenCredential(TokenCredential):
         def __init__(self, expires_on=None):
@@ -36,6 +121,125 @@ if add_to_registry:
 
         def get_token(self, *scopes, **kwargs):
             return AccessToken(self.token, self.expires_on)
+
+    class SynapseAppDeploymentService(AppDeploymentService):
+        """Synapse-specific implementation of AppDeploymentService"""
+
+        def __init__(self, synapse_service, logger):
+            self.synapse_service = synapse_service
+            self.logger = logger
+
+        def submit_spark_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+            """Submit a Spark job to Synapse
+
+            Args:
+                job_config: Contains 'script_path', 'app_name', 'environment_vars'
+
+            Returns:
+                Dict containing job_id and submission status
+            """
+            try:
+                import __main__
+                mssparkutils = getattr(__main__, 'mssparkutils', None)
+
+                if not mssparkutils:
+                    raise RuntimeError(
+                        "mssparkutils not available in current environment")
+
+                script_path = job_config.get('script_path')
+                app_name = job_config.get('app_name', 'unknown-app')
+                env_vars = job_config.get('environment_vars', {})
+
+                # In Synapse, we typically run scripts directly in the notebook context
+                # For system testing, we'll simulate job submission by running the script
+
+                self.logger.info(f"Executing Synapse job for app: {app_name}")
+                self.logger.info(f"Script path: {script_path}")
+
+                # Generate a simple job ID based on timestamp and app name
+                import time
+                job_id = f"synapse-{app_name}-{int(time.time())}"
+
+                # Set environment variables if provided
+                import os
+                for key, value in env_vars.items():
+                    os.environ[key] = str(value)
+
+                try:
+                    # Execute the script in the current context
+                    # For KDA packages, the script should be the main.py file
+                    if script_path and self.synapse_service.exists(script_path):
+                        self.logger.info(f"Executing script: {script_path}")
+                        exec(open(script_path).read())
+                        status = "SUCCEEDED"
+                        message = f"Job {job_id} completed successfully"
+                    else:
+                        status = "FAILED"
+                        message = f"Script not found: {script_path}"
+
+                except Exception as e:
+                    status = "FAILED"
+                    message = f"Job execution failed: {str(e)}"
+                    self.logger.error(message)
+
+                return {
+                    "job_id": job_id,
+                    "status": status,
+                    "message": message,
+                    "submission_time": time.time()
+                }
+
+            except Exception as e:
+                self.logger.error(f"Failed to submit Synapse job: {e}")
+                return {
+                    "job_id": None,
+                    "status": "FAILED",
+                    "message": f"Job submission failed: {str(e)}"
+                }
+
+        def get_job_status(self, job_id: str) -> Dict[str, Any]:
+            """Get the status of a submitted job
+
+            Since Synapse notebooks run synchronously, this returns final status
+            """
+            # In a real implementation, you would track job states
+            # For now, we'll return a basic status
+            return {
+                "job_id": job_id,
+                "status": "COMPLETED",
+                "message": "Job status not tracked in notebook execution mode"
+            }
+
+        def cancel_job(self, job_id: str) -> bool:
+            """Cancel a running job
+
+            Not applicable for synchronous notebook execution
+            """
+            self.logger.warning(
+                f"Job cancellation not supported for notebook execution: {job_id}")
+            return False
+
+        def get_job_logs(self, job_id: str) -> str:
+            """Get logs from a job
+
+            In notebook mode, logs are displayed in real-time
+            """
+            return f"Logs for {job_id} are displayed in the notebook output"
+
+        def create_job_config(self, app_name: str, app_path: str,
+                              environment_vars: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+            """Create Synapse-specific job configuration"""
+
+            # For KDA packages, the main script is typically main.py
+            main_script = f"{app_path}/main.py"
+
+            return {
+                "app_name": app_name,
+                "script_path": main_script,
+                "environment_vars": environment_vars or {},
+                "platform": "synapse",
+                "execution_mode": "notebook"
+            }
 
     class SynapseService(PlatformService):
         def __init__(self, config, logger):

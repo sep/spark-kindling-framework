@@ -7,7 +7,7 @@ Cloud configuration is detected automatically from environment variables.
 This is the recommended approach for local development.
 For production, use managed identities in Synapse/Fabric/Databricks.
 """
-from tests.spark_test_helper import get_local_spark_session_with_azure
+from tests.spark_test_helper import get_local_spark_session_with_azure, _get_azure_cloud_config
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -20,9 +20,12 @@ def test_azure_storage_with_key():
     storage_container = os.getenv(
         'AZURE_CONTAINER', 'your-container')
     # 'public', 'government', or 'china'
-    azure_cloud = os.getenv('AZURE_CLOUD', 'public')
-    endpoint_suffix = os.getenv(
-        'AZURE_STORAGE_ENDPOINT_SUFFIX', 'dfs.core.windows.net')
+    azure_cloud = os.getenv('AZURE_CLOUD', 'AZURE_PUBLIC_CLOUD')
+
+    # Get cloud-specific configuration dynamically
+    cloud_config = _get_azure_cloud_config(azure_cloud)
+    endpoint_suffix = cloud_config['dfs_suffix']
+
     account_key = os.getenv('AZURE_STORAGE_KEY')
 
     if not account_key:
@@ -36,12 +39,7 @@ def test_azure_storage_with_key():
         return False
 
     # Display cloud info
-    cloud_names = {
-        'public': 'Azure Commercial Cloud',
-        'government': 'Azure Government Cloud',
-        'china': 'Azure China Cloud'
-    }
-    cloud_display = cloud_names.get(azure_cloud, f'Azure ({azure_cloud})')
+    cloud_display = cloud_config['name']
 
     print(f"Testing Azure storage access...")
     print(f"Cloud: {cloud_display} ({endpoint_suffix})")
@@ -91,11 +89,13 @@ def test_azure_storage_with_key():
         print(f"  - Deploy to Synapse/Fabric/Databricks in {cloud_display}")
         print("  - Use managed identities (no keys needed)")
 
-        return True
+        # Test passed successfully
+        assert True
 
     except Exception as e:
         print(f"\n❌ Error: {str(e)}")
-        return False
+        # Test failed
+        assert False, f"Azure storage test failed: {str(e)}"
 
     finally:
         spark.stop()

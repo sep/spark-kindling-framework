@@ -1,7 +1,7 @@
 """
-Unit tests for app_framework module
+Unit tests for data_apps module
 
-Tests for the refactored AppManager class, focusing on:
+Tests for the refactored DataAppManager class, focusing on:
 - Config loading with environment overrides
 - Dependency resolution and wheel selection
 - Installation orchestration
@@ -12,35 +12,35 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch
 from typing import List, Dict, Any
 
-from kindling.app_framework import (
-    AppManager,
-    AppConfig,
-    AppContext,
-    AppConstants,
+from kindling.data_apps import (
+    DataAppManager,
+    DataAppConfig,
+    DataAppContext,
+    DataAppConstants,
     WheelCandidate
 )
 
 
 class TestAppConstants:
-    """Test app framework constants"""
+    """Test data app framework constants"""
 
-    def test_constants_defined(self):
-        """Verify all required constants are defined"""
-        assert AppConstants.REQUIREMENTS_FILE == "requirements.txt"
-        assert AppConstants.LAKE_REQUIREMENTS_FILE == "lake-reqs.txt"
-        assert AppConstants.BASE_CONFIG_FILE == "app.yaml"
-        assert AppConstants.DEFAULT_ENTRY_POINT == "main.py"
+    def test_app_constants_values(self):
+        """Test that DataAppConstants has expected values"""
+        assert DataAppConstants.REQUIREMENTS_FILE == "requirements.txt"
+        assert DataAppConstants.LAKE_REQUIREMENTS_FILE == "lake-reqs.txt"
+        assert DataAppConstants.BASE_CONFIG_FILE == "app.yaml"
+        assert DataAppConstants.DEFAULT_ENTRY_POINT == "main.py"
 
-    def test_wheel_priorities(self):
-        """Verify wheel priority ordering"""
-        assert AppConstants.WHEEL_PRIORITY_PLATFORM_SPECIFIC == 1
-        assert AppConstants.WHEEL_PRIORITY_GENERIC == 2
-        assert AppConstants.WHEEL_PRIORITY_FALLBACK == 3
+    def test_app_constants_priorities(self):
+        """Test wheel priority constants"""
+        assert DataAppConstants.WHEEL_PRIORITY_PLATFORM_SPECIFIC == 1
+        assert DataAppConstants.WHEEL_PRIORITY_GENERIC == 2
+        assert DataAppConstants.WHEEL_PRIORITY_FALLBACK == 3
 
-    def test_pip_common_args(self):
-        """Verify pip common arguments"""
-        assert "--disable-pip-version-check" in AppConstants.PIP_COMMON_ARGS
-        assert "--no-warn-conflicts" in AppConstants.PIP_COMMON_ARGS
+    def test_app_constants_pip_args(self):
+        """Test pip common arguments"""
+        assert "--disable-pip-version-check" in DataAppConstants.PIP_COMMON_ARGS
+        assert "--no-warn-conflicts" in DataAppConstants.PIP_COMMON_ARGS
 
 
 class TestWheelCandidate:
@@ -71,29 +71,34 @@ class TestWheelCandidate:
 
 
 class TestAppManagerHelpers:
-    """Test helper methods in AppManager"""
+    """Test helper methods in DataAppManager"""
 
     @pytest.fixture
     def mock_app_manager(self):
-        """Create mock AppManager for testing"""
-        manager = Mock(spec=AppManager)
+        """Create mock DataAppManager for testing"""
+        manager = Mock(spec=DataAppManager)
         manager.artifacts_path = "/artifacts"
         manager.logger = Mock()
 
-        manager._get_app_dir = AppManager._get_app_dir.__get__(manager)
-        manager._get_packages_dir = AppManager._get_packages_dir.__get__(
-            manager)
-        manager._extract_package_name = AppManager._extract_package_name.__get__(
-            manager)
-        manager._parse_package_spec = AppManager._parse_package_spec.__get__(
-            manager)
+        # Mock the methods we need to access from the real class
+        # This allows us to test the real method logic on a mock instance
+        manager._get_app_dir = DataAppManager._get_app_dir.__get__(manager)
+        manager._get_packages_dir = DataAppManager._get_packages_dir.__get__(
+            manager
+        )
+        manager._extract_package_name = DataAppManager._extract_package_name.__get__(
+            manager
+        )
+        manager._parse_package_spec = DataAppManager._parse_package_spec.__get__(
+            manager
+        )
 
         return manager
 
     def test_get_app_dir(self, mock_app_manager):
         """Test _get_app_dir helper"""
         result = mock_app_manager._get_app_dir("my_app")
-        assert result == "/artifacts/apps/my_app/"
+        assert result == "/artifacts/data-apps/my_app/"
 
     def test_extract_package_name_simple(self, mock_app_manager):
         """Test package name extraction"""

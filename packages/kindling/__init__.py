@@ -17,7 +17,7 @@ from . import test_framework
 from . import notebook_framework
 from . import platform_provider
 from . import pipe_streaming
-from . import app_framework
+from . import data_apps  # Renamed from app_framework
 from . import bootstrap  # This imports all platform modules
 from . import simple_file_ingestion_processor
 from . import pip_manager

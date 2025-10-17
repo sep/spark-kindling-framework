@@ -1,50 +1,40 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
 
-[project]
+[tool.poetry]
 name = "kindling"
 version = "0.1.0"
 description = "Cross-platform data processing framework for Azure Synapse, Microsoft Fabric, and Databricks"
+authors = ["SEP Engineering <engineering@sep.com>"]
+license = "MIT"
 readme = "README.md"
-authors = [
-    {name = "SEP Engineering", email = "engineering@sep.com"}
-]
-license = {text = "MIT"}
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-]
-dependencies = [
-    "pyspark>=3.4.0",
-    "delta-spark>=2.4.0",
-    "pandas>=2.0.0",
-    "pyarrow>=12.0.0",
-]
-requires-python = ">=3.10"
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "black>=23.0.0",
-    "pylint>=2.17.0",
-    "mypy>=1.0.0",
-    "ipython>=8.0.0",
-    "jupyter>=1.0.0",
+packages = [
+    {include = "kindling", from = "packages"},
 ]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+[tool.poetry.dependencies]
+python = "^3.10"
+pyspark = ">=3.4.0"
+delta-spark = ">=2.4.0"
+pandas = ">=2.0.0"
+pyarrow = ">=12.0.0"
+injector = ">=0.20.1"
+dynaconf = ">=3.1.0"
+pyyaml = ">=6.0"
+azure-storage-blob = ">=12.14.0"
+azure-identity = ">=1.12.0"
+azure-core = ">=1.26.0"
+databricks-sdk = ">=0.12.0"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-cov = ">=4.0.0"
+black = ">=23.0.0"
+pylint = ">=2.17.0"
+mypy = ">=1.0.0"
+ipython = ">=8.0.0"
+jupyter = ">=1.0.0"
 
 [tool.black]
 line-length = 100
@@ -74,8 +64,8 @@ addopts = [
     "--verbose",
     "--cov=kindling",
     "--cov-report=term-missing",
-    "--cov-report=html:output/htmlcov",
+    "--cov-report=html:htmlcov",
 ]
 
 [tool.coverage.run]
-data_file = "output/.coverage"
+data_file = ".coverage"

@@ -4,10 +4,14 @@ import os
 import uuid
 import shutil
 import tempfile
+import zipfile
+import json
+import yaml
 from typing import Dict, List, Any, Optional, Union, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from kindling.injection import *
 from kindling.spark_config import *
@@ -17,13 +21,18 @@ from .notebook_framework import *
 from kindling.platform_provider import *
 
 
-class AppConstants:
-    """Configuration constants for app framework"""
+class DataAppConstants:
+    """Configuration constants for data app framework"""
     REQUIREMENTS_FILE = "requirements.txt"
     LAKE_REQUIREMENTS_FILE = "lake-reqs.txt"
     BASE_CONFIG_FILE = "app.yaml"
     ENV_CONFIG_TEMPLATE = "app.{environment}.yaml"
     DEFAULT_ENTRY_POINT = "main.py"
+
+    # KDA package constants
+    KDA_EXTENSION = ".kda"
+    KDA_MANIFEST_FILE = "kda-manifest.json"
+    KDA_VERSION = "1.0"
 
     # Wheel priorities (lower is better)
     WHEEL_PRIORITY_PLATFORM_SPECIFIC = 1
@@ -37,10 +46,92 @@ class AppConstants:
     ]
 
 
-class AppRunner(ABC):
+class DataAppRunner(ABC):
     @abstractmethod
     def run_app(self, app_name: str) -> Any:
         pass
+
+
+class AppDeploymentService(ABC):
+    """Platform-specific service for deploying and running data apps"""
+
+    @abstractmethod
+    def submit_spark_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit a Spark job to the platform
+
+        Args:
+            job_config: Platform-specific job configuration
+
+        Returns:
+            Dict containing job_id and submission status
+        """
+        pass
+
+    @abstractmethod
+    def get_job_status(self, job_id: str) -> Dict[str, Any]:
+        """Get the status of a submitted job
+
+        Args:
+            job_id: Platform job identifier
+
+        Returns:
+            Dict containing job status, logs, and results
+        """
+        pass
+
+    @abstractmethod
+    def cancel_job(self, job_id: str) -> bool:
+        """Cancel a running job
+
+        Args:
+            job_id: Platform job identifier
+
+        Returns:
+            True if cancellation succeeded
+        """
+        pass
+
+    @abstractmethod
+    def get_job_logs(self, job_id: str) -> str:
+        """Get logs from a job
+
+        Args:
+            job_id: Platform job identifier
+
+        Returns:
+            Job logs as string
+        """
+        pass
+
+    @abstractmethod
+    def create_job_config(self, app_name: str, app_path: str,
+                          environment_vars: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Create platform-specific job configuration
+
+        Args:
+            app_name: Name of the data app
+            app_path: Path to deployed app in storage
+            environment_vars: Environment variables for the job
+
+        Returns:
+            Platform-specific job configuration
+        """
+        pass
+
+
+@dataclass
+class KDAManifest:
+    """Manifest file for KDA packages"""
+    name: str
+    version: str
+    description: str
+    entry_point: str
+    dependencies: List[str]
+    lake_requirements: List[str]
+    environment: str
+    metadata: Dict[str, Any]
+    created_at: str
+    kda_version: str = DataAppConstants.KDA_VERSION
 
 
 @dataclass
@@ -58,15 +149,15 @@ class WheelCandidate:
 
 
 @dataclass
-class AppContext:
-    """Container for app execution context"""
-    config: 'AppConfig'
+class DataAppContext:
+    """Container for data app execution context"""
+    config: 'DataAppConfig'
     pypi_dependencies: List[str]
     lake_requirements: List[str]
 
 
 @dataclass
-class AppConfig:
+class DataAppConfig:
     name: str
     description: str
     entry_point: str
@@ -76,7 +167,7 @@ class AppConfig:
 
 
 @GlobalInjector.singleton_autobind()
-class AppManager(AppRunner):
+class DataAppManager(DataAppRunner):
     @inject
     def __init__(self, nm: NotebookManager, pp: PlatformServiceProvider,
                  config: ConfigService, tp: SparkTraceProvider, lp: PythonLoggerProvider):
@@ -95,17 +186,18 @@ class AppManager(AppRunner):
 
     def discover_apps(self) -> List[str]:
         try:
-            apps_dir = f"{self.artifacts_path}/apps/"
+            apps_dir = f"{self.artifacts_path}/data-apps/"  # Updated path
             apps = self.get_platform_service().list(apps_dir)
             app_names = []
             for app_path in apps:
                 app_name = app_path.rstrip('/').split('/')[-1]
                 if app_name and not app_name.startswith('.'):
                     app_names.append(app_name)
-            self.logger.info(f"Discovered {len(app_names)} apps: {app_names}")
+            self.logger.info(
+                f"Discovered {len(app_names)} data apps: {app_names}")
             return app_names
         except Exception as e:
-            self.logger.error(f"Failed to discover apps: {str(e)}")
+            self.logger.error(f"Failed to discover data apps: {str(e)}")
             return []
 
     def run_app(self, app_name: str) -> Any:
@@ -142,7 +234,7 @@ class AppManager(AppRunner):
                 if temp_dir:
                     self._cleanup_temp_files(temp_dir)
 
-    def _prepare_app_context(self, app_name: str) -> AppContext:
+    def _prepare_app_context(self, app_name: str) -> DataAppContext:
         """Prepare all context needed for app execution"""
         environment = self.config.get('environment')
 
@@ -155,7 +247,7 @@ class AppManager(AppRunner):
         pypi_deps = self._override_with_workspace_packages(
             pypi_deps, self.config)
 
-        return AppContext(
+        return DataAppContext(
             config=app_config,
             pypi_dependencies=pypi_deps,
             lake_requirements=lake_reqs
@@ -167,13 +259,290 @@ class AppManager(AppRunner):
 
     def _get_app_dir(self, app_name: str) -> str:
         """Get app directory path"""
-        return f"{self.artifacts_path}/apps/{app_name}/"
+        return f"{self.artifacts_path}/data-apps/{app_name}/"
 
     def _get_packages_dir(self) -> str:
         """Get packages directory path"""
         return f"{self.artifacts_path}/packages/"
 
-    def _load_app_config(self, app_name: str, environment: str = None) -> AppConfig:
+    def package_app(self, app_directory: str, output_path: Optional[str] = None,
+                    version: Optional[str] = None, target_platform: Optional[str] = None,
+                    merge_platform_config: bool = True) -> str:
+        """Package a data app directory into a KDA file for a specific platform
+
+        Args:
+            app_directory: Path to app source directory
+            output_path: Output KDA file path (auto-generated if None)
+            version: App version (from metadata if None)
+            target_platform: Target platform (synapse, databricks, fabric)
+            merge_platform_config: If True, merge platform config into base config.
+                                  If False, include all platform configs separately.
+        """
+        try:
+            app_path = Path(app_directory)
+            if not app_path.exists():
+                raise FileNotFoundError(
+                    f"App directory not found: {app_directory}")
+
+            # Load base app config from source directory
+            config = self._load_app_config_from_directory(app_path)
+
+            # If merging platform config, merge it at package time
+            if merge_platform_config and target_platform:
+                config = self._merge_platform_config_at_deploy_time(
+                    app_path, config, target_platform)
+            app_name = config.name
+            app_version = version or config.metadata.get('version', '1.0.0')
+
+            # Generate output path if not provided
+            if not output_path:
+                platform_suffix = f"-{target_platform}" if target_platform and merge_platform_config else ""
+                output_path = f"{app_name}{platform_suffix}-v{app_version}{DataAppConstants.KDA_EXTENSION}"
+
+            platform_info = f" for {target_platform}" if target_platform else ""
+            merge_info = " (merged)" if merge_platform_config and target_platform else " (multi-platform)"
+            self.logger.info(
+                f"Packaging data app '{app_name}' v{app_version}{platform_info}{merge_info} -> {output_path}")
+
+            # Create KDA package
+            with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as kda_file:
+                if merge_platform_config:
+                    # Single platform: exclude platform-specific configs and base app.yaml, use merged version
+                    for file_path in app_path.rglob('*'):
+                        if (file_path.is_file() and
+                            not self._is_platform_config_file(file_path) and
+                                file_path.name != 'app.yaml'):
+                            relative_path = file_path.relative_to(app_path)
+                            kda_file.write(file_path, relative_path)
+                            self.logger.debug(f"Added to KDA: {relative_path}")
+
+                    # Add the merged config as app.yaml
+                    merged_config = self._create_merged_config(config)
+                    kda_file.writestr("app.yaml", merged_config)
+                    self.logger.debug("Added merged app.yaml to KDA")
+                else:
+                    # Multi-platform: include all files including platform configs
+                    for file_path in app_path.rglob('*'):
+                        if file_path.is_file():
+                            relative_path = file_path.relative_to(app_path)
+                            kda_file.write(file_path, relative_path)
+                            self.logger.debug(f"Added to KDA: {relative_path}")
+
+                # Generate and add manifest
+                manifest = self._create_kda_manifest(
+                    config, app_version, target_platform, merge_platform_config)
+                manifest_json = json.dumps(asdict(manifest), indent=2)
+                kda_file.writestr(
+                    DataAppConstants.KDA_MANIFEST_FILE, manifest_json)
+
+            self.logger.info(
+                f"✅ Successfully created KDA package: {output_path}")
+            return output_path
+
+        except Exception as e:
+            self.logger.error(f"Failed to package data app: {str(e)}")
+            raise
+
+    def _is_platform_config_file(self, file_path: Path) -> bool:
+        """Check if file is a platform-specific config file"""
+        filename = file_path.name
+        return (filename.startswith('app.') and
+                filename != 'app.yaml' and
+                filename.endswith('.yaml'))
+
+    def _create_merged_config(self, config: 'DataAppConfig') -> str:
+        """Create merged YAML config from DataAppConfig"""
+        try:
+            import yaml
+
+            config_dict = {
+                'name': config.name,
+                'description': config.description,
+                'entry_point': config.entry_point,
+                'environment': config.environment,
+                'dependencies': config.dependencies,
+                'metadata': config.metadata
+            }
+
+            return yaml.safe_dump(config_dict, indent=2)
+        except ImportError:
+            # Fallback to JSON if yaml not available
+            return json.dumps(asdict(config), indent=2)
+
+    def deploy_kda(self, kda_file_path: str, target_environment: Optional[str] = None) -> bool:
+        """Deploy a KDA file to the artifacts storage"""
+        try:
+            kda_path = Path(kda_file_path)
+            if not kda_path.exists():
+                raise FileNotFoundError(f"KDA file not found: {kda_file_path}")
+
+            self.logger.info(f"Deploying KDA: {kda_file_path}")
+
+            # Extract and validate manifest
+            with zipfile.ZipFile(kda_path, 'r') as kda_file:
+                if DataAppConstants.KDA_MANIFEST_FILE not in kda_file.namelist():
+                    raise ValueError("Invalid KDA file: missing manifest")
+
+                manifest_content = kda_file.read(
+                    DataAppConstants.KDA_MANIFEST_FILE)
+                manifest_data = json.loads(manifest_content)
+                manifest = KDAManifest(**manifest_data)
+
+                app_name = manifest.name
+                self.logger.info(
+                    f"Deploying data app: {app_name} v{manifest.version}")
+
+                # Extract to target directory
+                target_dir = f"{self.artifacts_path}/data-apps/{app_name}/"
+                platform_service = self.get_platform_service()
+
+                # Clear existing deployment
+                try:
+                    platform_service.delete(target_dir)
+                    self.logger.debug(
+                        f"Cleared existing deployment at: {target_dir}")
+                except:
+                    pass  # Directory might not exist
+
+                # Extract all files except manifest to target directory
+                for file_info in kda_file.filelist:
+                    if file_info.filename == DataAppConstants.KDA_MANIFEST_FILE:
+                        continue  # Skip manifest in deployed version
+
+                    file_content = kda_file.read(file_info.filename)
+                    target_path = f"{target_dir}{file_info.filename}"
+                    platform_service.write(target_path, file_content)
+                    self.logger.debug(f"Deployed: {target_path}")
+
+                # Store deployment metadata
+                deployment_info = {
+                    "app_name": app_name,
+                    "version": manifest.version,
+                    "deployed_at": datetime.now().isoformat(),
+                    "environment": target_environment or "default",
+                    "kda_version": manifest.kda_version
+                }
+
+                deployment_path = f"{target_dir}.deployment-info.json"
+                platform_service.write(
+                    deployment_path, json.dumps(deployment_info, indent=2))
+
+            self.logger.info(
+                f"✅ Successfully deployed data app '{app_name}' to {target_dir}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to deploy KDA: {str(e)}")
+            return False
+
+    def _create_kda_manifest(self, config: DataAppConfig, version: str, target_platform: Optional[str] = None, merged: bool = False) -> KDAManifest:
+        """Create KDA manifest from app config"""
+        # For local packaging, resolve what we can
+        pypi_deps = config.dependencies
+        lake_reqs = []  # Could enhance to read lake-reqs.txt from directory
+
+        # Add platform info to metadata
+        metadata = config.metadata.copy()
+        if target_platform:
+            metadata['target_platform'] = target_platform
+
+        return KDAManifest(
+            name=config.name,
+            version=version,
+            description=config.description,
+            entry_point=config.entry_point,
+            dependencies=pypi_deps,
+            lake_requirements=lake_reqs,
+            environment=config.environment,
+            metadata=metadata,
+            created_at=datetime.now().isoformat()
+        )
+
+    def _load_app_config_from_directory(self, app_path: Path) -> DataAppConfig:
+        """Load app config from local directory"""
+        try:
+            # Try base config first
+            config_file = app_path / DataAppConstants.BASE_CONFIG_FILE
+            if not config_file.exists():
+                raise FileNotFoundError(f"App config not found: {config_file}")
+
+            with open(config_file, 'r') as f:
+                config_content = f.read()
+
+            try:
+                config_data = yaml.safe_load(config_content)
+            except:
+                config_data = json.loads(config_content)
+
+            return DataAppConfig(
+                name=config_data.get('name', app_path.name),
+                description=config_data.get('description', ''),
+                entry_point=config_data.get(
+                    'entry_point', DataAppConstants.DEFAULT_ENTRY_POINT),
+                dependencies=config_data.get('dependencies', []),
+                environment=config_data.get('environment', 'default'),
+                metadata=config_data.get('metadata', {})
+            )
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to load app config from {app_path}: {str(e)}")
+            raise
+
+    def _merge_platform_config_at_deploy_time(self, app_path: Path, base_config: DataAppConfig, target_platform: str) -> DataAppConfig:
+        """Merge platform-specific config into base config at deploy time"""
+        try:
+            # Look for platform-specific config file
+            platform_config_file = app_path / f"app.{target_platform}.yaml"
+
+            if not platform_config_file.exists():
+                self.logger.debug(
+                    f"No platform config found for {target_platform}, using base config")
+                return base_config
+
+            # Load platform-specific overrides
+            with open(platform_config_file, 'r') as f:
+                platform_content = f.read()
+
+            try:
+                platform_data = yaml.safe_load(platform_content)
+            except:
+                platform_data = json.loads(platform_content)
+
+            # Create merged config (platform overrides base)
+            merged_metadata = base_config.metadata.copy()
+            if platform_data.get('metadata'):
+                merged_metadata.update(platform_data['metadata'])
+
+            merged_dependencies = base_config.dependencies.copy()
+            if platform_data.get('dependencies'):
+                # Platform dependencies extend base dependencies
+                for dep in platform_data['dependencies']:
+                    if dep not in merged_dependencies:
+                        merged_dependencies.append(dep)
+
+            merged_config = DataAppConfig(
+                name=platform_data.get('name', base_config.name),
+                description=platform_data.get(
+                    'description', base_config.description),
+                entry_point=platform_data.get(
+                    'entry_point', base_config.entry_point),
+                dependencies=merged_dependencies,
+                environment=platform_data.get(
+                    'environment', base_config.environment),
+                metadata=merged_metadata
+            )
+
+            self.logger.debug(
+                f"Merged {target_platform} config into base config")
+            return merged_config
+
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to merge platform config for {target_platform}: {str(e)}")
+            return base_config
+
+    def _load_app_config(self, app_name: str, environment: str = None) -> DataAppConfig:
         """Load app configuration with environment override support"""
         self.logger.debug(f"Loading config for {app_name}")
 
@@ -202,7 +571,7 @@ class AppManager(AppRunner):
 
         # Fall back to base config
         try:
-            config_path = f"{app_dir}{AppConstants.BASE_CONFIG_FILE}"
+            config_path = f"{app_dir}{DataAppConstants.BASE_CONFIG_FILE}"
             self.logger.debug(f"Loading config: {config_path}")
             return self.get_platform_service().read(config_path)
         except Exception as e:
@@ -219,13 +588,13 @@ class AppManager(AppRunner):
             return json.loads(content)
 
     def _create_app_config(self, config_data: Dict[str, Any],
-                           app_name: str, environment: str = None) -> AppConfig:
-        """Create AppConfig from parsed data"""
-        return AppConfig(
+                           app_name: str, environment: str = None) -> DataAppConfig:
+        """Create DataAppConfig from parsed data"""
+        return DataAppConfig(
             name=config_data.get('name', app_name),
             description=config_data.get('description', ''),
             entry_point=config_data.get(
-                'entry_point', AppConstants.DEFAULT_ENTRY_POINT),
+                'entry_point', DataAppConstants.DEFAULT_ENTRY_POINT),
             dependencies=config_data.get('dependencies', []),
             environment=environment or config_data.get(
                 'environment', 'default'),
@@ -242,7 +611,7 @@ class AppManager(AppRunner):
 
             # Load PyPI dependencies
             try:
-                requirements_path = f"{app_dir}{AppConstants.REQUIREMENTS_FILE}"
+                requirements_path = f"{app_dir}{DataAppConstants.REQUIREMENTS_FILE}"
                 content = self.get_platform_service().read(requirements_path)
 
                 pypi_dependencies = [line.strip() for line in content.split('\n')
@@ -269,7 +638,7 @@ class AppManager(AppRunner):
         """Parse lake-reqs.txt file for custom wheel dependencies"""
         try:
             app_dir = self._get_app_dir(app_name)
-            lake_reqs_path = f"{app_dir}{AppConstants.LAKE_REQUIREMENTS_FILE}"
+            lake_reqs_path = f"{app_dir}{DataAppConstants.LAKE_REQUIREMENTS_FILE}"
 
             content = self.get_platform_service().read(lake_reqs_path)
 
@@ -360,7 +729,7 @@ class AppManager(AppRunner):
         pip_args = [
             sys.executable, "-m", "pip", "install",
             *[str(wf) for wf in wheel_files],
-            *AppConstants.PIP_COMMON_ARGS
+            *DataAppConstants.PIP_COMMON_ARGS
         ]
 
         result = subprocess.run(pip_args, capture_output=True, text=True)
@@ -395,7 +764,7 @@ class AppManager(AppRunner):
         pip_args = [
             sys.executable, "-m", "pip", "install",
             *pypi_dependencies,
-            *AppConstants.PIP_COMMON_ARGS
+            *DataAppConstants.PIP_COMMON_ARGS
         ]
 
         if wheels_cache_dir:
@@ -531,12 +900,18 @@ class AppManager(AppRunner):
         version = wheel_parts[1] if len(wheel_parts) > 1 else None
 
         # Determine priority based on platform specificity
-        if f"-{current_env}.whl" in file_name:
-            priority = AppConstants.WHEEL_PRIORITY_PLATFORM_SPECIFIC
+        # Highest priority: platform-specific package names
+        # Note: wheel filenames convert dashes to underscores (kindling-synapse -> kindling_synapse)
+        if package_name == f"kindling-{current_env}" or package_name == f"kindling_{current_env}":
+            priority = DataAppConstants.WHEEL_PRIORITY_PLATFORM_SPECIFIC
+        # Legacy support: platform tags in filename (kindling-0.1.0-py3-none-synapse.whl)
+        elif f"-{current_env}.whl" in file_name:
+            priority = DataAppConstants.WHEEL_PRIORITY_PLATFORM_SPECIFIC
+        # Generic wheels (kindling-0.1.0-py3-none-any.whl)
         elif "-any.whl" in file_name:
-            priority = AppConstants.WHEEL_PRIORITY_GENERIC
+            priority = DataAppConstants.WHEEL_PRIORITY_GENERIC
         else:
-            priority = AppConstants.WHEEL_PRIORITY_FALLBACK
+            priority = DataAppConstants.WHEEL_PRIORITY_FALLBACK
 
         return WheelCandidate(
             file_path=file_path,

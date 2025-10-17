@@ -1,0 +1,40 @@
+name: azure-storage-test
+description: "System test for Azure storage connectivity across all clouds and platforms"
+entry_point: main.py
+environment: system-test
+
+dependencies:
+  - azure-storage-blob
+  - delta-spark
+
+metadata:
+  version: "1.0.0"
+  test_type: connectivity
+  test_category: azure_storage
+  timeout_minutes: 30
+
+parameters:
+  # Test configuration
+  test_data_rows: 10000
+  test_partitions: 4
+  cleanup_on_success: true
+
+  # Storage paths (platform-specific overrides)
+  storage_account: "${AZURE_STORAGE_ACCOUNT}"
+  container: "${AZURE_CONTAINER}"
+  test_path_prefix: "system-tests/azure-storage"
+
+  # Authentication (managed identity preferred in production)
+  auth_type: managed_identity # overridden per platform
+
+validation:
+  # Expected test outcomes
+  min_write_throughput_mbps: 10.0
+  min_read_throughput_mbps: 50.0
+  max_execution_time_minutes: 15
+
+reporting:
+  # Result collection
+  results_path: "system-test-results/azure-storage-test"
+  include_metrics: true
+  include_execution_plan: false
