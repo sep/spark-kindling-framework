@@ -65,3 +65,36 @@ derby.log
 .env
 .env.local
 .env.*.local
+
+# Security and credentials
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Test results
+test-results/
+junit.xml
+*.xml
+
+# Coverage reports
+coverage.xml
+.coverage.*
+htmlcov/
+
+# Package builds
+*.whl
+*.tar.gz
+
+# Azure specific
+.azure/
+
+# Poetry
+poetry.lock.bak
+
+# Local development
+.venv/
+.python-version
