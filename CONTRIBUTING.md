@@ -1,7 +1,6 @@
-TODO: Needs thorough review/revise
+# Contributing to Spark Kindling Framework
 
-# Contributing to Kindling
-We welcome contributions from the community!
+Thank you for your interest in contributing to the Spark Kindling Framework! We welcome contributions from the community and are grateful for your support.
 
 ## Bug Reports and Fixes
 If you encounter a bug:
@@ -57,13 +56,53 @@ When adding or updating dependencies:
 - Provide usage examples for new functionality
 - Update CHANGELOG.md with your changes
 
+## Getting Started with Development
+
+### Setting Up Your Development Environment
+
+1. **Fork and clone the repository**:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/spark-kindling-framework.git
+   cd spark-kindling-framework
+   ```
+
+2. **Install Poetry** (if not already installed):
+   ```bash
+   pip install poetry
+   ```
+
+3. **Install dependencies**:
+   ```bash
+   poetry install --with dev
+   ```
+
+4. **Run tests to verify setup**:
+   ```bash
+   poetry run pytest tests/unit/
+   ```
+
+### Development Workflow
+
+1. Create a feature branch from `main`
+2. Make your changes
+3. Add or update tests
+4. Run linters and formatters
+5. Ensure all tests pass
+6. Commit your changes with clear messages
+7. Push to your fork and submit a pull request
+
 ## Questions or Suggestions?
 - Open an issue for feature requests or questions
 - Start a discussion for architectural changes
-- Contact the maintainers directly for security concerns
+- Contact the maintainers directly for security concerns at security@sep.com
 
 ## License
 By contributing, you agree that your contributions will be licensed under the MIT License.
 
 ## Recognition
 All contributors will be acknowledged in the project documentation. Thank you for helping make this framework better for everyone!
+
+## Contact
+- General inquiries: support@sep.com
+- Security issues: security@sep.com
+- Code of Conduct issues: conduct@sep.com

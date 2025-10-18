@@ -105,23 +105,31 @@ class MyWatermarkEntityFinder(WatermarkEntityFinder):
 
 ## Directory Structure
 
-TODO: Rewrite this hallucination
-For optimal organization, structure your notebooks following this pattern:
+For optimal organization, we recommend structuring your data projects following this pattern:
 
 ```
-/workspace
-  /project
-    /bronze
-      # Bronze layer transformation notebooks
-    /silver
-      # Silver layer transformation notebooks
-    /gold
-      # Gold layer transformation notebooks
-    /common
-      # Shared utility notebooks and entity definitions
-    /orchestration
-      # Pipeline orchestration notebooks
+/project
+  /src
+    /pipelines
+      /bronze
+        # Raw data ingestion notebooks
+      /silver
+        # Cleaned and validated data notebooks
+      /gold
+        # Business-level aggregated data notebooks
+    /entities
+      # Data entity definitions
+    /transforms
+      # Shared transformation utilities
+  /tests
+    # Unit and integration tests
+  /config
+    # Configuration files (settings.yaml, .env.template)
+  /scripts
+    # Deployment and utility scripts
 ```
+
+This structure follows the medallion architecture pattern and aligns with best practices for data engineering projects.
 
 ## Entity and Pipe Naming Conventions
 

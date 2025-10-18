@@ -97,7 +97,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 ## Support
 This is open source software provided without warranty or guaranteed support. 
 
-**Commercial Support:** Professional support, training, and consulting services are available from Software Engineering Professionals, Inc. Contact us at [contact information].
+**Commercial Support:** Professional support, training, and consulting services are available from Software Engineering Professionals, Inc. Contact us at support@sep.com or visit [www.sep.com](https://www.sep.com).
 
 ## License
 

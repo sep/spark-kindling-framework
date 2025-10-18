@@ -9,6 +9,35 @@ description = "Cross-platform data processing framework for Azure Synapse, Micro
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
 readme = "README.md"
+homepage = "https://github.com/sep/spark-kindling-framework"
+repository = "https://github.com/sep/spark-kindling-framework"
+documentation = "https://github.com/sep/spark-kindling-framework/tree/main/docs"
+keywords = [
+    "spark",
+    "data-engineering",
+    "etl",
+    "azure-synapse",
+    "databricks",
+    "microsoft-fabric",
+    "delta-lake",
+    "data-pipeline",
+    "dependency-injection",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering",
+    "Framework :: Apache Spark",
+]
 packages = [
     {include = "kindling", from = "packages"},
 ]
