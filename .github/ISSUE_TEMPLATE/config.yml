@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/sep/spark-kindling-framework/security/advisories/new
+    about: Please report security vulnerabilities through GitHub Security Advisories or email security@sep.com
+  - name: Question or Discussion
+    url: https://github.com/sep/spark-kindling-framework/discussions
+    about: Ask questions and discuss ideas with the community
