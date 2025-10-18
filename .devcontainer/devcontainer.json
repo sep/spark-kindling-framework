@@ -38,7 +38,11 @@
 	"remoteUser": "vscode",
 	"features": {
 		"ghcr.io/devcontainers/features/docker-in-docker:2": {
-			"moby": false
+			"moby": true,
+			"dockerDashComposeVersion": "v2"
 		}
+	},
+	"containerEnv": {
+		"DOCKER_BUILDKIT": "1"
 	}
 }
