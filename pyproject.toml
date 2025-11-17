@@ -1,0 +1,123 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "kindling"
+version = "0.1.3"
+description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
+authors = ["SEP Engineering <engineering@sep.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [
+    {include = "kindling", from = "packages"}
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pyspark = ">=3.4.0"
+delta-spark = ">=2.4.0"
+pandas = ">=2.0.0"
+pyarrow = ">=12.0.0"
+injector = ">=0.20.1"
+dynaconf = ">=3.1.0"
+pyyaml = ">=6.0"
+blinker = ">=1.6.0"
+azure-storage-blob = ">=12.14.0"
+azure-storage-file-datalake = ">=12.14.0"
+azure-identity = ">=1.12.0"
+azure-core = ">=1.30.0,<2.0.0"
+azure-synapse-artifacts = "0.17.0"
+databricks-sdk = ">=0.12.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-cov = ">=4.0.0"
+pytest-json-report = ">=1.5.0"
+black = ">=23.0.0"
+pylint = ">=2.17.0"
+mypy = ">=1.0.0"
+ipython = ">=8.0.0"
+jupyter = ">=1.0.0"
+poethepoet = ">=0.24.0"
+requests = ">=2.31.0"
+azure-mgmt-storage = "^24.0.0"
+
+[tool.poe.tasks]
+# Build and deploy tasks
+build = { script = "scripts.build:main" }
+build-wheels = { shell = "bash scripts/build_platform_wheels.sh" }
+deploy = { cmd = "python scripts/deploy.py" }
+deploy-release = { cmd = "python scripts/deploy.py --release" }
+deploy-synapse = { cmd = "python scripts/deploy.py --platform synapse" }
+deploy-databricks = { cmd = "python scripts/deploy.py --platform databricks" }
+deploy-fabric = { cmd = "python scripts/deploy.py --platform fabric" }
+upload = { shell = "bash scripts/upload_to_storage.sh" }
+upload-release = { shell = "bash scripts/upload_to_storage.sh --release" }
+
+# Release tasks
+release = { shell = "bash scripts/release.sh" }
+
+# Development environment setup
+init-azure = { shell = "source scripts/init_azure_dev.sh" }
+setup-github-secrets = { shell = "bash scripts/set_github_secrets.sh" }
+
+# Testing tasks
+test = "pytest tests/ -v"
+test-unit = "pytest tests/unit/ -v"
+test-integration = "pytest tests/integration/ -v"
+test-system = "pytest tests/system/ -v -s -m system"
+test-system-fabric = "pytest tests/system/ -v -s -m fabric"
+test-system-synapse = "pytest tests/system/ -v -s -m synapse"
+test-system-databricks = "pytest tests/system/ -v -s -m databricks"
+test-quick = "pytest tests/unit/ tests/integration/ -v"
+test-coverage = "pytest tests/ -v --cov=kindling --cov-report=html --cov-report=term"
+
+# Code quality tasks
+format = "black packages/ tests/ scripts/"
+lint = "pylint packages/"
+check = ["format", "lint", "test"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+
+[tool.pylint.messages_control]
+disable = [
+    "C0111",  # missing-docstring
+    "C0103",  # invalid-name
+]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--verbose",
+    "--cov=kindling",
+    "--cov-report=term-missing",
+    "--cov-report=html:htmlcov",
+]
+markers = [
+    "integration: Integration tests requiring Spark session but no cloud infrastructure",
+    "synapse: Synapse-specific system tests (requires Azure Synapse Analytics)",
+    "databricks: Databricks-specific system tests (requires Databricks workspace)",
+    "fabric: Fabric-specific system tests (requires Microsoft Fabric)",
+    "standalone: Standalone-specific tests (requires generic Spark or local environment)",
+    "system: System tests requiring cloud infrastructure",
+    "requires_azure: Tests requiring Azure credentials and SDK",
+    "skip_cleanup: Skip automatic cleanup of test resources (for manual monitoring)",
+]
+
+[tool.coverage.run]
+data_file = ".coverage"

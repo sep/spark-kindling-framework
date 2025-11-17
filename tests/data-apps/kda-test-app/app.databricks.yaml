@@ -1,0 +1,28 @@
+# Databricks-specific configuration overrides
+environment: databricks
+
+parameters:
+  # Databricks uses cluster-scoped managed identity
+  auth_type: managed_identity
+
+  # Databricks-specific paths
+  test_path_prefix: "system-tests/databricks/azure-storage"
+
+  # Databricks performance expectations
+  min_write_throughput_mbps: 25.0 # Higher throughput expected
+  min_read_throughput_mbps: 100.0
+
+cluster_config:
+  # Databricks cluster requirements
+  runtime_version: "13.3.x-scala2.12"
+  node_type: "Standard_D4s_v3"
+  min_workers: 2
+  max_workers: 4
+  spark_config:
+    "spark.sql.adaptive.enabled": "true"
+    "spark.sql.adaptive.coalescePartitions.enabled": "true"
+
+libraries:
+  # Databricks-specific library versions
+  - pypi:
+      package: "delta-spark==2.4.0"

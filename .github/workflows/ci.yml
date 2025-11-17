@@ -1,0 +1,538 @@
+name: Kindling CI/CD Pipeline
+
+# Workflow triggers and test strategy:
+#
+# ON EVERY COMMIT (push or PR):
+# - Unit tests: Always run (fast feedback)
+# - Integration tests: Always run (validates framework integration)
+# - Code quality checks: Always run (linting, formatting, security)
+# - Wheel builds: Only if source code changes or [build wheels] in commit message
+#
+# ON RELEASE ONLY:
+# - System tests: All 3 platforms (Databricks, Synapse, Fabric) MUST pass
+# - Wheel attachment: Only attaches wheels to release if system tests pass
+# - Fail fast: Any platform failure blocks the release
+#
+# To force wheel rebuild on any commit, include [build wheels] in commit message
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch: # Allow manual triggering
+
+env:
+  PYTHON_VERSION: "3.11"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/ci
+
+jobs:
+  build-ci-image:
+    name: Build CI Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image-name.outputs.image }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image name
+        id: image-name
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "Building image: $IMAGE"
+
+      - name: Build and push CI image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: .github/Dockerfile.ci
+          push: true
+          tags: ${{ steps.image-name.outputs.image }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: build-ci-image
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Activate virtualenv and install project
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          cd $GITHUB_WORKSPACE
+          pip install -e .
+
+      - name: Run unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
+        run: |
+          mkdir -p test-results
+          pytest tests/unit/ \
+            --cov=packages/kindling \
+            --cov-report=xml \
+            --cov-report=html:htmlcov \
+            --junit-xml=test-results/unit-test-results.xml \
+            --json-report --json-report-file=test-results/unit-test-report.json \
+            -v
+
+      - name: Create output directory for backwards compatibility
+        run: mkdir -p output && cp -r htmlcov test-results/unit-test-results.xml output/ 2>/dev/null || true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: |
+            test-results/
+            htmlcov/
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+  lint-and-format:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    needs: build-ci-image
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Activate virtualenv
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+
+      - name: Run Black formatter check
+        run: black --check --diff packages/ tests/
+
+      - name: Run pylint
+        run: |
+          mkdir -p output
+          pylint packages/kindling/ --output-format=parseable --exit-zero > output/pylint-report.txt
+
+      - name: Run mypy type checking
+        run: mypy packages/kindling/ --html-report output/mypy-report || true
+
+      - name: Upload code quality reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: code-quality-reports
+          path: output/
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [build-ci-image, unit-tests, lint-and-format]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    # Run integration tests on every commit (push or PR)
+    if: always() && !cancelled()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Activate virtualenv and install project
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          cd $GITHUB_WORKSPACE
+          pip install -e .
+
+      - name: Run integration tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+          AZURE_BASE_PATH: ci-tests/${{ github.run_id }}
+        run: |
+          pytest tests/integration/ \
+            --junit-xml=test-results/integration-test-results.xml \
+            --no-cov \
+            -v
+
+      - name: Upload integration test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results
+          path: test-results/integration-test-results.xml
+
+  kda-packaging-tests:
+    name: KDA Packaging Tests
+    runs-on: ubuntu-latest
+    needs: [build-ci-image, unit-tests]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Activate virtualenv and install project
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          cd $GITHUB_WORKSPACE
+          pip install -e .
+
+      - name: Run KDA packaging tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
+        run: |
+          mkdir -p test-results
+          python tests/test_kda_packaging.py
+
+      - name: Run simple KDA workflow test
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
+        run: |
+          python tests/integration/test_kda_packaging.py
+
+      - name: Upload KDA test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kda-test-results
+          path: test-results/
+
+  system-tests:
+    name: System Tests (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    needs: [build-ci-image, integration-tests, kda-packaging-tests]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    # Run system tests for releases OR manual workflow dispatch
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    environment: testing
+
+    strategy:
+      matrix:
+        platform: [synapse, databricks, fabric]
+      fail-fast: false # Allow all platforms to run independently
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Activate virtualenv and install project
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          cd $GITHUB_WORKSPACE
+          pip install -e .
+
+      - name: Run system tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
+          # Platform-specific credentials
+          FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
+          FABRIC_LAKEHOUSE_ID: ${{ secrets.FABRIC_LAKEHOUSE_ID }}
+          SYNAPSE_WORKSPACE_NAME: ${{ secrets.SYNAPSE_WORKSPACE_NAME }}
+          SYNAPSE_SPARK_POOL: ${{ secrets.SYNAPSE_SPARK_POOL }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
+          # Azure authentication (shared) - using both AZURE_* and ARM_* for compatibility
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          # Databricks SDK expects ARM_* environment variables for service principal auth
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          # Storage configuration
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+          AZURE_BASE_PATH: ""
+        run: |
+          mkdir -p test-results
+          pytest tests/system/ \
+            -m ${{ matrix.platform }} \
+            --junit-xml=test-results/system-test-results-${{ matrix.platform }}.xml \
+            --json-report --json-report-file=test-results/system-test-report-${{ matrix.platform }}.json \
+            -v -s
+
+      - name: Upload system test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: system-test-results-${{ matrix.platform }}
+          path: test-results/
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: [build-ci-image, unit-tests]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install security tools
+        run: pip install safety bandit
+
+      - name: Run safety check for known vulnerabilities
+        run: |
+          mkdir -p output
+          safety check --json --output output/safety-report.json || true
+
+      - name: Run bandit security analysis
+        run: |
+          bandit -r packages/ -f json -o output/bandit-report.json || true
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: output/
+
+  build-wheels:
+    name: Build Platform Wheels
+    runs-on: ubuntu-latest
+    needs: [build-ci-image, unit-tests, lint-and-format]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    # Build wheels for releases, when explicitly requested with commit message,
+    # or when source code that affects wheel content changes
+    if: |
+      github.event_name == 'release' ||
+      contains(github.event.head_commit.message, '[build wheels]') ||
+      (github.event_name == 'push' && (
+        contains(github.event.commits.*.modified, 'packages/kindling/') ||
+        contains(github.event.commits.*.modified, 'build-configs/') ||
+        contains(github.event.commits.*.modified, 'scripts/build_platform_wheels.sh') ||
+        contains(github.event.commits.*.modified, 'pyproject.toml')
+      ))
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 2 # Need previous commit for comparison
+
+      - name: Check if wheel rebuild needed
+        id: check-changes
+        run: |
+          echo "Checking for changes that affect wheel content..."
+
+          # Get list of changed files (comparing with previous commit)
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "Release event - always build wheels"
+            echo "needs_rebuild=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check if commit message forces build
+          if [[ "${{ github.event.head_commit.message }}" == *"[build wheels]"* ]]; then
+            echo "Commit message contains [build wheels] - forcing rebuild"
+            echo "needs_rebuild=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD || echo "")
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Check if any relevant files changed
+          if echo "$CHANGED_FILES" | grep -qE '^packages/kindling/|^build-configs/|^scripts/build_platform_wheels\.sh|^pyproject\.toml'; then
+            echo "✅ Found changes that affect wheel content"
+            echo "needs_rebuild=true" >> $GITHUB_OUTPUT
+          else
+            echo "⏭️  No changes affect wheel content (docs/tests only)"
+            echo "needs_rebuild=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build platform-specific wheels
+        if: steps.check-changes.outputs.needs_rebuild == 'true'
+        run: |
+          chmod +x scripts/build_platform_wheels.sh
+          bash scripts/build_platform_wheels.sh
+
+      - name: List built wheels
+        if: steps.check-changes.outputs.needs_rebuild == 'true'
+        run: |
+          echo "📦 Built wheels:"
+          ls -lh dist/
+
+      - name: Skip message
+        if: steps.check-changes.outputs.needs_rebuild == 'false'
+        run: |
+          echo "⏭️  Skipping wheel build - no relevant changes detected"
+          echo "To force a rebuild, include [build wheels] in commit message"
+
+      - name: Upload wheel artifacts
+        if: steps.check-changes.outputs.needs_rebuild == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-wheels
+          path: dist/*.whl
+
+  attach-wheels-to-release:
+    name: Attach Wheels to Release
+    runs-on: ubuntu-latest
+    needs: [build-wheels, system-tests]
+    # Only attach wheels to release if ALL system tests pass
+    if: github.event_name == 'release' && github.event.action == 'published' && needs.system-tests.result == 'success'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: platform-wheels
+          path: dist/
+
+      - name: Attach wheels to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release summary
+        run: |
+          echo "# 📦 Release Assets Attached" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The following wheels have been attached to the release:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | File |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|------|" >> $GITHUB_STEP_SUMMARY
+          for wheel in dist/*.whl; do
+            filename=$(basename "$wheel")
+            size=$(du -h "$wheel" | cut -f1)
+            echo "| ${filename%.whl} | $filename ($size) |" >> $GITHUB_STEP_SUMMARY
+          done
+
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs:
+      [
+        unit-tests,
+        integration-tests,
+        kda-packaging-tests,
+        system-tests,
+        security-scan,
+      ]
+    if: always()
+
+    steps:
+      - name: Download all test results
+        uses: actions/download-artifact@v5
+
+      - name: Generate test summary
+        run: |
+          echo "# 🧪 Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          # Check unit tests
+          if [ "${{ needs.unit-tests.result }}" == "success" ]; then
+            echo "| Unit Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Unit Tests | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Check integration tests
+          if [ "${{ needs.integration-tests.result }}" == "success" ]; then
+            echo "| Integration Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.integration-tests.result }}" == "skipped" ]; then
+            echo "| Integration Tests | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Integration Tests | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Check KDA tests
+          if [ "${{ needs.kda-packaging-tests.result }}" == "success" ]; then
+            echo "| KDA Packaging Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| KDA Packaging Tests | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Check system tests
+          if [ "${{ needs.system-tests.result }}" == "success" ]; then
+            echo "| System Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.system-tests.result }}" == "skipped" ]; then
+            echo "| System Tests | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| System Tests | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Check security scan
+          if [ "${{ needs.security-scan.result }}" == "success" ]; then
+            echo "| Security Scan | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Security Scan | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
