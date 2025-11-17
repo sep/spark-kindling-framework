@@ -1,0 +1,58 @@
+{
+	"name": "Kindling Development",
+	"dockerComposeFile": "docker-compose.yml",
+	"service": "devcontainer",
+	"workspaceFolder": "/workspace",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-toolsai.jupyter",
+				"redhat.vscode-yaml",
+				"ms-azuretools.vscode-docker"
+			],
+			"settings": {
+				"python.defaultInterpreterPath": "/usr/local/bin/python",
+				"python.linting.enabled": true,
+				"python.linting.pylintEnabled": true,
+				"python.linting.flake8Enabled": true,
+				"python.formatting.provider": "black",
+				"editor.formatOnSave": true,
+				"editor.codeActionsOnSave": {
+					"source.organizeImports": "explicit"
+				},
+				"[python]": {
+					"editor.formatOnSave": true,
+					"editor.codeActionsOnSave": {
+						"source.organizeImports": "explicit"
+					}
+				},
+				"isort.args": [
+					"--profile",
+					"black"
+				],
+				"files.trimTrailingWhitespace": true,
+				"files.insertFinalNewline": true
+			}
+		}
+	},
+	"postCreateCommand": "poetry install --with dev && pip install -e .[dev] && pre-commit install",
+	"postStartCommand": "bash -c '[ -f /workspace/.env ] && echo \"# Auto-load .env file\" >> ~/.bashrc && echo \"[ -f /workspace/.env ] && set -a && source /workspace/.env && set +a\" >> ~/.bashrc && echo \"✅ .env will load in new terminals\" || echo \"⚠️  No .env file found\"'",
+	"initializeCommand": "echo '⚙️  Initializing devcontainer...'",
+	"forwardPorts": [
+		4040
+	],
+	"portsAttributes": {
+		"4040": {
+			"label": "Spark UI",
+			"onAutoForward": "notify"
+		}
+	},
+	"remoteUser": "vscode",
+	"features": {
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {
+			"moby": false
+		}
+	}
+}

@@ -1,0 +1,2094 @@
+import base64
+import json
+import subprocess
+import sys
+import time
+import types
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Union
+from urllib.parse import quote
+
+import __main__
+import requests
+from azure.core.exceptions import *
+from azure.identity import DefaultAzureCredential
+from kindling.notebook_framework import *
+
+from .platform_provider import PlatformAPI
+
+
+def _get_mssparkutils():
+    """Get mssparkutils with proper fallback chain for Fabric"""
+    # First check __main__ (most reliable when available)
+    if hasattr(__main__, "mssparkutils") and getattr(__main__, "mssparkutils") is not None:
+        return getattr(__main__, "mssparkutils")
+
+    # Fallback to explicit import if not in __main__
+    try:
+        from notebookutils import mssparkutils
+
+        return mssparkutils
+    except ImportError:
+        pass
+
+    # Final fallback - raise error if not available
+    raise Exception(
+        "mssparkutils not available - neither in __main__ nor importable from notebookutils"
+    )
+
+
+class FabricService(PlatformService):
+    def __init__(self, config, logger):
+        self.config = config
+        self.logger = logger
+        self._base_url = self._build_base_url()
+
+        # Get and validate the workspace ID
+        self.workspace_id = self._get_workspace_id()
+
+        # Cache system from original code
+        self._token_cache = {}
+        self._items_cache = []
+        self._folders_cache = {}
+        self._notebooks_cache = []
+        self.credential = self
+
+        self._initialize_cache()
+
+    def _initialize_cache(self):
+        """Initialize the cache with all workspace items and folders"""
+        try:
+            self.logger.debug("Initializing workspace cache...")
+
+            # Get all items in the workspace using the items endpoint
+            url = f"{self._base_url}/workspaces/{self.workspace_id}/items"
+            self.logger.debug(f"Fetching items from: {url}")
+            response = requests.get(url, headers=self._get_headers())
+
+            if response.status_code == 200:
+                data = self._handle_response(response)
+
+                if isinstance(data, dict):
+                    self._items_cache = data.get("value", [])
+                elif isinstance(data, list):
+                    self._items_cache = data
+                else:
+                    self._items_cache = []
+
+                # Debug: Print all item types found
+                item_types = {}
+                for item in self._items_cache:
+                    item_type = item.get("type", "Unknown")
+                    if item_type not in item_types:
+                        item_types[item_type] = 0
+                    item_types[item_type] += 1
+
+                self.logger.debug(f"Item types found: {item_types}")
+
+                # Separate items by type
+                self._notebooks_cache = []
+                self._folders_cache = {}
+
+                for item in self._items_cache:
+                    item_type = item.get("type", "").lower()
+
+                    if item_type == "notebook":
+                        self._notebooks_cache.append(item)
+                    elif item_type == "folder":
+                        folder_id = item.get("id")
+                        folder_name = item.get("displayName", "")
+                        self.logger.debug(
+                            f"Found folder from items - ID: {folder_id}, Name: {folder_name}"
+                        )
+                        if folder_id:
+                            self._folders_cache[folder_id] = folder_name
+
+                # Since /items doesn't return folders, fetch them separately
+                self.logger.debug(
+                    "Items endpoint didn't return folders, fetching from /folders endpoint..."
+                )
+                folders_url = f"{self._base_url}/workspaces/{self.workspace_id}/folders"
+                self.logger.debug(f"Fetching folders from: {folders_url}")
+
+                folders_response = requests.get(folders_url, headers=self._get_headers())
+
+                if folders_response.status_code == 200:
+                    folders_data = self._handle_response(folders_response)
+
+                    if isinstance(folders_data, dict):
+                        folders_list = folders_data.get("value", [])
+                    elif isinstance(folders_data, list):
+                        folders_list = folders_data
+                    else:
+                        folders_list = []
+
+                    self.logger.debug(f"Found {len(folders_list)} folders from /folders endpoint")
+
+                    for folder in folders_list:
+                        folder_id = folder.get("id")
+                        folder_name = folder.get("displayName", "")
+                        self.logger.debug(
+                            f"Found folder from /folders - ID: {folder_id}, Name: {folder_name}"
+                        )
+                        if folder_id:
+                            self._folders_cache[folder_id] = folder_name
+                else:
+                    self.logger.debug(
+                        f"Failed to fetch folders. Status: {folders_response.status_code}"
+                    )
+                    self.logger.debug(f"Folders response: {folders_response.text}")
+
+                self._cache_initialized = True
+                self.logger.debug(f"Cache initialized with {len(self._items_cache)} total items")
+                self.logger.debug(f"Found {len(self._notebooks_cache)} notebooks")
+                self.logger.debug(f"Found {len(self._folders_cache)} folders")
+
+                # Debug: Print folder cache contents
+                if self._folders_cache:
+                    self.logger.debug(f"Folder cache: {self._folders_cache}")
+
+            else:
+                self.logger.warning(f"Failed to initialize cache. Status: {response.status_code}")
+                self.logger.debug(f"Response text: {response.text}")
+                self._cache_initialized = False
+
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize cache: {e}")
+            import traceback
+
+            traceback.print_exc()
+            self._cache_initialized = False
+
+    def get_platform_name(self):
+        return "fabric"
+
+    def get_token(self, audience: str) -> str:
+        mssparkutils = _get_mssparkutils()
+        return mssparkutils.credentials.getToken(audience)
+
+    def exists(self, path: str) -> bool:
+        mssparkutils = _get_mssparkutils()
+        return mssparkutils.fs.exists(path)
+
+    def copy(self, source: str, destination: str, overwrite: bool = False) -> None:
+        mssparkutils = _get_mssparkutils()
+        mssparkutils.fs.cp(source, destination, overwrite)
+
+    def move(self, source: str, dest: str) -> Union[str, bytes]:
+        mssparkutils = _get_mssparkutils()
+        mssparkutils.fs.mv(source, dest)
+
+    def read(self, path: str, max_bytes=1024 * 1024) -> Union[str, bytes]:
+        mssparkutils = _get_mssparkutils()
+        return mssparkutils.fs.head(path, max_bytes)
+
+    def write(self, path: str, content: str, overwrite: bool = False) -> None:
+        mssparkutils = _get_mssparkutils()
+        mssparkutils.fs.put(path, content, overwrite)
+
+    def list(self, path: str) -> List[str]:
+        mssparkutils = _get_mssparkutils()
+        files = mssparkutils.fs.ls(path)
+        return [f.name for f in files]
+
+    def delete(self, path: str, recurse=False) -> None:
+        mssparkutils = _get_mssparkutils()
+        if mssparkutils:
+            mssparkutils.fs.rm(path, recurse)
+        else:
+            raise NotImplementedError("File delete not available without mssparkutils")
+
+    def _build_base_url(self) -> str:
+        return "https://api.fabric.microsoft.com/v1/"
+
+    def _get_workspace_id(self) -> str:
+        import notebookutils
+
+        workspace_id = self.config.get(
+            "workspace_id", notebookutils.runtime.context.get("currentWorkspaceId")
+        )
+        return workspace_id
+
+    def _get_token(self) -> str:
+        """Get access token for Fabric API"""
+        current_time = time.time()
+
+        # Check if we have a valid cached token
+        if (
+            "token" in self._token_cache
+            and "expires_at" in self._token_cache
+            and current_time < self._token_cache["expires_at"]
+        ):
+            return self._token_cache["token"]
+
+        # Get new token
+        token_response = self.credential.get_token("https://api.fabric.microsoft.com/.default")
+
+        # Cache the token
+        self._token_cache = {
+            "token": token_response,
+            "expires_at": (datetime.now() + timedelta(hours=24)).timestamp(),
+        }
+
+        return token_response
+
+    def _get_headers(self) -> Dict[str, str]:
+        """Get request headers with authorization"""
+        return {
+            "Authorization": f"Bearer {self._get_token()}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "azure-synapse-artifacts/1.0.0",
+        }
+
+    def _handle_response(self, response: requests.Response) -> Any:
+        """Handle HTTP response and convert to appropriate exceptions"""
+        if 200 <= response.status_code < 300:
+            try:
+                return response.json() if response.content else None
+            except json.JSONDecodeError:
+                return response.text if response.content else None
+
+        # Convert HTTP errors to appropriate Azure exceptions
+        error_map = {
+            401: ClientAuthenticationError,
+            404: ResourceNotFoundError,
+            409: ResourceExistsError,
+        }
+
+        exception_class = error_map.get(response.status_code, HttpResponseError)
+
+        try:
+            error_data = response.json()
+            message = error_data.get("error", {}).get("message", response.text)
+        except:
+            message = response.text or f"HTTP {response.status_code}"
+
+        raise exception_class(message)
+
+    def list_notebooks(self) -> List[Dict[str, Any]]:
+        """List all notebooks in the workspace"""
+        url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks"
+
+        response = requests.get(url, headers=self._get_headers())
+        data = self._handle_response(response)
+
+        if isinstance(data, dict):
+            return data.get("value", [])
+        elif isinstance(data, list):
+            return data
+        else:
+            return []
+
+    def get_notebook_id_by_name(self, notebook_name: str) -> Optional[str]:
+        """Get notebook ID by display name"""
+        notebooks = self.list_notebooks()
+        for notebook in notebooks:
+            if notebook.get("displayName") == notebook_name:
+                return notebook.get("id")
+        return None
+
+    def get_notebooks(self):
+        return [self._convert_to_notebook_resource(d) for d in self.list_notebooks()]
+
+    def get_notebook(self, notebook_name: str, include_content: bool = True):
+        """Get a specific notebook"""
+        # Get notebook ID by name
+        notebook_id = self.get_notebook_id_by_name(notebook_name)
+
+        if not notebook_id:
+            raise ResourceNotFoundError(f"Notebook '{notebook_name}' not found")
+
+        # Get basic notebook info first
+        url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks/{notebook_id}"
+        response = requests.get(url, headers=self._get_headers())
+        notebook_data = self._handle_response(response)
+
+        if include_content:
+            # Use the correct Fabric API endpoint for getting definition
+            definition_url = (
+                f"{self._base_url}/workspaces/{self.workspace_id}/items/{notebook_id}/getDefinition"
+            )
+            definition_url += "?format=ipynb"
+
+            self.logger.debug(f"Getting definition via POST: {definition_url}")
+
+            # Use POST request as per Fabric API documentation
+            definition_response = requests.post(definition_url, headers=self._get_headers())
+            self.logger.debug(f"Definition response status: {definition_response.status_code}")
+
+            if definition_response.status_code == 200:
+                definition_data = definition_response.json()
+                notebook_data["definition"] = definition_data.get("definition", definition_data)
+                self.logger.debug("Successfully got notebook definition via POST")
+            elif definition_response.status_code == 202:
+                # Async operation - get the operation ID and poll
+                operation_id = definition_response.headers.get("x-ms-operation-id")
+                if not operation_id:
+                    # Extract from Location header if x-ms-operation-id not present
+                    location = definition_response.headers.get("Location")
+                    if location:
+                        operation_id = location.split("/")[-1]
+
+                if operation_id:
+                    # Poll until operation completes using existing method signature
+                    operation_url = f"{self._base_url}/operations/{operation_id}"
+
+                    # The existing _poll_operation method expects (operation_url, notebook_name=None)
+                    # and returns the result data, not just boolean
+                    try:
+                        self.logger.debug(f"Polling operation: {operation_url}")
+                        completed_successfully = self._wait_for_operation(operation_id)
+                        if completed_successfully:
+                            # Get the operation result using the documented API
+                            result_url = f"{self._base_url}/operations/{operation_id}/result"
+                            self.logger.debug(f"Getting operation result: {result_url}")
+
+                            result_response = requests.get(result_url, headers=self._get_headers())
+                            self.logger.debug(
+                                f"Result response status: {result_response.status_code}"
+                            )
+
+                            if result_response.status_code == 200:
+                                definition_data = result_response.json()
+                                notebook_data["definition"] = definition_data.get(
+                                    "definition", definition_data
+                                )
+                                self.logger.debug(
+                                    f"Successfully got notebook definition from operation result"
+                                )
+
+                            else:
+                                self.logger.debug(
+                                    f"Operation result request failed: {result_response.text}"
+                                )
+                        else:
+                            self.logger.debug("Operation failed or timed out")
+                    except AttributeError as e:
+                        self.logger.debug(f"Method not found: {e}")
+            else:
+                self.logger.debug(f"Definition POST failed: {definition_response.text}")
+
+        return self._convert_to_notebook_resource(notebook_data)
+
+    def _wait_for_operation(self, operation_id: str) -> bool:
+        """Wait for operation to complete"""
+        max_attempts = 30
+        delay = 1
+        operation_url = f"{self._base_url}/operations/{operation_id}"
+
+        for attempt in range(max_attempts):
+            response = requests.get(operation_url, headers=self._get_headers())
+
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get("status", "").lower()
+
+                if status == "succeeded":
+                    return True
+                elif status == "failed":
+                    error = data.get("error", {})
+                    self.logger.debug(f"Operation failed: {error}")
+                    return False
+                elif status in ["inprogress", "running", "notstarted"]:
+                    time.sleep(delay)
+                    continue
+
+            time.sleep(delay)
+
+        return False
+
+    def _poll_operation_completion(self, operation_url: str) -> bool:
+        """Poll operation until completion, return True if succeeded"""
+        max_attempts = 60
+        delay = 1
+
+        for attempt in range(max_attempts):
+            response = requests.get(operation_url, headers=self._get_headers())
+
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get("status", "").lower()
+
+                if status == "succeeded":
+                    return True
+                elif status == "failed":
+                    error = data.get("error", {})
+                    self.logger.debug(f"Operation failed: {error}")
+                    return False
+                elif status in ["inprogress", "running", "notstarted"]:
+                    time.sleep(delay)
+                    continue
+
+            time.sleep(delay)
+
+        self.logger.debug("Operation polling timeout")
+        return False
+
+    def create_or_update_notebook(
+        self, notebook_name: str, notebook_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Create or update a notebook"""
+        encoded_name = quote(notebook_name, safe="")
+
+        url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks/{encoded_name}"
+
+        try:
+            self.logger.debug(f"Creating/updating notebook - URL: {url}")
+            self.logger.debug(f"Payload keys: {list(notebook_data.keys())}")
+
+            # Validate the payload structure
+            if "displayName" not in notebook_data:
+                notebook_data["displayName"] = notebook_name
+
+            response = requests.post(url, headers=self._get_headers(), json=notebook_data)
+            self.logger.debug(f"Response Status: {response.status_code}")
+
+            if response.status_code not in [200, 201, 202]:
+                self.logger.debug(f"Response Text: {response.text}")
+
+            # Handle async operation
+            if response.status_code == 202:
+                operation_url = response.headers.get("Location")
+                if operation_url:
+                    self.logger.debug(f"Polling operation at: {operation_url}")
+                    return self._poll_operation(operation_url, notebook_name)
+
+            return self._handle_response(response)
+        except Exception as e:
+            self.logger.debug(f"Exception in create_or_update_notebook: {e}")
+            raise
+
+    def delete_notebook(self, notebook_name: str) -> None:
+        """Delete a notebook"""
+        encoded_name = quote(notebook_name, safe="")
+        url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks/{encoded_name}"
+        response = requests.delete(url, headers=self._get_headers())
+
+        if response.status_code == 202:
+            operation_url = response.headers.get("Location")
+            if operation_url:
+                self._poll_operation(operation_url)
+                return
+
+        self._handle_response(response)
+
+    def get_folder_name(self, folder_id: str) -> str:
+        """Get folder name from folder ID"""
+        if not folder_id:
+            return ""
+
+        try:
+            # Try the folders endpoint first
+            url = f"{self._base_url}/workspaces/{self.workspace_id}/folders/{folder_id}"
+            response = requests.get(url, headers=self._get_headers())
+
+            if response.status_code == 200:
+                folder_data = response.json()
+                return folder_data.get("displayName", "")
+
+            return ""
+
+        except Exception as e:
+            return ""
+
+    def _poll_operation(self, operation_url: str, notebook_name: str = None) -> Any:
+        # TODO: MAKE THIS CONFIGURABLE
+        max_attempts = 60
+        delay = 1
+
+        for attempt in range(max_attempts):
+            response = requests.get(operation_url, headers=self._get_headers())
+
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get("status", "").lower()
+
+                if status == "succeeded":
+                    if notebook_name:
+                        return self.get_notebook(notebook_name)
+                    return data
+                elif status == "failed":
+                    error = data.get("error", {})
+                    raise HttpResponseError(
+                        f"Operation failed: {error.get('message', 'Unknown error')}"
+                    )
+                elif status in ["inprogress", "running"]:
+                    time.sleep(delay)
+                    continue
+                else:
+                    # Unknown status, continue polling
+                    time.sleep(delay)
+                    continue
+            elif response.status_code == 404:
+                # Operation completed and cleaned up
+                if notebook_name:
+                    return self.get_notebook(notebook_name)
+                return None
+            else:
+                # Unexpected response, continue polling for a bit
+                if attempt < 5:
+                    time.sleep(delay)
+                    continue
+                else:
+                    raise HttpResponseError(
+                        f"Operation polling failed: HTTP {response.status_code}"
+                    )
+
+        raise HttpResponseError("Operation polling timeout after 2 minutes")
+
+    def _convert_to_notebook_resource(
+        self, fabric_data: Dict[str, Any], include_content: bool = True
+    ) -> NotebookResource:
+        """Convert Fabric item to NotebookResource with folder path logic from original"""
+
+        notebook_data = {
+            "id": fabric_data.get("id"),
+            "name": fabric_data.get("displayName", fabric_data.get("name")),
+            "type": "Microsoft.Synapse/workspaces/notebooks",
+            "etag": fabric_data.get("etag"),
+            "properties": {},
+        }
+
+        # Use cached folder lookup instead of API call
+        folder_id = fabric_data.get("folderId")
+        if folder_id:
+            folder_name = self._folders_cache[
+                folder_id
+            ]  # Use cache instead of backend.get_folder_name
+            folder_info = {
+                "name": folder_name,
+                "path": folder_name,  # For now, use folder name as path
+            }
+        else:
+            # No folder - notebook is at root level
+            folder_info = {"name": "", "path": ""}
+
+        if include_content and "definition" in fabric_data:
+            # Parse notebook content from Fabric definition
+            definition = fabric_data["definition"]
+            notebook_content = self._extract_notebook_content_from_fabric(definition)
+            # Add folder information
+            notebook_content["folder"] = folder_info
+            notebook_data["properties"] = notebook_content
+        else:
+            # Even without content, always add folder info
+            notebook_data["properties"] = {"folder": folder_info}
+
+        return NotebookResource(**notebook_data)
+
+    def _extract_notebook_content_from_fabric(self, definition: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract notebook content from Fabric definition"""
+        content = {"nbformat": 4, "nbformat_minor": 2, "metadata": {}, "cells": []}
+
+        definition_keys = list(definition.keys()) if definition else "None"
+        self.logger.debug(f"Definition keys: {definition_keys}")
+
+        if "parts" in definition:
+            parts_count = len(definition["parts"])
+            self.logger.debug(f"Found {parts_count} parts")
+
+            for i, part in enumerate(definition["parts"]):
+                part_path = part.get("path")
+                part_payload_type = part.get("payloadType")
+                part_payload_length = len(part.get("payload", ""))
+                self.logger.debug(
+                    f"Part {i}: path='{part_path}', payloadType='{part_payload_type}', payload_length={part_payload_length}"
+                )
+
+                if part.get("path") in ["notebook-content.ipynb", "notebook-content.py"]:
+                    payload = part.get("payload", "")
+                    payload_type = part.get("payloadType", "")
+
+                    self.logger.debug(
+                        f"Processing payload of type '{payload_type}', length {len(payload)}"
+                    )
+                    payload_preview = payload[:200]
+                    # logger.debug(f"Payload preview: {payload_preview}...")
+
+                    try:
+                        # Handle base64 encoded payloads
+                        if payload_type == "InlineBase64":
+                            import base64
+
+                            decoded_payload = base64.b64decode(payload).decode("utf-8")
+                            decoded_length = len(decoded_payload)
+                            self.logger.debug(f"Decoded payload length: {decoded_length}")
+                            decoded_preview = decoded_payload[:200]
+                            # logger.debug(f"Decoded preview: {decoded_preview}...")
+                        else:
+                            decoded_payload = payload
+
+                        # Try to parse as JSON (Jupyter format)
+                        if decoded_payload.strip():
+                            parsed_content = json.loads(decoded_payload)
+                            if isinstance(parsed_content, dict):
+                                content.update(parsed_content)
+                                cells_count = len(content.get("cells", []))
+                                self.logger.debug(
+                                    f"Successfully parsed notebook with {cells_count} cells"
+                                )
+
+                    except (json.JSONDecodeError, Exception) as e:
+                        self.logger.debug(f"Failed to parse as JSON: {e}")
+                        # Handle as plain text/Python code
+                        payload_text = (
+                            decoded_payload if payload_type == "InlineBase64" else payload
+                        )
+                        lines_count = len(payload_text.split("\n") if payload_text else [])
+                        content["cells"] = [
+                            {
+                                "cell_type": "code",
+                                "source": payload_text.split("\n") if payload_text else [],
+                                "metadata": {},
+                                "outputs": [],
+                                "execution_count": None,
+                            }
+                        ]
+                        self.logger.debug(f"Created single code cell with {lines_count} lines")
+        else:
+            self.logger.debug("No 'parts' found in definition")
+
+        return content
+
+    def _convert_from_notebook_resource(self, notebook: NotebookResource) -> Dict[str, Any]:
+        # Extract just the display name (remove folder path)
+        display_name = notebook.name
+        if "/" in display_name:
+            display_name = display_name.split("/")[-1]
+
+        return {
+            "displayName": display_name,
+            "type": "Notebook",
+            "definition": {
+                "parts": [
+                    {
+                        "path": "notebook-content.py",
+                        "payload": {
+                            "cells": [
+                                {"cell_type": cell.cell_type, "source": cell.source}
+                                for cell in notebook.properties.cells
+                            ]
+                        },
+                    }
+                ]
+            },
+        }
+
+    def is_interactive_session(self) -> bool:
+        if "get_ipython" not in globals():
+            try:
+                from IPython import get_ipython
+            except ImportError:
+                return False
+        else:
+            get_ipython = globals()["get_ipython"]
+
+        ipython = get_ipython()
+        if ipython is None:
+            return False
+
+        try:
+            connection_file = ipython.config.get("IPKernelApp", {}).get("connection_file")
+            return connection_file is not None
+        except:
+            return False
+
+    def get_workspace_info(self) -> Dict[str, Any]:
+        try:
+            mssparkutils = _get_mssparkutils()
+            if mssparkutils:
+                return {
+                    "workspace_id": getattr(
+                        mssparkutils.env, "getWorkspaceId", lambda: "unknown"
+                    )(),
+                    "environment": "fabric",
+                }
+        except Exception:
+            pass
+        return {"environment": "fabric"}
+
+    def get_cluster_info(self) -> Dict[str, Any]:
+        try:
+            import __main__
+
+            spark = getattr(__main__, "spark", None)
+            if spark:
+                return {
+                    "app_name": spark.sparkContext.appName,
+                    "spark_version": spark.version,
+                    "master": spark.sparkContext.master,
+                }
+        except Exception:
+            pass
+        return {}
+
+    def deploy_spark_job(
+        self, app_files: Dict[str, str], job_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Deploy application as Spark job on Fabric
+
+        Creates a Spark Job Definition, uploads files to OneLake, and configures the job.
+
+        Args:
+            app_files: Dictionary of {filename: content} to deploy
+            job_config: Configuration including:
+                - job_name: Display name for the job
+                - lakehouse_id: Lakehouse ID for storage
+                - entry_point: Main Python file (default: kindling_bootstrap.py)
+                - executor_cores: Number of executor cores (default: 4)
+                - executor_memory: Executor memory (default: "28g")
+                - driver_cores: Driver cores (default: 4)
+                - driver_memory: Driver memory (default: "28g")
+
+        Returns:
+            Dictionary with: {job_id, deployment_path, metadata}
+        """
+        self.logger.info(f"Deploying Spark job to Fabric: {job_config.get('job_name')}")
+
+        job_name = job_config["job_name"]
+        lakehouse_id = job_config.get("lakehouse_id")
+        entry_point = job_config.get("entry_point", "kindling_bootstrap.py")
+
+        if not lakehouse_id:
+            raise ValueError("lakehouse_id is required for Fabric job deployment")
+
+        # Step 1: Create Spark Job Definition
+        self.logger.debug("Creating Spark Job Definition...")
+        job_definition = self._create_spark_job_definition(
+            job_name, lakehouse_id, entry_point, job_config
+        )
+        job_id = job_definition["id"]
+        self.logger.debug(f"Created job definition: {job_id}")
+
+        # Step 2: Upload files to OneLake
+        self.logger.debug(f"Uploading {len(app_files)} files to OneLake...")
+        onelake_paths = self._upload_files_to_onelake(job_id, app_files, entry_point)
+        self.logger.debug(f"Uploaded files: {list(onelake_paths.keys())}")
+
+        # Step 3: Update job definition with file paths
+        self.logger.debug("Updating job definition with file paths...")
+        self._update_job_definition_with_files(
+            job_id, onelake_paths, entry_point, lakehouse_id, job_config
+        )
+        self.logger.debug("Job definition updated")
+
+        return {
+            "job_id": job_id,
+            "deployment_path": f"abfss://{self.workspace_id}@onelake.dfs.fabric.microsoft.com/{job_id}/",
+            "metadata": {
+                "job_name": job_name,
+                "lakehouse_id": lakehouse_id,
+                "entry_point": entry_point,
+                "files": list(onelake_paths.keys()),
+            },
+        }
+
+    def run_spark_job(self, job_id: str, parameters: Dict[str, Any] = None) -> str:
+        """Execute a Spark job on Fabric
+
+        Args:
+            job_id: Job definition ID
+            parameters: Optional runtime parameters
+
+        Returns:
+            Run ID for monitoring
+        """
+        self.logger.info(f"Running Spark job: {job_id}")
+
+        # Fabric uses the Item Run API to execute jobs
+        url = f"{self._base_url}workspaces/{self.workspace_id}/items/{job_id}/jobs/instances?jobType=SparkJob"
+
+        payload = {}
+        if parameters:
+            payload["executionData"] = {"parameters": parameters}
+
+        response = requests.post(url, headers=self._get_headers(), json=payload)
+        result = self._handle_response(response)
+
+        run_id = result.get("id")
+        self.logger.info(f"Job started with run_id: {run_id}")
+        return run_id
+
+    def get_job_status(self, run_id: str) -> Dict[str, Any]:
+        """Get status of a running Spark job
+
+        Args:
+            run_id: Run ID from run_spark_job()
+
+        Returns:
+            Dictionary with: {status, start_time, end_time, error, logs}
+        """
+        url = f"{self._base_url}workspaces/{self.workspace_id}/items/jobs/instances/{run_id}"
+
+        response = requests.get(url, headers=self._get_headers())
+        result = self._handle_response(response)
+
+        return {
+            "status": result.get("status", "Unknown"),
+            "start_time": result.get("startTimeUtc"),
+            "end_time": result.get("endTimeUtc"),
+            "error": result.get("failureReason"),
+            "logs": result.get("logUri"),
+        }
+
+    def cancel_job(self, run_id: str) -> bool:
+        """Cancel a running Spark job
+
+        Args:
+            run_id: Run ID to cancel
+
+        Returns:
+            True if cancelled successfully
+        """
+        self.logger.info(f"Cancelling job: {run_id}")
+
+        url = f"{self._base_url}workspaces/{self.workspace_id}/items/jobs/instances/{run_id}/cancel"
+
+        response = requests.post(url, headers=self._get_headers())
+
+        if response.status_code in [200, 202]:
+            self.logger.info(f"Job cancelled: {run_id}")
+            return True
+        else:
+            self.logger.error(f"Failed to cancel job: {response.status_code} - {response.text}")
+            return False
+
+    def _create_spark_job_definition(
+        self, job_name: str, lakehouse_id: str, entry_point: str, job_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Create a Spark Job Definition item"""
+
+        # Build initial job definition payload
+        definition_payload = {
+            "executableFile": f"placeholder.py",  # Will update after file upload
+            "defaultLakehouseArtifactId": lakehouse_id,
+            "mainClass": "",
+            "commandLineArguments": "",
+            "additionalLakehouseIds": [],
+            "retryPolicy": None,
+            "environmentArtifactId": None,
+            "language": "python",
+        }
+
+        # Encode definition as base64
+        definition_json = json.dumps(definition_payload)
+        definition_base64 = base64.b64encode(definition_json.encode("utf-8")).decode("utf-8")
+
+        # Create item payload
+        payload = {
+            "displayName": job_name,
+            "type": "SparkJobDefinition",
+            "definition": {
+                "format": "SparkJobDefinitionV1",
+                "parts": [
+                    {
+                        "path": "SparkJobDefinitionV1.json",
+                        "payload": definition_base64,
+                        "payloadType": "InlineBase64",
+                    }
+                ],
+            },
+        }
+
+        url = f"{self._base_url}workspaces/{self.workspace_id}/items"
+        response = requests.post(url, headers=self._get_headers(), json=payload)
+
+        return self._handle_response(response)
+
+    def _upload_files_to_onelake(
+        self, job_id: str, app_files: Dict[str, str], entry_point: str
+    ) -> Dict[str, str]:
+        """Upload files to OneLake using the 3-step process (Create → Append → Flush)
+
+        Returns:
+            Dictionary mapping filename to OneLake abfss:// path
+        """
+        onelake_paths = {}
+
+        # Get OneLake storage token
+        storage_token = self.get_token("https://storage.azure.com/.default")
+
+        for filename, content in app_files.items():
+            # Determine folder (Main for entry point, Libs for others)
+            if filename == entry_point:
+                folder = "Main"
+            else:
+                folder = "Libs"
+
+            # Upload to OneLake
+            onelake_path = self._upload_file_to_onelake(
+                job_id, folder, filename, content, storage_token
+            )
+            onelake_paths[filename] = onelake_path
+
+        return onelake_paths
+
+    def _upload_file_to_onelake(
+        self, job_id: str, folder: str, filename: str, content: str, storage_token: str
+    ) -> str:
+        """Upload a single file to OneLake using Create → Append → Flush"""
+
+        # Build OneLake URL
+        onelake_base = f"https://onelake.dfs.fabric.microsoft.com/{self.workspace_id}/{job_id}/{folder}/{filename}"
+
+        headers = {"Authorization": f"Bearer {storage_token}", "x-ms-version": "2023-11-03"}
+
+        # Step 1: Create file
+        create_url = f"{onelake_base}?resource=file"
+        create_response = requests.put(create_url, headers=headers)
+        if create_response.status_code not in [200, 201]:
+            raise Exception(
+                f"Failed to create file {filename}: {create_response.status_code} - {create_response.text}"
+            )
+
+        # Step 2: Append content
+        content_bytes = content.encode("utf-8")
+        append_url = f"{onelake_base}?position=0&action=append"
+        append_headers = headers.copy()
+        append_headers["Content-Type"] = "text/plain"
+        append_response = requests.patch(append_url, headers=append_headers, data=content_bytes)
+        if append_response.status_code not in [200, 202]:
+            raise Exception(
+                f"Failed to append content to {filename}: {append_response.status_code} - {append_response.text}"
+            )
+
+        # Step 3: Flush file
+        flush_url = f"{onelake_base}?position={len(content_bytes)}&action=flush"
+        flush_response = requests.patch(flush_url, headers=headers)
+        if flush_response.status_code not in [200, 201]:
+            raise Exception(
+                f"Failed to flush file {filename}: {flush_response.status_code} - {flush_response.text}"
+            )
+
+        # Return abfss path
+        abfss_path = f"abfss://{self.workspace_id}@onelake.dfs.fabric.microsoft.com/{job_id}/{folder}/{filename}"
+        return abfss_path
+
+    def _update_job_definition_with_files(
+        self,
+        job_id: str,
+        onelake_paths: Dict[str, str],
+        entry_point: str,
+        lakehouse_id: str,
+        job_config: Dict[str, Any],
+    ) -> None:
+        """Update job definition with actual file paths and configuration"""
+
+        # Build updated definition
+        definition_payload = {
+            "executableFile": onelake_paths[entry_point],
+            "defaultLakehouseArtifactId": lakehouse_id,
+            "mainClass": "",
+            "commandLineArguments": job_config.get("command_line_arguments", ""),
+            "additionalLibraryUris": [
+                path for filename, path in onelake_paths.items() if filename != entry_point
+            ],
+            "additionalLakehouseIds": job_config.get("additional_lakehouse_ids", []),
+            "retryPolicy": job_config.get("retry_policy"),
+            "environmentArtifactId": job_config.get("environment_id"),
+            "language": "python",
+            "sparkConfig": {
+                "spark.executor.cores": str(job_config.get("executor_cores", 4)),
+                "spark.executor.memory": job_config.get("executor_memory", "28g"),
+                "spark.driver.cores": str(job_config.get("driver_cores", 4)),
+                "spark.driver.memory": job_config.get("driver_memory", "28g"),
+            },
+        }
+
+        # Encode as base64
+        definition_json = json.dumps(definition_payload)
+        definition_base64 = base64.b64encode(definition_json.encode("utf-8")).decode("utf-8")
+
+        # Build update payload
+        update_payload = {
+            "definition": {
+                "format": "SparkJobDefinitionV1",
+                "parts": [
+                    {
+                        "path": "SparkJobDefinitionV1.json",
+                        "payload": definition_base64,
+                        "payloadType": "InlineBase64",
+                    }
+                ],
+            }
+        }
+
+        # Update the job definition
+        url = f"{self._base_url}workspaces/{self.workspace_id}/items/{job_id}/updateDefinition"
+        response = requests.post(url, headers=self._get_headers(), json=update_payload)
+
+        if response.status_code == 202:
+            # Wait for update operation to complete
+            operation_id = response.headers.get("x-ms-operation-id")
+            if operation_id:
+                self._wait_for_operation(operation_id)
+        elif response.status_code not in [200, 201]:
+            raise Exception(
+                f"Failed to update job definition: {response.status_code} - {response.text}"
+            )
+
+
+@PlatformServices.register(name="fabric", description="Fabric platform service")
+def create_platform_service(config, logger):
+    return FabricService(config, logger)
+
+
+# ============================================================================
+# Fabric REST API Client (for remote operations)
+# ============================================================================
+
+
+try:
+    from azure.storage.filedatalake import DataLakeServiceClient
+
+    HAS_STORAGE_SDK = True
+except ImportError:
+    HAS_STORAGE_SDK = False
+
+
+class FabricAPI(PlatformAPI):
+    """
+    Microsoft Fabric REST API client for remote operations.
+
+    This class provides REST API access to Fabric for operations like:
+    - Creating Spark job definitions
+    - Uploading files to OneLake
+    - Running and monitoring jobs
+
+    Does NOT require mssparkutils/dbutils - pure REST API.
+    Can be used from local dev, CI/CD, tests, etc.
+
+    Authentication via Azure DefaultAzureCredential which supports:
+    - Service Principal (env vars)
+    - Azure CLI (az login)
+    - Managed Identity
+    - Interactive login
+
+    Example:
+        >>> from fabric_api import FabricAPI
+        >>> api = FabricAPI("workspace-id", "lakehouse-id")
+        >>> job = api.create_spark_job("my-job", config)
+        >>> run_id = api.run_job(job["job_id"])
+        >>> status = api.get_job_status(run_id)
+    """
+
+    def __init__(
+        self,
+        workspace_id: str,
+        lakehouse_id: Optional[str] = None,
+        credential: Optional[DefaultAzureCredential] = None,
+        storage_account: Optional[str] = None,
+        container: Optional[str] = None,
+        base_path: Optional[str] = None,
+    ):
+        """Initialize Fabric API client
+
+        Args:
+            workspace_id: Fabric workspace ID
+            lakehouse_id: Optional Fabric lakehouse ID (required for job definitions that use lakehouse)
+            credential: Optional Azure credential. If not provided, uses DefaultAzureCredential
+            storage_account: Optional storage account for ABFSS uploads (required for file uploads)
+            container: Optional container name for ABFSS uploads (required for file uploads)
+            base_path: Optional base path within container (e.g., "packages" or "kindling")
+        """
+        self.workspace_id = workspace_id
+        self.lakehouse_id = lakehouse_id
+        self.credential = credential or DefaultAzureCredential()
+        self.storage_account = storage_account
+        self.container = container
+        self.base_path = base_path
+        self.base_url = "https://api.fabric.microsoft.com/v1"
+        self._token = None
+        self._token_expiry = 0
+        self._storage_client = None
+        """Initialize Fabric API client
+
+        Args:
+            workspace_id: Fabric workspace ID
+            lakehouse_id: Optional Fabric lakehouse ID (required for job definitions that use lakehouse)
+            credential: Optional Azure credential. If not provided, uses DefaultAzureCredential
+            storage_account: Optional storage account for ABFSS uploads (required for file uploads)
+            container: Optional container name for ABFSS uploads (required for file uploads)
+            base_path: Optional base path within container (e.g., "packages" or "artifacts")
+        """
+        self.workspace_id = workspace_id
+        self.lakehouse_id = lakehouse_id
+        self.credential = credential or DefaultAzureCredential()
+        self.storage_account = storage_account
+        self.container = container
+        self.base_path = base_path
+        self.base_url = "https://api.fabric.microsoft.com/v1"
+        self._token = None
+        self._token_expiry = 0
+        self._storage_client = None
+
+    def get_platform_name(self) -> str:
+        """Get platform name"""
+        return "fabric"
+
+    def deploy_spark_job(
+        self, app_files: Dict[str, str], job_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Deploy application as Spark job (convenience method)
+
+        Combines create_spark_job + upload_files + update_job_files into one call.
+
+        Args:
+            app_files: Dictionary of {filename: content} to deploy
+            job_config: Platform-specific job configuration (must include lakehouse_id)
+
+        Returns:
+            Dictionary with job_id, deployment_path, and metadata
+        """
+        job_name = job_config["job_name"]
+
+        # Step 1: Create job definition
+        result = self.create_spark_job(job_name, job_config)
+        job_id = result["job_id"]
+
+        # Step 2: Upload files to data-apps/ subdirectory
+        # base_path will be prepended by upload_files() if configured
+        app_name = job_config.get("app_name", job_name)
+        target_path = f"data-apps/{app_name}"
+        deployment_path = self.upload_files(app_files, target_path)
+
+        # Step 3: Update job with file paths
+        self.update_job_files(job_id, deployment_path)
+
+        return {
+            "job_id": job_id,
+            "deployment_path": deployment_path,
+            "metadata": {
+                "job_name": job_name,
+                "app_name": app_name,
+                "files_count": len(app_files),
+            },
+        }
+
+    def _get_token(self, scope: str = "fabric") -> str:
+        """Get access token for Fabric or OneLake API
+
+        Args:
+            scope: "fabric" for Fabric API or "storage" for OneLake/ADLS
+
+        Returns:
+            Valid access token
+        """
+        # Different tokens for different APIs
+        if scope == "storage":
+            # OneLake uses Azure Storage scope
+            token_obj = self.credential.get_token("https://storage.azure.com/.default")
+            return token_obj.token
+        else:
+            # Fabric API uses Fabric-specific scope
+            # Refresh token if expired
+            if not self._token or time.time() >= self._token_expiry:
+                token_obj = self.credential.get_token("https://api.fabric.microsoft.com/.default")
+                self._token = token_obj.token
+                # Set expiry 5 minutes before actual expiry
+                self._token_expiry = token_obj.expires_on - 300
+
+            return self._token
+
+    def _get_headers(self) -> Dict[str, str]:
+        """Get API request headers
+
+        Returns:
+            Headers dictionary with authorization
+        """
+        return {"Authorization": f"Bearer {self._get_token()}", "Content-Type": "application/json"}
+
+    def _upload_file_to_lakehouse(self, file_path: str, content: str) -> None:
+        """Upload a single file to lakehouse via OneLake API
+
+        Uses the Create → Append → Flush pattern for OneLake uploads.
+
+        Args:
+            file_path: Path within lakehouse (e.g., "Files/data-apps/my-app/main.py")
+            content: File content as string
+        """
+        # Build OneLake URL for lakehouse
+        onelake_base = f"https://onelake.dfs.fabric.microsoft.com/{self.workspace_id}/{self.lakehouse_id}/{file_path}"
+
+        # Get storage token
+        storage_token = self._get_token(scope="storage")
+        headers = {"Authorization": f"Bearer {storage_token}", "x-ms-version": "2023-11-03"}
+
+        # Step 1: Create file
+        create_url = f"{onelake_base}?resource=file"
+        create_response = requests.put(create_url, headers=headers)
+        if create_response.status_code not in [200, 201]:
+            raise Exception(
+                f"Failed to create file {file_path}: {create_response.status_code} - {create_response.text}"
+            )
+
+        # Step 2: Append content
+        content_bytes = content.encode("utf-8")
+        append_url = f"{onelake_base}?position=0&action=append"
+        append_headers = headers.copy()
+        append_headers["Content-Type"] = "text/plain"
+        append_response = requests.patch(append_url, headers=append_headers, data=content_bytes)
+        if append_response.status_code not in [200, 202]:
+            raise Exception(
+                f"Failed to append content to {file_path}: {append_response.status_code} - {append_response.text}"
+            )
+
+        # Step 3: Flush file
+        flush_url = f"{onelake_base}?position={len(content_bytes)}&action=flush"
+        flush_response = requests.patch(flush_url, headers=headers)
+        if flush_response.status_code not in [200, 201]:
+            raise Exception(
+                f"Failed to flush file {file_path}: {flush_response.status_code} - {flush_response.text}"
+            )
+
+    def _make_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Make authenticated API request
+
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            url: Full URL to request
+            **kwargs: Additional arguments to pass to requests
+
+        Returns:
+            Response object
+
+        Raises:
+            requests.HTTPError: If request fails
+        """
+        kwargs.setdefault("headers", self._get_headers())
+        response = requests.request(method, url, **kwargs)
+
+        # Enhanced error handling with response body
+        if not response.ok:
+            try:
+                error_body = response.json()
+                error_msg = f"{response.status_code} Error: {error_body}"
+            except:
+                error_msg = f"{response.status_code} Error: {response.text}"
+            raise requests.HTTPError(error_msg, response=response)
+
+        return response
+
+    def create_spark_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, str]:
+        """Create a Spark job definition
+
+        Args:
+            job_name: Name for the job
+            job_config: Job configuration dict with:
+                - app_name: Application name for Kindling bootstrap (optional)
+                - artifacts_path: Path to artifacts in lakehouse (optional, defaults to 'Files/artifacts')
+                - main_file: Entry point file (optional, defaults to 'Files/scripts/kindling_bootstrap.py')
+                - command_line_args: Additional command line arguments (optional)
+                - spark_config: Spark configuration (optional)
+                - environment: Environment variables (optional)
+
+        Returns:
+            Dictionary with:
+                - job_id: Created job ID
+                - job_name: Job name
+                - workspace_id: Workspace ID
+        """
+        url = f"{self.base_url}/workspaces/{self.workspace_id}/items"
+
+        # For Fabric jobs with Kindling bootstrap:
+        # - executableFile points to kindling_bootstrap.py in lakehouse Files/scripts/
+        # - Bootstrap config is passed via command line arguments as JSON
+        # - Lakehouse context provides access to Files/ and packages
+
+        app_name = job_config.get("app_name", job_name)
+        artifacts_path = job_config.get("artifacts_path", "Files/artifacts")
+
+        # Build artifacts_storage_path based on upload mode
+        # If lakehouse_id configured: use Files/{base_path}
+        # If storage_account configured: use abfss://.../{base_path}
+        if self.lakehouse_id:
+            # Lakehouse mode: Files uploaded to Files/{base_path}/data-apps/
+            if self.base_path:
+                artifacts_storage_path = f"Files/{self.base_path.strip('/')}"
+            else:
+                artifacts_storage_path = "Files/artifacts"
+        elif self.storage_account and self.container:
+            # ABFSS mode: Files uploaded to abfss://.../{base_path}/data-apps/
+            base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+            if self.base_path:
+                artifacts_storage_path = f"{base_url}/{self.base_path.strip('/')}"
+            else:
+                artifacts_storage_path = base_url
+        else:
+            # Fallback to relative path
+            artifacts_storage_path = "Files/artifacts"
+
+        # Build bootstrap config that will be passed to kindling_bootstrap.py
+        # Using convention: config:key=value sets BOOTSTRAP_CONFIG[key] = value
+        bootstrap_params = {
+            "app_name": app_name,
+            # Base path for artifacts - data-apps and config are under artifacts_storage_path/
+            # Bootstrap will look for apps in {artifacts_storage_path}/data-apps/{app_name}/
+            # and config in {artifacts_storage_path}/config/
+            "artifacts_storage_path": artifacts_storage_path,
+            "platform": "fabric",  # Explicitly set platform to avoid detection issues
+            "use_lake_packages": "True",
+            "load_local_packages": "False",
+            "spark_app_name": f"kindling-app-{app_name}",  # Set Spark app name for test ID extraction
+        }
+
+        # Add test_id if provided (for test tracking)
+        if "test_id" in job_config:
+            bootstrap_params["test_id"] = job_config["test_id"]
+
+        # Build command line args using config:key=value convention
+        config_args = " ".join([f"config:{k}={v}" for k, v in bootstrap_params.items()])
+
+        # Combine with any additional command line args
+        additional_args = job_config.get("command_line_args", "")
+        command_line_args = f"{config_args} {additional_args}".strip()
+
+        # Map our config to Fabric Spark Job Definition format
+        # The definition payload must be base64 encoded
+        # Note: executableFile must be an absolute ABFSS path in Fabric
+        main_file = job_config.get("main_file", "Files/scripts/kindling_bootstrap.py")
+
+        # Validate main_file
+        if not main_file or not main_file.strip():
+            raise ValueError("main_file cannot be empty")
+
+        # Convert to full ABFSS path if not already absolute
+        if not main_file.startswith("abfss://"):
+            # Use storage account and container from environment or instance
+            storage_account = self.storage_account or os.getenv("AZURE_STORAGE_ACCOUNT")
+            container = self.container or os.getenv("AZURE_CONTAINER", "artifacts")
+
+            # Convert Files/scripts/kindling_bootstrap.py to scripts/kindling_bootstrap.py
+            if main_file.startswith("Files/"):
+                main_file = main_file[6:]  # Remove "Files/" prefix
+
+            # Construct full ABFSS path
+            main_file = f"abfss://{container}@{storage_account}.dfs.core.windows.net/{main_file}"
+
+        # Check for environment_id in job_config
+        environment_id = job_config.get("environment_id")
+
+        # NOTE: Fabric does not support sparkConf in the job definition like Synapse does.
+        # Spark configuration must be set via:
+        # 1. Fabric Environment (environmentArtifactId)
+        # 2. Runtime parameters (not yet fully supported by API)
+        # 3. SparkConf in the application code itself
+        #
+        # For diagnostic emitters, we'll need to set them programmatically in the bootstrap code
+        # or create a Fabric Environment with the required Spark configs.
+
+        definition_json = {
+            "executableFile": main_file,
+            "defaultLakehouseArtifactId": self.lakehouse_id,
+            "mainClass": "",
+            "additionalLakehouseIds": [],
+            "retryPolicy": None,
+            "commandLineArguments": command_line_args,
+            "additionalLibraryUris": [],
+            "language": "python",
+            "environmentArtifactId": environment_id,  # Use environment if provided
+        }
+
+        # Base64 encode the definition
+        definition_bytes = json.dumps(definition_json).encode("utf-8")
+        definition_base64 = base64.b64encode(definition_bytes).decode("utf-8")
+
+        payload = {
+            "displayName": job_name,
+            "type": "SparkJobDefinition",
+            "definition": {
+                "format": "SparkJobDefinitionV1",
+                "parts": [
+                    {
+                        "path": "SparkJobDefinitionV1.json",
+                        "payload": definition_base64,
+                        "payloadType": "InlineBase64",
+                    }
+                ],
+            },
+        }
+
+        response = self._make_request("POST", url, json=payload)
+        result = response.json()
+
+        return {
+            "job_id": result["id"],
+            "job_name": result["displayName"],
+            "workspace_id": self.workspace_id,
+        }
+
+    def upload_files(self, files: Dict[str, str], target_path: str) -> str:
+        """Upload files to ABFSS storage (lakehouse shortcut provides runtime access)
+
+        ALL artifacts are stored in ABFSS (ADLS Gen2):
+            Files uploaded to ABFSS container via Azure Storage SDK
+            Runtime access via lakehouse shortcut Files/artifacts -> abfss://container/
+            Returns relative path (accessible via shortcut at runtime)
+
+        Args:
+            files: Dictionary of {filename: content}
+            target_path: Relative path (e.g., "data-apps/my-app")
+
+        Returns:
+            Storage path reference (relative path for runtime via shortcut)
+
+        Note:
+            Lakehouse shortcut Files/artifacts points to ABFSS container root.
+            This allows runtime to access abfss://container/data-apps/app via Files/artifacts/data-apps/app
+        """
+        # ALL files go to ABFSS storage (not lakehouse OneLake API)
+        if not HAS_STORAGE_SDK:
+            print("⚠️  azure-storage-file-datalake not installed. Files not uploaded.")
+            print("   Install with: pip install azure-storage-file-datalake")
+            print("   Bundling files for later reference instead.")
+            # Fallback to bundling
+            if not hasattr(self, "_pending_files"):
+                self._pending_files = {}
+            self._pending_files.update(files)
+            return target_path
+
+        if not self.storage_account or not self.container:
+            print("⚠️  Storage account/container not configured. Files not uploaded.")
+            print(f"   Files prepared: {list(files.keys())}")
+            print("   Configure storage_account and container in FabricAPI.__init__()")
+            # Fallback to bundling
+            if not hasattr(self, "_pending_files"):
+                self._pending_files = {}
+            self._pending_files.update(files)
+            return target_path
+
+        print(f"📤 Uploading {len(files)} files to ABFSS storage...")
+
+        # Initialize storage client if needed
+        if not self._storage_client:
+            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            self._storage_client = DataLakeServiceClient(
+                account_url=account_url, credential=self.credential
+            )
+
+        # Get file system (container) client
+        file_system_client = self._storage_client.get_file_system_client(file_system=self.container)
+
+        # Construct full path with base_path if provided
+        if self.base_path:
+            full_target_path = f"{self.base_path}/{target_path}"
+        else:
+            full_target_path = target_path
+
+        # Upload each file
+        uploaded_count = 0
+        for filename, content in files.items():
+            file_path = f"{full_target_path}/{filename}"
+            try:
+                # Get file client
+                file_client = file_system_client.get_file_client(file_path)
+
+                # Upload file (overwrite if exists)
+                file_client.upload_data(
+                    content.encode("utf-8") if isinstance(content, str) else content, overwrite=True
+                )
+                uploaded_count += 1
+            except Exception as e:
+                print(f"⚠️  Failed to upload {filename}: {e}")
+
+        # Construct ABFSS path
+        abfss_path = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/{full_target_path}"
+
+        print(f"📂 Uploaded {uploaded_count}/{len(files)} files to: {abfss_path}")
+
+        return abfss_path
+
+    def update_job_files(self, job_id: str, files_path: str) -> None:
+        """Update job definition with file path reference
+
+        For Fabric, this is not needed as files are referenced via command line args
+        to the bootstrap script. The executableFile is set during create_spark_job
+        and points to kindling_bootstrap.py, which then loads the app based on
+        the app_name parameter passed in command line arguments.
+
+        Args:
+            job_id: Job ID to update
+            files_path: Path where files were uploaded (from upload_files)
+        """
+        print(f"✅ Job {job_id} configured with file path: {files_path}")
+
+    def run_job(self, job_id: str, parameters: Optional[Dict[str, Any]] = None) -> str:
+        """Execute a Spark job
+
+        Args:
+            job_id: Job ID to run
+            parameters: Optional runtime parameters
+
+        Returns:
+            Run ID for monitoring
+        """
+        url = f"{self.base_url}/workspaces/{self.workspace_id}/items/{job_id}/jobs/instances?jobType=sparkjob"
+
+        payload = {}
+        if parameters:
+            payload["executionData"] = {"parameters": parameters}
+
+        response = self._make_request("POST", url, json=payload)
+
+        # 202 Accepted with empty body is typical for async operations
+        # Run ID is in Location header
+        if response.status_code == 202:
+            location = response.headers.get("Location", "")
+            if location:
+                # Extract run ID from Location header
+                # Format: https://api.fabric.microsoft.com/v1/workspaces/{workspace}/items/{item}/jobs/instances/{run_id}
+                run_id = location.split("/")[-1].split("?")[0]
+                # Store job_id -> run_id mapping for status queries
+                if not hasattr(self, "_run_to_job_map"):
+                    self._run_to_job_map = {}
+                self._run_to_job_map[run_id] = job_id
+                return run_id
+            else:
+                # If no Location header, return job_id as fallback
+                # This allows tests to continue even if API structure is different
+                return job_id
+
+        # If 200/201 with body, parse JSON
+        result = response.json()
+        run_id = result.get("id", job_id)
+        # Store mapping
+        if not hasattr(self, "_run_to_job_map"):
+            self._run_to_job_map = {}
+        self._run_to_job_map[run_id] = job_id
+        return run_id
+
+    def get_job_status(self, run_id: str) -> Dict[str, Any]:
+        """Get job execution status
+
+        Args:
+            run_id: Run ID to check
+
+        Returns:
+            Status dictionary with keys:
+                - status: Current status (RUNNING, SUCCEEDED, FAILED, etc.)
+                - start_time: When job started
+                - end_time: When job finished (if complete)
+                - error: Error message (if failed)
+        """
+        # Get job_id from mapping
+        job_id = getattr(self, "_run_to_job_map", {}).get(run_id, run_id)
+
+        # Correct endpoint format with job_id
+        url = (
+            f"{self.base_url}/workspaces/{self.workspace_id}/items/{job_id}/jobs/instances/{run_id}"
+        )
+
+        response = self._make_request("GET", url)
+        result = response.json()
+
+        # Store rootActivityId for log retrieval
+        # Fabric uses this ID in the log folder path: logs/{workspace_id}.{rootActivityId}
+        root_activity_id = result.get("rootActivityId")
+
+        # DEBUG: Trace job status response for troubleshooting
+        print(f"🔍 DEBUG: Job Status Response for run_id={run_id}")
+        print(f"   Full response keys: {list(result.keys())}")
+        print(f"   rootActivityId: {root_activity_id}")
+        print(f"   status: {result.get('status')}")
+        print(f"   id: {result.get('id')}")
+        print(f"   jobType: {result.get('jobType')}")
+        if root_activity_id:
+            print(
+                f"   Expected log path: logs/{self.workspace_id}.{root_activity_id}/driver/spark-logs"
+            )
+        else:
+            print(f"   ⚠️  NO rootActivityId in response - will use discovery fallback")
+
+        if root_activity_id and not hasattr(self, "_run_to_activity_map"):
+            self._run_to_activity_map = {}
+        if root_activity_id:
+            self._run_to_activity_map[run_id] = root_activity_id
+
+        return {
+            "status": result.get("status", "UNKNOWN"),
+            "start_time": result.get("startTimeUtc"),
+            "end_time": result.get("endTimeUtc"),
+            "error": result.get("failureReason"),
+            "logs": None,  # Logs require separate API call - use get_job_logs()
+            "activity_id": root_activity_id,  # For internal use
+        }
+
+    def get_job_logs(self, run_id: str, from_line: int = 0, size: int = 1000) -> Dict[str, Any]:
+        """Get job execution logs
+
+        Args:
+            run_id: Run ID to get logs for
+            from_line: Starting line offset (default: 0)
+            size: Maximum number of log lines to return (default: 1000)
+
+        Returns:
+            Dictionary with:
+                - logs: List of log lines (or single string if not in Livy format)
+                - from: Starting offset
+                - size: Number of lines returned
+                - total: Total lines available (if known)
+                - source: Which endpoint provided the logs
+        """
+        # Get job_id from mapping
+        job_id = getattr(self, "_run_to_job_map", {}).get(run_id, run_id)
+
+        # PRIORITY 1: Try to read diagnostic logs from ABFSS storage (primary method)
+        # Spark diagnostic emitters write to ABFSS at logs/<workspace_id>.<activity_id>/driver/spark-logs
+        # We get the activity_id from get_job_status() which stores it in _run_to_activity_map
+        # Runtime accesses this via lakehouse shortcut Files/artifacts -> abfss://container/
+        # API should read directly from ABFSS, not via OneLake (OneLake is for runtime only)
+        if self.storage_account and self.container:
+            try:
+                # Get activity_id from mapping (populated by get_job_status)
+                activity_id = getattr(self, "_run_to_activity_map", {}).get(run_id)
+
+                # DEBUG: Trace log retrieval attempt
+                print(f"🔍 DEBUG: Log Retrieval for run_id={run_id}")
+                print(f"   storage_account: {self.storage_account}")
+                print(f"   container: {self.container}")
+                print(f"   workspace_id: {self.workspace_id}")
+                print(f"   activity_id from mapping: {activity_id}")
+                print(
+                    f"   _run_to_activity_map contents: {getattr(self, '_run_to_activity_map', {})}"
+                )
+
+                # Try run_id first (this is what Fabric actually uses)
+                log_path = f"logs/{self.workspace_id}.{run_id}/driver/spark-logs"
+                print(f"📂 Reading logs from: {log_path}")
+                log_lines = self._read_diagnostic_logs_from_adls(log_path)
+
+                if not log_lines and activity_id:
+                    # Fallback: try activity_id (in case it changes)
+                    log_path = f"logs/{self.workspace_id}.{activity_id}/driver/spark-logs"
+                    print(f"📂 Fallback: trying activity_id path: {log_path}")
+                    log_lines = self._read_diagnostic_logs_from_adls(log_path)
+
+                if not log_lines:
+                    # Last resort: discover by finding most recent folder for this workspace
+                    print(f"⚠️  Direct paths failed, using discovery fallback")
+                    log_lines = self._discover_and_read_diagnostic_logs(run_id)
+
+                if log_lines:
+                    # Apply from_line and size filtering
+                    if from_line > 0 or size < len(log_lines):
+                        filtered_logs = log_lines[from_line : from_line + size]
+                    else:
+                        filtered_logs = log_lines
+
+                    return {
+                        "id": run_id,
+                        "from": from_line,
+                        "total": len(log_lines),
+                        "log": filtered_logs,
+                        "source": "abfss_diagnostic_emitters",
+                    }
+            except Exception as e:
+                # Don't print stack trace - logs might just not be ready yet
+                pass  # Fall through to Fabric API
+
+        # PRIORITY 2: Try Fabric job instances log endpoint (undocumented fallback)
+        try:
+            url = f"{self.base_url}/workspaces/{self.workspace_id}/items/{job_id}/jobs/instances/{run_id}/logs"
+            response = self._make_request("GET", url)
+
+            # Response might be JSON with log content or direct text
+            if response.headers.get("content-type", "").startswith("application/json"):
+                result = response.json()
+                log_content = result.get("content", result.get("logs", str(result)))
+            else:
+                log_content = response.text
+
+            # Convert to list of lines if it's a string
+            if isinstance(log_content, str):
+                log_lines = log_content.split("\n")
+            else:
+                log_lines = log_content if isinstance(log_content, list) else [str(log_content)]
+
+            return {
+                "logs": log_lines,
+                "from": 0,
+                "size": len(log_lines),
+                "total": len(log_lines),
+                "source": "fabric_instances_api",
+            }
+
+        except requests.HTTPError as e:
+            # Log the error for debugging
+            error_status = e.response.status_code if hasattr(e, "response") else "unknown"
+            pass  # Try next method
+
+        # No logs available via any method
+        return {
+            "logs": [
+                "❌ Logs not available via REST API",
+                "",
+                "📍 Access logs via Fabric Portal:",
+                "   1. Go to your Fabric workspace",
+                "   2. Open Monitoring Hub",
+                "   3. Find your job run",
+                "   4. View logs in the UI",
+                "",
+                f"   Run ID: {run_id}",
+                f"   Job ID: {job_id}",
+                "",
+                "💡 Alternative: Configure diagnostic emitters in job config with storage_access_key",
+            ],
+            "from": 0,
+            "size": 1,
+            "total": 1,
+            "source": "unavailable",
+        }
+
+    def _discover_and_read_diagnostic_logs(self, run_id: str) -> List[str]:
+        """Discover log folder and read diagnostic logs from ADLS Gen2 storage
+
+        Fabric creates logs with pattern: logs/<some_uuid>.<run_id>/driver/spark-logs
+        The first UUID is NOT the workspace_id - it appears to be randomly generated.
+        We must discover it by listing the logs directory.
+
+        Args:
+            run_id: Run ID to find logs for
+
+        Returns:
+            List of log message strings
+        """
+        if not HAS_STORAGE_SDK:
+            print("⚠️  azure-storage-file-datalake not installed")
+            return []
+
+        if not self.storage_account or not self.container:
+            return []
+
+        # Initialize storage client if needed
+        if not self._storage_client:
+            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            self._storage_client = DataLakeServiceClient(
+                account_url=account_url, credential=self.credential
+            )
+
+        file_system_client = self._storage_client.get_file_system_client(file_system=self.container)
+
+        try:
+            # List all folders in the logs directory for this workspace
+            # Fabric uses pattern: logs/{workspace_id}.{activity_id}
+            # The activity_id is NOT the same as run_id - we must find the most recent folder
+            paths = file_system_client.get_paths(path="logs")
+
+            matching_folders = []
+            for path_item in paths:
+                if path_item.is_directory:
+                    folder_name = path_item.name.replace("logs/", "")
+                    # Check if folder starts with workspace_id
+                    if folder_name.startswith(f"{self.workspace_id}."):
+                        # Store with last_modified time
+                        matching_folders.append((folder_name, path_item.last_modified))
+
+            if not matching_folders:
+                print(f"⚠️  No log folders found for workspace {self.workspace_id}")
+                return []
+
+            # Sort by last_modified descending and take the most recent
+            matching_folders.sort(key=lambda x: x[1], reverse=True)
+            matching_folder = matching_folders[0][0]
+            print(f"✅ Found most recent log folder: {matching_folder}")
+
+            # Now read from the discovered folder
+            log_path = f"logs/{matching_folder}/driver/spark-logs"
+            print(f"📂 Reading logs from: {log_path}")
+
+            return self._read_diagnostic_logs_from_adls(log_path)
+
+        except Exception as e:
+            print(f"⚠️  Failed to discover log folder: {e}")
+            return []
+
+    def _read_diagnostic_logs_from_adls(self, log_path: str) -> List[str]:
+        """Read Spark diagnostic logs directly from ADLS Gen2 storage
+
+        Fabric writes diagnostic logs to external ADLS storage which is accessed
+        via a lakehouse shortcut (Files/artifacts) at runtime.
+
+        Args:
+            log_path: Relative path to log file (e.g., "logs/<workspace>.<run_id>/driver/spark-logs")
+
+        Returns:
+            List of log message strings extracted from JSON log entries
+        """
+        if not HAS_STORAGE_SDK:
+            print("⚠️  azure-storage-file-datalake not installed")
+            return []
+
+        if not self.storage_account or not self.container:
+            return []
+
+        # Initialize storage client if needed
+        if not self._storage_client:
+            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            self._storage_client = DataLakeServiceClient(
+                account_url=account_url, credential=self.credential
+            )
+
+        file_system_client = self._storage_client.get_file_system_client(file_system=self.container)
+
+        log_lines = []
+
+        try:
+            # Read the log file directly
+            file_client = file_system_client.get_file_client(log_path)
+            download = file_client.download_file()
+            content = download.readall()
+
+            # Parse JSON log entries (diagnostic emitter format)
+            for line in content.decode("utf-8").splitlines():
+                if not line.strip():
+                    continue
+
+                try:
+                    log_entry = json.loads(line)
+                    # Extract message from properties
+                    if "properties" in log_entry:
+                        message = log_entry["properties"].get("message", "")
+                        if message:
+                            log_lines.append(message)
+                    elif "message" in log_entry:
+                        log_lines.append(log_entry["message"])
+                    else:
+                        # Unknown format, keep raw line
+                        log_lines.append(line)
+                except json.JSONDecodeError:
+                    # Not JSON, keep as-is
+                    log_lines.append(line)
+
+            if log_lines:
+                print(f"✅ Found {len(log_lines)} log lines from diagnostic emitters")
+
+            return log_lines
+
+        except Exception as e:
+            print(f"⚠️  Failed to read diagnostic logs from {log_path}: {e}")
+            return []
+
+    def _read_event_logs_from_storage(self, app_id: str, run_id: str, job_id: str) -> List[str]:
+        """Read Spark diagnostic logs from Azure Storage (diagnostic emitters)
+
+        Fabric uses the same Spark runtime as Synapse and supports diagnostic emitters.
+        Diagnostic logs are written to: logs/<workspaceName>.<jobName>.<runId>/driver/spark-logs
+
+        Format: JSON lines with categories: Log, EventLog, Metrics
+
+        Reference: https://learn.microsoft.com/en-us/azure/synapse-analytics/spark/azure-synapse-diagnostic-emitters-azure-storage
+
+        Args:
+            app_id: Spark application ID (e.g., application_1234567890_0001)
+            run_id: Run/session ID
+            job_id: Fabric job definition ID
+
+        Returns:
+            List of log lines extracted from diagnostic log files
+        """
+        try:
+            import gzip
+            import json
+
+            from azure.storage.filedatalake import DataLakeServiceClient
+        except ImportError:
+            print("⚠️  azure-storage-file-datalake not installed")
+            return []
+
+        if not self.storage_account or not self.container:
+            return []
+
+        # Initialize storage client if needed
+        if not self._storage_client:
+            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            self._storage_client = DataLakeServiceClient(
+                account_url=account_url, credential=self.credential
+            )
+
+        file_system_client = self._storage_client.get_file_system_client(file_system=self.container)
+
+        # Fabric diagnostic logs path pattern: logs/<some_uuid>.<run_id>/driver/spark-logs
+        # The first UUID appears to be randomly generated or an internal Fabric identifier
+        # We need to discover it by listing the logs directory
+
+        log_lines = []
+
+        try:
+            # List all folders in the logs directory to find one ending with our run_id
+            paths = file_system_client.get_paths(path="logs")
+
+            matching_folder = None
+            for path_item in paths:
+                if path_item.is_directory:
+                    folder_name = path_item.name.replace("logs/", "")
+                    # Check if folder ends with .<run_id>
+                    if folder_name.endswith(f".{run_id}"):
+                        matching_folder = folder_name
+                        print(f"✅ Found log folder: {folder_name}")
+                        break
+
+            if not matching_folder:
+                print(f"⚠️  No log folder found ending with .{run_id}")
+                return []
+
+            # Now try to read from the discovered folder
+            log_path = f"logs/{matching_folder}/driver/spark-logs"
+            print(f"📂 Reading logs from: {log_path}")
+
+        except Exception as e:
+            print(f"⚠️  Failed to list logs directory: {e}")
+            # Fallback to trying known patterns
+            possible_paths = [
+                f"logs/{self.workspace_id}.{run_id}/driver/spark-logs",
+                f"logs/{self.workspace_id}.{job_id}.{run_id}/driver/spark-logs",
+            ]
+            log_path = possible_paths[0]  # Try first pattern
+
+        # Try to read the log file
+        try:
+            # Read the driver spark-logs file
+            file_client = file_system_client.get_file_client(log_path)
+            download = file_client.download_file()
+            content = download.readall()
+
+            # Logs may be compressed
+            if log_path.endswith(".gz"):
+                content = gzip.decompress(content)
+
+            # Parse diagnostic log entries (JSON lines format)
+            for line in content.decode("utf-8").splitlines():
+                if line.strip():
+                    try:
+                        entry = json.loads(line)
+
+                        # Filter to only this application (if app_id is provided)
+                        if app_id and entry.get("applicationId") != app_id:
+                            continue
+
+                        category = entry.get("category", "")
+                        properties = entry.get("properties", {})
+                        timestamp = entry.get("timestamp", "")
+
+                        # Extract log messages
+                        if category == "Log":
+                            # Driver and executor logs
+                            level = properties.get("level", "INFO")
+                            message = properties.get("message", "")
+                            logger_name = properties.get("logger_name", "")
+
+                            # DEBUG: Check message structure
+                            if isinstance(message, list):
+                                # Message is an array of log lines
+                                for msg in message:
+                                    if isinstance(msg, str) and msg.strip():
+                                        log_line = (
+                                            f"[{timestamp}] {level} {logger_name}: {msg.strip()}"
+                                        )
+                                        log_lines.append(log_line)
+                            elif isinstance(message, str):
+                                # Message field may contain multiple log lines separated by newlines
+                                messages = message.strip().split("\n") if message else [""]
+                                for msg in messages:
+                                    msg = msg.strip()
+                                    if msg:  # Only include non-empty messages
+                                        log_line = f"[{timestamp}] {level} {logger_name}: {msg}"
+                                        log_lines.append(log_line)
+                            else:
+                                # Handle other types
+                                log_line = f"[{timestamp}] {level} {logger_name}: {message}"
+                                log_lines.append(log_line)
+
+                        elif category == "EventLog":
+                            # Spark events
+                            event_data = properties.get("Event", {})
+                            if isinstance(event_data, str):
+                                log_lines.append(f"[{timestamp}] EVENT: {event_data}")
+                            elif isinstance(event_data, dict):
+                                event_type = event_data.get("type", "Unknown")
+                                log_lines.append(f"[{timestamp}] EVENT: {event_type}")
+
+                        elif category == "Metrics":
+                            # Optionally include metrics
+                            metric_name = properties.get("name", "")
+                            metric_value = properties.get("value", "")
+                            if metric_name:
+                                log_lines.append(
+                                    f"[{timestamp}] METRIC {metric_name}: {metric_value}"
+                                )
+
+                    except json.JSONDecodeError:
+                        # Skip invalid JSON lines
+                        continue
+
+            # If we found logs, return them
+            if log_lines:
+                print(f"✅ Found {len(log_lines)} log lines from diagnostic emitters at {log_path}")
+                return log_lines
+            else:
+                print(f"⚠️  No log entries found at {log_path}")
+                return []
+
+        except Exception as e:
+            print(f"⚠️  Failed to read diagnostic logs from {log_path}: {e}")
+            return []
+
+    def cancel_job(self, run_id: str) -> bool:
+        """Cancel a running job
+
+        Args:
+            run_id: Run ID to cancel
+
+        Returns:
+            True if cancelled successfully
+        """
+        # Get job_id from mapping
+        job_id = getattr(self, "_run_to_job_map", {}).get(run_id, run_id)
+
+        url = f"{self.base_url}/workspaces/{self.workspace_id}/items/{job_id}/jobs/instances/{run_id}/cancel"
+
+        try:
+            self._make_request("POST", url)
+            return True
+        except requests.HTTPError:
+            return False
+
+    def delete_job(self, job_id: str) -> bool:
+        """Delete a job definition
+
+        Args:
+            job_id: Job ID to delete
+
+        Returns:
+            True if deleted successfully
+        """
+        url = f"{self.base_url}/workspaces/{self.workspace_id}/items/{job_id}"
+
+        try:
+            self._make_request("DELETE", url)
+            return True
+        except requests.HTTPError:
+            return False
+
+    def list_spark_jobs(self) -> list:
+        """List all Spark job definitions in the workspace
+
+        Returns:
+            List of job definition dictionaries with id, displayName, type, etc.
+        """
+        url = f"{self.base_url}/workspaces/{self.workspace_id}/items?type=SparkJobDefinition"
+
+        response = self._make_request("GET", url)
+        return response.json().get("value", [])
+
+    def list_jobs(self) -> list:
+        """Alias for list_spark_jobs() for compatibility
+
+        Returns:
+            List of job definition dictionaries with id, displayName, type, etc.
+        """
+        return self.list_spark_jobs()
+
+
+# Expose in module
+__all__ = ["FabricAPI"]

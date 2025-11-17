@@ -1,0 +1,33 @@
+FROM mcr.microsoft.com/devcontainers/python:3.11
+
+# Install system dependencies
+RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
+    && apt-get -y install --no-install-recommends \
+    openjdk-21-jdk-headless \
+    git \
+    curl \
+    gpg \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Java environment (Java 21 for Spark 3.5)
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Install Poetry
+RUN pip install --no-cache-dir poetry==1.8.3
+
+# Configure Poetry to create virtualenv in project
+RUN poetry config virtualenvs.in-project true
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy dependency files first (for better caching)
+COPY pyproject.toml poetry.lock ./
+
+# Install dependencies (this layer will be cached unless poetry.lock changes)
+RUN poetry install --with dev --no-root
+
+# Default command
+CMD ["/bin/bash"]

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "kindling-databricks-dlt"
+version = "0.1.0"
+description = "Databricks Delta Live Tables extension for Kindling framework"
+authors = ["SEP Engineering <engineering@sep.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [
+    {include = "kindling_databricks_dlt"},
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+kindling = "^0.1.0"
+databricks-sdk = ">=0.12.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+black = ">=23.0.0"

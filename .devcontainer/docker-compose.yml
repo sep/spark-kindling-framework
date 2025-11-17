@@ -1,0 +1,15 @@
+services:
+  devcontainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspace:cached
+      - spark-warehouse:/spark-warehouse
+    command: sleep infinity
+    environment:
+      - PYTHONPATH=/workspace
+      - SPARK_LOCAL_IP=127.0.0.1
+
+volumes:
+  spark-warehouse:
