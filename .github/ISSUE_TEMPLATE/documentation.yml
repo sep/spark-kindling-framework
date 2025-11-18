@@ -1,0 +1,94 @@
+name: Documentation Issue
+description: Report documentation that is missing, unclear, or incorrect
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve the documentation! Report missing, unclear, or incorrect docs.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Which platform does this documentation relate to?
+      options:
+        - All Platforms
+        - Fabric
+        - Synapse
+        - Databricks
+        - Not Platform-Specific
+      default: 0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this documentation issue?
+      options:
+        - Low
+        - Medium
+        - High
+        - Critical
+      default: 1
+    validations:
+      required: false
+
+  - type: dropdown
+    id: doc_type
+    attributes:
+      label: Documentation Type
+      description: What kind of documentation issue is this?
+      options:
+        - Missing Documentation
+        - Incorrect/Outdated Information
+        - Unclear/Confusing Explanation
+        - Broken Link or Reference
+        - Example Needed
+        - API Reference Issue
+      default: 0
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Documentation Location
+      description: Where is the issue? (file path, URL, section heading, etc.)
+      placeholder: |
+        Example: docs/job_deployment.md, line 45
+        Or: README.md, "Quick Start" section
+        Or: Missing from docs/ entirely
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue
+    attributes:
+      label: Issue Description
+      description: What's wrong or missing?
+      placeholder: Describe the documentation issue clearly
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: How should this be fixed or improved?
+      placeholder: |
+        Provide specific suggestions, corrections, or examples that would help
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any other helpful information
+      placeholder: Screenshots, related docs, user confusion examples, etc.
+    validations:
+      required: false
