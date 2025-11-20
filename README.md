@@ -2,7 +2,7 @@
 
 ## Overview
 
-Spark Kindling Framework is a comprehensive solution for building robust data pipelines on Apache Spark, specifically designed for notebook-based environments like Microsoft Fabric and Azure Databricks. It provides a declarative, dependency-injection-driven approach to defining and executing data transformations while maintaining strict governance and observability.
+Spark Kindling Framework is a comprehensive solution for building robust data pipelines on Apache Spark, specifically designed for notebook-based environments like Microsoft Fabric and Azure Databricks (better support for local python-first development coming soon). It provides a declarative, dependency-injection-driven approach to defining and executing data transformations while maintaining strict governance and observability.
 
 ## Documentation
 
