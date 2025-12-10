@@ -8,20 +8,22 @@ A comprehensive guide to testing the Spark Kindling Framework.
 
 ```bash
 # All tests
-cd /workspace
-pytest tests/ -v
+poe test
 
 # Unit tests only
-pytest tests/unit/ -v
+poe test-unit
 
 # Integration tests only
-pytest tests/integration/ -v
+poe test-integration
 
-# Specific test file
+# Quick tests (unit + integration, no system tests)
+poe test-quick
+
+# With coverage report
+poe test-coverage
+
+# Specific test file (use pytest directly)
 pytest tests/integration/test_data_pipes_integration.py -v
-
-# With coverage
-pytest tests/ --cov=src/kindling --cov-report=html
 ```
 
 ### Current Test Status
@@ -257,6 +259,7 @@ class TestEntityReadPersistStrategy:
 ## Testing Best Practices
 
 ### DO ✅
+- Use `poe test-*` commands for standard test runs
 - Use fixtures for common setup/teardown
 - Test one thing per test function
 - Use descriptive test names (`test_<what>_<when>_<expected>`)
@@ -266,6 +269,7 @@ class TestEntityReadPersistStrategy:
 - Mock external dependencies in unit tests
 - Use real Spark in integration tests for realistic behavior
 - Isolate tests (no shared state)
+- Run `poe test-quick` before committing code
 
 ### DON'T ❌
 - Test external services (cloud APIs) in unit tests
@@ -282,11 +286,26 @@ class TestEntityReadPersistStrategy:
 ## Test Commands Reference
 
 ```bash
-# Run all tests
-pytest tests/ -v
+# Poe task runner commands (recommended)
+poe test              # Run all tests (unit + integration + system)
+poe test-unit         # Run unit tests only
+poe test-integration  # Run integration tests only
+poe test-quick        # Run unit + integration (skip system tests)
+poe test-coverage     # Run tests with HTML coverage report
+
+# System tests (require cloud credentials)
+poe test-system           # All system tests
+poe test-system-fabric    # Fabric-specific system tests
+poe test-system-synapse   # Synapse-specific system tests
+poe test-system-databricks # Databricks-specific system tests
+
+# Direct pytest commands (for advanced usage)
+pytest tests/ -v                    # All tests
+pytest tests/unit/ -v               # Unit tests
+pytest tests/integration/ -v        # Integration tests
 
 # Run with coverage report
-pytest tests/ --cov=src/kindling --cov-report=html --cov-report=term-missing
+pytest tests/ --cov=packages/kindling --cov-report=html --cov-report=term-missing
 
 # Run specific test class
 pytest tests/unit/test_platform_local.py::TestLocalServiceFileOperations -v
@@ -305,10 +324,6 @@ pytest tests/ -v -s
 
 # Run in parallel (requires pytest-xdist)
 pytest tests/ -n auto
-
-# Generate coverage report
-pytest tests/ --cov=src/kindling --cov-report=html
-# Open: htmlcov/index.html
 ```
 
 ---
