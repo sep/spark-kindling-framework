@@ -6,7 +6,7 @@ configuration lifecycle with actual Spark initialization.
 """
 
 import pytest
-from kindling.injection import GlobalInjector
+from kindling.injection import GlobalInjector, get_kindling_service
 from kindling.spark_config import (
     ConfigService,
     DynaconfConfig,
@@ -49,7 +49,7 @@ class TestConfigureInjectorFunction:
         )
 
         # Verify singleton was created and initialized
-        config_service = GlobalInjector.get(ConfigService)
+        config_service = get_kindling_service(ConfigService)
 
         assert config_service is not None, "Should create ConfigService singleton"
         assert isinstance(config_service, DynaconfConfig), "Should be DynaconfConfig instance"
@@ -79,7 +79,7 @@ class TestConfigureInjectorFunction:
         )
 
         # Verify configuration was applied
-        config_service = GlobalInjector.get(ConfigService)
+        config_service = get_kindling_service(ConfigService)
 
         assert config_service.initial_config == initial_config, "Should apply initial config"
         assert config_service.spark is not None, "Should have real Spark session"
@@ -115,7 +115,7 @@ class TestConfigIntegration:
         configure_injector_with_config(initial_config={"log_level": "INFO"})
 
         # Get config service
-        config = GlobalInjector.get(ConfigService)
+        config = get_kindling_service(ConfigService)
 
         assert config is not None, "Should get ConfigService instance"
         assert config.spark is not None, "Should have real Spark session"
@@ -149,8 +149,8 @@ class TestConfigIntegration:
         configure_injector_with_config(initial_config={})
 
         # Get config service via interface
-        config1 = GlobalInjector.get(ConfigService)
-        config2 = GlobalInjector.get(ConfigService)
+        config1 = get_kindling_service(ConfigService)
+        config2 = get_kindling_service(ConfigService)
 
         # Should be same singleton
         assert config1 is config2, "Should return same singleton instance"

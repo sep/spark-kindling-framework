@@ -140,7 +140,8 @@ class DeltaAccessMode(Enum):
 
 ```python
 # Get entity provider
-entity_provider = GlobalInjector.get(EntityProvider)
+from kindling.injection import get_kindling_service
+entity_provider = get_kindling_service(EntityProvider)
 
 # Get entity definition
 entity = data_entity_registry.get_entity_definition("sales.transactions")
@@ -159,7 +160,8 @@ entity_provider.append_to_entity(new_records_df, entity)
 
 ```python
 # Get entity provider
-entity_provider = GlobalInjector.get(EntityProvider)
+from kindling.injection import get_kindling_service
+entity_provider = get_kindling_service(EntityProvider)
 
 # Define entity with merge columns
 @DataEntities.entity(

@@ -36,7 +36,7 @@ The framework consists of several modular components:
 # Import Kindling framework
 from kindling.data_entities import *
 from kindling.data_pipes import *
-from kindling.injection import *
+from kindling.injection import get_kindling_service
 
 # Define data entity
 @DataEntities.entity(
@@ -62,7 +62,7 @@ def transform_customers(customers_raw):
     return customers_raw.filter(...)
 
 # Execute pipeline
-executer = GlobalInjector.get(DataPipesExecution)
+executer = get_kindling_service(DataPipesExecution)
 executer.run_datapipes(["customers.transform"])
 ```
 
