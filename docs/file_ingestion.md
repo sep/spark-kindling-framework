@@ -101,7 +101,8 @@ class FileIngestionProcessor(ABC):
 
 ```python
 # Get the processor
-processor = GlobalInjector.get(FileIngestionProcessor)
+from kindling.injection import get_kindling_service
+processor = get_kindling_service(FileIngestionProcessor)
 
 # Process a specific ingestion entry
 processor.process_entry("customer_ingestion")
