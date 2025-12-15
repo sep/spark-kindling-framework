@@ -40,151 +40,31 @@ def _get_mssparkutils():
     raise ImportError("mssparkutils not available in this environment")
 
 
+class SynapseTokenCredential(TokenCredential):
+    """Token credential for Synapse using mssparkutils"""
+
+    def __init__(self, expires_on=None):
+        mssparkutils = _get_mssparkutils()
+        # Use simple "Synapse" audience - NOT a URL!
+        self.token = mssparkutils.credentials.getToken("Synapse")
+        self.expires_on = expires_on or (time.time() + 3600)
+
+    def get_token(self, *scopes, **kwargs):
+        return AccessToken(self.token, int(self.expires_on))
+
+
 class SynapseService(PlatformService):
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
         self._base_url = self._build_base_url()
 
-        # Initialize credential - use self as credential like Fabric does
-        # The get_token method below handles mssparkutils
-        self.credential = self
+        # Initialize credential using SynapseTokenCredential
+        self.credential = SynapseTokenCredential()
 
         # Initialize Synapse client
         from azure.synapse.artifacts import ArtifactsClient
 
-        self.client = ArtifactsClient(endpoint=self._base_url, credential=self.credential)
-
-    """Synapse-specific implementation of AppDeploymentService"""
-
-    def __init__(self, synapse_service, logger):
-        self.synapse_service = synapse_service
-        self.logger = logger
-
-    def submit_spark_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Submit a Spark job to Synapse
-
-        Args:
-            job_config: Contains 'script_path', 'app_name', 'environment_vars'
-
-        Returns:
-            Dict containing job_id and submission status
-        """
-        try:
-            mssparkutils = _get_mssparkutils()
-
-            if not mssparkutils:
-                raise RuntimeError("mssparkutils not available in current environment")
-
-            script_path = job_config.get("script_path")
-            app_name = job_config.get("app_name", "unknown-app")
-            env_vars = job_config.get("environment_vars", {})
-
-            # In Synapse, we typically run scripts directly in the notebook context
-            # For system testing, we'll simulate job submission by running the script
-
-            self.logger.info(f"Executing Synapse job for app: {app_name}")
-            self.logger.info(f"Script path: {script_path}")
-
-            # Generate a simple job ID based on timestamp and app name
-            import time
-
-            job_id = f"synapse-{app_name}-{int(time.time())}"
-
-            # Set environment variables if provided
-            import os
-
-            for key, value in env_vars.items():
-                os.environ[key] = str(value)
-
-            try:
-                # Execute the script in the current context
-                # For KDA packages, the script should be the main.py file
-                if script_path and self.synapse_service.exists(script_path):
-                    self.logger.info(f"Executing script: {script_path}")
-                    exec(open(script_path).read())
-                    status = "SUCCEEDED"
-                    message = f"Job {job_id} completed successfully"
-                else:
-                    status = "FAILED"
-                    message = f"Script not found: {script_path}"
-
-            except Exception as e:
-                status = "FAILED"
-                message = f"Job execution failed: {str(e)}"
-                self.logger.error(message)
-
-            return {
-                "job_id": job_id,
-                "status": status,
-                "message": message,
-                "submission_time": time.time(),
-            }
-
-        except Exception as e:
-            self.logger.error(f"Failed to submit Synapse job: {e}")
-            return {
-                "job_id": None,
-                "status": "FAILED",
-                "message": f"Job submission failed: {str(e)}",
-            }
-
-    def get_job_status(self, job_id: str) -> Dict[str, Any]:
-        """Get the status of a submitted job
-
-        Since Synapse notebooks run synchronously, this returns final status
-        """
-        # In a real implementation, you would track job states
-        # For now, we'll return a basic status
-        return {
-            "job_id": job_id,
-            "status": "COMPLETED",
-            "message": "Job status not tracked in notebook execution mode",
-        }
-
-    def cancel_job(self, job_id: str) -> bool:
-        """Cancel a running job
-
-        Not applicable for synchronous notebook execution
-        """
-        self.logger.warning(f"Job cancellation not supported for notebook execution: {job_id}")
-        return False
-
-    def get_job_logs(self, job_id: str) -> str:
-        """Get logs from a job
-
-        In notebook mode, logs are displayed in real-time
-        """
-        return f"Logs for {job_id} are displayed in the notebook output"
-
-    def create_job_config(
-        self, app_name: str, app_path: str, environment_vars: Optional[Dict[str, str]] = None
-    ) -> Dict[str, Any]:
-        """Create Synapse-specific job configuration"""
-
-        # For KDA packages, the main script is typically main.py
-        main_script = f"{app_path}/main.py"
-
-        return {
-            "app_name": app_name,
-            "script_path": main_script,
-            "environment_vars": environment_vars or {},
-            "platform": "synapse",
-            "execution_mode": "notebook",
-        }
-
-
-class SynapseService(PlatformService):
-    def __init__(self, config, logger):
-        self.config = config
-        self.logger = logger
-        self._base_url = self._build_base_url()
-
-        # Initialize credential and client
-        # Use DefaultAzureCredential for both notebook and batch contexts
-        from azure.identity import DefaultAzureCredential
-
-        self.credential = DefaultAzureCredential()
         self.client = ArtifactsClient(endpoint=self._base_url, credential=self.credential)
 
         # Cache system
@@ -192,8 +72,16 @@ class SynapseService(PlatformService):
         self._items_cache = []
         self._folders_cache = {}
         self._notebooks_cache = []
+        self._cache_initialized = False
 
-        self._initialize_cache()
+        try:
+            self._initialize_cache()
+        except Exception as e:
+            self.logger.error(f"Cache initialization failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            raise
 
     def _initialize_cache(self):
         """Initialize the cache with all workspace items and folders"""
@@ -202,8 +90,8 @@ class SynapseService(PlatformService):
 
             # Get all notebooks using Synapse SDK
             notebooks = self.client.notebook.get_notebooks_by_workspace()
-            self._notebooks_cache = []
 
+            self._notebooks_cache = []
             for notebook in notebooks:
                 self._notebooks_cache.append(
                     {
@@ -222,20 +110,20 @@ class SynapseService(PlatformService):
             # Get folders from notebook properties
             self._folders_cache = {}
             for notebook in self._notebooks_cache:
-                if "folder" in notebook.get("properties", {}):
-                    folder_info = notebook["properties"]["folder"]
+                properties = notebook.get("properties", {})
+                if "folder" in properties:
+                    folder_info = properties["folder"]
                     if isinstance(folder_info, dict) and "name" in folder_info:
                         folder_name = folder_info["name"]
                         if folder_name:
-                            # Use folder name as ID for simplicity
                             self._folders_cache[folder_name] = folder_name
 
             self._items_cache = self._notebooks_cache.copy()
             self._cache_initialized = True
 
-            self.logger.debug(f"Cache initialized with {len(self._items_cache)} total items")
-            self.logger.debug(f"Found {len(self._notebooks_cache)} notebooks")
-            self.logger.debug(f"Found {len(self._folders_cache)} folders")
+            self.logger.debug(
+                f"Cache initialized: {len(self._notebooks_cache)} notebooks, {len(self._folders_cache)} folders"
+            )
 
         except Exception as e:
             self.logger.warning(f"Failed to initialize cache: {e}")
@@ -254,21 +142,10 @@ class SynapseService(PlatformService):
     def get_platform_name(self):
         return "synapse"
 
-    def get_token(self, *scopes, **kwargs):
-        """Get access token using mssparkutils - implements TokenCredential interface"""
-        import time
-
-        from azure.core.credentials import AccessToken
-
-        mssparkutils = _get_mssparkutils()
-        if mssparkutils:
-            # Use mssparkutils to get token (works in both notebook and batch contexts)
-            token_str = mssparkutils.credentials.getToken("https://dev.azuresynapse.net")
-            # Return AccessToken with token and expiry (1 hour from now)
-            return AccessToken(token_str, int(time.time()) + 3600)
-        else:
-            # Fallback for non-Synapse environments (shouldn't happen in production)
-            raise RuntimeError("mssparkutils not available - cannot get authentication token")
+    def get_token(self, audience: str) -> str:
+        """Get access token for the specified audience"""
+        token = self.credential.get_token(audience)
+        return token.token
 
     def exists(self, path: str) -> bool:
         """Check if a file exists"""

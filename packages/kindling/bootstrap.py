@@ -423,24 +423,34 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
         # DEBUG: Check what the config value actually is
         load_local_value = config_service.get("kindling.bootstrap.load_local", True)
+        print(
+            f"🔍 DEBUG: kindling.bootstrap.load_local = {load_local_value} (type: {type(load_local_value).__name__})"
+        )
         logger.info(
             f"DEBUG: kindling.bootstrap.load_local = {load_local_value} (type: {type(load_local_value).__name__})"
         )
 
         # Also check the original flat key
         load_local_flat = config_service.get("load_local_packages", "NOT_SET")
+        print(
+            f"🔍 DEBUG: load_local_packages (flat) = {load_local_flat} (type: {type(load_local_flat).__name__})"
+        )
         logger.info(
             f"DEBUG: load_local_packages (flat) = {load_local_flat} (type: {type(load_local_flat).__name__})"
         )
 
         if load_local_value:
+            print(f"📦 Loading workspace packages (load_local=True)...")
             ignored_folders = config_service.get("kindling.bootstrap.ignored_folders", [])
+            print(f"📦 Getting all packages from NotebookManager...")
             workspace_packages = get_kindling_service(NotebookManager).get_all_packages(
                 ignored_folders=ignored_folders
             )
+            print(f"📦 Found {len(workspace_packages)} workspace packages: {workspace_packages}")
             load_workspace_packages(platformservice, workspace_packages, logger)
             logger.info(f"Loaded {len(workspace_packages)} workspace packages")
         else:
+            print(f"⏭️  Skipping workspace package loading (load_local=False)")
             logger.info("Skipping workspace package loading (load_local=False)")
 
         logger.info("Framework initialization complete")
