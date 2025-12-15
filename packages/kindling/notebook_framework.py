@@ -1111,33 +1111,33 @@ class NotebookLoader(NotebookManager):
         folders = self.get_all_folders()
         packages = {}
 
-        self.logger.debug(f"Searching folders {folders} for packages ...")
+        self.logger.debug(f"Searching {len(folders)} folders for packages...")
+
         for folder in folders:
-            self.logger.debug(f"Searching folders {folder} for packages ...")
             if folder not in ignored_folders:
                 if self._folder_has_notebooks(folder):
                     nbs_in_folder = self.get_notebooks_for_folder(folder)
                     nbs = [nb.name for nb in nbs_in_folder]
-                    self.logger.debug(f"nbs in {folder} = {nbs}")
+                    self.logger.debug(f"Checking folder '{folder}': {len(nbs)} notebooks")
 
                     init_nb_name = f"{folder.split('/')[-1]}_init"
 
                     if init_nb_name in nbs:
-                        self.logger.debug(f"{init_nb_name} in folder {folder}")
+                        self.logger.debug(f"Found package: {folder}")
                         packages[folder] = self.get_package_dependencies(folder)
                     else:
-                        self.logger.debug(f"{init_nb_name} not in folder {folder}")
+                        self.logger.debug(f"No package in {folder} (missing {init_nb_name})")
                 else:
-                    self.logger.debug(f"Folder ({folder}) has notebooks returned false")
+                    self.logger.debug(f"Folder {folder} has no notebooks")
             else:
-                self.logger.debug(f"{folder} in ignored folders ...")
+                self.logger.debug(f"Ignoring folder: {folder}")
 
         package_list = self._resolve_dependency_order(packages)
 
         filtered_package_list = [pkg for pkg in package_list if pkg in packages.keys()]
 
         self.logger.debug(
-            f"Discovered {len(filtered_package_list)} packages: {filtered_package_list}"
+            f"Package discovery complete: {len(filtered_package_list)} packages found"
         )
         return filtered_package_list
 
