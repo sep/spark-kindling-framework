@@ -1116,17 +1116,18 @@ class NotebookLoader(NotebookManager):
         for folder in folders:
             if folder not in ignored_folders:
                 if self._folder_has_notebooks(folder):
+                    folder_name = folder.split("/")[-1]
                     nbs_in_folder = self.get_notebooks_for_folder(folder)
                     nbs = [nb.name for nb in nbs_in_folder]
                     self.logger.debug(f"Checking folder '{folder}': {len(nbs)} notebooks")
 
-                    init_nb_name = f"{folder.split('/')[-1]}_init"
+                    init_nb_name = f"{folder_name}_init"
 
                     if init_nb_name in nbs:
-                        self.logger.debug(f"Found package: {folder}")
-                        packages[folder] = self.get_package_dependencies(folder)
+                        self.logger.debug(f"Found package: {folder_name}")
+                        packages[folder_name] = self.get_package_dependencies(folder_name)
                     else:
-                        self.logger.debug(f"No package in {folder} (missing {init_nb_name})")
+                        self.logger.debug(f"No package in {folder_name} (missing {init_nb_name})")
                 else:
                     self.logger.debug(f"Folder {folder} has no notebooks")
             else:
@@ -1342,7 +1343,7 @@ class NotebookLoader(NotebookManager):
     def _extract_cell_code(self, cell) -> str:
         if isinstance(cell.source, list):
             # Synapse cells already have \n at the end of each line
-            return "".join(str(line) for line in cell.source)
+            return "\n".join(str(line.rstrip("\n")) for line in cell.source)
         else:
             return str(cell.source)
 
