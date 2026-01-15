@@ -1125,7 +1125,7 @@ class NotebookLoader(NotebookManager):
 
                     if init_nb_name in nbs:
                         self.logger.debug(f"Found package: {folder_name}")
-                        packages[folder_name] = self.get_package_dependencies(folder_name)
+                        packages[folder] = self.get_package_dependencies(folder_name)
                     else:
                         self.logger.debug(f"No package in {folder_name} (missing {init_nb_name})")
                 else:
