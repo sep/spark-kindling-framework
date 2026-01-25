@@ -1,0 +1,9 @@
+kindling:
+  extensions:
+    - kindling-otel-azure>=0.1.0.4
+
+  telemetry:
+    azure_monitor:
+      enable_logging: true
+      enable_tracing: true
+      connection_string: "${APPLICATIONINSIGHTS_CONNECTION_STRING}"

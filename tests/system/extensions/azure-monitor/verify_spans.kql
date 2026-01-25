@@ -1,0 +1,83 @@
+// Query to verify Azure Monitor OpenTelemetry spans were exported
+// Run this in Application Insights > Logs (Analytics)
+
+// 1. Check for ANY spans from the test app (last 24 hours)
+traces
+| where timestamp > ago(24h)
+| where customDimensions.SpanId != "" or customDimensions["_MS.ProcessedByMetricExtractors"] != ""
+| where message contains "otel-azure-test" or cloud_RoleName contains "otel-azure-test"
+| project timestamp, message, operation_Name, operation_Id, customDimensions, severityLevel
+| order by timestamp desc
+| take 50
+
+// 2. Look for specific test operations (spans we created)
+// traces
+// | where timestamp > ago(24h)
+// | where operation_Name in ("test_operation", "nested_operation", "correlated_operation")
+// | project timestamp, operation_Name, operation_Id, operation_ParentId, customDimensions, message
+// | order by timestamp desc
+
+// 3. Check for span attributes we set in test app
+// traces
+// | where timestamp > ago(24h)
+// | where customDimensions.["test.attribute"] == "test_value"
+//    or customDimensions.["nested.data"] == "nested_value"
+// | project timestamp, operation_Name, customDimensions, message
+// | order by timestamp desc
+
+// 4. Verify parent-child span relationships
+// traces
+// | where timestamp > ago(24h)
+// | where operation_Name in ("test_operation", "nested_operation")
+// | extend parentId = tostring(customDimensions.operation_ParentId)
+// | project timestamp, operation_Name, operation_Id, parentId, customDimensions
+// | order by timestamp desc
+
+// 5. Check dependencies table for span data (OpenTelemetry may export as dependencies)
+// dependencies
+// | where timestamp > ago(24h)
+// | where name in ("test_operation", "nested_operation", "correlated_operation")
+// | project timestamp, name, operation_Id, operation_ParentId, duration, data, customDimensions
+// | order by timestamp desc
+
+// 6. Get trace hierarchy (if spans exported)
+// let targetTraceId = "your_trace_id_here";
+// union traces, dependencies
+// | where timestamp > ago(24h)
+// | where operation_Id == targetTraceId
+// | project timestamp, itemType, name = coalesce(message, name), operation_Id, operation_ParentId, customDimensions
+// | order by timestamp asc
+
+// 7. Count span exports by operation name
+// traces
+// | where timestamp > ago(24h)
+// | where isnotempty(customDimensions.SpanId)
+// | summarize count() by operation_Name
+// | order by count_ desc
+
+// 8. Check for logs WITH trace context (proves correlation works)
+// traces
+// | where timestamp > ago(24h)
+// | where message contains "trace_id:" or message contains "span_id:"
+// | extend traceId = extract("trace_id: ([a-f0-9]+)", 1, message)
+// | extend spanId = extract("span_id: ([a-f0-9]+)", 1, message)
+// | where isnotempty(traceId) or isnotempty(spanId)
+// | project timestamp, message, operation_Id, traceId, spanId
+// | order by timestamp desc
+
+// 9. Get all telemetry from most recent test run (replace with your job timestamp)
+// let testRunTime = datetime('2026-01-23T19:45:00Z'); // Adjust to your test run time
+// union traces, dependencies, requests, exceptions
+// | where timestamp between ((testRunTime - 5m) .. (testRunTime + 10m))
+// | where cloud_RoleName contains "otel-azure-test"
+//    or message contains "otel-azure-test"
+//    or name contains "otel-azure-test"
+// | project timestamp, itemType, name = coalesce(message, name), operation_Id, duration, customDimensions
+// | order by timestamp asc
+
+// INSTRUCTIONS:
+// 1. Uncomment ONE query at a time (remove the leading //)
+// 2. Run in Application Insights > Logs
+// 3. Start with query #1 to see if ANY data arrived
+// 4. If query #1 shows data, try query #5 (dependencies table)
+// 5. If no data, check cloud_RoleName and adjust filters

@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling"
-version = "0.1.5"
+version = "0.1.6.5"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -52,6 +52,7 @@ deploy-release = { cmd = "python scripts/deploy.py --release" }
 deploy-synapse = { cmd = "python scripts/deploy.py --platform synapse" }
 deploy-databricks = { cmd = "python scripts/deploy.py --platform databricks" }
 deploy-fabric = { cmd = "python scripts/deploy.py --platform fabric" }
+deploy-extensions = { cmd = "python scripts/deploy_extensions.py kindling-otel-azure" }
 upload = { shell = "bash scripts/upload_to_storage.sh" }
 upload-release = { shell = "bash scripts/upload_to_storage.sh --release" }
 
@@ -66,12 +67,17 @@ setup-github-secrets = { shell = "bash scripts/set_github_secrets.sh" }
 test = "pytest tests/ -v"
 test-unit = "pytest tests/unit/ -v"
 test-integration = "pytest tests/integration/ -v"
-test-system = "pytest tests/system/ -v -s -m system"
-test-system-fabric = "pytest tests/system/ -v -s -m fabric"
-test-system-synapse = "pytest tests/system/ -v -s -m synapse"
-test-system-databricks = "pytest tests/system/ -v -s -m databricks"
+test-system = "pytest tests/system/core/ -v -s -m system"
+test-system-fabric = "pytest tests/system/core/ -v -s -m fabric"
+test-system-synapse = "pytest tests/system/core/ -v -s -m synapse"
+test-system-databricks = "pytest tests/system/core/ -v -s -m databricks"
+test-extension = { cmd = "pytest tests/system/extensions/${extension}/ -v -s -m ${platform}", args = [{name = "extension", default = "*", positional = false}, {name = "platform", default = "fabric", positional = false}] }
 test-quick = "pytest tests/unit/ tests/integration/ -v"
 test-coverage = "pytest tests/ -v --cov=kindling --cov-report=html --cov-report=term"
+cleanup = { cmd = "python scripts/cleanup_test_resources.py --all" }
+cleanup-fabric = { cmd = "python scripts/cleanup_test_resources.py --platform fabric" }
+cleanup-synapse = { cmd = "python scripts/cleanup_test_resources.py --platform synapse" }
+cleanup-databricks = { cmd = "python scripts/cleanup_test_resources.py --platform databricks" }
 
 # Code quality tasks
 format = "black packages/ tests/ scripts/"

@@ -122,8 +122,11 @@ class TestDynaconfConfigInitialization:
         # Verify Dynaconf was initialized with correct parameters
         call_kwargs = mock_dynaconf_class.call_args[1]
         assert call_kwargs["settings_files"] == config_files, "Should pass config files"
-        assert call_kwargs["env"] == "production", "Should use production environment"
-        assert call_kwargs["environments"] is True, "Should enable environments"
+        # Note: env parameter not passed because environments=False
+        # Kindling uses separate files (settings.yaml, production.yaml) not environment blocks
+        assert (
+            call_kwargs["environments"] is False
+        ), "Should disable environments (using separate files)"
         assert call_kwargs["MERGE_ENABLED_FOR_DYNACONF"] is True, "Should enable merging"
         assert call_kwargs["envvar_prefix"] == "KINDLING", "Should use KINDLING prefix"
 
