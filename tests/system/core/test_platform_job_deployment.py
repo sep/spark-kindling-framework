@@ -115,7 +115,7 @@ def job_config_provider(platform_client):
         """Generate platform-specific job config with unique names"""
         unique_suffix = str(uuid.uuid4())[:8]
         config = {
-            "job_name": f"{platform}-test-job-{unique_suffix}",
+            "job_name": f"systest-job-deploy-{unique_suffix}",
             "app_name": f"universal-test-app-{unique_suffix}",
             "entry_point": "main.py",  # Universal test app entry point
             "test_id": unique_suffix,  # Pass test_id for log tracking
@@ -261,7 +261,8 @@ class TestPlatformJobDeployment:
 
                     print(f"   Retrieved {len(log_lines)} log lines from {log_source}")
 
-                    if log_lines and len(log_lines) > 5:  # Need substantial logs, not just headers
+                    # Need substantial logs, not just headers
+                    if log_lines and len(log_lines) > 5:
                         print(f"\n{'='*80}")
                         print("JOB LOGS:")
                         print("=" * 80)
@@ -456,6 +457,13 @@ class TestPlatformJobDeployment:
 
     def _cleanup_test(self, api_client, job_id: str, app_name: str):
         """Clean up job and data-app files"""
+        # Skip cleanup if environment variable is set
+        import os
+
+        if os.environ.get("SKIP_TEST_CLEANUP", "").lower() == "true":
+            print(f"⏸️  Skipping cleanup (SKIP_TEST_CLEANUP=true) - job: {job_id}, app: {app_name}")
+            return
+
         # Clean up job
         try:
             success = api_client.delete_job(job_id=job_id)

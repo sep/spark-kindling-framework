@@ -556,25 +556,28 @@ BOOTSTRAP_CONFIG = {
 
 ```yaml
 # settings.yaml
-default:
-  AZURE:
-    storage_account: mystorageacct
-    tenant_id: ${AZURE_TENANT_ID}
-    client_id: ${AZURE_CLIENT_ID}
-    client_secret: ${AZURE_CLIENT_SECRET}
+AZURE:
+  storage_account: mystorageacct
+  tenant_id: ${AZURE_TENANT_ID}
+  client_id: ${AZURE_CLIENT_ID}
+  client_secret: ${AZURE_CLIENT_SECRET}
 
-  SPARK_CONFIGS:
-    fs.azure.account.auth.type.mystorageacct.dfs.core.windows.net: OAuth
-    fs.azure.account.oauth.provider.type.mystorageacct.dfs.core.windows.net:
-      org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider
+SPARK_CONFIGS:
+  fs.azure.account.auth.type.mystorageacct.dfs.core.windows.net: OAuth
+  fs.azure.account.oauth.provider.type.mystorageacct.dfs.core.windows.net:
+    org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider
+```
 
-development:
-  AZURE:
-    storage_account: devstorageacct
+```yaml
+# development.yaml (environment-specific overrides)
+AZURE:
+  storage_account: devstorageacct
+```
 
-production:
-  AZURE:
-    storage_account: prodstorageacct
+```yaml
+# production.yaml (environment-specific overrides)
+AZURE:
+  storage_account: prodstorageacct
 ```
 
 ```python
