@@ -61,10 +61,11 @@ class DynaconfConfig(ConfigService):
         settings_files = config_files or []
 
         # Load YAML configs first
+        # NOTE: environments=False because Kindling uses separate files (settings.yaml, development.yaml)
+        # NOT environment blocks within files (default:, development:)
         self.dynaconf = Dynaconf(
             settings_files=settings_files,
-            environments=True,
-            env=environment,
+            environments=False,
             MERGE_ENABLED_FOR_DYNACONF=True,
             envvar_prefix="KINDLING",
         )
@@ -87,6 +88,7 @@ class DynaconfConfig(ConfigService):
             "kindling.BOOTSTRAP.load_local": "load_local_packages",
             "kindling.BOOTSTRAP.load_lake": "use_lake_packages",
             "kindling.REQUIRED_PACKAGES": "required_packages",
+            "kindling.EXTENSIONS": "extensions",
             "kindling.IGNORED_FOLDERS": "ignored_folders",
         }
 
@@ -136,6 +138,7 @@ class DynaconfConfig(ConfigService):
             "load_local_packages": "BOOTSTRAP.load_local",
             "use_lake_packages": "BOOTSTRAP.load_lake",
             "required_packages": "REQUIRED_PACKAGES",
+            "extensions": "EXTENSIONS",
             "ignored_folders": "IGNORED_FOLDERS",
         }
 

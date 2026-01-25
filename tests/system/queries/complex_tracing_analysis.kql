@@ -1,0 +1,136 @@
+// Application Insights queries for Complex Tracing Test verification
+
+// 1. Overview: All pipelines and their durations
+dependencies
+| where timestamp > ago(1h)
+| where name == "data_pipeline"
+| extend recordCount = toint(customDimensions.["pipeline.record_count"])
+| project timestamp, operation_Id, duration, recordCount, customDimensions
+| order by timestamp desc
+
+// 2. Pipeline stage breakdown by duration
+dependencies
+| where timestamp > ago(1h)
+| where name in ("validate_data", "transform_data", "enrich_data", "aggregate_data")
+| summarize
+    count = count(),
+    avg_duration = avg(duration),
+    min_duration = min(duration),
+    max_duration = max(duration),
+    p50_duration = percentile(duration, 50),
+    p95_duration = percentile(duration, 95)
+    by name
+| order by avg_duration desc
+
+// 3. Batch processing analysis - find slow batches
+dependencies
+| where timestamp > ago(1h)
+| where name startswith "transform_batch_"
+| extend
+    batchNum = toint(extract("transform_batch_(\\d+)", 1, name)),
+    isSlow = tobool(customDimensions.["batch.slow"])
+| summarize
+    count = count(),
+    slow_count = countif(isSlow == true),
+    avg_duration = avg(duration),
+    max_duration = max(duration)
+    by batchNum
+| extend slow_pct = (slow_count * 100.0) / count
+| order by batchNum asc
+
+// 4. Enrichment source performance comparison
+dependencies
+| where timestamp > ago(1h)
+| where name startswith "lookup_"
+| extend
+    source = replace(@"lookup_", "", name),
+    cacheHitRate = todouble(customDimensions.["source.cache_hit_rate"])
+| summarize
+    call_count = count(),
+    avg_duration = avg(duration),
+    avg_cache_hit_rate = avg(cacheHitRate)
+    by source
+| order by avg_duration desc
+
+// 5. Error and retry analysis
+dependencies
+| where timestamp > ago(1h)
+| where name in ("error_prone_operation", "retry_operation")
+| extend status = tostring(customDimensions.["operation.status"])
+| summarize
+    count = count(),
+    failed = countif(name == "error_prone_operation" and status == "failed"),
+    retried = countif(name == "retry_operation")
+    by name
+| extend failure_rate = iff(name == "error_prone_operation", (failed * 100.0) / count, 0.0)
+
+// 6. Full span hierarchy for a single pipeline
+let targetOperationId = "SELECT_ONE_FROM_QUERY_1";  // Replace with actual operation_Id
+dependencies
+| where timestamp > ago(1h)
+| where operation_Id == targetOperationId
+| extend
+    level = case(
+        name == "tracing_system_test", 0,
+        name == "data_pipeline", 1,
+        name in ("validate_data", "transform_data", "enrich_data", "aggregate_data", "error_prone_operation"), 2,
+        name startswith "transform_batch_" or name startswith "lookup_" or name startswith "calculate_" or name == "group_by_operation", 3,
+        name == "retry_operation", 4,
+        99
+    )
+| project timestamp, level, name, duration, operation_ParentId, customDimensions
+| order by timestamp asc, level asc
+
+// 7. Performance distribution across all operations
+dependencies
+| where timestamp > ago(1h)
+| where name != "tracing_system_test"  // Exclude top-level span
+| summarize
+    count = count(),
+    avg_duration = avg(duration),
+    operations = make_set(name, 100)
+    by bin(duration, 50)  // 50ms buckets
+| order by duration asc
+
+// 8. Record count vs pipeline duration correlation
+dependencies
+| where timestamp > ago(1h)
+| where name == "data_pipeline"
+| extend recordCount = toint(customDimensions.["pipeline.record_count"])
+| summarize
+    avg_duration = avg(duration),
+    pipeline_count = count()
+    by recordCount
+| order by recordCount asc
+
+// 9. Calculate spans per pipeline (measure telemetry volume)
+dependencies
+| where timestamp > ago(1h)
+| where operation_Id != ""
+| summarize
+    span_count = count(),
+    pipeline_name = any(name),
+    total_duration = max(duration)
+    by operation_Id
+| where pipeline_name == "data_pipeline" or span_count > 10
+| project operation_Id, span_count, total_duration
+| order by span_count desc
+
+// 10. Time series: Pipeline throughput over time
+dependencies
+| where timestamp > ago(1h)
+| where name == "data_pipeline"
+| extend recordCount = toint(customDimensions.["pipeline.record_count"])
+| summarize
+    pipeline_count = count(),
+    total_records = sum(recordCount),
+    avg_duration = avg(duration)
+    by bin(timestamp, 5m)
+| extend throughput_records_per_sec = (total_records * 1.0) / (avg_duration / 1000.0)
+| order by timestamp asc
+
+// USAGE INSTRUCTIONS:
+// 1. Run queries 1 and 2 first to verify data is present
+// 2. Query 3-5 provide detailed stage analysis
+// 3. Query 6 requires an operation_Id from query 1
+// 4. Queries 7-10 provide performance analytics

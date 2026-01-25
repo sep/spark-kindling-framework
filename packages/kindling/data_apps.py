@@ -827,7 +827,10 @@ class DataAppManager(DataAppRunner):
             return self._create_app_config(config_data, app_name, environment)
         except Exception as e:
             # Config file is optional - if not found, return default config
-            self.logger.info(f"No config file found for {app_name}, using default config: {str(e)}")
+            error_msg = str(e).split("\n")[0] if "\n" in str(e) else str(e)
+            self.logger.debug(
+                f"No config file found for {app_name}, using default config: {error_msg}"
+            )
             return DataAppConfig(
                 name=app_name,
                 description=f"Auto-generated config for {app_name}",
@@ -913,7 +916,8 @@ class DataAppManager(DataAppRunner):
                 )
 
             except Exception as e:
-                self.logger.debug(f"No requirements.txt found for {app_name}: {str(e)}")
+                error_msg = str(e).split("\n")[0] if "\n" in str(e) else str(e)
+                self.logger.debug(f"No requirements.txt found for {app_name}: {error_msg}")
 
             # Load lake dependencies
             lake_requirements = self._parse_lake_requirements(app_name)
@@ -942,7 +946,8 @@ class DataAppManager(DataAppRunner):
             return lake_requirements
 
         except Exception as e:
-            self.logger.debug(f"No lake-reqs.txt found for {app_name}: {str(e)}")
+            error_msg = str(e).split("\n")[0] if "\n" in str(e) else str(e)
+            self.logger.debug(f"No lake-reqs.txt found for {app_name}: {error_msg}")
             return []
 
     def _extract_package_name(self, package_spec: str) -> str:

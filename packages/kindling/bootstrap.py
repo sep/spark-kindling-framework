@@ -122,6 +122,7 @@ default:
       load_lake: false
       load_local: true
       required_packages: []
+      extensions: []
       ignored_folders: []
 
     delta:
@@ -280,28 +281,253 @@ def is_framework_initialized() -> bool:
         return False
 
 
-def install_bootstrap_dependencies(logger, bootstrap_config):
-    """Install packages needed for framework bootstrap"""
+def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_path=None):
+    """Install packages needed for framework bootstrap
 
-    def is_package_installed(package_name):
+    Args:
+        logger: Logger instance
+        bootstrap_config: Bootstrap configuration dict
+        artifacts_storage_path: Path to artifacts storage (for loading extension wheels)
+    """
+
+    def get_import_name(package_spec: str) -> str:
+        """Convert pip package name to import name (dash to underscore)"""
+        # Strip version specifiers
+        base_package = package_spec.split(">=")[0].split("==")[0].split("[")[0].strip()
+        # Convert dashes to underscores (PEP 8 convention)
+        return base_package.replace("-", "_")
+
+    def get_package_name(package_spec: str) -> str:
+        """Extract base package name (with dashes) from package spec"""
+        return package_spec.split(">=")[0].split("==")[0].split("[")[0].strip()
+
+    def is_package_installed(package_spec):
+        """Check if package is installed by checking if module can be imported"""
         try:
-            spec = importlib.util.find_spec(package_name)
+            import_name = get_import_name(package_spec)
+            spec = importlib.util.find_spec(import_name)
             return spec is not None
         except ValueError as e:
             if ".__spec__ is None" in str(e):
                 return False
             return False
 
-    def load_if_needed(package_name):
-        if not is_package_installed(package_name):
+    def load_if_needed(package_spec):
+        """Install package if not already installed (from PyPI)"""
+        if not is_package_installed(package_spec):
+            print(f"📥 Installing package: {package_spec}")
+            logger.info(f"Installing package: {package_spec}")
             try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-                logger.debug(f"Installed package: {package_name}")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", package_spec])
+                print(f"✅ Successfully installed package: {package_spec}")
+                logger.info(f"Successfully installed package: {package_spec}")
             except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to install {package_name}: {e}")
+                print(f"❌ Failed to install {package_spec}: {e}")
+                logger.error(f"Failed to install {package_spec}: {e}")
+        else:
+            import_name = get_import_name(package_spec)
+            print(f"✓ Package already installed: {import_name}")
+            logger.info(f"Package already installed: {import_name}")
 
-    for package in bootstrap_config.get("required_packages", []):
+    def load_extension_wheel(package_spec, storage_utils, artifacts_path):
+        """Install extension wheel from artifacts storage (like kindling-otel-azure)"""
+        if is_package_installed(package_spec):
+            import_name = get_import_name(package_spec)
+            print(f"✓ Extension already installed: {import_name}")
+            logger.info(f"Extension already installed: {import_name}")
+            return
+
+        import os
+        import tempfile
+
+        package_name = get_package_name(package_spec)
+        # Convert to wheel format: kindling-otel-azure -> kindling_otel_azure
+        wheel_prefix = package_name.replace("-", "_")
+
+        # Extract version requirement if present
+        version_req = None
+        version_operator = None
+        if ">=" in package_spec:
+            version_req = package_spec.split(">=")[1].strip()
+            version_operator = ">="
+        elif "==" in package_spec:
+            version_req = package_spec.split("==")[1].strip()
+            version_operator = "=="
+
+        base_path = artifacts_path.rstrip("/")
+
+        print(f"📥 Installing extension from artifacts: {package_spec}")
+        logger.info(f"Installing extension from artifacts: {package_spec}")
+
+        try:
+            # Create temp directory
+            temp_dir = tempfile.mkdtemp(prefix="kindling_ext_")
+
+            # List directory contents to find the exact wheel filename
+            # storage_utils.fs.ls() returns list of file info
+            packages_dir = f"{base_path}/packages"
+            print(f"   Listing directory: {packages_dir}")
+
+            try:
+                # List all files in packages directory
+                files = storage_utils.fs.ls(packages_dir)
+
+                # Find matching wheel file
+                # files is a list of FileInfo objects with .path attribute
+                matching_wheels = []
+                for file_info in files:
+                    file_path = file_info.path if hasattr(file_info, "path") else str(file_info)
+                    filename = file_path.split("/")[-1]
+
+                    # Match: kindling_otel_azure-*.whl or kindling-otel-azure-*.whl
+                    if (
+                        filename.startswith(wheel_prefix) or filename.startswith(package_name)
+                    ) and filename.endswith(".whl"):
+
+                        # Extract version from wheel filename
+                        # Format: package_name-version-py3-none-any.whl
+                        if filename.startswith(wheel_prefix):
+                            # kindling_otel_azure-0.1.0-py3-none-any.whl -> 0.1.0
+                            parts = filename[len(wheel_prefix) + 1 :].split("-")
+                        else:
+                            # kindling-otel-azure-0.1.0-py3-none-any.whl -> 0.1.0
+                            parts = filename[len(package_name) + 1 :].split("-")
+
+                        if parts:
+                            wheel_version = parts[0]
+
+                            # Check version requirement if specified
+                            if version_req:
+                                try:
+                                    from packaging import version
+
+                                    wheel_ver = version.parse(wheel_version)
+                                    req_ver = version.parse(version_req)
+
+                                    if version_operator == ">=":
+                                        if wheel_ver >= req_ver:
+                                            matching_wheels.append((filename, wheel_version))
+                                    elif version_operator == "==":
+                                        if wheel_ver == req_ver:
+                                            matching_wheels.append((filename, wheel_version))
+                                except Exception:
+                                    # If version parsing fails, just add it
+                                    matching_wheels.append((filename, wheel_version))
+                            else:
+                                # No version requirement, add all matching wheels
+                                matching_wheels.append((filename, wheel_version))
+
+                if not matching_wheels:
+                    print(
+                        f"❌ No wheel found matching '{wheel_prefix}' or '{package_name}' in {packages_dir}"
+                    )
+                    logger.error(f"Extension wheel not found: {package_spec}")
+                    return
+
+                # If multiple matches, use the highest version
+                if len(matching_wheels) > 1:
+                    try:
+                        from packaging import version
+
+                        matching_wheels.sort(key=lambda x: version.parse(x[1]), reverse=True)
+                    except Exception:
+                        pass  # Just use first one if sorting fails
+
+                # Extract filename from tuple
+                wheel_filename = matching_wheels[0][0]
+                print(f"   Found wheel: {wheel_filename}")
+
+                # Download the exact wheel file
+                remote_wheel_path = f"{packages_dir}/{wheel_filename}"
+                local_path = os.path.join(temp_dir, wheel_filename)
+
+                print(f"   Downloading: {remote_wheel_path}")
+                storage_utils.fs.cp(remote_wheel_path, f"file://{local_path}")
+
+                if not os.path.exists(local_path):
+                    print(f"❌ Failed to download wheel to {local_path}")
+                    logger.error(f"Failed to download extension wheel: {package_spec}")
+                    return
+
+                print(f"   ✅ Downloaded wheel ({os.path.getsize(local_path)} bytes)")
+
+                # Install the downloaded wheel
+                print(f"📦 Installing {wheel_filename}...")
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        local_path,
+                        "--disable-pip-version-check",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+
+                if result.returncode == 0:
+                    print(f"✅ Successfully installed extension: {package_spec}")
+                    logger.info(f"Successfully installed extension: {package_spec}")
+                else:
+                    print(f"❌ Failed to install extension {package_spec}")
+                    print(f"   stdout: {result.stdout}")
+                    print(f"   stderr: {result.stderr}")
+                    logger.error(f"Failed to install extension {package_spec}: {result.stderr}")
+
+            except Exception as e:
+                print(f"❌ Failed to list or download extension wheel: {e}")
+                logger.error(f"Failed to find extension wheel {package_spec}: {e}")
+                return
+
+            # Cleanup
+            import shutil
+
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        except Exception as e:
+            print(f"❌ Failed to install extension {package_spec}: {e}")
+            logger.error(f"Failed to install extension {package_spec}: {e}")
+
+    # Install required packages (dependencies - no import, from PyPI)
+    required = bootstrap_config.get("required_packages", [])
+    print(f"📦 Required packages: {required}")
+    logger.info(f"Required packages: {required}")
+    for package in required:
         load_if_needed(package)
+
+    # Install and import extensions (Kindling extensions from artifacts storage)
+    extensions = bootstrap_config.get("extensions", [])
+    print(f"🔌 Extensions to load: {extensions}")
+    logger.info(f"Extensions to load: {extensions}")
+
+    if extensions and artifacts_storage_path:
+        # Get storage utils for downloading extension wheels
+        storage_utils = _get_storage_utils()
+        if not storage_utils:
+            print(
+                "⚠️  Warning: Storage utilities not available, cannot load extensions from artifacts"
+            )
+            logger.warning("Storage utilities not available for extension loading")
+        else:
+            for extension in extensions:
+                # Install the extension from artifacts storage
+                print(f"🔌 Loading extension: {extension}")
+                load_extension_wheel(extension, storage_utils, artifacts_storage_path)
+
+                # Import to trigger @GlobalInjector.singleton_autobind() decorators
+                import_name = get_import_name(extension)
+                print(f"📦 Importing extension module: {import_name}")
+                try:
+                    importlib.import_module(import_name)
+                    print(f"✅ Loaded extension: {import_name}")
+                    logger.info(f"Loaded extension: {import_name}")
+                except ImportError as e:
+                    print(f"❌ Failed to import extension {import_name}: {e}")
+                    logger.warning(f"Failed to import extension {import_name}: {e}")
+    elif extensions:
+        print("⚠️  Warning: Extensions specified but no artifacts_storage_path provided")
+        logger.warning("Extensions specified but no artifacts_storage_path for loading wheels")
 
 
 def initialize_platform_services(platform, config, logger):
@@ -407,7 +633,27 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
     try:
         required_packages = config_service.get("kindling.bootstrap.required_packages", [])
-        install_bootstrap_dependencies(logger, {"required_packages": required_packages})
+        extensions = config_service.get("kindling.extensions", [])
+
+        # Debug: Print entire kindling config section
+        print(f"🔍 DEBUG: Full kindling config section:")
+        try:
+            kindling_config = config_service.get("kindling", {})
+            print(f"   Keys in kindling config: {list(kindling_config.keys())}")
+            if "extensions" in kindling_config:
+                print(f"   kindling.extensions value: {kindling_config['extensions']}")
+            else:
+                print(f"   ❌ 'extensions' key NOT FOUND in kindling config")
+        except Exception as e:
+            print(f"   Error reading kindling config: {e}")
+
+        print(f"📦 Required packages: {required_packages}")
+        print(f"🔌 Extensions: {extensions}")
+        install_bootstrap_dependencies(
+            logger,
+            {"required_packages": required_packages, "extensions": extensions},
+            artifacts_storage_path=artifacts_storage_path,
+        )
 
         # Check for explicit platform in config (supports both nested and flat config keys)
         explicit_platform = (
