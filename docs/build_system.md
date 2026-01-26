@@ -1,6 +1,27 @@
 # Platform Wheel Build System
 
-This document describes the final Poetry-based build system that replaced the custom 400+ line build script.
+This document describes the Poetry-based build system that replaced the custom 400+ line build script.
+
+## Overview
+
+**Current Version:** 0.2.0
+**Build Tool:** Poe the Poet (poethepoet) task runner with Poetry
+**Platforms:** Microsoft Fabric, Azure Synapse Analytics, Databricks
+
+## Build Commands
+
+```bash
+# Build all platform wheels
+poe build
+
+# Deploy to Azure storage (platform-specific during testing)
+poe deploy-fabric      # Deploy ONLY Fabric wheel
+poe deploy-databricks  # Deploy ONLY Databricks wheel
+poe deploy-synapse     # Deploy ONLY Synapse wheel
+poe deploy             # Deploy ALL wheels (avoid during testing)
+```
+
+**Important:** During testing, deploy only the platform wheel you're testing to avoid pip caching issues.
 
 ## ✅ **Architecture: Single Wheel Per Platform**
 
@@ -27,16 +48,15 @@ This document describes the final Poetry-based build system that replaced the cu
 ### **Wheel Output**
 ```bash
 # Each wheel contains: Core + Platform-specific implementation + Dependencies
-kindling-0.1.0-py3-none-synapse.whl      # 76K - Core + Synapse + Azure SDKs
-kindling-0.1.0-py3-none-databricks.whl   # 76K - Core + Databricks + Databricks SDK
-kindling-0.1.0-py3-none-fabric.whl       # 76K - Core + Fabric + Fabric SDKs
+kindling_fabric-0.2.0-py3-none-any.whl      # Core + Fabric + Fabric SDKs
+kindling_synapse-0.2.0-py3-none-any.whl     # Core + Synapse + Azure SDKs
+kindling_databricks-0.2.0-py3-none-any.whl  # Core + Databricks + Databricks SDK
 ```
 
 ### **Platform Tag Compatibility**
-- ✅ Maintains `f"-{current_env}.whl"` naming convention
-- ✅ Your existing `app_framework.py` wheel selection **unchanged**
-- ✅ Platform detection logic **unchanged**
-- ✅ Deployment workflow **unchanged**
+- ✅ Platform-specific wheel names (kindling_{platform}-version)
+- ✅ Auto-detection of platform in bootstrap
+- ✅ Deployment workflow via `poe deploy-{platform}`
 
 ### **File Exclusion Strategy**
 Each wheel contains **only its platform implementation**:
@@ -61,58 +81,65 @@ python scripts/build_platform_wheels.py --all
 # Hardcoded pyproject.toml generation
 ```
 
-### **New Poetry Script**
+### **New Poetry + Poe System**
 ```bash
-./scripts/build_platform_wheels.sh
-# 89 lines of clean shell script
+poe build  # Build all platform wheels
 # Standard Poetry build system
-# Platform-specific configs
-# Post-build wheel customization
+# Platform-specific configs in pyproject.toml
+# Poe the Poet task automation
 ```
 
-## **Key Files Created**
+## **Key Configuration**
 
-### **Platform-Specific Poetry Configs**
-- `pyproject-synapse.toml` - Synapse platform build config
-- `pyproject-databricks.toml` - Databricks platform build config
-- `pyproject-fabric.toml` - Fabric platform build config
+### **Poetry Configuration**
+- `pyproject.toml` - Main project configuration with platform-specific extras
+- `tool.poetry.extras` - Platform-specific dependencies
+- `tool.poe.tasks` - Build and deployment automation
 
-### **Build Script**
-- `scripts/build_platform_wheels.sh` - Clean Poetry-based builder
-
-### **Extension Framework**
-- `packages/kindling-databricks-dlt/` - Delta Live Tables extension (ready to build separately)
+### **Poe Tasks**
+See `pyproject.toml` `[tool.poe.tasks]` section for all available tasks:
+- `build` - Build platform-specific wheels
+- `deploy-fabric` / `deploy-databricks` / `deploy-synapse` - Deploy to Azure storage
+- `test` / `test-unit` / `test-integration` - Run tests
+- `cleanup` - Clean test artifacts
 
 ## **Deployment Simplicity Achieved**
 
 ### **Single Wheel Installation**
 ```bash
-# One command per platform - exactly what you wanted
-pip install output/wheels/kindling-0.1.0-py3-none-synapse.whl
-pip install output/wheels/kindling-0.1.0-py3-none-databricks.whl
-pip install output/wheels/kindling-0.1.0-py3-none-fabric.whl
+# One command per platform
+pip install kindling_fabric-0.2.0-py3-none-any.whl
+pip install kindling_synapse-0.2.0-py3-none-any.whl
+pip install kindling_databricks-0.2.0-py3-none-any.whl
 ```
 
-### **Your Code Unchanged**
+### **Usage in Applications**
 ```python
-# Your existing code works exactly the same
-from kindling import DataAppManager
-manager = DataAppManager()  # Auto-detects platform
-manager.run_app("my_app")   # Uses correct platform wheel
+# Platform auto-detection works seamlessly
+from kindling import DataAppManager, initialize_framework
+
+# Initialize framework (auto-detects platform)
+initialize_framework(BOOTSTRAP_CONFIG)
+
+# Use framework services
+manager = DataAppManager()
+manager.run_app("my_app")
 ```
 
 ## **Future Extensibility**
 
-### **Databricks Extensions** (Optional)
+### **Platform Extensions** (Optional)
 ```bash
-# Base Databricks platform
-pip install kindling-0.1.0-py3-none-databricks.whl
+# Base platform wheels
+pip install kindling_fabric-0.2.0-py3-none-any.whl
+pip install kindling_synapse-0.2.0-py3-none-any.whl
+pip install kindling_databricks-0.2.0-py3-none-any.whl
 
-# Optional: Add Delta Live Tables features
+# Optional: Add observability features
+pip install kindling-otel-azure-0.2.0-py3-none-any.whl
+
+# Optional: Add Databricks Delta Live Tables
 pip install kindling-databricks-dlt-0.1.0-py3-none-any.whl
-
-# Optional: Add Unity Catalog features
-pip install kindling-databricks-unity-0.1.0-py3-none-any.whl
 ```
 
 ## **Bottom Line: Success! 🎉**
@@ -120,24 +147,21 @@ pip install kindling-databricks-unity-0.1.0-py3-none-any.whl
 ✅ **Eliminated** 400+ line custom build script
 ✅ **Achieved** single wheel per platform deployment
 ✅ **Maintained** full compatibility with existing code
-✅ **Used** standard Python packaging tools (Poetry)
+✅ **Used** standard Python packaging tools (Poetry + Poe)
 ✅ **Provided** clean extensibility path for platform-specific features
 ✅ **Reduced** wheel size by excluding unused platform files
-
-## **Platform Comparison Summary**
-
-Each platform implements the same interfaces differently:
-
-| Platform | Dependencies | Key Features |
-|----------|-------------|-------------|
-| **Synapse** | Azure SDKs, Synapse Artifacts | LIVY endpoints, workspace integration, Synapse pipelines |
-| **Databricks** | Databricks SDK | Unity Catalog, cluster management, Delta Live Tables |
-| **Fabric** | Fabric APIs, Azure Identity | Power BI integration, Fabric workspaces |
+✅ **Version** 0.2.0 with hierarchical config, data apps, job deployment
 
 ## **Build Process**
 
 ```bash
-./scripts/build_platform_wheels.sh
+# Build all platform wheels
+poe build
+
+# Deploy to Azure storage
+poe deploy-fabric      # For Fabric testing
+poe deploy-databricks  # For Databricks testing
+poe deploy-synapse     # For Synapse testing
 ```
 
-Produces platform-specific wheels in `output/wheels/` that are compatible with the existing `app_framework.py` wheel selection logic.
+Produces platform-specific wheels compatible with auto-detection and bootstrap system.

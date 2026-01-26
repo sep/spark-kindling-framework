@@ -1,7 +1,6 @@
 name: complex-tracing-test
 version: 0.1.0
 description: Complex tracing system test with variable durations and nested spans
-
 # No extension specified - works with both default and Azure Monitor telemetry
 # To test with Azure Monitor, add:
 # extensions:

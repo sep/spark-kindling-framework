@@ -18,6 +18,7 @@ from kindling.platform_provider import *
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
+from packaging.version import InvalidVersion, Version
 
 from .notebook_framework import *
 
@@ -145,9 +146,20 @@ class WheelCandidate:
     version: Optional[str]
 
     @property
-    def sort_key(self) -> Tuple[int, str]:
-        """Sort key for selecting best wheel (prefer lower priority, higher version)"""
-        return (self.priority, self.version or "0")
+    def sort_key(self) -> Tuple[int, Version]:
+        """Sort key for selecting best wheel (prefer lower priority, higher version)
+
+        Uses packaging.version.Version for proper semantic versioning including:
+        - Pre-releases: 1.0.0-alpha < 1.0.0-beta < 1.0.0-rc < 1.0.0
+        - Dev releases: 1.0.0.dev1 < 1.0.0
+        - Post releases: 1.0.0 < 1.0.0.post1
+        """
+        try:
+            version_obj = Version(self.version) if self.version else Version("0.0.0")
+        except InvalidVersion:
+            # Fallback for malformed versions
+            version_obj = Version("0.0.0")
+        return (self.priority, version_obj)
 
 
 @dataclass

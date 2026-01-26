@@ -281,7 +281,7 @@ poe deploy             # Deploy ALL wheels (avoid this during testing)
 
 **Storage Structure:**
 {AZURE_BASE_PATH}/
-├── config/              # Universal config (settings.yaml)
+├── config/              # Hierarchical config system (see below)
 ├── data-apps/{app}/     # App-specific code and config
 ├── packages/            # Python wheels (kindling_fabric-*.whl)
 └── scripts/             # Utility scripts (kindling_bootstrap.py)
@@ -290,6 +290,143 @@ poe deploy             # Deploy ALL wheels (avoid this during testing)
 - Lakehouse (`Files/`) for: scripts, config, data-apps (runtime access)
 - External ABFSS for: packages (deployment artifacts)
 - Current test setup: Uploads to external ABFSS but should migrate to lakehouse for apps
+
+## Configuration System - Hierarchical YAML
+
+### Configuration Priority (Lowest to Highest)
+
+Kindling uses a **hierarchical configuration system** with multiple layers of YAML files:
+
+1. **`settings.yaml`** - Base framework settings (lowest priority)
+2. **`platform_{platform}.yaml`** - Platform-specific (fabric, synapse, databricks)
+3. **`workspace_{workspace_id}.yaml`** - Workspace-specific settings
+4. **`env_{environment}.yaml`** - Environment-specific (dev, prod, etc.)
+5. **Bootstrap Config** - In-memory overrides from BOOTSTRAP_CONFIG dict (highest priority)
+
+Each layer can override values from previous layers, providing precise control at different organizational levels.
+
+### Configuration File Locations
+
+All config files are stored in `{artifacts_storage_path}/config/` and are **optional**:
+
+```
+config/
+├── settings.yaml                    # Base settings
+├── platform_fabric.yaml             # Fabric-specific
+├── platform_synapse.yaml            # Synapse-specific
+├── platform_databricks.yaml         # Databricks-specific
+├── workspace_{workspace_id}.yaml    # Workspace-specific
+├── env_dev.yaml                     # Development environment
+├── env_staging.yaml                 # Staging environment
+└── env_prod.yaml                    # Production environment
+```
+
+### Platform Detection
+
+Platform is auto-detected during framework initialization:
+- **Fabric**: Via `notebookutils.runtime.context.get("currentWorkspaceId")`
+- **Synapse**: Via `spark.conf.get("spark.synapse.workspace.name")`
+- **Databricks**: Via `dbutils.entry_point` context or `spark.conf.get("spark.databricks.workspaceUrl")`
+
+### Workspace ID Detection
+
+Workspace IDs are auto-detected per platform:
+- **Fabric**: GUID format (e.g., `workspace_12345678-1234-1234-1234-123456789abc.yaml`)
+- **Synapse**: Workspace name (e.g., `workspace_mysynapsews.yaml`)
+- **Databricks**: Sanitized workspace URL (e.g., `workspace_adb-123456789_azuredatabricks_net.yaml`)
+
+### Example Configuration Hierarchy
+
+**Scenario: Multi-team Fabric deployment with dev/prod environments**
+
+```yaml
+# settings.yaml - Base for all teams/environments
+kindling:
+  version: "0.2.0"
+  delta:
+    tablerefmode: "forName"
+  telemetry:
+    logging:
+      level: INFO
+
+# platform_fabric.yaml - Fabric-specific tuning
+kindling:
+  platform:
+    name: fabric
+  TELEMETRY:
+    logging:
+      level: DEBUG  # More verbose for diagnostic emitters
+  extensions:
+    - kindling-otel-azure>=0.2.0
+
+# workspace_team-a-workspace-id.yaml - Team A workspace
+kindling:
+  workspace:
+    team: "team-a"
+  DATA:
+    bronze: "abfss://bronze-team-a@..."
+
+# env_prod.yaml - Production overrides (highest YAML priority)
+kindling:
+  TELEMETRY:
+    logging:
+      level: WARN  # Less verbose in production
+  SPARK_CONFIGS:
+    spark.executor.memory: "32g"
+```
+
+**Result**: Team A's prod workspace gets `WARN` level logging (from env_prod.yaml), team-specific data paths (from workspace yaml), Fabric extensions (from platform yaml), and base Delta settings (from settings.yaml).
+
+### Configuration Use Cases
+
+**1. Multi-Platform Deployments**
+- Base settings apply everywhere
+- Platform configs tune for Fabric vs Synapse vs Databricks
+- Environment configs manage dev/prod differences
+
+**2. Multi-Team Workspaces**
+- Workspace configs provide team/cost-center separation
+- Each team gets own data paths, quotas, security settings
+- Shared platform and environment configs
+
+**3. Geographic Regions**
+- Workspace configs for region-specific settings
+- Region-specific data compliance, storage locations
+- Shared platform configuration
+
+### Documentation
+
+- **Complete Guide**: [docs/platform_workspace_config.md](docs/platform_workspace_config.md)
+- **Example Configs**: [examples/config/](examples/config/)
+- **Implementation**: `packages/kindling/bootstrap.py` (`download_config_files()`, `_get_workspace_id_for_platform()`)
+- **Tests**: `tests/unit/test_platform_workspace_config.py`
+
+### Migration from Single Config
+
+**Before (all settings in settings.yaml):**
+```yaml
+# settings.yaml - Everything mixed together
+kindling:
+  version: "0.2.0"
+  # Platform-specific stuff
+  # Team-specific stuff
+  # Environment-specific stuff
+```
+
+**After (organized hierarchy):**
+```yaml
+# settings.yaml - Just base settings
+kindling:
+  version: "0.2.0"
+  delta:
+    tablerefmode: "forName"
+
+# platform_fabric.yaml - Extract platform settings
+# workspace_team-a.yaml - Extract team settings
+# prod.yaml - Extract environment settings
+```
+
+Benefits: Better organization, version control, team autonomy, easier maintenance
 
 ## System Testing
 

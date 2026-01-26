@@ -60,9 +60,9 @@ poetry run poe deploy --platform fabric       # Deploy only fabric
 This builds all 3 platform wheels and uploads them to:
 ```
 sepstdatalakedev/artifacts/packages/
-  ├── kindling_databricks-0.0.11-py3-none-any.whl
-  ├── kindling_fabric-0.0.11-py3-none-any.whl
-  └── kindling_synapse-0.0.11-py3-none-any.whl
+  ├── kindling_databricks-0.2.0-py3-none-any.whl
+  ├── kindling_fabric-0.2.0-py3-none-any.whl
+  └── kindling_synapse-0.2.0-py3-none-any.whl
 ```
 
 **Platform-specific deployment** is useful when:
@@ -269,7 +269,7 @@ The version is managed in a single location:
 ```toml
 # pyproject.toml
 [tool.poetry]
-version = "0.0.11"  # Single source of truth
+version = "0.2.0"  # Single source of truth
 ```
 
 Platform-specific builds automatically use this version.
