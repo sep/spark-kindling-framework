@@ -1,0 +1,60 @@
+# Workspace-specific configuration example
+# This file is optional and loaded after platform configs but before environment configs
+# Upload to: {artifacts_storage_path}/config/workspace_{workspace_id}.yaml
+#
+# Naming conventions:
+#   - Fabric: workspace_{guid}.yaml (e.g., workspace_12345678-1234-1234-1234-123456789abc.yaml)
+#   - Synapse: workspace_{workspace_name}.yaml (e.g., workspace_mysynapsews.yaml)
+#   - Databricks: workspace_{workspace_url_sanitized}.yaml (e.g., workspace_adb-123456789_azuredatabricks_net.yaml)
+
+kindling:
+  workspace:
+    # Workspace metadata
+    name: "Production Workspace"
+    team: "Data Engineering"
+    cost_center: "CC-12345"
+
+  # Workspace-specific telemetry
+  TELEMETRY:
+    logging:
+      # More verbose logging for specific workspace
+      level: DEBUG
+    tracing:
+      enabled: true
+      # Add workspace tags to traces
+      tags:
+        workspace: "production"
+        team: "data-eng"
+
+  # Workspace-specific resource limits
+  LIMITS:
+    max_executors: 20
+    max_memory_per_executor: "32g"
+    max_cores_per_executor: 8
+
+  # Workspace-specific data locations
+  DATA:
+    landing_zone: "abfss://landing@mystorageaccount.dfs.core.windows.net/"
+    bronze_layer: "abfss://bronze@mystorageaccount.dfs.core.windows.net/"
+    silver_layer: "abfss://silver@mystorageaccount.dfs.core.windows.net/"
+    gold_layer: "abfss://gold@mystorageaccount.dfs.core.windows.net/"
+
+  # Workspace-specific security settings
+  SECURITY:
+    enable_credential_passthrough: true
+    enable_acl_enforcement: true
+
+  # Workspace-specific extensions
+  EXTENSIONS:
+    - kindling-otel-azure>=0.2.0
+
+  # Workspace-specific Spark configurations
+  SPARK_CONFIGS:
+    spark.sql.catalog.default: "hive_metastore"
+    spark.hadoop.fs.azure.account.auth.type: "OAuth"
+# Example: Different configs per workspace
+# This allows you to have different settings for:
+#   - Different teams using the same platform
+#   - Different geographic regions
+#   - Different security requirements
+#   - Different cost centers or departments

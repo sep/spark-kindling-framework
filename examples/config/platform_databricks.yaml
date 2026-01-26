@@ -1,0 +1,39 @@
+# Platform-specific configuration for Databricks
+# This file is optional and loaded after settings.yaml but before environment configs
+# Upload to: {artifacts_storage_path}/config/platform_databricks.yaml
+
+kindling:
+  platform:
+    name: databricks
+    environment: databricks
+
+  # Databricks-specific telemetry settings
+  TELEMETRY:
+    logging:
+      # Databricks has good stdout capture
+      level: INFO
+      print: true
+    tracing:
+      enabled: true
+      print: false
+
+  # Databricks-specific Spark configurations
+  SPARK_CONFIGS:
+    spark.sql.adaptive.enabled: "true"
+    spark.databricks.delta.optimizeWrite.enabled: "true"
+    spark.databricks.delta.autoCompact.enabled: "true"
+
+  # Databricks-specific delta settings
+  DELTA:
+    tablerefmode: "forName"
+    optimize_write: true
+    auto_compact: true
+
+  # Databricks-specific cluster settings
+  CLUSTER:
+    # These can be referenced in job configs
+    default_runtime_version: "14.3.x-scala2.12"
+    default_node_type: "Standard_DS3_v2"
+# Example: Databricks-specific extensions
+# extensions:
+#   - databricks-feature-store>=0.10.0

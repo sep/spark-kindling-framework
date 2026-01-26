@@ -1,0 +1,31 @@
+# Platform-specific configuration for Fabric
+# This file is optional and loaded after settings.yaml but before environment configs
+# Upload to: {artifacts_storage_path}/config/platform_fabric.yaml
+
+kindling:
+  platform:
+    name: fabric
+    environment: fabric
+
+  # Fabric-specific telemetry settings
+  TELEMETRY:
+    logging:
+      # Override logging for Fabric (more verbose for diagnostic emitters)
+      level: DEBUG
+    tracing:
+      # Enable tracing for Fabric jobs
+      enabled: true
+
+  # Fabric-specific Spark configurations
+  SPARK_CONFIGS:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+
+  # Fabric-specific delta settings
+  DELTA:
+    # Fabric uses forName for delta tables
+    tablerefmode: "forName"
+    optimize_write: true
+# Example: Fabric-specific extensions
+# extensions:
+#   - kindling-otel-azure>=0.2.0  # Azure Monitor integration for Fabric
