@@ -4,6 +4,47 @@ applyTo: '**'
 
 # Kindling Framework - Technical Context
 
+## CRITICAL WORKFLOW RULES
+
+### 🚨 ALWAYS Check for Poe Tasks First
+
+**Before executing ANY manual commands, ALWAYS check for existing poe tasks:**
+
+```bash
+# List all available tasks
+poe --help
+```
+
+**Common poe tasks that MUST be used instead of manual commands:**
+
+| Task | Purpose | Instead of Manual |
+|------|---------|-------------------|
+| `poe release <version>` | **Full release workflow** | Manual git tag + gh release + build + upload |
+| `poe build` | Build all platform wheels | Manual poetry build commands |
+| `poe deploy-fabric` | Deploy Fabric wheel to Azure | Manual az storage commands |
+| `poe deploy-synapse` | Deploy Synapse wheel to Azure | Manual az storage commands |
+| `poe deploy-databricks` | Deploy Databricks wheel to Azure | Manual az storage commands |
+| `poe test-system-fabric` | Run Fabric system tests | Manual pytest commands |
+| `poe test-system-synapse` | Run Synapse system tests | Manual pytest commands |
+| `poe test-system-databricks` | Run Databricks system tests | Manual pytest commands |
+| `poe cleanup` | Clean up all test resources | Manual deletion commands |
+
+**The `poe release` workflow handles:**
+1. ✅ Version bump in all config files
+2. ✅ Git commit and push
+3. ✅ GitHub release creation
+4. ✅ Triggers CI/CD to build wheels
+5. ✅ Triggers CI/CD to run system tests
+6. ✅ Triggers CI/CD to attach wheels to release
+
+**NEVER manually:**
+- Create git tags without using `poe release`
+- Build wheels without using `poe build`
+- Create GitHub releases without using `poe release`
+- Deploy wheels without using `poe deploy-*`
+
+**Exception:** Only do manual operations if explicitly requested by user or if no poe task exists.
+
 ## Project Overview
 
 **Framework:** Kindling - Multi-platform Spark data lakehouse framework
