@@ -5,6 +5,13 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, Union
 
+try:
+    from packaging.version import InvalidVersion, Version
+except ImportError:
+    # Fallback if packaging not available (shouldn't happen in modern Python)
+    Version = None
+    InvalidVersion = None
+
 # DEBUG: Track script execution to detect duplicate runs
 now = datetime.now()
 execution_id = now.strftime("%Y%m%d_%H%M%S_%f")
@@ -248,12 +255,23 @@ def install_framework_package(
             if matching_files:
 
                 def extract_version(filename):
-                    try:
-                        version_part = filename.split("-")[1]  # Get "0.20.1" part
+                    """Extract version using packaging.version for proper semantic versioning.
 
-                        return tuple(map(int, version_part.split(".")))
-                    except (IndexError, ValueError):
-                        return (0, 0, 0)  # Fallback for malformed versions
+                    Handles pre-releases (alpha, beta, rc), dev releases, and post releases.
+                    """
+                    try:
+                        version_part = filename.split("-")[1]  # Get "0.20.1" or "0.20.1-alpha" part
+                        if Version is not None:
+                            return Version(version_part)
+                        else:
+                            # Fallback to tuple comparison if packaging not available
+                            return tuple(map(int, version_part.split(".")))
+                    except (IndexError, ValueError, InvalidVersion):
+                        # Fallback for malformed versions
+                        if Version is not None:
+                            return Version("0.0.0")
+                        else:
+                            return (0, 0, 0)
 
                 matching_files.sort(key=lambda f: extract_version(f.name), reverse=True)
         else:

@@ -1,0 +1,33 @@
+# Platform-specific configuration for Synapse
+# This file is optional and loaded after settings.yaml but before environment configs
+# Upload to: {artifacts_storage_path}/config/platform_synapse.yaml
+
+kindling:
+  platform:
+    name: synapse
+    environment: synapse
+
+  # Synapse-specific telemetry settings
+  TELEMETRY:
+    logging:
+      level: INFO
+    tracing:
+      enabled: true
+
+  # Synapse-specific Spark configurations
+  SPARK_CONFIGS:
+    spark.sql.adaptive.enabled: "true"
+    spark.synapse.linkedService.enabled: "true"
+
+  # Synapse-specific delta settings
+  DELTA:
+    tablerefmode: "forName"
+    optimize_write: true
+
+  # Synapse-specific pool configuration
+  POOL:
+    default_executor_cores: 4
+    default_executor_memory: "28g"
+# Example: Synapse-specific extensions
+# extensions:
+#   - kindling-otel-azure>=0.2.0  # Azure Monitor integration for Synapse

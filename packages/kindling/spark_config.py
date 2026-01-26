@@ -1,4 +1,5 @@
 import tempfile
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, Union
@@ -11,6 +12,17 @@ from .spark_session import *
 
 
 class ConfigService(ABC):
+    """Abstract configuration service interface.
+
+    Signals:
+        config.pre_reload: Emitted before config reload starts
+            Payload: {old_config: Dict[str, Any]}
+        config.post_reload: Emitted after config reload completes
+            Payload: {changes: Dict[str, tuple], version: int, new_config: Dict[str, Any]}
+        config.reload_failed: Emitted if reload fails
+            Payload: {error: Exception, old_config: Dict[str, Any]}
+    """
+
     @abstractmethod
     def get(self, key: str, default: Any = None) -> Any:
         pass
@@ -37,6 +49,15 @@ class ConfigService(ABC):
         """Initialize/reconfigure the config service with actual parameters"""
         pass
 
+    @abstractmethod
+    def reload(self) -> Dict[str, Any]:
+        """Reload configuration from source.
+
+        Returns:
+            Dictionary with reload summary: {version, changes, status}
+        """
+        pass
+
 
 @GlobalInjector.singleton_autobind()
 class DynaconfConfig(ConfigService):
@@ -45,18 +66,44 @@ class DynaconfConfig(ConfigService):
         self.spark = None
         self.initial_config = {}
         self.dynaconf = None
+        self._config_lock = threading.RLock()
+        self._version = 0
+        self._reload_context = None  # Stores context for hot-reload
+
+        # Create signals for config reload notifications
+        from kindling.signaling import SignalProvider
+
+        try:
+            signal_provider = get_kindling_service(SignalProvider)
+            self.pre_reload_signal = signal_provider.create_signal(
+                "config.pre_reload", doc="Emitted before configuration reload starts"
+            )
+            self.post_reload_signal = signal_provider.create_signal(
+                "config.post_reload",
+                doc="Emitted after configuration reload completes successfully",
+            )
+            self.reload_failed_signal = signal_provider.create_signal(
+                "config.reload_failed", doc="Emitted when configuration reload fails"
+            )
+        except Exception:
+            # Signals are optional - service works without them
+            self.pre_reload_signal = None
+            self.post_reload_signal = None
+            self.reload_failed_signal = None
 
     def initialize(
         self,
         config_files: Optional[List[str]] = None,
         initial_config: Optional[Dict[str, Any]] = None,
         environment: str = "development",
+        reload_context: Optional[Dict[str, Any]] = None,
     ) -> None:
 
         print(f"Initializing DynaconfConfig:")
 
         self.spark = get_or_create_spark_session()
         self.initial_config = initial_config or {}
+        self._reload_context = reload_context  # Store for hot-reload
 
         settings_files = config_files or []
 
@@ -166,18 +213,20 @@ class DynaconfConfig(ConfigService):
         return transformed
 
     def get(self, key: str, default: Any = None) -> Any:
-        if self.spark:
-            try:
-                spark_value = self.spark.conf.get(key.upper())
-                if spark_value is not None:
-                    return spark_value
-            except:
-                pass
+        with self._config_lock:
+            if self.spark:
+                try:
+                    spark_value = self.spark.conf.get(key.upper())
+                    if spark_value is not None:
+                        return spark_value
+                except:
+                    pass
 
-        return self.dynaconf.get(key, default)
+            return self.dynaconf.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
-        self.dynaconf.set(key, value)
+        with self._config_lock:
+            self.dynaconf.set(key, value)
 
     def get_all(self) -> Dict[str, Any]:
         all_config = {}
@@ -206,19 +255,137 @@ class DynaconfConfig(ConfigService):
             raise AttributeError(f"No configuration found for '{name}'")
         return value
 
-    def reload(self) -> None:
-        self.dynaconf.reload()
+    def reload(self) -> Dict[str, Any]:
+        """Hot-reload configuration from storage.
+
+        Returns:
+            Dict with reload summary: {version, changes, status, error}
+
+        Raises:
+            ConfigReloadError: If reload fails and cannot rollback
+        """
+        with self._config_lock:
+            old_config = self.get_all()
+            old_dynaconf = self.dynaconf
+
+            # Emit pre_reload signal
+            if self.pre_reload_signal:
+                try:
+                    self.pre_reload_signal.send(self, old_config=old_config)
+                except Exception as e:
+                    print(f"⚠️  pre_reload signal handler error: {e}")
+
+            try:
+                # If we have reload context, re-download fresh config files
+                if self._reload_context:
+                    from kindling.bootstrap import download_config_files
+
+                    print("♻️  Reloading configuration from storage...")
+                    config_files = download_config_files(
+                        artifacts_storage_path=self._reload_context["artifacts_storage_path"],
+                        environment=self._reload_context["environment"],
+                        platform=self._reload_context.get("platform"),
+                        workspace_id=self._reload_context.get("workspace_id"),
+                        app_name=self._reload_context.get("app_name"),
+                    )
+
+                    # Reload Dynaconf with fresh files
+                    self.dynaconf = Dynaconf(
+                        settings_files=config_files,
+                        environments=False,
+                        MERGE_ENABLED_FOR_DYNACONF=True,
+                        envvar_prefix="KINDLING",
+                    )
+
+                    # Re-run translations
+                    self._translate_yaml_to_flat()
+                    self._translate_bootstrap_to_nested()
+                else:
+                    # Fallback: reload from existing temp files
+                    print("♻️  Reloading configuration from temp files...")
+                    self.dynaconf.reload()
+
+                # Increment version
+                self._version += 1
+
+                # Compute changes
+                new_config = self.get_all()
+                changes = self._compute_changes(old_config, new_config)
+
+                # Log changes
+                print(f"✓ Config reloaded (version {self._version}, {len(changes)} changes)")
+                for key, (old_val, new_val) in changes.items():
+                    print(f"  {key}: {old_val} → {new_val}")
+
+                result = {
+                    "version": self._version,
+                    "changes": changes,
+                    "status": "success",
+                    "change_count": len(changes),
+                }
+
+                # Emit post_reload signal
+                if self.post_reload_signal:
+                    try:
+                        self.post_reload_signal.send(
+                            self, changes=changes, version=self._version, new_config=new_config
+                        )
+                    except Exception as e:
+                        print(f"⚠️  post_reload signal handler error: {e}")
+
+                return result
+
+            except Exception as e:
+                # Rollback on failure
+                self.dynaconf = old_dynaconf
+                error_msg = f"Config reload failed: {e}"
+                print(f"❌ {error_msg}")
+
+                # Emit reload_failed signal
+                if self.reload_failed_signal:
+                    try:
+                        self.reload_failed_signal.send(self, error=e, old_config=old_config)
+                    except Exception as signal_error:
+                        print(f"⚠️  reload_failed signal handler error: {signal_error}")
+
+                return {
+                    "version": self._version,
+                    "status": "failed",
+                    "error": str(e),
+                }
+
+    def _compute_changes(self, old_config: Dict, new_config: Dict) -> Dict[str, tuple]:
+        """Compute configuration changes between old and new config.
+
+        Args:
+            old_config: Previous configuration
+            new_config: New configuration
+
+        Returns:
+            Dict mapping changed keys to (old_value, new_value) tuples
+        """
+        changes = {}
+        all_keys = set(old_config.keys()) | set(new_config.keys())
+
+        for key in all_keys:
+            old_val = old_config.get(key)
+            new_val = new_config.get(key)
+            if old_val != new_val:
+                changes[key] = (old_val, new_val)
+
+        return changes
 
     def get_fresh(self, key: str, default: Any = None) -> Any:
-        if self.spark:
-            try:
-                spark_value = self.spark.conf.get(key)
-                if spark_value is not None:
-                    return spark_value
-            except:
-                pass
+        with self._config_lock:
+            if self.spark:
+                try:
+                    spark_value = self.spark.conf.get(key)
+                    if spark_value is not None:
+                        return spark_value
+                except:
+                    pass
 
-        return self.dynaconf.get_fresh(key, default=default)
+            return self.dynaconf.get_fresh(key, default=default)
 
 
 def configure_injector_with_config(
@@ -226,6 +393,9 @@ def configure_injector_with_config(
     initial_config: Optional[Dict[str, Any]] = None,
     environment: str = "development",
     artifacts_storage_path: Optional[str] = None,
+    platform: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    app_name: Optional[str] = None,
 ) -> None:
     """
     Configure the GlobalInjector's ConfigService singleton.
@@ -234,19 +404,36 @@ def configure_injector_with_config(
         config_files: List of downloaded config file paths
         initial_config: Bootstrap config overrides
         environment: Environment name (development, production, etc.)
-        artifacts_storage_path: Path to artifacts (for reference only)
+        artifacts_storage_path: Path to artifacts storage (enables hot-reload)
+        platform: Platform name (fabric, synapse, databricks)
+        workspace_id: Workspace ID for workspace-specific config
+        app_name: Application name for app-specific config
     """
     print("Setting up config ...")
     # print(f"Config files: {config_files}")
     # print(f"initial_config : {initial_config}")
     # print(f"artifacts_storage_path: {artifacts_storage_path}")
 
+    # Build reload context for hot-reload capability
+    reload_context = None
+    if artifacts_storage_path:
+        reload_context = {
+            "artifacts_storage_path": artifacts_storage_path,
+            "environment": environment,
+            "platform": platform,
+            "workspace_id": workspace_id,
+            "app_name": app_name,
+        }
+
     # Get the singleton instance from GlobalInjector (auto-created if needed)
     config_service = GlobalInjector.get(ConfigService)
 
     # Initialize it with proper parameters
     config_service.initialize(
-        config_files=config_files, initial_config=initial_config, environment=environment
+        config_files=config_files,
+        initial_config=initial_config,
+        environment=environment,
+        reload_context=reload_context,
     )
 
     print("✓ Config configured in GlobalInjector")

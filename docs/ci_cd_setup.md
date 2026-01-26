@@ -133,9 +133,9 @@ After each workflow run, artifacts are available:
 unzip platform-wheels.zip
 
 # Install specific platform
-pip install kindling_synapse-0.1.0-py3-none-any.whl
-pip install kindling_databricks-0.1.0-py3-none-any.whl
-pip install kindling_fabric-0.1.0-py3-none-any.whl
+pip install kindling_synapse-0.2.0-py3-none-any.whl
+pip install kindling_databricks-0.2.0-py3-none-any.whl
+pip install kindling_fabric-0.2.0-py3-none-any.whl
 ```
 
 ## 🧪 Running Tests Locally

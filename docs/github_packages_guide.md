@@ -160,7 +160,7 @@ pip install kindling-synapse \
 ```txt
 # requirements.txt
 --extra-index-url https://pypi.pkg.github.com/sep/simple/
-kindling-synapse==0.1.0
+kindling-synapse==0.2.0
 ```
 
 ### For Private Packages (Authentication Required)

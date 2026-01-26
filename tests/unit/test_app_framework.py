@@ -61,13 +61,27 @@ class TestWheelCandidate:
         assert candidate.version == "1.0.0"
 
     def test_sort_key(self):
-        """Test sort key property"""
+        """Test sort key property returns Version objects for proper semantic versioning"""
+        from packaging.version import Version
+
         candidate1 = WheelCandidate("", "", 1, "1.0.0")
         candidate2 = WheelCandidate("", "", 2, "1.0.0")
 
-        assert candidate1.sort_key == (1, "1.0.0")
-        assert candidate2.sort_key == (2, "1.0.0")
+        # Verify sort_key returns (priority, Version)
+        assert candidate1.sort_key == (1, Version("1.0.0"))
+        assert candidate2.sort_key == (2, Version("1.0.0"))
+        # Lower priority wins (1 < 2)
         assert candidate1.sort_key < candidate2.sort_key
+
+        # Test pre-release versions are handled correctly
+        candidate_stable = WheelCandidate("", "", 2, "1.0.0")
+        candidate_alpha = WheelCandidate("", "", 2, "1.0.0-alpha")
+        # Alpha < stable (pre-release comes before stable)
+        assert candidate_alpha.sort_key < candidate_stable.sort_key
+
+        # Test malformed version handling
+        candidate_bad = WheelCandidate("", "", 2, None)
+        assert candidate_bad.sort_key == (2, Version("0.0.0"))
 
 
 class TestAppManagerHelpers:

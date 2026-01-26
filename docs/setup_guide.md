@@ -1,53 +1,102 @@
 # Setup Guide
 
-This guide explains how to install, configure, and start using the Spark Kindling Framework in Microsoft Fabric or Azure Databricks environments.
+This guide explains how to install, configure, and start using the Spark Kindling Framework across Microsoft Fabric, Azure Synapse Analytics, and Databricks environments.
 
 ## Prerequisites
 
-- Microsoft Fabric or Azure Databricks workspace
-- Python 3.8+
-- Apache Spark 3.2+
-- Delta Lake 2.0+
+### Required
+- One of the following platforms:
+  - **Microsoft Fabric** (with Spark runtime)
+  - **Azure Synapse Analytics** (with Spark pools)
+  - **Databricks** (Azure, AWS, or GCP)
+- **Python 3.10+**
+- **Apache Spark 3.4+**
+- **Delta Lake 2.0+**
+
+### Optional
+- Azure Storage Account (for artifacts storage)
+- Azure Monitor workspace (for telemetry extension)
 
 ## Installation Options
 
-### Option 1: Direct Notebook Import
+### Option 1: Deploy Pre-built Wheels (Recommended)
 
-1. Clone the repository to your local machine
-2. Upload the notebook files to your Fabric/Databricks workspace
-3. Import the notebooks using the notebook_import function
+The framework is distributed as platform-specific wheels:
 
-### Option 2: Package Installation
+1. **Upload wheels to artifacts storage:**
+   ```bash
+   # From releases or build output
+   az storage blob upload \
+     --account-name <storage-account> \
+     --container artifacts \
+     --name packages/kindling_fabric-0.2.0-py3-none-any.whl \
+     --file dist/kindling_fabric-0.2.0-py3-none-any.whl
+   ```
 
-The framework can be packaged and installed as a Python package:
+2. **Install in notebook:**
+   ```python
+   BOOTSTRAP_CONFIG = {
+       "artifacts_storage_path": "abfss://artifacts@<storage>.dfs.core.windows.net/",
+       "environment": "dev",
+       "use_lake_packages": True,  # Install from artifacts
+   }
+
+   %run /path/to/kindling_bootstrap.py
+   ```
+
+### Option 2: Install from Artifacts Storage
+
+If wheels are already deployed to your artifacts storage:
 
 ```python
-# Run the build framework packages notebook
-%run /fabric/build_framework_packages
-
-# Then in your notebooks
-import kindling
-```
+# In your notebook
+BOOTSTRAP_CONFIG = {
+    "artifacts_storage_path": "Files/artifacts",  # Or full abfss:// path
+    "environment": "production",
+    "use_lake_packages": True,
+}
 
 ## Configuration
 
-### Environment Bootstrap
+### Hierarchical Configuration System
 
-For easy setup, you can use the provided bootstrap notebook:
+Kindling uses a layered configuration approach with YAML files:
+
+**Priority (lowest → highest):**
+1. `settings.yaml` - Base framework settings
+2. `platform_{platform}.yaml` - Platform-specific (fabric/synapse/databricks)
+3. `workspace_{workspace_id}.yaml` - Workspace-specific
+4. `env_{environment}.yaml` - Environment-specific (dev/prod/etc)
+5. `BOOTSTRAP_CONFIG` - Runtime overrides
+
+See [Hierarchical Configuration Guide](./platform_workspace_config.md) for complete details.
+
+### Bootstrap Configuration
+
+Minimal bootstrap example:
 
 ```python
 BOOTSTRAP_CONFIG = {
-    'log_level': 'INFO',
-    'is_interactive': True,
-    'use_lake_packages': False,
-    'load_local_packages': False,
-    'workspace_endpoint': "your-workspace-endpoint-id",
-    'platform_environment': 'fabric',  # or 'databricks'
-    'artifacts_storage_path': "Files/artifacts",
-    'required_packages': ["injector", "dynaconf", "pytest"],
-    'ignored_folders': ['utilities'],
+    # Required
+    'artifacts_storage_path': "abfss://artifacts@<storage>.dfs.core.windows.net/",
+    'environment': 'dev',  # Loads env_dev.yaml if exists
+
+    # Package loading
+    'use_lake_packages': True,   # Install from artifacts storage
+    'load_local_packages': True,  # Load workspace notebooks as packages
+
+    # Optional overrides
+    'log_level': 'INFO',  # Override YAML log level
+    'platform': 'fabric',  # Force platform (auto-detected if omitted)
+
+    # Extensions (can also be in YAML)
+    'extensions': ['kindling-otel-azure>=0.2.0'],
+
+    # Spark configs
     'spark_configs': {
-        'spark.databricks.delta.schema.autoMerge.enabled': 'true'
+        'spark.sql.adaptive.enabled': 'true'
+    }
+}
     }
 }
 

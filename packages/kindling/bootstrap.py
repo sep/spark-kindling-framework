@@ -1,7 +1,9 @@
 import importlib.util
 import subprocess
 import sys
-from typing import Any, Dict, Optional, Union
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from kindling.injection import *
 from kindling.spark_config import *
@@ -27,13 +29,31 @@ level_hierarchy = {
 
 
 def download_config_files(
-    artifacts_storage_path: str, environment: str, app_name: Optional[str] = None
+    artifacts_storage_path: str,
+    environment: str,
+    platform: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    app_name: Optional[str] = None,
 ) -> List[str]:
     """
     Download config files from lake to temp location for Dynaconf.
 
     All files are optional - bootstrap config can provide everything.
-    Returns list of local file paths in priority order.
+    Returns list of local file paths in priority order (lowest to highest):
+      1. settings.yaml (base settings)
+      2. platform_{platform}.yaml (platform-specific: fabric, synapse, databricks)
+      3. workspace_{workspace_id}.yaml (workspace-specific)
+      4. env_{environment}.yaml (environment-specific: dev, prod, etc - highest priority)
+
+    Args:
+        artifacts_storage_path: Base path for artifacts storage
+        environment: Environment name (dev, prod, etc)
+        platform: Platform name (fabric, synapse, databricks)
+        workspace_id: Workspace ID for workspace-specific config
+        app_name: Optional app name for app-specific config
+
+    Returns:
+        List of downloaded config file paths in priority order
     """
     storage_utils = _get_storage_utils()
 
@@ -43,26 +63,47 @@ def download_config_files(
     # Strip trailing slash to prevent double slashes in path construction
     base_path = artifacts_storage_path.rstrip("/")
     print(f"Using artifacts path: {base_path}")
+    if platform:
+        print(f"Platform: {platform}")
+    if workspace_id:
+        print(f"Workspace ID: {workspace_id}")
+    print(f"Environment: {environment}")
 
     temp_dir = tempfile.mkdtemp(prefix="kindling_config_")
     temp_path = Path(temp_dir)
 
     config_files = []
 
+    # Build list of config files to download in priority order (lowest to highest)
     files_to_download = [
-        f"{base_path}/config/settings.yaml",
-        f"{base_path}/config/{environment}.yaml",
+        (f"{base_path}/config/settings.yaml", "settings.yaml"),
     ]
 
-    for remote_path in files_to_download:
-        filename = remote_path.split("/")[-1]
+    # Add platform-specific config if platform is known
+    if platform:
+        files_to_download.append(
+            (f"{base_path}/config/platform_{platform}.yaml", f"platform_{platform}.yaml")
+        )
+
+    # Add workspace-specific config if workspace_id is known
+    if workspace_id:
+        files_to_download.append(
+            (f"{base_path}/config/workspace_{workspace_id}.yaml", f"workspace_{workspace_id}.yaml")
+        )
+
+    # Add environment config (highest priority from files)
+    files_to_download.append(
+        (f"{base_path}/config/env_{environment}.yaml", f"env_{environment}.yaml")
+    )
+
+    for remote_path, filename in files_to_download:
         local_path = temp_path / f"{len(config_files)}_{filename}"
 
         try:
             # Use file:// prefix for local filesystem paths with mssparkutils/dbutils
             storage_utils.fs.cp(remote_path, f"file://{str(local_path)}")
             config_files.append(str(local_path))
-            print(f"✓ Downloaded: {remote_path}")
+            print(f"✓ Downloaded: {filename}")
         except Exception as e:
             # All config files are optional - continue silently
             print(f"  (Optional config not found: {filename})")
@@ -107,6 +148,93 @@ def _get_storage_utils():
             return DBUtils(spark)
     except ImportError:
         pass
+
+    return None
+
+
+def _get_workspace_id_for_platform(platform: str) -> Optional[str]:
+    """
+    Get workspace ID based on detected platform.
+
+    Returns:
+        Workspace ID string or None if not available
+    """
+    if not platform:
+        return None
+
+    try:
+        if platform == "fabric":
+            # Try notebookutils first (Fabric)
+            try:
+                import notebookutils
+
+                workspace_id = notebookutils.runtime.context.get("currentWorkspaceId")
+                if workspace_id:
+                    return workspace_id
+            except (ImportError, Exception):
+                pass
+
+            # Try mssparkutils
+            try:
+                import __main__
+
+                mssparkutils = getattr(__main__, "mssparkutils", None)
+                if mssparkutils and hasattr(mssparkutils.env, "getWorkspaceId"):
+                    return mssparkutils.env.getWorkspaceId()
+            except Exception:
+                pass
+
+        elif platform == "synapse":
+            # Synapse uses workspace name, not ID
+            # We'll use the workspace name as the identifier
+            try:
+                spark = get_or_create_spark_session()
+                workspace_name = spark.conf.get("spark.synapse.workspace.name", None)
+                if workspace_name:
+                    return workspace_name
+            except Exception:
+                pass
+
+            # Try mssparkutils
+            try:
+                import __main__
+
+                mssparkutils = getattr(__main__, "mssparkutils", None)
+                if mssparkutils and hasattr(mssparkutils.env, "getWorkspaceName"):
+                    return mssparkutils.env.getWorkspaceName()
+            except Exception:
+                pass
+
+        elif platform == "databricks":
+            # Try to get workspace ID from context
+            try:
+                import __main__
+
+                dbutils = getattr(__main__, "dbutils", None)
+                if dbutils:
+                    try:
+                        context = dbutils.entry_point.getDbutils().notebook().getContext()
+                        workspace_id = context.workspaceId().get()
+                        if workspace_id:
+                            return workspace_id
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Try from spark config
+            try:
+                spark = get_or_create_spark_session()
+                workspace_url = spark.conf.get("spark.databricks.workspaceUrl", None)
+                if workspace_url:
+                    # Extract workspace ID from URL (e.g., "adb-123456789.azuredatabricks.net")
+                    # Use the full hostname as identifier
+                    return workspace_url.replace(".", "_")
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"⚠️  Error getting workspace ID for {platform}: {e}")
 
     return None
 
@@ -593,11 +721,28 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     use_lake_packages = config.get("use_lake_packages", True)
     environment = config.get("environment", "development")
 
+    # Early platform detection for config loading
+    platform = None
+    workspace_id = None
+    if use_lake_packages and artifacts_storage_path:
+        try:
+            # Detect platform early to load platform-specific config
+            explicit_platform = config.get("platform_environment") or config.get("platform")
+            platform = detect_platform(config={"platform_service": explicit_platform})
+
+            # Get workspace ID based on platform
+            workspace_id = _get_workspace_id_for_platform(platform)
+        except Exception as e:
+            print(f"⚠️  Could not detect platform/workspace for config loading: {e}")
+            # Continue without platform/workspace-specific configs
+
     config_files = None
     if use_lake_packages and artifacts_storage_path:
         config_files = download_config_files(
             artifacts_storage_path=artifacts_storage_path,
             environment=environment,
+            platform=platform,
+            workspace_id=workspace_id,
             app_name=app_name,
         )
 
@@ -616,6 +761,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 initial_config=config,  # BOOTSTRAP_CONFIG as overrides
                 environment=environment,
                 artifacts_storage_path=artifacts_storage_path,
+                platform=platform,
+                workspace_id=workspace_id,
+                app_name=app_name,
             )
             config_service = get_kindling_service(ConfigService)
     except:
@@ -625,6 +773,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             initial_config=config,  # BOOTSTRAP_CONFIG as overrides
             environment=environment,
             artifacts_storage_path=artifacts_storage_path,
+            platform=platform,
+            workspace_id=workspace_id,
+            app_name=app_name,
         )
         config_service = get_kindling_service(ConfigService)
 
