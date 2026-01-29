@@ -28,12 +28,43 @@ level_hierarchy = {
 }
 
 
+def get_temp_path() -> str:
+    """
+    Get platform-specific temp directory path.
+
+    Detects the platform and returns an appropriate temp directory:
+    - Databricks: /tmp/kindling_{uuid} (writable via dbutils, readable at /dbfs/tmp/)
+    - Fabric/Synapse/Standalone: tempfile.mkdtemp() result
+
+    Returns:
+        Absolute path to temp directory suitable for the current platform
+    """
+    storage_utils = _get_storage_utils()
+
+    # Check if we're in Databricks by looking for DBUtils
+    # Only Databricks has DBUtils - Fabric/Synapse have MsSparkUtils which also has fs
+    if storage_utils:
+        storage_utils_type = type(storage_utils).__name__
+        is_databricks = "DBUtils" in storage_utils_type
+
+        if is_databricks and hasattr(storage_utils, "fs"):
+            # Databricks: Use DBFS temp directory
+            import uuid
+
+            temp_id = uuid.uuid4().hex[:8]
+            return f"/tmp/kindling_{temp_id}"
+
+    # Fabric/Synapse/Standalone: Use standard temp directory
+    return tempfile.mkdtemp(prefix="kindling_")
+
+
 def download_config_files(
     artifacts_storage_path: str,
     environment: str,
     platform: Optional[str] = None,
     workspace_id: Optional[str] = None,
     app_name: Optional[str] = None,
+    temp_path: Optional[str] = None,
 ) -> List[str]:
     """
     Download config files from lake to temp location for Dynaconf.
@@ -43,7 +74,8 @@ def download_config_files(
       1. settings.yaml (base settings)
       2. platform_{platform}.yaml (platform-specific: fabric, synapse, databricks)
       3. workspace_{workspace_id}.yaml (workspace-specific)
-      4. env_{environment}.yaml (environment-specific: dev, prod, etc - highest priority)
+      4. env_{environment}.yaml (environment-specific: dev, prod, etc)
+      5. data-apps/{app_name}/settings.yaml (app-specific - highest priority)
 
     Args:
         artifacts_storage_path: Base path for artifacts storage
@@ -69,8 +101,28 @@ def download_config_files(
         print(f"Workspace ID: {workspace_id}")
     print(f"Environment: {environment}")
 
-    temp_dir = tempfile.mkdtemp(prefix="kindling_config_")
+    # Get platform-specific temp path
+    temp_dir = get_temp_path()
+
+    # Detect platform by checking storage utils type (more reliable than path format)
+    storage_utils = _get_storage_utils()
+    storage_utils_type = type(storage_utils).__name__ if storage_utils else "None"
+    is_databricks = "DBUtils" in storage_utils_type
+
+    # Use parameter instead of trying to import
+    volume_path = temp_path
+
+    # Always create temp_path for Fabric/Synapse (used for default config if needed)
     temp_path = Path(temp_dir)
+
+    if is_databricks:
+        if volume_path:
+            print(f"Using Volume path for configs: {volume_path}")
+        else:
+            print(f"Using DBFS temp path: {temp_dir}")
+            dbfs_temp_path = temp_dir
+    else:
+        print(f"Using local temp path: {temp_dir}")
 
     config_files = []
 
@@ -91,22 +143,53 @@ def download_config_files(
             (f"{base_path}/config/workspace_{workspace_id}.yaml", f"workspace_{workspace_id}.yaml")
         )
 
-    # Add environment config (highest priority from files)
+    # Add environment config
     files_to_download.append(
         (f"{base_path}/config/env_{environment}.yaml", f"env_{environment}.yaml")
     )
 
-    for remote_path, filename in files_to_download:
-        local_path = temp_path / f"{len(config_files)}_{filename}"
+    # Add app-specific settings (highest priority from files)
+    # Apps deployed with settings.yaml in their directory get those loaded last
+    if app_name:
+        files_to_download.append(
+            (f"{base_path}/data-apps/{app_name}/settings.yaml", f"app_{app_name}_settings.yaml")
+        )
 
+    for remote_path, filename in files_to_download:
         try:
-            # Use file:// prefix for local filesystem paths with mssparkutils/dbutils
-            storage_utils.fs.cp(remote_path, f"file://{str(local_path)}")
-            config_files.append(str(local_path))
-            print(f"✓ Downloaded: {filename}")
+            if is_databricks:
+                # Databricks: Use fs.head() + fs.put() for DBFS/Volume writes
+                content = storage_utils.fs.head(remote_path, 1024 * 1024)  # 1MB max
+                # Decode bytes to string
+                text_content = content.decode("utf-8") if isinstance(content, bytes) else content
+
+                if volume_path:
+                    # Write to Volume (preferred - accessible as regular file)
+                    volume_file = f"{volume_path.rstrip('/')}/{len(config_files)}_{filename}"
+                    storage_utils.fs.put(volume_file, text_content, overwrite=True)
+                    config_files.append(volume_file)
+                    print(f"✓ Downloaded: {filename} to {volume_file}")
+                else:
+                    # Fallback to DBFS (requires /dbfs mount)
+                    dbfs_file_path = f"{dbfs_temp_path}/{len(config_files)}_{filename}"
+                    storage_utils.fs.put(dbfs_file_path, text_content, overwrite=True)
+                    local_file_path = f"/dbfs{dbfs_file_path}"
+                    config_files.append(local_file_path)
+                    print(f"✓ Downloaded: {filename} to {local_file_path}")
+            else:
+                # Fabric/Synapse: Use fs.cp() with file:// prefix (works with relative lakehouse paths)
+                local_path = temp_path / f"{len(config_files)}_{filename}"
+                storage_utils.fs.cp(remote_path, f"file://{str(local_path)}")
+                config_files.append(str(local_path))
+                print(f"✓ Downloaded: {filename}")
         except Exception as e:
-            # All config files are optional - continue silently
-            print(f"  (Optional config not found: {filename})")
+            # All config files are optional - log error details for debugging
+            error_msg = str(e)
+            if "FileNotFoundException" in error_msg or "does not exist" in error_msg.lower():
+                print(f"  (Optional config not found: {filename})")
+            else:
+                print(f"  (Optional config not found: {filename})")
+                print(f"  Debug: {type(e).__name__}: {error_msg[:100]}")
 
     if not config_files:
         print("No YAML config files found")
@@ -441,23 +524,51 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             return False
 
     def load_if_needed(package_spec):
-        """Install package if not already installed (from PyPI)"""
-        if not is_package_installed(package_spec):
-            print(f"📥 Installing package: {package_spec}")
-            logger.info(f"Installing package: {package_spec}")
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", package_spec])
-                print(f"✅ Successfully installed package: {package_spec}")
-                logger.info(f"Successfully installed package: {package_spec}")
-            except subprocess.CalledProcessError as e:
-                print(f"❌ Failed to install {package_spec}: {e}")
-                logger.error(f"Failed to install {package_spec}: {e}")
-        else:
-            import_name = get_import_name(package_spec)
-            print(f"✓ Package already installed: {import_name}")
-            logger.info(f"Package already installed: {import_name}")
+        """Install package (from PyPI), forcing upgrade to override system packages"""
+        print(f"📥 Installing package: {package_spec}")
+        logger.info(f"Installing package: {package_spec}")
+        try:
+            # Use --ignore-installed to force installation even if package exists in system site-packages
+            # This is critical for platforms like Databricks where system packages may be outdated
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--ignore-installed", package_spec]
+            )
+            print(f"✅ Successfully installed package: {package_spec}")
+            logger.info(f"Successfully installed package: {package_spec}")
 
-    def load_extension_wheel(package_spec, storage_utils, artifacts_path):
+            # CRITICAL: Ensure venv site-packages takes precedence over system site-packages
+            # After installing, prioritize the venv path where the package was installed
+            import site
+
+            user_site = site.getusersitepackages()
+            site_packages = site.getsitepackages()
+
+            # Insert venv paths at the BEGINNING of sys.path (before system paths)
+            # This ensures our newly installed packages are found first
+            for path in reversed([user_site] + site_packages):
+                if path and path not in sys.path:
+                    sys.path.insert(0, path)
+                    print(f"   📌 Prioritized in sys.path: {path}")
+                elif path and path in sys.path:
+                    # Move existing path to the front
+                    sys.path.remove(path)
+                    sys.path.insert(0, path)
+                    print(f"   📌 Moved to front of sys.path: {path}")
+
+            # Clear any cached imports of this package to force reload from new location
+            package_name = (
+                package_spec.split(">")[0].split("=")[0].split("<")[0].split("!")[0].strip()
+            )
+            module_name = package_name.replace("-", "_")
+            if module_name in sys.modules:
+                print(f"   🔄 Clearing cached import: {module_name}")
+                del sys.modules[module_name]
+
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to install {package_spec}: {e}")
+            logger.error(f"Failed to install {package_spec}: {e}")
+
+    def load_extension_wheel(package_spec, storage_utils, artifacts_path, temp_path=None):
         """Install extension wheel from artifacts storage (like kindling-otel-azure)"""
         if is_package_installed(package_spec):
             import_name = get_import_name(package_spec)
@@ -488,8 +599,8 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         logger.info(f"Installing extension from artifacts: {package_spec}")
 
         try:
-            # Create temp directory
-            temp_dir = tempfile.mkdtemp(prefix="kindling_ext_")
+            # Create temp directory using platform-specific path
+            temp_dir = get_temp_path()
 
             # List directory contents to find the exact wheel filename
             # storage_utils.fs.ls() returns list of file info
@@ -567,10 +678,31 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
                 # Download the exact wheel file
                 remote_wheel_path = f"{packages_dir}/{wheel_filename}"
-                local_path = os.path.join(temp_dir, wheel_filename)
 
-                print(f"   Downloading: {remote_wheel_path}")
-                storage_utils.fs.cp(remote_wheel_path, f"file://{local_path}")
+                # Detect platform for appropriate download method
+                storage_utils_type = type(storage_utils).__name__
+                is_databricks = "DBUtils" in storage_utils_type
+
+                if is_databricks:
+                    # Databricks: Use Volume or DBFS (same pattern as runtime bootstrap)
+                    volume_path = temp_path
+
+                    if volume_path:
+                        # Use Unity Catalog Volume
+                        local_path = f"{volume_path.rstrip('/')}/{wheel_filename}"
+                        print(f"   Downloading to volume: {local_path}")
+                        storage_utils.fs.cp(remote_wheel_path, local_path, recurse=False)
+                    else:
+                        # Fallback to DBFS
+                        dbfs_path = f"/tmp/{wheel_filename}"
+                        print(f"   Downloading to DBFS: dbfs:{dbfs_path}")
+                        storage_utils.fs.cp(remote_wheel_path, f"dbfs:{dbfs_path}", recurse=False)
+                        local_path = f"/dbfs{dbfs_path}"
+                else:
+                    # Fabric/Synapse: Use file:// with temp directory
+                    local_path = os.path.join(temp_dir, wheel_filename)
+                    print(f"   Downloading: {remote_wheel_path}")
+                    storage_utils.fs.cp(remote_wheel_path, f"file://{local_path}")
 
                 if not os.path.exists(local_path):
                     print(f"❌ Failed to download wheel to {local_path}")
@@ -587,6 +719,9 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                         "-m",
                         "pip",
                         "install",
+                        "--upgrade",
+                        "--upgrade-strategy",
+                        "eager",  # Upgrade dependencies too (e.g., typing-extensions)
                         local_path,
                         "--disable-pip-version-check",
                     ],
@@ -607,11 +742,27 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                 print(f"❌ Failed to list or download extension wheel: {e}")
                 logger.error(f"Failed to find extension wheel {package_spec}: {e}")
                 return
+            finally:
+                # Cleanup
+                if is_databricks:
+                    # Clean up from volume or DBFS
+                    try:
+                        volume_path = temp_path
+                        if volume_path:
+                            cleanup_path = f"{volume_path.rstrip('/')}/{wheel_filename}"
+                            storage_utils.fs.rm(cleanup_path)
+                            print(f"   🧹 Cleaned up volume file")
+                        else:
+                            dbfs_path = f"/tmp/{wheel_filename}"
+                            storage_utils.fs.rm(f"dbfs:{dbfs_path}")
+                            print(f"   🧹 Cleaned up DBFS file")
+                    except Exception as e:
+                        print(f"   ⚠️  Could not clean up temp file: {e}")
+                else:
+                    # Clean up temp directory for Fabric/Synapse
+                    import shutil
 
-            # Cleanup
-            import shutil
-
-            shutil.rmtree(temp_dir, ignore_errors=True)
+                    shutil.rmtree(temp_dir, ignore_errors=True)
 
         except Exception as e:
             print(f"❌ Failed to install extension {package_spec}: {e}")
@@ -641,7 +792,12 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             for extension in extensions:
                 # Install the extension from artifacts storage
                 print(f"🔌 Loading extension: {extension}")
-                load_extension_wheel(extension, storage_utils, artifacts_storage_path)
+                load_extension_wheel(
+                    extension,
+                    storage_utils,
+                    artifacts_storage_path,
+                    temp_path=bootstrap_config.get("temp_path"),
+                )
 
                 # Import to trigger @GlobalInjector.singleton_autobind() decorators
                 import_name = get_import_name(extension)
@@ -744,6 +900,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             platform=platform,
             workspace_id=workspace_id,
             app_name=app_name,
+            temp_path=config.get("kindling.temp_path") or config.get("temp_path"),
         )
 
     from kindling.spark_config import configure_injector_with_config
@@ -783,8 +940,35 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     logger.info("Starting framework initialization")
 
     try:
-        required_packages = config_service.get("kindling.bootstrap.required_packages", [])
+        # Read from general kindling config (not bootstrap namespace)
+        # bootstrap is just for temp backwards compatibility mapping
+        required_packages = config_service.get("kindling.required_packages", [])
         extensions = config_service.get("kindling.extensions", [])
+
+        # Deduplicate extensions - prefer versioned specs over plain names
+        # e.g., keep "kindling-otel-azure>=0.3.0a1" instead of "kindling-otel-azure"
+        if extensions:
+            ext_dict = {}
+            for ext in extensions:
+                # Extract package name (before any version operator)
+                pkg_name = ext.split(">")[0].split("=")[0].split("<")[0].split("!")[0].strip()
+
+                # Check if this extension has a version spec
+                has_version = any(op in ext for op in [">=", "<=", "==", "!=", ">", "<", "~="])
+
+                if pkg_name in ext_dict:
+                    # If we already have this package, prefer the versioned one
+                    existing_has_version = any(
+                        op in ext_dict[pkg_name] for op in [">=", "<=", "==", "!=", ">", "<", "~="]
+                    )
+                    if has_version and not existing_has_version:
+                        # Replace plain with versioned
+                        ext_dict[pkg_name] = ext
+                    # If both versioned or both plain, keep first one
+                else:
+                    ext_dict[pkg_name] = ext
+
+            extensions = list(ext_dict.values())
 
         # Debug: Print entire kindling config section
         print(f"🔍 DEBUG: Full kindling config section:")
@@ -800,9 +984,18 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
         print(f"📦 Required packages: {required_packages}")
         print(f"🔌 Extensions: {extensions}")
+
+        # Build bootstrap config including temp_path from original config
+        bootstrap_deps_config = {
+            "required_packages": required_packages,
+            "extensions": extensions,
+            # Pass through from original config (generic temp_path for all platforms)
+            "temp_path": config.get("kindling.temp_path") or config.get("temp_path"),
+        }
+
         install_bootstrap_dependencies(
             logger,
-            {"required_packages": required_packages, "extensions": extensions},
+            bootstrap_deps_config,
             artifacts_storage_path=artifacts_storage_path,
         )
 

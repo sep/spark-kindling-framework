@@ -171,3 +171,21 @@ def job_packager():
     from kindling.job_deployment import JobPackager
 
     return JobPackager()
+
+
+@pytest.fixture
+def stdout_validator(platform_client):
+    """Get stdout stream validator for the active platform
+
+    Returns a StdoutStreamValidator configured for the platform API client.
+    Use this to stream and validate stdout logs from Spark jobs.
+
+    Example:
+        validator = stdout_validator
+        validator.stream_with_callback(job_id, run_id, print_lines=True)
+        validator.assert_markers({"bootstrap": ["BOOTSTRAP SCRIPT"]})
+    """
+    from tests.system.test_helpers import create_stdout_validator
+
+    client, platform_name = platform_client
+    return create_stdout_validator(client)

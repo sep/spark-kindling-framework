@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling"
-version = "0.2.1"
+version = "0.3.0"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -22,11 +22,12 @@ pyarrow = ">=12.0.0"
 injector = ">=0.20.1"
 dynaconf = ">=3.1.0"
 pyyaml = ">=6.0"
+packaging = ">=23.0"
 blinker = ">=1.6.0"
 azure-storage-blob = ">=12.14.0"
 azure-storage-file-datalake = ">=12.14.0"
-azure-identity = ">=1.12.0"
-azure-core = ">=1.30.0,<2.0.0"
+azure-identity = ">=1.15.0"
+azure-core = ">=1.30.0,<1.31.0"  # Pin to 1.30.x - compatible with Fabric runtime 1.30.2
 azure-synapse-artifacts = "0.17.0"
 databricks-sdk = ">=0.12.0"
 
@@ -74,7 +75,7 @@ test-system-databricks = "pytest tests/system/core/ -v -s -m databricks"
 test-extension = { cmd = "pytest tests/system/extensions/${extension}/ -v -s -m ${platform}", args = [{name = "extension", default = "*", positional = false}, {name = "platform", default = "fabric", positional = false}] }
 test-quick = "pytest tests/unit/ tests/integration/ -v"
 test-coverage = "pytest tests/ -v --cov=kindling --cov-report=html --cov-report=term"
-cleanup = { cmd = "python scripts/cleanup_test_resources.py --all" }
+cleanup = { shell = "python scripts/cleanup_test_resources.py --all && python scripts/cleanup_old_packages.py" }
 cleanup-fabric = { cmd = "python scripts/cleanup_test_resources.py --platform fabric" }
 cleanup-synapse = { cmd = "python scripts/cleanup_test_resources.py --platform synapse" }
 cleanup-databricks = { cmd = "python scripts/cleanup_test_resources.py --platform databricks" }

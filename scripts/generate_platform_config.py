@@ -11,16 +11,18 @@ PLATFORM_DEPS = {
         'azure-synapse-artifacts = ">=0.17.0"',
         'azure-storage-file-datalake = ">=12.0.0"',
         'azure-identity = ">=1.12.0"',
-        # Pin azure-core for Synapse runtime compatibility (runtime has 1.30.1, we need >=1.32.0)
-        'azure-core = ">=1.32.0,<2.0.0"',
+        # Pin azure-core to match Synapse runtime (1.30.x)
+        'azure-core = ">=1.30.0,<1.31.0"',
     ],
     "databricks": [
-        'databricks-sdk = ">=0.12.0"',
+        # databricks-sdk is provided by Databricks runtime (0.1.6+)
+        # Omitted to avoid version conflicts with runtime packages
     ],
     "fabric": [
         'azure-storage-file-datalake = ">=12.0.0"',
+        # Pin azure-core to match Fabric runtime 1.30.2 - do NOT upgrade or imports will fail
+        'azure-core = ">=1.30.0,<1.31.0"',
         'azure-identity = ">=1.12.0"',
-        'azure-core = ">=1.26.0,<2.0.0"',
     ],
 }
 
@@ -47,6 +49,7 @@ python = "^3.10"
 injector = ">=0.20.1"
 dynaconf = ">=3.1.0"
 pyyaml = ">=6.0"
+packaging = ">=23.0"
 {platform_deps}
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"

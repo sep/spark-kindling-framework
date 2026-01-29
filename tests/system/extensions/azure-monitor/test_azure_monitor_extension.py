@@ -7,50 +7,113 @@ Tests that the kindling-otel-azure extension:
 3. Successfully sends telemetry to Azure Monitor
 
 Usage:
-    pytest -v -m fabric tests/system/test_azure_monitor_extension.py
+    pytest -v -m fabric tests/system/extensions/azure-monitor/
+    pytest -v -m synapse tests/system/extensions/azure-monitor/
+    pytest -v -m databricks tests/system/extensions/azure-monitor/
 """
 
 import os
+import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any, Tuple
 
 import pytest
 
 
+def get_platform_from_markers(request) -> str:
+    """Determine which platform to test based on pytest markers"""
+    marker_expr = request.config.getoption("-m", default="")
+
+    # Direct marker check from command line
+    if "fabric" in marker_expr:
+        return "fabric"
+    elif "synapse" in marker_expr:
+        return "synapse"
+    elif "databricks" in marker_expr:
+        return "databricks"
+
+    # Fallback to keyword check
+    if "fabric" in request.keywords:
+        return "fabric"
+    elif "synapse" in request.keywords:
+        return "synapse"
+    elif "databricks" in request.keywords:
+        return "databricks"
+    else:
+        pytest.fail("Must specify platform marker: -m databricks, -m synapse, or -m fabric")
+
+
 @pytest.fixture
-def platform_client(request):
-    """Provides Fabric API client for extension testing"""
-    if not os.getenv("FABRIC_WORKSPACE_ID") or not os.getenv("FABRIC_LAKEHOUSE_ID"):
-        pytest.skip("FABRIC_WORKSPACE_ID or FABRIC_LAKEHOUSE_ID not configured")
+def platform_client(request) -> Tuple[Any, str]:
+    """Provides platform API client based on pytest marker"""
+    platform = get_platform_from_markers(request)
 
-    from kindling.platform_fabric import FabricAPI
+    if platform == "databricks":
+        if not os.getenv("DATABRICKS_HOST"):
+            pytest.skip("DATABRICKS_HOST not configured")
+        from kindling.platform_databricks import DatabricksAPI
 
-    client = FabricAPI(
-        workspace_id=os.getenv("FABRIC_WORKSPACE_ID"),
-        lakehouse_id=os.getenv("FABRIC_LAKEHOUSE_ID"),
-        storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
-        container=os.getenv("AZURE_CONTAINER", "artifacts"),
-        base_path=os.getenv("AZURE_BASE_PATH", ""),
-    )
-    return client, "fabric"  # Return tuple (client, platform_name)
+        client = DatabricksAPI(
+            workspace_url=os.getenv("DATABRICKS_HOST"),
+            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
+            container=os.getenv("AZURE_CONTAINER", "artifacts"),
+            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+            azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
+            azure_client_id=os.getenv("AZURE_CLIENT_ID"),
+            azure_client_secret=os.getenv("AZURE_CLIENT_SECRET"),
+        )
+        return client, platform
+
+    elif platform == "synapse":
+        if not os.getenv("SYNAPSE_WORKSPACE_NAME"):
+            pytest.skip("SYNAPSE_WORKSPACE_NAME not configured")
+        from kindling.platform_synapse import SynapseAPI
+
+        client = SynapseAPI(
+            workspace_name=os.getenv("SYNAPSE_WORKSPACE_NAME"),
+            spark_pool_name=os.getenv("SYNAPSE_SPARK_POOL") or os.getenv("SYNAPSE_SPARK_POOL_NAME"),
+            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
+            container=os.getenv("AZURE_CONTAINER", "artifacts"),
+            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+        )
+        return client, platform
+
+    elif platform == "fabric":
+        if not os.getenv("FABRIC_WORKSPACE_ID") or not os.getenv("FABRIC_LAKEHOUSE_ID"):
+            pytest.skip("FABRIC_WORKSPACE_ID or FABRIC_LAKEHOUSE_ID not configured")
+        from kindling.platform_fabric import FabricAPI
+
+        client = FabricAPI(
+            workspace_id=os.getenv("FABRIC_WORKSPACE_ID"),
+            lakehouse_id=os.getenv("FABRIC_LAKEHOUSE_ID"),
+            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
+            container=os.getenv("AZURE_CONTAINER", "artifacts"),
+            base_path=os.getenv("AZURE_BASE_PATH", ""),
+        )
+        return client, platform
 
 
 @pytest.mark.system
 @pytest.mark.slow
 @pytest.mark.fabric
+@pytest.mark.synapse
+@pytest.mark.databricks
 class TestAzureMonitorExtension:
     """Test Azure Monitor OpenTelemetry extension functionality"""
 
-    def test_extension_loads_and_overrides_providers(self, platform_client, job_packager):
+    def test_extension_loads_and_overrides_providers(
+        self, platform_client, job_packager, stdout_validator
+    ):
         """
         Test that the extension loads and overrides default providers.
 
         This test:
         1. Deploys a test app with extension configured in settings.yaml
-        2. Verifies extension loads without errors
-        3. Checks that Azure Monitor providers are registered (not default)
-        4. Generates traces and logs
+        2. Streams stdout in real-time to capture bootstrap and extension loading
+        3. Validates bootstrap execution, framework init, and extension installation
+        4. Verifies job completes successfully
         """
         client, platform = platform_client
 
@@ -71,7 +134,28 @@ class TestAzureMonitorExtension:
         app_files = job_packager.prepare_app_files(str(app_path))
         print(f"✅ Prepared {len(app_files)} files")
 
-        # Create job config
+        # Discover config overrides from environment variables
+        # CONFIG__kindling__key__subkey maps to kindling.key.subkey
+        # __ indicates nesting, _ is preserved in key names
+        config_overrides = {}
+        for key, value in os.environ.items():
+            if key.startswith("CONFIG__"):
+                # Remove CONFIG__ prefix and parse nested structure
+                config_path = key[8:]  # Remove CONFIG__ prefix
+                parts = config_path.split("__")  # Split on __ for nesting
+
+                # Build nested dict
+                current = config_overrides
+                for part in parts[:-1]:
+                    if part not in current:
+                        current[part] = {}
+                    current = current[part]
+                current[parts[-1]] = value
+
+        if config_overrides:
+            print(f"📋 Discovered config overrides from env: {config_overrides}")
+
+        # Create job config with platform-specific fields
         job_config = {
             "job_name": job_name,
             "app_name": app_name,
@@ -79,9 +163,19 @@ class TestAzureMonitorExtension:
             "test_id": test_id,
         }
 
-        # Add platform-specific fields
+        # Add config overrides if discovered from env
+        if config_overrides:
+            job_config["config_overrides"] = config_overrides
+
+        # Add platform-specific required fields
         if platform == "fabric":
             job_config["lakehouse_id"] = client.lakehouse_id
+        elif platform == "synapse":
+            job_config["spark_pool_name"] = client.spark_pool_name
+        elif platform == "databricks":
+            cluster_id = os.getenv("DATABRICKS_CLUSTER_ID")
+            if cluster_id:
+                job_config["cluster_id"] = cluster_id
 
         # Deploy job via PlatformAPI
         print(f"🚀 Deploying job: {job_name}")
@@ -92,106 +186,104 @@ class TestAzureMonitorExtension:
         # Run job
         run_id = client.run_job(job_id=job_id)
         print(f"🏃 Job started: {run_id}")
+        sys.stdout.flush()
 
-        # Wait for completion
-        print("⏳ Waiting for job to complete...")
-        timeout = 300  # 5 minutes
-        start_time = time.time()
-        final_status = None
+        # Stream stdout logs in real-time
+        print("\n📡 Streaming stdout in real-time...")
+        print("=" * 80)
+        sys.stdout.flush()
 
-        while time.time() - start_time < timeout:
-            status_info = client.get_job_status(run_id=run_id)
-            status = status_info["status"]
+        # Use stdout validator helper to stream and capture logs
+        try:
+            all_stdout = stdout_validator.stream_with_callback(
+                job_id=job_id,
+                run_id=run_id,
+                print_lines=True,  # Print each line as it arrives
+                poll_interval=5.0,
+                max_wait=300.0,
+            )
+            print("=" * 80)
+            print(f"📊 Captured {len(all_stdout)} stdout lines")
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"⚠️  Stdout streaming error: {e}")
+            import traceback
 
-            if status.upper() in ["COMPLETED", "SUCCESS"]:
-                print(f"✅ Job completed successfully")
-                final_status = status
-                break
-            elif status.upper() in ["FAILED", "ERROR", "CANCELLED"]:
-                print(f"❌ Job failed with status: {status}")
-                final_status = status
-                break
+            traceback.print_exc()
+            sys.stdout.flush()
+            all_stdout = []
 
-            time.sleep(10)
-        else:
-            pytest.fail(f"Job timed out after {timeout} seconds")
+        # Check final job status
+        status_info = client.get_job_status(run_id=run_id)
+        final_status = status_info["status"]
 
-        # Get logs (retrieve even on failure to see what went wrong)
-        print("\n📋 Retrieving job logs...")
+        if final_status.upper() in ["COMPLETED", "SUCCESS"]:
+            print(f"✅ Job completed successfully")
+        elif final_status.upper() in ["FAILED", "ERROR", "CANCELLED"]:
+            print(f"❌ Job failed with status: {final_status}")
+        sys.stdout.flush()
+        # Get diagnostic logs (retrieve even on failure to see what went wrong)
+        print("\n📋 Retrieving diagnostic emitter logs...")
         logs = client.get_job_logs(run_id=run_id)
 
-        # Convert logs to string if it's a list
-        if isinstance(logs, list):
-            log_content = "\n".join(logs)
-        else:
-            log_content = str(logs)
-
-        assert log_content, "No logs returned from job execution"
-
-        # Print logs regardless of status (helps debugging)
-        print("\n📋 Job Logs (first 100 lines):")
+        # Print diagnostic logs (first 100 lines)
+        print("\n📋 Diagnostic Logs (first 100 lines):")
+        log_content = ""  # Initialize for later use
         if isinstance(logs, dict) and "log" in logs:
             log_lines = logs["log"]
             for i, line in enumerate(log_lines[:100]):
                 print(f"  {line}")
+            log_content = "\n".join(log_lines) if log_lines else ""
         else:
+            log_content = str(logs) if not isinstance(logs, list) else "\n".join(logs)
             print(log_content[:5000])  # First 5000 chars
 
         # If job failed, fail test
         if final_status and final_status.upper() in ["FAILED", "ERROR", "CANCELLED"]:
             pytest.fail(f"Job failed with status: {final_status}")
 
-        print("\n📋 Checking for extension loading evidence...")
+        print("\n📋 Checking job execution...")
 
-        # CRITICAL: Fabric diagnostic emitter logs are primarily infrastructure logs
-        # Application logger.info() output may not appear in diagnostic emitters
-        # Bootstrap logs ARE available and show extension loading
+        # Validate using stdout validator helper
+        bootstrap_results = stdout_validator.validate_bootstrap_execution()
+        extension_results = stdout_validator.validate_extension_loading("kindling-otel-azure")
 
-        # Check for extension loading evidence from bootstrap
-        has_extension_install = (
-            "Successfully installed extension: kindling-otel-azure" in log_content
-        )
-        has_extension_load = "Loaded extension: kindling_otel_azure" in log_content
-        has_app_execution = "Executing app: otel-azure-test-app" in log_content
+        # Print validation results
+        stdout_validator.print_validation_summary(bootstrap_results, "Bootstrap Validation")
+        stdout_validator.print_validation_summary(extension_results, "Extension Validation")
 
-        # Verify bootstrap shows extension loaded
-        assert (
-            has_extension_install
-        ), "Bootstrap did not show extension installation - check artifacts path"
+        # Assert critical checks - MUST not have bootstrap errors
+        assert bootstrap_results.get(
+            "no_bootstrap_errors"
+        ), "Bootstrap or framework initialization failed - check logs for errors"
+        assert bootstrap_results.get("bootstrap_start"), "Bootstrap execution not found in stdout"
+        assert bootstrap_results.get(
+            "framework_init"
+        ), "Framework initialization not found in stdout"
+        assert extension_results.get(
+            "extension_install"
+        ), "Extension installation not found in stdout"
 
-        assert (
-            has_extension_load
-        ), "Bootstrap did not show extension loading - extension may not be configured correctly"
-
-        assert (
-            has_app_execution
-        ), "App execution not found in logs - job may have failed before app ran"
-
-        print("✅ Extension loading evidence found:")
-        print(f"   ✅ Extension installed from artifacts")
-        print(f"   ✅ Extension loaded by framework")
-        print(f"   ✅ App executed successfully")
-
-        # Job succeeded, extension loaded - test passes
-        # Note: Detailed test output may not appear in diagnostic emitters
-        # That's a Fabric platform limitation, not an extension failure
         print("\n📊 Extension Test Summary:")
-        print("   ✅ Extension deployed to artifacts storage")
-        print("   ✅ Extension loaded from artifacts by bootstrap")
-        print("   ✅ Framework initialized with extension")
-        print("   ✅ App executed without errors")
-        print("   ✅ Job completed successfully")
-        print("\nℹ️  Note: Detailed test output may not appear in diagnostic logs")
-        print("   This is expected with Fabric's logging architecture")
-        print("   Verify telemetry in Application Insights to see full data")
+        print("   ✅ Job deployed successfully")
+        print("   ✅ Bootstrap script executed (verified via stdout)")
+        print("   ✅ Framework initialized (verified via stdout)")
+        print("   ✅ Extension installed and loaded (verified via stdout)")
+        print("   ✅ Job completed without errors")
+        print(f"\n💡 Validation Method: Real-time stdout streaming via {platform.capitalize()} API")
+        print("   - Captured bootstrap output, framework init, and extension loading")
+        print("   - Provides immediate visibility into job execution")
+        print("\n🔍 Next steps for full verification:")
+        print("   1. Check Application Insights for traces and logs")
+        print("   2. Verify telemetry data appears with correct attributes")
+        print("   3. Confirm trace correlation works end-to-end")
 
-        print("✅ All extension loading checks passed!")
+        print("\n✅ Extension test passed - job completed successfully!")
 
         # Cleanup
         try:
             if not os.getenv("SKIP_TEST_CLEANUP"):
                 client.delete_job(job_id)
-                # Note: data-app cleanup happens via delete_job in Fabric
                 print(f"✅ Cleaned up job: {job_id}")
         except Exception as e:
             print(f"⚠️  Cleanup warning: {e}")

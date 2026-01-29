@@ -2,6 +2,9 @@
 
 Azure Monitor OpenTelemetry integration for the Kindling Spark framework.
 
+> **⚠️ Alpha Version**: This is version 0.3.0-alpha.1 with updated dependencies for better cross-platform compatibility.
+> See [CHANGELOG.md](CHANGELOG.md) for details.
+
 ## Overview
 
 This package provides Azure Monitor-backed implementations of Kindling's telemetry providers:
@@ -11,7 +14,11 @@ This package provides Azure Monitor-backed implementations of Kindling's telemet
 ## Installation
 
 ```bash
+# Latest stable
 pip install kindling-otel-azure
+
+# Alpha version with improved Databricks compatibility
+pip install kindling-otel-azure==0.3.0a1
 ```
 
 ## Usage
@@ -24,7 +31,7 @@ Add the extension to your `settings.yaml` or `BOOTSTRAP_CONFIG`:
 kindling:
   # Extensions are automatically loaded (installed + imported)
   extensions:
-    - kindling-otel-azure>=0.1.0
+    - kindling-otel-azure>=0.3.0a1  # Alpha with improved cross-platform support
 
   telemetry:
     azure_monitor:

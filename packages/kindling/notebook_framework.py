@@ -307,8 +307,10 @@ class NotebookWheelBuilder:
         dependencies = dependencies or []
         description = description or f"Package created from notebooks in {folder_name}"
 
-        # Create temporary build directory
-        temp_folder_path = f"/tmp/dist_{uuid.uuid4().hex}"
+        # Create temporary build directory using platform-specific path
+        from kindling.bootstrap import get_temp_path
+
+        temp_folder_path = get_temp_path()
         os.makedirs(temp_folder_path, exist_ok=True)
 
         try:
@@ -1684,9 +1686,10 @@ class NotebookLoader(NotebookManager):
         import shutil
         import uuid
 
+        from kindling.bootstrap import get_temp_path
         from setuptools import find_packages, setup
 
-        temp_folder_path = f"/tmp/dist_{uuid.uuid4().hex}"
+        temp_folder_path = get_temp_path()
         os.makedirs(temp_folder_path, exist_ok=True)
 
         nbs = self.get_notebooks_for_folder(folder_name)

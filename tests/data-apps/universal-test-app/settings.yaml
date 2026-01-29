@@ -1,0 +1,11 @@
+# Universal Test App Configuration
+# Tests basic framework functionality across all platforms (Fabric, Synapse, Databricks)
+# Does NOT test extensions - use otel-azure-test-app for extension testing
+
+kindling:
+  version: "0.2.0"
+
+  # Basic logging configuration
+  telemetry:
+    logging:
+      level: INFO

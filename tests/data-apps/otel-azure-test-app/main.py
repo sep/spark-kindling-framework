@@ -4,21 +4,66 @@ Azure Monitor OpenTelemetry Extension Test App
 
 Tests that the kindling-otel-azure extension correctly overrides
 the default trace and log providers with Azure Monitor versions.
+
+CRITICAL: This test requires the Kindling bootstrap system to load the extension.
+Without bootstrap, the extension will not be installed or loaded.
 """
 import sys
 import time
 from datetime import datetime
 
-from kindling.injection import get_kindling_service
-from kindling.spark_log_provider import SparkLoggerProvider
-from kindling.spark_session import *
-from kindling.spark_trace import SparkTraceProvider
+# Print early to confirm app is starting
+print("=" * 80)
+print("OTEL-AZURE-TEST-APP STARTING")
+print("=" * 80)
+
+try:
+    from kindling.injection import get_kindling_service
+    from kindling.spark_log_provider import SparkLoggerProvider
+    from kindling.spark_session import *
+    from kindling.spark_trace import SparkTraceProvider
+
+    print("✅ Kindling imports successful")
+except Exception as e:
+    print(f"❌ Failed to import Kindling: {e}")
+    sys.exit(1)
 
 
 def get_logger():
     """Get logger from Kindling framework"""
-    logger_provider = get_kindling_service(SparkLoggerProvider)
-    return logger_provider.get_logger("otel-azure-test")
+    try:
+        print("Attempting to get logger from Kindling framework...")
+        logger_provider = get_kindling_service(SparkLoggerProvider)
+        logger = logger_provider.get_logger("otel-azure-test")
+        print("✅ Logger obtained successfully")
+        return logger
+    except Exception as e:
+        print(f"❌ Failed to get logger: {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def log_extension_version(logger):
+    """Log the version of the kindling-otel-azure extension that was loaded"""
+    try:
+        import kindling_otel_azure
+
+        version = kindling_otel_azure.__version__
+        # Print to stdout (captured by Fabric/Databricks)
+        print(f"EXTENSION_VERSION: kindling-otel-azure {version}")
+        # Also log via framework
+        logger.info(f"Extension loaded: kindling-otel-azure version {version}")
+        return version
+    except ImportError:
+        print("⚠️  kindling-otel-azure not found - extension not loaded")
+        logger.warning("kindling-otel-azure not found - extension not loaded")
+        return None
+    except AttributeError:
+        print("⚠️  kindling-otel-azure version not available")
+        logger.warning("kindling-otel-azure version not available")
+        return None
 
 
 def test_provider_override(logger):
@@ -134,11 +179,42 @@ def test_trace_and_log_correlation(logger):
 
 
 # Main execution
-logger = get_logger()
+print("\n" + "=" * 80)
+print("MAIN EXECUTION STARTING")
+print("=" * 80)
+
+try:
+    logger = get_logger()
+except Exception as e:
+    print(f"❌ FATAL: Could not initialize logger: {e}")
+    sys.exit(1)
 
 logger.info("=" * 60)
 logger.info("Azure Monitor OpenTelemetry Extension Test")
 logger.info("=" * 60)
+
+# Log extension version first
+extension_version = log_extension_version(logger)
+if extension_version:
+    logger.info(f"✅ Extension version check passed: {extension_version}")
+    print(f"✅ Extension package found: kindling-otel-azure {extension_version}")
+else:
+    logger.warning("⚠️  Extension version could not be determined")
+    print("⚠️  Extension package NOT found - extension may not be installed")
+
+# Check if extension is actually active (providers registered)
+try:
+    trace_provider = get_kindling_service(SparkTraceProvider)
+    log_provider = get_kindling_service(SparkLoggerProvider)
+
+    trace_class = f"{trace_provider.__class__.__module__}.{trace_provider.__class__.__name__}"
+    log_class = f"{log_provider.__class__.__module__}.{log_provider.__class__.__name__}"
+
+    print(f"CURRENT_PROVIDERS: Trace={trace_class}, Log={log_class}")
+    logger.info(f"Current Providers: Trace={trace_class}, Log={log_class}")
+except Exception as e:
+    print(f"❌ Failed to get providers: {e}")
+    logger.error(f"Failed to get providers: {e}")
 
 results = {
     "provider_override": test_provider_override(logger),
