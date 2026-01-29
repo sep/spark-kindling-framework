@@ -127,6 +127,21 @@ class DynaconfConfig(ConfigService):
 
     def _translate_yaml_to_flat(self):
         """Translate YAML's nested keys back to flat bootstrap keys"""
+
+        # Debug: Print ALL keys that Dynaconf loaded
+        print(f"🔍 DEBUG: All Dynaconf keys loaded from YAML:")
+        try:
+            all_data = self.dynaconf.as_dict()
+            for key in sorted(all_data.keys()):
+                value = all_data[key]
+                # Show nested structure for debugging
+                if isinstance(value, dict):
+                    print(f"  {key}: {list(value.keys())}")
+                else:
+                    print(f"  {key}: {value}")
+        except Exception as e:
+            print(f"  Error reading Dynaconf keys: {e}")
+
         reverse_mappings = {
             "kindling.TELEMETRY.logging.level": "log_level",
             "kindling.TELEMETRY.logging.print": "print_logging",
@@ -135,7 +150,8 @@ class DynaconfConfig(ConfigService):
             "kindling.BOOTSTRAP.load_local": "load_local_packages",
             "kindling.BOOTSTRAP.load_lake": "use_lake_packages",
             "kindling.REQUIRED_PACKAGES": "required_packages",
-            "kindling.EXTENSIONS": "extensions",
+            "kindling.extensions": "extensions",  # lowercase - matches YAML
+            "kindling.EXTENSIONS": "extensions",  # uppercase - backwards compat
             "kindling.IGNORED_FOLDERS": "ignored_folders",
         }
 

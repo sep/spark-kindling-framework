@@ -7,6 +7,12 @@ kindling:
     name: databricks
     environment: databricks
 
+  # Required packages to override outdated Databricks system packages
+  # typing-extensions: Databricks runtime has <4.5.0, extensions need >=4.6.0 for deprecated decorator
+  bootstrap:
+    required_packages:
+      - typing-extensions>=4.6.0
+
   # Databricks-specific telemetry settings
   TELEMETRY:
     logging:

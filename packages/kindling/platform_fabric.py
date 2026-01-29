@@ -1330,7 +1330,8 @@ class FabricAPI(PlatformAPI):
             "platform": "fabric",  # Explicitly set platform to avoid detection issues
             "use_lake_packages": "True",
             "load_local_packages": "False",
-            "spark_app_name": f"kindling-app-{app_name}",  # Set Spark app name for test ID extraction
+            # Set Spark app name for test ID extraction
+            "spark_app_name": f"kindling-app-{app_name}",
         }
 
         # Add test_id if provided (for test tracking)
@@ -2032,6 +2033,395 @@ class FabricAPI(PlatformAPI):
         except Exception as e:
             print(f"⚠️  Failed to read diagnostic logs from {log_path}: {e}")
             return []
+
+    def get_livy_session_info(
+        self, job_id: str, run_id: str, max_wait: int = 30
+    ) -> Optional[Dict[str, Any]]:
+        """Get Livy session information for a running Spark job
+
+        Based on Microsoft Fabric REST API documentation:
+        https://learn.microsoft.com/en-us/rest/api/fabric/spark/item-job-instances/list-spark-job-definition-instances
+
+        Args:
+            job_id: Spark job definition ID
+            run_id: Job run/instance ID
+            max_wait: Maximum seconds to wait for session to appear (default: 30)
+
+        Returns:
+            Dictionary with livy_id, app_id, state if available, None otherwise
+        """
+        try:
+            # First check if the job is running
+            status_info = self.get_job_status(run_id)
+            if status_info.get("status", "").upper() not in ["INPROGRESS", "RUNNING"]:
+                print(
+                    f"⚠️  Job not running, cannot get session info (status: {status_info.get('status')})"
+                )
+                sys.stdout.flush()
+                return None
+
+            # Try to get Livy sessions via official Fabric API
+            # Response structure per Microsoft docs: { "value": [ {...session objects...} ] }
+            url = f"{self.base_url}/workspaces/{self.workspace_id}/sparkJobDefinitions/{job_id}/livySessions"
+
+            start_time = time.time()
+            attempt = 0
+
+            while time.time() - start_time < max_wait:
+                attempt += 1
+
+                try:
+                    response = self._make_request("GET", url)
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        # Per Microsoft docs: sessions are in 'value' array, not 'sessions'
+                        sessions = data.get("value", [])
+
+                        if sessions:
+                            # Get the most recent session (last in array)
+                            session = sessions[-1]
+
+                            # Per actual API response: field is 'livyId' not 'id'
+                            livy_id = session.get("livyId")
+                            state = session.get("state")
+
+                            if livy_id:
+                                # Now get the specific session details to get application ID
+                                # Per Microsoft docs: GET /livySessions/{livyId}
+                                session_detail_url = f"{url}/{livy_id}"
+
+                                try:
+                                    detail_response = self._make_request("GET", session_detail_url)
+                                    if detail_response.status_code == 200:
+                                        detail_data = detail_response.json()
+
+                                        # Per actual API: field is 'sparkApplicationId' at top level
+                                        app_id = detail_data.get("sparkApplicationId")
+
+                                        # Fallback: check other possible locations
+                                        if not app_id:
+                                            app_id = detail_data.get(
+                                                "applicationId"
+                                            ) or detail_data.get("appId")
+                                            spark_app = detail_data.get("sparkApplication", {})
+                                            if not app_id and spark_app:
+                                                app_id = spark_app.get("id") or spark_app.get(
+                                                    "applicationId"
+                                                )
+
+                                        if app_id:
+                                            return {
+                                                "livy_id": livy_id,
+                                                "app_id": app_id,
+                                                "state": state,
+                                                "job_id": job_id,
+                                                "run_id": run_id,
+                                            }
+                                except requests.HTTPError:
+                                    pass
+                        else:
+                            print(f"⏳ No sessions yet, waiting... (attempt {attempt})")
+                            sys.stdout.flush()
+
+                except requests.HTTPError as e:
+                    print(f"⚠️  HTTP {e.response.status_code}: {e.response.text[:200]}")
+                    sys.stdout.flush()
+                    if e.response.status_code != 404:
+                        # Non-404 errors are unexpected, stop retrying
+                        break
+
+                # Wait before retry
+                if time.time() - start_time < max_wait:
+                    time.sleep(5)
+
+            print(f"⚠️  No Livy session found after {max_wait}s")
+            sys.stdout.flush()
+            return None
+
+        except Exception as e:
+            print(f"⚠️  Failed to get Livy session info: {e}")
+            import traceback
+
+            traceback.print_exc()
+            sys.stdout.flush()
+            return None
+
+    def stream_stdout_logs(
+        self,
+        job_id: str,
+        run_id: str,
+        callback: Optional[callable] = None,
+        poll_interval: float = 5.0,
+        max_wait: float = 300.0,
+    ) -> List[str]:
+        """Stream stdout logs from a running Spark job in real-time
+
+        This method polls the Fabric Spark REST API for stdout logs and streams
+        new content as it becomes available. It tracks the last read position
+        to only display new content (append-only behavior).
+
+        Args:
+            job_id: Spark job definition ID
+            run_id: Job run/instance ID
+            callback: Optional callback function called with each new line: callback(line: str)
+            poll_interval: Seconds between polls (default: 5.0)
+            max_wait: Maximum seconds to wait for job to start (default: 300)
+
+        Returns:
+            Complete list of all log lines retrieved
+
+        Example:
+            >>> api = FabricAPI(workspace_id, lakehouse_id)
+            >>> def print_log(line):
+            ...     print(f"[STDOUT] {line}")
+            >>> logs = api.stream_stdout_logs(job_id, run_id, callback=print_log)
+        """
+        all_logs = []
+        last_byte_offset = 0  # Track byte position in file, not line count
+        start_time = time.time()
+        session_info = None
+        job_started_time = None  # Track when job actually started running
+        stdout_warmup_seconds = 45  # Wait this long after job starts before expecting stdout
+        last_poll_message_time = 0  # Track last time we printed a polling message
+
+        # Total timeout for entire streaming operation (not just job start)
+        total_timeout = max_wait + 300.0  # max_wait for start + 5 minutes for execution
+
+        print(f"📡 Starting stdout log stream for run_id={run_id}")
+        print(f"   Poll interval: {poll_interval}s")
+        print(f"   Max wait for job start: {max_wait}s")
+        print(f"   Stdout warmup time: {stdout_warmup_seconds}s")
+        print(f"   Total timeout: {total_timeout}s")
+        sys.stdout.flush()
+
+        while True:
+            # Check if we've exceeded total timeout
+            elapsed = time.time() - start_time
+            if elapsed > total_timeout:
+                print(f"⏱️  Total timeout ({total_timeout}s) exceeded")
+                sys.stdout.flush()
+                break
+
+            # Get current job status
+            try:
+                status_info = self.get_job_status(run_id)
+                status = status_info.get("status", "UNKNOWN").upper()
+
+                # If job completed, do final read and exit
+                if status in ["COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED"]:
+                    print(f"✅ Job {status.lower()} - doing final log read")
+                    sys.stdout.flush()
+                    # Read any remaining logs
+                    new_logs, last_byte_offset = self._read_stdout_chunk(
+                        job_id, run_id, session_info, last_byte_offset
+                    )
+                    if new_logs:
+                        all_logs.extend(new_logs)
+                        for log_line in new_logs:
+                            if callback:
+                                callback(log_line)
+                    break
+
+                # If job not started yet, wait
+                if status in ["NOTSTARTED", "PENDING", "STARTING"]:
+                    print(f"⏳ Job status: {status} - waiting...")
+                    time.sleep(poll_interval)
+                    continue
+
+                # Job is running - track when it started
+                if status in ["INPROGRESS", "RUNNING"]:
+                    if job_started_time is None:
+                        job_started_time = time.time()
+                        print(
+                            f"🚀 Job started running - waiting {stdout_warmup_seconds}s for stdout to become available..."
+                        )
+                        sys.stdout.flush()
+
+                    # Check if we're still in the warmup period
+                    time_since_start = time.time() - job_started_time
+                    if time_since_start < stdout_warmup_seconds:
+                        remaining = stdout_warmup_seconds - time_since_start
+                        if remaining > 1:  # Only print if meaningful time remains
+                            print(f"⏳ Warmup period: {int(remaining)}s remaining...")
+                            sys.stdout.flush()
+                        time.sleep(poll_interval)
+                        continue
+
+                    # Warmup complete - try to get session info if we don't have it
+                    if not session_info:
+                        session_info = self.get_livy_session_info(job_id, run_id)
+
+                # Read new log content (works with or without session info now)
+                new_logs, last_byte_offset = self._read_stdout_chunk(
+                    job_id, run_id, session_info, last_byte_offset
+                )
+
+                if new_logs:
+                    all_logs.extend(new_logs)
+
+                    # Call callback for each new line
+                    for log_line in new_logs:
+                        if callback:
+                            callback(log_line)
+                else:
+                    # No new logs - print periodic progress message
+                    current_time = time.time()
+                    if current_time - last_poll_message_time >= 30:  # Every 30 seconds
+                        elapsed = int(current_time - start_time)
+                        print(f"🔄 Still polling for stdout... ({elapsed}s elapsed)")
+                        sys.stdout.flush()
+                        last_poll_message_time = current_time
+
+            except Exception as e:
+                print(f"⚠️  Error during log streaming: {e}")
+                sys.stdout.flush()
+
+            # Wait before next poll
+            time.sleep(poll_interval)
+
+        print(f"📊 Streaming complete - total lines: {len(all_logs)}")
+        return all_logs
+
+    def _read_stdout_chunk(
+        self, job_id: str, run_id: str, session_info: Optional[Dict[str, Any]], byte_offset: int = 0
+    ) -> tuple[List[str], int]:
+        """Read a chunk of stdout logs starting from a specific byte offset
+
+        Uses Microsoft's official Fabric Spark monitoring API with proper parameters:
+        - isDownload=true: Download log file as stream
+        - isPartial=true: Download partial content
+        - offset: Starting byte position (only valid while app is running)
+        - size: Number of bytes to read (default 1MB per docs)
+
+        Args:
+            job_id: Spark job definition ID
+            run_id: Job run/instance ID
+            session_info: Optional session info with livy_id and app_id
+            byte_offset: Byte position to start reading from (0-based)
+
+        Returns:
+            Tuple of (new log lines, new byte offset for next read)
+        """
+        chunk_size = 1024 * 1024  # 1MB chunks as per Microsoft docs default
+
+        # APPROACH 1: Use session info if available (official driver log API)
+        # https://learn.microsoft.com/en-us/fabric/data-engineering/driver-log
+        if session_info:
+            livy_id = session_info.get("livy_id")
+            app_id = session_info.get("app_id")
+
+            if livy_id and app_id:
+                try:
+                    # Official API endpoint with proper streaming parameters
+                    url = (
+                        f"{self.base_url}/workspaces/{self.workspace_id}"
+                        f"/sparkJobDefinitions/{job_id}"
+                        f"/livySessions/{livy_id}"
+                        f"/applications/{app_id}"
+                        f"/logs?type=driver&fileName=stdout"
+                        f"&isDownload=true&isPartial=true"
+                        f"&offset={byte_offset}&size={chunk_size}"
+                    )
+
+                    print(f"🔍 DEBUG: Attempting driver log API")
+                    print(f"   URL: {url}")
+                    sys.stdout.flush()
+
+                    response = self._make_request("GET", url)
+
+                    print(f"🔍 DEBUG: Driver log API response")
+                    print(f"   Status: {response.status_code}")
+                    print(f"   Content-Type: {response.headers.get('content-type', 'N/A')}")
+                    print(f"   Content length: {len(response.text)} bytes")
+                    print(f"   Has content: {bool(response.text)}")
+                    sys.stdout.flush()
+
+                    # Response should be raw text content (not JSON) when using isDownload=true
+                    if response.status_code == 200 and response.text:
+                        content = response.text
+                        lines = content.split("\n") if content else []
+
+                        # Calculate new byte offset
+                        bytes_read = len(content.encode("utf-8"))
+                        new_offset = byte_offset + bytes_read
+
+                        if lines:
+                            print(f"✅ Read {len(lines)} lines ({bytes_read} bytes) from stdout")
+                            sys.stdout.flush()
+                            return lines, new_offset
+
+                except requests.HTTPError as e:
+                    # 404 is expected early on - stdout doesn't exist yet
+                    if e.response.status_code != 404:
+                        print(f"⚠️  Driver log API error: {e.response.status_code}")
+                        sys.stdout.flush()
+                except Exception as e:
+                    print(f"⚠️  Driver log API failed: {e}")
+                    sys.stdout.flush()
+
+        # APPROACH 2: Try to get rolling driver logs metadata first, then content
+        # This can help us understand what log files are available
+        if session_info:
+            livy_id = session_info.get("livy_id")
+            app_id = session_info.get("app_id")
+
+            if livy_id and app_id:
+                try:
+                    # Get metadata about stdout file
+                    meta_url = (
+                        f"{self.base_url}/workspaces/{self.workspace_id}"
+                        f"/sparkJobDefinitions/{job_id}"
+                        f"/livySessions/{livy_id}"
+                        f"/applications/{app_id}"
+                        f"/logs?type=driver&meta=true&fileName=stdout"
+                    )
+
+                    meta_response = self._make_request("GET", meta_url)
+
+                    if meta_response.status_code == 200:
+                        meta_data = meta_response.json()
+                        container_log_meta = meta_data.get("containerLogMeta", {})
+                        file_length = container_log_meta.get("length", 0)
+
+                        # If file exists and has content beyond our current offset
+                        if file_length > byte_offset:
+                            # Now get the actual content
+                            content_url = (
+                                f"{self.base_url}/workspaces/{self.workspace_id}"
+                                f"/sparkJobDefinitions/{job_id}"
+                                f"/livySessions/{livy_id}"
+                                f"/applications/{app_id}"
+                                f"/logs?type=driver&fileName=stdout"
+                                f"&isDownload=true&isPartial=true"
+                                f"&offset={byte_offset}&size={chunk_size}"
+                            )
+
+                            content_response = self._make_request("GET", content_url)
+
+                            if content_response.status_code == 200 and content_response.text:
+                                content = content_response.text
+                                lines = content.split("\n") if content else []
+                                bytes_read = len(content.encode("utf-8"))
+                                new_offset = byte_offset + bytes_read
+
+                                if lines:
+                                    print(
+                                        f"✅ Read {len(lines)} lines ({bytes_read} bytes) via metadata approach"
+                                    )
+                                    sys.stdout.flush()
+                                    return lines, new_offset
+
+                except requests.HTTPError as e:
+                    if e.response.status_code != 404:
+                        print(f"⚠️  Metadata approach error: {e.response.status_code}")
+                        sys.stdout.flush()
+                except Exception as e:
+                    print(f"⚠️  Metadata approach failed: {e}")
+                    sys.stdout.flush()
+
+        # No new logs available from any source
+        return [], byte_offset
 
     def cancel_job(self, run_id: str) -> bool:
         """Cancel a running job

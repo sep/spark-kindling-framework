@@ -90,9 +90,9 @@ def cleanup_synapse(storage_account: str, container: str, base_path: str = ""):
     # Delete all system test jobs (systest-*)
     jobs_deleted = 0
     try:
-        jobs = client.list_jobs()
+        jobs = client.list_spark_jobs()
         for job in jobs:
-            job_name = job.get("name", "")
+            job_name = job.get("displayName", "")
             if job_name.startswith("systest-"):
                 job_id = job.get("id")
                 try:
@@ -116,18 +116,18 @@ def cleanup_databricks(storage_account: str, container: str, base_path: str = ""
 
     print("🧹 Cleaning up Databricks test resources...")
 
-    host = os.getenv("DATABRICKS_HOST")
+    workspace_url = os.getenv("DATABRICKS_HOST")
+    # Optional - uses Azure auth if not provided
     token = os.getenv("DATABRICKS_TOKEN")
-    cluster_id = os.getenv("DATABRICKS_CLUSTER_ID")
+    # cluster_id not needed for cleanup operations
 
-    if not host or not token:
-        print("⚠️  Skipping Databricks: Missing DATABRICKS_HOST or DATABRICKS_TOKEN")
+    if not workspace_url:
+        print("⚠️  Skipping Databricks: Missing DATABRICKS_HOST")
         return 0, 0
 
     client = DatabricksAPI(
-        host=host,
-        token=token,
-        cluster_id=cluster_id,
+        workspace_url=workspace_url,
+        token=token,  # Can be None - will use Azure authentication
         storage_account=storage_account,
         container=container,
         base_path=base_path,

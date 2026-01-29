@@ -1803,6 +1803,203 @@ class SynapseAPI(PlatformAPI):
             print(f"⚠️  Failed to cancel job {run_id}: {e}")
             return False
 
+    def stream_stdout_logs(
+        self,
+        job_id: str,
+        run_id: str,
+        callback: Optional[callable] = None,
+        poll_interval: float = 5.0,
+        max_wait: float = 300.0,
+    ) -> List[str]:
+        """Stream stdout logs from a running Spark job in real-time
+
+        For Synapse Spark jobs, stdout logs are written to diagnostic emitter storage.
+        This method polls the batch status and reads new log content incrementally.
+
+        Note: Synapse diagnostic logs have a delay (typically 2-5 minutes) before
+        appearing in storage after job completion.
+
+        Args:
+            job_id: Job name (for consistency with other platforms, not used in Synapse)
+            run_id: Batch ID
+            callback: Optional callback function called with each new line: callback(line: str)
+            poll_interval: Seconds between polls (default: 5.0)
+            max_wait: Maximum seconds to wait (default: 300)
+
+        Returns:
+            Complete list of all log lines retrieved
+
+        Example:
+            >>> api = SynapseAPI(workspace_name, spark_pool_name)
+            >>> def print_log(line):
+            ...     print(f"[STDOUT] {line}")
+            >>> logs = api.stream_stdout_logs(job_id, run_id, callback=print_log)
+        """
+        all_logs = []
+        last_byte_offset = 0
+        start_time = time.time()
+        job_started_time = None
+        stdout_warmup_seconds = 45  # Similar to Fabric
+        last_poll_message_time = 0
+        app_id = None  # Spark application ID
+
+        total_timeout = max_wait + 300.0
+
+        print(f"📡 Starting stdout log stream for batch_id={run_id}")
+        print(f"   Poll interval: {poll_interval}s")
+        print(f"   Max wait: {max_wait}s")
+        print(f"   Total timeout: {total_timeout}s")
+        sys.stdout.flush()
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > total_timeout:
+                print(f"⏱️  Total timeout ({total_timeout}s) exceeded")
+                sys.stdout.flush()
+                break
+
+            try:
+                # Get current job status
+                status_info = self.get_job_status(run_id)
+                status = status_info.get("status", "UNKNOWN").upper()
+
+                # Extract application ID when available
+                if not app_id and status_info.get("app_id"):
+                    app_id = status_info.get("app_id")
+                    print(f"📋 Got application ID: {app_id}")
+                    sys.stdout.flush()
+
+                # If job completed, do final read and exit
+                if status in ["SUCCESS", "COMPLETE", "ERROR", "DEAD", "KILLED"]:
+                    print(f"✅ Job {status.lower()} - doing final log read")
+                    sys.stdout.flush()
+                    # Read final logs
+                    new_logs, last_byte_offset = self._read_stdout_chunk_synapse(
+                        run_id, app_id, last_byte_offset
+                    )
+                    if new_logs:
+                        all_logs.extend(new_logs)
+                        for log_line in new_logs:
+                            if callback:
+                                callback(log_line)
+                    break
+
+                # If job not started yet, wait
+                if status in ["NOT_STARTED", "STARTING"]:
+                    print(f"⏳ Job status: {status} - waiting...")
+                    sys.stdout.flush()
+                    time.sleep(poll_interval)
+                    continue
+
+                # Job is running - track when it started
+                if status in ["RUNNING", "IDLE", "BUSY", "SHUTTING_DOWN"]:
+                    if job_started_time is None:
+                        job_started_time = time.time()
+                        print(
+                            f"🚀 Job started running - waiting {stdout_warmup_seconds}s for stdout to become available..."
+                        )
+                        sys.stdout.flush()
+
+                    # Check if we're still in the warmup period
+                    time_since_start = time.time() - job_started_time
+                    if time_since_start < stdout_warmup_seconds:
+                        remaining = stdout_warmup_seconds - time_since_start
+                        if remaining > 1:
+                            print(f"⏳ Warmup period: {int(remaining)}s remaining...")
+                            sys.stdout.flush()
+                        time.sleep(poll_interval)
+                        continue
+
+                # Read new log content (requires app_id for log location)
+                new_logs, last_byte_offset = self._read_stdout_chunk_synapse(
+                    run_id, app_id, last_byte_offset
+                )
+
+                if new_logs:
+                    all_logs.extend(new_logs)
+
+                    # Call callback for each new line
+                    for log_line in new_logs:
+                        if callback:
+                            callback(log_line)
+                else:
+                    # No new logs - print periodic progress message
+                    current_time = time.time()
+                    if current_time - last_poll_message_time >= 30:
+                        elapsed = int(current_time - start_time)
+                        print(f"🔄 Still polling for stdout... ({elapsed}s elapsed)")
+                        sys.stdout.flush()
+                        last_poll_message_time = current_time
+
+            except Exception as e:
+                print(f"⚠️  Error during log streaming: {e}")
+                sys.stdout.flush()
+
+            # Wait before next poll
+            time.sleep(poll_interval)
+
+        print(f"📊 Streaming complete - total lines: {len(all_logs)}")
+        sys.stdout.flush()
+        return all_logs
+
+    def _read_stdout_chunk_synapse(
+        self, run_id: str, app_id: Optional[str], byte_offset: int = 0
+    ) -> tuple:
+        """Read new stdout content from Synapse diagnostic emitter logs
+
+        Args:
+            run_id: Batch ID
+            app_id: Spark application ID (if available)
+            byte_offset: Starting byte position
+
+        Returns:
+            Tuple of (new_lines, new_byte_offset)
+        """
+        if not app_id:
+            # Can't read logs without application ID
+            return [], byte_offset
+
+        try:
+            # Construct log path: logs/{workspace}.{pool}.{batch_id}/driver/spark-logs/stdout
+            log_path = (
+                f"logs/{self.workspace_name}.{self.spark_pool_name}.{run_id}/driver/spark-logs"
+            )
+
+            # Read stdout file from ADLS Gen2
+            from azure.identity import DefaultAzureCredential
+            from azure.storage.filedatalake import DataLakeServiceClient
+
+            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            credential = DefaultAzureCredential()
+            storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
+            file_system_client = storage_client.get_file_system_client(file_system=self.container)
+
+            # Try to read stdout file
+            stdout_path = f"{log_path}/stdout"
+            file_client = file_system_client.get_file_client(stdout_path)
+
+            # Get file properties to check size
+            properties = file_client.get_file_properties()
+            file_size = properties.size
+
+            if file_size <= byte_offset:
+                # No new content
+                return [], byte_offset
+
+            # Read new content from byte_offset
+            download = file_client.download_file(offset=byte_offset)
+            content = download.readall()
+            new_text = content.decode("utf-8")
+            new_lines = new_text.splitlines()
+
+            new_byte_offset = byte_offset + len(content)
+
+            return new_lines, new_byte_offset
+
+        except Exception as e:
+            # Expected during early execution - logs not available yet
+            return [], byte_offset
+
     def delete_job(self, job_id: str) -> bool:
         """Delete a job definition
 
