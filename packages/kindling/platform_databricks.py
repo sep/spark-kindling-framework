@@ -247,7 +247,10 @@ class DatabricksService(PlatformService):
             dbutils = getattr(__main__, "dbutils", None)
             if dbutils:
                 # For DBFS, we need to write to a temp file first then copy
-                temp_path = f"/tmp/{path.split('/')[-1]}"
+                from kindling.bootstrap import get_temp_path
+
+                temp_dir = get_temp_path()
+                temp_path = f"{temp_dir}/{path.split('/')[-1]}"
                 mode = "w" if isinstance(content, str) else "wb"
                 with open(temp_path, mode) as f:
                     f.write(content)
@@ -832,7 +835,7 @@ class DatabricksService(PlatformService):
 
         state = result.get("state", {})
         return {
-            "status": state.get("life_cycle_state", "Unknown"),
+            "status": state.get("life_cycle_state") or "UNKNOWN",
             "result_state": state.get("result_state"),
             "start_time": result.get("start_time"),
             "end_time": result.get("end_time"),
@@ -887,11 +890,15 @@ class DatabricksService(PlatformService):
             pass
 
         # Write each file
+        from kindling.bootstrap import get_temp_path
+
+        temp_dir = get_temp_path()
+
         for filename, content in app_files.items():
             file_path = f"{deployment_path}/{filename}"
 
             # Write to temp file then copy to DBFS
-            temp_path = f"/tmp/{filename}"
+            temp_path = f"{temp_dir}/{filename}"
             with open(temp_path, "w") as f:
                 f.write(content)
 
@@ -1134,6 +1141,25 @@ class DatabricksAPI(PlatformAPI):
         # Add test_id if provided (for test tracking)
         if "test_id" in job_config:
             bootstrap_params["test_id"] = job_config["test_id"]
+
+        # Merge any additional config overrides (generic mechanism)
+        # CONFIG__kindling__key -> passed as config:key=value
+        if "config_overrides" in job_config:
+            overrides = job_config["config_overrides"]
+
+            # Flatten nested dict to dot notation
+            def flatten_dict(d, parent_key=""):
+                items = []
+                for k, v in d.items():
+                    new_key = f"{parent_key}.{k}" if parent_key else k
+                    if isinstance(v, dict):
+                        items.extend(flatten_dict(v, new_key).items())
+                    else:
+                        items.append((new_key, v))
+                return dict(items)
+
+            flattened = flatten_dict(overrides)
+            bootstrap_params.update(flattened)
 
         # Build command line args using config:key=value convention
         config_args = [f"config:{k}={v}" for k, v in bootstrap_params.items()]
@@ -1681,6 +1707,170 @@ class DatabricksAPI(PlatformAPI):
             return True
         except Exception:
             return False
+
+    def stream_stdout_logs(
+        self,
+        job_id: str,
+        run_id: str,
+        callback: Optional[callable] = None,
+        poll_interval: float = 5.0,
+        max_wait: float = 300.0,
+    ) -> List[str]:
+        """Stream logs from a running Spark job by polling diagnostic emitter logs
+
+        For Databricks, we poll the cluster log storage (UC Volumes or DBFS) where
+        diagnostic emitters write driver logs. This provides application logs
+        (logger.info, logger.error, etc.) with a delay due to storage flush timing.
+
+        Note: Databricks doesn't provide real-time stdout for existing cluster jobs.
+        This implementation polls diagnostic logs for a streaming-like experience.
+
+        Args:
+            job_id: Job ID (for consistency with other platforms, not used in Databricks)
+            run_id: Job run ID
+            callback: Optional callback function called with each new line: callback(line: str)
+            poll_interval: Seconds between polls (default: 5.0)
+            max_wait: Maximum seconds to wait (default: 300)
+
+        Returns:
+            Complete list of all log lines retrieved
+
+        Example:
+            >>> api = DatabricksAPI(workspace_url)
+            >>> def print_log(line):
+            ...     print(f"[LOG] {line}")
+            >>> logs = api.stream_stdout_logs(job_id, run_id, callback=print_log)
+        """
+        all_logs = []
+        last_line_count = 0  # Track lines already processed
+        start_time = time.time()
+        job_started_time = None
+        log_warmup_seconds = 45  # Diagnostic emitters need time to flush to storage
+        last_poll_message_time = 0
+
+        total_timeout = max_wait + 300.0
+
+        print(f"📡 Starting log stream for run_id={run_id}")
+        print(f"   Poll interval: {poll_interval}s")
+        print(f"   Max wait: {max_wait}s")
+        print(f"   Total timeout: {total_timeout}s")
+        print(f"   Source: Cluster diagnostic logs (UC Volumes/DBFS)")
+        sys.stdout.flush()
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > total_timeout:
+                print(f"⏱️  Total timeout ({total_timeout}s) exceeded")
+                sys.stdout.flush()
+                break
+
+            try:
+                # Get current job status
+                status_info = self.get_job_status(run_id)
+                status = (status_info.get("status") or "UNKNOWN").upper()
+                result_state = (status_info.get("result_state") or "").upper()
+
+                # If job completed, do final read and exit
+                if status in ["TERMINATED", "INTERNAL_ERROR", "SKIPPED"]:
+                    print(
+                        f"✅ Job {status.lower()} (result: {result_state or 'N/A'}) - doing final log read"
+                    )
+                    sys.stdout.flush()
+                    # Read final logs from diagnostic emitters
+                    new_logs = self._read_log_chunk_databricks(run_id, last_line_count)
+                    if new_logs:
+                        all_logs.extend(new_logs)
+                        last_line_count = len(all_logs)
+                        for log_line in new_logs:
+                            if callback:
+                                callback(log_line)
+                    break
+
+                # If job not started yet, wait
+                if status in ["PENDING", "QUEUED", "WAITING_FOR_RETRY"]:
+                    print(f"⏳ Job status: {status} - waiting...")
+                    sys.stdout.flush()
+                    time.sleep(poll_interval)
+                    continue
+
+                # Job is running - track when it started
+                if status in ["RUNNING", "TERMINATING"]:
+                    if job_started_time is None:
+                        job_started_time = time.time()
+                        print(
+                            f"🚀 Job started running - waiting {log_warmup_seconds}s for logs to flush to storage..."
+                        )
+                        sys.stdout.flush()
+
+                    # Check if we're still in the warmup period
+                    time_since_start = time.time() - job_started_time
+                    if time_since_start < log_warmup_seconds:
+                        remaining = log_warmup_seconds - time_since_start
+                        if remaining > 1:
+                            print(f"⏳ Warmup period: {int(remaining)}s remaining...")
+                            sys.stdout.flush()
+                        time.sleep(poll_interval)
+                        continue
+
+                # Read new log content from diagnostic emitters
+                new_logs = self._read_log_chunk_databricks(run_id, last_line_count)
+
+                if new_logs:
+                    all_logs.extend(new_logs)
+                    last_line_count = len(all_logs)
+
+                    # Call callback for each new line
+                    for log_line in new_logs:
+                        if callback:
+                            callback(log_line)
+                else:
+                    # No new logs - print periodic progress message
+                    current_time = time.time()
+                    if current_time - last_poll_message_time >= 30:
+                        elapsed = int(current_time - start_time)
+                        print(f"🔄 Still polling for logs... ({elapsed}s elapsed)")
+                        sys.stdout.flush()
+                        last_poll_message_time = current_time
+
+            except Exception as e:
+                print(f"⚠️  Error during log streaming: {e}")
+                sys.stdout.flush()
+
+            # Wait before next poll
+            time.sleep(poll_interval)
+
+        print(f"📊 Streaming complete - total lines: {len(all_logs)}")
+        sys.stdout.flush()
+        return all_logs
+
+    def _read_log_chunk_databricks(self, run_id: str, last_line_count: int = 0) -> List[str]:
+        """Read new log content from Databricks diagnostic emitters
+
+        Reads cluster driver logs from UC Volumes or DBFS storage where
+        diagnostic emitters write application logs.
+
+        Args:
+            run_id: Job run ID
+            last_line_count: Number of lines already processed
+
+        Returns:
+            List of new log lines (only lines after last_line_count)
+        """
+        try:
+            # Use get_job_logs which already knows how to read from diagnostic emitters
+            result = self.get_job_logs(run_id=run_id)
+
+            if isinstance(result, dict) and "log" in result:
+                all_lines = result["log"]
+                # Return only new lines after last_line_count
+                if len(all_lines) > last_line_count:
+                    return all_lines[last_line_count:]
+
+            return []
+
+        except Exception as e:
+            # Logs may not be available yet - this is expected during warmup
+            return []
 
     def delete_job(self, job_id: str) -> bool:
         """Delete a job definition using SDK

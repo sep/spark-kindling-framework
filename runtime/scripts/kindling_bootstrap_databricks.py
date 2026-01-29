@@ -260,8 +260,7 @@ def install_framework_package(
                     Handles pre-releases (alpha, beta, rc), dev releases, and post releases.
                     """
                     try:
-                        # Get "0.20.1" or "0.20.1-alpha" part
-                        version_part = filename.split("-")[1]
+                        version_part = filename.split("-")[1]  # Get "0.20.1" or "0.20.1-alpha" part
                         if Version is not None:
                             return Version(version_part)
                         else:
@@ -464,25 +463,23 @@ def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
         # Just importing py_compile is enough to ensure .pyc handling is initialized
         # Detect platform and use appropriate temp path
         storage_utils_type = type(storage_utils).__name__
-        # Only Databricks has DBUtils - Fabric/Synapse have MsSparkUtils which also has fs
-        is_databricks = "DBUtils" in storage_utils_type
+        is_databricks = "DBUtils" in storage_utils_type or hasattr(storage_utils, "fs")
 
         if is_databricks:
             # Databricks: Try Unity Catalog Volume first, fallback to DBFS
             print(f"📥 Preparing wheel for installation...")
             try:
-                # Check if we have a temp path configured (UC Volume for Databricks)
-                # Look for kindling.temp_path first (new convention), fallback to temp_path
-                temp_path = None
-                if "BOOTSTRAP_CONFIG" in globals():
-                    temp_path = BOOTSTRAP_CONFIG.get("kindling.temp_path") or BOOTSTRAP_CONFIG.get(
-                        "temp_path"
-                    )
+                # Check if we have a volume path configured
+                volume_path = (
+                    BOOTSTRAP_CONFIG.get("databricks_volume_path")
+                    if "BOOTSTRAP_CONFIG" in globals()
+                    else None
+                )
 
-                if temp_path:
-                    # Use configured temp path (typically UC Volume for Databricks)
-                    print(f"   Using Unity Catalog Volume: {temp_path}")
-                    volume_file = f"{temp_path.rstrip('/')}/{filename}"
+                if volume_path:
+                    # Use Unity Catalog Volume
+                    print(f"   Using Unity Catalog Volume: {volume_path}")
+                    volume_file = f"{volume_path.rstrip('/')}/{filename}"
 
                     print(f"   Source: {remote_path}")
                     print(f"   Volume target: {volume_file}")
@@ -495,7 +492,7 @@ def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
 
                 else:
                     # Fallback to DBFS /tmp
-                    print(f"   Using DBFS (set kindling.temp_path in config to use volumes)")
+                    print(f"   Using DBFS (set databricks_volume_path in config to use volumes)")
                     dbfs_temp_path = f"/tmp/{filename}"
 
                     print(f"   Source: {remote_path}")
@@ -572,29 +569,9 @@ def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
         if result.stdout:
             print(result.stdout)
 
-        # Print stderr but filter out non-critical pip dependency warnings
+        # Print stderr (error/warning output)
         if result.stderr:
-            stderr_lines = result.stderr.split("\n")
-            filtered_lines = []
-            skip_next = False
-
-            for line in stderr_lines:
-                # Skip pip's dependency conflict warnings (not actual errors)
-                if "dependency resolver does not currently take into account" in line:
-                    skip_next = True
-                    continue
-                if skip_next and ("requires" in line.lower() or "but you have" in line.lower()):
-                    # This is the continuation of the dependency warning
-                    continue
-                skip_next = False
-
-                # Keep actual errors and other warnings
-                if line.strip():
-                    filtered_lines.append(line)
-
-            filtered_stderr = "\n".join(filtered_lines).strip()
-            if filtered_stderr:
-                print(filtered_stderr)
+            print(result.stderr)
 
         # DIAGNOSTIC: Show what platform modules actually exist after installation
         print("🔍 Checking installed kindling package contents...")
@@ -642,14 +619,13 @@ def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
         else:
             # Clean up Databricks temp file (volume or DBFS)
             try:
-                # Check for temp path (new convention)
-                temp_path = None
-                if "BOOTSTRAP_CONFIG" in globals():
-                    temp_path = BOOTSTRAP_CONFIG.get("kindling.temp_path") or BOOTSTRAP_CONFIG.get(
-                        "temp_path"
-                    )
-                if temp_path:
-                    volume_file = f"{temp_path.rstrip('/')}/{filename}"
+                volume_path = (
+                    BOOTSTRAP_CONFIG.get("databricks_volume_path")
+                    if "BOOTSTRAP_CONFIG" in globals()
+                    else None
+                )
+                if volume_path:
+                    volume_file = f"{volume_path.rstrip('/')}/{filename}"
                     storage_utils.fs.rm(volume_file)
                     print(f"   🧹 Cleaned up volume file")
                 else:

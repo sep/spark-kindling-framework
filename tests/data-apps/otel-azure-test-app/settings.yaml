@@ -1,6 +1,9 @@
 kindling:
   extensions:
-    - kindling-otel-azure>=0.1.0.4
+    - kindling-otel-azure>=0.3.0a3
+
+  bootstrap:
+    databricks_volume_path: "/Volumes/medallion/default/temp"
 
   telemetry:
     azure_monitor:

@@ -132,6 +132,45 @@ def job_config_provider(platform_client):
             if cluster_id:
                 config["cluster_id"] = cluster_id
 
+        # Discover CONFIG__* environment variables and pass as config_overrides
+        # Format: CONFIG__kindling__key__subkey -> kindling.key.subkey (all platforms)
+        # Format: CONFIG__platform_databricks__kindling__key -> kindling.key (databricks only)
+        config_overrides = {}
+        platform_prefix = f"CONFIG__platform_{platform}__"
+
+        for key, value in os.environ.items():
+            if key.startswith(platform_prefix):
+                # Platform-specific config (takes precedence)
+                config_path = key[len(platform_prefix) :]  # Remove platform prefix
+                parts = config_path.split("__")
+
+                # Build nested dict structure
+                current = config_overrides
+                for part in parts[:-1]:
+                    if part not in current:
+                        current[part] = {}
+                    current = current[part]
+                current[parts[-1]] = value
+
+            elif key.startswith("CONFIG__") and not key.startswith("CONFIG__platform_"):
+                # General config (applies to all platforms)
+                config_path = key[8:]  # Remove "CONFIG__"
+                parts = config_path.split("__")
+
+                # Build nested dict structure (only if not already set by platform-specific)
+                current = config_overrides
+                for i, part in enumerate(parts[:-1]):
+                    if part not in current:
+                        current[part] = {}
+                    current = current[part]
+                # Only set if not already present (platform-specific wins)
+                if parts[-1] not in current:
+                    current[parts[-1]] = value
+
+        # Add config_overrides to job config if we found any
+        if config_overrides:
+            config["config_overrides"] = config_overrides
+
         return config
 
     return get_config
@@ -172,11 +211,12 @@ class TestPlatformJobDeployment:
         self._cleanup_test(api_client, job_id, app_name)
 
     def test_run_and_monitor_job(
-        self, platform_client, job_packager, test_app_path, job_config_provider
+        self, platform_client, job_packager, test_app_path, job_config_provider, stdout_validator
     ):
         """Test running and monitoring a job - runs on all platforms"""
         api_client, platform_name = platform_client
         job_config = job_config_provider()
+        test_id = job_config["test_id"]
 
         print(f"\n🎯 [{platform_name.upper()}] Testing job execution and monitoring")
 
@@ -194,115 +234,54 @@ class TestPlatformJobDeployment:
             assert run_id is not None, "run_id is None"
             print(f"🏃 Job started: {run_id}")
 
-            # Monitor execution (10-minute timeout)
-            print("⏳ Monitoring job (10-minute timeout)...\n")
-            timeout = 600
-            poll_interval = 10
-            start_time = time.time()
-            last_status = None
+            # Stream stdout in real-time to capture execution
+            print("\n📡 Streaming stdout in real-time...")
+            print("=" * 80)
 
-            while (time.time() - start_time) < timeout:
-                try:
-                    status_result = api_client.get_job_status(run_id=run_id)
-                    current_status = status_result.get("status", "UNKNOWN")
-
-                    if current_status != last_status:
-                        elapsed = int(time.time() - start_time)
-                        print(f"[{elapsed}s] Status: {current_status}")
-                        last_status = current_status
-
-                    # Check completion (case-insensitive, platform-agnostic)
-                    status_upper = current_status.upper()
-                    if status_upper in ["COMPLETED", "SUCCEEDED", "SUCCESS", "TERMINATED"]:
-                        elapsed = int(time.time() - start_time)
-                        print(f"\n✅ Job completed in {elapsed}s!")
-                        status = status_result
-                        break
-                    elif status_upper in ["FAILED", "CANCELLED", "CANCELED", "ERROR"]:
-                        elapsed = int(time.time() - start_time)
-                        print(f"\n❌ Job failed after {elapsed}s")
-                        print(f"   Status: {current_status}")
-                        if status_result.get("error"):
-                            print(f"   Error: {status_result['error']}")
-                        status = status_result
-                        break
-
-                except Exception as e:
-                    print(f"⚠️  Error checking status: {e}")
-
-                time.sleep(poll_interval)
-            else:
-                print(f"\n⏱️  Timeout reached")
-                status = {"status": last_status or "TIMEOUT"}
-
-            print(f"\n📊 Final Status: {status.get('status', 'UNKNOWN')}")
-
-            # Fetch and validate logs with retry for diagnostic emitters
-            # Fabric and Synapse write logs asynchronously - typically 2-5 minutes after completion
-            print(f"\n📜 Fetching job logs...")
-
-            max_log_attempts = (
-                6 if platform_name in ["fabric", "synapse"] else 1
-            )  # 6 attempts × 60s = 6 min (was 30 min)
-            log_retry_delay = 60  # seconds between retries
-            logs_found = False
-
-            for attempt in range(1, max_log_attempts + 1):
-                try:
-                    if attempt > 1:
-                        print(
-                            f"   Attempt {attempt}/{max_log_attempts} (waiting for diagnostic logs to propagate)..."
-                        )
-                        time.sleep(log_retry_delay)
-
-                    logs = api_client.get_job_logs(run_id=run_id, size=5000)
-                    log_lines = logs.get("log", logs.get("logs", []))
-                    log_source = logs.get("source", "unknown")
-
-                    print(f"   Retrieved {len(log_lines)} log lines from {log_source}")
-
-                    # Need substantial logs, not just headers
-                    if log_lines and len(log_lines) > 5:
-                        print(f"\n{'='*80}")
-                        print("JOB LOGS:")
-                        print("=" * 80)
-                        if isinstance(log_lines, list):
-                            for line in log_lines:
-                                print(line)
-                        else:
-                            print(log_lines)
-                        print("=" * 80)
-
-                        # Validate test app
-                        log_content = (
-                            "\n".join(log_lines) if isinstance(log_lines, list) else str(log_lines)
-                        )
-
-                        # Check if logs contain test markers
-                        if "TEST_ID=" in log_content:
-                            self._validate_test_app_logs(log_content)
-                            logs_found = True
-                            break
-                        elif attempt < max_log_attempts:
-                            print(f"   ⚠️  Logs found but don't contain test markers, retrying...")
-                            continue
-                    elif attempt < max_log_attempts:
-                        print(f"   ⚠️  No logs available yet, retrying...")
-                        continue
-                    else:
-                        print("   ❌ No logs available after all retries")
-
-                except Exception as e:
-                    print(f"   ⚠️  Error fetching logs: {e}")
-                    if attempt < max_log_attempts:
-                        continue
-                    else:
-                        raise
-
-            if not logs_found:
-                pytest.fail(
-                    f"Expected logs from test app execution after {max_log_attempts} attempts over {max_log_attempts * log_retry_delay}s"
+            try:
+                stdout_validator.stream_with_callback(
+                    job_id=job_id,
+                    run_id=run_id,
+                    print_lines=True,  # Print each line as it arrives
+                    poll_interval=10.0,
+                    max_wait=600.0,  # 10 minute timeout
                 )
+                print("=" * 80)
+            except Exception as e:
+                print(f"⚠️  Stdout streaming error: {e}")
+                import traceback
+
+                traceback.print_exc()
+
+            # Check final job status
+            status_result = api_client.get_job_status(run_id=run_id)
+            final_status = status_result.get("status", "UNKNOWN")
+            print(f"\n📊 Final Status: {final_status}")
+
+            # Validate using stdout (captured during streaming)
+            print("\n📋 Validating job execution from stdout...")
+
+            # Validate bootstrap and test app markers
+            bootstrap_results = stdout_validator.validate_bootstrap_execution()
+            test_app_results = stdout_validator.validate_test_app_execution(test_id)
+
+            # Print validation summaries
+            stdout_validator.print_validation_summary(bootstrap_results, "Bootstrap Validation")
+            stdout_validator.print_validation_summary(test_app_results, "Test App Validation")
+
+            # Assert critical validations
+            assert bootstrap_results.get(
+                "bootstrap_start"
+            ), "Bootstrap execution not found in stdout"
+            assert test_app_results.get(
+                "test_markers"
+            ), "Test execution markers not found in stdout"
+            if test_id:
+                assert test_app_results.get(
+                    "test_id_match"
+                ), f"Test ID {test_id} not found in stdout"
+
+            print("\n✅ All validations passed!")
 
         finally:
             self._cleanup_test(api_client, job_id, app_name)

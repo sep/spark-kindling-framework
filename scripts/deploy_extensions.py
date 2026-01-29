@@ -29,77 +29,38 @@ BASE_PATH = os.getenv("AZURE_BASE_PATH", "")
 PACKAGES_PATH = f"{BASE_PATH}/packages" if BASE_PATH else "packages"
 
 
-def find_extension_wheels(extension_name: str) -> List[Path]:
+def find_extension_wheels(extension_name: str, platform: Optional[str] = None) -> List[Path]:
     """
-    Find the latest extension wheel in packages/ subdirectories
+    Find extension wheels in dist/ directory
 
     Args:
         extension_name: Extension name (e.g., 'kindling-otel-azure')
+        platform: Optional platform filter (e.g., 'fabric')
 
     Returns:
-        List containing only the latest wheel file (or empty if none found)
+        List of matching wheel files
     """
-    packages_dir = Path("packages")
-    if not packages_dir.exists():
-        print("❌ Error: packages/ directory not found")
+    dist_dir = Path("dist")
+    if not dist_dir.exists():
+        print("❌ Error: dist/ directory not found")
         return []
 
-    all_wheels = []
+    # Convert to underscore format for wheel filename matching
+    wheel_prefix = extension_name.replace("-", "_")
 
-    for ext_dir in packages_dir.iterdir():
-        if not ext_dir.is_dir():
-            continue
+    # Build pattern: kindling_otel_azure_fabric-*.whl or kindling_otel_azure-*.whl
+    if platform:
+        pattern = f"{wheel_prefix}_{platform}-*.whl"
+    else:
+        pattern = f"{wheel_prefix}*.whl"
 
-        # Skip the main kindling package (not an extension)
-        if ext_dir.name == "kindling":
-            continue
+    wheels = list(dist_dir.glob(pattern))
 
-        # Convert package_name to directory name: kindling-otel-azure -> kindling_otel_azure
-        expected_dir = extension_name.replace("-", "_")
-        if ext_dir.name != expected_dir:
-            continue
-
-        # Look for dist/ subdirectory
-        dist_dir = ext_dir / "dist"
-        if not dist_dir.exists():
-            continue
-
-        # Find wheel files
-        ext_wheels = list(dist_dir.glob("*.whl"))
-        if ext_wheels:
-            all_wheels.extend(ext_wheels)
-            print(f"📦 Found {len(ext_wheels)} wheel(s) in {ext_dir.name}/")
-
-    if not all_wheels:
+    if not wheels:
+        print(f"❌ No extension wheels found matching: {pattern}")
         return []
 
-    # Parse versions and find the latest
-    wheel_versions = []
-    for wheel in all_wheels:
-        # Extract version from wheel filename: name-version-py3-none-any.whl
-        match = re.match(r"^.+-(.+?)-py\d+-none-any\.whl$", wheel.name)
-        if match:
-            version_str = match.group(1)
-            try:
-                version = Version(version_str)
-                wheel_versions.append((version, wheel))
-            except InvalidVersion:
-                print(f"⚠️  Could not parse version from: {wheel.name}")
-                continue
-
-    if not wheel_versions:
-        # If we can't parse versions, just return the most recently modified file
-        print("⚠️  Using most recent file by modification time")
-        return [max(all_wheels, key=lambda p: p.stat().st_mtime)]
-
-    # Sort by version and return only the latest
-    wheel_versions.sort(key=lambda x: x[0], reverse=True)
-    latest_wheel = wheel_versions[0][1]
-    latest_version = wheel_versions[0][0]
-
-    print(f"📌 Selected latest version: {latest_version}")
-
-    return [latest_wheel]
+    return wheels
 
 
 def deploy_extension_wheels(wheels: List[Path]) -> None:
