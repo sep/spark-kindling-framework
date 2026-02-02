@@ -2,11 +2,12 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
 from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from pyspark.sql import DataFrame
@@ -25,6 +26,42 @@ class EntityNameMapper(ABC):
 
 
 class EntityProvider(ABC):
+    """Abstract base for entity storage operations.
+
+    Implementations MUST emit these signals:
+        - entity.before_ensure_table: Before table creation check
+        - entity.after_ensure_table: After table created/verified
+        - entity.ensure_failed: Table creation fails
+        - entity.before_merge: Before merge operation
+        - entity.after_merge: After merge completes
+        - entity.merge_failed: Merge fails
+        - entity.before_append: Before append operation
+        - entity.after_append: After append completes
+        - entity.append_failed: Append fails
+        - entity.before_write: Before write operation
+        - entity.after_write: After write completes
+        - entity.write_failed: Write fails
+        - entity.before_read: Before read operation
+        - entity.after_read: After read completes
+    """
+
+    EMITS = [
+        "entity.before_ensure_table",
+        "entity.after_ensure_table",
+        "entity.ensure_failed",
+        "entity.before_merge",
+        "entity.after_merge",
+        "entity.merge_failed",
+        "entity.before_append",
+        "entity.after_append",
+        "entity.append_failed",
+        "entity.before_write",
+        "entity.after_write",
+        "entity.write_failed",
+        "entity.before_read",
+        "entity.after_read",
+    ]
+
     @abstractmethod
     def ensure_entity_table(self, entity):
         pass
@@ -101,6 +138,16 @@ class DataEntities:
 
 
 class DataEntityRegistry(ABC):
+    """Abstract base for entity registration.
+
+    Implementations MUST emit these signals:
+        - entity.registered: When a new entity is registered
+    """
+
+    EMITS = [
+        "entity.registered",
+    ]
+
     @abstractmethod
     def register_entity(self, entityid, **decorator_params):
         pass
@@ -115,13 +162,21 @@ class DataEntityRegistry(ABC):
 
 
 @GlobalInjector.singleton_autobind()
-class DataEntityManager(DataEntityRegistry):
+class DataEntityManager(DataEntityRegistry, SignalEmitter):
+    """Manages entity registrations with signal emissions."""
+
     @inject
-    def __init__(self):
+    def __init__(self, signal_provider: SignalProvider = None):
+        self._init_signal_emitter(signal_provider)
         self.registry = {}
 
     def register_entity(self, entityid, **decorator_params):
         self.registry[entityid] = EntityMetadata(entityid, **decorator_params)
+        self.emit(
+            "entity.registered",
+            entity_id=entityid,
+            entity_name=decorator_params.get("name", entityid),
+        )
 
     def get_entity_ids(self):
         return self.registry.keys()

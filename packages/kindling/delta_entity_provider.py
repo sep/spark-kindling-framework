@@ -1,4 +1,5 @@
 import logging
+import time
 from enum import Enum
 from functools import reduce
 from typing import Callable, Literal, Optional
@@ -9,6 +10,7 @@ from kindling.common_transforms import *
 
 # Import your existing modules
 from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from pyspark.errors import AnalysisException
@@ -76,7 +78,8 @@ class DeltaTableReference:
 
 
 @GlobalInjector.singleton_autobind()
-class DeltaEntityProvider(EntityProvider):
+class DeltaEntityProvider(EntityProvider, SignalEmitter):
+    """Delta Lake implementation of EntityProvider with signal emissions."""
 
     @inject
     def __init__(
@@ -85,7 +88,9 @@ class DeltaEntityProvider(EntityProvider):
         entity_name_mapper: EntityNameMapper,
         path_locator: EntityPathLocator,
         tp: PythonLoggerProvider,
+        signal_provider: SignalProvider = None,
     ):
+        self._init_signal_emitter(signal_provider)
         self.config = config
         self.epl = path_locator
         self.enm = entity_name_mapper
@@ -422,11 +427,39 @@ class DeltaEntityProvider(EntityProvider):
             .withColumnRenamed("_commit_timestamp", "SourceTimestamp")
         )
 
-    # EntityProvider interface implementation
+    # EntityProvider interface implementation with signals
     def ensure_entity_table(self, entity):
         """Ensure entity table exists"""
+        start_time = time.time()
         table_ref = self._get_table_reference(entity)
-        self._ensure_table_exists(entity, table_ref)
+
+        self.emit(
+            "entity.before_ensure_table",
+            entity_id=entity.entityid,
+            entity_name=entity.name,
+            table_path=table_ref.table_path,
+        )
+
+        try:
+            self._ensure_table_exists(entity, table_ref)
+            duration = time.time() - start_time
+
+            self.emit(
+                "entity.after_ensure_table",
+                entity_id=entity.entityid,
+                entity_name=entity.name,
+                duration_seconds=duration,
+            )
+        except Exception as e:
+            duration = time.time() - start_time
+            self.emit(
+                "entity.ensure_failed",
+                entity_id=entity.entityid,
+                error=str(e),
+                error_type=type(e).__name__,
+                duration_seconds=duration,
+            )
+            raise
 
     def check_entity_exists(self, entity) -> bool:
         """Check if entity table exists"""
@@ -445,18 +478,71 @@ class DeltaEntityProvider(EntityProvider):
         )
 
     def merge_to_entity(self, df: DataFrame, entity):
+        """Merge DataFrame to entity table with signal emissions."""
+        start_time = time.time()
         table_ref = self._get_table_reference(entity)
-        if self._check_table_exists(table_ref):
-            self._merge_to_delta_table(df, entity, table_ref)
-        else:
-            self.write_to_entity(df, entity)
+
+        self.emit(
+            "entity.before_merge",
+            entity_id=entity.entityid,
+            entity_name=entity.name,
+            merge_columns=entity.merge_columns,
+        )
+
+        try:
+            if self._check_table_exists(table_ref):
+                self._merge_to_delta_table(df, entity, table_ref)
+            else:
+                self.write_to_entity(df, entity)
+
+            duration = time.time() - start_time
+            self.emit(
+                "entity.after_merge",
+                entity_id=entity.entityid,
+                entity_name=entity.name,
+                duration_seconds=duration,
+            )
+        except Exception as e:
+            duration = time.time() - start_time
+            self.emit(
+                "entity.merge_failed",
+                entity_id=entity.entityid,
+                error=str(e),
+                error_type=type(e).__name__,
+                duration_seconds=duration,
+            )
+            raise
 
     def append_to_entity(self, df: DataFrame, entity):
+        """Append DataFrame to entity table with signal emissions."""
+        start_time = time.time()
         table_ref = self._get_table_reference(entity)
-        if self._check_table_exists(table_ref):
-            self._append_to_delta_table(df, entity, table_ref)
-        else:
-            self.write_to_entity(df, entity)
+
+        self.emit("entity.before_append", entity_id=entity.entityid, entity_name=entity.name)
+
+        try:
+            if self._check_table_exists(table_ref):
+                self._append_to_delta_table(df, entity, table_ref)
+            else:
+                self.write_to_entity(df, entity)
+
+            duration = time.time() - start_time
+            self.emit(
+                "entity.after_append",
+                entity_id=entity.entityid,
+                entity_name=entity.name,
+                duration_seconds=duration,
+            )
+        except Exception as e:
+            duration = time.time() - start_time
+            self.emit(
+                "entity.append_failed",
+                entity_id=entity.entityid,
+                error=str(e),
+                error_type=type(e).__name__,
+                duration_seconds=duration,
+            )
+            raise
 
     def read_entity_since_version(self, entity, since_version: int) -> DataFrame:
         """Read entity changes since specific version"""
@@ -465,9 +551,23 @@ class DeltaEntityProvider(EntityProvider):
         return self._transform_delta_feed_to_changes(df, entity.merge_columns)
 
     def read_entity(self, entity) -> DataFrame:
-        """Read full entity table"""
+        """Read full entity table with signal emissions."""
+        start_time = time.time()
         table_ref = self._get_table_reference(entity)
-        return self._read_delta_table(table_ref)
+
+        self.emit("entity.before_read", entity_id=entity.entityid, entity_name=entity.name)
+
+        df = self._read_delta_table(table_ref)
+
+        duration = time.time() - start_time
+        self.emit(
+            "entity.after_read",
+            entity_id=entity.entityid,
+            entity_name=entity.name,
+            duration_seconds=duration,
+        )
+
+        return df
 
     def read_entity_as_stream(self, entity, format=None, options=None) -> DataFrame:
         """Read full entity table"""
@@ -475,9 +575,32 @@ class DeltaEntityProvider(EntityProvider):
         return table_ref.get_spark_read_stream(self.spark, format, options)
 
     def write_to_entity(self, df: DataFrame, entity):
-        """Write DataFrame to entity table"""
+        """Write DataFrame to entity table with signal emissions."""
+        start_time = time.time()
         table_ref = self._get_table_reference(entity)
-        self._write_to_delta_table(df, entity, table_ref)
+
+        self.emit("entity.before_write", entity_id=entity.entityid, entity_name=entity.name)
+
+        try:
+            self._write_to_delta_table(df, entity, table_ref)
+
+            duration = time.time() - start_time
+            self.emit(
+                "entity.after_write",
+                entity_id=entity.entityid,
+                entity_name=entity.name,
+                duration_seconds=duration,
+            )
+        except Exception as e:
+            duration = time.time() - start_time
+            self.emit(
+                "entity.write_failed",
+                entity_id=entity.entityid,
+                error=str(e),
+                error_type=type(e).__name__,
+                duration_seconds=duration,
+            )
+            raise
 
     def get_entity_version(self, entity) -> int:
         """Get current version of entity table"""

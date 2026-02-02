@@ -5,14 +5,138 @@ allowing components to emit and listen to signals without tight coupling.
 
 The abstraction allows swapping underlying implementations (currently Blinker)
 while maintaining a consistent API throughout the framework.
+
+Key components:
+- Signal: Abstract signal interface
+- SignalProvider: Creates and manages signals
+- SignalEmitter: Mixin for classes that emit signals
+- BlinkerSignalProvider: Default implementation using Blinker library
 """
 
+import uuid
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from injector import inject
 from kindling.injection import GlobalInjector
+
+# =============================================================================
+# Signal Payload Base Classes
+# =============================================================================
+
+
+@dataclass
+class SignalPayload:
+    """Base class for typed signal payloads.
+
+    Provides common fields for all signal payloads including
+    operation tracking and timestamps.
+
+    Example:
+        @dataclass
+        class PipeRunPayload(SignalPayload):
+            pipe_ids: List[str]
+            pipe_count: int
+    """
+
+    operation_id: str = None
+    timestamp: str = None
+
+    def __post_init__(self):
+        if self.operation_id is None:
+            self.operation_id = str(uuid.uuid4())
+        if self.timestamp is None:
+            self.timestamp = datetime.utcnow().isoformat()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert payload to dictionary for signal emission."""
+        return {k: v for k, v in vars(self).items() if v is not None}
+
+
+# =============================================================================
+# Signal Emitter Mixin
+# =============================================================================
+
+
+class SignalEmitter:
+    """Mixin class that provides emit() helper for services.
+
+    Services inherit from this to gain easy signal emission capabilities.
+    The EMITS class attribute documents which signals the class can emit.
+
+    Example:
+        class MyService(SignalEmitter):
+            EMITS = [
+                "myservice.before_operation",
+                "myservice.after_operation",
+                "myservice.operation_failed",
+            ]
+
+            def do_operation(self):
+                self.emit("myservice.before_operation", item_count=10)
+                try:
+                    # ... do work ...
+                    self.emit("myservice.after_operation", duration=1.5)
+                except Exception as e:
+                    self.emit("myservice.operation_failed", error=str(e))
+                    raise
+    """
+
+    # Declare signals this class emits (for documentation/introspection)
+    EMITS: List[str] = []
+
+    def _init_signal_emitter(self, signal_provider: Optional["SignalProvider"] = None):
+        """Initialize signal emitter capabilities.
+
+        Call this in __init__ of classes that use SignalEmitter mixin.
+
+        Args:
+            signal_provider: Optional SignalProvider instance
+        """
+        self._signal_provider: Optional["SignalProvider"] = signal_provider
+
+    def set_signal_provider(self, provider: "SignalProvider"):
+        """Set the signal provider for this emitter.
+
+        Args:
+            provider: SignalProvider instance to use for emissions
+        """
+        self._signal_provider = provider
+
+    def emit(self, signal_name: str, **kwargs) -> List[Tuple[Callable, Any]]:
+        """Emit a signal with the given payload.
+
+        Signals are created lazily on first use. If no signal provider
+        is configured, emissions are silently ignored.
+
+        Args:
+            signal_name: Name of the signal (e.g., 'datapipes.before_run')
+            **kwargs: Signal payload fields
+
+        Returns:
+            List of (receiver, return_value) tuples from handlers,
+            or empty list if no provider configured
+        """
+        if not hasattr(self, "_signal_provider") or self._signal_provider is None:
+            return []
+
+        signal = self._signal_provider.get_signal(signal_name)
+        if signal is None:
+            # Create signal on first use (lazy creation)
+            signal = self._signal_provider.create_signal(signal_name)
+
+        return signal.send(self, **kwargs)
+
+    def get_emitted_signals(self) -> List[str]:
+        """Return list of signals this emitter can emit.
+
+        Returns:
+            Copy of the EMITS class attribute
+        """
+        return self.EMITS.copy()
 
 
 class Signal(ABC):
