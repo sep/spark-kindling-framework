@@ -531,6 +531,7 @@ class TestDataPipesExecuter:
         # Mock pipe metadata
         mock_pipe = Mock(spec=PipeMetadata)
         mock_pipe.pipeid = "test_pipe"
+        mock_pipe.name = "Test Pipe"
         mock_pipe.tags = {"env": "test"}
         mock_pipe.input_entity_ids = ["entity1"]
         mock_pipe.execute = Mock(return_value=Mock())
@@ -566,15 +567,15 @@ class TestDataPipesExecuter:
             self.mock_trace_provider,
         )
 
-        # Mock pipe metadata
-        for i in range(3):
-            mock_pipe = Mock(spec=PipeMetadata)
-            mock_pipe.pipeid = f"pipe{i}"
-            mock_pipe.tags = {}
-            mock_pipe.input_entity_ids = ["entity1"]
-            mock_pipe.execute = Mock(return_value=Mock())
+        # Mock pipe metadata - create properly named pipes
+        mock_pipe = Mock(spec=PipeMetadata)
+        mock_pipe.pipeid = "pipe0"
+        mock_pipe.name = "Test Pipe"
+        mock_pipe.tags = {}
+        mock_pipe.input_entity_ids = ["entity1"]
+        mock_pipe.execute = Mock(return_value=Mock())
 
-            self.mock_pipes_registry.get_pipe_definition.side_effect = lambda pid: mock_pipe
+        self.mock_pipes_registry.get_pipe_definition.return_value = mock_pipe
 
         # Mock entity reader and activator
         mock_reader = Mock(return_value=Mock())

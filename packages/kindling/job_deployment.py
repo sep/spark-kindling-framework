@@ -9,13 +9,16 @@ This module contains both utilities (JobPackager, JobConfigValidator) and servic
 (DataAppDeployer) as they are tightly coupled and used together.
 """
 
+import time
+import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from injector import inject
 
 from .platform_provider import PlatformServiceProvider
+from .signaling import SignalEmitter, SignalProvider
 from .spark_log_provider import PythonLoggerProvider
 
 # ============================================================================
@@ -116,26 +119,56 @@ class JobConfigValidator:
 # ============================================================================
 
 
-class DataAppDeployer:
+class DataAppDeployer(SignalEmitter):
     """
     Service for deploying data apps as Spark jobs.
 
     Uses dependency injection for platform service and logger.
     Delegates mechanical operations to utility classes.
+
+    Signals emitted:
+        - job.before_deploy: Before deploying an app as a job
+        - job.after_deploy: After successful deployment
+        - job.deploy_failed: When deployment fails
+        - job.before_run: Before running a job
+        - job.after_run: After job starts (returns run_id)
+        - job.run_failed: When job start fails
+        - job.before_cancel: Before cancelling a job
+        - job.after_cancel: After job is cancelled
+        - job.cancel_failed: When cancellation fails
+        - job.status_checked: When job status is retrieved
     """
+
+    EMITS = [
+        "job.before_deploy",
+        "job.after_deploy",
+        "job.deploy_failed",
+        "job.before_run",
+        "job.after_run",
+        "job.run_failed",
+        "job.before_cancel",
+        "job.after_cancel",
+        "job.cancel_failed",
+        "job.status_checked",
+    ]
 
     @inject
     def __init__(
-        self, platform_provider: PlatformServiceProvider, logger_provider: PythonLoggerProvider
+        self,
+        platform_provider: PlatformServiceProvider,
+        logger_provider: PythonLoggerProvider,
+        signal_provider: Optional[SignalProvider] = None,
     ):
         """Initialize deployer with injected dependencies
 
         Args:
             platform_provider: Provider for platform service
             logger_provider: Provider for logger
+            signal_provider: Optional signal provider for event emissions
         """
         self.platform = platform_provider.get()
         self.logger = logger_provider.get()
+        self._init_signal_emitter(signal_provider)
 
         # Initialize utilities (no DI needed - pure utilities)
         self.packager = JobPackager()
@@ -160,25 +193,65 @@ class DataAppDeployer:
             Job will use kindling_bootstrap.py from lakehouse Files/scripts/
             Bootstrap config is passed via command line arguments (config:key=value)
         """
+        deployment_id = str(uuid.uuid4())
+        start_time = time.time()
+        job_name = job_config.get("job_name", "unknown")
+        platform_name = self.platform.get_platform_name()
+
         self.logger.info(f"Deploying app from: {app_path}")
 
-        # Validate config using utility
-        self.validator.validate(job_config)
+        self.emit(
+            "job.before_deploy",
+            app_path=app_path,
+            job_name=job_name,
+            platform=platform_name,
+            deployment_id=deployment_id,
+        )
 
-        # Prepare app files using utility
-        app_files = self.packager.prepare_app_files(app_path)
-        self.logger.debug(f"Prepared {len(app_files)} app files")
+        try:
+            # Validate config using utility
+            self.validator.validate(job_config)
 
-        # Delegate to platform service
-        # Platform service (e.g., FabricAPI) will:
-        # 1. Create job definition pointing to Files/scripts/kindling_bootstrap.py
-        # 2. Pass bootstrap config via command line args (config:key=value)
-        # 3. Upload app files to appropriate location
-        self.logger.info(f"Deploying to {self.platform.get_platform_name()} platform")
-        result = self.platform.deploy_spark_job(app_files, job_config)
+            # Prepare app files using utility
+            app_files = self.packager.prepare_app_files(app_path)
+            self.logger.debug(f"Prepared {len(app_files)} app files")
 
-        self.logger.info(f"✅ Deployment complete: {result.get('job_id')}")
-        return result
+            # Delegate to platform service
+            # Platform service (e.g., FabricAPI) will:
+            # 1. Create job definition pointing to Files/scripts/kindling_bootstrap.py
+            # 2. Pass bootstrap config via command line args (config:key=value)
+            # 3. Upload app files to appropriate location
+            self.logger.info(f"Deploying to {platform_name} platform")
+            result = self.platform.deploy_spark_job(app_files, job_config)
+
+            duration = time.time() - start_time
+            self.logger.info(f"✅ Deployment complete: {result.get('job_id')}")
+
+            self.emit(
+                "job.after_deploy",
+                app_path=app_path,
+                job_name=job_name,
+                job_id=result.get("job_id"),
+                platform=platform_name,
+                duration_seconds=duration,
+                deployment_id=deployment_id,
+            )
+
+            return result
+
+        except Exception as e:
+            duration = time.time() - start_time
+            self.emit(
+                "job.deploy_failed",
+                app_path=app_path,
+                job_name=job_name,
+                platform=platform_name,
+                error=str(e),
+                error_type=type(e).__name__,
+                duration_seconds=duration,
+                deployment_id=deployment_id,
+            )
+            raise
 
     def run_job(self, job_id: str, parameters: Dict[str, Any] = None) -> str:
         """Run a deployed job
@@ -191,9 +264,26 @@ class DataAppDeployer:
             Run ID for monitoring
         """
         self.logger.info(f"Running job: {job_id}")
-        run_id = self.platform.run_spark_job(job_id, parameters)
-        self.logger.info(f"Job started with run_id: {run_id}")
-        return run_id
+
+        self.emit("job.before_run", job_id=job_id, parameters=parameters)
+
+        try:
+            run_id = self.platform.run_spark_job(job_id, parameters)
+            self.logger.info(f"Job started with run_id: {run_id}")
+
+            self.emit("job.after_run", job_id=job_id, run_id=run_id, parameters=parameters)
+
+            return run_id
+
+        except Exception as e:
+            self.emit(
+                "job.run_failed",
+                job_id=job_id,
+                parameters=parameters,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            raise
 
     def get_job_status(self, run_id: str) -> Dict[str, Any]:
         """Get status of a running job
@@ -204,7 +294,16 @@ class DataAppDeployer:
         Returns:
             Status dictionary from platform service
         """
-        return self.platform.get_job_status(run_id)
+        status = self.platform.get_job_status(run_id)
+
+        self.emit(
+            "job.status_checked",
+            run_id=run_id,
+            status=status.get("status"),
+            is_complete=status.get("status") in ("COMPLETED", "FAILED", "CANCELLED"),
+        )
+
+        return status
 
     def cancel_job(self, run_id: str) -> bool:
         """Cancel a running job
@@ -216,10 +315,28 @@ class DataAppDeployer:
             True if cancelled successfully
         """
         self.logger.info(f"Cancelling job: {run_id}")
-        result = self.platform.cancel_job(run_id)
-        if result:
-            self.logger.info(f"✅ Job cancelled: {run_id}")
-        return result
+
+        self.emit("job.before_cancel", run_id=run_id)
+
+        try:
+            result = self.platform.cancel_job(run_id)
+
+            if result:
+                self.logger.info(f"✅ Job cancelled: {run_id}")
+                self.emit("job.after_cancel", run_id=run_id, success=True)
+            else:
+                self.emit(
+                    "job.cancel_failed",
+                    run_id=run_id,
+                    error="Platform returned False",
+                    error_type="CancelFailed",
+                )
+
+            return result
+
+        except Exception as e:
+            self.emit("job.cancel_failed", run_id=run_id, error=str(e), error_type=type(e).__name__)
+            raise
 
 
 # Expose utilities and service in module

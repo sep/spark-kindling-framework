@@ -542,12 +542,17 @@ class TestDataEntityManagerInjection:
         # This tests that the __init__ method has the @inject decorator
         import inspect
 
-        # Check __init__ signature accepts no arguments beyond self
+        # Check __init__ signature - should accept self and optional signal_provider
         sig = inspect.signature(DataEntityManager.__init__)
         params = list(sig.parameters.keys())
-        assert params == [
-            "self"
-        ], "DataEntityManager.__init__ should only accept 'self' parameter (no other dependencies)"
+        assert "self" in params, "DataEntityManager.__init__ should have 'self' parameter"
+        # Optional signal_provider is allowed for signal emissions
+        for param in params:
+            if param != "self":
+                assert (
+                    sig.parameters[param].default is not inspect.Parameter.empty
+                    or sig.parameters[param].annotation.__name__ == "Optional"
+                ), f"Non-self parameter '{param}' should be optional"
 
 
 class TestEntityMetadataIntegration:
