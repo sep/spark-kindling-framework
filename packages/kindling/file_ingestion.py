@@ -1,6 +1,7 @@
 import logging
 import re
 import time
+import uuid
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,6 +15,7 @@ from kindling.data_entities import *
 from kindling.file_ingestion import *
 from kindling.injection import *
 from kindling.platform_provider import *
+from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_session import *
@@ -98,6 +100,30 @@ class FileIngestionManager(FileIngestionRegistry):
 
 
 class FileIngestionProcessor(ABC):
+    """Abstract base for file ingestion processing.
+
+    Implementations MUST emit these signals:
+        - file_ingestion.before_process: Before batch processing starts
+        - file_ingestion.after_process: After batch completes
+        - file_ingestion.process_failed: Batch processing fails
+        - file_ingestion.before_file: Before individual file processing
+        - file_ingestion.after_file: After file processed
+        - file_ingestion.file_failed: File processing fails
+        - file_ingestion.file_moved: File moved after ingestion
+        - file_ingestion.batch_written: Batch written to table
+    """
+
+    EMITS = [
+        "file_ingestion.before_process",
+        "file_ingestion.after_process",
+        "file_ingestion.process_failed",
+        "file_ingestion.before_file",
+        "file_ingestion.after_file",
+        "file_ingestion.file_failed",
+        "file_ingestion.file_moved",
+        "file_ingestion.batch_written",
+    ]
+
     @abstractmethod
     def process_path(self, path: str):
         pass
@@ -110,7 +136,7 @@ class FileIngestionProcessorProvider(ABC):
 
 
 @GlobalInjector.singleton_autobind()
-class ParallelizingFileIngestionProcessor(FileIngestionProcessor):
+class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter):
     """Advanced file ingestion processor with batching, parallelism, and signal support.
 
     Features:
@@ -120,6 +146,7 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor):
     - File management - moves files after successful ingestion
     - Transform support - applies custom transformations to DataFrames
     - Enrichment - adds named regex groups and ingestion timestamp as columns
+    - Signal emissions - emits signals for monitoring and orchestration
     """
 
     @inject
@@ -132,7 +159,9 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor):
         tp: SparkTraceProvider,
         lp: PythonLoggerProvider,
         pep: PlatformServiceProvider,
+        signal_provider: SignalProvider = None,
     ):
+        self._init_signal_emitter(signal_provider)
         self.config = config
         self.fir = fir
         self.ep = ep
@@ -229,6 +258,13 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor):
 
             self.logger.info(f"Successfully wrote {len(df_list)} files to {dest_entity_id}")
 
+            # Emit batch_written signal
+            self.emit(
+                "file_ingestion.batch_written",
+                dest_entity_id=dest_entity_id,
+                file_count=len(df_list),
+            )
+
             # Clean up after successful write
             if movepath:
                 for _, file_info in df_list:
@@ -236,8 +272,17 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor):
                     self.env.delete(file_info["source_path"])
                     self.logger.debug(f"Moved {file_info['filename']} to {movepath}")
 
+                    # Emit file_moved signal
+                    self.emit(
+                        "file_ingestion.file_moved",
+                        filename=file_info["filename"],
+                        source_path=file_info["source_path"],
+                        dest_path=movepath,
+                    )
+
         except Exception as e:
             self.logger.error(f"Failed to write {dest_entity_id}: {e}")
+            raise
             raise
 
     def process_path(
@@ -250,6 +295,11 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor):
             movepath: Optional path to move files after successful ingestion
             transform: Optional function to transform DataFrames before writing
         """
+        batch_id = str(uuid.uuid4())
+        start_time = time.time()
+        success_files = 0
+        failed_files = 0
+
         with self.tp.span(
             component="SimpleFileIngestionProcessor",
             operation="process_path",
@@ -259,44 +309,120 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor):
             filenames = self.env.list(path)
             self.logger.info(f"Found {len(filenames)} files in {path}")
 
-            # Phase 1: Build DataFrame plans and group by destination (fast, no execution)
-            df_plans = defaultdict(list)
+            # Emit before_process signal
+            self.emit(
+                "file_ingestion.before_process",
+                path=path,
+                file_count=len(filenames),
+                batch_id=batch_id,
+            )
 
-            for fn in filenames:
-                result = self._build_df_plan(fn, path, transform)
-                if result:
-                    dest_entity_id, df, file_info = result
-                    df_plans[dest_entity_id].append((df, file_info))
+            try:
+                # Phase 1: Build DataFrame plans and group by destination (fast, no execution)
+                df_plans = defaultdict(list)
 
-            if not df_plans:
-                self.logger.info("No files matched any patterns")
-                return
+                for fn in filenames:
+                    # Emit before_file signal
+                    self.emit("file_ingestion.before_file", filename=fn, batch_id=batch_id)
 
-            self.logger.info(f"Grouped files into {len(df_plans)} destination tables")
+                    try:
+                        result = self._build_df_plan(fn, path, transform)
+                        if result:
+                            dest_entity_id, df, file_info = result
+                            df_plans[dest_entity_id].append((df, file_info))
+                            success_files += 1
 
-            # Phase 2: Process each destination table (optionally in parallel)
-            max_workers = self.config.get("ingestion.max_parallel_tables", 3)
+                            # Emit after_file signal
+                            self.emit(
+                                "file_ingestion.after_file",
+                                filename=fn,
+                                dest_entity_id=dest_entity_id,
+                                batch_id=batch_id,
+                            )
+                        else:
+                            # No pattern matched
+                            self.emit(
+                                "file_ingestion.after_file",
+                                filename=fn,
+                                dest_entity_id=None,
+                                matched=False,
+                                batch_id=batch_id,
+                            )
+                    except Exception as e:
+                        failed_files += 1
+                        self.emit(
+                            "file_ingestion.file_failed",
+                            filename=fn,
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            batch_id=batch_id,
+                        )
+                        raise
 
-            if max_workers <= 1 or len(df_plans) == 1:
-                # Sequential processing
-                for dest_entity_id, df_list in df_plans.items():
-                    self._write_table_group(dest_entity_id, df_list, movepath)
-            else:
-                # Parallel processing
-                self.logger.info(
-                    f"Processing {len(df_plans)} tables in parallel (max_workers={max_workers})"
+                if not df_plans:
+                    self.logger.info("No files matched any patterns")
+                    duration = time.time() - start_time
+                    self.emit(
+                        "file_ingestion.after_process",
+                        path=path,
+                        success_files=0,
+                        failed_files=0,
+                        tables_written=0,
+                        duration_seconds=duration,
+                        batch_id=batch_id,
+                    )
+                    return
+
+                self.logger.info(f"Grouped files into {len(df_plans)} destination tables")
+
+                # Phase 2: Process each destination table (optionally in parallel)
+                max_workers = self.config.get("ingestion.max_parallel_tables", 3)
+
+                if max_workers <= 1 or len(df_plans) == 1:
+                    # Sequential processing
+                    for dest_entity_id, df_list in df_plans.items():
+                        self._write_table_group(dest_entity_id, df_list, movepath)
+                else:
+                    # Parallel processing
+                    self.logger.info(
+                        f"Processing {len(df_plans)} tables in parallel (max_workers={max_workers})"
+                    )
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        futures = {
+                            executor.submit(
+                                self._write_table_group, dest_entity_id, df_list, movepath
+                            ): dest_entity_id
+                            for dest_entity_id, df_list in df_plans.items()
+                        }
+
+                        for future in as_completed(futures):
+                            dest_entity_id = futures[future]
+                            try:
+                                future.result()
+                            except Exception as e:
+                                self.logger.error(f"Failed to write {dest_entity_id}: {e}")
+
+                duration = time.time() - start_time
+                self.emit(
+                    "file_ingestion.after_process",
+                    path=path,
+                    success_files=success_files,
+                    failed_files=failed_files,
+                    tables_written=len(df_plans),
+                    duration_seconds=duration,
+                    batch_id=batch_id,
                 )
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {
-                        executor.submit(
-                            self._write_table_group, dest_entity_id, df_list, movepath
-                        ): dest_entity_id
-                        for dest_entity_id, df_list in df_plans.items()
-                    }
 
-                    for future in as_completed(futures):
-                        dest_entity_id = futures[future]
-                        try:
-                            future.result()
-                        except Exception as e:
-                            self.logger.error(f"Failed to write {dest_entity_id}: {e}")
+            except Exception as e:
+                duration = time.time() - start_time
+                self.emit(
+                    "file_ingestion.process_failed",
+                    path=path,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    success_files=success_files,
+                    failed_files=failed_files,
+                    duration_seconds=duration,
+                    batch_id=batch_id,
+                )
+                raise

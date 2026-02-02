@@ -1,16 +1,20 @@
+import time
 import uuid
 from functools import reduce
+from typing import Optional
 
 from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log import *
 from kindling.watermarking import *
 from pyspark.sql.functions import col
 
 
 @GlobalInjector.singleton_autobind()
-class SimpleReadPersistStrategy(EntityReadPersistStrategy):
+class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
+    """Strategy for reading entities and persisting pipe results with signals."""
 
     @inject
     def __init__(
@@ -20,12 +24,14 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy):
         der: DataEntityRegistry,
         tp: SparkTraceProvider,
         lp: PythonLoggerProvider,
+        signal_provider: Optional[SignalProvider] = None,
     ):
         self.wms = wms
         self.der = der
         self.ep = ep
         self.tp = tp
         self.logger = lp.get_logger("SimpleReadPersistStrategy")
+        self._init_signal_emitter(signal_provider)
 
     def create_pipe_entity_reader(self, pipe: str):
         return lambda entity, usewm: (
@@ -35,43 +41,88 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy):
         )
 
     def create_pipe_persist_activator(self, pipe):
+        # Capture self for use in closure
+        strategy = self
 
         ##TODO: More intelligent processing -- parallelization, caching, error handling, skipping if inputs fail, etc.
 
         def persist_lambda(df):
+            persist_id = str(uuid.uuid4())
+            start_time = time.time()
 
             if pipe.input_entity_ids and len(pipe.input_entity_ids) > 0:
 
-                src_input_entity = self.der.get_entity_definition(pipe.input_entity_ids[0])
-
+                src_input_entity = strategy.der.get_entity_definition(pipe.input_entity_ids[0])
                 src_input_entity_id = src_input_entity.entityid
+                src_read_version = strategy.ep.get_entity_version(src_input_entity)
+                output_entity = strategy.der.get_entity_definition(pipe.output_entity_id)
 
-                src_read_version = self.ep.get_entity_version(src_input_entity)
+                strategy.logger.debug(
+                    f"read_version - pipe = {pipe.pipeid} - ver = {src_read_version}"
+                )
+                strategy.logger.debug(f"persist_lambda - pipe = {pipe.pipeid}")
 
-                self.logger.debug(f"read_version - pipe = {pipe.pipeid} - ver = {src_read_version}")
+                strategy.emit(
+                    "persist.before_persist",
+                    pipe_id=pipe.pipeid,
+                    source_entity_id=src_input_entity_id,
+                    output_entity_id=pipe.output_entity_id,
+                    source_version=src_read_version,
+                    persist_id=persist_id,
+                )
 
-                self.logger.debug(f"persist_lambda - pipe = {pipe.pipeid}")
-                output_entity = self.der.get_entity_definition(pipe.output_entity_id)
+                try:
+                    with strategy.tp.span(
+                        component="data_utils", operation="merge_and_watermark", reraise=False
+                    ):
+                        if strategy.ep.check_entity_exists(output_entity):
+                            with strategy.tp.span(operation="merge_to_entity_table"):
+                                strategy.ep.merge_to_entity(df, output_entity)
+                        else:
+                            with strategy.tp.span(operation="write_to_entity_table", reraise=True):
+                                strategy.ep.write_to_entity(df, output_entity)
 
-                with self.tp.span(
-                    component="data_utils", operation="merge_and_watermark", reraise=False
-                ):
-                    if self.ep.check_entity_exists(output_entity):
-                        with self.tp.span(operation="merge_to_entity_table"):
-                            self.ep.merge_to_entity(df, output_entity)
-                    else:
-                        with self.tp.span(operation="write_to_entity_table", reraise=True):
-                            self.ep.write_to_entity(df, output_entity)
+                        with strategy.tp.span(operation="save_watermarks"):
+                            with strategy.tp.span(
+                                operation="save_watermark", component=f"{src_input_entity_id}"
+                            ):
+                                strategy.wms.save_watermark(
+                                    src_input_entity_id,
+                                    pipe.pipeid,
+                                    src_read_version,
+                                    str(uuid.uuid4()),
+                                )
 
-                    with self.tp.span(operation="save_watermarks"):
-                        with self.tp.span(
-                            operation="save_watermark", component=f"{src_input_entity_id}"
-                        ):
-                            self.wms.save_watermark(
-                                src_input_entity_id,
-                                pipe.pipeid,
-                                src_read_version,
-                                str(uuid.uuid4()),
-                            )
+                                strategy.emit(
+                                    "persist.watermark_saved",
+                                    pipe_id=pipe.pipeid,
+                                    source_entity_id=src_input_entity_id,
+                                    version=src_read_version,
+                                    persist_id=persist_id,
+                                )
+
+                    duration = time.time() - start_time
+                    strategy.emit(
+                        "persist.after_persist",
+                        pipe_id=pipe.pipeid,
+                        source_entity_id=src_input_entity_id,
+                        output_entity_id=pipe.output_entity_id,
+                        duration_seconds=duration,
+                        persist_id=persist_id,
+                    )
+
+                except Exception as e:
+                    duration = time.time() - start_time
+                    strategy.emit(
+                        "persist.persist_failed",
+                        pipe_id=pipe.pipeid,
+                        source_entity_id=src_input_entity_id,
+                        output_entity_id=pipe.output_entity_id,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        duration_seconds=duration,
+                        persist_id=persist_id,
+                    )
+                    raise
 
         return persist_lambda
