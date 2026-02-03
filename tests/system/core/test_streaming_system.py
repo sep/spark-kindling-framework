@@ -16,7 +16,7 @@ from queue import Queue
 from threading import Event
 
 import pytest
-from kindling.signaling import SignalProvider
+from kindling.signaling import BlinkerSignalProvider
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 from kindling.streaming_health_monitor import QueryHealthStatus, StreamingHealthMonitor
@@ -45,7 +45,7 @@ def spark():
 @pytest.fixture
 def signal_provider():
     """Create signal provider."""
-    return SignalProvider()
+    return BlinkerSignalProvider()
 
 
 @pytest.fixture
