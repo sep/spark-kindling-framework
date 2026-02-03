@@ -32,7 +32,16 @@ from pyspark.sql.functions import col
 
 
 @pytest.fixture(scope="module")
-def spark():
+def initialize_kindling():
+    """Initialize Kindling framework for testing."""
+    from kindling.bootstrap import initialize_framework
+
+    # Initialize with minimal config
+    initialize_framework(config={}, app_name="streaming-system-test")
+
+
+@pytest.fixture(scope="module")
+def spark(initialize_kindling):
     """
     Get Spark session for testing (platform-agnostic).
 
@@ -44,13 +53,13 @@ def spark():
 
 
 @pytest.fixture
-def signal_provider():
+def signal_provider(initialize_kindling):
     """Get signal provider from DI."""
     return get_kindling_service(SignalProvider)
 
 
 @pytest.fixture
-def logger_provider():
+def logger_provider(initialize_kindling):
     """Get logger provider from DI."""
     return get_kindling_service(SparkLoggerProvider)
 
