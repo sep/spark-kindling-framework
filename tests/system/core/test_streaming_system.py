@@ -16,13 +16,14 @@ from queue import Queue
 from threading import Event
 
 import pytest
-from kindling.signaling import BlinkerSignalProvider
+from kindling.injection import get_kindling_service
+from kindling.signaling import SignalProvider
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
-from kindling.streaming_health_monitor import QueryHealthStatus, StreamingHealthMonitor
+from kindling.streaming_health_monitor import StreamingHealthMonitor
 from kindling.streaming_listener import KindlingStreamingListener
 from kindling.streaming_query_manager import StreamingQueryManager
-from kindling.streaming_recovery_manager import RecoveryStatus, StreamingRecoveryManager
+from kindling.streaming_recovery_manager import StreamingRecoveryManager
 from pyspark.sql.functions import col
 
 # =============================================================================
@@ -44,14 +45,14 @@ def spark():
 
 @pytest.fixture
 def signal_provider():
-    """Create signal provider."""
-    return BlinkerSignalProvider()
+    """Get signal provider from DI."""
+    return get_kindling_service(SignalProvider)
 
 
 @pytest.fixture
 def logger_provider():
-    """Create logger provider."""
-    return SparkLoggerProvider()
+    """Get logger provider from DI."""
+    return get_kindling_service(SparkLoggerProvider)
 
 
 @pytest.fixture
