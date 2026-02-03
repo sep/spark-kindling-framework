@@ -542,11 +542,20 @@ Closes #18
 
 ### PR Review Process
 
+**Lightweight Self-Merge (Current Process):**
+
 1. **Create PR** with template filled out
-2. **Request review** (if human review needed)
-3. **Address feedback** - make requested changes
-4. **Re-request review** after changes
-5. **Merge** when approved
+2. **Verify all checks pass:**
+   - ✅ All tests pass
+   - ✅ Coverage ≥80%
+   - ✅ Pre-commit hooks pass
+   - ✅ No merge conflicts
+3. **Self-merge** using squash and merge
+4. **Delete feature branch** after merge
+
+**Future Enhancement:**
+- PRs serve as checkpoint for potential automated review (e.g., CodeRabbit)
+- Manual review can be requested if needed for complex changes
 
 ### Merge Strategy
 
