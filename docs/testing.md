@@ -22,8 +22,58 @@ poe test-quick
 # With coverage report
 poe test-coverage
 
+# System tests (flexible filtering)
+poe test-system                                    # All platforms, all tests
+poe test-system --platform fabric                   # Only Fabric tests
+poe test-system --platform synapse                  # Only Synapse tests
+poe test-system --platform databricks               # Only Databricks tests
+poe test-system --test deploy_app_as_job           # Specific test, all platforms
+poe test-system --platform fabric --test deploy    # Fabric + deploy tests
+
+# Extension tests (flexible filtering)
+poe test-extension                                          # Azure Monitor on all platforms
+poe test-extension --extension azure-monitor --platform fabric  # Azure Monitor on Fabric only
+
+# Cleanup tests resources (flexible filtering)
+poe cleanup                              # Clean all platforms + old packages
+poe cleanup --platform fabric            # Clean Fabric only
+poe cleanup --platform synapse           # Clean Synapse only
+poe cleanup --platform databricks        # Clean Databricks only
+poe cleanup --skip-packages              # Clean all platforms, skip package cleanup
+
+# Deploy wheels (flexible filtering)
+poe deploy                                # Deploy all platforms from local dist/
+poe deploy --platform fabric              # Deploy Fabric only from local dist/
+poe deploy --release                      # Deploy all from latest GitHub release
+poe deploy --release 0.4.0                # Deploy all from specific release
+poe deploy --platform fabric --release    # Deploy Fabric from latest release
+
 # Specific test file (use pytest directly)
 pytest tests/integration/test_data_pipes_integration.py -v
+```
+
+### System Test Filtering
+
+The `poe test-system` command uses pytest's `-k` filtering under the hood:
+
+- **No filters**: Runs all system tests on all platforms (fabric, synapse, databricks)
+- **`--platform <name>`**: Filters by platform marker (fabric, synapse, databricks)
+- **`--test <pattern>`**: Filters by test name pattern (e.g., `deploy`, `monitor`, etc.)
+- **Combined filters**: Both filters are AND'ed together
+
+Examples:
+```bash
+# Run all tests on all platforms (26 tests = ~13 tests × 2 platforms)
+poe test-system
+
+# Run only Fabric tests (13 tests)
+poe test-system --platform fabric
+
+# Run only deployment tests on all platforms
+poe test-system --test deploy_app_as_job
+
+# Run specific test on specific platform (1 test)
+poe test-system --platform fabric --test deploy_app_as_job
 ```
 
 ### Current Test Status
@@ -35,6 +85,11 @@ pytest tests/integration/test_data_pipes_integration.py -v
 **Integration Tests**
 - 10 data_pipes integration tests - all passing ✅
 - Coverage: 91% on data_pipes.py with integration tests
+
+**System Tests**
+- Unified tests that run on all platforms via parametrization
+- Tests located in `tests/system/core/`
+- Each test runs on fabric, synapse, and databricks platforms
 
 ---
 
@@ -293,11 +348,13 @@ poe test-integration  # Run integration tests only
 poe test-quick        # Run unit + integration (skip system tests)
 poe test-coverage     # Run tests with HTML coverage report
 
-# System tests (require cloud credentials)
-poe test-system           # All system tests
-poe test-system-fabric    # Fabric-specific system tests
-poe test-system-synapse   # Synapse-specific system tests
-poe test-system-databricks # Databricks-specific system tests
+# System tests (require cloud credentials) - flexible filtering
+poe test-system                                    # All tests on all platforms
+poe test-system --platform fabric                   # Fabric tests only
+poe test-system --platform synapse                  # Synapse tests only
+poe test-system --platform databricks               # Databricks tests only
+poe test-system --test deploy_app_as_job           # Specific test on all platforms
+poe test-system --platform fabric --test deploy    # Fabric + deploy tests
 
 # Direct pytest commands (for advanced usage)
 pytest tests/ -v                    # All tests

@@ -52,6 +52,7 @@ from enum import Enum
 from typing import Callable, Dict, Optional
 
 from injector import inject
+from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.streaming_query_manager import StreamingQueryManager
@@ -148,6 +149,7 @@ class RecoveryState:
 # =============================================================================
 
 
+@GlobalInjector.singleton_autobind()
 class StreamingRecoveryManager(SignalEmitter):
     """
     Event-driven auto-recovery manager for streaming queries.
