@@ -1,0 +1,8 @@
+# Streaming Test App Configuration
+# Tests streaming framework functionality across all platforms (Fabric, Synapse, Databricks)
+
+kindling:
+  # Basic logging configuration
+  telemetry:
+    logging:
+      level: DEBUG

@@ -1,5 +1,6 @@
 import logging
 import re
+import traceback
 from datetime import datetime
 
 from kindling.injection import *
@@ -36,19 +37,29 @@ class SparkLogger:
     def should_print(self):
         return self.config.get("print_logging", False)
 
-    def debug(self, msg: str):
+    def debug(self, msg: str, exc_info: bool = False):
+        if exc_info:
+            msg = f"{msg}\n{traceback.format_exc()}"
         self._log("debug", msg)
 
-    def info(self, msg: str):
+    def info(self, msg: str, exc_info: bool = False):
+        if exc_info:
+            msg = f"{msg}\n{traceback.format_exc()}"
         self._log("info", msg)
 
-    def warn(self, msg: str):
+    def warn(self, msg: str, exc_info: bool = False):
+        if exc_info:
+            msg = f"{msg}\n{traceback.format_exc()}"
         self._log("warn", msg)
 
-    def warning(self, msg: str):
+    def warning(self, msg: str, exc_info: bool = False):
+        if exc_info:
+            msg = f"{msg}\n{traceback.format_exc()}"
         self._log("warn", msg)
 
-    def error(self, msg: str):
+    def error(self, msg: str, exc_info: bool = False):
+        if exc_info:
+            msg = f"{msg}\n{traceback.format_exc()}"
         self._log("error", msg)
 
     def _is_level_enabled(self, level: str) -> bool:

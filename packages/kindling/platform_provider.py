@@ -168,3 +168,94 @@ class SparkPlatformServiceProvider(PlatformServiceProvider):
 
     def get_service(self):
         return self.svc
+
+
+# =============================================================================
+# Platform API Registry (for CI/CD, testing, CLI tools)
+# =============================================================================
+
+
+class PlatformAPIRegistry:
+    """Registry for platform API classes"""
+
+    _registry: Dict[str, type] = {}
+
+    @classmethod
+    def register(cls, platform_name: str):
+        """Decorator to register a platform API class
+
+        Example:
+            @PlatformAPIRegistry.register("fabric")
+            class FabricAPI(PlatformAPI):
+                @classmethod
+                def from_env(cls):
+                    ...
+        """
+
+        def decorator(api_class):
+            cls._registry[platform_name] = api_class
+            return api_class
+
+        return decorator
+
+    @classmethod
+    def get(cls, platform_name: str):
+        """Get platform API class by name
+
+        Args:
+            platform_name: Platform name (e.g., "fabric", "synapse", "databricks")
+
+        Returns:
+            Platform API class
+
+        Raises:
+            ValueError: If platform is not registered
+        """
+        # If not already registered, try to import the platform module to trigger registration
+        if platform_name not in cls._registry:
+            try:
+                import importlib
+
+                # Dynamic import: from kindling.platform_{name} import {Name}API
+                module_name = f"kindling.platform_{platform_name}"
+                importlib.import_module(module_name)
+                # Import triggers the @register decorator, which adds to registry
+            except ImportError:
+                pass
+
+        # Check again after import attempt
+        if platform_name not in cls._registry:
+            available = ", ".join(cls._registry.keys()) if cls._registry else "none"
+            raise ValueError(
+                f"Unknown platform: {platform_name}. " f"Available platforms: {available}"
+            )
+        return cls._registry[platform_name]
+
+    @classmethod
+    def list_platforms(cls):
+        """List all registered platform names"""
+        return list(cls._registry.keys())
+
+
+def create_platform_api_from_env(platform: str):
+    """
+    Create platform API client from environment variables.
+
+    Uses the platform API registry to find the appropriate class
+    and calls its from_env() class method.
+
+    Args:
+        platform: Platform name ("fabric", "synapse", "databricks", etc.)
+
+    Returns:
+        Tuple of (PlatformAPI client, platform_name)
+
+    Raises:
+        ValueError: If platform is unknown or required env vars are missing
+
+    Example:
+        >>> client, name = create_platform_api_from_env("fabric")
+        >>> result = client.deploy_spark_job(app_files, job_config)
+    """
+    api_class = PlatformAPIRegistry.get(platform)
+    return api_class.from_env(), platform

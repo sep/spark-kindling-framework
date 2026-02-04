@@ -7,9 +7,9 @@ Tests that the kindling-otel-azure extension:
 3. Successfully sends telemetry to Azure Monitor
 
 Usage:
-    pytest -v -m fabric tests/system/extensions/azure-monitor/
-    pytest -v -m synapse tests/system/extensions/azure-monitor/
-    pytest -v -m databricks tests/system/extensions/azure-monitor/
+    pytest -k fabric tests/system/extensions/azure-monitor/
+    pytest -k synapse tests/system/extensions/azure-monitor/
+    pytest -k databricks tests/system/extensions/azure-monitor/
 """
 
 import os
@@ -17,87 +17,13 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Tuple
 
 import pytest
 
 
-def get_platform_from_markers(request) -> str:
-    """Determine which platform to test based on pytest markers"""
-    marker_expr = request.config.getoption("-m", default="")
-
-    # Direct marker check from command line
-    if "fabric" in marker_expr:
-        return "fabric"
-    elif "synapse" in marker_expr:
-        return "synapse"
-    elif "databricks" in marker_expr:
-        return "databricks"
-
-    # Fallback to keyword check
-    if "fabric" in request.keywords:
-        return "fabric"
-    elif "synapse" in request.keywords:
-        return "synapse"
-    elif "databricks" in request.keywords:
-        return "databricks"
-    else:
-        pytest.fail("Must specify platform marker: -m databricks, -m synapse, or -m fabric")
-
-
-@pytest.fixture
-def platform_client(request) -> Tuple[Any, str]:
-    """Provides platform API client based on pytest marker"""
-    platform = get_platform_from_markers(request)
-
-    if platform == "databricks":
-        if not os.getenv("DATABRICKS_HOST"):
-            pytest.skip("DATABRICKS_HOST not configured")
-        from kindling.platform_databricks import DatabricksAPI
-
-        client = DatabricksAPI(
-            workspace_url=os.getenv("DATABRICKS_HOST"),
-            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
-            container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
-            azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
-            azure_client_id=os.getenv("AZURE_CLIENT_ID"),
-            azure_client_secret=os.getenv("AZURE_CLIENT_SECRET"),
-        )
-        return client, platform
-
-    elif platform == "synapse":
-        if not os.getenv("SYNAPSE_WORKSPACE_NAME"):
-            pytest.skip("SYNAPSE_WORKSPACE_NAME not configured")
-        from kindling.platform_synapse import SynapseAPI
-
-        client = SynapseAPI(
-            workspace_name=os.getenv("SYNAPSE_WORKSPACE_NAME"),
-            spark_pool_name=os.getenv("SYNAPSE_SPARK_POOL") or os.getenv("SYNAPSE_SPARK_POOL_NAME"),
-            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
-            container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
-        )
-        return client, platform
-
-    elif platform == "fabric":
-        if not os.getenv("FABRIC_WORKSPACE_ID") or not os.getenv("FABRIC_LAKEHOUSE_ID"):
-            pytest.skip("FABRIC_WORKSPACE_ID or FABRIC_LAKEHOUSE_ID not configured")
-        from kindling.platform_fabric import FabricAPI
-
-        client = FabricAPI(
-            workspace_id=os.getenv("FABRIC_WORKSPACE_ID"),
-            lakehouse_id=os.getenv("FABRIC_LAKEHOUSE_ID"),
-            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
-            container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", ""),
-        )
-        return client, platform
-
-
 @pytest.mark.system
 @pytest.mark.slow
-@pytest.mark.fabric
+@pytest.mark.parametrize("platform", ["fabric"])
 @pytest.mark.synapse
 @pytest.mark.databricks
 class TestAzureMonitorExtension:
@@ -155,7 +81,7 @@ class TestAzureMonitorExtension:
         if config_overrides:
             print(f"📋 Discovered config overrides from env: {config_overrides}")
 
-        # Create job config with platform-specific fields
+        # Create job config (platform APIs handle their own required fields)
         job_config = {
             "job_name": job_name,
             "app_name": app_name,
@@ -166,16 +92,6 @@ class TestAzureMonitorExtension:
         # Add config overrides if discovered from env
         if config_overrides:
             job_config["config_overrides"] = config_overrides
-
-        # Add platform-specific required fields
-        if platform == "fabric":
-            job_config["lakehouse_id"] = client.lakehouse_id
-        elif platform == "synapse":
-            job_config["spark_pool_name"] = client.spark_pool_name
-        elif platform == "databricks":
-            cluster_id = os.getenv("DATABRICKS_CLUSTER_ID")
-            if cluster_id:
-                job_config["cluster_id"] = cluster_id
 
         # Deploy job via PlatformAPI
         print(f"🚀 Deploying job: {job_name}")

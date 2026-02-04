@@ -240,3 +240,30 @@ def create_stdout_validator(api_client: Any) -> StdoutStreamValidator:
         StdoutStreamValidator instance
     """
     return StdoutStreamValidator(api_client)
+
+
+def get_captured_stdout(validator: StdoutStreamValidator) -> List[str]:
+    """Get captured stdout lines from validator"""
+    return validator.captured_lines
+
+
+def create_platform_client(platform: str):
+    """
+    Create platform API client for testing.
+
+    Uses kindling.platform_provider factory to create clients from environment variables.
+    Wraps ValueError exceptions as pytest.skip for missing configuration.
+
+    Args:
+        platform: Platform name ("fabric", "synapse", or "databricks")
+
+    Returns:
+        Tuple of (client, platform_name)
+    """
+    import pytest
+    from kindling.platform_provider import create_platform_api_from_env
+
+    try:
+        return create_platform_api_from_env(platform)
+    except ValueError as e:
+        pytest.skip(str(e))

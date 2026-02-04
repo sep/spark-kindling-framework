@@ -6,28 +6,59 @@ applyTo: '**'
 
 ## CRITICAL WORKFLOW RULES
 
-### 🚨 ALWAYS Check for Poe Tasks First
+### 🚨 ALWAYS Use Poe Tasks - NEVER Call Scripts Directly
 
-**Before executing ANY manual commands, ALWAYS check for existing poe tasks:**
+**CRITICAL: Poe tasks are the ONLY way to run operations. NEVER call scripts directly.**
 
 ```bash
 # List all available tasks
 poe --help
 ```
 
+**How Poe Tasks Work:**
+- Poe tasks are defined in `pyproject.toml` under `[tool.poe.tasks]`
+- Many tasks call functions in `scripts/test_runner.py` (the backend implementation)
+- **NEVER call test_runner.py directly** - it's internal infrastructure
+- **ALWAYS use `poe <task-name>`** instead
+
+**Example:**
+```bash
+# ✅ CORRECT: Use poe task
+poe test-system --platform fabric
+
+# ❌ WRONG: Don't call test_runner.py directly
+python scripts/test_runner.py system --platform fabric
+
+# ✅ CORRECT: Use poe task
+poe deploy --platform fabric
+
+# ❌ WRONG: Don't call deploy.py directly
+python scripts/deploy.py --platform fabric
+```
+
 **Common poe tasks that MUST be used instead of manual commands:**
 
 | Task | Purpose | Instead of Manual |
 |------|---------|-------------------|
+| `poe version --type alpha` | **Bump alpha version** (for cache busting during dev) | Manual pyproject.toml editing |
+| `poe version --type alpha --platform fabric` | **Bump + build + deploy Fabric** (one command workflow) | Manual version edit + build + deploy |
+| `poe version --type patch` | Bump patch version (remove alpha suffix) | Manual version editing |
+| `poe version --type minor` | Bump minor version | Manual version editing |
+| `poe version --type major` | Bump major version | Manual version editing |
 | `poe release <version>` | **Full release workflow** | Manual git tag + gh release + build + upload |
 | `poe build` | Build all platform wheels | Manual poetry build commands |
-| `poe deploy-fabric` | Deploy Fabric wheel to Azure | Manual az storage commands |
-| `poe deploy-synapse` | Deploy Synapse wheel to Azure | Manual az storage commands |
-| `poe deploy-databricks` | Deploy Databricks wheel to Azure | Manual az storage commands |
-| `poe test-system-fabric` | Run Fabric system tests | Manual pytest commands |
-| `poe test-system-synapse` | Run Synapse system tests | Manual pytest commands |
-| `poe test-system-databricks` | Run Databricks system tests | Manual pytest commands |
-| `poe cleanup` | Clean up all test resources | Manual deletion commands |
+| `poe deploy` | Deploy all platform wheels to Azure | Manual az storage commands |
+| `poe deploy --platform fabric` | Deploy Fabric wheel to Azure | Manual az storage commands |
+| `poe deploy --platform synapse` | Deploy Synapse wheel to Azure | Manual az storage commands |
+| `poe deploy --platform databricks` | Deploy Databricks wheel to Azure | Manual az storage commands |
+| `poe deploy --release` | Deploy all from latest GitHub release | Manual gh release download + upload |
+| `poe test-system` | Run system tests (all platforms, all tests) | Manual pytest commands |
+| `poe test-system --platform fabric` | Run Fabric system tests | Manual pytest with markers |
+| `poe test-system --platform synapse` | Run Synapse system tests | Manual pytest with markers |
+| `poe test-system --platform databricks` | Run Databricks system tests | Manual pytest with markers |
+| `poe test-system --test <pattern>` | Run specific test(s) on all platforms | Manual pytest -k filtering |
+| `poe cleanup` | Clean up all test resources (all platforms + old packages) | Manual deletion commands |
+| `poe cleanup --platform fabric` | Clean up Fabric test resources only | Manual deletion commands |
 
 **The `poe release` workflow handles:**
 1. ✅ Version bump in all config files
@@ -590,9 +621,10 @@ export AZURE_CLIENT_SECRET="..."
 
 ### Test Infrastructure
 
-- ✅ Poe test tasks configured: `poe test`, `poe test-system-databricks`, `poe test-system-synapse`, `poe test-system-fabric`, `poe test-system-all`
-- ⚠️ Parallel test runner (`scripts/run_parallel_system_tests.py`) hung during initial run - use individual platform tests instead
-- ✅ System tests located: `tests/system/test_{platform}_job_deployment.py`
+- ✅ Unified test tasks: `poe test-system` with optional `--platform` and `--test` filters
+- ✅ Flexible filtering: Run all platforms, specific platform, or specific test patterns
+- ✅ Extension tests: `poe test-extension` with optional platform filtering
+- ✅ System tests located: `tests/system/core/test_platform_job_deployment.py`
 
 **Test Durations (Approximate):**
 - Databricks: ~300s

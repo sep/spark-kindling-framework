@@ -4,173 +4,32 @@ Unified system tests for job deployment across all platforms.
 These tests validate end-to-end job deployment, execution, and monitoring
 using the PlatformAPI interface. The SAME test code runs on all platforms.
 
-Select platform via marker:
-    pytest -m databricks tests/system/test_platform_job_deployment.py
-    pytest -m synapse tests/system/test_platform_job_deployment.py
-    pytest -m fabric tests/system/test_platform_job_deployment.py
-
-Run all platforms (run pytest 3 times with different markers):
-    pytest -m databricks tests/system/test_platform_job_deployment.py && \
-    pytest -m synapse tests/system/test_platform_job_deployment.py && \
-    pytest -m fabric tests/system/test_platform_job_deployment.py
+Run specific platform:
+    pytest tests/system/core/test_platform_job_deployment.py -k fabric
+    pytest tests/system/core/test_platform_job_deployment.py -k synapse
+    pytest tests/system/core/test_platform_job_deployment.py -k databricks
 """
 
 import os
 import time
 import uuid
-from typing import Any, Dict, Tuple
 
 import pytest
 
 
-def get_platform_from_markers(request) -> str:
-    """Determine which platform to test based on pytest markers
-
-    When run with -m fabric/synapse/databricks, checks which marker was used to SELECT the test.
-    Priority: fabric > synapse > databricks (reverse alphabetical to catch most specific first)
-    """
-    # Check config for marker expression used
-    marker_expr = request.config.getoption("-m", default="")
-
-    # Direct marker check from command line
-    if "fabric" in marker_expr:
-        return "fabric"
-    elif "synapse" in marker_expr:
-        return "synapse"
-    elif "databricks" in marker_expr:
-        return "databricks"
-
-    # Fallback to keyword check (for programmatic test execution)
-    # Check in reverse priority to prefer more specific platforms
-    if "fabric" in request.keywords:
-        return "fabric"
-    elif "synapse" in request.keywords:
-        return "synapse"
-    elif "databricks" in request.keywords:
-        return "databricks"
-    else:
-        pytest.fail("Must specify platform marker: -m databricks, -m synapse, or -m fabric")
-
-
 @pytest.fixture
-def platform_client(request) -> Tuple[Any, str]:
-    """Provides the platform API client based on pytest marker
-
-    Usage: pytest -m databricks tests/system/test_platform_job_deployment.py
-    """
-    platform = get_platform_from_markers(request)
-
-    if platform == "databricks":
-        if not os.getenv("DATABRICKS_HOST"):
-            pytest.skip(f"DATABRICKS_HOST not configured")
-        from kindling.platform_databricks import DatabricksAPI
-
-        client = DatabricksAPI(
-            workspace_url=os.getenv("DATABRICKS_HOST"),
-            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
-            container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
-            azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
-            azure_client_id=os.getenv("AZURE_CLIENT_ID"),
-            azure_client_secret=os.getenv("AZURE_CLIENT_SECRET"),
-        )
-        # Store lakehouse_id on client for job_config retrieval
-        return client, platform
-
-    elif platform == "synapse":
-        if not os.getenv("SYNAPSE_WORKSPACE_NAME"):
-            pytest.skip(f"SYNAPSE_WORKSPACE_NAME not configured")
-        from kindling.platform_synapse import SynapseAPI
-
-        client = SynapseAPI(
-            workspace_name=os.getenv("SYNAPSE_WORKSPACE_NAME"),
-            spark_pool_name=os.getenv("SYNAPSE_SPARK_POOL") or os.getenv("SYNAPSE_SPARK_POOL_NAME"),
-            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
-            container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
-        )
-        return client, platform
-
-    elif platform == "fabric":
-        if not os.getenv("FABRIC_WORKSPACE_ID") or not os.getenv("FABRIC_LAKEHOUSE_ID"):
-            pytest.skip(f"FABRIC_WORKSPACE_ID or FABRIC_LAKEHOUSE_ID not configured")
-        from kindling.platform_fabric import FabricAPI
-
-        client = FabricAPI(
-            workspace_id=os.getenv("FABRIC_WORKSPACE_ID"),
-            lakehouse_id=os.getenv("FABRIC_LAKEHOUSE_ID"),
-            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
-            container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", ""),
-        )
-        return client, platform
-
-
-@pytest.fixture
-def job_config_provider(platform_client):
-    """Provides platform-specific job config"""
-    client, platform = platform_client
+def job_config_provider():
+    """Provides job config (platform APIs handle their own required fields)"""
 
     def get_config():
-        """Generate platform-specific job config with unique names"""
+        """Generate job config with unique names"""
         unique_suffix = str(uuid.uuid4())[:8]
         config = {
             "job_name": f"systest-job-deploy-{unique_suffix}",
             "app_name": f"universal-test-app-{unique_suffix}",
-            "entry_point": "main.py",  # Universal test app entry point
-            "test_id": unique_suffix,  # Pass test_id for log tracking
+            "entry_point": "main.py",
+            "test_id": unique_suffix,
         }
-
-        # Add platform-specific required fields
-        if platform == "fabric":
-            config["lakehouse_id"] = client.lakehouse_id
-        elif platform == "synapse":
-            config["spark_pool_name"] = client.spark_pool_name
-        elif platform == "databricks":
-            # Use existing cluster from environment
-            cluster_id = os.getenv("DATABRICKS_CLUSTER_ID")
-            if cluster_id:
-                config["cluster_id"] = cluster_id
-
-        # Discover CONFIG__* environment variables and pass as config_overrides
-        # Format: CONFIG__kindling__key__subkey -> kindling.key.subkey (all platforms)
-        # Format: CONFIG__platform_databricks__kindling__key -> kindling.key (databricks only)
-        config_overrides = {}
-        platform_prefix = f"CONFIG__platform_{platform}__"
-
-        for key, value in os.environ.items():
-            if key.startswith(platform_prefix):
-                # Platform-specific config (takes precedence)
-                config_path = key[len(platform_prefix) :]  # Remove platform prefix
-                parts = config_path.split("__")
-
-                # Build nested dict structure
-                current = config_overrides
-                for part in parts[:-1]:
-                    if part not in current:
-                        current[part] = {}
-                    current = current[part]
-                current[parts[-1]] = value
-
-            elif key.startswith("CONFIG__") and not key.startswith("CONFIG__platform_"):
-                # General config (applies to all platforms)
-                config_path = key[8:]  # Remove "CONFIG__"
-                parts = config_path.split("__")
-
-                # Build nested dict structure (only if not already set by platform-specific)
-                current = config_overrides
-                for i, part in enumerate(parts[:-1]):
-                    if part not in current:
-                        current[part] = {}
-                    current = current[part]
-                # Only set if not already present (platform-specific wins)
-                if parts[-1] not in current:
-                    current[parts[-1]] = value
-
-        # Add config_overrides to job config if we found any
-        if config_overrides:
-            config["config_overrides"] = config_overrides
-
         return config
 
     return get_config
@@ -178,9 +37,7 @@ def job_config_provider(platform_client):
 
 @pytest.mark.system
 @pytest.mark.slow
-@pytest.mark.fabric
-@pytest.mark.synapse
-@pytest.mark.databricks
+@pytest.mark.parametrize("platform", ["fabric", "databricks", "synapse"])
 class TestPlatformJobDeployment:
     """Unified tests that run on all platforms via parametrization"""
 
@@ -485,9 +342,7 @@ class TestPlatformJobDeployment:
 
 @pytest.mark.system
 @pytest.mark.slow
-@pytest.mark.fabric
-@pytest.mark.synapse
-@pytest.mark.databricks
+@pytest.mark.parametrize("platform", ["fabric", "databricks", "synapse"])
 class TestPlatformJobResults:
     """Tests for job execution results - runs on all platforms"""
 
