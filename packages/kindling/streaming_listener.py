@@ -42,6 +42,7 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 from injector import inject
+from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import SparkLoggerProvider
 from pyspark.sql.streaming import StreamingQueryListener
@@ -90,6 +91,7 @@ class StreamingEvent:
 # =============================================================================
 
 
+@GlobalInjector.singleton_autobind()
 class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
     """
     Non-blocking streaming query listener with queue-based event processing.

@@ -14,7 +14,7 @@ from azure.core.exceptions import *
 from azure.identity import DefaultAzureCredential
 from kindling.notebook_framework import *
 
-from .platform_provider import PlatformAPI
+from .platform_provider import PlatformAPI, PlatformAPIRegistry
 
 
 def _get_mssparkutils():
@@ -1047,6 +1047,7 @@ except ImportError:
     HAS_STORAGE_SDK = False
 
 
+@PlatformAPIRegistry.register("fabric")
 class FabricAPI(PlatformAPI):
     """
     Microsoft Fabric REST API client for remote operations.
@@ -1122,6 +1123,42 @@ class FabricAPI(PlatformAPI):
         self._token = None
         self._token_expiry = 0
         self._storage_client = None
+
+    @classmethod
+    def from_env(cls):
+        """
+        Create FabricAPI client from environment variables.
+
+        Required environment variables:
+            - FABRIC_WORKSPACE_ID
+            - FABRIC_LAKEHOUSE_ID
+
+        Optional environment variables:
+            - AZURE_STORAGE_ACCOUNT (for ABFSS uploads)
+            - AZURE_CONTAINER (default: "artifacts")
+            - AZURE_BASE_PATH (default: "")
+
+        Returns:
+            FabricAPI client instance
+
+        Raises:
+            ValueError: If required environment variables are missing
+        """
+        workspace_id = os.getenv("FABRIC_WORKSPACE_ID")
+        lakehouse_id = os.getenv("FABRIC_LAKEHOUSE_ID")
+
+        if not workspace_id or not lakehouse_id:
+            raise ValueError(
+                "Missing required environment variables: FABRIC_WORKSPACE_ID and FABRIC_LAKEHOUSE_ID"
+            )
+
+        return cls(
+            workspace_id=workspace_id,
+            lakehouse_id=lakehouse_id,
+            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
+            container=os.getenv("AZURE_CONTAINER", "artifacts"),
+            base_path=os.getenv("AZURE_BASE_PATH", ""),
+        )
 
     def get_platform_name(self) -> str:
         """Get platform name"""

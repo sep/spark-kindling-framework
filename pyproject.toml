@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling"
-version = "0.4.0"
+version = "0.4.1a17"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -45,14 +45,13 @@ requests = ">=2.31.0"
 azure-mgmt-storage = "^24.0.0"
 
 [tool.poe.tasks]
+# Version management
+version = { script = "scripts.bump_version:main", help = "Bump version and optionally build/deploy", args = [{name = "bump_type", default = "alpha", positional = false, help = "Version bump type: alpha (default), patch, minor, major"}, {name = "platform", default = "", positional = false, help = "Platform to deploy after bump (fabric, synapse, databricks). Implies build+deploy"}, {name = "build", type = "boolean", default = false, positional = false, help = "Build wheels after version bump"}, {name = "deploy", type = "boolean", default = false, positional = false, help = "Deploy all platforms after build"}] }
+
 # Build and deploy tasks
 build = { script = "scripts.build:main" }
 build-wheels = { shell = "bash scripts/build_platform_wheels.sh" }
-deploy = { cmd = "python scripts/deploy.py" }
-deploy-release = { cmd = "python scripts/deploy.py --release" }
-deploy-synapse = { cmd = "python scripts/deploy.py --platform synapse" }
-deploy-databricks = { cmd = "python scripts/deploy.py --platform databricks" }
-deploy-fabric = { cmd = "python scripts/deploy.py --platform fabric" }
+deploy = { script = "scripts.test_runner:run_deploy", help = "Deploy wheels to Azure Storage. Use --platform and/or --release to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to deploy (fabric, synapse, databricks). If not specified, deploys all platforms"}, {name = "release", default = "", positional = false, help = "Deploy from GitHub release. Use 'latest' or specific version (e.g., '0.4.0'). If not specified, deploys from local dist/"}] }
 deploy-extensions = { cmd = "python scripts/deploy_extensions.py kindling-otel-azure" }
 upload = { shell = "bash scripts/upload_to_storage.sh" }
 upload-release = { shell = "bash scripts/upload_to_storage.sh --release" }
@@ -68,17 +67,11 @@ setup-github-secrets = { shell = "bash scripts/set_github_secrets.sh" }
 test = "pytest tests/ -v"
 test-unit = "pytest tests/unit/ -v"
 test-integration = "pytest tests/integration/ -v"
-test-system = "pytest tests/system/core/ -v -s -m system"
-test-system-fabric = "pytest tests/system/core/ -v -s -m fabric"
-test-system-synapse = "pytest tests/system/core/ -v -s -m synapse"
-test-system-databricks = "pytest tests/system/core/ -v -s -m databricks"
-test-extension = { cmd = "pytest tests/system/extensions/${extension}/ -v -s -m ${platform}", args = [{name = "extension", default = "*", positional = false}, {name = "platform", default = "fabric", positional = false}] }
+test-system = { script = "scripts.test_runner:run_system_tests", help = "Run system tests. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}] }
+test-extension = { script = "scripts.test_runner:run_extension_tests", help = "Run extension tests", args = [{name = "extension", default = "azure-monitor", positional = false, help = "Extension name to test (e.g., azure-monitor)"}, {name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}] }
 test-quick = "pytest tests/unit/ tests/integration/ -v"
 test-coverage = "pytest tests/ -v --cov=kindling --cov-report=html --cov-report=term"
-cleanup = { shell = "python scripts/cleanup_test_resources.py --all && python scripts/cleanup_old_packages.py" }
-cleanup-fabric = { cmd = "python scripts/cleanup_test_resources.py --platform fabric" }
-cleanup-synapse = { cmd = "python scripts/cleanup_test_resources.py --platform synapse" }
-cleanup-databricks = { cmd = "python scripts/cleanup_test_resources.py --platform databricks" }
+cleanup = { script = "scripts.test_runner:run_cleanup", help = "Clean up test resources. Use --platform to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to clean (fabric, synapse, databricks). If not specified, cleans all platforms"}, {name = "skip-packages", default = false, positional = false, help = "Skip cleanup of old packages"}] }
 
 # Code quality tasks
 format = "black packages/ tests/ scripts/"

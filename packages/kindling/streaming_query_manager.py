@@ -44,8 +44,10 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 from injector import inject
+from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_session import get_or_create_spark_session
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.streaming import StreamingQuery
 
@@ -118,6 +120,7 @@ class StreamingQueryInfo:
 # =============================================================================
 
 
+@GlobalInjector.singleton_autobind()
 class StreamingQueryManager(SignalEmitter):
     """
     Central registry and lifecycle manager for streaming queries.
@@ -159,7 +162,6 @@ class StreamingQueryManager(SignalEmitter):
         self,
         signal_provider: SignalProvider,
         logger_provider: SparkLoggerProvider,
-        spark: SparkSession,
     ):
         """
         Initialize the streaming query manager.
@@ -167,12 +169,11 @@ class StreamingQueryManager(SignalEmitter):
         Args:
             signal_provider: Provider for creating/emitting signals
             logger_provider: Provider for logging
-            spark: SparkSession for creating queries
         """
         self._init_signal_emitter(signal_provider)
 
         self.logger = logger_provider.get_logger("StreamingQueryManager")
-        self.spark = spark
+        self.spark = get_or_create_spark_session()
 
         # Query registry: query_id -> StreamingQueryInfo
         self._queries: Dict[str, StreamingQueryInfo] = {}

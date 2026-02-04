@@ -27,6 +27,12 @@ def pytest_collection_modifyitems(config, items):
     Skip tests that require unavailable credentials.
     """
     for item in items:
+        # Add platform marker dynamically from parametrize values
+        if hasattr(item, "callspec") and "platform" in item.callspec.params:
+            platform_value = item.callspec.params["platform"]
+            # Add the platform as a marker so -m fabric/databricks/synapse works
+            item.add_marker(getattr(pytest.mark, platform_value))
+
         # Check for platform markers and required credentials
         if "fabric" in item.keywords:
             # Only workspace and lakehouse IDs are required
@@ -171,6 +177,18 @@ def job_packager():
     from kindling.job_deployment import JobPackager
 
     return JobPackager()
+
+
+@pytest.fixture
+def platform_client(platform):
+    """Get platform API client for the parametrized platform
+
+    Returns a tuple of (client, platform_name).
+    Platform comes from test parametrization.
+    """
+    from tests.system.test_helpers import create_platform_client
+
+    return create_platform_client(platform)
 
 
 @pytest.fixture
