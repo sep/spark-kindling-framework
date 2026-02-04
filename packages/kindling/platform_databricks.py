@@ -11,7 +11,7 @@ from urllib.parse import quote
 import requests
 from kindling.notebook_framework import *
 
-from .platform_provider import PlatformAPI
+from .platform_provider import PlatformAPI, PlatformAPIRegistry
 
 
 class DatabricksService(PlatformService):
@@ -953,6 +953,7 @@ def create_platform_service(config, logger):
 # ============================================================================
 
 
+@PlatformAPIRegistry.register("databricks")
 class DatabricksAPI(PlatformAPI):
     """
     Databricks API client for remote operations using Databricks SDK.
@@ -1038,6 +1039,45 @@ class DatabricksAPI(PlatformAPI):
         else:
             # Fall back to Azure CLI authentication
             return WorkspaceClient(host=self.workspace_url, auth_type="azure-cli")
+
+    @classmethod
+    def from_env(cls):
+        """
+        Create DatabricksAPI client from environment variables.
+
+        Required environment variables:
+            - DATABRICKS_HOST
+
+        Optional environment variables:
+            - AZURE_STORAGE_ACCOUNT (for file uploads)
+            - AZURE_CONTAINER (default: "artifacts")
+            - AZURE_BASE_PATH (default: "system-tests")
+            - AZURE_TENANT_ID (for service principal auth)
+            - AZURE_CLIENT_ID (for service principal auth)
+            - AZURE_CLIENT_SECRET (for service principal auth)
+
+        Returns:
+            DatabricksAPI client instance
+
+        Raises:
+            ValueError: If required environment variables are missing
+        """
+        import os
+
+        workspace_url = os.getenv("DATABRICKS_HOST")
+
+        if not workspace_url:
+            raise ValueError("Missing required environment variable: DATABRICKS_HOST")
+
+        return cls(
+            workspace_url=workspace_url,
+            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
+            container=os.getenv("AZURE_CONTAINER", "artifacts"),
+            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+            azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
+            azure_client_id=os.getenv("AZURE_CLIENT_ID"),
+            azure_client_secret=os.getenv("AZURE_CLIENT_SECRET"),
+        )
 
     def get_platform_name(self) -> str:
         """Get platform name"""

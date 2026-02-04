@@ -14,7 +14,7 @@ from kindling.data_apps import AppDeploymentService
 from kindling.notebook_framework import *
 from kindling.spark_session import *
 
-from .platform_provider import PlatformAPI
+from .platform_provider import PlatformAPI, PlatformAPIRegistry
 
 mssparkutils = None
 
@@ -888,7 +888,7 @@ class SynapseService(PlatformService):
     ) -> Any:
         """Create a Synapse Spark Job Definition"""
 
-        spark_pool_name = job_config["spark_pool_name"]
+        spark_pool_name = job_config.get("spark_pool_name", self.spark_pool_name)
 
         # Build job definition
         job_properties = SparkJobProperties(
@@ -941,6 +941,7 @@ def create_platform_service(config, logger):
 # ============================================================================
 
 
+@PlatformAPIRegistry.register("synapse")
 class SynapseAPI(PlatformAPI):
     """
     Azure Synapse REST API client for remote operations.
@@ -1010,6 +1011,41 @@ class SynapseAPI(PlatformAPI):
         # Rate limiting: Synapse has 2 requests/second limit
         self._last_request_time = 0
         self._min_request_interval = 0.6  # 600ms between requests = ~1.67 req/sec (safe margin)
+
+    @classmethod
+    def from_env(cls):
+        """
+        Create SynapseAPI client from environment variables.
+
+        Required environment variables:
+            - SYNAPSE_WORKSPACE_NAME
+
+        Optional environment variables:
+            - SYNAPSE_SPARK_POOL or SYNAPSE_SPARK_POOL_NAME
+            - AZURE_STORAGE_ACCOUNT (for file uploads)
+            - AZURE_CONTAINER (default: "artifacts")
+            - AZURE_BASE_PATH (default: "system-tests")
+
+        Returns:
+            SynapseAPI client instance
+
+        Raises:
+            ValueError: If required environment variables are missing
+        """
+        import os
+
+        workspace_name = os.getenv("SYNAPSE_WORKSPACE_NAME")
+
+        if not workspace_name:
+            raise ValueError("Missing required environment variable: SYNAPSE_WORKSPACE_NAME")
+
+        return cls(
+            workspace_name=workspace_name,
+            spark_pool_name=os.getenv("SYNAPSE_SPARK_POOL") or os.getenv("SYNAPSE_SPARK_POOL_NAME"),
+            storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
+            container=os.getenv("AZURE_CONTAINER", "artifacts"),
+            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+        )
 
     def get_platform_name(self) -> str:
         """Get platform name"""
