@@ -146,11 +146,23 @@ try:
         signal.connect(track_signal(signal_name), weak=False)
 
     # Register and start a streaming query
-    # Use lakehouse path for checkpoint (works on all platforms)
+    # Use platform-appropriate checkpoint path
     import time
 
+    from kindling.spark_config import ConfigService
+
     checkpoint_suffix = int(time.time())
-    checkpoint_dir = f"Files/checkpoints/streaming_test_{test_id}_{checkpoint_suffix}"
+
+    # Get platform from config to use appropriate checkpoint path format
+    config_service = get_kindling_service(ConfigService)
+    platform = config_service.get("platform", "fabric").lower()
+
+    if platform == "databricks":
+        # Databricks requires absolute paths - use DBFS
+        checkpoint_dir = f"/tmp/checkpoints/streaming_test_{test_id}_{checkpoint_suffix}"
+    else:
+        # Fabric/Synapse use lakehouse Files path
+        checkpoint_dir = f"Files/checkpoints/streaming_test_{test_id}_{checkpoint_suffix}"
 
     def builder(spark, config):
         df = create_test_stream(spark, rate=10)

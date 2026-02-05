@@ -362,7 +362,7 @@ class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
                 continue
 
             except Exception as e:
-                self.logger.error(f"Error processing event: {e}", exc_info=True)
+                self.logger.error(f"Error processing event: {e}", include_traceback=True)
 
         # Drain remaining events before shutdown
         self._drain_queue()
@@ -384,7 +384,7 @@ class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
                 break
 
             except Exception as e:
-                self.logger.error(f"Error draining event: {e}", exc_info=True)
+                self.logger.error(f"Error draining event: {e}", include_traceback=True)
                 break
 
         if drained > 0:
@@ -432,5 +432,5 @@ class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
         except Exception as e:
             self.logger.error(
                 f"Error emitting signal for {event.event_type.value}: {e}",
-                exc_info=True,
+                include_traceback=True,
             )

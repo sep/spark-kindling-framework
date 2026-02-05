@@ -305,7 +305,7 @@ class StreamingQueryManager(SignalEmitter):
                 query_info.state = StreamingQueryState.FAILED
                 query_info.last_error = str(e)
 
-            self.logger.error(f"Failed to start query '{query_id}': {e}", exc_info=True)
+            self.logger.error(f"Failed to start query '{query_id}': {e}", include_traceback=True)
 
             self.emit(
                 "streaming.query_failed",
@@ -373,7 +373,7 @@ class StreamingQueryManager(SignalEmitter):
                 query_info.state = StreamingQueryState.FAILED
                 query_info.last_error = str(e)
 
-            self.logger.error(f"Error stopping query '{query_id}': {e}", exc_info=True)
+            self.logger.error(f"Error stopping query '{query_id}': {e}", include_traceback=True)
 
             self.emit(
                 "streaming.query_failed",
@@ -432,7 +432,7 @@ class StreamingQueryManager(SignalEmitter):
             return query_info
 
         except Exception as e:
-            self.logger.error(f"Failed to restart query '{query_id}': {e}", exc_info=True)
+            self.logger.error(f"Failed to restart query '{query_id}': {e}", include_traceback=True)
             raise
 
     def get_query_status(self, query_id: str) -> StreamingQueryInfo:
