@@ -375,7 +375,7 @@ class StreamingRecoveryManager(SignalEmitter):
             self.logger.info("Subscribed to health signals")
 
         except Exception as e:
-            self.logger.error(f"Error subscribing to signals: {e}", exc_info=True)
+            self.logger.error(f"Error subscribing to signals: {e}", include_traceback=True)
 
     def _unsubscribe_from_signals(self):
         """Unsubscribe from health signals."""
@@ -388,7 +388,7 @@ class StreamingRecoveryManager(SignalEmitter):
             self.logger.info("Unsubscribed from health signals")
 
         except Exception as e:
-            self.logger.error(f"Error unsubscribing from signals: {e}", exc_info=True)
+            self.logger.error(f"Error unsubscribing from signals: {e}", include_traceback=True)
 
     # =========================================================================
     # Signal Handlers
@@ -471,7 +471,7 @@ class StreamingRecoveryManager(SignalEmitter):
                     break
 
             except Exception as e:
-                self.logger.error(f"Error in recovery loop: {e}", exc_info=True)
+                self.logger.error(f"Error in recovery loop: {e}", include_traceback=True)
 
         self.logger.info("Recovery thread stopped")
 
@@ -494,7 +494,8 @@ class StreamingRecoveryManager(SignalEmitter):
 
                 except Exception as e:
                     self.logger.error(
-                        f"Error processing recovery for query '{query_id}': {e}", exc_info=True
+                        f"Error processing recovery for query '{query_id}': {e}",
+                        include_traceback=True,
                     )
 
     def _attempt_recovery(self, state: RecoveryState):

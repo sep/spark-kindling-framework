@@ -37,30 +37,20 @@ class SparkLogger:
     def should_print(self):
         return self.config.get("print_logging", False)
 
-    def debug(self, msg: str, exc_info: bool = False):
-        if exc_info:
-            msg = f"{msg}\n{traceback.format_exc()}"
-        self._log("debug", msg)
+    def debug(self, msg: str, include_traceback: bool = False):
+        self._log("debug", msg, include_traceback=include_traceback)
 
-    def info(self, msg: str, exc_info: bool = False):
-        if exc_info:
-            msg = f"{msg}\n{traceback.format_exc()}"
-        self._log("info", msg)
+    def info(self, msg: str, include_traceback: bool = False):
+        self._log("info", msg, include_traceback=include_traceback)
 
-    def warn(self, msg: str, exc_info: bool = False):
-        if exc_info:
-            msg = f"{msg}\n{traceback.format_exc()}"
-        self._log("warn", msg)
+    def warn(self, msg: str, include_traceback: bool = False):
+        self._log("warn", msg, include_traceback=include_traceback)
 
-    def warning(self, msg: str, exc_info: bool = False):
-        if exc_info:
-            msg = f"{msg}\n{traceback.format_exc()}"
-        self._log("warn", msg)
+    def warning(self, msg: str, include_traceback: bool = False):
+        self._log("warn", msg, include_traceback=include_traceback)
 
-    def error(self, msg: str, exc_info: bool = False):
-        if exc_info:
-            msg = f"{msg}\n{traceback.format_exc()}"
-        self._log("error", msg)
+    def error(self, msg: str, include_traceback: bool = False):
+        self._log("error", msg, include_traceback=include_traceback)
 
     def _is_level_enabled(self, level: str) -> bool:
         """Check if the given log level should be logged based on current logger level"""
@@ -79,10 +69,16 @@ class SparkLogger:
 
         return self._level_hierarchy[level] <= self._level_hierarchy[current_level_str]
 
-    def _log(self, level: str, msg: str):
+    def _log(self, level: str, msg: str, include_traceback: bool = False):
         """Central logging method that respects log levels and eliminates redundancy"""
         if self._is_level_enabled(level):
             formatted_msg = self._format_msg(msg, level)
+
+            # If traceback is requested, manually append it to message
+            # This avoids compatibility issues with different logger implementations
+            if include_traceback:
+                formatted_msg = f"{formatted_msg}\n{traceback.format_exc()}"
+
             self._log_methods[level](formatted_msg)
 
             if self.should_print():

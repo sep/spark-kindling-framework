@@ -377,7 +377,7 @@ class StreamingHealthMonitor(SignalEmitter):
             self.logger.info("Subscribed to streaming signals")
 
         except Exception as e:
-            self.logger.error(f"Error subscribing to signals: {e}", exc_info=True)
+            self.logger.error(f"Error subscribing to signals: {e}", include_traceback=True)
 
     def _unsubscribe_from_signals(self):
         """Unsubscribe from streaming signals."""
@@ -390,7 +390,7 @@ class StreamingHealthMonitor(SignalEmitter):
             self.logger.info("Unsubscribed from streaming signals")
 
         except Exception as e:
-            self.logger.error(f"Error unsubscribing from signals: {e}", exc_info=True)
+            self.logger.error(f"Error unsubscribing from signals: {e}", include_traceback=True)
 
     # =========================================================================
     # Signal Handlers
@@ -525,7 +525,7 @@ class StreamingHealthMonitor(SignalEmitter):
                     break
 
             except Exception as e:
-                self.logger.error(f"Error in stall checker: {e}", exc_info=True)
+                self.logger.error(f"Error in stall checker: {e}", include_traceback=True)
 
         self.logger.info("Stall checker thread stopped")
 
@@ -544,7 +544,7 @@ class StreamingHealthMonitor(SignalEmitter):
 
                 except Exception as e:
                     self.logger.error(
-                        f"Error checking stall for query '{query_id}': {e}", exc_info=True
+                        f"Error checking stall for query '{query_id}': {e}", include_traceback=True
                     )
 
     # =========================================================================
