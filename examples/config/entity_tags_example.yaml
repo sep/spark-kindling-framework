@@ -1,0 +1,36 @@
+# Example: Entity Tag Configuration
+#
+# This file shows how to configure entity tags via YAML configuration.
+# Entity tags are merged at retrieval time, so config can be loaded before or after
+# entity registration - order doesn't matter.
+
+# Entity tag overrides
+entity_tags:
+  # Bronze layer entities
+  bronze.orders:
+    provider.path: "abfss://production@storage.dfs.core.windows.net/bronze/orders"
+    environment: "production"
+    retention_days: "90"
+
+  bronze.customers:
+    provider.path: "abfss://production@storage.dfs.core.windows.net/bronze/customers"
+    environment: "production"
+    retention_days: "365"
+
+  # Reference data entities (CSV)
+  ref.categories:
+    provider.path: "Files/reference/categories.csv"
+    provider.header: "true"
+    provider.inferSchema: "true"
+
+  ref.products:
+    provider.path: "Files/reference/products.csv"
+    provider.header: "true"
+    provider.inferSchema: "true"
+
+  # Streaming entities
+  stream.orders_raw:
+    provider.connection_string: "${EVENTHUB_CONNECTION_STRING}"
+    provider.consumer_group: "$Default"
+    provider.starting_position: "earliest"
+    environment: "production"

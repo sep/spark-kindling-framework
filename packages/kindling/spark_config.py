@@ -58,6 +58,28 @@ class ConfigService(ABC):
         """
         pass
 
+    @abstractmethod
+    def set_entity_tags(self, entityid: str, tags: Dict[str, str]) -> None:
+        """Store tag overrides for an entity.
+
+        Args:
+            entityid: Entity ID to store tags for
+            tags: Dictionary of tag key-value pairs to merge with entity base tags
+        """
+        pass
+
+    @abstractmethod
+    def get_entity_tags(self, entityid: str) -> Dict[str, str]:
+        """Get tag overrides for an entity.
+
+        Args:
+            entityid: Entity ID to retrieve tags for
+
+        Returns:
+            Dictionary of tag overrides (empty dict if none configured)
+        """
+        pass
+
 
 @GlobalInjector.singleton_autobind()
 class DynaconfConfig(ConfigService):
@@ -402,6 +424,27 @@ class DynaconfConfig(ConfigService):
                     pass
 
             return self.dynaconf.get_fresh(key, default=default)
+
+    def set_entity_tags(self, entityid: str, tags: Dict[str, str]) -> None:
+        """Store tag overrides for an entity."""
+        with self._config_lock:
+            # Get entire entity_tags dict, update it, and set it back
+            all_entity_tags = self.dynaconf.get("entity_tags", {})
+            if not isinstance(all_entity_tags, dict):
+                all_entity_tags = {}
+            all_entity_tags[entityid] = tags
+            self.dynaconf.set("entity_tags", all_entity_tags)
+
+    def get_entity_tags(self, entityid: str) -> Dict[str, str]:
+        """Get tag overrides for an entity."""
+        with self._config_lock:
+            # Get the entire entity_tags dictionary first
+            all_entity_tags = self.dynaconf.get("entity_tags", {})
+            if not isinstance(all_entity_tags, dict):
+                return {}
+            # Look up the entityid as a key (entityid may contain dots like "bronze.orders")
+            tags = all_entity_tags.get(entityid, {})
+            return tags if isinstance(tags, dict) else {}
 
 
 def configure_injector_with_config(
