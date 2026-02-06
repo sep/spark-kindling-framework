@@ -39,7 +39,8 @@ class TestCSVEntityProviderIntegration:
             existing = SparkSession.getActiveSession()
             if existing:
                 existing.stop()
-        except:
+        except Exception:
+            # Ignore errors if no session exists
             pass
 
         spark = (

@@ -65,6 +65,9 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
                 # Get provider for source entity (version tracking may be Delta-specific)
                 src_provider = strategy.provider_registry.get_provider_for_entity(src_input_entity)
+                # Version tracking: Delta providers return actual version numbers, other providers
+                # default to 0 (no versioning). This is acceptable for watermarking as the
+                # watermark system will still track processing state via timestamps.
                 src_read_version = (
                     src_provider.get_entity_version(src_input_entity)
                     if hasattr(src_provider, "get_entity_version")
@@ -99,14 +102,32 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                                 if hasattr(output_provider, "merge_to_entity"):
                                     output_provider.merge_to_entity(df, output_entity)
                                 else:
-                                    # Provider doesn't support merge, use append instead
-                                    strategy.logger.info(
-                                        f"Provider '{output_entity.provider_type or 'delta'}' does not support merge, using append"
+                                    # Provider doesn't support merge, use append if writable
+                                    from kindling.entity_provider import (
+                                        WritableEntityProvider,
                                     )
-                                    output_provider.append_to_entity(df, output_entity)
+
+                                    if isinstance(output_provider, WritableEntityProvider):
+                                        strategy.logger.info(
+                                            f"Provider '{output_entity.provider_type or 'delta'}' does not support merge, using append"
+                                        )
+                                        output_provider.append_to_entity(df, output_entity)
+                                    else:
+                                        raise ValueError(
+                                            f"Provider '{output_entity.provider_type or 'unknown'}' does not support write operations"
+                                        )
                         else:
                             with strategy.tp.span(operation="write_to_entity_table", reraise=True):
-                                output_provider.write_to_entity(df, output_entity)
+                                from kindling.entity_provider import (
+                                    WritableEntityProvider,
+                                )
+
+                                if isinstance(output_provider, WritableEntityProvider):
+                                    output_provider.write_to_entity(df, output_entity)
+                                else:
+                                    raise ValueError(
+                                        f"Provider '{output_entity.provider_type or 'unknown'}' does not support write operations"
+                                    )
 
                         with strategy.tp.span(operation="save_watermarks"):
                             with strategy.tp.span(
