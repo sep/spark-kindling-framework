@@ -56,29 +56,6 @@ class CSVEntityProvider(BaseEntityProvider):
     def __init__(self, logger_provider: PythonLoggerProvider):
         self.logger = logger_provider.get_logger("CSVEntityProvider")
 
-    def _get_provider_config(self, entity_metadata: EntityMetadata) -> Dict[str, Any]:
-        """
-        Extract provider configuration from entity tags.
-
-        Looks for tags with 'provider.' prefix and converts them to a config dict.
-
-        Args:
-            entity_metadata: Entity metadata
-
-        Returns:
-            Dict with provider configuration (keys without 'provider.' prefix)
-        """
-        config = {}
-        for key, value in entity_metadata.tags.items():
-            if key.startswith("provider."):
-                config_key = key[9:]  # Remove 'provider.' prefix
-                # Convert string values to appropriate types
-                if value.lower() in ("true", "false"):
-                    config[config_key] = value.lower() == "true"
-                else:
-                    config[config_key] = value
-        return config
-
     def read_entity(self, entity_metadata: EntityMetadata) -> DataFrame:
         """
         Read CSV file as batch DataFrame.

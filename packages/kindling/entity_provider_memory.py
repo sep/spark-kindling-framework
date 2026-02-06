@@ -93,31 +93,6 @@ class MemoryEntityProvider(
         # Store in-memory DataFrames
         self._memory_store: Dict[str, DataFrame] = {}
 
-    def _get_provider_config(self, entity_metadata: EntityMetadata) -> Dict[str, Any]:
-        """
-        Extract provider configuration from entity tags.
-
-        Looks for tags with 'provider.' prefix and converts them to a config dict.
-
-        Args:
-            entity_metadata: Entity metadata
-
-        Returns:
-            Dict with provider configuration (keys without 'provider.' prefix)
-        """
-        config = {}
-        for key, value in entity_metadata.tags.items():
-            if key.startswith("provider."):
-                config_key = key[9:]  # Remove 'provider.' prefix
-                # Convert string values to appropriate types
-                if value.lower() in ("true", "false"):
-                    config[config_key] = value.lower() == "true"
-                elif value.isdigit():
-                    config[config_key] = int(value)
-                else:
-                    config[config_key] = value
-        return config
-
     def _get_table_name(self, entity_metadata: EntityMetadata) -> str:
         """Get memory table name from config or entity name."""
         config = self._get_provider_config(entity_metadata)

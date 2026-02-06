@@ -17,7 +17,7 @@ Examples:
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pyspark.sql import DataFrame
 from pyspark.sql.streaming import StreamingQuery
@@ -57,6 +57,67 @@ class BaseEntityProvider(ABC):
             True if entity exists, False otherwise
         """
         pass
+
+    # ===== Common Helper Methods (Concrete implementations) =====
+
+    def _get_provider_config(self, entity_metadata: EntityMetadata) -> Dict[str, Any]:
+        """
+        Extract configuration from entity tags with type conversion.
+
+        Returns ALL entity tags (not just provider.*), with provider.* tags
+        having their prefix stripped for convenience.
+
+        Example:
+            Input tags: {
+                "provider.path": "/data/sales.csv",
+                "provider.header": "true",
+                "region": "us-west",
+                "pii": "true"
+            }
+            Returns: {
+                "path": "/data/sales.csv",    # provider.* prefix stripped
+                "header": True,                # type converted
+                "region": "us-west",           # non-provider tags included
+                "pii": True                    # type converted
+            }
+
+        Args:
+            entity_metadata: Entity metadata with tags
+
+        Returns:
+            Dictionary with all tags, type-converted, provider.* prefix stripped
+        """
+        config = {}
+
+        # Add all non-provider tags as-is (with type conversion)
+        for key, value in entity_metadata.tags.items():
+            if not key.startswith("provider."):
+                config[key] = self._convert_tag_type(value)
+
+        # Add provider tags with prefix stripped (with type conversion)
+        for key, value in entity_metadata.tags.items():
+            if key.startswith("provider."):
+                config_key = key[9:]  # Remove 'provider.' prefix
+                config[config_key] = self._convert_tag_type(value)
+
+        return config
+
+    def _convert_tag_type(self, value: str) -> Any:
+        """
+        Convert string tag values to appropriate Python types.
+
+        Args:
+            value: String value from entity tags
+
+        Returns:
+            Converted value (bool for "true"/"false", int for digits, str otherwise)
+        """
+        if isinstance(value, str):
+            if value.lower() in ("true", "false"):
+                return value.lower() == "true"
+            elif value.isdigit():
+                return int(value)
+        return value
 
 
 class StreamableEntityProvider(ABC):
