@@ -17,6 +17,12 @@ from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
 
 from .data_entities import *
+from .entity_provider import (
+    BaseEntityProvider,
+    StreamableEntityProvider,
+    StreamWritableEntityProvider,
+    WritableEntityProvider,
+)
 
 
 class DeltaAccessMode:
@@ -78,8 +84,25 @@ class DeltaTableReference:
 
 
 @GlobalInjector.singleton_autobind()
-class DeltaEntityProvider(EntityProvider, SignalEmitter):
-    """Delta Lake implementation of EntityProvider with signal emissions."""
+class DeltaEntityProvider(
+    EntityProvider,
+    BaseEntityProvider,
+    StreamableEntityProvider,
+    WritableEntityProvider,
+    StreamWritableEntityProvider,
+    SignalEmitter,
+):
+    """
+    Delta Lake implementation with full entity provider capabilities.
+
+    Implements all 4 provider interfaces:
+    - BaseEntityProvider: Batch read operations
+    - StreamableEntityProvider: Streaming read operations
+    - WritableEntityProvider: Batch write operations
+    - StreamWritableEntityProvider: Streaming write operations
+
+    Also maintains backward compatibility with legacy EntityProvider interface.
+    """
 
     @inject
     def __init__(

@@ -50,11 +50,13 @@ def mock_spark():
 @pytest.fixture
 def manager(mock_signal_provider, mock_logger_provider, mock_spark):
     """Create manager instance for testing."""
-    mgr = StreamingQueryManager(
-        signal_provider=mock_signal_provider,
-        logger_provider=mock_logger_provider,
-        spark=mock_spark,
-    )
+    with patch(
+        "kindling.streaming_query_manager.get_or_create_spark_session", return_value=mock_spark
+    ):
+        mgr = StreamingQueryManager(
+            signal_provider=mock_signal_provider,
+            logger_provider=mock_logger_provider,
+        )
     # Mock emit for testing
     mgr.emit = Mock()
     return mgr
@@ -173,11 +175,13 @@ class TestManagerInitialization:
 
     def test_initialization(self, mock_signal_provider, mock_logger_provider, mock_spark):
         """Test manager initialization."""
-        manager = StreamingQueryManager(
-            signal_provider=mock_signal_provider,
-            logger_provider=mock_logger_provider,
-            spark=mock_spark,
-        )
+        with patch(
+            "kindling.streaming_query_manager.get_or_create_spark_session", return_value=mock_spark
+        ):
+            manager = StreamingQueryManager(
+                signal_provider=mock_signal_provider,
+                logger_provider=mock_logger_provider,
+            )
 
         assert manager.spark is mock_spark
         assert len(manager._queries) == 0
