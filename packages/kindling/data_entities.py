@@ -1,8 +1,8 @@
 import logging
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, fields
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import MISSING, dataclass, fields, replace
+from typing import Any, Callable, Dict, List
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
@@ -121,8 +121,14 @@ class DataEntities:
     def entity(cls, **decorator_params):
         if cls.deregistry is None:
             cls.deregistry = GlobalInjector.get(DataEntityRegistry)
-        # Check all required fields are provided
-        required_fields = {field.name for field in fields(EntityMetadata)}
+        # Check all required fields are provided (excluding optional fields with defaults)
+        all_fields = {field.name for field in fields(EntityMetadata)}
+        optional_fields = {
+            field.name
+            for field in fields(EntityMetadata)
+            if field.default is not MISSING or field.default_factory is not MISSING
+        }
+        required_fields = all_fields - optional_fields
         missing_fields = required_fields - decorator_params.keys()
 
         if missing_fields:
@@ -166,9 +172,12 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
     """Manages entity registrations with signal emissions."""
 
     @inject
-    def __init__(self, signal_provider: SignalProvider = None):
+    def __init__(
+        self, signal_provider: SignalProvider = None, config_service: ConfigService = None
+    ):
         self._init_signal_emitter(signal_provider)
         self.registry = {}
+        self.config_service = config_service
 
     def register_entity(self, entityid, **decorator_params):
         self.registry[entityid] = EntityMetadata(entityid, **decorator_params)
@@ -182,4 +191,21 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         return self.registry.keys()
 
     def get_entity_definition(self, name):
-        return self.registry.get(name)
+        """Get entity definition with config-based tag overrides applied.
+
+        Returns entity with tags merged at retrieval time, allowing config
+        to be loaded before or after entity registration.
+        """
+        base_entity = self.registry.get(name)
+        if base_entity is None:
+            return None
+
+        # Merge config-based tag overrides if config service is available
+        if self.config_service:
+            config_tags = self.config_service.get_entity_tags(name)
+            if config_tags:
+                # Merge tags: config overrides base
+                merged_tags = {**base_entity.tags, **config_tags}
+                return replace(base_entity, tags=merged_tags)
+
+        return base_entity

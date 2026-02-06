@@ -189,7 +189,7 @@ class TestLoggingMethods:
             logger.debug("debug message")
 
         mock_log.assert_called_once_with(
-            "debug", "debug message"
+            "debug", "debug message", include_traceback=False
         ), "_log should be called with 'debug' level and message"
 
     def test_info_method_calls_log(self, mock_spark, mock_logger, basic_config):
@@ -200,7 +200,7 @@ class TestLoggingMethods:
             logger.info("info message")
 
         mock_log.assert_called_once_with(
-            "info", "info message"
+            "info", "info message", include_traceback=False
         ), "_log should be called with 'info' level and message"
 
     def test_warn_method_calls_log(self, mock_spark, mock_logger, basic_config):
@@ -211,7 +211,7 @@ class TestLoggingMethods:
             logger.warn("warn message")
 
         mock_log.assert_called_once_with(
-            "warn", "warn message"
+            "warn", "warn message", include_traceback=False
         ), "_log should be called with 'warn' level and message"
 
     def test_warning_method_calls_log(self, mock_spark, mock_logger, basic_config):
@@ -222,7 +222,7 @@ class TestLoggingMethods:
             logger.warning("warning message")
 
         mock_log.assert_called_once_with(
-            "warn", "warning message"
+            "warn", "warning message", include_traceback=False
         ), "warning() should be alias calling _log with 'warn' level"
 
     def test_error_method_calls_log(self, mock_spark, mock_logger, basic_config):
@@ -233,7 +233,7 @@ class TestLoggingMethods:
             logger.error("error message")
 
         mock_log.assert_called_once_with(
-            "error", "error message"
+            "error", "error message", include_traceback=False
         ), "_log should be called with 'error' level and message"
 
     def test_all_methods_called_sequentially(self, mock_spark, mock_logger, basic_config):
@@ -249,11 +249,21 @@ class TestLoggingMethods:
 
         assert mock_log.call_count == 5, "All five logging methods should delegate to _log"
         calls = mock_log.call_args_list
-        assert calls[0] == call("debug", "debug msg"), "First call should be debug"
-        assert calls[1] == call("info", "info msg"), "Second call should be info"
-        assert calls[2] == call("warn", "warn msg"), "Third call should be warn"
-        assert calls[3] == call("warn", "warning msg"), "Fourth call should be warn (warning alias)"
-        assert calls[4] == call("error", "error msg"), "Fifth call should be error"
+        assert calls[0] == call(
+            "debug", "debug msg", include_traceback=False
+        ), "First call should be debug"
+        assert calls[1] == call(
+            "info", "info msg", include_traceback=False
+        ), "Second call should be info"
+        assert calls[2] == call(
+            "warn", "warn msg", include_traceback=False
+        ), "Third call should be warn"
+        assert calls[3] == call(
+            "warn", "warning msg", include_traceback=False
+        ), "Fourth call should be warn (warning alias)"
+        assert calls[4] == call(
+            "error", "error msg", include_traceback=False
+        ), "Fifth call should be error"
 
 
 class TestCentralLogMethod:
@@ -565,7 +575,9 @@ class TestPatternCustomization:
 
         custom_pattern = "%p: %m%ntrace_id=%x{trace_id} span_id=%x{span_id} component=%x{component} operation=%x{operation}"
         assert logger.pattern == custom_pattern, "Pattern should be updated before logging"
-        mock_log.assert_called_once_with("info", "test"), "Chained logging method should work"
+        mock_log.assert_called_once_with(
+            "info", "test", include_traceback=False
+        ), "Chained logging method should work"
 
 
 class TestShouldPrint:
