@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from kindling.injection import *
 
@@ -9,10 +9,21 @@ class PlatformAPI(ABC):
     Abstract interface for remote platform API operations.
 
     This is for operations that can be performed remotely via REST APIs,
-    such as deploying jobs, uploading files, and monitoring execution.
+    such as deploying apps, creating jobs, and monitoring execution.
 
     Does NOT require mssparkutils/dbutils - uses only HTTP/REST APIs.
+
+    Two independent concerns:
+    - **App deployment**: Upload app files to storage (`deploy_app`, `cleanup_app`)
+    - **Job lifecycle**: Create/run/monitor Spark jobs (`create_job`, `run_job`, etc.)
+
+    A job references an app by name via its config. The bootstrap script
+    resolves the app files at runtime from storage.
     """
+
+    # =========================================================================
+    # Identity
+    # =========================================================================
 
     @abstractmethod
     def get_platform_name(self) -> str:
@@ -23,56 +34,57 @@ class PlatformAPI(ABC):
         """
         pass
 
-    @abstractmethod
-    def deploy_spark_job(
-        self, app_files: Dict[str, str], job_config: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Deploy application as Spark job (convenience method)
+    # =========================================================================
+    # App Deployment — upload/manage app files in storage
+    # =========================================================================
 
-        This is a convenience method that combines create_spark_job + upload_files + update_job_files.
+    @abstractmethod
+    def deploy_app(self, app_name: str, app_files: Dict[str, str]) -> str:
+        """Deploy app files to platform storage
+
+        Uploads app files to the conventional location:
+            {base_path}/data-apps/{app_name}/
 
         Args:
-            app_files: Dictionary of {filename: content} to deploy
-            job_config: Platform-specific job configuration
+            app_name: Application name (used as storage directory)
+            app_files: Dictionary of {filename: content}
 
         Returns:
-            Dictionary with job_id, deployment_path, and metadata
+            Storage path where app was deployed (e.g., abfss://...)
         """
         pass
 
     @abstractmethod
-    def create_spark_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a Spark job definition
+    def cleanup_app(self, app_name: str) -> bool:
+        """Remove deployed app files from storage
 
         Args:
-            job_name: Name for the job
-            job_config: Platform-specific job configuration
+            app_name: Application name to clean up
+
+        Returns:
+            True if cleanup succeeded
+        """
+        pass
+
+    # =========================================================================
+    # Job Lifecycle — create/run/monitor Spark job definitions
+    # =========================================================================
+
+    @abstractmethod
+    def create_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a Spark job definition
+
+        The job config should include `app_name` so the bootstrap script
+        knows which app to load at runtime.
+
+        Args:
+            job_name: Name for the job definition
+            job_config: Platform-specific configuration including:
+                - app_name: Which deployed app to run
+                - Additional platform-specific settings
 
         Returns:
             Dictionary with job_id and other metadata
-        """
-        pass
-
-    @abstractmethod
-    def upload_files(self, files: Dict[str, str], target_path: str) -> str:
-        """Upload files to platform storage
-
-        Args:
-            files: Dictionary of {filename: content}
-            target_path: Target path in platform storage
-
-        Returns:
-            Storage path where files were uploaded
-        """
-        pass
-
-    @abstractmethod
-    def update_job_files(self, job_id: str, files_path: str) -> None:
-        """Update job definition with file paths
-
-        Args:
-            job_id: Job ID to update
-            files_path: Path to uploaded files
         """
         pass
 
@@ -102,7 +114,6 @@ class PlatformAPI(ABC):
                 - start_time: When job started
                 - end_time: When job finished (if complete)
                 - error: Error message (if failed)
-                - logs: Job logs (if available)
         """
         pass
 
@@ -140,13 +151,62 @@ class PlatformAPI(ABC):
             size: Maximum number of lines to return (default: 1000)
 
         Returns:
-            Dictionary containing logs and metadata:
-                - log: List of log lines or full log content
-                - total_lines: Total number of lines available (if known)
-                - from_line: Starting line of returned logs
-                - has_more: Whether more logs are available
+            Dictionary containing logs and metadata
         """
         pass
+
+    @abstractmethod
+    def stream_stdout_logs(
+        self,
+        job_id: str,
+        run_id: str,
+        callback: Optional[Callable[[str], None]] = None,
+        poll_interval: float = 5.0,
+        max_wait: float = 300.0,
+    ) -> List[str]:
+        """Stream stdout logs in real-time
+
+        Args:
+            job_id: Job definition ID
+            run_id: Job run ID
+            callback: Optional callback called for each new line
+            poll_interval: Seconds between polls
+            max_wait: Maximum seconds to wait
+
+        Returns:
+            List of all captured stdout lines
+        """
+        pass
+
+    # =========================================================================
+    # Backward compatibility — convenience method combining app + job
+    # =========================================================================
+
+    def deploy_spark_job(
+        self, app_files: Dict[str, str], job_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Deploy app and create job in one call (convenience method)
+
+        DEPRECATED: Use deploy_app() + create_job() separately.
+
+        Args:
+            app_files: Dictionary of {filename: content}
+            job_config: Job configuration (must include app_name and job_name)
+
+        Returns:
+            Dictionary with job_id, deployment_path, and metadata
+        """
+        app_name = job_config.get("app_name", job_config["job_name"])
+        job_name = job_config["job_name"]
+
+        # Step 1: Deploy app files
+        deployment_path = self.deploy_app(app_name, app_files)
+
+        # Step 2: Create job definition
+        result = self.create_job(job_name, job_config)
+
+        result["deployment_path"] = deployment_path
+        return result
 
 
 class PlatformServiceProvider(ABC):

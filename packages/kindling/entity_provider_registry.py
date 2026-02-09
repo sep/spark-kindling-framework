@@ -131,7 +131,7 @@ class EntityProviderRegistry:
         This is called during initialization to make core providers available.
         """
         # Import here to avoid circular dependencies
-        from .delta_entity_provider import DeltaEntityProvider
+        from .entity_provider_delta import DeltaEntityProvider
 
         # Register Delta provider (always available)
         self.register_provider("delta", DeltaEntityProvider)

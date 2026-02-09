@@ -44,7 +44,7 @@ def platform_client(request):
 class TestComplexTracing:
     """Test complex tracing with variable durations"""
 
-    def _run_tracing_test(self, platform_client, job_packager, use_azure_monitor=False):
+    def _run_tracing_test(self, platform_client, app_packager, use_azure_monitor=False):
         """Common test logic for both default and Azure Monitor telemetry"""
         client, platform = platform_client
 
@@ -63,7 +63,7 @@ class TestComplexTracing:
 
         # Prepare app files
         print(f"📦 Packaging test app: {app_name}")
-        app_files = job_packager.prepare_app_files(str(app_path))
+        app_files = app_packager.prepare_app_files(str(app_path))
 
         # Use Azure Monitor settings if requested
         if use_azure_monitor and os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
@@ -91,11 +91,13 @@ class TestComplexTracing:
         if platform == "fabric":
             job_config["lakehouse_id"] = client.lakehouse_id
 
-        # Deploy and run job
-        print(f"🚀 Deploying job: {job_name}")
-        result = client.deploy_spark_job(app_files, job_config)
+        # Deploy app and create job (separate operations)
+        print(f"📂 Deploying app: {app_name}")
+        client.deploy_app(app_name, app_files)
+        print(f"🚀 Creating job: {job_name}")
+        result = client.create_job(job_name=job_name, job_config=job_config)
         job_id = result["job_id"]
-        print(f"✅ Job deployed: {job_id}")
+        print(f"✅ Job created: {job_id}")
 
         run_id = client.run_job(job_id=job_id)
         print(f"🏃 Job started: {run_id}")
@@ -198,17 +200,19 @@ class TestComplexTracing:
             if not os.getenv("SKIP_TEST_CLEANUP"):
                 client.delete_job(job_id)
                 print(f"✅ Cleaned up job: {job_id}")
+                client.cleanup_app(app_name)
+                print(f"🗑️  Cleaned up app: {app_name}")
         except Exception as e:
             print(f"⚠️  Cleanup warning: {e}")
 
-    def test_default_telemetry(self, platform_client, job_packager):
+    def test_default_telemetry(self, platform_client, app_packager):
         """Test complex tracing with default Kindling telemetry"""
-        self._run_tracing_test(platform_client, job_packager, use_azure_monitor=False)
+        self._run_tracing_test(platform_client, app_packager, use_azure_monitor=False)
 
     @pytest.mark.skipif(
         not os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"),
         reason="APPLICATIONINSIGHTS_CONNECTION_STRING not set",
     )
-    def test_azure_monitor_telemetry(self, platform_client, job_packager):
+    def test_azure_monitor_telemetry(self, platform_client, app_packager):
         """Test complex tracing with Azure Monitor OpenTelemetry extension"""
-        self._run_tracing_test(platform_client, job_packager, use_azure_monitor=True)
+        self._run_tracing_test(platform_client, app_packager, use_azure_monitor=True)

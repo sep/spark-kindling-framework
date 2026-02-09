@@ -209,6 +209,88 @@ class StdoutStreamValidator:
 
         return results
 
+    def validate_tests(
+        self,
+        test_id: str,
+        expected_tests: List[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Validate that expected test markers appear in captured stdout.
+
+        Looks for markers of the form:
+            TEST_ID={test_id} test={test_name} status=PASSED
+
+        Args:
+            test_id: The test ID to search for
+            expected_tests: List of test names expected to pass
+
+        Returns:
+            Dict mapping test names to {passed: bool, status: str, message: str}
+        """
+        content = self.get_content()
+        results = {}
+
+        for test_name in expected_tests:
+            passed_marker = f"TEST_ID={test_id} test={test_name} status=PASSED"
+            failed_marker = f"TEST_ID={test_id} test={test_name} status=FAILED"
+
+            if passed_marker in content:
+                results[test_name] = {
+                    "passed": True,
+                    "status": "PASSED",
+                    "message": None,
+                }
+            elif failed_marker in content:
+                results[test_name] = {
+                    "passed": False,
+                    "status": "FAILED",
+                    "message": f"Test {test_name} failed",
+                }
+            else:
+                results[test_name] = {
+                    "passed": False,
+                    "status": "NOT_FOUND",
+                    "message": f"No marker found for test {test_name}",
+                }
+
+        return results
+
+    def validate_completion(
+        self,
+        test_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Validate that the test run completed successfully.
+
+        Looks for the completion marker:
+            TEST_ID={test_id} status=COMPLETED result=PASSED
+
+        Args:
+            test_id: The test ID to search for
+
+        Returns:
+            Dict with {passed: bool, status: str, message: str}
+        """
+        content = self.get_content()
+
+        passed_marker = f"TEST_ID={test_id} status=COMPLETED result=PASSED"
+        failed_marker = f"TEST_ID={test_id} status=COMPLETED result=FAILED"
+
+        if passed_marker in content:
+            return {"passed": True, "status": "COMPLETED", "message": "All tests passed"}
+        elif failed_marker in content:
+            return {
+                "passed": False,
+                "status": "FAILED",
+                "message": "Test run completed with failures",
+            }
+        else:
+            return {
+                "passed": False,
+                "status": "NOT_FOUND",
+                "message": "Completion marker not found in stdout",
+            }
+
     def print_validation_summary(
         self,
         validation_results: Dict[str, bool],
