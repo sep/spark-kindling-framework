@@ -9,15 +9,16 @@ a test app on actual platforms (Fabric, Databricks, Synapse):
 - StreamingRecoveryManager (auto-recovery)
 
 These tests use the same pattern as test_platform_job_deployment.py:
-- Deploy test app as a Spark job
+- Deploy app to storage (deploy_app)
+- Create job definition (create_job)
 - Run job and stream stdout
 - Validate execution from stdout markers
 - Clean up resources
 
 Run on specific platform:
-    pytest -m fabric tests/system/core/test_streaming_system.py
-    pytest -m databricks tests/system/core/test_streaming_system.py
-    pytest -m synapse tests/system/core/test_streaming_system.py
+    poe test-system --platform fabric --test streaming_system
+    poe test-system --platform databricks --test streaming_system
+    poe test-system --platform synapse --test streaming_system
 """
 
 import os
@@ -53,7 +54,6 @@ def streaming_job_config():
 
 @pytest.mark.system
 @pytest.mark.slow
-@pytest.mark.parametrize("platform", ["fabric", "databricks", "synapse"])
 class TestStreamingSystemIntegration:
     """
     System tests for integrated streaming components.
@@ -65,7 +65,7 @@ class TestStreamingSystemIntegration:
     def test_complete_streaming_lifecycle(
         self,
         platform_client,
-        job_packager,
+        app_packager,
         streaming_test_app_path,
         streaming_job_config,
         stdout_validator,
@@ -81,15 +81,19 @@ class TestStreamingSystemIntegration:
         """
         api_client, platform_name = platform_client
         test_id = streaming_job_config["test_id"]
+        app_name = streaming_job_config["app_name"]
 
         print(f"\n🎯 [{platform_name.upper()}] Testing streaming system lifecycle")
 
-        # Deploy job
-        app_files = job_packager.prepare_app_files(str(streaming_test_app_path))
-        result = api_client.deploy_spark_job(app_files, streaming_job_config)
+        # Deploy app and create job (separate operations)
+        app_files = app_packager.prepare_app_files(str(streaming_test_app_path))
+        api_client.deploy_app(app_name, app_files)
+        result = api_client.create_job(
+            job_name=streaming_job_config["job_name"],
+            job_config=streaming_job_config,
+        )
         job_id = result["job_id"]
-        app_name = streaming_job_config["app_name"]
-        print(f"📦 Job deployed: {job_id}")
+        print(f"📦 App deployed and job created: {job_id}")
 
         try:
             # Run job
@@ -201,7 +205,7 @@ class TestStreamingSystemIntegration:
     def test_streaming_health_monitoring(
         self,
         platform_client,
-        job_packager,
+        app_packager,
         streaming_test_app_path,
         streaming_job_config,
         stdout_validator,
@@ -215,14 +219,18 @@ class TestStreamingSystemIntegration:
         """
         api_client, platform_name = platform_client
         test_id = streaming_job_config["test_id"]
+        app_name = streaming_job_config["app_name"]
 
         print(f"\n🏥 [{platform_name.upper()}] Testing streaming health monitoring")
 
-        # Deploy and run job
-        app_files = job_packager.prepare_app_files(str(streaming_test_app_path))
-        result = api_client.deploy_spark_job(app_files, streaming_job_config)
+        # Deploy app and create job
+        app_files = app_packager.prepare_app_files(str(streaming_test_app_path))
+        api_client.deploy_app(app_name, app_files)
+        result = api_client.create_job(
+            job_name=streaming_job_config["job_name"],
+            job_config=streaming_job_config,
+        )
         job_id = result["job_id"]
-        app_name = streaming_job_config["app_name"]
 
         try:
             run_id = api_client.run_job(job_id=job_id)
@@ -257,7 +265,7 @@ class TestStreamingSystemIntegration:
     def test_streaming_signal_flow(
         self,
         platform_client,
-        job_packager,
+        app_packager,
         streaming_test_app_path,
         streaming_job_config,
         stdout_validator,
@@ -272,14 +280,18 @@ class TestStreamingSystemIntegration:
         """
         api_client, platform_name = platform_client
         test_id = streaming_job_config["test_id"]
+        app_name = streaming_job_config["app_name"]
 
         print(f"\n📡 [{platform_name.upper()}] Testing streaming signal flow")
 
-        # Deploy and run job
-        app_files = job_packager.prepare_app_files(str(streaming_test_app_path))
-        result = api_client.deploy_spark_job(app_files, streaming_job_config)
+        # Deploy app and create job
+        app_files = app_packager.prepare_app_files(str(streaming_test_app_path))
+        api_client.deploy_app(app_name, app_files)
+        result = api_client.create_job(
+            job_name=streaming_job_config["job_name"],
+            job_config=streaming_job_config,
+        )
         job_id = result["job_id"]
-        app_name = streaming_job_config["app_name"]
 
         try:
             run_id = api_client.run_job(job_id=job_id)
@@ -321,13 +333,12 @@ class TestStreamingSystemIntegration:
             self._cleanup_test(api_client, job_id, app_name)
 
     def _cleanup_test(self, api_client, job_id: str, app_name: str):
-        """Clean up job and data-app files"""
-        # Skip cleanup if environment variable is set
+        """Clean up job and app files using platform API"""
         if os.environ.get("SKIP_TEST_CLEANUP", "").lower() == "true":
             print(f"⏸️  Skipping cleanup (SKIP_TEST_CLEANUP=true) - job: {job_id}, app: {app_name}")
             return
 
-        # Clean up job
+        # Clean up job definition
         try:
             success = api_client.delete_job(job_id=job_id)
             if success:
@@ -335,34 +346,13 @@ class TestStreamingSystemIntegration:
         except Exception as e:
             print(f"⚠️  Error deleting job: {e}")
 
-        # Clean up app files from ABFSS storage
+        # Clean up app files using platform API
         try:
-            from azure.identity import DefaultAzureCredential
-            from azure.storage.filedatalake import DataLakeServiceClient
-
-            storage_account = getattr(api_client, "storage_account", None)
-            container = getattr(api_client, "container", None)
-            base_path = getattr(api_client, "base_path", None)
-
-            if storage_account and container:
-                account_url = f"https://{storage_account}.dfs.core.windows.net"
-                credential = getattr(api_client, "credential", None)
-                if credential is None:
-                    credential = DefaultAzureCredential()
-
-                storage_client = DataLakeServiceClient(
-                    account_url=account_url, credential=credential
-                )
-                file_system_client = storage_client.get_file_system_client(file_system=container)
-
-                target_path = f"data-apps/{app_name}"
-                full_path = f"{base_path}/{target_path}" if base_path else target_path
-
-                directory_client = file_system_client.get_directory_client(full_path)
-                directory_client.delete_directory()
-                print(f"🗑️  Deleted data-app from ABFSS: {full_path}")
+            success = api_client.cleanup_app(app_name)
+            if success:
+                print(f"🗑️  Cleaned up app: {app_name}")
         except Exception as e:
-            print(f"⚠️  Error deleting data-app: {e}")
+            print(f"⚠️  Error cleaning up app: {e}")
 
 
 if __name__ == "__main__":

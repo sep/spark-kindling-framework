@@ -55,8 +55,7 @@ class DeltaTableReference:
                 return DeltaTable.forPath(self.spark, self.get_read_path())
 
     def get_spark_read_stream(self, spark, format=None, options=None):
-        strmformat = format or "delta"
-        base = spark.readStream.format(strmformat)
+        base = spark.readStream.format("delta")
 
         if options is not None:
             path = options.get("path", None)
@@ -64,9 +63,7 @@ class DeltaTableReference:
                 del options["path"]
             base = base.options(**options)
 
-        if strmformat != "delta":
-            base = base.load()
-        elif self.access_mode == DeltaAccessMode.FOR_NAME:
+        if self.access_mode == DeltaAccessMode.FOR_NAME:
             base = base.table(self.table_name)
         elif self.access_mode == DeltaAccessMode.FOR_PATH:
             base = base.load(self.table_path)
@@ -102,6 +99,29 @@ class DeltaEntityProvider(
     - StreamWritableEntityProvider: Streaming write operations
 
     Also maintains backward compatibility with legacy EntityProvider interface.
+
+    Provider configuration options (via entity tags with 'provider.' prefix):
+    - provider.path: Override table path (optional, defaults to EntityPathLocator)
+    - provider.table_name: Override table name (optional, defaults to EntityNameMapper)
+    - provider.access_mode: Override access mode (optional, values: forName, forPath, auto)
+
+    Example entity definition with tag-based configuration:
+    ```python
+    @DataEntities.entity(
+        entityid="sales.transactions",
+        name="transactions",
+        partition_columns=["date"],
+        merge_columns=["transaction_id"],
+        tags={
+            "provider_type": "delta",
+            "provider.path": "Tables/custom/sales_transactions",
+            "provider.access_mode": "forPath"
+        }
+    )
+    ```
+
+    Note: Tag-based overrides take precedence over injected services (EntityPathLocator,
+    EntityNameMapper). This enables flexible per-entity configuration via YAML.
     """
 
     @inject
@@ -122,11 +142,41 @@ class DeltaEntityProvider(
         self.logger = tp.get_logger("DeltaEntityProvider")
 
     def _get_table_reference(self, entity) -> DeltaTableReference:
-        """Create table reference for entity"""
+        """
+        Create table reference for entity.
+
+        Supports both tag-based and service-based configuration:
+        - provider.path: Override table path (optional)
+        - provider.table_name: Override table name (optional)
+        - provider.access_mode: Override access mode (optional, values: forName, forPath, auto)
+
+        Falls back to injected services (EntityPathLocator, EntityNameMapper) if tags not provided.
+        """
+        # Get tag-based configuration
+        config = self._get_provider_config(entity)
+
+        # Use tag overrides if provided, otherwise fall back to services
+        table_path = config.get("path") or self.epl.get_table_path(entity)
+        table_name = config.get("table_name") or self.enm.get_table_name(entity)
+
+        # Check for access_mode override in tags
+        access_mode = config.get("access_mode")
+        if access_mode:
+            # Validate the access mode value
+            valid_modes = ["forName", "forPath", "auto"]
+            if access_mode not in valid_modes:
+                self.logger.warning(
+                    f"Invalid provider.access_mode '{access_mode}' in tags for entity '{entity.entityid}'. "
+                    f"Valid values: {valid_modes}. Using config default: {self.access_mode}"
+                )
+                access_mode = self.access_mode
+        else:
+            access_mode = self.access_mode
+
         return DeltaTableReference(
-            table_name=self.enm.get_table_name(entity),
-            table_path=self.epl.get_table_path(entity),
-            access_mode=self.access_mode,
+            table_name=table_name,
+            table_path=table_path,
+            access_mode=access_mode,
         )
 
     def _ensure_schema_applied(self, entity, table_ref: DeltaTableReference):

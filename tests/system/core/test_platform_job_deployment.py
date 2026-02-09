@@ -4,10 +4,20 @@ Unified system tests for job deployment across all platforms.
 These tests validate end-to-end job deployment, execution, and monitoring
 using the PlatformAPI interface. The SAME test code runs on all platforms.
 
+Architecture:
+    App deployment and job deployment are SEPARATE concerns:
+    - deploy_app(): Upload app files to storage
+    - create_job(): Create a Spark job definition
+    - run_job(): Execute the job
+    These are independent activities. A job references an app by name.
+
+Run all platforms:
+    poe test-system
+
 Run specific platform:
-    pytest tests/system/core/test_platform_job_deployment.py -k fabric
-    pytest tests/system/core/test_platform_job_deployment.py -k synapse
-    pytest tests/system/core/test_platform_job_deployment.py -k databricks
+    poe test-system --platform fabric
+    poe test-system --platform synapse
+    poe test-system --platform databricks
 """
 
 import os
@@ -37,52 +47,60 @@ def job_config_provider():
 
 @pytest.mark.system
 @pytest.mark.slow
-@pytest.mark.parametrize("platform", ["fabric", "databricks", "synapse"])
 class TestPlatformJobDeployment:
     """Unified tests that run on all platforms via parametrization"""
 
-    def test_deploy_app_as_job(
-        self, platform_client, job_packager, test_app_path, job_config_provider
+    def test_deploy_app_and_create_job(
+        self, platform_client, app_packager, test_app_path, job_config_provider
     ):
-        """Test deploying an app as a Spark job - runs on all platforms"""
+        """Test deploying an app and creating a job as separate operations"""
         api_client, platform_name = platform_client
         job_config = job_config_provider()
+        app_name = job_config["app_name"]
 
         print(f"\n🚀 [{platform_name.upper()}] Deploying test app from {test_app_path}")
 
-        # Package app files
-        app_files = job_packager.prepare_app_files(str(test_app_path))
+        # Step 1: Package app files
+        app_files = app_packager.prepare_app_files(str(test_app_path))
         print(f"📦 Prepared {len(app_files)} files")
 
-        # Deploy job via PlatformAPI (all-in-one: create + upload + configure)
-        result = api_client.deploy_spark_job(app_files, job_config)
+        # Step 2: Deploy app to storage (independent of job)
+        storage_path = api_client.deploy_app(app_name, app_files)
+        print(f"📂 App deployed to: {storage_path}")
 
-        assert "job_id" in result, "job_id not in deployment result"
+        # Step 3: Create job definition (independent of app deployment)
+        result = api_client.create_job(
+            job_name=job_config["job_name"],
+            job_config=job_config,
+        )
+        assert "job_id" in result, "job_id not in job creation result"
         job_id = result["job_id"]
-        print(f"✅ Job deployed: {job_id}")
-        print(f"📂 Deployment path: {result.get('deployment_path', 'N/A')}")
+        print(f"✅ Job created: {job_id}")
 
         # Cleanup
-        app_name = job_config["app_name"]
         print(f"🧹 Cleaning up: {job_id}")
         self._cleanup_test(api_client, job_id, app_name)
 
     def test_run_and_monitor_job(
-        self, platform_client, job_packager, test_app_path, job_config_provider, stdout_validator
+        self, platform_client, app_packager, test_app_path, job_config_provider, stdout_validator
     ):
         """Test running and monitoring a job - runs on all platforms"""
         api_client, platform_name = platform_client
         job_config = job_config_provider()
         test_id = job_config["test_id"]
+        app_name = job_config["app_name"]
 
         print(f"\n🎯 [{platform_name.upper()}] Testing job execution and monitoring")
 
-        # Deploy job (all-in-one: create + upload + configure)
-        app_files = job_packager.prepare_app_files(str(test_app_path))
-        result = api_client.deploy_spark_job(app_files, job_config)
+        # Deploy app and create job (separate operations)
+        app_files = app_packager.prepare_app_files(str(test_app_path))
+        api_client.deploy_app(app_name, app_files)
+        result = api_client.create_job(
+            job_name=job_config["job_name"],
+            job_config=job_config,
+        )
         job_id = result["job_id"]
-        app_name = job_config["app_name"]
-        print(f"📦 Job deployed: {job_id}")
+        print(f"📦 App deployed and job created: {job_id}")
 
         try:
             # Run job
@@ -99,9 +117,9 @@ class TestPlatformJobDeployment:
                 stdout_validator.stream_with_callback(
                     job_id=job_id,
                     run_id=run_id,
-                    print_lines=True,  # Print each line as it arrives
+                    print_lines=True,
                     poll_interval=10.0,
-                    max_wait=600.0,  # 10 minute timeout
+                    max_wait=600.0,
                 )
                 print("=" * 80)
             except Exception as e:
@@ -144,20 +162,23 @@ class TestPlatformJobDeployment:
             self._cleanup_test(api_client, job_id, app_name)
 
     def test_job_cancellation(
-        self, platform_client, job_packager, test_app_path, job_config_provider
+        self, platform_client, app_packager, test_app_path, job_config_provider
     ):
         """Test cancelling a running job - runs on all platforms"""
         api_client, platform_name = platform_client
         job_config = job_config_provider()
+        app_name = job_config["app_name"]
 
         print(f"\n🛑 [{platform_name.upper()}] Testing job cancellation")
 
-        # Deploy job
-        app_files = job_packager.prepare_app_files(str(test_app_path))
-        result = api_client.deploy_spark_job(app_files, job_config)
+        # Deploy app and create job
+        app_files = app_packager.prepare_app_files(str(test_app_path))
+        api_client.deploy_app(app_name, app_files)
+        result = api_client.create_job(
+            job_name=job_config["job_name"],
+            job_config=job_config,
+        )
         job_id = result["job_id"]
-        app_name = job_config["app_name"]
-        app_name = job_config["app_name"]
 
         try:
             # Start job
@@ -220,7 +241,7 @@ class TestPlatformJobDeployment:
 
         # Try to create job with invalid config
         try:
-            result = api_client.create_spark_job(
+            result = api_client.create_job(
                 job_name=invalid_config["job_name"], job_config=invalid_config
             )
             job_id = result.get("job_id")
@@ -292,15 +313,14 @@ class TestPlatformJobDeployment:
             print(f"   ✅ All expected log entries found!")
 
     def _cleanup_test(self, api_client, job_id: str, app_name: str):
-        """Clean up job and data-app files"""
-        # Skip cleanup if environment variable is set
+        """Clean up job and app files using platform API"""
         import os
 
         if os.environ.get("SKIP_TEST_CLEANUP", "").lower() == "true":
             print(f"⏸️  Skipping cleanup (SKIP_TEST_CLEANUP=true) - job: {job_id}, app: {app_name}")
             return
 
-        # Clean up job
+        # Clean up job definition
         try:
             success = api_client.delete_job(job_id=job_id)
             if success:
@@ -308,59 +328,38 @@ class TestPlatformJobDeployment:
         except Exception as e:
             print(f"⚠️  Error deleting job: {e}")
 
-        # Clean up app files
-        # ALL platforms now upload to ABFSS storage (not lakehouse OneLake)
+        # Clean up app files using platform API
         try:
-            from azure.identity import DefaultAzureCredential
-            from azure.storage.filedatalake import DataLakeServiceClient
-
-            storage_account = getattr(api_client, "storage_account", None)
-            container = getattr(api_client, "container", None)
-            base_path = getattr(api_client, "base_path", None)
-
-            if storage_account and container:
-                account_url = f"https://{storage_account}.dfs.core.windows.net"
-                # Use credential from api_client if available, otherwise use DefaultAzureCredential
-                credential = getattr(api_client, "credential", None)
-                if credential is None:
-                    credential = DefaultAzureCredential()
-
-                storage_client = DataLakeServiceClient(
-                    account_url=account_url, credential=credential
-                )
-                file_system_client = storage_client.get_file_system_client(file_system=container)
-
-                target_path = f"data-apps/{app_name}"
-                full_path = f"{base_path}/{target_path}" if base_path else target_path
-
-                directory_client = file_system_client.get_directory_client(full_path)
-                directory_client.delete_directory()
-                print(f"🗑️  Deleted data-app from ABFSS: {full_path}")
+            success = api_client.cleanup_app(app_name)
+            if success:
+                print(f"🗑️  Cleaned up app: {app_name}")
         except Exception as e:
-            print(f"⚠️  Error deleting data-app: {e}")
+            print(f"⚠️  Error cleaning up app: {e}")
 
 
 @pytest.mark.system
 @pytest.mark.slow
-@pytest.mark.parametrize("platform", ["fabric", "databricks", "synapse"])
 class TestPlatformJobResults:
     """Tests for job execution results - runs on all platforms"""
 
     def test_job_output_files(
-        self, platform_client, job_packager, test_app_path, job_config_provider
+        self, platform_client, app_packager, test_app_path, job_config_provider
     ):
         """Test that job creates output files - runs on all platforms"""
         api_client, platform_name = platform_client
         job_config = job_config_provider()
+        app_name = job_config["app_name"]
 
         print(f"\n📁 [{platform_name.upper()}] Testing job output file creation")
 
-        # Deploy and run job
-        app_files = job_packager.prepare_app_files(str(test_app_path))
-        result = api_client.deploy_spark_job(app_files, job_config)
+        # Deploy app and create job (separate operations)
+        app_files = app_packager.prepare_app_files(str(test_app_path))
+        api_client.deploy_app(app_name, app_files)
+        result = api_client.create_job(
+            job_name=job_config["job_name"],
+            job_config=job_config,
+        )
         job_id = result["job_id"]
-        app_name = job_config["app_name"]
-        app_name = job_config["app_name"]
 
         try:
             run_id = api_client.run_job(job_id=job_id)
