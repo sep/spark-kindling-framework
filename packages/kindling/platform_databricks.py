@@ -971,7 +971,7 @@ class DatabricksAPI(PlatformAPI):
     Example:
         >>> from databricks_api import DatabricksAPI
         >>> api = DatabricksAPI("https://adb-xxx.azuredatabricks.net")
-        >>> job = api.create_spark_job("my-job", config)
+        >>> job = api.create_job("my-job", config)
         >>> run_id = api.run_job(job["job_id"])
         >>> status = api.get_job_status(run_id)
     """
@@ -1083,12 +1083,68 @@ class DatabricksAPI(PlatformAPI):
         """Get platform name"""
         return "databricks"
 
+    def deploy_app(self, app_name: str, app_files: Dict[str, str]) -> str:
+        """Upload app files to ABFSS storage
+
+        Args:
+            app_name: Application name
+            app_files: Dictionary of {filename: content} to deploy
+
+        Returns:
+            Storage path where files were uploaded
+        """
+        target_path = f"data-apps/{app_name}"
+        return self._upload_files(app_files, target_path)
+
+    def cleanup_app(self, app_name: str) -> bool:
+        """Delete app files from ABFSS storage
+
+        Args:
+            app_name: Application name to clean up
+
+        Returns:
+            True if cleanup succeeded, False otherwise
+        """
+        try:
+            from azure.identity import DefaultAzureCredential
+            from azure.storage.filedatalake import DataLakeServiceClient
+        except ImportError:
+            print("⚠️  azure-storage-file-datalake not installed. Cleanup skipped.")
+            return False
+
+        if not self.storage_account or not self.container:
+            print("⚠️  Storage account/container not configured. Cleanup skipped.")
+            return False
+
+        try:
+            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            credential = self.credential if self.credential else DefaultAzureCredential()
+            storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
+            file_system_client = storage_client.get_file_system_client(file_system=self.container)
+
+            # Construct full path
+            app_path = f"data-apps/{app_name}"
+            if self.base_path:
+                full_path = f"{self.base_path}/{app_path}"
+            else:
+                full_path = app_path
+
+            # Delete the directory recursively
+            dir_client = file_system_client.get_directory_client(full_path)
+            dir_client.delete_directory()
+            print(f"🗑️  Cleaned up app files at: {full_path}")
+            return True
+        except Exception as e:
+            print(f"⚠️  Failed to cleanup app {app_name}: {e}")
+            return False
+
     def deploy_spark_job(
         self, app_files: Dict[str, str], job_config: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Deploy application as Spark job (convenience method)
+        """Deploy application as Spark job (backward compat wrapper)
 
-        Combines create_spark_job + upload_files + update_job_files into one call.
+        Delegates to the ABC base class implementation which calls
+        deploy_app + create_job.
 
         Args:
             app_files: Dictionary of {filename: content} to deploy
@@ -1097,36 +1153,14 @@ class DatabricksAPI(PlatformAPI):
         Returns:
             Dictionary with job_id, deployment_path, and metadata
         """
-        job_name = job_config["job_name"]
-
-        # Step 1: Create job definition
-        result = self.create_spark_job(job_name, job_config)
-        job_id = result["job_id"]
-
-        # Step 2: Upload files
-        app_name = job_config.get("app_name", job_name)
-        target_path = f"data-apps/{app_name}"
-        deployment_path = self.upload_files(app_files, target_path)
-
-        # Step 3: Update job with file paths
-        self.update_job_files(job_id, deployment_path)
-
-        return {
-            "job_id": job_id,
-            "deployment_path": deployment_path,
-            "metadata": {
-                "job_name": job_name,
-                "app_name": app_name,
-                "files_count": len(app_files),
-            },
-        }
+        return super().deploy_spark_job(app_files, job_config)
 
     @property
     def client(self):
         """Get the Databricks SDK client"""
         return self._client
 
-    def create_spark_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
+    def create_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
         """Create a Spark job definition in Databricks using SDK
 
         Args:
@@ -1304,7 +1338,7 @@ class DatabricksAPI(PlatformAPI):
             "workspace_url": self.workspace_url,
         }
 
-    def upload_files(self, files: Dict[str, str], target_path: str) -> str:
+    def _upload_files(self, files: Dict[str, str], target_path: str) -> str:
         """Upload files to ABFSS storage path (same pattern as Fabric/Synapse)
 
         Files are uploaded to Azure Data Lake Storage which Databricks can access at runtime.
@@ -1319,6 +1353,7 @@ class DatabricksAPI(PlatformAPI):
         Note:
             Requires storage_account and container to be configured.
             Files are uploaded using Azure Storage SDK.
+            This is an internal method - use deploy_app() for public API.
         """
         try:
             from azure.identity import DefaultAzureCredential
@@ -1371,8 +1406,8 @@ class DatabricksAPI(PlatformAPI):
 
         return abfss_path
 
-    def update_job_files(self, job_id: str, files_path: str) -> None:
-        """Update job definition with file paths
+    def _update_job_files(self, job_id: str, files_path: str) -> None:
+        """Update job definition with file paths (internal)
 
         For Databricks, this is typically not needed as files are
         referenced by path in the job definition.

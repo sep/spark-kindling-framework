@@ -23,23 +23,21 @@ import pytest
 
 @pytest.mark.system
 @pytest.mark.slow
-@pytest.mark.parametrize("platform", ["fabric"])
-@pytest.mark.synapse
-@pytest.mark.databricks
 class TestAzureMonitorExtension:
     """Test Azure Monitor OpenTelemetry extension functionality"""
 
     def test_extension_loads_and_overrides_providers(
-        self, platform_client, job_packager, stdout_validator
+        self, platform_client, app_packager, stdout_validator
     ):
         """
         Test that the extension loads and overrides default providers.
 
         This test:
         1. Deploys a test app with extension configured in settings.yaml
-        2. Streams stdout in real-time to capture bootstrap and extension loading
-        3. Validates bootstrap execution, framework init, and extension installation
-        4. Verifies job completes successfully
+        2. Creates a job definition and runs it
+        3. Streams stdout in real-time to capture bootstrap and extension loading
+        4. Validates bootstrap execution, framework init, and extension installation
+        5. Verifies job completes successfully
         """
         client, platform = platform_client
 
@@ -55,9 +53,9 @@ class TestAzureMonitorExtension:
         app_name = f"otel-azure-test-app-{test_id}"
         job_name = f"systest-azure-monitor-providers-{test_id}"
 
-        # Prepare app files using job packager
+        # Prepare app files using app packager
         print(f"📦 Packaging test app: {app_name}")
-        app_files = job_packager.prepare_app_files(str(app_path))
+        app_files = app_packager.prepare_app_files(str(app_path))
         print(f"✅ Prepared {len(app_files)} files")
 
         # Discover config overrides from environment variables
@@ -93,11 +91,15 @@ class TestAzureMonitorExtension:
         if config_overrides:
             job_config["config_overrides"] = config_overrides
 
-        # Deploy job via PlatformAPI
-        print(f"🚀 Deploying job: {job_name}")
-        result = client.deploy_spark_job(app_files, job_config)
+        # Step 1: Deploy app to storage
+        print(f"📂 Deploying app: {app_name}")
+        client.deploy_app(app_name, app_files)
+
+        # Step 2: Create job definition
+        print(f"🚀 Creating job: {job_name}")
+        result = client.create_job(job_name=job_name, job_config=job_config)
         job_id = result["job_id"]
-        print(f"✅ Job deployed: {job_id}")
+        print(f"✅ Job created: {job_id}")
 
         # Run job
         run_id = client.run_job(job_id=job_id)
@@ -201,5 +203,7 @@ class TestAzureMonitorExtension:
             if not os.getenv("SKIP_TEST_CLEANUP"):
                 client.delete_job(job_id)
                 print(f"✅ Cleaned up job: {job_id}")
+                client.cleanup_app(app_name)
+                print(f"🗑️  Cleaned up app: {app_name}")
         except Exception as e:
             print(f"⚠️  Cleanup warning: {e}")

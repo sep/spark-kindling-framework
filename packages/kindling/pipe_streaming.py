@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 
 from kindling.data_entities import *
 from kindling.data_pipes import *
+from kindling.entity_provider import StreamableEntityProvider, is_streamable
+from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import *
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
@@ -21,33 +23,44 @@ class SimplePipeStreamOrchestrator(PipeStreamOrchestrator):
         self,
         cs: ConfigService,
         dpr: DataPipesRegistry,
-        ep: EntityProvider,
+        provider_registry: EntityProviderRegistry,
         der: DataEntityRegistry,
         epl: EntityPathLocator,
         plp: PythonLoggerProvider,
     ):
         self.dpr = dpr
-        self.ep = ep
+        self.provider_registry = provider_registry
         self.der = der
         self.epl = epl
         self.logger = plp.get_logger("SimplePipeStreamOrchestrator")
-        self.logger.debug(f"SynapseStreamProcessor initialized")
+        self.logger.debug(f"SimplePipeStreamOrchestrator initialized")
         self.cs = cs
 
     def start_pipe_as_stream_processor(self, pipeid, options={}) -> object:
         pipe = self.dpr.get_pipe_definition(pipeid)
-        streamInputEntity = self.der.get_entity_definition(pipe.input_entity_ids[0])
-        srcfrmt = options.get("source_format", "delta")
-        srccnfg = options.get("source_config", None) or {
-            "path": self.epl.get_table_path(streamInputEntity)
-        }
-        self.logger.debug(f"Src format = {srcfrmt}, cnfg = {srccnfg}")
-        stream = self.ep.read_entity_as_stream(streamInputEntity, srcfrmt, srccnfg)
-        streamOutEntity = self.der.get_entity_definition(pipe.output_entity_id)
+        input_entity = self.der.get_entity_definition(pipe.input_entity_ids[0])
+        output_entity = self.der.get_entity_definition(pipe.output_entity_id)
+
+        # Resolve providers via registry based on entity tags
+        input_provider = self.provider_registry.get_provider_for_entity(input_entity)
+        output_provider = self.provider_registry.get_provider_for_entity(output_entity)
+
+        # Read input as stream (provider knows its own format)
+        if not is_streamable(input_provider):
+            raise TypeError(
+                f"Input provider for entity '{input_entity.entityid}' "
+                f"(type={input_entity.tags.get('provider_type')}) "
+                f"does not support streaming reads"
+            )
+        stream = input_provider.read_entity_as_stream(input_entity)
+
+        # Transform
         transformed_stream = pipe.execute(stream)
+
+        # Write output as stream
         base_chkpt_path = options.get("base_checkpoint_path", None) or self.cs.get(
             "base_checkpoint_path"
         )
-        return self.ep.append_as_stream(
-            streamOutEntity, transformed_stream, f"{base_chkpt_path}/{pipe.pipeid}"
-        ).start(self.epl.get_table_path(streamOutEntity))
+        return output_provider.append_as_stream(
+            output_entity, transformed_stream, f"{base_chkpt_path}/{pipe.pipeid}"
+        ).start(self.epl.get_table_path(output_entity))

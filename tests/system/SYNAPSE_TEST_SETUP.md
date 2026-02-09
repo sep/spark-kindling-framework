@@ -90,9 +90,11 @@ def test_something(...):
 
 ✅ All `SynapseAPI` methods are implemented:
 
-- [x] `create_spark_job()` - Create Spark job definition (stored locally)
-- [x] `upload_files()` - Upload files to ADLS Gen2 via Azure Storage SDK
-- [x] `update_job_files()` - Update job config with file paths
+- [x] `deploy_app()` - Deploy app files to ADLS Gen2 storage
+- [x] `cleanup_app()` - Remove deployed app files from storage
+- [x] `create_job()` - Create Spark job definition (stored locally)
+- [x] `_upload_files()` - Upload files to ADLS Gen2 via Azure Storage SDK (internal)
+- [x] `_update_job_files()` - Update job config with file paths (internal)
 - [x] `run_job()` - Execute Spark batch job via Livy API
 - [x] `get_job_status()` - Check job execution status via Livy API
 - [x] `cancel_job()` - Cancel running job
