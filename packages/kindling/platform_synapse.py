@@ -2015,6 +2015,12 @@ class SynapseAPI(PlatformAPI):
     ) -> tuple:
         """Read new stdout content from Synapse diagnostic emitter logs
 
+        Synapse doesn't have a raw stdout file. Instead, diagnostic emitters write
+        JSON-lines to: logs/{workspace}.{pool}.{batch_id}/driver/spark-logs
+
+        Each line is a JSON object with category, applicationId, properties.message etc.
+        We extract "Log" category messages that match our app_id.
+
         Args:
             run_id: Batch ID
             app_id: Spark application ID (if available)
@@ -2027,24 +2033,31 @@ class SynapseAPI(PlatformAPI):
             # Can't read logs without application ID
             return [], byte_offset
 
+        if not self.storage_account or not self.container:
+            return [], byte_offset
+
         try:
-            # Construct log path: logs/{workspace}.{pool}.{batch_id}/driver/spark-logs/stdout
+            import json
+
+            from azure.storage.filedatalake import DataLakeServiceClient
+
+            # Reuse or create storage client
+            if not self._storage_client:
+                account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+                self._storage_client = DataLakeServiceClient(
+                    account_url=account_url, credential=self.credential
+                )
+
+            file_system_client = self._storage_client.get_file_system_client(
+                file_system=self.container
+            )
+
+            # Synapse diagnostic emitter path (single file, not a directory)
             log_path = (
                 f"logs/{self.workspace_name}.{self.spark_pool_name}.{run_id}/driver/spark-logs"
             )
 
-            # Read stdout file from ADLS Gen2
-            from azure.identity import DefaultAzureCredential
-            from azure.storage.filedatalake import DataLakeServiceClient
-
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
-            credential = DefaultAzureCredential()
-            storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
-            file_system_client = storage_client.get_file_system_client(file_system=self.container)
-
-            # Try to read stdout file
-            stdout_path = f"{log_path}/stdout"
-            file_client = file_system_client.get_file_client(stdout_path)
+            file_client = file_system_client.get_file_client(log_path)
 
             # Get file properties to check size
             properties = file_client.get_file_properties()
@@ -2055,12 +2068,33 @@ class SynapseAPI(PlatformAPI):
                 return [], byte_offset
 
             # Read new content from byte_offset
-            download = file_client.download_file(offset=byte_offset)
+            download = file_client.download_file(offset=byte_offset, length=file_size - byte_offset)
             content = download.readall()
             new_text = content.decode("utf-8")
-            new_lines = new_text.splitlines()
-
             new_byte_offset = byte_offset + len(content)
+
+            # Parse JSON lines and extract log messages
+            new_lines = []
+            for line in new_text.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+
+                    # Filter to our application
+                    if entry.get("applicationId") != app_id:
+                        continue
+
+                    category = entry.get("category", "")
+                    properties_dict = entry.get("properties", {})
+
+                    if category == "Log":
+                        message = properties_dict.get("message", "")
+                        if message:
+                            new_lines.append(message)
+
+                except json.JSONDecodeError:
+                    continue
 
             return new_lines, new_byte_offset
 
