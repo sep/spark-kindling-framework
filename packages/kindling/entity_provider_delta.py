@@ -54,7 +54,7 @@ class DeltaTableReference:
             except Exception:
                 return DeltaTable.forPath(self.spark, self.get_read_path())
 
-    def get_spark_read_stream(self, spark, format=None, options=None):
+    def get_spark_read_stream(self, spark, options=None):
         base = spark.readStream.format("delta")
 
         if options is not None:
@@ -643,9 +643,15 @@ class DeltaEntityProvider(
         return df
 
     def read_entity_as_stream(self, entity, format=None, options=None) -> DataFrame:
-        """Read full entity table"""
+        """Read entity as a streaming DataFrame.
+
+        Args:
+            entity: Entity metadata
+            format: Ignored — DeltaEntityProvider always uses delta format
+            options: Optional read stream options
+        """
         table_ref = self._get_table_reference(entity)
-        return table_ref.get_spark_read_stream(self.spark, format, options)
+        return table_ref.get_spark_read_stream(self.spark, options)
 
     def write_to_entity(self, df: DataFrame, entity):
         """Write DataFrame to entity table with signal emissions."""
