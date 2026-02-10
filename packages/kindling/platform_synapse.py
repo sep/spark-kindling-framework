@@ -1010,7 +1010,8 @@ class SynapseAPI(PlatformAPI):
 
         # Rate limiting: Synapse has 2 requests/second limit
         self._last_request_time = 0
-        self._min_request_interval = 0.6  # 600ms between requests = ~1.67 req/sec (safe margin)
+        # 600ms between requests = ~1.67 req/sec (safe margin)
+        self._min_request_interval = 0.6
 
     @classmethod
     def from_env(cls):
