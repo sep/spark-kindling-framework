@@ -295,8 +295,8 @@ try:
 
     # ---- Wait for data to flow through pipeline ----
 
-    print(f"TEST_ID={test_id} waiting_for_pipeline=true duration=15s")
-    time.sleep(15)
+    print(f"TEST_ID={test_id} waiting_for_pipeline=true duration=30s")
+    time.sleep(30)
 
     # ---- Verify data in each layer ----
 

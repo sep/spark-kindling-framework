@@ -78,8 +78,14 @@ class TestStreamingPipesOrchestrator:
 
         print(f"\n🎯 [{platform_name.upper()}] Testing streaming pipes orchestrator")
 
-        # Step 1: Deploy app to storage (independent of job)
+        # Step 1: Prepare app files and inject platform-specific config
+        from tests.system.conftest import inject_platform_config
+
         app_files = app_packager.prepare_app_files(str(streaming_pipes_app_path))
+        app_files = inject_platform_config(app_files, platform_name, test_id)
+        print(f"✅ Injected {platform_name} config into app settings.yaml")
+
+        # Step 2: Deploy app to storage with platform config baked in
         storage_path = api_client.deploy_app(app_name, app_files)
         print(f"📂 App deployed to: {storage_path}")
 
