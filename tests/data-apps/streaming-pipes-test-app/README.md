@@ -86,18 +86,18 @@ Gold Layer (aggregated metrics by time window)
 ### Run on specific platform:
 ```bash
 # Fabric
-pytest -m fabric tests/system/core/test_streaming_pipes_orchestrator.py
+poe test-system --platform fabric --test streaming_pipes
 
 # Databricks
-pytest -m databricks tests/system/core/test_streaming_pipes_orchestrator.py
+poe test-system --platform databricks --test streaming_pipes
 
 # Synapse
-pytest -m synapse tests/system/core/test_streaming_pipes_orchestrator.py
+poe test-system --platform synapse --test streaming_pipes
 ```
 
 ### Run on all platforms:
 ```bash
-pytest -m system tests/system/core/test_streaming_pipes_orchestrator.py
+poe test-system --test streaming_pipes
 ```
 
 ## Expected Output
