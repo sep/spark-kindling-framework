@@ -125,13 +125,19 @@ try:
     print(msg)
     test_results["components_started"] = True
 
+    msg = f"TEST_ID={test_id} test=components_started status=PASSED"
+    logger.info(msg)
+    print(msg)
+
     # Track signals
     emitted_signals = []
 
     def track_signal(signal_name):
         def handler(sender, **kwargs):
             emitted_signals.append(signal_name)
-            print(f"TEST_ID={test_id} signal={signal_name} received=true")
+            msg = f"TEST_ID={test_id} signal={signal_name} received=true"
+            logger.info(msg)
+            print(msg)
 
         return handler
 
