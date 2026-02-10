@@ -194,10 +194,10 @@ class StreamingRecoveryManager(SignalEmitter):
         signal_provider: SignalProvider,
         logger_provider: SparkLoggerProvider,
         query_manager: StreamingQueryManager,
-        max_retries: int = 5,
-        initial_backoff: float = 1.0,
-        max_backoff: float = 300.0,
-        check_interval: float = 5.0,
+        max_retries: Optional[int] = None,
+        initial_backoff: Optional[float] = None,
+        max_backoff: Optional[float] = None,
+        check_interval: Optional[float] = None,
     ):
         """
         Initialize the streaming recovery manager.
@@ -216,10 +216,11 @@ class StreamingRecoveryManager(SignalEmitter):
         self.logger = logger_provider.get_logger("StreamingRecoveryManager")
         self.signal_provider = signal_provider
         self.query_manager = query_manager
-        self.max_retries = max_retries
-        self.initial_backoff = initial_backoff
-        self.max_backoff = max_backoff
-        self.check_interval = check_interval
+        # Use Optional types to prevent DI auto_bind from injecting 0/0.0
+        self.max_retries = max_retries if max_retries is not None else 5
+        self.initial_backoff = initial_backoff if initial_backoff is not None else 1.0
+        self.max_backoff = max_backoff if max_backoff is not None else 300.0
+        self.check_interval = check_interval if check_interval is not None else 5.0
 
         # Recovery state tracking: query_id -> RecoveryState
         self._recovery_states: Dict[str, RecoveryState] = {}
@@ -242,8 +243,8 @@ class StreamingRecoveryManager(SignalEmitter):
 
         self.logger.info(
             f"StreamingRecoveryManager initialized "
-            f"(max_retries={max_retries}, initial_backoff={initial_backoff}s, "
-            f"max_backoff={max_backoff}s, check_interval={check_interval}s)"
+            f"(max_retries={self.max_retries}, initial_backoff={self.initial_backoff}s, "
+            f"max_backoff={self.max_backoff}s, check_interval={self.check_interval}s)"
         )
 
     def start(self):
