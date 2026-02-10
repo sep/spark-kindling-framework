@@ -209,8 +209,8 @@ class StreamingHealthMonitor(SignalEmitter):
         self,
         signal_provider: SignalProvider,
         logger_provider: SparkLoggerProvider,
-        stall_threshold: float = 300.0,
-        stall_check_interval: float = 60.0,
+        stall_threshold=300.0,
+        stall_check_interval=60.0,
     ):
         """
         Initialize the streaming health monitor.
@@ -225,6 +225,7 @@ class StreamingHealthMonitor(SignalEmitter):
 
         self.logger = logger_provider.get_logger("StreamingHealthMonitor")
         self.signal_provider = signal_provider
+        # No type annotations on primitives — injector only resolves annotated params
         self.stall_threshold = stall_threshold
         self.stall_check_interval = stall_check_interval
 
@@ -246,7 +247,7 @@ class StreamingHealthMonitor(SignalEmitter):
 
         self.logger.info(
             f"StreamingHealthMonitor initialized "
-            f"(stall_threshold={stall_threshold}s, check_interval={stall_check_interval}s)"
+            f"(stall_threshold={self.stall_threshold}s, check_interval={self.stall_check_interval}s)"
         )
 
     def start(self):

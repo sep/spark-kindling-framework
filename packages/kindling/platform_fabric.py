@@ -1069,7 +1069,7 @@ class FabricAPI(PlatformAPI):
     Example:
         >>> from fabric_api import FabricAPI
         >>> api = FabricAPI("workspace-id", "lakehouse-id")
-        >>> job = api.create_spark_job("my-job", config)
+        >>> job = api.create_job("my-job", config)
         >>> run_id = api.run_job(job["job_id"])
         >>> status = api.get_job_status(run_id)
     """
@@ -1164,12 +1164,72 @@ class FabricAPI(PlatformAPI):
         """Get platform name"""
         return "fabric"
 
+    def deploy_app(self, app_name: str, app_files: Dict[str, str]) -> str:
+        """Upload app files to data-apps/{app_name}/ in storage
+
+        Args:
+            app_name: Application name (used as subdirectory)
+            app_files: Dictionary of {filename: content} to deploy
+
+        Returns:
+            Storage path where files were uploaded
+        """
+        target_path = f"data-apps/{app_name}"
+        return self._upload_files(app_files, target_path)
+
+    def cleanup_app(self, app_name: str) -> bool:
+        """Delete app files from storage
+
+        Removes the data-apps/{app_name}/ directory from ADLS Gen2 storage.
+
+        Args:
+            app_name: Application name to clean up
+
+        Returns:
+            True if cleanup succeeded, False otherwise
+        """
+        try:
+            if not HAS_STORAGE_SDK:
+                print("⚠️  azure-storage-file-datalake not installed. Cannot cleanup.")
+                return False
+
+            if not self.storage_account or not self.container:
+                print("⚠️  Storage account/container not configured. Cannot cleanup.")
+                return False
+
+            # Initialize storage client if needed
+            if not self._storage_client:
+                account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+                self._storage_client = DataLakeServiceClient(
+                    account_url=account_url, credential=self.credential
+                )
+
+            file_system_client = self._storage_client.get_file_system_client(
+                file_system=self.container
+            )
+
+            # Construct full path
+            if self.base_path:
+                full_path = f"{self.base_path}/data-apps/{app_name}"
+            else:
+                full_path = f"data-apps/{app_name}"
+
+            # Delete directory recursively
+            dir_client = file_system_client.get_directory_client(full_path)
+            dir_client.delete_directory()
+            print(f"🗑️  Cleaned up app files at: {full_path}")
+            return True
+        except Exception as e:
+            print(f"⚠️  Failed to cleanup app '{app_name}': {e}")
+            return False
+
     def deploy_spark_job(
         self, app_files: Dict[str, str], job_config: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Deploy application as Spark job (convenience method)
 
-        Combines create_spark_job + upload_files + update_job_files into one call.
+        Combines deploy_app + create_job into one call.
+        Delegates to the ABC default implementation via super().
 
         Args:
             app_files: Dictionary of {filename: content} to deploy
@@ -1178,30 +1238,7 @@ class FabricAPI(PlatformAPI):
         Returns:
             Dictionary with job_id, deployment_path, and metadata
         """
-        job_name = job_config["job_name"]
-
-        # Step 1: Create job definition
-        result = self.create_spark_job(job_name, job_config)
-        job_id = result["job_id"]
-
-        # Step 2: Upload files to data-apps/ subdirectory
-        # base_path will be prepended by upload_files() if configured
-        app_name = job_config.get("app_name", job_name)
-        target_path = f"data-apps/{app_name}"
-        deployment_path = self.upload_files(app_files, target_path)
-
-        # Step 3: Update job with file paths
-        self.update_job_files(job_id, deployment_path)
-
-        return {
-            "job_id": job_id,
-            "deployment_path": deployment_path,
-            "metadata": {
-                "job_name": job_name,
-                "app_name": app_name,
-                "files_count": len(app_files),
-            },
-        }
+        return super().deploy_spark_job(app_files, job_config)
 
     def _get_token(self, scope: str = "fabric") -> str:
         """Get access token for Fabric or OneLake API
@@ -1307,7 +1344,7 @@ class FabricAPI(PlatformAPI):
 
         return response
 
-    def create_spark_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, str]:
+    def create_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
         """Create a Spark job definition
 
         Args:
@@ -1456,7 +1493,7 @@ class FabricAPI(PlatformAPI):
             "workspace_id": self.workspace_id,
         }
 
-    def upload_files(self, files: Dict[str, str], target_path: str) -> str:
+    def _upload_files(self, files: Dict[str, str], target_path: str) -> str:
         """Upload files to ABFSS storage (lakehouse shortcut provides runtime access)
 
         ALL artifacts are stored in ABFSS (ADLS Gen2):
@@ -1537,17 +1574,17 @@ class FabricAPI(PlatformAPI):
 
         return abfss_path
 
-    def update_job_files(self, job_id: str, files_path: str) -> None:
-        """Update job definition with file path reference
+    def _update_job_files(self, job_id: str, files_path: str) -> None:
+        """Update job definition with file path reference (internal)
 
-        For Fabric, this is not needed as files are referenced via command line args
-        to the bootstrap script. The executableFile is set during create_spark_job
+        For Fabric, this is a no-op as files are referenced via command line args
+        to the bootstrap script. The executableFile is set during create_job
         and points to kindling_bootstrap.py, which then loads the app based on
         the app_name parameter passed in command line arguments.
 
         Args:
             job_id: Job ID to update
-            files_path: Path where files were uploaded (from upload_files)
+            files_path: Path where files were uploaded (from _upload_files)
         """
         print(f"✅ Job {job_id} configured with file path: {files_path}")
 

@@ -1102,6 +1102,34 @@ def create_test_dataframe(data: List[Dict], spark_session=None):
         return mock_df
 
 
+def create_mock_stream(rows_per_second: int = 10, spark_session=None):
+    """Create a mock streaming DataFrame for testing streaming pipelines.
+
+    Uses Spark's built-in `rate` source to generate a continuous stream of
+    synthetic rows. Each row contains:
+        - timestamp (TimestampType): When the row was generated
+        - value (LongType): Monotonically increasing counter
+
+    This is a test helper — not a framework component. Use it to seed
+    streaming pipeline tests without needing real data sources.
+
+    Args:
+        rows_per_second: Rate of row generation (default: 10)
+        spark_session: Optional SparkSession. Falls back to global `spark`.
+
+    Returns:
+        Streaming DataFrame from Spark's rate source
+
+    Example:
+        stream = create_mock_stream(rows_per_second=5)
+        query = stream.writeStream.format("delta").start(path)
+    """
+    from kindling.spark_session import get_or_create_spark_session
+
+    spark = spark_session or get_or_create_spark_session()
+    return spark.readStream.format("rate").option("rowsPerSecond", str(rows_per_second)).load()
+
+
 # ==============================================================================
 # pytest Integration
 # ==============================================================================

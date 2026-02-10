@@ -10,6 +10,27 @@ from pathlib import Path
 
 import pytest
 
+# All supported platforms - single source of truth
+ALL_PLATFORMS = ["fabric", "databricks", "synapse"]
+
+
+def pytest_generate_tests(metafunc):
+    """
+    Dynamically parametrize tests that need a 'platform' fixture.
+
+    Platform is injected from --platform CLI option or TEST_PLATFORM env var.
+    Tests never hardcode platform names - they just declare they need the fixture.
+    """
+    if "platform" in metafunc.fixturenames:
+        platform = metafunc.config.getoption("--platform", default=None) or os.getenv(
+            "TEST_PLATFORM"
+        )
+        if platform:
+            platforms = [platform]
+        else:
+            platforms = ALL_PLATFORMS
+        metafunc.parametrize("platform", platforms)
+
 
 def pytest_configure(config):
     """Configure custom pytest markers"""
@@ -172,11 +193,19 @@ def test_app_path():
 
 
 @pytest.fixture
-def job_packager():
-    """Get job packager utility"""
-    from kindling.job_deployment import JobPackager
+def app_packager():
+    """Get app packager utility for preparing app files"""
+    from kindling.job_deployment import AppPackager
 
-    return JobPackager()
+    return AppPackager()
+
+
+@pytest.fixture
+def job_packager():
+    """Backward compatibility alias for app_packager"""
+    from kindling.job_deployment import AppPackager
+
+    return AppPackager()
 
 
 @pytest.fixture

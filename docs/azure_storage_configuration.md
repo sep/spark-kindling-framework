@@ -774,7 +774,7 @@ Configure DeltaEntityProvider to use ABFSS paths:
 
 ```python
 from kindling.data_entities import DataEntityManager
-from kindling.delta_entity_provider import DeltaEntityProvider
+from kindling.entity_provider_delta import DeltaEntityProvider
 
 # Initialize providers
 entity_registry = DataEntityManager()
