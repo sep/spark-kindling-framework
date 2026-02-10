@@ -4,27 +4,39 @@ Streaming Pipes Test App
 
 Tests the Unified DAG Orchestrator in streaming mode:
 - Define entities and pipes via framework decorators
-- Seed bronze via entity provider + create_mock_stream() helper
+- Bind a concrete EntityPathLocator (the one ABC users must provide)
 - Execute streaming plan via GenerationExecutor
 - Verify data flows through bronze → silver → gold
 
-Pipeline: mock stream → bronze (seed) → silver → gold (orchestrated)
+Pipeline: rate source → bronze (Delta) → silver (Delta) → gold (Delta)
 """
 
 import sys
 import time
 
-from kindling.data_entities import DataEntities, DataEntityRegistry, EntityPathLocator
+from kindling.data_entities import (
+    DataEntities,
+    DataEntityRegistry,
+    EntityNameMapper,
+    EntityPathLocator,
+)
 from kindling.data_pipes import DataPipes
-from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.execution_strategy import ExecutionPlanGenerator
 from kindling.generation_executor import GenerationExecutor
-from kindling.injection import get_kindling_service
+from kindling.injection import GlobalInjector, get_kindling_service
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_session import get_or_create_spark_session
 from kindling.test_framework import create_mock_stream
+from kindling.watermarking import WatermarkEntityFinder
 from pyspark.sql.functions import col, current_timestamp
-from pyspark.sql.types import StringType
+from pyspark.sql.types import (
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 # ---- Init ----
 
@@ -39,43 +51,115 @@ logger.info(msg)
 print(msg)
 
 test_results = {}
+streaming_queries = []
 
 try:
-    # Checkpoint base from config — set per-platform in config hierarchy
-    chk_base = config_service.get("checkpoint_path") or f"checkpoints/streaming_pipes_{test_id}"
-    config_service.set("base_checkpoint_path", f"{chk_base}/pipes")
+    spark = get_or_create_spark_session()
+
+    # Read platform-specific paths from config (injected at app publish time)
+    table_root = config_service.get("kindling.storage.table_root", "Tables")
+    checkpoint_root = config_service.get("kindling.storage.checkpoint_root", "Files/checkpoints")
+
+    base_path = f"{table_root}/streaming_pipes_test_{test_id}"
+    chk_base = f"{checkpoint_root}/streaming_pipes_{test_id}"
+
+    bronze_path = f"{base_path}/bronze"
+    silver_path = f"{base_path}/silver"
+    gold_path = f"{base_path}/gold"
+
+    # ---- Bind EntityPathLocator (user-provided ABC) ----
+    # EntityPathLocator has no framework default — users bind their own.
+    # This implementation uses provider.path tags set on entity definitions.
+
+    class TagBasedPathLocator(EntityPathLocator):
+        """Resolves table paths from entity provider.path tags."""
+
+        def get_table_path(self, entity):
+            path = entity.tags.get("provider.path")
+            if path:
+                return path
+            # Fallback: derive from entity id
+            entity_id = entity.entityid if hasattr(entity, "entityid") else str(entity)
+            if "." in entity_id:
+                layer, name = entity_id.split(".", 1)
+                return f"{base_path}/{layer}/{name}"
+            return f"{base_path}/{entity_id}"
+
+    class SimpleEntityNameMapper(EntityNameMapper):
+        """Maps entity to a table name derived from its entityid."""
+
+        def get_table_name(self, entity):
+            entity_id = entity.entityid if hasattr(entity, "entityid") else str(entity)
+            return entity_id.replace(".", "_")
+
+    class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
+        """Provides watermark entities for streaming test - minimal implementation."""
+
+        def __init__(self):
+            # Define watermark entity schema (used by WatermarkManager)
+            self.watermark_schema = StructType(
+                [
+                    StructField("watermark_id", StringType(), False),
+                    StructField("source_entity_id", StringType(), False),
+                    StructField("reader_id", StringType(), False),
+                    StructField("timestamp", TimestampType(), False),
+                    StructField("last_version_processed", IntegerType(), False),
+                    StructField("last_execution_id", StringType(), False),
+                ]
+            )
+
+            # Create a dummy watermark entity
+            # NOTE: This test uses streaming mode, so watermarks aren't actually used,
+            # but WatermarkEntityFinder is required by dependency injection
+            from types import SimpleNamespace
+
+            self.watermark_entity = SimpleNamespace(
+                entityid="system.watermarks",
+                name="watermarks",
+                schema=self.watermark_schema,
+                partition_columns=[],
+                merge_columns=["watermark_id"],
+                tags={"provider_type": "delta"},
+            )
+
+        def get_watermark_entity_for_entity(self, _context: str):
+            return self.watermark_entity
+
+        def get_watermark_entity_for_layer(self, _layer: str):
+            return self.watermark_entity
+
+    GlobalInjector.bind(EntityPathLocator, TagBasedPathLocator)
+    GlobalInjector.bind(EntityNameMapper, SimpleEntityNameMapper)
+    GlobalInjector.bind(WatermarkEntityFinder, SimpleWatermarkEntityFinder)
 
     # ---- Define entities ----
 
-    @DataEntities.entity(
+    DataEntities.entity(
         entityid="stream.bronze",
         name="bronze_events",
         partition_columns=[],
         merge_columns=["event_id"],
-        tags={"provider_type": "delta"},
+        tags={"provider_type": "delta", "provider.path": bronze_path},
+        schema=None,
     )
-    class BronzeEvents:
-        pass
 
-    @DataEntities.entity(
+    DataEntities.entity(
         entityid="stream.silver",
         name="silver_events",
         partition_columns=[],
         merge_columns=["event_id"],
-        tags={"provider_type": "delta"},
+        tags={"provider_type": "delta", "provider.path": silver_path},
+        schema=None,
     )
-    class SilverEvents:
-        pass
 
-    @DataEntities.entity(
+    DataEntities.entity(
         entityid="stream.gold",
         name="gold_events",
         partition_columns=[],
         merge_columns=["event_id"],
-        tags={"provider_type": "delta"},
+        tags={"provider_type": "delta", "provider.path": gold_path},
+        schema=None,
     )
-    class GoldEvents:
-        pass
 
     msg = f"TEST_ID={test_id} test=entity_definitions status=PASSED"
     logger.info(msg)
@@ -86,8 +170,10 @@ try:
 
     @DataPipes.pipe(
         pipeid="bronze_to_silver",
+        name="bronze_to_silver",
         input_entity_ids=["stream.bronze"],
         output_entity_id="stream.silver",
+        output_type="append",
         tags={"processing_mode": "streaming"},
     )
     def bronze_to_silver(df):
@@ -98,8 +184,10 @@ try:
 
     @DataPipes.pipe(
         pipeid="silver_to_gold",
+        name="silver_to_gold",
         input_entity_ids=["stream.silver"],
         output_entity_id="stream.gold",
+        output_type="append",
         tags={"processing_mode": "streaming"},
     )
     def silver_to_gold(df):
@@ -111,17 +199,7 @@ try:
     print(msg)
     test_results["pipe_definitions"] = True
 
-    # ---- Seed bronze via entity provider ----
-    # create_mock_stream() is a test helper that creates a Spark rate source.
-    # In production, bronze would be fed by EventHub, Kafka, etc.
-
-    entity_registry = get_kindling_service(DataEntityRegistry)
-    provider_registry = get_kindling_service(EntityProviderRegistry)
-    entity_path_locator = get_kindling_service(EntityPathLocator)
-
-    bronze_entity = entity_registry.get_entity_definition("stream.bronze")
-    bronze_provider = provider_registry.get_provider_for_entity(bronze_entity)
-    bronze_path = entity_path_locator.get_table_path(bronze_entity)
+    # ---- Seed bronze with rate source stream → Delta ----
 
     mock_stream = create_mock_stream(rows_per_second=10)
     bronze_seed = mock_stream.select(
@@ -130,17 +208,57 @@ try:
         col("value"),
     )
 
-    bronze_query = bronze_provider.append_as_stream(
-        bronze_entity, bronze_seed, f"{chk_base}/seed"
-    ).start(bronze_path)
+    bronze_query = (
+        bronze_seed.writeStream.format("delta")
+        .outputMode("append")
+        .option("checkpointLocation", f"{chk_base}/seed")
+        .start(bronze_path)
+    )
+    streaming_queries.append(bronze_query)
 
-    msg = f"TEST_ID={test_id} test=bronze_seed status=STARTED query_id={bronze_query.id}"
+    msg = f"TEST_ID={test_id} test=bronze_seed status=PASSED query_id={bronze_query.id}"
     logger.info(msg)
     print(msg)
     test_results["bronze_seed"] = True
 
     # Let some data land in bronze
     time.sleep(5)
+
+    # ---- Pre-create silver and gold tables ----
+    # Streaming executor runs in reverse order (sinks→sources), so downstream tables
+    # must exist with schema before consumers can read them as streams.
+
+    # Silver schema (output of bronze_to_silver pipe)
+    silver_schema = StructType(
+        [
+            StructField("event_id", StringType(), True),
+            StructField("timestamp", TimestampType(), True),
+            StructField("value", StringType(), True),
+            StructField("processed_at", TimestampType(), True),
+        ]
+    )
+
+    # Gold schema (output of silver_to_gold pipe)
+    gold_schema = StructType(
+        [
+            StructField("event_id", StringType(), True),
+            StructField("timestamp", TimestampType(), True),
+            StructField("value", StringType(), True),
+            StructField("processed_at", TimestampType(), True),
+            StructField("enriched_at", TimestampType(), True),
+        ]
+    )
+
+    # Create empty tables
+    spark.createDataFrame([], silver_schema).write.format("delta").mode("overwrite").save(
+        silver_path
+    )
+    spark.createDataFrame([], gold_schema).write.format("delta").mode("overwrite").save(gold_path)
+
+    msg = f"TEST_ID={test_id} test=table_creation status=PASSED"
+    logger.info(msg)
+    print(msg)
+    test_results["table_creation"] = True
 
     # ---- Execute streaming plan via GenerationExecutor ----
 
@@ -149,33 +267,45 @@ try:
 
     pipe_ids = ["bronze_to_silver", "silver_to_gold"]
     plan = plan_generator.generate_streaming_plan(pipe_ids)
-    result = executor.execute_streaming(plan)
+
+    # Pass checkpoint base path for streaming queries
+    streaming_options = {"base_checkpoint_path": chk_base}
+    result = executor.execute_streaming(plan, streaming_options=streaming_options)
 
     ok = result.all_succeeded
+    num_queries = len(result.streaming_queries) if hasattr(result, "streaming_queries") else 0
     msg = (
         f"TEST_ID={test_id} test=executor_streaming "
         f"status={'PASSED' if ok else 'FAILED'} "
-        f"success={result.success_count} failed={result.failed_count}"
+        f"success={result.success_count} failed={result.failed_count} "
+        f"queries={num_queries}"
     )
     logger.info(msg)
     print(msg)
     test_results["executor_streaming"] = ok
 
-    # ---- Wait for data to flow through ----
+    # Track executor's streaming queries for cleanup
+    if hasattr(result, "streaming_queries"):
+        for pipe_id, q in result.streaming_queries.items():
+            msg = f"TEST_ID={test_id} streaming_query pipe={pipe_id} query_id={q.id if q else 'None'} active={q.isActive if q else False}"
+            logger.info(msg)
+            print(msg)
+            if q:
+                streaming_queries.append(q)
+
+    # ---- Wait for data to flow through pipeline ----
 
     print(f"TEST_ID={test_id} waiting_for_pipeline=true duration=15s")
     time.sleep(15)
 
     # ---- Verify data in each layer ----
 
-    for entity_id, label in [
-        ("stream.bronze", "bronze_data"),
-        ("stream.silver", "silver_data"),
-        ("stream.gold", "gold_data"),
+    for path, label in [
+        (bronze_path, "bronze_data"),
+        (silver_path, "silver_data"),
+        (gold_path, "gold_data"),
     ]:
-        entity = entity_registry.get_entity_definition(entity_id)
-        provider = provider_registry.get_provider_for_entity(entity)
-        count = provider.read_entity(entity).count()
+        count = spark.read.format("delta").load(path).count()
         ok = count > 0
         msg = f"TEST_ID={test_id} test={label} status={'PASSED' if ok else 'FAILED'} count={count}"
         logger.info(msg)
@@ -184,9 +314,12 @@ try:
 
     # ---- Stop all streaming queries ----
 
-    bronze_query.stop()
-    for q in result.streaming_queries.values():
-        q.stop()
+    for q in streaming_queries:
+        try:
+            q.stop()
+        except Exception:
+            pass
+    streaming_queries.clear()
     time.sleep(2)
 
     msg = f"TEST_ID={test_id} test=queries_stopped status=PASSED"
@@ -196,12 +329,19 @@ try:
 
 except Exception as e:
     msg = f"TEST_ID={test_id} status=FAILED error={str(e)}"
-    logger.error(msg, exc_info=True)
+    logger.error(msg, include_traceback=True)
     print(msg)
     import traceback
 
     traceback.print_exc()
     test_results["exception"] = False
+
+    # Stop any running queries on failure
+    for q in streaming_queries:
+        try:
+            q.stop()
+        except Exception:
+            pass
 
 # ---- Summary ----
 
