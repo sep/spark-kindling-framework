@@ -209,8 +209,8 @@ class StreamingHealthMonitor(SignalEmitter):
         self,
         signal_provider: SignalProvider,
         logger_provider: SparkLoggerProvider,
-        stall_threshold: Optional[float] = None,
-        stall_check_interval: Optional[float] = None,
+        stall_threshold=300.0,
+        stall_check_interval=60.0,
     ):
         """
         Initialize the streaming health monitor.
@@ -225,11 +225,9 @@ class StreamingHealthMonitor(SignalEmitter):
 
         self.logger = logger_provider.get_logger("StreamingHealthMonitor")
         self.signal_provider = signal_provider
-        # Use Optional[float] to prevent DI auto_bind from injecting 0.0
-        self.stall_threshold = stall_threshold if stall_threshold is not None else 300.0
-        self.stall_check_interval = (
-            stall_check_interval if stall_check_interval is not None else 60.0
-        )
+        # No type annotations on primitives — injector only resolves annotated params
+        self.stall_threshold = stall_threshold
+        self.stall_check_interval = stall_check_interval
 
         # Health state tracking: query_id -> QueryHealthState
         self._health_states: Dict[str, QueryHealthState] = {}
