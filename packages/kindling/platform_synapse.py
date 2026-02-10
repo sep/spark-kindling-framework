@@ -959,7 +959,7 @@ class SynapseAPI(PlatformAPI):
     Example:
         >>> from synapse_api import SynapseAPI
         >>> api = SynapseAPI("workspace-name", "spark-pool-name")
-        >>> job = api.create_spark_job("my-job", config)
+        >>> job = api.create_job("my-job", config)
         >>> run_id = api.run_job(job["job_id"])
         >>> status = api.get_job_status(run_id)
     """
@@ -1010,7 +1010,8 @@ class SynapseAPI(PlatformAPI):
 
         # Rate limiting: Synapse has 2 requests/second limit
         self._last_request_time = 0
-        self._min_request_interval = 0.6  # 600ms between requests = ~1.67 req/sec (safe margin)
+        # 600ms between requests = ~1.67 req/sec (safe margin)
+        self._min_request_interval = 0.6
 
     @classmethod
     def from_env(cls):
@@ -1051,43 +1052,71 @@ class SynapseAPI(PlatformAPI):
         """Get platform name"""
         return "synapse"
 
+    def deploy_app(self, app_name: str, app_files: Dict[str, str]) -> str:
+        """Deploy app files to platform storage
+
+        Uploads app files to the conventional location:
+            {base_path}/data-apps/{app_name}/
+
+        Args:
+            app_name: Application name (used as storage directory)
+            app_files: Dictionary of {filename: content}
+
+        Returns:
+            Storage path where app was deployed (abfss://...)
+        """
+        target_path = f"data-apps/{app_name}"
+        return self._upload_files(app_files, target_path)
+
+    def cleanup_app(self, app_name: str) -> bool:
+        """Remove deployed app files from storage
+
+        Args:
+            app_name: Application name to clean up
+
+        Returns:
+            True if cleanup succeeded
+        """
+        try:
+            from azure.storage.filedatalake import DataLakeServiceClient
+        except ImportError:
+            print("⚠️  azure-storage-file-datalake not installed")
+            return False
+
+        if not self.storage_account or not self.container:
+            print("⚠️  storage_account and container must be configured for cleanup")
+            return False
+
+        try:
+            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            service_client = DataLakeServiceClient(
+                account_url=account_url, credential=self.credential
+            )
+            file_system_client = service_client.get_file_system_client(file_system=self.container)
+
+            # Construct full path
+            app_path = f"data-apps/{app_name}"
+            if self.base_path:
+                app_path = f"{self.base_path}/{app_path}"
+
+            # Delete the directory recursively
+            dir_client = file_system_client.get_directory_client(app_path)
+            dir_client.delete_directory()
+            print(f"🗑️  Cleaned up app: {app_path}")
+            return True
+        except Exception as e:
+            print(f"⚠️  Failed to clean up app {app_name}: {e}")
+            return False
+
     def deploy_spark_job(
         self, app_files: Dict[str, str], job_config: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Deploy application as Spark job (convenience method)
+        """Deploy app and create job in one call (backward compat)
 
-        Combines create_spark_job + upload_files + update_job_files into one call.
-
-        Args:
-            app_files: Dictionary of {filename: content} to deploy
-            job_config: Platform-specific job configuration (must include spark_pool_name)
-
-        Returns:
-            Dictionary with job_id, deployment_path, and metadata
+        Delegates to the ABC base class default implementation which
+        calls deploy_app() + create_job().
         """
-        job_name = job_config["job_name"]
-
-        # Step 1: Create job definition
-        result = self.create_spark_job(job_name, job_config)
-        job_id = result["job_id"]
-
-        # Step 2: Upload files
-        app_name = job_config.get("app_name", job_name)
-        target_path = f"data-apps/{app_name}"
-        deployment_path = self.upload_files(app_files, target_path)
-
-        # Step 3: Update job with file paths
-        self.update_job_files(job_id, deployment_path)
-
-        return {
-            "job_id": job_id,
-            "deployment_path": deployment_path,
-            "metadata": {
-                "job_name": job_name,
-                "app_name": app_name,
-                "files_count": len(app_files),
-            },
-        }
+        return super().deploy_spark_job(app_files, job_config)
 
     def _get_access_token(self) -> str:
         """Get Azure access token for Synapse API"""
@@ -1133,7 +1162,7 @@ class SynapseAPI(PlatformAPI):
 
         return response
 
-    def create_spark_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
+    def create_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
         """Create a Spark job definition in Synapse
 
         NOTE: Synapse doesn't have persistent job definitions like Fabric.
@@ -1171,8 +1200,8 @@ class SynapseAPI(PlatformAPI):
             "workspace_name": self.workspace_name,
         }
 
-    def upload_files(self, files: Dict[str, str], target_path: str) -> str:
-        """Upload files to ADLS Gen2
+    def _upload_files(self, files: Dict[str, str], target_path: str) -> str:
+        """Upload files to ADLS Gen2 (internal)
 
         Args:
             files: Dictionary of {filename: content}
@@ -1231,8 +1260,8 @@ class SynapseAPI(PlatformAPI):
 
         return abfss_path
 
-    def update_job_files(self, job_id: str, files_path: str) -> None:
-        """Update job definition with file paths
+    def _update_job_files(self, job_id: str, files_path: str) -> None:
+        """Update job definition with file paths (internal)
 
         For Synapse, this updates the stored job config with the files path
         which will be used when the job is run.
@@ -1251,14 +1280,14 @@ class SynapseAPI(PlatformAPI):
         """Execute a Spark batch job
 
         Args:
-            job_id: Job ID to run (from create_spark_job)
+            job_id: Job ID to run (from create_job)
             parameters: Optional runtime parameters
 
         Returns:
             Batch ID (run ID) for monitoring
         """
         if job_id not in self._job_mapping:
-            raise ValueError(f"Job {job_id} not found. Call create_spark_job first.")
+            raise ValueError(f"Job {job_id} not found. Call create_job first.")
 
         job_info = self._job_mapping[job_id]
         job_config = job_info["job_config"]
@@ -1473,6 +1502,10 @@ class SynapseAPI(PlatformAPI):
                 "livy_state": livy_state,  # Keep original for debugging
                 "batch_id": run_id,
             }
+
+            # Include app_id for log retrieval (needed by stream_stdout_logs)
+            if "appId" in result and result["appId"]:
+                status_dict["app_id"] = result["appId"]
 
             # Add timestamps if available
             if "submittedAt" in result:
@@ -1906,7 +1939,7 @@ class SynapseAPI(PlatformAPI):
                     sys.stdout.flush()
 
                 # If job completed, do final read and exit
-                if status in ["SUCCESS", "COMPLETE", "ERROR", "DEAD", "KILLED"]:
+                if status in ["COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED"]:
                     print(f"✅ Job {status.lower()} - doing final log read")
                     sys.stdout.flush()
                     # Read final logs
@@ -1921,14 +1954,14 @@ class SynapseAPI(PlatformAPI):
                     break
 
                 # If job not started yet, wait
-                if status in ["NOT_STARTED", "STARTING"]:
+                if status in ["NOTSTARTED", "PENDING", "STARTING"]:
                     print(f"⏳ Job status: {status} - waiting...")
                     sys.stdout.flush()
                     time.sleep(poll_interval)
                     continue
 
                 # Job is running - track when it started
-                if status in ["RUNNING", "IDLE", "BUSY", "SHUTTING_DOWN"]:
+                if status in ["INPROGRESS", "RUNNING"]:
                     if job_started_time is None:
                         job_started_time = time.time()
                         print(
@@ -1983,6 +2016,12 @@ class SynapseAPI(PlatformAPI):
     ) -> tuple:
         """Read new stdout content from Synapse diagnostic emitter logs
 
+        Synapse doesn't have a raw stdout file. Instead, diagnostic emitters write
+        JSON-lines to: logs/{workspace}.{pool}.{batch_id}/driver/spark-logs
+
+        Each line is a JSON object with category, applicationId, properties.message etc.
+        We extract "Log" category messages that match our app_id.
+
         Args:
             run_id: Batch ID
             app_id: Spark application ID (if available)
@@ -1995,24 +2034,31 @@ class SynapseAPI(PlatformAPI):
             # Can't read logs without application ID
             return [], byte_offset
 
+        if not self.storage_account or not self.container:
+            return [], byte_offset
+
         try:
-            # Construct log path: logs/{workspace}.{pool}.{batch_id}/driver/spark-logs/stdout
+            import json
+
+            from azure.storage.filedatalake import DataLakeServiceClient
+
+            # Reuse or create storage client
+            if not self._storage_client:
+                account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+                self._storage_client = DataLakeServiceClient(
+                    account_url=account_url, credential=self.credential
+                )
+
+            file_system_client = self._storage_client.get_file_system_client(
+                file_system=self.container
+            )
+
+            # Synapse diagnostic emitter path (single file, not a directory)
             log_path = (
                 f"logs/{self.workspace_name}.{self.spark_pool_name}.{run_id}/driver/spark-logs"
             )
 
-            # Read stdout file from ADLS Gen2
-            from azure.identity import DefaultAzureCredential
-            from azure.storage.filedatalake import DataLakeServiceClient
-
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
-            credential = DefaultAzureCredential()
-            storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
-            file_system_client = storage_client.get_file_system_client(file_system=self.container)
-
-            # Try to read stdout file
-            stdout_path = f"{log_path}/stdout"
-            file_client = file_system_client.get_file_client(stdout_path)
+            file_client = file_system_client.get_file_client(log_path)
 
             # Get file properties to check size
             properties = file_client.get_file_properties()
@@ -2023,12 +2069,33 @@ class SynapseAPI(PlatformAPI):
                 return [], byte_offset
 
             # Read new content from byte_offset
-            download = file_client.download_file(offset=byte_offset)
+            download = file_client.download_file(offset=byte_offset, length=file_size - byte_offset)
             content = download.readall()
             new_text = content.decode("utf-8")
-            new_lines = new_text.splitlines()
-
             new_byte_offset = byte_offset + len(content)
+
+            # Parse JSON lines and extract log messages
+            new_lines = []
+            for line in new_text.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+
+                    # Filter to our application
+                    if entry.get("applicationId") != app_id:
+                        continue
+
+                    category = entry.get("category", "")
+                    properties_dict = entry.get("properties", {})
+
+                    if category == "Log":
+                        message = properties_dict.get("message", "")
+                        if message:
+                            new_lines.append(message)
+
+                except json.JSONDecodeError:
+                    continue
 
             return new_lines, new_byte_offset
 

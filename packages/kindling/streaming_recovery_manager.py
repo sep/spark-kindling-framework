@@ -194,10 +194,10 @@ class StreamingRecoveryManager(SignalEmitter):
         signal_provider: SignalProvider,
         logger_provider: SparkLoggerProvider,
         query_manager: StreamingQueryManager,
-        max_retries: int = 5,
-        initial_backoff: float = 1.0,
-        max_backoff: float = 300.0,
-        check_interval: float = 5.0,
+        max_retries=5,
+        initial_backoff=1.0,
+        max_backoff=300.0,
+        check_interval=5.0,
     ):
         """
         Initialize the streaming recovery manager.
@@ -216,6 +216,7 @@ class StreamingRecoveryManager(SignalEmitter):
         self.logger = logger_provider.get_logger("StreamingRecoveryManager")
         self.signal_provider = signal_provider
         self.query_manager = query_manager
+        # No type annotations on primitives — injector only resolves annotated params
         self.max_retries = max_retries
         self.initial_backoff = initial_backoff
         self.max_backoff = max_backoff
@@ -242,8 +243,8 @@ class StreamingRecoveryManager(SignalEmitter):
 
         self.logger.info(
             f"StreamingRecoveryManager initialized "
-            f"(max_retries={max_retries}, initial_backoff={initial_backoff}s, "
-            f"max_backoff={max_backoff}s, check_interval={check_interval}s)"
+            f"(max_retries={self.max_retries}, initial_backoff={self.initial_backoff}s, "
+            f"max_backoff={self.max_backoff}s, check_interval={self.check_interval}s)"
         )
 
     def start(self):

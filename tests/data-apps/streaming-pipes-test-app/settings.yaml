@@ -1,0 +1,20 @@
+# Streaming Pipes Test App Configuration
+
+kindling:
+  version: "0.4.2"
+
+  # Delta table access mode (forPath for Fabric, forName for Synapse, auto for both)
+  delta:
+    tablerefmode: "forPath"
+
+  # Logging configuration
+  telemetry:
+    logging:
+      level: INFO
+
+  # Base checkpoint path for streaming queries (set dynamically in code)
+  # base_checkpoint_path: "Files/checkpoints/streaming_pipes_test"
+
+  # Framework extensions (if needed)
+  bootstrap:
+    required_packages: []
