@@ -1502,6 +1502,10 @@ class SynapseAPI(PlatformAPI):
                 "batch_id": run_id,
             }
 
+            # Include app_id for log retrieval (needed by stream_stdout_logs)
+            if "appId" in result and result["appId"]:
+                status_dict["app_id"] = result["appId"]
+
             # Add timestamps if available
             if "submittedAt" in result:
                 status_dict["start_time"] = result["submittedAt"]
@@ -1934,7 +1938,7 @@ class SynapseAPI(PlatformAPI):
                     sys.stdout.flush()
 
                 # If job completed, do final read and exit
-                if status in ["SUCCESS", "COMPLETE", "ERROR", "DEAD", "KILLED"]:
+                if status in ["COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED"]:
                     print(f"✅ Job {status.lower()} - doing final log read")
                     sys.stdout.flush()
                     # Read final logs
@@ -1949,14 +1953,14 @@ class SynapseAPI(PlatformAPI):
                     break
 
                 # If job not started yet, wait
-                if status in ["NOT_STARTED", "STARTING"]:
+                if status in ["NOTSTARTED", "PENDING", "STARTING"]:
                     print(f"⏳ Job status: {status} - waiting...")
                     sys.stdout.flush()
                     time.sleep(poll_interval)
                     continue
 
                 # Job is running - track when it started
-                if status in ["RUNNING", "IDLE", "BUSY", "SHUTTING_DOWN"]:
+                if status in ["INPROGRESS", "RUNNING"]:
                     if job_started_time is None:
                         job_started_time = time.time()
                         print(
