@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling"
-version = "0.4.2"
+version = "0.5.1"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -52,6 +52,7 @@ version = { script = "scripts.bump_version:main", help = "Bump version and optio
 build = { script = "scripts.build:main" }
 build-wheels = { shell = "bash scripts/build_platform_wheels.sh" }
 deploy = { script = "scripts.test_runner:run_deploy", help = "Deploy wheels to Azure Storage. Use --platform and/or --release to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to deploy (fabric, synapse, databricks). If not specified, deploys all platforms"}, {name = "release", default = "", positional = false, help = "Deploy from GitHub release. Use 'latest' or specific version (e.g., '0.4.0'). If not specified, deploys from local dist/"}] }
+deploy-app = { script = "scripts.test_runner:run_deploy_app", help = "Deploy a data app to Azure Storage", args = [{name = "app_path", positional = false, help = "Path to app directory or .kda file"}, {name = "app_name", default = "", positional = false, help = "Name for the deployed app (defaults to directory name)"}] }
 deploy-extensions = { cmd = "python scripts/deploy_extensions.py kindling-otel-azure" }
 upload = { shell = "bash scripts/upload_to_storage.sh" }
 upload-release = { shell = "bash scripts/upload_to_storage.sh --release" }

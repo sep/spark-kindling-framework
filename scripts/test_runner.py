@@ -30,17 +30,13 @@ def build_pytest_args(
     """
     args = ["pytest", test_path, "-v", "-s"]
 
-    # Add platform and/or test filters using -k option
-    k_filters = []
+    # Pass platform as a pytest option (injected into tests via conftest)
     if platform:
-        k_filters.append(platform)
-    if test:
-        k_filters.append(test)
+        args.extend(["--platform", platform])
 
-    if k_filters:
-        # Combine filters with 'and' logic
-        k_expr = " and ".join(k_filters)
-        args.extend(["-k", k_expr])
+    # Use -k only for test name filtering
+    if test:
+        args.extend(["-k", test])
 
     if extra_args:
         args.extend(extra_args)
@@ -171,6 +167,96 @@ def run_cleanup(platform: str = "", skip_packages: bool = False) -> int:
     return result.returncode
 
 
+def run_deploy_app(
+    app_path: str = "",
+    app_name: str = "",
+) -> int:
+    """
+    Deploy a data app to Azure Storage.
+
+    Apps are platform-independent — they're just files in storage.
+    Any platform's jobs can reference them by app_name.
+
+    Uses AppPackager to prepare files and uploads to:
+        {AZURE_BASE_PATH}/data-apps/{app_name}/
+
+    Args:
+        app_path: Path to app directory or .kda file
+        app_name: Name for the deployed app. Defaults to the directory name.
+
+    Returns:
+        Exit code (0 = success)
+
+    Examples:
+        poe deploy-app --app-path tests/data-apps/universal-test-app
+        poe deploy-app --app-path my-app.kda --app-name my-app
+    """
+    import os
+    from pathlib import Path
+
+    from azure.identity import DefaultAzureCredential
+    from azure.storage.blob import BlobServiceClient
+
+    if not app_path:
+        print("❌ --app-path is required")
+        return 1
+
+    app_path_obj = Path(app_path)
+    if not app_path_obj.exists():
+        print(f"❌ App path does not exist: {app_path}")
+        return 1
+
+    # Default app_name to directory/file name
+    if not app_name:
+        app_name = app_path_obj.stem if app_path_obj.is_file() else app_path_obj.name
+
+    # Storage config from environment (same vars as deploy.py)
+    storage_account = os.getenv("AZURE_STORAGE_ACCOUNT")
+    container = os.getenv("AZURE_CONTAINER", "artifacts")
+    base_path = os.getenv("AZURE_BASE_PATH", "")
+
+    if not storage_account:
+        print("❌ AZURE_STORAGE_ACCOUNT environment variable is required")
+        return 1
+
+    target_path = f"{base_path}/data-apps/{app_name}" if base_path else f"data-apps/{app_name}"
+
+    print(f"🚀 Deploying app '{app_name}' from {app_path}")
+    print(f"   → {storage_account}/{container}/{target_path}/")
+    print()
+
+    try:
+        # Prepare app files
+        from kindling.job_deployment import AppPackager
+
+        packager = AppPackager()
+        app_files = packager.prepare_app_files(str(app_path_obj))
+        print(f"📦 Prepared {len(app_files)} app files")
+
+        # Connect to Azure Storage
+        account_url = f"https://{storage_account}.blob.core.windows.net"
+        credential = DefaultAzureCredential()
+        blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
+
+        # Upload each file
+        upload_count = 0
+        for filename, content in app_files.items():
+            blob_path = f"{target_path}/{filename}"
+            blob_client = blob_service_client.get_blob_client(container=container, blob=blob_path)
+            blob_client.upload_blob(
+                content.encode() if isinstance(content, str) else content, overwrite=True
+            )
+            print(f"  ↑ {filename}")
+            upload_count += 1
+
+        print(f"\n✅ Deployed {upload_count} files to data-apps/{app_name}/")
+        return 0
+
+    except Exception as e:
+        print(f"❌ Deploy failed: {e}")
+        return 1
+
+
 def run_deploy(platform: str = "", release: str = "") -> int:
     """
     Run deployment with optional platform and release filtering.
@@ -257,6 +343,17 @@ if __name__ == "__main__":
         help="Deploy from release (latest or specific version)",
     )
 
+    # Deploy-app subcommand
+    deploy_app_parser = subparsers.add_parser(
+        "deploy-app", help="Deploy a data app to Azure Storage"
+    )
+    deploy_app_parser.add_argument(
+        "--app-path", default="", help="Path to app directory or .kda file"
+    )
+    deploy_app_parser.add_argument(
+        "--app-name", default="", help="Name for the deployed app (defaults to directory name)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "system":
@@ -267,6 +364,8 @@ if __name__ == "__main__":
         sys.exit(run_cleanup(platform=args.platform, skip_packages=args.skip_packages))
     elif args.command == "deploy":
         sys.exit(run_deploy(platform=args.platform, release=args.release))
+    elif args.command == "deploy-app":
+        sys.exit(run_deploy_app(app_path=args.app_path, app_name=args.app_name))
     else:
         parser.print_help()
         sys.exit(1)

@@ -2,11 +2,19 @@
 Job Deployment Module
 
 Provides platform-agnostic job deployment capabilities using dependency injection
-and platform services pattern. Enables deploying data apps as Spark jobs across
-Fabric, Databricks, and Synapse platforms.
+and platform services pattern. Enables deploying data apps and managing Spark jobs
+across Fabric, Databricks, and Synapse platforms.
 
-This module contains both utilities (JobPackager, JobConfigValidator) and services
-(DataAppDeployer) as they are tightly coupled and used together.
+Architecture:
+    App deployment and job deployment are SEPARATE concerns:
+    - App deployment: Package files → upload to storage (deploy_app)
+    - Job deployment: Create a job definition → run → monitor (create_job, run_job)
+    - A job references an app by name in its config, but they are independent activities
+
+This module contains:
+    - AppPackager: Utility for preparing app files from directories or .kda packages
+    - JobConfigValidator: Utility for validating job configuration
+    - DataAppDeployer: Service orchestrating the full lifecycle (app deploy + job create + run)
 """
 
 import time
@@ -26,8 +34,13 @@ from .spark_log_provider import PythonLoggerProvider
 # ============================================================================
 
 
-class JobPackager:
-    """Utility for preparing app files for job deployment"""
+class AppPackager:
+    """Utility for preparing app files for deployment.
+
+    Handles both directory-based apps and .kda packages.
+    This is an app concern, not a job concern — apps are deployed
+    independently from jobs.
+    """
 
     @staticmethod
     def prepare_app_files(app_path: str) -> Dict[str, str]:
@@ -42,9 +55,9 @@ class JobPackager:
         path = Path(app_path)
 
         if path.is_file() and path.suffix == ".kda":
-            return JobPackager.extract_kda_files(path)
+            return AppPackager.extract_kda_files(path)
         elif path.is_dir():
-            return JobPackager.scan_directory_files(path)
+            return AppPackager.scan_directory_files(path)
         else:
             raise ValueError(f"Invalid app path: {app_path}")
 
@@ -95,6 +108,10 @@ class JobPackager:
         return app_files
 
 
+# Backward compatibility alias
+JobPackager = AppPackager
+
+
 class JobConfigValidator:
     """Utility for validating job configuration"""
 
@@ -121,15 +138,27 @@ class JobConfigValidator:
 
 class DataAppDeployer(SignalEmitter):
     """
-    Service for deploying data apps as Spark jobs.
+    Service for deploying data apps and managing Spark jobs.
+
+    App deployment and job deployment are SEPARATE concerns:
+    - deploy_app(): Package files and upload to storage
+    - create_job(): Create a Spark job definition
+    - run_job(): Execute a job (passing app_name as config)
+    - deploy_and_create_job(): Convenience method that does both
+
+    A single job definition can run different apps by passing different
+    app_name values at execution time.
 
     Uses dependency injection for platform service and logger.
     Delegates mechanical operations to utility classes.
 
     Signals emitted:
-        - job.before_deploy: Before deploying an app as a job
-        - job.after_deploy: After successful deployment
-        - job.deploy_failed: When deployment fails
+        - app.before_deploy: Before deploying app files
+        - app.after_deploy: After successful app deployment
+        - app.deploy_failed: When app deployment fails
+        - job.before_create: Before creating a job definition
+        - job.after_create: After successful job creation
+        - job.create_failed: When job creation fails
         - job.before_run: Before running a job
         - job.after_run: After job starts (returns run_id)
         - job.run_failed: When job start fails
@@ -140,9 +169,12 @@ class DataAppDeployer(SignalEmitter):
     """
 
     EMITS = [
-        "job.before_deploy",
-        "job.after_deploy",
-        "job.deploy_failed",
+        "app.before_deploy",
+        "app.after_deploy",
+        "app.deploy_failed",
+        "job.before_create",
+        "job.after_create",
+        "job.create_failed",
         "job.before_run",
         "job.after_run",
         "job.run_failed",
@@ -171,86 +203,152 @@ class DataAppDeployer(SignalEmitter):
         self._init_signal_emitter(signal_provider)
 
         # Initialize utilities (no DI needed - pure utilities)
-        self.packager = JobPackager()
+        self.packager = AppPackager()
         self.validator = JobConfigValidator()
 
-    def deploy_as_job(self, app_path: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Deploy a data app as a Spark job
+    def deploy_app(self, app_path: str, app_name: str) -> str:
+        """Deploy app files to platform storage.
+
+        This is INDEPENDENT of job creation. Apps are deployed to storage
+        and can be referenced by any number of jobs.
 
         Args:
             app_path: Path to app directory or .kda file
-            job_config: Job configuration including:
-                - job_name: Name for the job
-                - app_name: Application name for Kindling bootstrap
-                - artifacts_path: Where framework wheels are stored (default: Files/artifacts)
-                - lakehouse_id or workspace_id: Platform-specific IDs
-                - additional parameters as needed by platform
+            app_name: Name for the deployed app (used as storage key)
 
         Returns:
-            Dictionary with deployment info from platform service
-
-        Note:
-            Job will use kindling_bootstrap.py from lakehouse Files/scripts/
-            Bootstrap config is passed via command line arguments (config:key=value)
+            Storage path where app was deployed
         """
-        deployment_id = str(uuid.uuid4())
-        start_time = time.time()
-        job_name = job_config.get("job_name", "unknown")
         platform_name = self.platform.get_platform_name()
-
-        self.logger.info(f"Deploying app from: {app_path}")
+        self.logger.info(f"Deploying app '{app_name}' from: {app_path}")
 
         self.emit(
-            "job.before_deploy",
+            "app.before_deploy",
             app_path=app_path,
-            job_name=job_name,
+            app_name=app_name,
             platform=platform_name,
-            deployment_id=deployment_id,
         )
 
         try:
-            # Validate config using utility
-            self.validator.validate(job_config)
-
             # Prepare app files using utility
             app_files = self.packager.prepare_app_files(app_path)
             self.logger.debug(f"Prepared {len(app_files)} app files")
 
-            # Delegate to platform service
-            # Platform service (e.g., FabricAPI) will:
-            # 1. Create job definition pointing to Files/scripts/kindling_bootstrap.py
-            # 2. Pass bootstrap config via command line args (config:key=value)
-            # 3. Upload app files to appropriate location
-            self.logger.info(f"Deploying to {platform_name} platform")
-            result = self.platform.deploy_spark_job(app_files, job_config)
-
-            duration = time.time() - start_time
-            self.logger.info(f"✅ Deployment complete: {result.get('job_id')}")
+            # Upload to platform storage
+            storage_path = self.platform.deploy_app(app_name, app_files)
+            self.logger.info(f"✅ App deployed to: {storage_path}")
 
             self.emit(
-                "job.after_deploy",
+                "app.after_deploy",
                 app_path=app_path,
+                app_name=app_name,
+                storage_path=storage_path,
+                platform=platform_name,
+            )
+
+            return storage_path
+
+        except Exception as e:
+            self.emit(
+                "app.deploy_failed",
+                app_path=app_path,
+                app_name=app_name,
+                platform=platform_name,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            raise
+
+    def create_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a Spark job definition.
+
+        This is INDEPENDENT of app deployment. A job references an app
+        by name in its config (app_name), but the job definition itself
+        is a separate resource.
+
+        Args:
+            job_config: Job configuration including:
+                - job_name: Name for the job definition
+                - app_name: Which app to run (referenced by bootstrap)
+                - Additional platform-specific parameters
+
+        Returns:
+            Dictionary with job info including 'job_id'
+        """
+        platform_name = self.platform.get_platform_name()
+        job_name = job_config.get("job_name", "unknown")
+
+        self.logger.info(f"Creating job '{job_name}' on {platform_name}")
+
+        self.emit(
+            "job.before_create",
+            job_name=job_name,
+            platform=platform_name,
+        )
+
+        try:
+            self.validator.validate(job_config)
+            result = self.platform.create_job(job_name, job_config)
+
+            self.logger.info(f"✅ Job created: {result.get('job_id')}")
+
+            self.emit(
+                "job.after_create",
                 job_name=job_name,
                 job_id=result.get("job_id"),
                 platform=platform_name,
-                duration_seconds=duration,
-                deployment_id=deployment_id,
+            )
+
+            return result
+
+        except Exception as e:
+            self.emit(
+                "job.create_failed",
+                job_name=job_name,
+                platform=platform_name,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            raise
+
+    def deploy_as_job(self, app_path: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Convenience method: deploy app + create job in one call.
+
+        Equivalent to calling deploy_app() then create_job() separately.
+        Maintained for backward compatibility.
+
+        Args:
+            app_path: Path to app directory or .kda file
+            job_config: Job configuration including job_name, app_name, etc.
+
+        Returns:
+            Dictionary with deployment info from platform service
+        """
+        deployment_id = str(uuid.uuid4())
+        start_time = time.time()
+        job_name = job_config.get("job_name", "unknown")
+        app_name = job_config.get("app_name", job_name)
+        platform_name = self.platform.get_platform_name()
+
+        self.logger.info(f"Deploying app and creating job from: {app_path}")
+
+        try:
+            # Step 1: Deploy app files to storage
+            self.deploy_app(app_path, app_name)
+
+            # Step 2: Create job definition
+            result = self.create_job(job_config)
+
+            duration = time.time() - start_time
+            self.logger.info(
+                f"✅ App deployed and job created: {result.get('job_id')} ({duration:.1f}s)"
             )
 
             return result
 
         except Exception as e:
             duration = time.time() - start_time
-            self.emit(
-                "job.deploy_failed",
-                app_path=app_path,
-                job_name=job_name,
-                platform=platform_name,
-                error=str(e),
-                error_type=type(e).__name__,
-                duration_seconds=duration,
-                deployment_id=deployment_id,
-            )
+            self.logger.error(f"Deploy failed after {duration:.1f}s: {e}", exc_info=True)
             raise
 
     def run_job(self, job_id: str, parameters: Dict[str, Any] = None) -> str:
@@ -338,6 +436,25 @@ class DataAppDeployer(SignalEmitter):
             self.emit("job.cancel_failed", run_id=run_id, error=str(e), error_type=type(e).__name__)
             raise
 
+    def cleanup_app(self, app_name: str) -> bool:
+        """Clean up deployed app files from storage.
+
+        Args:
+            app_name: Name of the app to clean up
+
+        Returns:
+            True if cleanup succeeded
+        """
+        self.logger.info(f"Cleaning up app: {app_name}")
+        try:
+            result = self.platform.cleanup_app(app_name)
+            if result:
+                self.logger.info(f"✅ App cleaned up: {app_name}")
+            return result
+        except Exception as e:
+            self.logger.warning(f"App cleanup failed for {app_name}: {e}")
+            return False
+
 
 # Expose utilities and service in module
-__all__ = ["JobPackager", "JobConfigValidator", "DataAppDeployer"]
+__all__ = ["AppPackager", "JobPackager", "JobConfigValidator", "DataAppDeployer"]
