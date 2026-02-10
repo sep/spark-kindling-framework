@@ -128,7 +128,7 @@ class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
         self,
         signal_provider: SignalProvider,
         logger_provider: SparkLoggerProvider,
-        max_queue_size: Optional[int] = None,
+        max_queue_size=1000,
     ):
         """
         Initialize the streaming listener.
@@ -142,8 +142,8 @@ class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
         self._init_signal_emitter(signal_provider)
 
         self.logger = logger_provider.get_logger("KindlingStreamingListener")
-        # Use Optional[int] to prevent DI auto_bind from injecting 0
-        self.max_queue_size = max_queue_size if max_queue_size is not None else 1000
+        # No type annotation on primitive — injector only resolves annotated params
+        self.max_queue_size = max_queue_size
 
         # Event queue (thread-safe)
         self._event_queue: queue.Queue[StreamingEvent] = queue.Queue(maxsize=self.max_queue_size)

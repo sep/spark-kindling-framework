@@ -194,10 +194,10 @@ class StreamingRecoveryManager(SignalEmitter):
         signal_provider: SignalProvider,
         logger_provider: SparkLoggerProvider,
         query_manager: StreamingQueryManager,
-        max_retries: Optional[int] = None,
-        initial_backoff: Optional[float] = None,
-        max_backoff: Optional[float] = None,
-        check_interval: Optional[float] = None,
+        max_retries=5,
+        initial_backoff=1.0,
+        max_backoff=300.0,
+        check_interval=5.0,
     ):
         """
         Initialize the streaming recovery manager.
@@ -216,11 +216,11 @@ class StreamingRecoveryManager(SignalEmitter):
         self.logger = logger_provider.get_logger("StreamingRecoveryManager")
         self.signal_provider = signal_provider
         self.query_manager = query_manager
-        # Use Optional types to prevent DI auto_bind from injecting 0/0.0
-        self.max_retries = max_retries if max_retries is not None else 5
-        self.initial_backoff = initial_backoff if initial_backoff is not None else 1.0
-        self.max_backoff = max_backoff if max_backoff is not None else 300.0
-        self.check_interval = check_interval if check_interval is not None else 5.0
+        # No type annotations on primitives — injector only resolves annotated params
+        self.max_retries = max_retries
+        self.initial_backoff = initial_backoff
+        self.max_backoff = max_backoff
+        self.check_interval = check_interval
 
         # Recovery state tracking: query_id -> RecoveryState
         self._recovery_states: Dict[str, RecoveryState] = {}
