@@ -12,7 +12,7 @@ from kindling.spark_trace import *
 
 class PipeStreamOrchestrator(ABC):
     @abstractmethod
-    def start_pipe_as_stream_processor(self, pipeid, options={}) -> object:
+    def start_pipe_as_stream_processor(self, pipeid, options=None) -> object:
         pass
 
 
@@ -36,7 +36,8 @@ class SimplePipeStreamOrchestrator(PipeStreamOrchestrator):
         self.logger.debug(f"SimplePipeStreamOrchestrator initialized")
         self.cs = cs
 
-    def start_pipe_as_stream_processor(self, pipeid, options={}) -> object:
+    def start_pipe_as_stream_processor(self, pipeid, options=None) -> object:
+        options = options or {}
         pipe = self.dpr.get_pipe_definition(pipeid)
         input_entity = self.der.get_entity_definition(pipe.input_entity_ids[0])
         output_entity = self.der.get_entity_definition(pipe.output_entity_id)

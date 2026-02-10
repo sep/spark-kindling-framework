@@ -7,12 +7,12 @@ This module provides strategy patterns for different execution modes:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
-from injector import inject
+from typing import Dict, List, Optional
 
+from injector import inject
+from kindling.data_pipes import DataPipesRegistry
 from kindling.pipe_graph import PipeGraph, PipeGraphBuilder
 from kindling.spark_log_provider import PythonLoggerProvider
-from kindling.data_pipes import DataPipesRegistry
 
 
 @dataclass
@@ -24,6 +24,7 @@ class Generation:
         pipe_ids: List of pipe IDs in this generation
         dependencies: Pipe IDs that must complete before this generation starts
     """
+
     number: int
     pipe_ids: List[str]
     dependencies: List[str] = field(default_factory=list)
@@ -49,6 +50,7 @@ class ExecutionPlan:
         strategy: Name of the strategy used
         metadata: Additional metadata about the plan
     """
+
     pipe_ids: List[str]
     generations: List[Generation]
     graph: PipeGraph
@@ -97,14 +99,14 @@ class ExecutionPlan:
         if pipes_in_plan != set(self.pipe_ids):
             missing = set(self.pipe_ids) - pipes_in_plan
             extra = pipes_in_plan - set(self.pipe_ids)
-            raise ValueError(
-                f"Plan validation failed. Missing: {missing}, Extra: {extra}"
-            )
+            raise ValueError(f"Plan validation failed. Missing: {missing}, Extra: {extra}")
 
         # Check generations are ordered correctly (dependencies satisfied)
         # For batch: dependencies must execute BEFORE consumers
         # For streaming: consumers can execute BEFORE producers (reverse order)
-        is_streaming = self.strategy == "streaming"
+        is_streaming = self.strategy == "streaming" or (
+            self.strategy == "config_based" and self.metadata.get("detected_mode") == "streaming"
+        )
 
         if not is_streaming:
             # Batch mode: validate forward dependencies
@@ -136,10 +138,13 @@ class ExecutionPlan:
             "total_pipes": self.total_pipes(),
             "total_generations": self.total_generations(),
             "max_parallelism": self.max_parallelism(),
-            "avg_pipes_per_generation": round(self.total_pipes() / self.total_generations(), 2)
-                if self.total_generations() > 0 else 0,
+            "avg_pipes_per_generation": (
+                round(self.total_pipes() / self.total_generations(), 2)
+                if self.total_generations() > 0
+                else 0
+            ),
             "generation_sizes": [len(gen) for gen in self.generations],
-            **self.metadata
+            **self.metadata,
         }
 
 
@@ -212,10 +217,13 @@ class BatchExecutionStrategy(ExecutionStrategy):
         while len(processed) < len(pipe_ids):
             # Find pipes whose dependencies are all satisfied
             current_gen_pipes = [
-                pipe_id for pipe_id in pipe_ids
-                if pipe_id not in processed and
-                all(dep in processed or dep not in pipe_ids
-                    for dep in graph.get_dependencies(pipe_id))
+                pipe_id
+                for pipe_id in pipe_ids
+                if pipe_id not in processed
+                and all(
+                    dep in processed or dep not in pipe_ids
+                    for dep in graph.get_dependencies(pipe_id)
+                )
             ]
 
             if not current_gen_pipes:
@@ -235,7 +243,7 @@ class BatchExecutionStrategy(ExecutionStrategy):
             generation = Generation(
                 number=generation_num,
                 pipe_ids=current_gen_pipes,
-                dependencies=list(gen_dependencies)
+                dependencies=list(gen_dependencies),
             )
             generations_list.append(generation)
             processed.update(current_gen_pipes)
@@ -253,8 +261,8 @@ class BatchExecutionStrategy(ExecutionStrategy):
             strategy=self.get_strategy_name(),
             metadata={
                 "execution_order": "forward",
-                "description": "Sources → Sinks (batch processing)"
-            }
+                "description": "Sources → Sinks (batch processing)",
+            },
         )
 
         # Validate the plan
@@ -305,10 +313,12 @@ class StreamingExecutionStrategy(ExecutionStrategy):
             # Find pipes whose dependents are all satisfied
             # In reverse order, we process sinks first (pipes with no dependents in the remaining set)
             current_gen_pipes = [
-                pipe_id for pipe_id in pipe_ids
-                if pipe_id not in processed and
-                all(dep in processed or dep not in pipe_ids
-                    for dep in graph.get_dependents(pipe_id))
+                pipe_id
+                for pipe_id in pipe_ids
+                if pipe_id not in processed
+                and all(
+                    dep in processed or dep not in pipe_ids for dep in graph.get_dependents(pipe_id)
+                )
             ]
 
             if not current_gen_pipes:
@@ -329,7 +339,7 @@ class StreamingExecutionStrategy(ExecutionStrategy):
             generation = Generation(
                 number=generation_num,
                 pipe_ids=current_gen_pipes,
-                dependencies=list(gen_dependencies)
+                dependencies=list(gen_dependencies),
             )
             generations_list.append(generation)
             processed.update(current_gen_pipes)
@@ -348,8 +358,8 @@ class StreamingExecutionStrategy(ExecutionStrategy):
             metadata={
                 "execution_order": "reverse",
                 "description": "Sinks → Sources (streaming processing)",
-                "checkpoint_order": "downstream_first"
-            }
+                "checkpoint_order": "downstream_first",
+            },
         )
 
         # Validate the plan
@@ -386,9 +396,7 @@ class StreamingExecutionStrategy(ExecutionStrategy):
         if pipes_in_plan != set(plan.pipe_ids):
             missing = set(plan.pipe_ids) - pipes_in_plan
             extra = pipes_in_plan - set(plan.pipe_ids)
-            raise ValueError(
-                f"Plan validation failed. Missing: {missing}, Extra: {extra}"
-            )
+            raise ValueError(f"Plan validation failed. Missing: {missing}, Extra: {extra}")
 
         # Check streaming order: dependents should be started before dependencies
         started = set()
@@ -470,11 +478,13 @@ class ConfigBasedExecutionStrategy(ExecutionStrategy):
 
         # Override strategy name and add metadata
         plan.strategy = self.get_strategy_name()
-        plan.metadata.update({
-            "detected_mode": detected_mode,
-            "description": f"Config-based {detected_mode} execution",
-            "mode_source": "pipe_tags"
-        })
+        plan.metadata.update(
+            {
+                "detected_mode": detected_mode,
+                "description": f"Config-based {detected_mode} execution",
+                "mode_source": "pipe_tags",
+            }
+        )
 
         self.logger.info(
             f"Config-based plan generated: {len(plan.generations)} generations, "
@@ -541,7 +551,7 @@ class ExecutionPlanGenerator:
         self,
         registry: DataPipesRegistry,
         graph_builder: PipeGraphBuilder,
-        logger_provider: PythonLoggerProvider
+        logger_provider: PythonLoggerProvider,
     ):
         """Initialize the plan generator.
 
@@ -560,9 +570,7 @@ class ExecutionPlanGenerator:
         self.config_strategy = ConfigBasedExecutionStrategy(logger_provider)
 
     def generate_plan(
-        self,
-        pipe_ids: List[str],
-        strategy: Optional[ExecutionStrategy] = None
+        self, pipe_ids: List[str], strategy: Optional[ExecutionStrategy] = None
     ) -> ExecutionPlan:
         """Generate execution plan for given pipes.
 
@@ -643,7 +651,7 @@ class ExecutionPlanGenerator:
             f"Max Parallelism: {plan.max_parallelism()}",
             "",
             "Execution Order:",
-            "-" * 50
+            "-" * 50,
         ]
 
         for gen in plan.generations:
