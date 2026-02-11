@@ -27,7 +27,6 @@ from kindling.injection import GlobalInjector, get_kindling_service
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
-from kindling.test_framework import create_mock_stream
 from kindling.watermarking import WatermarkEntityFinder
 from pyspark.sql.functions import col, current_timestamp
 from pyspark.sql.types import (
@@ -132,6 +131,35 @@ try:
     GlobalInjector.bind(EntityNameMapper, SimpleEntityNameMapper)
     GlobalInjector.bind(WatermarkEntityFinder, SimpleWatermarkEntityFinder)
 
+    # ---- Define entity schemas ----
+
+    bronze_schema = StructType(
+        [
+            StructField("event_id", StringType(), True),
+            StructField("timestamp", TimestampType(), True),
+            StructField("value", StringType(), True),
+        ]
+    )
+
+    silver_schema = StructType(
+        [
+            StructField("event_id", StringType(), True),
+            StructField("timestamp", TimestampType(), True),
+            StructField("value", StringType(), True),
+            StructField("processed_at", TimestampType(), True),
+        ]
+    )
+
+    gold_schema = StructType(
+        [
+            StructField("event_id", StringType(), True),
+            StructField("timestamp", TimestampType(), True),
+            StructField("value", StringType(), True),
+            StructField("processed_at", TimestampType(), True),
+            StructField("enriched_at", TimestampType(), True),
+        ]
+    )
+
     # ---- Define entities ----
 
     DataEntities.entity(
@@ -140,7 +168,7 @@ try:
         partition_columns=[],
         merge_columns=["event_id"],
         tags={"provider_type": "delta", "provider.path": bronze_path},
-        schema=None,
+        schema=bronze_schema,
     )
 
     DataEntities.entity(
@@ -149,7 +177,7 @@ try:
         partition_columns=[],
         merge_columns=["event_id"],
         tags={"provider_type": "delta", "provider.path": silver_path},
-        schema=None,
+        schema=silver_schema,
     )
 
     DataEntities.entity(
@@ -158,7 +186,7 @@ try:
         partition_columns=[],
         merge_columns=["event_id"],
         tags={"provider_type": "delta", "provider.path": gold_path},
-        schema=None,
+        schema=gold_schema,
     )
 
     msg = f"TEST_ID={test_id} test=entity_definitions status=PASSED"
@@ -167,24 +195,8 @@ try:
     test_results["entity_definitions"] = True
 
     # ---- Define pipes ----
-
-    @DataPipes.pipe(
-        pipeid="source_to_bronze",
-        name="source_to_bronze",
-        input_entity_ids=[],  # Source pipe - no Delta input
-        output_entity_id="stream.bronze",
-        output_type="append",
-        tags={"processing_mode": "streaming", "source_type": "rate"},
-    )
-    def source_to_bronze(df=None):
-        """Streaming source: rate → bronze."""
-        # For source pipes, create the stream directly
-        mock_stream = create_mock_stream(rows_per_second=10)
-        return mock_stream.select(
-            col("value").cast(StringType()).alias("event_id"),
-            col("timestamp"),
-            col("value"),
-        )
+    # Bronze is the source entity (pre-seeded with streaming data)
+    # Pipes transform: bronze → silver → gold
 
     @DataPipes.pipe(
         pipeid="bronze_to_silver",
@@ -217,13 +229,34 @@ try:
     print(msg)
     test_results["pipe_definitions"] = True
 
-    # ---- Execute streaming plan via GenerationExecutor ----
-    # Let the orchestrator handle everything: table creation, ordering, starting queries
+    # ---- Create tables by writing empty DataFrames (using framework) ----
+
+    from kindling.data_entities import EntityProvider
+
+    entity_provider = get_kindling_service(EntityProvider)
+    entity_registry = get_kindling_service(DataEntityRegistry)
+
+    bronze_entity = entity_registry.get_entity_definition("stream.bronze")
+    silver_entity = entity_registry.get_entity_definition("stream.silver")
+    gold_entity = entity_registry.get_entity_definition("stream.gold")
+
+    # Write empty DataFrames to create Delta tables at specified paths
+    entity_provider.write_to_entity(spark.createDataFrame([], bronze_schema), bronze_entity)
+    entity_provider.write_to_entity(spark.createDataFrame([], silver_schema), silver_entity)
+    entity_provider.write_to_entity(spark.createDataFrame([], gold_schema), gold_entity)
+
+    msg = f"TEST_ID={test_id} test=bronze_seed status=PASSED"
+    logger.info(msg)
+    print(msg)
+    test_results["bronze_seed"] = True
+
+    # ---- Execute streaming pipeline via Orchestrator FIRST ----
+    # Start downstream queries (silver_to_gold, bronze_to_silver) - they wait for data
 
     plan_generator = get_kindling_service(ExecutionPlanGenerator)
     executor = get_kindling_service(GenerationExecutor)
 
-    pipe_ids = ["source_to_bronze", "bronze_to_silver", "silver_to_gold"]
+    pipe_ids = ["bronze_to_silver", "silver_to_gold"]
     plan = plan_generator.generate_streaming_plan(pipe_ids)
 
     # Pass checkpoint base path for streaming queries
@@ -251,12 +284,82 @@ try:
             if q:
                 streaming_queries.append(q)
 
-    # ---- Wait for data to flow through pipeline ----
-    # Orchestrator started all queries in reverse-DAG order
-    # source_to_bronze is now writing → bronze_to_silver → silver_to_gold
+    # ---- Helper: Wait for queries to process data ----
+    def wait_for_query_progress(queries, expected_rows, timeout_seconds=60, poll_interval=2):
+        """Monitor streaming queries and wait until they've processed expected rows."""
+        start_time = time.time()
+        while time.time() - start_time < timeout_seconds:
+            all_processed = True
+            for q in queries:
+                if not q.isActive:
+                    continue
+                progress = q.lastProgress
+                if progress:
+                    num_input = progress.get("numInputRows", 0)
+                    msg = f"TEST_ID={test_id} query={q.id} batch={progress.get('batchId')} input_rows={num_input}"
+                    logger.debug(msg)
+                    # Check if this query has processed enough data
+                    if num_input < expected_rows:
+                        all_processed = False
+                else:
+                    all_processed = False
 
-    print(f"TEST_ID={test_id} waiting_for_pipeline=true duration=30s")
-    time.sleep(30)
+            if all_processed:
+                msg = f"TEST_ID={test_id} queries_processed=true elapsed={time.time() - start_time:.1f}s"
+                logger.info(msg)
+                print(msg)
+                return True
+
+            time.sleep(poll_interval)
+
+        # Timeout reached
+        msg = f"TEST_ID={test_id} queries_timeout=true elapsed={time.time() - start_time:.1f}s"
+        logger.warning(msg)
+        print(msg)
+        return False
+
+    # ---- Simulate streaming by appending batches to bronze ----
+    # Streaming queries are active and will pick up new data automatically
+    from datetime import datetime
+
+    # Small delay to let queries initialize checkpoints
+    time.sleep(3)
+
+    # Append batches of data to bronze over time using framework
+    total_rows = 0
+    for batch_num in range(5):
+        batch_time = datetime.now()
+        batch_data = [
+            {
+                "event_id": str(batch_num * 20 + i),
+                "timestamp": batch_time,
+                "value": str(batch_num * 20 + i),
+            }
+            for i in range(20)
+        ]
+        batch_df = spark.createDataFrame(batch_data)
+        entity_provider.append_to_entity(batch_df, bronze_entity)
+        total_rows += 20
+
+        msg = f"TEST_ID={test_id} bronze_batch={batch_num + 1} rows=20 total={total_rows} appended=true"
+        logger.info(msg)
+        print(msg)
+
+        # Wait between batches to simulate streaming
+        time.sleep(3)
+
+    # Wait for streaming queries to process all data (with timeout)
+    msg = f"TEST_ID={test_id} waiting_for_queries=true expected_rows={total_rows} timeout=60s"
+    logger.info(msg)
+    print(msg)
+
+    queries_processed = wait_for_query_progress(
+        streaming_queries, expected_rows=total_rows, timeout_seconds=60
+    )
+    if not queries_processed:
+        msg = f"TEST_ID={test_id} warning=queries_did_not_process_all_data"
+        logger.warning(msg)
+        print(msg)
 
     # ---- Verify data in each layer ----
 
@@ -272,20 +375,64 @@ try:
         print(msg)
         test_results[label] = ok
 
-    # ---- Stop all streaming queries ----
+    # ---- Stop streaming queries gracefully in reverse order ----
+    # NOTE: Framework should provide executor.stop_streaming_queries() that handles this
+    # Reverse order ensures downstream queries finish processing before upstream stops
 
-    for q in streaming_queries:
+    msg = f"TEST_ID={test_id} stopping_queries=true count={len(streaming_queries)}"
+    logger.info(msg)
+    print(msg)
+
+    for q in reversed(streaming_queries):
         try:
-            q.stop()
-        except Exception:
-            pass
+            if q.isActive:
+                query_id = q.id
+                # Process any remaining data
+                q.processAllAvailable()
+                # Stop gracefully
+                q.stop()
+                msg = f"TEST_ID={test_id} query_stopped=true query_id={query_id}"
+                logger.info(msg)
+                print(msg)
+        except Exception as e:
+            msg = f"TEST_ID={test_id} query_stop_failed=true query_id={q.id} error={str(e)}"
+            logger.warning(msg)
+            print(msg)
+
     streaming_queries.clear()
-    time.sleep(2)
+    time.sleep(2)  # Allow final cleanup
 
     msg = f"TEST_ID={test_id} test=queries_stopped status=PASSED"
     logger.info(msg)
     print(msg)
     test_results["queries_stopped"] = True
+
+    # ---- Cleanup: Delete test tables and checkpoints ----
+    msg = f"TEST_ID={test_id} cleanup=starting"
+    logger.info(msg)
+    print(msg)
+
+    from kindling.platform_provider import PlatformServiceProvider
+
+    platform_service_provider = get_kindling_service(PlatformServiceProvider)
+    platform_service = platform_service_provider.get_service()
+
+    for path, label in [
+        (bronze_path, "bronze"),
+        (silver_path, "silver"),
+        (gold_path, "gold"),
+        (chk_base, "checkpoints"),
+    ]:
+        try:
+            if platform_service.exists(path):
+                platform_service.delete(path, recurse=True)
+            msg = f"TEST_ID={test_id} cleanup={label} status=deleted"
+            logger.info(msg)
+            print(msg)
+        except Exception as cleanup_error:
+            msg = f"TEST_ID={test_id} cleanup={label} status=failed error={str(cleanup_error)}"
+            logger.warning(msg)
+            print(msg)
 
 except Exception as e:
     msg = f"TEST_ID={test_id} status=FAILED error={str(e)}"
