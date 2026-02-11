@@ -47,7 +47,7 @@ test_id = str(config_service.get("test_id") or "unknown")
 
 msg = f"TEST_ID={test_id} status=STARTED component=streaming_orchestrator"
 logger.info(msg)
-print(msg)
+print(msg, flush=True)
 
 test_results = {}
 streaming_queries = []
@@ -191,7 +191,7 @@ try:
 
     msg = f"TEST_ID={test_id} test=entity_definitions status=PASSED"
     logger.info(msg)
-    print(msg)
+    print(msg, flush=True)
     test_results["entity_definitions"] = True
 
     # ---- Define pipes ----
@@ -226,7 +226,7 @@ try:
 
     msg = f"TEST_ID={test_id} test=pipe_definitions status=PASSED"
     logger.info(msg)
-    print(msg)
+    print(msg, flush=True)
     test_results["pipe_definitions"] = True
 
     # ---- Create tables by writing empty DataFrames (using framework) ----
@@ -244,11 +244,6 @@ try:
     entity_provider.write_to_entity(spark.createDataFrame([], bronze_schema), bronze_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], silver_schema), silver_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], gold_schema), gold_entity)
-
-    msg = f"TEST_ID={test_id} test=bronze_seed status=PASSED"
-    logger.info(msg)
-    print(msg)
-    test_results["bronze_seed"] = True
 
     # ---- Execute streaming pipeline via Orchestrator FIRST ----
     # Start downstream queries (silver_to_gold, bronze_to_silver) - they wait for data
@@ -272,7 +267,7 @@ try:
         f"queries={num_queries}"
     )
     logger.info(msg)
-    print(msg)
+    print(msg, flush=True)
     test_results["executor_streaming"] = ok
 
     # Track executor's streaming queries for cleanup
@@ -372,7 +367,7 @@ try:
         ok = count > 0
         msg = f"TEST_ID={test_id} test={label} status={'PASSED' if ok else 'FAILED'} count={count}"
         logger.info(msg)
-        print(msg)
+        print(msg, flush=True)
         test_results[label] = ok
 
     # ---- Stop streaming queries gracefully in reverse order ----
@@ -404,7 +399,7 @@ try:
 
     msg = f"TEST_ID={test_id} test=queries_stopped status=PASSED"
     logger.info(msg)
-    print(msg)
+    print(msg, flush=True)
     test_results["queries_stopped"] = True
 
     # ---- Cleanup: Delete test tables and checkpoints ----
@@ -456,7 +451,7 @@ overall = all(test_results.values())
 status = "PASSED" if overall else "FAILED"
 msg = f"TEST_ID={test_id} status=COMPLETED result={status}"
 logger.info(msg)
-print(msg)
+print(msg, flush=True)
 
 print(f"\n{'='*60}")
 print(f"TEST SUMMARY - {status}")

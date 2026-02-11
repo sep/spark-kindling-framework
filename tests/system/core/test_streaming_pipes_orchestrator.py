@@ -132,7 +132,6 @@ class TestStreamingPipesOrchestrator:
             expected_tests = [
                 "entity_definitions",
                 "pipe_definitions",
-                "bronze_seed",
                 "executor_streaming",
                 "bronze_data",
                 "silver_data",
