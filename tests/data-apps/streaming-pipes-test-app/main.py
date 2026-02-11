@@ -169,6 +169,24 @@ try:
     # ---- Define pipes ----
 
     @DataPipes.pipe(
+        pipeid="source_to_bronze",
+        name="source_to_bronze",
+        input_entity_ids=[],  # Source pipe - no Delta input
+        output_entity_id="stream.bronze",
+        output_type="append",
+        tags={"processing_mode": "streaming", "source_type": "rate"},
+    )
+    def source_to_bronze(df=None):
+        """Streaming source: rate → bronze."""
+        # For source pipes, create the stream directly
+        mock_stream = create_mock_stream(rows_per_second=10)
+        return mock_stream.select(
+            col("value").cast(StringType()).alias("event_id"),
+            col("timestamp"),
+            col("value"),
+        )
+
+    @DataPipes.pipe(
         pipeid="bronze_to_silver",
         name="bronze_to_silver",
         input_entity_ids=["stream.bronze"],
@@ -199,79 +217,13 @@ try:
     print(msg)
     test_results["pipe_definitions"] = True
 
-    # ---- Pre-create silver and gold tables ----
-    # Streaming executor runs in reverse order (sinks→sources), so downstream tables
-    # must exist with schema before consumers can read them as streams.
-    # Bronze is NOT pre-created - it will be created by the seed query.
-
-    # Silver schema (output of bronze_to_silver pipe)
-    silver_schema = StructType(
-        [
-            StructField("event_id", StringType(), True),
-            StructField("timestamp", TimestampType(), True),
-            StructField("value", StringType(), True),
-            StructField("processed_at", TimestampType(), True),
-        ]
-    )
-
-    # Gold schema (output of silver_to_gold pipe)
-    gold_schema = StructType(
-        [
-            StructField("event_id", StringType(), True),
-            StructField("timestamp", TimestampType(), True),
-            StructField("value", StringType(), True),
-            StructField("processed_at", TimestampType(), True),
-            StructField("enriched_at", TimestampType(), True),
-        ]
-    )
-
-    # Create empty silver and gold tables
-    spark.createDataFrame([], silver_schema).write.format("delta").mode("overwrite").save(
-        silver_path
-    )
-    spark.createDataFrame([], gold_schema).write.format("delta").mode("overwrite").save(gold_path)
-
-    msg = f"TEST_ID={test_id} test=table_creation status=PASSED tables=2"
-    logger.info(msg)
-    print(msg)
-    test_results["table_creation"] = True
-
-    # ---- Start bronze seed FIRST (creates bronze table and begins data flow) ----
-
-    msg = f"TEST_ID={test_id} starting bronze seed to create bronze table"
-    logger.info(msg)
-    print(msg)
-
-    mock_stream = create_mock_stream(rows_per_second=10)
-    bronze_seed = mock_stream.select(
-        col("value").cast(StringType()).alias("event_id"),
-        col("timestamp"),
-        col("value"),
-    )
-
-    bronze_query = (
-        bronze_seed.writeStream.format("delta")
-        .outputMode("append")
-        .option("checkpointLocation", f"{chk_base}/seed")
-        .start(bronze_path)
-    )
-    streaming_queries.append(bronze_query)
-
-    msg = f"TEST_ID={test_id} test=bronze_seed status=PASSED query_id={bronze_query.id}"
-    logger.info(msg)
-    print(msg)
-    test_results["bronze_seed"] = True
-
-    # Let bronze table be created and receive some data before starting consumers
-    print(f"TEST_ID={test_id} waiting_for_bronze=true duration=10s")
-    time.sleep(10)
-
     # ---- Execute streaming plan via GenerationExecutor ----
+    # Let the orchestrator handle everything: table creation, ordering, starting queries
 
     plan_generator = get_kindling_service(ExecutionPlanGenerator)
     executor = get_kindling_service(GenerationExecutor)
 
-    pipe_ids = ["bronze_to_silver", "silver_to_gold"]
+    pipe_ids = ["source_to_bronze", "bronze_to_silver", "silver_to_gold"]
     plan = plan_generator.generate_streaming_plan(pipe_ids)
 
     # Pass checkpoint base path for streaming queries
@@ -300,7 +252,8 @@ try:
                 streaming_queries.append(q)
 
     # ---- Wait for data to flow through pipeline ----
-    # Bronze seed is already writing → bronze_to_silver → silver_to_gold should process
+    # Orchestrator started all queries in reverse-DAG order
+    # source_to_bronze is now writing → bronze_to_silver → silver_to_gold
 
     print(f"TEST_ID={test_id} waiting_for_pipeline=true duration=30s")
     time.sleep(30)
