@@ -236,3 +236,69 @@ def stdout_validator(platform_client):
 
     client, platform_name = platform_client
     return create_stdout_validator(client)
+
+
+def inject_platform_config(app_files: dict, platform_name: str, test_id: str = None) -> dict:
+    """Inject platform-specific config into app's settings.yaml before deployment.
+
+    Args:
+        app_files: Dict of {filename: content} from AppPackager
+        platform_name: Platform name (fabric, databricks, synapse)
+        test_id: Optional test ID for unique paths
+
+    Returns:
+        Modified app_files dict with platform config merged into settings.yaml
+    """
+    import yaml
+
+    # Platform-specific config
+    platform_config = {
+        "fabric": {
+            "kindling": {
+                "storage": {
+                    "table_root": "Tables",
+                    "checkpoint_root": "Files/checkpoints",
+                }
+            }
+        },
+        "databricks": {
+            "kindling": {
+                "storage": {
+                    "table_root": "/tmp",
+                    "checkpoint_root": "/tmp/checkpoints",
+                }
+            }
+        },
+        "synapse": {
+            "kindling": {
+                "storage": {
+                    "table_root": "Tables",
+                    "checkpoint_root": "Files/checkpoints",
+                }
+            }
+        },
+    }
+
+    config_to_merge = platform_config.get(platform_name, {})
+
+    # Load existing settings.yaml if present
+    existing_config = {}
+    if "settings.yaml" in app_files:
+        existing_config = yaml.safe_load(app_files["settings.yaml"]) or {}
+
+    # Deep merge (config_to_merge overrides existing)
+    def deep_merge(base, override):
+        result = base.copy()
+        for key, value in override.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+
+    merged_config = deep_merge(existing_config, config_to_merge)
+
+    # Update app_files with merged config
+    app_files["settings.yaml"] = yaml.dump(merged_config, default_flow_style=False, sort_keys=False)
+
+    return app_files
