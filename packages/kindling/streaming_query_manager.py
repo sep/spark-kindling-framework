@@ -398,21 +398,25 @@ class StreamingQueryManager(SignalEmitter):
             ValueError: If query not registered
         """
         with self._lock:
-            if query_id not in self._queries:
+            resolved_query_id = self.resolve_registered_query_id(query_id)
+            if resolved_query_id is None:
                 raise ValueError(f"Query '{query_id}' not registered")
 
+            query_id = resolved_query_id
             query_info = self._queries[query_id]
-            query_info.state = StreamingQueryState.RESTARTING
+            was_active = query_info.is_active
 
         try:
             self.logger.info(f"Restarting query '{query_id}'...")
 
             # Stop if active
-            if query_info.is_active:
+            if was_active:
                 self.stop_query(query_id, await_termination=True)
 
             # Increment restart count
             with self._lock:
+                query_info = self._queries[query_id]
+                query_info.state = StreamingQueryState.RESTARTING
                 query_info.restart_count += 1
 
             # Start again
@@ -434,6 +438,26 @@ class StreamingQueryManager(SignalEmitter):
         except Exception as e:
             self.logger.error(f"Failed to restart query '{query_id}': {e}", include_traceback=True)
             raise
+
+    def resolve_registered_query_id(self, query_id_or_spark_id: str) -> Optional[str]:
+        """
+        Resolve a logical registered query_id from either logical ID or Spark query ID.
+
+        Args:
+            query_id_or_spark_id: Registered query ID or Spark runtime query ID
+
+        Returns:
+            Registered query ID if found, otherwise None
+        """
+        with self._lock:
+            if query_id_or_spark_id in self._queries:
+                return query_id_or_spark_id
+
+            for registered_query_id, query_info in self._queries.items():
+                if query_info.spark_query_id == query_id_or_spark_id:
+                    return registered_query_id
+
+            return None
 
     def get_query_status(self, query_id: str) -> StreamingQueryInfo:
         """

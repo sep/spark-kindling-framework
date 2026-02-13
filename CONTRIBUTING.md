@@ -1,5 +1,3 @@
-TODO: Needs thorough review/revise
-
 # Contributing to Kindling
 We welcome contributions from the community!
 
@@ -55,7 +53,7 @@ When adding or updating dependencies:
 - Update README.md if adding features
 - Include inline code comments for complex logic
 - Provide usage examples for new functionality
-- Update CHANGELOG.md with your changes
+- Add release notes under `docs/releases/` when preparing a release
 
 ## Questions or Suggestions?
 - Open an issue for feature requests or questions

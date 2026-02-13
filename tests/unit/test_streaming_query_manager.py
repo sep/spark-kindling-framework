@@ -434,6 +434,38 @@ class TestQueryRestart:
         query_info = manager.get_query_status("test_query")
         assert query_info.restart_count == 2
 
+    def test_restart_active_query_stops_before_start(self, manager):
+        """Active query should be stopped before restart start call."""
+
+        query = Mock()
+        query.id = "spark-id-1"
+        query.runId = "spark-run-1"
+        query.isActive = True
+
+        manager.register_query("test_query", lambda spark, config: query, {})
+        manager.start_query("test_query")
+
+        original_stop = manager.stop_query
+        manager.stop_query = Mock(wraps=original_stop)
+
+        manager.restart_query("test_query")
+
+        manager.stop_query.assert_called_once_with("test_query", await_termination=True)
+
+    def test_restart_accepts_spark_query_id(self, manager, mock_streaming_query):
+        """Restart can resolve Spark runtime query id to registered query id."""
+
+        def builder(spark, config):
+            return mock_streaming_query
+
+        manager.register_query("test_query", builder, {})
+        manager.start_query("test_query")
+
+        query_info = manager.restart_query("spark-query-123")
+
+        assert query_info.state == StreamingQueryState.ACTIVE
+        assert query_info.restart_count == 1
+
 
 # =============================================================================
 # Query Status Tests

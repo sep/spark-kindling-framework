@@ -58,24 +58,9 @@ class TestAzureMonitorExtension:
         app_files = app_packager.prepare_app_files(str(app_path))
         print(f"✅ Prepared {len(app_files)} files")
 
-        # Discover config overrides from environment variables
-        # CONFIG__kindling__key__subkey maps to kindling.key.subkey
-        # __ indicates nesting, _ is preserved in key names
-        config_overrides = {}
-        for key, value in os.environ.items():
-            if key.startswith("CONFIG__"):
-                # Remove CONFIG__ prefix and parse nested structure
-                config_path = key[8:]  # Remove CONFIG__ prefix
-                parts = config_path.split("__")  # Split on __ for nesting
+        from tests.system.test_helpers import get_env_config_overrides
 
-                # Build nested dict
-                current = config_overrides
-                for part in parts[:-1]:
-                    if part not in current:
-                        current[part] = {}
-                    current = current[part]
-                current[parts[-1]] = value
-
+        config_overrides = get_env_config_overrides(platform)
         if config_overrides:
             print(f"📋 Discovered config overrides from env: {config_overrides}")
 
@@ -86,10 +71,6 @@ class TestAzureMonitorExtension:
             "entry_point": "main.py",
             "test_id": test_id,
         }
-
-        # Add config overrides if discovered from env
-        if config_overrides:
-            job_config["config_overrides"] = config_overrides
 
         # Step 1: Deploy app to storage
         print(f"📂 Deploying app: {app_name}")

@@ -16,27 +16,16 @@ When you publish a GitHub Release:
 ### Step 1: Prepare the Release
 
 ```bash
-# 1. Update version in all build configs
-./scripts/update_version.sh 0.2.0  # or manually edit files
+# 1. Bump version in pyproject.toml
+poetry run poe version --bump_type patch
+# Or: --bump_type minor / --bump_type major
 
-# 2. Update CHANGELOG.md
-cat >> CHANGELOG.md << 'CHANGELOG'
-## [0.2.0] - 2025-10-17
-
-### Added
-- New feature X
-- Enhancement Y
-
-### Fixed
-- Bug fix Z
-
-### Changed
-- Breaking change description
-CHANGELOG
+# 2. Add release notes file
+vim docs/releases/v0.6.0.md
 
 # 3. Commit and push
-git add build-configs/*.toml CHANGELOG.md
-git commit -m "chore: bump version to 0.2.0"
+git add pyproject.toml docs/releases/v0.6.0.md
+git commit -m "chore: prepare release v0.6.0"
 git push origin main
 
 # 4. Wait for CI to pass
@@ -55,9 +44,9 @@ git push origin main
 2. **Click "Draft a new release"**
 
 3. **Fill in Release Details**
-   - **Choose a tag**: `v0.2.0` (create new tag)
+   - **Choose a tag**: `v0.6.0` (create new tag)
    - **Target**: `main` branch
-   - **Release title**: `v0.2.0 - Brief description`
+   - **Release title**: `v0.6.0 - Brief description`
    - **Description**: Add release notes (or click "Generate release notes")
 
 4. **Publish Release**
@@ -72,14 +61,14 @@ git push origin main
 # https://cli.github.com/
 
 # Create release with auto-generated notes
-gh release create v0.2.0 \
-  --title "v0.2.0 - Feature Release" \
+gh release create v0.6.0 \
+  --title "v0.6.0 - Feature Release" \
   --generate-notes
 
 # Or with custom notes
-gh release create v0.2.0 \
-  --title "v0.2.0 - Feature Release" \
-  --notes "See CHANGELOG.md for details"
+gh release create v0.6.0 \
+  --title "v0.6.0 - Feature Release" \
+  --notes-file docs/releases/v0.6.0.md
 ```
 
 ### Step 3: Verify Release Assets
@@ -88,13 +77,13 @@ After the workflow completes:
 
 1. **Check Release Page**
    ```
-   https://github.com/sep/spark-kindling-framework/releases/tag/v0.2.0
+   https://github.com/sep/spark-kindling-framework/releases/tag/v0.6.0
    ```
 
 2. **Verify Assets Section shows:**
-   - ✅ `kindling_synapse-0.2.0-py3-none-any.whl`
-   - ✅ `kindling_databricks-0.2.0-py3-none-any.whl`
-   - ✅ `kindling_fabric-0.2.0-py3-none-any.whl`
+   - ✅ `kindling_synapse-0.6.0-py3-none-any.whl`
+   - ✅ `kindling_databricks-0.6.0-py3-none-any.whl`
+   - ✅ `kindling_fabric-0.6.0-py3-none-any.whl`
    - ✅ Source code (zip)
    - ✅ Source code (tar.gz)
 
@@ -107,17 +96,17 @@ After the workflow completes:
 # https://github.com/sep/spark-kindling-framework/releases/latest
 
 # 2. Install locally
-pip install kindling_synapse-0.2.0-py3-none-any.whl
+pip install kindling_synapse-0.6.0-py3-none-any.whl
 ```
 
 ### Direct Install from URL
 
 ```bash
 # Install directly from GitHub Release
-pip install https://github.com/sep/spark-kindling-framework/releases/download/v0.2.0/kindling_synapse-0.2.0-py3-none-any.whl
+pip install https://github.com/sep/spark-kindling-framework/releases/download/v0.6.0/kindling_synapse-0.6.0-py3-none-any.whl
 
 # Or use the "latest" release
-pip install https://github.com/sep/spark-kindling-framework/releases/latest/download/kindling_synapse-0.2.0-py3-none-any.whl
+pip install https://github.com/sep/spark-kindling-framework/releases/latest/download/kindling_synapse-0.6.0-py3-none-any.whl
 ```
 
 ### In requirements.txt
@@ -126,21 +115,21 @@ pip install https://github.com/sep/spark-kindling-framework/releases/latest/down
 # requirements.txt
 
 # Install specific version from release
-kindling-synapse @ https://github.com/sep/spark-kindling-framework/releases/download/v0.2.0/kindling_synapse-0.2.0-py3-none-any.whl
+kindling-synapse @ https://github.com/sep/spark-kindling-framework/releases/download/v0.6.0/kindling_synapse-0.6.0-py3-none-any.whl
 
 # Or always use latest
-kindling-synapse @ https://github.com/sep/spark-kindling-framework/releases/latest/download/kindling_synapse-0.2.0-py3-none-any.whl
+kindling-synapse @ https://github.com/sep/spark-kindling-framework/releases/latest/download/kindling_synapse-0.6.0-py3-none-any.whl
 ```
 
 ### In Databricks/Synapse/Fabric
 
 ```python
 # Databricks notebook
-%pip install https://github.com/sep/spark-kindling-framework/releases/download/v0.2.0/kindling_databricks-0.2.0-py3-none-any.whl
+%pip install https://github.com/sep/spark-kindling-framework/releases/download/v0.6.0/kindling_databricks-0.6.0-py3-none-any.whl
 
 # Or in cluster libraries
 # UI: Libraries → Install New → PyPI
-# Package: https://github.com/sep/spark-kindling-framework/releases/download/v0.2.0/kindling_databricks-0.2.0-py3-none-any.whl
+# Package: https://github.com/sep/spark-kindling-framework/releases/download/v0.6.0/kindling_databricks-0.6.0-py3-none-any.whl
 ```
 
 ## 🏷️ Release Types
@@ -165,13 +154,13 @@ For beta/alpha versions:
 
 ```bash
 # Create pre-release
-gh release create v0.2.0-beta.1 \
+gh release create v0.6.0-beta.1 \
   --prerelease \
-  --title "v0.2.0 Beta 1" \
+  --title "v0.6.0 Beta 1" \
   --notes "Beta release for testing"
 
 # Users can install with:
-pip install https://github.com/sep/spark-kindling-framework/releases/download/v0.2.0-beta.1/kindling_synapse-0.2.0b1-py3-none-any.whl
+pip install https://github.com/sep/spark-kindling-framework/releases/download/v0.6.0-beta.1/kindling_synapse-0.6.0b1-py3-none-any.whl
 ```
 
 ## 📊 What Shows Up in a Release
@@ -179,91 +168,62 @@ pip install https://github.com/sep/spark-kindling-framework/releases/download/v0
 When you navigate to a release page, users will see:
 
 ```
-Release v0.2.0 - Feature Release
+Release v0.6.0 - Feature Release
 Published by @username on Oct 17, 2025
 
 [Release notes here]
 
 Assets
 
- kindling_synapse-0.2.0-py3-none-any.whl      76 KB
- kindling_databricks-0.2.0-py3-none-any.whl   76 KB
- kindling_fabric-0.2.0-py3-none-any.whl       72 KB
+ kindling_synapse-0.6.0-py3-none-any.whl      76 KB
+ kindling_databricks-0.6.0-py3-none-any.whl   76 KB
+ kindling_fabric-0.6.0-py3-none-any.whl       72 KB
  Source code (zip)
  Source code (tar.gz)
 ```
 
 ## 🔄 Automated Version Bumping
 
-Create a helper script to update versions across all files:
+Use the existing `poe version` task (defined in `pyproject.toml`):
 
 ```bash
-#!/bin/bash
-# scripts/update_version.sh
-
-NEW_VERSION=$1
-
-if [ -z "$NEW_VERSION" ]; then
-    echo "Usage: ./scripts/update_version.sh <version>"
-    echo "Example: ./scripts/update_version.sh 0.2.0"
-    exit 1
-fi
-
-echo "Updating version to $NEW_VERSION..."
-
-# Update all platform configs
-for platform in synapse databricks fabric; do
-    sed -i "s/^version = .*/version = \"$NEW_VERSION\"/" build-configs/$platform.toml
-    echo "✅ Updated build-configs/$platform.toml"
-done
-
-# Update main pyproject.toml
-sed -i "s/^version = .*/version = \"$NEW_VERSION\"/" pyproject.toml
-echo "✅ Updated pyproject.toml"
-
-echo ""
-echo "Version updated to $NEW_VERSION"
-echo "Next steps:"
-echo "  1. git add build-configs/*.toml pyproject.toml"
-echo "  2. git commit -m 'chore: bump version to $NEW_VERSION'"
-echo "  3. git push origin main"
-echo "  4. Create release: gh release create v$NEW_VERSION"
+poetry run poe version --bump_type patch   # 0.6.0 -> 0.6.1
+poetry run poe version --bump_type minor   # 0.6.0 -> 0.7.0
+poetry run poe version --bump_type major   # 0.6.0 -> 1.0.0
+poetry run poe version --bump_type alpha   # 0.6.0 -> 0.6.1a1
 ```
 
-Make it executable:
-```bash
-chmod +x scripts/update_version.sh
-```
+This updates the version in `pyproject.toml` and can optionally trigger build/deploy.
 
 ## 🎯 Complete Release Workflow
 
 ```bash
 # 1. Update version
-./scripts/update_version.sh 0.2.0
+poetry run poe version --bump_type patch
 
-# 2. Update CHANGELOG
-vim CHANGELOG.md
+# 2. Update release notes
+vim docs/releases/v0.6.0.md
 
 # 3. Commit changes
 git add .
-git commit -m "chore: prepare release v0.2.0"
+git commit -m "chore: prepare release v0.6.0"
 git push origin main
 
 # 4. Wait for CI to pass (check Actions tab)
 
 # 5. Create release
-gh release create v0.2.0 \
-  --title "v0.2.0 - Feature Release" \
-  --notes-file CHANGELOG.md
+gh release create v0.6.0 \
+  --title "v0.6.0 - Feature Release" \
+  --notes-file docs/releases/v0.6.0.md
 
 # 6. Monitor release build
 # Go to: Actions → Wait for "Attach Wheels to Release" job
 
 # 7. Verify release
-gh release view v0.2.0
+gh release view v0.6.0
 
 # 8. Test installation
-pip install https://github.com/sep/spark-kindling-framework/releases/download/v0.2.0/kindling_synapse-0.2.0-py3-none-any.whl
+pip install https://github.com/sep/spark-kindling-framework/releases/download/v0.6.0/kindling_synapse-0.6.0-py3-none-any.whl
 ```
 
 ## 🔐 Access Control for Releases
@@ -283,12 +243,12 @@ For private repos, users must authenticate:
 
 ```bash
 # Option 1: Use GitHub CLI (automatic auth)
-gh release download v0.2.0 --pattern "*.whl"
+gh release download v0.6.0 --pattern "*.whl"
 
 # Option 2: Use curl with token
 curl -H "Authorization: token YOUR_PAT" \
-  -L https://github.com/sep/spark-kindling-framework/releases/download/v0.2.0/kindling_synapse-0.2.0-py3-none-any.whl \
-  -o kindling_synapse-0.2.0-py3-none-any.whl
+  -L https://github.com/sep/spark-kindling-framework/releases/download/v0.6.0/kindling_synapse-0.6.0-py3-none-any.whl \
+  -o kindling_synapse-0.6.0-py3-none-any.whl
 ```
 
 ## 📝 Release Notes Best Practices
@@ -318,7 +278,7 @@ curl -H "Authorization: token YOUR_PAT" \
 - Upgraded to PySpark 3.5.0
 - Updated all dependencies for security patches
 
-**Full Changelog**: https://github.com/sep/spark-kindling-framework/compare/v0.1.0...v0.2.0
+**Full Changelog**: https://github.com/sep/spark-kindling-framework/compare/v0.5.0...v0.6.0
 ```
 
 ### Use GitHub's Auto-Generated Notes
@@ -335,21 +295,21 @@ For urgent bug fixes:
 
 ```bash
 # 1. Create hotfix branch from tag
-git checkout -b hotfix/0.2.1 v0.2.0
+git checkout -b hotfix/0.6.1 v0.6.0
 
 # 2. Fix the bug
 git add .
 git commit -m "fix: critical bug in platform detection"
 
 # 3. Update version
-./scripts/update_version.sh 0.2.1
+poetry run poe version --bump_type patch
 
 # 4. Push and create PR
-git push origin hotfix/0.2.1
+git push origin hotfix/0.6.1
 
 # 5. After PR approval and merge
-gh release create v0.2.1 \
-  --title "v0.2.1 - Hotfix Release" \
+gh release create v0.6.1 \
+  --title "v0.6.1 - Hotfix Release" \
   --notes "Critical bug fix: platform detection"
 ```
 

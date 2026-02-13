@@ -148,6 +148,7 @@ class TestStreamingSystemIntegration:
                 f"TEST_ID={test_id} test=query_registration status=PASSED",
                 f"TEST_ID={test_id} test=query_start status=PASSED",
                 f"TEST_ID={test_id} test=listener_events status=PASSED",
+                f"TEST_ID={test_id} test=query_restart_by_spark_id status=PASSED",
                 f"TEST_ID={test_id} test=query_stop status=PASSED",
                 f"TEST_ID={test_id} status=COMPLETED result=PASSED",
             ]
@@ -188,6 +189,9 @@ class TestStreamingSystemIntegration:
             assert (
                 f"TEST_ID={test_id} test=listener_events status=PASSED" in stdout_content
             ), "Streaming listener did not process events"
+            assert (
+                f"TEST_ID={test_id} test=query_restart_by_spark_id status=PASSED" in stdout_content
+            ), "Streaming query did not restart by Spark query ID"
             assert (
                 f"TEST_ID={test_id} status=COMPLETED result=PASSED" in stdout_content
             ), "Streaming test did not complete successfully"

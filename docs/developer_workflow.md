@@ -16,13 +16,9 @@ poetry run poe deploy --platform synapse        # Deploy only synapse wheel
 poetry run poe deploy --platform databricks     # Deploy only databricks wheel
 poetry run poe deploy --platform fabric         # Deploy only fabric wheel
 
-# Or use dedicated tasks:
-poetry run poe deploy-synapse                   # Same as --platform synapse
-poetry run poe deploy-databricks                # Same as --platform databricks
-poetry run poe deploy-fabric                    # Same as --platform fabric
-
-# Deploy from GitHub release (production)
-poetry run poe deploy-release                   # Deploy all platforms from release
+# Deploy from GitHub release assets (production)
+poetry run poe deploy --release latest          # Deploy all platforms from latest release
+poetry run poe deploy --release 0.6.0           # Deploy all platforms from specific release
 
 # Run tests with coverage
 poetry run poe test
@@ -60,9 +56,9 @@ poetry run poe deploy --platform fabric       # Deploy only fabric
 This builds all 3 platform wheels and uploads them to:
 ```
 sepstdatalakedev/artifacts/packages/
-  ├── kindling_databricks-0.2.0-py3-none-any.whl
-  ├── kindling_fabric-0.2.0-py3-none-any.whl
-  └── kindling_synapse-0.2.0-py3-none-any.whl
+  ├── kindling_databricks-0.6.0-py3-none-any.whl
+  ├── kindling_fabric-0.6.0-py3-none-any.whl
+  └── kindling_synapse-0.6.0-py3-none-any.whl
 ```
 
 **Platform-specific deployment** is useful when:
@@ -74,10 +70,10 @@ sepstdatalakedev/artifacts/packages/
 
 ```bash
 # After creating a GitHub release with wheels attached:
-poetry run poe deploy-release
+poetry run poe deploy --release latest
 
 # Or deploy a specific release version:
-poetry run poe deploy-release 0.2.0
+poetry run poe deploy --release 0.6.0
 ```
 
 ### 3. Advanced Usage (Direct Python)
@@ -95,7 +91,7 @@ python scripts/deploy.py --platform fabric
 
 # Deploy from GitHub release
 python scripts/deploy.py --release
-python scripts/deploy.py --release 0.2.0
+python scripts/deploy.py --release 0.6.0
 python scripts/deploy.py --release --platform synapse
 ```
 
@@ -269,7 +265,7 @@ The version is managed in a single location:
 ```toml
 # pyproject.toml
 [tool.poetry]
-version = "0.2.0"  # Single source of truth
+version = "0.6.0"  # Single source of truth
 ```
 
 Platform-specific builds automatically use this version.

@@ -539,7 +539,7 @@ class DeltaEntityProvider(
         table_ref = self._get_table_reference(entity)
         return self._check_table_exists(table_ref)
 
-    def append_as_stream(self, entity, df, checkpointLocation, format=None, options=None):
+    def append_as_stream(self, df, entity, checkpointLocation, format=None, options=None):
         epl = GlobalInjector.get(EntityPathLocator)
         streamFormat = format or "delta"
 

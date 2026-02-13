@@ -8,8 +8,97 @@ Provides reusable patterns for:
 - Log content analysis
 """
 
+import os
 import sys
 from typing import Any, Callable, Dict, List, Optional, Set
+
+
+def _coerce_env_config_value(raw_value: str) -> Any:
+    """Coerce CONFIG__ env values to primitive Python types when obvious."""
+    lowered = raw_value.strip().lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    return raw_value
+
+
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Deep merge dictionaries, with override values winning."""
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def get_env_config_overrides(platform_name: str) -> Dict[str, Any]:
+    """
+    Parse CONFIG__ environment variables into nested config overrides.
+
+    Supports:
+    - CONFIG__kindling__temp_path=/...                      (global)
+    - CONFIG__platform_databricks__kindling__temp_path=/... (platform-specific)
+
+    Platform-specific entries are only applied when the platform prefix matches.
+    """
+    platform_prefix = f"platform_{platform_name}"
+    overrides: Dict[str, Any] = {}
+    global_entries: List[tuple[List[str], Any]] = []
+    platform_entries: List[tuple[List[str], Any]] = []
+
+    for env_key, raw_value in os.environ.items():
+        if not env_key.startswith("CONFIG__"):
+            continue
+
+        path = env_key[len("CONFIG__") :]
+        parts = [part for part in path.split("__") if part]
+        if not parts:
+            continue
+
+        value = _coerce_env_config_value(raw_value)
+        first = parts[0]
+        if first.startswith("platform_"):
+            if first != platform_prefix:
+                continue
+            scoped_parts = parts[1:]
+            if scoped_parts:
+                platform_entries.append((scoped_parts, value))
+            continue
+
+        global_entries.append((parts, value))
+
+    # Apply global entries first, then matching platform-specific entries
+    # so platform overrides are deterministic regardless os.environ iteration order.
+    for parts, value in global_entries + platform_entries:
+        current = overrides
+        for part in parts[:-1]:
+            existing = current.get(part)
+            if not isinstance(existing, dict):
+                current[part] = {}
+            current = current[part]
+
+        current[parts[-1]] = value
+
+    return overrides
+
+
+def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -> Dict[str, Any]:
+    """Merge CONFIG__ env overrides into a job_config payload for create_job()."""
+    merged_config = dict(job_config)
+    env_overrides = get_env_config_overrides(platform_name)
+    existing_overrides = merged_config.get("config_overrides") or {}
+
+    if env_overrides and existing_overrides:
+        merged_config["config_overrides"] = _deep_merge_dict(env_overrides, existing_overrides)
+    elif env_overrides:
+        merged_config["config_overrides"] = env_overrides
+    elif existing_overrides:
+        merged_config["config_overrides"] = existing_overrides
+
+    return merged_config
 
 
 class StdoutStreamValidator:
@@ -233,14 +322,16 @@ class StdoutStreamValidator:
         for test_name in expected_tests:
             passed_marker = f"TEST_ID={test_id} test={test_name} status=PASSED"
             failed_marker = f"TEST_ID={test_id} test={test_name} status=FAILED"
+            summary_passed_marker = f"{test_name}: PASSED"
+            summary_failed_marker = f"{test_name}: FAILED"
 
-            if passed_marker in content:
+            if passed_marker in content or summary_passed_marker in content:
                 results[test_name] = {
                     "passed": True,
                     "status": "PASSED",
                     "message": None,
                 }
-            elif failed_marker in content:
+            elif failed_marker in content or summary_failed_marker in content:
                 results[test_name] = {
                     "passed": False,
                     "status": "FAILED",
@@ -346,6 +437,25 @@ def create_platform_client(platform: str):
     from kindling.platform_provider import create_platform_api_from_env
 
     try:
-        return create_platform_api_from_env(platform)
+        client, platform_name = create_platform_api_from_env(platform)
+
+        original_create_job = client.create_job
+
+        def create_job_with_env_overrides(*args, **kwargs):
+            if "job_config" in kwargs:
+                kwargs["job_config"] = apply_env_config_overrides(
+                    kwargs["job_config"], platform_name
+                )
+                return original_create_job(*args, **kwargs)
+
+            if len(args) >= 2:
+                args_list = list(args)
+                args_list[1] = apply_env_config_overrides(args_list[1], platform_name)
+                return original_create_job(*args_list, **kwargs)
+
+            return original_create_job(*args, **kwargs)
+
+        client.create_job = create_job_with_env_overrides
+        return client, platform_name
     except ValueError as e:
         pytest.skip(str(e))
