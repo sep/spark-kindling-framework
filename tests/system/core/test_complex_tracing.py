@@ -6,14 +6,14 @@ with both default Kindling telemetry and Azure Monitor extension.
 
 Usage:
     # Test with default telemetry on a specific platform
-    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_default_telemetry --platform fabric
-    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_default_telemetry --platform synapse
-    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_default_telemetry --platform databricks
+    poe test-system --platform fabric --test default_telemetry
+    poe test-system --platform synapse --test default_telemetry
+    poe test-system --platform databricks --test default_telemetry
 
     # Test with Azure Monitor extension on a specific platform
-    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_azure_monitor_telemetry --platform fabric
-    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_azure_monitor_telemetry --platform synapse
-    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_azure_monitor_telemetry --platform databricks
+    poe test-system --platform fabric --test azure_monitor_telemetry
+    poe test-system --platform synapse --test azure_monitor_telemetry
+    poe test-system --platform databricks --test azure_monitor_telemetry
 """
 
 import os
