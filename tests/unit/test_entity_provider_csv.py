@@ -24,6 +24,14 @@ class TestCSVEntityProvider:
         provider.spark = MagicMock()
         return provider
 
+    @pytest.fixture(autouse=True)
+    def mock_spark_session(self, provider):
+        """Route Spark session factory calls to the mocked provider spark."""
+        with patch(
+            "kindling.entity_provider_csv.get_or_create_spark_session", return_value=provider.spark
+        ):
+            yield
+
     @pytest.fixture
     def entity_metadata(self):
         """Create sample entity metadata for CSV"""
@@ -226,6 +234,14 @@ class TestCSVProviderConfiguration:
         provider = CSVEntityProvider(logger_provider)
         provider.spark = MagicMock()
         return provider
+
+    @pytest.fixture(autouse=True)
+    def mock_spark_session(self, provider):
+        """Route Spark session factory calls to the mocked provider spark."""
+        with patch(
+            "kindling.entity_provider_csv.get_or_create_spark_session", return_value=provider.spark
+        ):
+            yield
 
     def test_no_provider_config_uses_empty_dict(self, provider):
         """Test that empty tags result in missing path error"""
