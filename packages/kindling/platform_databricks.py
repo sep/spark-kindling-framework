@@ -984,6 +984,7 @@ class DatabricksAPI(PlatformAPI):
         storage_account: Optional[str] = None,
         container: Optional[str] = None,
         base_path: Optional[str] = None,
+        default_cluster_id: Optional[str] = None,
         azure_tenant_id: Optional[str] = None,
         azure_client_id: Optional[str] = None,
         azure_client_secret: Optional[str] = None,
@@ -997,6 +998,7 @@ class DatabricksAPI(PlatformAPI):
             storage_account: Optional storage account for ABFSS cluster logs
             container: Optional container name for ABFSS cluster logs
             base_path: Optional base path within container
+            default_cluster_id: Optional existing cluster ID to use when job config omits cluster
             azure_tenant_id: Optional Azure tenant ID for service principal auth
             azure_client_id: Optional Azure client ID for service principal auth
             azure_client_secret: Optional Azure client secret for service principal auth
@@ -1007,6 +1009,7 @@ class DatabricksAPI(PlatformAPI):
         self.storage_account = storage_account
         self.container = container
         self.base_path = base_path
+        self.default_cluster_id = default_cluster_id
         self.azure_tenant_id = azure_tenant_id
         self.azure_client_id = azure_client_id
         self.azure_client_secret = azure_client_secret
@@ -1052,6 +1055,7 @@ class DatabricksAPI(PlatformAPI):
             - AZURE_STORAGE_ACCOUNT (for file uploads)
             - AZURE_CONTAINER (default: "artifacts")
             - AZURE_BASE_PATH (default: "system-tests")
+            - DATABRICKS_CLUSTER_ID (default existing cluster for jobs)
             - AZURE_TENANT_ID (for service principal auth)
             - AZURE_CLIENT_ID (for service principal auth)
             - AZURE_CLIENT_SECRET (for service principal auth)
@@ -1074,6 +1078,7 @@ class DatabricksAPI(PlatformAPI):
             storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
             container=os.getenv("AZURE_CONTAINER", "artifacts"),
             base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+            default_cluster_id=os.getenv("DATABRICKS_CLUSTER_ID"),
             azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
             azure_client_id=os.getenv("AZURE_CLIENT_ID"),
             azure_client_secret=os.getenv("AZURE_CLIENT_SECRET"),
@@ -1216,11 +1221,9 @@ class DatabricksAPI(PlatformAPI):
         if "test_id" in job_config:
             bootstrap_params["test_id"] = job_config["test_id"]
 
-        # Merge any additional config overrides (generic mechanism)
-        # CONFIG__kindling__key -> passed as config:key=value
-        if "config_overrides" in job_config:
-            overrides = job_config["config_overrides"]
-
+        # Config overrides are expected to be resolved by the caller/test harness.
+        overrides = job_config.get("config_overrides", {})
+        if overrides:
             # Flatten nested dict to dot notation
             def flatten_dict(d, parent_key=""):
                 items = []
@@ -1294,7 +1297,11 @@ class DatabricksAPI(PlatformAPI):
         # Build task using SDK Task object with new_cluster or existing_cluster_id
         # Check if existing cluster ID is provided in config
         # Support both 'cluster_id' and 'existing_cluster_id' for backward compatibility
-        existing_cluster_id = job_config.get("existing_cluster_id") or job_config.get("cluster_id")
+        existing_cluster_id = (
+            job_config.get("existing_cluster_id")
+            or job_config.get("cluster_id")
+            or self.default_cluster_id
+        )
 
         if existing_cluster_id:
             # Use existing cluster instead of creating new one

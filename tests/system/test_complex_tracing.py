@@ -87,6 +87,9 @@ class TestComplexTracing:
             "entry_point": "main.py",
             "test_id": test_id,
         }
+        from tests.system.test_helpers import apply_env_config_overrides
+
+        job_config = apply_env_config_overrides(job_config, platform)
 
         if platform == "fabric":
             job_config["lakehouse_id"] = client.lakehouse_id

@@ -90,7 +90,7 @@ BOOTSTRAP_CONFIG = {
     'platform': 'fabric',  # Force platform (auto-detected if omitted)
 
     # Extensions (can also be in YAML)
-    'extensions': ['kindling-otel-azure>=0.2.0'],
+    'extensions': ['kindling-otel-azure>=0.3.0'],
 
     # Spark configs
     'spark_configs': {
