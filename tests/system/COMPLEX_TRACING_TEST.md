@@ -15,7 +15,8 @@ tests/
 │       ├── settings-azure.yaml        # Azure Monitor config
 │       └── README.md                  # App documentation
 ├── system/
-│   ├── test_complex_tracing.py        # System tests for both modes
+│   ├── core/
+│   │   └── test_complex_tracing.py    # System tests for both modes
 │   └── queries/
 │       └── complex_tracing_analysis.kql  # Application Insights queries
 ```
@@ -59,7 +60,7 @@ tracing_system_test (2-5s)
 ### Test with Default Telemetry
 ```bash
 cd /workspace
-poetry run pytest -v tests/system/test_complex_tracing.py::TestComplexTracing::test_default_telemetry
+poe test-system --test default_telemetry
 ```
 
 ### Test with Azure Monitor Extension
@@ -68,12 +69,12 @@ poetry run pytest -v tests/system/test_complex_tracing.py::TestComplexTracing::t
 export APPLICATIONINSIGHTS_CONNECTION_STRING="InstrumentationKey=..."
 
 # Run test
-poetry run pytest -v tests/system/test_complex_tracing.py::TestComplexTracing::test_azure_monitor_telemetry
+poe test-system --test azure_monitor_telemetry
 ```
 
 ### Run Both Tests
 ```bash
-poetry run pytest -v tests/system/test_complex_tracing.py
+poe test-system --test complex_tracing
 ```
 
 ## Verification in Application Insights
