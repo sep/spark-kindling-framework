@@ -12,6 +12,7 @@ This test simulates realistic data processing patterns with:
 - Error handling and recovery
 - Span attributes and annotations
 """
+
 import random
 import sys
 import time
