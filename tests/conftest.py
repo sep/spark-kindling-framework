@@ -46,6 +46,9 @@ def pytest_configure(config):
         "markers",
         "requires_azure: mark test as requiring Azure credentials (Azure SDK, storage, etc.)",
     )
+    config.addinivalue_line("markers", "azure: mark test as requiring Azure cloud")
+    config.addinivalue_line("markers", "aws: mark test as requiring AWS cloud")
+    config.addinivalue_line("markers", "gcp: mark test as requiring Google Cloud")
 
 
 def pytest_addoption(parser):

@@ -20,7 +20,7 @@ except ImportError as e:
     sys.exit(1)
 
 
-def test_authentication():
+def check_authentication():
     """Test Azure authentication"""
     print("\n" + "=" * 60)
     print("Azure Authentication Test")
@@ -100,7 +100,7 @@ def test_authentication():
         return False
 
 
-def test_fabric_config():
+def check_fabric_config():
     """Test Fabric configuration"""
     print("\n" + "=" * 60)
     print("Fabric Configuration Test")
@@ -129,8 +129,8 @@ def test_fabric_config():
 
 def main():
     """Main test runner"""
-    auth_ok = test_authentication()
-    config_ok = test_fabric_config()
+    auth_ok = check_authentication()
+    config_ok = check_fabric_config()
 
     print("\n" + "=" * 60)
     print("Summary")

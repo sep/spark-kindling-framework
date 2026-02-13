@@ -8,6 +8,7 @@ the default trace and log providers with Azure Monitor versions.
 CRITICAL: This test requires the Kindling bootstrap system to load the extension.
 Without bootstrap, the extension will not be installed or loaded.
 """
+
 import sys
 import time
 from datetime import datetime

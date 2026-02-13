@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling"
-version = "0.6.2"
+version = "0.6.3"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -42,7 +42,7 @@ ipython = ">=8.0.0"
 jupyter = ">=1.0.0"
 poethepoet = ">=0.24.0"
 requests = ">=2.31.0"
-azure-mgmt-storage = "^24.0.0"
+azure-mgmt-storage = "22.1.0"
 
 [tool.poe.tasks]
 # Version management
@@ -114,6 +114,9 @@ markers = [
     "synapse: Synapse-specific system tests (requires Azure Synapse Analytics)",
     "databricks: Databricks-specific system tests (requires Databricks workspace)",
     "fabric: Fabric-specific system tests (requires Microsoft Fabric)",
+    "azure: Azure cloud tests (can run on Azure-backed platforms)",
+    "aws: AWS cloud tests",
+    "gcp: Google Cloud tests",
     "standalone: Standalone-specific tests (requires generic Spark or local environment)",
     "system: System tests requiring cloud infrastructure",
     "requires_azure: Tests requiring Azure credentials and SDK",
