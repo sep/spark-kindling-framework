@@ -327,7 +327,7 @@ class GenerationExecutor(SignalEmitter):
 
             self.logger.error(
                 f"Execution failed after {result.duration_seconds:.2f}s: {e}",
-                exc_info=True,
+                include_traceback=True,
             )
 
             self.emit(
@@ -580,7 +580,7 @@ class GenerationExecutor(SignalEmitter):
 
             self.logger.error(
                 f"Pipe '{pipe_id}' failed after {duration:.2f}s: {e}",
-                exc_info=True,
+                include_traceback=True,
             )
 
             self.emit(

@@ -5,11 +5,15 @@ Tests that complex span hierarchies with variable durations work correctly
 with both default Kindling telemetry and Azure Monitor extension.
 
 Usage:
-    # Test with default telemetry
-    pytest -v tests/system/test_complex_tracing.py::TestComplexTracing::test_default_telemetry
+    # Test with default telemetry on a specific platform
+    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_default_telemetry --platform fabric
+    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_default_telemetry --platform synapse
+    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_default_telemetry --platform databricks
 
-    # Test with Azure Monitor extension
-    pytest -v tests/system/test_complex_tracing.py::TestComplexTracing::test_azure_monitor_telemetry
+    # Test with Azure Monitor extension on a specific platform
+    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_azure_monitor_telemetry --platform fabric
+    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_azure_monitor_telemetry --platform synapse
+    pytest -v tests/system/core/test_complex_tracing.py::TestComplexTracing::test_azure_monitor_telemetry --platform databricks
 """
 
 import os
@@ -20,29 +24,11 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture
-def platform_client(request):
-    """Provides Fabric API client"""
-    if not os.getenv("FABRIC_WORKSPACE_ID") or not os.getenv("FABRIC_LAKEHOUSE_ID"):
-        pytest.skip("FABRIC_WORKSPACE_ID or FABRIC_LAKEHOUSE_ID not configured")
-
-    from kindling.platform_fabric import FabricAPI
-
-    client = FabricAPI(
-        workspace_id=os.getenv("FABRIC_WORKSPACE_ID"),
-        lakehouse_id=os.getenv("FABRIC_LAKEHOUSE_ID"),
-        storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
-        container=os.getenv("AZURE_CONTAINER", "artifacts"),
-        base_path=os.getenv("AZURE_BASE_PATH", ""),
-    )
-    return client, "fabric"
-
-
 @pytest.mark.system
 @pytest.mark.slow
-@pytest.mark.fabric
+@pytest.mark.azure
 class TestComplexTracing:
-    """Test complex tracing with variable durations"""
+    """Test complex tracing with variable durations across Azure platforms."""
 
     def _run_tracing_test(self, platform_client, app_packager, use_azure_monitor=False):
         """Common test logic for both default and Azure Monitor telemetry"""
@@ -52,7 +38,7 @@ class TestComplexTracing:
         print(f"\n🧪 Testing Complex Tracing with {test_type} on {platform.upper()}")
 
         # Get test app path
-        workspace_root = Path(__file__).parent.parent.parent
+        workspace_root = Path(__file__).resolve().parents[3]
         app_path = workspace_root / "tests" / "data-apps" / "complex-tracing-test"
         assert app_path.exists(), f"Test app not found at {app_path}"
 
@@ -90,9 +76,6 @@ class TestComplexTracing:
         from tests.system.test_helpers import apply_env_config_overrides
 
         job_config = apply_env_config_overrides(job_config, platform)
-
-        if platform == "fabric":
-            job_config["lakehouse_id"] = client.lakehouse_id
 
         # Deploy app and create job (separate operations)
         print(f"📂 Deploying app: {app_name}")

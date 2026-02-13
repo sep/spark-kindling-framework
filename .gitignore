@@ -65,6 +65,8 @@ derby.log
 *.log
 .temp*
 *.kda
+workspace_diff_raw.json
+workspace_diff_report.md
 system-test-*.json
 system-test-*.xml
 
