@@ -36,6 +36,7 @@ from kindling.data_pipes import (
 from kindling.entity_provider import (
     StreamableEntityProvider,
     StreamWritableEntityProvider,
+    is_stream_writable,
     is_streamable,
 )
 from kindling.entity_provider_registry import EntityProviderRegistry
@@ -645,26 +646,53 @@ class GenerationExecutor(SignalEmitter):
             elif not any(isinstance(v, dict) for v in streaming_options.values()):
                 pipe_options = streaming_options
 
-        # Resolve input entity and its provider
-        input_entity = self.entity_registry.get_entity_definition(pipe.input_entity_ids[0])
-        input_provider = self.provider_registry.get_provider_for_entity(input_entity)
+        if not pipe.input_entity_ids:
+            raise ValueError(f"Streaming pipe '{pipe.pipeid}' has no input entities")
 
-        if not is_streamable(input_provider):
+        # Convention:
+        # - first input entity is streaming input
+        # - remaining input entities are direct (batch/static) reads for joins/lookups
+        input_entity_frames: Dict[str, Any] = {}
+
+        stream_input_entity_id = pipe.input_entity_ids[0]
+        stream_input_entity = self.entity_registry.get_entity_definition(stream_input_entity_id)
+        stream_input_provider = self.provider_registry.get_provider_for_entity(stream_input_entity)
+
+        if not is_streamable(stream_input_provider):
             raise TypeError(
-                f"Input provider for entity '{input_entity.entityid}' "
-                f"(type={input_entity.tags.get('provider_type')}) "
+                f"Input provider for entity '{stream_input_entity.entityid}' "
+                f"(type={stream_input_entity.tags.get('provider_type')}) "
                 f"does not support streaming reads"
             )
 
-        # Read input as stream
-        stream_df = input_provider.read_entity_as_stream(input_entity)
+        stream_df = stream_input_provider.read_entity_as_stream(stream_input_entity)
+        input_entity_frames[stream_input_entity_id.replace(".", "_")] = stream_df
 
-        # Transform
-        transformed_df = pipe.execute(stream_df)
+        for static_entity_id in pipe.input_entity_ids[1:]:
+            static_entity = self.entity_registry.get_entity_definition(static_entity_id)
+            static_provider = self.provider_registry.get_provider_for_entity(static_entity)
+            static_df = static_provider.read_entity(static_entity)
+            input_entity_frames[static_entity_id.replace(".", "_")] = static_df
+
+        # Backwards compatible invocation:
+        # - single input pipes may define execute(df)
+        # - multi input pipes should use named kwargs keyed by entity ids
+        if len(input_entity_frames) == 1:
+            transformed_df = pipe.execute(next(iter(input_entity_frames.values())))
+        else:
+            transformed_df = pipe.execute(**input_entity_frames)
 
         # Resolve output entity and its provider
         output_entity = self.entity_registry.get_entity_definition(pipe.output_entity_id)
         output_provider = self.provider_registry.get_provider_for_entity(output_entity)
+        if not is_stream_writable(output_provider) and not hasattr(
+            output_provider, "append_as_stream"
+        ):
+            raise TypeError(
+                f"Output provider for entity '{output_entity.entityid}' "
+                f"(type={output_entity.tags.get('provider_type')}) "
+                f"does not support streaming writes"
+            )
 
         # Determine checkpoint path
         base_chkpt = pipe_options.get("base_checkpoint_path") or self.config_service.get(
@@ -677,9 +705,12 @@ class GenerationExecutor(SignalEmitter):
         output_path = output_entity.tags.get(
             "provider.path"
         ) or self.entity_path_locator.get_table_path(output_entity)
-        query = output_provider.append_as_stream(
-            output_entity, transformed_df, checkpoint_path
-        ).start(output_path)
+        stream_handle = output_provider.append_as_stream(
+            transformed_df, output_entity, checkpoint_path
+        )
+        query = (
+            stream_handle.start(output_path) if hasattr(stream_handle, "start") else stream_handle
+        )
 
         return PipeResult(
             pipe_id=pipe.pipeid,

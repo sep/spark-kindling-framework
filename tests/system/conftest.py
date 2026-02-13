@@ -168,6 +168,7 @@ def databricks_api():
             storage_account=storage_account,
             container=container,
             base_path=base_path,
+            default_cluster_id=os.getenv("DATABRICKS_CLUSTER_ID"),
             azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
             azure_client_id=os.getenv("AZURE_CLIENT_ID"),
             azure_client_secret=os.getenv("AZURE_CLIENT_SECRET"),
@@ -180,6 +181,7 @@ def databricks_api():
             storage_account=storage_account,
             container=container,
             base_path=base_path,
+            default_cluster_id=os.getenv("DATABRICKS_CLUSTER_ID"),
         )
 
     return api

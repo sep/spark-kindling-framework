@@ -132,10 +132,12 @@ class TestStreamingPipesOrchestrator:
             expected_tests = [
                 "entity_definitions",
                 "pipe_definitions",
+                "lookup_data",
                 "executor_streaming",
                 "bronze_data",
                 "silver_data",
                 "gold_data",
+                "multi_input_lookup_join",
                 "queries_stopped",
             ]
 

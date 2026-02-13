@@ -336,6 +336,15 @@ class TestSignalHandlers:
 
         assert len(recovery_manager._recovery_states) == 0
 
+    def test_restart_function_resolves_spark_query_id(self, recovery_manager):
+        """Restart function resolves Spark query IDs to registered logical IDs."""
+        recovery_manager.query_manager.resolve_registered_query_id.return_value = "logical-query-id"
+
+        restart = recovery_manager._get_restart_function("spark-query-id")
+        restart()
+
+        recovery_manager.query_manager.restart_query.assert_called_once_with("logical-query-id")
+
     def test_on_query_unhealthy_already_tracking(self, recovery_manager):
         """Test handling unhealthy signal for already tracked query."""
         # First signal

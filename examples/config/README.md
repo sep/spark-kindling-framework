@@ -46,7 +46,7 @@ Minimal configuration with just base settings and environment overrides:
 ```yaml
 # config/settings.yaml
 kindling:
-  version: "0.2.0"
+  version: "0.6.0"
   telemetry:
     logging:
       level: INFO
@@ -71,7 +71,7 @@ kindling:
     logging:
       level: DEBUG  # More verbose for Fabric diagnostic logs
   extensions:
-    - kindling-otel-azure>=0.2.0
+    - kindling-otel-azure>=0.3.0
 
 # config/platform_databricks.yaml
 kindling:
@@ -124,7 +124,7 @@ Workspace IDs are auto-detected per platform:
 
 ## Complete Documentation
 
-See [docs/platform_workspace_config.md](../docs/platform_workspace_config.md) for:
+See [docs/platform_workspace_config.md](../../docs/platform_workspace_config.md) for:
 - Complete configuration reference
 - Usage patterns and scenarios
 - Migration guides

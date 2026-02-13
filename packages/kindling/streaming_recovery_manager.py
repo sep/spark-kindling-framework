@@ -347,14 +347,15 @@ class StreamingRecoveryManager(SignalEmitter):
         Returns:
             Dictionary with attempts, successes, failures, exhausted, tracked_queries
         """
-        return {
-            "total_attempts": self._total_attempts,
-            "total_successes": self._total_successes,
-            "total_failures": self._total_failures,
-            "total_exhausted": self._total_exhausted,
-            "tracked_queries": len(self._recovery_states),
-            "dead_letter_queries": len(self._dead_letter),
-        }
+        with self._state_lock:
+            return {
+                "total_attempts": self._total_attempts,
+                "total_successes": self._total_successes,
+                "total_failures": self._total_failures,
+                "total_exhausted": self._total_exhausted,
+                "tracked_queries": len(self._recovery_states),
+                "dead_letter_queries": len(self._dead_letter),
+            }
 
     # =========================================================================
     # Signal Subscription
@@ -478,26 +479,37 @@ class StreamingRecoveryManager(SignalEmitter):
 
     def _process_recovery_attempts(self):
         """Process all pending recovery attempts."""
+        states_to_attempt = []
+        states_to_exhaust = []
+
         with self._state_lock:
-            for query_id, state in list(self._recovery_states.items()):
-                try:
-                    # Check if ready for attempt
-                    if not state.is_ready_for_attempt():
-                        continue
+            for _query_id, state in list(self._recovery_states.items()):
+                if not state.is_ready_for_attempt():
+                    continue
 
-                    # Check if can retry
-                    if not state.can_retry():
-                        self._move_to_dead_letter(state)
-                        continue
+                if not state.can_retry():
+                    states_to_exhaust.append(state)
+                    continue
 
-                    # Attempt recovery
-                    self._attempt_recovery(state)
+                states_to_attempt.append(state)
 
-                except Exception as e:
-                    self.logger.error(
-                        f"Error processing recovery for query '{query_id}': {e}",
-                        include_traceback=True,
-                    )
+        for state in states_to_exhaust:
+            try:
+                self._move_to_dead_letter(state)
+            except Exception as e:
+                self.logger.error(
+                    f"Error exhausting recovery for query '{state.query_id}': {e}",
+                    include_traceback=True,
+                )
+
+        for state in states_to_attempt:
+            try:
+                self._attempt_recovery(state)
+            except Exception as e:
+                self.logger.error(
+                    f"Error processing recovery for query '{state.query_id}': {e}",
+                    include_traceback=True,
+                )
 
     def _attempt_recovery(self, state: RecoveryState):
         """
@@ -506,85 +518,119 @@ class StreamingRecoveryManager(SignalEmitter):
         Args:
             state: Recovery state
         """
-        state.recovery_status = RecoveryStatus.IN_PROGRESS
-        state.last_attempt_time = datetime.now()
-        state.retry_count += 1
-        self._total_attempts += 1
+        with self._state_lock:
+            current_state = self._recovery_states.get(state.query_id)
+            if current_state is not state:
+                return
+
+            if not state.can_retry():
+                should_exhaust = True
+            else:
+                should_exhaust = False
+                state.recovery_status = RecoveryStatus.IN_PROGRESS
+                state.last_attempt_time = datetime.now()
+                state.retry_count += 1
+                self._total_attempts += 1
+
+                retry_count = state.retry_count
+                max_retries = state.max_retries
+                query_id = state.query_id
+                query_name = state.query_name
+                attempt_time = state.last_attempt_time
+                restart_function = state.restart_function
+
+        if should_exhaust:
+            self._move_to_dead_letter(state)
+            return
 
         self.logger.info(
-            f"Attempting recovery for query '{state.query_id}' "
-            f"(attempt {state.retry_count}/{state.max_retries})"
+            f"Attempting recovery for query '{query_id}' " f"(attempt {retry_count}/{max_retries})"
         )
 
         # Emit recovery attempted signal
         self.emit(
             "streaming.recovery_attempted",
-            query_id=state.query_id,
-            query_name=state.query_name,
-            retry_count=state.retry_count,
-            max_retries=state.max_retries,
-            attempt_time=state.last_attempt_time,
+            query_id=query_id,
+            query_name=query_name,
+            retry_count=retry_count,
+            max_retries=max_retries,
+            attempt_time=attempt_time,
         )
 
         try:
-            # Call restart function
-            if state.restart_function:
-                state.restart_function()
+            # Execute restart outside the state lock to avoid lock contention.
+            if restart_function:
+                restart_function()
 
-            # Recovery succeeded
-            state.recovery_status = RecoveryStatus.SUCCEEDED
-            self._total_successes += 1
+            with self._state_lock:
+                current_state = self._recovery_states.get(state.query_id)
+                if current_state is not state:
+                    return
+
+                state.recovery_status = RecoveryStatus.SUCCEEDED
+                self._total_successes += 1
+                del self._recovery_states[state.query_id]
+
+                final_retry_count = state.retry_count
 
             self.logger.info(
-                f"Recovery succeeded for query '{state.query_id}' "
-                f"(attempts: {state.retry_count})"
+                f"Recovery succeeded for query '{query_id}' " f"(attempts: {final_retry_count})"
             )
 
             # Emit recovery succeeded signal
             self.emit(
                 "streaming.recovery_succeeded",
-                query_id=state.query_id,
-                query_name=state.query_name,
-                retry_count=state.retry_count,
+                query_id=query_id,
+                query_name=query_name,
+                retry_count=final_retry_count,
                 success_time=datetime.now(),
             )
 
-            # Remove from tracking (no longer needs recovery)
-            del self._recovery_states[state.query_id]
-
         except Exception as e:
-            # Recovery failed
-            state.recovery_status = RecoveryStatus.FAILED
-            state.failure_reason = str(e)
-            self._total_failures += 1
+            failure_reason = str(e)
+            should_exhaust = False
+            backoff = None
+
+            with self._state_lock:
+                current_state = self._recovery_states.get(state.query_id)
+                if current_state is not state:
+                    return
+
+                state.recovery_status = RecoveryStatus.FAILED
+                state.failure_reason = failure_reason
+                self._total_failures += 1
+
+                if state.can_retry():
+                    state.schedule_next_attempt()
+                    backoff = state.calculate_backoff()
+                    current_retry_count = state.retry_count
+                    current_max_retries = state.max_retries
+                else:
+                    current_retry_count = state.retry_count
+                    current_max_retries = state.max_retries
+                    should_exhaust = True
 
             self.logger.warning(
-                f"Recovery failed for query '{state.query_id}': {e} "
-                f"(attempt {state.retry_count}/{state.max_retries})"
+                f"Recovery failed for query '{query_id}': {e} "
+                f"(attempt {current_retry_count}/{current_max_retries})"
             )
 
             # Emit recovery failed signal
             self.emit(
                 "streaming.recovery_failed",
-                query_id=state.query_id,
-                query_name=state.query_name,
-                retry_count=state.retry_count,
-                max_retries=state.max_retries,
-                failure_reason=state.failure_reason,
+                query_id=query_id,
+                query_name=query_name,
+                retry_count=current_retry_count,
+                max_retries=current_max_retries,
+                failure_reason=failure_reason,
                 failure_time=datetime.now(),
             )
 
-            # Check if can retry
-            if state.can_retry():
-                # Schedule next attempt
-                state.schedule_next_attempt()
-                backoff = state.calculate_backoff()
+            if backoff is not None:
                 self.logger.info(
-                    f"Scheduled next recovery attempt for query '{state.query_id}' "
-                    f"in {backoff:.1f}s"
+                    f"Scheduled next recovery attempt for query '{query_id}' " f"in {backoff:.1f}s"
                 )
-            else:
-                # Max retries exhausted
+            elif should_exhaust:
                 self._move_to_dead_letter(state)
 
     def _move_to_dead_letter(self, state: RecoveryState):
@@ -594,28 +640,36 @@ class StreamingRecoveryManager(SignalEmitter):
         Args:
             state: Recovery state
         """
-        state.recovery_status = RecoveryStatus.EXHAUSTED
-        self._total_exhausted += 1
+        with self._state_lock:
+            current_state = self._recovery_states.get(state.query_id)
+            if current_state is not state:
+                return
+
+            state.recovery_status = RecoveryStatus.EXHAUSTED
+            self._total_exhausted += 1
+            self._dead_letter[state.query_id] = state
+            del self._recovery_states[state.query_id]
+
+            retry_count = state.retry_count
+            max_retries = state.max_retries
+            failure_reason = state.failure_reason
+            query_id = state.query_id
+            query_name = state.query_name
 
         self.logger.error(
-            f"Max retries exhausted for query '{state.query_id}' "
-            f"(attempts: {state.retry_count})"
+            f"Max retries exhausted for query '{query_id}' " f"(attempts: {retry_count})"
         )
 
         # Emit recovery exhausted signal
         self.emit(
             "streaming.recovery_exhausted",
-            query_id=state.query_id,
-            query_name=state.query_name,
-            retry_count=state.retry_count,
-            max_retries=state.max_retries,
-            failure_reason=state.failure_reason,
+            query_id=query_id,
+            query_name=query_name,
+            retry_count=retry_count,
+            max_retries=max_retries,
+            failure_reason=failure_reason,
             exhausted_time=datetime.now(),
         )
-
-        # Move to dead letter
-        self._dead_letter[state.query_id] = state
-        del self._recovery_states[state.query_id]
 
     def _get_restart_function(self, query_id: str) -> Optional[Callable]:
         """
@@ -628,8 +682,16 @@ class StreamingRecoveryManager(SignalEmitter):
             Restart function or None
         """
 
-        # Create restart function that uses StreamingQueryManager
+        # Create restart function that uses StreamingQueryManager.
+        # Resolve signal query IDs (often Spark runtime IDs) to registered logical IDs
+        # at execution time so restarts work across listener/health/recovery components.
         def restart():
-            self.query_manager.restart_query(query_id)
+            resolved_query_id = query_id
+            resolver = getattr(self.query_manager, "resolve_registered_query_id", None)
+            if callable(resolver):
+                candidate = resolver(query_id)
+                if isinstance(candidate, str) and candidate:
+                    resolved_query_id = candidate
+            self.query_manager.restart_query(resolved_query_id)
 
         return restart

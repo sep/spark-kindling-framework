@@ -33,10 +33,10 @@ These features are designed to work together, with signals providing the communi
 
 ### Current State
 
-- Blinker integration exists in [packages/kindling/signaling.py](../packages/kindling/signaling.py)
+- Blinker integration exists in [packages/kindling/signaling.py](../../packages/kindling/signaling.py)
 - `BlinkerSignalProvider` and `BlinkerSignalWrapper` classes implemented
 - Signal naming convention documented: `before_`/`after_` prefixes (Django-style)
-- Comprehensive signal catalog exists in [docs/signal_quick_reference.md](signal_quick_reference.md)
+- Comprehensive signal catalog exists in [docs/signal_quick_reference.md](../signal_quick_reference.md)
 
 ### Proposed Enhancements
 
@@ -244,7 +244,7 @@ class AsyncSignalSupport:
 
 ### Current State
 
-- Detailed plan exists in [docs/graph_based_pipe_execution_plan.md](graph_based_pipe_execution_plan.md)
+- Detailed plan exists in [docs/graph_based_pipe_execution_plan.md](../graph_based_pipe_execution_plan.md)
 - `PipeMetadata` already captures `input_entity_ids` and `output_entity_id` for dependency inference
 - `DataPipesExecuter` executes pipes sequentially
 
@@ -490,7 +490,7 @@ class GenerationExecutor:
 
 ### Current State
 
-- Basic streaming support in [packages/kindling/pipe_streaming.py](../packages/kindling/pipe_streaming.py)
+- Basic streaming support in [packages/kindling/pipe_streaming.py](../../packages/kindling/pipe_streaming.py)
 - `SimplePipeStreamOrchestrator` starts individual streams
 - No monitoring, recovery, or coordination features
 
