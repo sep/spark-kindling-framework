@@ -8,7 +8,7 @@ Tests the Unified DAG Orchestrator in streaming mode:
 - Execute streaming plan via GenerationExecutor
 - Verify data flows through bronze → silver → gold
 
-Pipeline: rate source → bronze (Delta) → silver (Delta) → gold (Delta)
+Pipeline: bronze stream → silver stream → gold stream (joined with static lookup)
 """
 
 import sys
@@ -65,6 +65,7 @@ try:
     bronze_path = f"{base_path}/bronze"
     silver_path = f"{base_path}/silver"
     gold_path = f"{base_path}/gold"
+    lookup_path = f"{base_path}/lookup"
 
     # ---- Bind EntityPathLocator (user-provided ABC) ----
     # EntityPathLocator has no framework default — users bind their own.
@@ -157,6 +158,14 @@ try:
             StructField("value", StringType(), True),
             StructField("processed_at", TimestampType(), True),
             StructField("enriched_at", TimestampType(), True),
+            StructField("category", StringType(), True),
+        ]
+    )
+
+    lookup_schema = StructType(
+        [
+            StructField("lookup_key", StringType(), True),
+            StructField("category", StringType(), True),
         ]
     )
 
@@ -189,6 +198,15 @@ try:
         schema=gold_schema,
     )
 
+    DataEntities.entity(
+        entityid="stream.lookup",
+        name="lookup_events",
+        partition_columns=[],
+        merge_columns=["lookup_key"],
+        tags={"provider_type": "delta", "provider.path": lookup_path},
+        schema=lookup_schema,
+    )
+
     msg = f"TEST_ID={test_id} test=entity_definitions status=PASSED"
     logger.info(msg)
     print(msg, flush=True)
@@ -215,14 +233,22 @@ try:
     @DataPipes.pipe(
         pipeid="silver_to_gold",
         name="silver_to_gold",
-        input_entity_ids=["stream.silver"],
+        input_entity_ids=["stream.silver", "stream.lookup"],
         output_entity_id="stream.gold",
         output_type="append",
         tags={"processing_mode": "streaming"},
     )
-    def silver_to_gold(df):
-        """Enrich silver events for gold layer."""
-        return df.withColumn("enriched_at", current_timestamp())
+    def silver_to_gold(stream_silver, stream_lookup):
+        """Enrich silver events for gold layer using static lookup data."""
+        return (
+            stream_silver.join(
+                stream_lookup,
+                stream_silver["value"] == stream_lookup["lookup_key"],
+                "left",
+            )
+            .drop("lookup_key")
+            .withColumn("enriched_at", current_timestamp())
+        )
 
     msg = f"TEST_ID={test_id} test=pipe_definitions status=PASSED"
     logger.info(msg)
@@ -239,11 +265,26 @@ try:
     bronze_entity = entity_registry.get_entity_definition("stream.bronze")
     silver_entity = entity_registry.get_entity_definition("stream.silver")
     gold_entity = entity_registry.get_entity_definition("stream.gold")
+    lookup_entity = entity_registry.get_entity_definition("stream.lookup")
 
     # Write empty DataFrames to create Delta tables at specified paths
     entity_provider.write_to_entity(spark.createDataFrame([], bronze_schema), bronze_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], silver_schema), silver_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], gold_schema), gold_entity)
+    entity_provider.write_to_entity(spark.createDataFrame([], lookup_schema), lookup_entity)
+
+    # Seed static lookup data (read as direct/batch input while silver is streaming)
+    lookup_rows = [{"lookup_key": str(i), "category": f"group_{i % 5}"} for i in range(100)]
+    lookup_df = spark.createDataFrame(lookup_rows, lookup_schema)
+    # Lookup table already exists from the empty-table bootstrap write above.
+    # Append seed rows to avoid DELTA_PATH_EXISTS on platforms that disallow
+    # implicit overwrite when saving to an existing Delta path.
+    entity_provider.append_to_entity(lookup_df, lookup_entity)
+
+    msg = f"TEST_ID={test_id} test=lookup_data status=PASSED count={len(lookup_rows)}"
+    logger.info(msg)
+    print(msg, flush=True)
+    test_results["lookup_data"] = True
 
     # ---- Execute streaming pipeline via Orchestrator FIRST ----
     # Start downstream queries (silver_to_gold, bronze_to_silver) - they wait for data
@@ -370,6 +411,18 @@ try:
         print(msg, flush=True)
         test_results[label] = ok
 
+    gold_df = spark.read.format("delta").load(gold_path)
+    matched_lookup_rows = gold_df.filter(col("category").isNotNull()).count()
+    multi_input_ok = matched_lookup_rows > 0
+    msg = (
+        f"TEST_ID={test_id} test=multi_input_lookup_join "
+        f"status={'PASSED' if multi_input_ok else 'FAILED'} "
+        f"matched_rows={matched_lookup_rows}"
+    )
+    logger.info(msg)
+    print(msg, flush=True)
+    test_results["multi_input_lookup_join"] = multi_input_ok
+
     # ---- Stop streaming queries gracefully in reverse order ----
     # NOTE: Framework should provide executor.stop_streaming_queries() that handles this
     # Reverse order ensures downstream queries finish processing before upstream stops
@@ -416,6 +469,7 @@ try:
         (bronze_path, "bronze"),
         (silver_path, "silver"),
         (gold_path, "gold"),
+        (lookup_path, "lookup"),
         (chk_base, "checkpoints"),
     ]:
         try:

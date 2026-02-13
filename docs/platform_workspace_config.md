@@ -24,7 +24,7 @@ Universal framework settings that apply across all platforms, workspaces, and en
 
 ```yaml
 kindling:
-  version: "0.2.0"
+  version: "0.6.0"
 
   bootstrap:
     load_lake: true
@@ -72,7 +72,7 @@ kindling:
     spark.sql.adaptive.enabled: "true"
 
   extensions:
-    - kindling-otel-azure>=0.2.0
+    - kindling-otel-azure>=0.3.0
 ```
 
 **Upload to:** `{artifacts_storage_path}/config/platform_fabric.yaml`
@@ -269,7 +269,7 @@ kindling:
   platform:
     name: fabric
   extensions:
-    - kindling-otel-azure>=0.2.0
+    - kindling-otel-azure>=0.3.0
 
 # workspace_team-a-workspace-id.yaml - Team A settings
 kindling:
@@ -464,6 +464,6 @@ Move settings to YAML files for better maintainability and version control.
 
 ## See Also
 
-- [Configuration Architecture](configuration_architecture.md) - Technical deep dive
-- [Bootstrap Process](bootstrap_process.md) - Initialization sequence
+- [Platform API Architecture](./platform_api_architecture.md) - Technical deep dive
+- [Setup Guide](./setup_guide.md) - Initialization and configuration workflow
 - [Example Configs](../examples/config/) - Complete working examples

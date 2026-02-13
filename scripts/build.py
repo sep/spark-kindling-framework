@@ -221,7 +221,7 @@ def main():
 
     print("\n📤 Next step:")
     print("   poetry run poe deploy       # Deploy to Azure Storage (testing)")
-    print("   poetry run poe deploy-release  # Deploy from GitHub release (production)")
+    print("   poetry run poe deploy --release latest  # Deploy from GitHub release (production)")
 
 
 if __name__ == "__main__":

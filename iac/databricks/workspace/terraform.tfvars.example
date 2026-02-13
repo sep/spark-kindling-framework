@@ -1,0 +1,138 @@
+# =============================================================================
+# Databricks Workspace Terraform Variables
+# =============================================================================
+# Copy this file to <env>.tfvars and fill in your values.
+# .tfvars files are gitignored — do NOT commit real values.
+#
+# Usage:
+#   terraform plan  -var-file=dev.tfvars
+#   terraform apply -var-file=dev.tfvars
+# =============================================================================
+
+# -- Azure --------------------------------------------------------------------
+azure_subscription_id = ""  # Your Azure subscription ID
+azure_tenant_id       = ""  # Your Azure AD tenant ID
+
+# -- Databricks Workspace ----------------------------------------------------
+databricks_host = ""        # e.g. "https://adb-1234567890.1.azuredatabricks.net"
+environment     = "dev"
+
+# -- Data Lake ----------------------------------------------------------------
+datalake_storage_account = ""  # ADLS Gen2 storage account name
+
+# Full resource ID of the Databricks access connector with managed identity
+# that has Storage Blob Data Contributor on the storage account
+access_connector_id = ""  # e.g. "/subscriptions/.../providers/Microsoft.Databricks/accessConnectors/my-connector"
+
+storage_credential_name = "datalake_managed_identity"
+
+# ADLS containers to register as UC external locations
+datalake_containers = [
+  # { name = "artifacts", container = "artifacts" },
+  # { name = "bronze",    container = "bronze" },
+]
+
+# -- Unity Catalog ------------------------------------------------------------
+catalog_name              = "medallion"
+catalog_storage_container = "artifacts"  # Container for catalog managed storage
+catalog_storage_path      = "catalog"    # Path within container
+
+schemas = [
+  # { name = "bronze", storage_root = null },
+  # { name = "silver", storage_root = "abfss://silver@mystorageaccount.dfs.core.windows.net/" },
+]
+
+external_volumes = [
+  # { name = "config",    container = "artifacts", path = "config" },
+  # { name = "packages",  container = "artifacts", path = "packages" },
+]
+
+managed_volumes = ["temp"]
+
+# -- Secret Scopes ------------------------------------------------------------
+secret_scopes = []  # e.g. ["my-secret-scope"]
+
+# -- Service Principals -------------------------------------------------------
+service_principals = [
+  # { display_name = "my-sp", application_id = "00000000-0000-0000-0000-000000000000" },
+]
+
+# -- Users & Groups -----------------------------------------------------------
+admin_users = [
+  # "admin@example.com",
+]
+
+workspace_users = [
+  # "user1@example.com",
+  # "user2@example.com",
+]
+
+# -- Clusters -----------------------------------------------------------------
+clusters = [
+  # {
+  #   name                    = "My Cluster"
+  #   spark_version           = "13.3.x-scala2.12"
+  #   node_type_id            = "Standard_DS3_v2"
+  #   num_workers             = 0          # 0 = single node
+  #   autotermination_minutes = 60
+  #   data_security_mode      = "USER_ISOLATION"
+  #   spot_policy             = "SPOT_WITH_FALLBACK_AZURE"
+  # },
+]
+
+# -- DLT Pipelines -----------------------------------------------------------
+# NOTE: These depend on notebooks being present in the workspace first.
+dlt_pipelines = [
+  # {
+  #   name          = "ingestion_pipeline"
+  #   target_schema = "bronze"
+  #   notebook_path = "/my-org/run_ingestion_dlts"
+  #   development   = true
+  # },
+]
+
+# -- Workspace Config ---------------------------------------------------------
+workspace_conf = {
+  # enableDbfsFileBrowser = "true"
+}
+
+# -- Unity Catalog Grants ----------------------------------------------------
+# Grant privileges on the catalog to specific principals (SPs, groups, etc.)
+catalog_grants = [
+  # { principal = "my-sp-app-id",   privileges = ["USE_CATALOG", "USE_SCHEMA", "SELECT"] },
+  # { principal = "account users",  privileges = ["BROWSE"] },
+]
+
+# Per-schema grants
+schema_grants = [
+  # { schema_name = "default", principal = "my-sp-app-id", privileges = ["USE_SCHEMA"] },
+]
+
+# Per-external-location grants
+external_location_grants = [
+  # { location_name = "bronze", principal = "my-sp-app-id", privileges = ["BROWSE", "READ_FILES", "WRITE_FILES"] },
+]
+
+# Per-volume grants (volumes live in catalog.default)
+volume_grants = [
+  # { volume_name = "config", principal = "my-sp-app-id", privileges = ["READ_VOLUME", "WRITE_VOLUME"] },
+]
+
+# Grants on the storage credential
+storage_credential_grants = []
+
+# -- Secret Scope ACLs -------------------------------------------------------
+secret_scope_acls = [
+  # { scope = "my-scope", principal = "user@example.com", permission = "MANAGE" },
+]
+
+# -- Entitlements -------------------------------------------------------------
+# User-level entitlements (allow_cluster_create, workspace_access, etc.)
+user_entitlements = [
+  # { user_name = "user@example.com", allow_cluster_create = true, allow_instance_pool_create = true },
+]
+
+# Service principal entitlements
+sp_entitlements = [
+  # { application_id = "00000000-...", workspace_access = true, databricks_sql_access = true },
+]

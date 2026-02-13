@@ -12,7 +12,10 @@ from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 from kindling.data_pipes import PipeMetadata
-from kindling.entity_provider import StreamableEntityProvider
+from kindling.entity_provider import (
+    StreamableEntityProvider,
+    StreamWritableEntityProvider,
+)
 from kindling.execution_strategy import ExecutionPlan, Generation
 from kindling.generation_executor import (
     ErrorStrategy,
@@ -651,6 +654,80 @@ class TestStreamingExecution:
         checkpoint_paths = [c[0][2] for c in calls]
         assert "/chk/pipe2/pipe2" in checkpoint_paths
         assert "/chk/pipe1/pipe1" in checkpoint_paths
+
+    def test_streaming_multi_input_first_stream_rest_batch(
+        self,
+        executor,
+        pipes_registry,
+        entity_registry,
+        provider_registry,
+    ):
+        """First input is streaming, additional inputs are direct reads."""
+        stream_df = Mock(name="stream_df")
+        lookup_df = Mock(name="lookup_df")
+        transformed_df = Mock(name="transformed_df")
+        execute_mock = Mock(return_value=transformed_df)
+
+        pipe = PipeMetadata(
+            pipeid="join_pipe",
+            name="join_pipe",
+            execute=execute_mock,
+            tags={},
+            input_entity_ids=["entity.stream", "entity.lookup"],
+            output_entity_id="entity.out",
+            output_type="delta",
+        )
+        pipes_registry.get_pipe_definition.return_value = pipe
+
+        stream_entity = Mock(entityid="entity.stream", tags={"provider_type": "delta"})
+        lookup_entity = Mock(entityid="entity.lookup", tags={"provider_type": "delta"})
+        out_entity = Mock(
+            entityid="entity.out", tags={"provider_type": "delta", "provider.path": "/out"}
+        )
+        entity_registry.get_entity_definition.side_effect = lambda eid: {
+            "entity.stream": stream_entity,
+            "entity.lookup": lookup_entity,
+            "entity.out": out_entity,
+        }[eid]
+
+        stream_provider = Mock(spec=StreamableEntityProvider)
+        stream_provider.read_entity_as_stream.return_value = stream_df
+
+        lookup_provider = Mock()
+        lookup_provider.read_entity.return_value = lookup_df
+
+        output_provider = Mock(spec=StreamWritableEntityProvider)
+        writer = Mock()
+        query = Mock(id="query-123")
+        writer.start.return_value = query
+        output_provider.append_as_stream.return_value = writer
+
+        provider_registry.get_provider_for_entity.side_effect = lambda entity: {
+            "entity.stream": stream_provider,
+            "entity.lookup": lookup_provider,
+            "entity.out": output_provider,
+        }[entity.entityid]
+
+        plan = make_plan(
+            ["join_pipe"],
+            [Generation(number=0, pipe_ids=["join_pipe"], dependencies=[])],
+            strategy="streaming",
+        )
+
+        result = executor.execute(plan)
+
+        assert result.success_count == 1
+        stream_provider.read_entity_as_stream.assert_called_once_with(stream_entity)
+        lookup_provider.read_entity.assert_called_once_with(lookup_entity)
+        execute_mock.assert_called_once_with(
+            entity_stream=stream_df,
+            entity_lookup=lookup_df,
+        )
+        output_provider.append_as_stream.assert_called_once_with(
+            transformed_df,
+            out_entity,
+            "/checkpoints/join_pipe",
+        )
 
     def test_streaming_with_global_options(
         self,

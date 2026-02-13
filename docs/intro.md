@@ -1,6 +1,6 @@
 # Kindling Framework
 
-**Version:** 0.2.0
+**Version:** 0.6.0
 **Platforms:** Microsoft Fabric, Azure Synapse Analytics, Databricks
 
 ## Overview

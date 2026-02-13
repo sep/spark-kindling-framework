@@ -49,12 +49,15 @@ def create_test_stream(spark, rate=5):
     return spark.readStream.format("rate").option("rowsPerSecond", rate).load()
 
 
-def create_memory_sink_query(spark, stream_df, query_name, checkpoint_location):
-    """Create a streaming query that writes to memory sink"""
+def create_restartable_sink_query(
+    spark, stream_df, query_name, checkpoint_location, output_location
+):
+    """Create a restartable streaming query backed by a Delta sink."""
     return (
-        stream_df.writeStream.format("memory")
+        stream_df.writeStream.format("delta")
         .queryName(query_name)
         .option("checkpointLocation", checkpoint_location)
+        .option("path", output_location)
         .start()
     )
 
@@ -166,13 +169,17 @@ try:
     if platform == "databricks":
         # Databricks requires absolute paths - use DBFS
         checkpoint_dir = f"/tmp/checkpoints/streaming_test_{test_id}_{checkpoint_suffix}"
+        output_dir = f"/tmp/streaming_output/streaming_test_{test_id}_{checkpoint_suffix}"
     else:
         # Fabric/Synapse use lakehouse Files path
         checkpoint_dir = f"Files/checkpoints/streaming_test_{test_id}_{checkpoint_suffix}"
+        output_dir = f"Files/streaming_output/streaming_test_{test_id}_{checkpoint_suffix}"
 
     def builder(spark, config):
         df = create_test_stream(spark, rate=10)
-        return create_memory_sink_query(spark, df, "test_streaming", checkpoint_dir)
+        return create_restartable_sink_query(
+            spark, df, "test_streaming", checkpoint_dir, output_dir
+        )
 
     query_manager.register_query("test_streaming", builder, {})
 
@@ -244,6 +251,20 @@ try:
         logger.error(msg)
         print(msg)
         test_results["health_monitoring"] = False
+
+    # Restart using the Spark runtime query ID to validate ID-resolution edge case
+    original_spark_query_id = query_info.spark_query_id
+    restarted_query_info = query_manager.restart_query(original_spark_query_id)
+    assert restarted_query_info.is_active, "Query should be active after restart"
+
+    msg = (
+        f"TEST_ID={test_id} test=query_restart_by_spark_id status=PASSED "
+        f"original_query_id={original_spark_query_id} "
+        f"restarted_query_id={restarted_query_info.spark_query_id}"
+    )
+    logger.info(msg)
+    print(msg)
+    test_results["query_restart_by_spark_id"] = True
 
     # Stop the query
     query_manager.stop_query("test_streaming", await_termination=False)
