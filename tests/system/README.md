@@ -123,6 +123,9 @@ Tests use pytest markers to categorize:
 - `@pytest.mark.fabric` - Requires Fabric platform
 - `@pytest.mark.databricks` - Requires Databricks platform
 - `@pytest.mark.synapse` - Requires Synapse platform
+- `@pytest.mark.azure` - Requires Azure cloud (platform-agnostic across Azure-backed platforms)
+- `@pytest.mark.aws` - Requires AWS cloud
+- `@pytest.mark.gcp` - Requires Google Cloud
 - `@pytest.mark.system` - System-level integration test
 - `@pytest.mark.slow` - Takes significant time to run
 

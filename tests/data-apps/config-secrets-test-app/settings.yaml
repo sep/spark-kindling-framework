@@ -1,0 +1,16 @@
+# Config Secrets Test App Settings
+
+kindling:
+  telemetry:
+    logging:
+      level: INFO
+      print: true
+  secret_refs:
+    service:
+      api_token: "@format {this.kindling.secrets.service.api_token}"
+    database:
+      password: "@format {this.kindling.secrets.database.password}"
+    integration:
+      webhook_key: "@format {this.kindling.secrets.integration.webhook_key}"
+  secret_templates:
+    auth_header: "@format Bearer {this.kindling.secrets.service.api_token}"
