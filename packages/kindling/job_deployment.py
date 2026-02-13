@@ -348,7 +348,7 @@ class DataAppDeployer(SignalEmitter):
 
         except Exception as e:
             duration = time.time() - start_time
-            self.logger.error(f"Deploy failed after {duration:.1f}s: {e}", exc_info=True)
+            self.logger.error(f"Deploy failed after {duration:.1f}s: {e}", include_traceback=True)
             raise
 
     def run_job(self, job_id: str, parameters: Dict[str, Any] = None) -> str:
