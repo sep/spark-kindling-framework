@@ -80,7 +80,7 @@ export AZURE_CLIENT_SECRET="your-client-secret"
 Run the authentication test script:
 
 ```bash
-python tests/system/test_auth.py
+python tests/system/auth_check.py
 ```
 
 This will:
@@ -286,7 +286,7 @@ steps:
 
 Run the test script for diagnostics:
 ```bash
-python tests/system/test_auth.py
+python tests/system/auth_check.py
 ```
 
 Or check individual components:

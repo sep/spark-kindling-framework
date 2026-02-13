@@ -7,11 +7,42 @@ Configures test markers, fixtures, and settings for system-level integration tes
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
 # All supported platforms - single source of truth
 ALL_PLATFORMS = ["fabric", "databricks", "synapse"]
+ALL_CLOUDS = ["azure", "aws", "gcp"]
+
+
+def _detect_databricks_cloud() -> Optional[str]:
+    """Detect Databricks cloud provider from environment."""
+    explicit = (os.getenv("DATABRICKS_CLOUD") or "").strip().lower()
+    if explicit in ALL_CLOUDS:
+        return explicit
+
+    host = (os.getenv("DATABRICKS_HOST") or "").strip().lower()
+    if not host:
+        return None
+
+    if "azuredatabricks.net" in host:
+        return "azure"
+    if "gcp.databricks.com" in host:
+        return "gcp"
+    if "cloud.databricks.com" in host or host.endswith(".databricks.com"):
+        return "aws"
+
+    return None
+
+
+def get_cloud_for_platform(platform_name: str) -> Optional[str]:
+    """Resolve cloud provider for a platform."""
+    if platform_name in {"fabric", "synapse"}:
+        return "azure"
+    if platform_name == "databricks":
+        return _detect_databricks_cloud()
+    return None
 
 
 def pytest_generate_tests(metafunc):
@@ -37,6 +68,9 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "fabric: tests that require Microsoft Fabric platform")
     config.addinivalue_line("markers", "databricks: tests that require Databricks platform")
     config.addinivalue_line("markers", "synapse: tests that require Azure Synapse platform")
+    config.addinivalue_line("markers", "azure: tests that require Azure cloud")
+    config.addinivalue_line("markers", "aws: tests that require AWS cloud")
+    config.addinivalue_line("markers", "gcp: tests that require Google Cloud")
     config.addinivalue_line("markers", "system: system-level integration tests")
     config.addinivalue_line("markers", "slow: tests that take significant time to run")
 
@@ -48,11 +82,45 @@ def pytest_collection_modifyitems(config, items):
     Skip tests that require unavailable credentials.
     """
     for item in items:
+        platform_value = None
         # Add platform marker dynamically from parametrize values
         if hasattr(item, "callspec") and "platform" in item.callspec.params:
             platform_value = item.callspec.params["platform"]
             # Add the platform as a marker so -m fabric/databricks/synapse works
             item.add_marker(getattr(pytest.mark, platform_value))
+
+            # Also add cloud marker (azure/aws/gcp) when platform->cloud is known
+            cloud_value = get_cloud_for_platform(platform_value)
+            if cloud_value:
+                item.add_marker(getattr(pytest.mark, cloud_value))
+
+        if not platform_value:
+            platform_value = config.getoption("--platform", default=None) or os.getenv(
+                "TEST_PLATFORM"
+            )
+
+        # Enforce cloud markers for platform-parametrized tests.
+        requested_cloud = next((cloud for cloud in ALL_CLOUDS if cloud in item.keywords), None)
+        if requested_cloud and platform_value:
+            platform_cloud = get_cloud_for_platform(platform_value)
+            if platform_cloud and platform_cloud != requested_cloud:
+                item.add_marker(
+                    pytest.mark.skip(
+                        reason=(
+                            f"Test requires cloud '{requested_cloud}', "
+                            f"but platform '{platform_value}' runs on '{platform_cloud}'."
+                        )
+                    )
+                )
+            elif platform_cloud is None:
+                item.add_marker(
+                    pytest.mark.skip(
+                        reason=(
+                            f"Test requires cloud '{requested_cloud}', but cloud could not be "
+                            f"determined for platform '{platform_value}'."
+                        )
+                    )
+                )
 
         # Check for platform markers and required credentials
         if "fabric" in item.keywords:
@@ -130,61 +198,6 @@ def test_timeout():
 def poll_interval():
     """Default poll interval for status checks (in seconds)"""
     return int(os.getenv("POLL_INTERVAL", "10"))  # 10 seconds default
-
-
-@pytest.fixture
-def databricks_api():
-    """Create Databricks API client for system tests (following Fabric/Synapse pattern)"""
-
-    # Get configuration from environment
-    workspace_url = os.getenv("DATABRICKS_HOST")
-    storage_account = os.getenv("AZURE_STORAGE_ACCOUNT")
-    container = os.getenv("AZURE_CONTAINER", "artifacts")
-    base_path = os.getenv("AZURE_BASE_PATH", "")
-
-    if not workspace_url:
-        pytest.skip("DATABRICKS_HOST not configured")
-
-    # Import DatabricksAPI (late import to avoid issues if not available)
-    try:
-        from kindling.platform_databricks import DatabricksAPI
-    except ImportError:
-        pytest.skip("DatabricksAPI not available - check platform_databricks.py")
-
-    # Check if service principal credentials are available
-    has_sp_creds = all(
-        [
-            os.getenv("AZURE_CLIENT_ID"),
-            os.getenv("AZURE_CLIENT_SECRET"),
-            os.getenv("AZURE_TENANT_ID"),
-        ]
-    )
-
-    if has_sp_creds:
-        print("🔐 Using Azure Service Principal authentication for Databricks API")
-        # Create API client with service principal authentication
-        api = DatabricksAPI(
-            workspace_url=workspace_url,
-            storage_account=storage_account,
-            container=container,
-            base_path=base_path,
-            default_cluster_id=os.getenv("DATABRICKS_CLUSTER_ID"),
-            azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
-            azure_client_id=os.getenv("AZURE_CLIENT_ID"),
-            azure_client_secret=os.getenv("AZURE_CLIENT_SECRET"),
-        )
-    else:
-        print("🔐 Using Azure CLI authentication for Databricks API")
-        # Create API client with Azure CLI authentication
-        api = DatabricksAPI(
-            workspace_url=workspace_url,
-            storage_account=storage_account,
-            container=container,
-            base_path=base_path,
-            default_cluster_id=os.getenv("DATABRICKS_CLUSTER_ID"),
-        )
-
-    return api
 
 
 @pytest.fixture
