@@ -42,7 +42,7 @@ ipython = ">=8.0.0"
 jupyter = ">=1.0.0"
 poethepoet = ">=0.24.0"
 requests = ">=2.31.0"
-azure-mgmt-storage = "^24.0.0"
+azure-mgmt-storage = "22.1.0"
 
 [tool.poe.tasks]
 # Version management
