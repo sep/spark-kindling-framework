@@ -8,7 +8,7 @@ def test_initialize_passes_config_through():
         result = kindling.initialize({"environment": "dev"})
 
     assert result == "ok"
-    mock_init.assert_called_once_with({"environment": "dev"}, app_name=None)
+    mock_init.assert_called_once_with({"environment": "dev"})
 
 
 def test_initialize_app_name_argument_overrides_config():
@@ -17,4 +17,4 @@ def test_initialize_app_name_argument_overrides_config():
     with patch.object(kindling, "initialize_framework", return_value="ok") as mock_init:
         kindling.initialize({"app_name": "from-config"}, app_name="from-arg")
 
-    mock_init.assert_called_once_with({"app_name": "from-arg"}, app_name="from-arg")
+    mock_init.assert_called_once_with({"app_name": "from-arg"})
