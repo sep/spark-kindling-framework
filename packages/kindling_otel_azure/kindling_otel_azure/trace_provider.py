@@ -61,6 +61,17 @@ class AzureMonitorTraceProvider(SparkTraceProvider):
                 f"✅ Trace provider: Azure Monitor initialized, tracer: {self._tracer is not None}"
             )
 
+    @staticmethod
+    def _set_span_attributes(span, details: Optional[Dict[str, Any]]):
+        """Set attributes on an OpenTelemetry span from details dict."""
+        if not details:
+            return
+        for key, value in details.items():
+            if isinstance(value, (str, int, float, bool)):
+                span.set_attribute(key, value)
+            else:
+                span.set_attribute(key, str(value))
+
     @contextmanager
     def span(
         self,
@@ -101,17 +112,13 @@ class AzureMonitorTraceProvider(SparkTraceProvider):
                     span.set_attribute("operation", operation)
 
                 # Add custom attributes from details
-                if details:
-                    for key, value in details.items():
-                        # Convert value to string if not a basic type
-                        if isinstance(value, (str, int, float, bool)):
-                            span.set_attribute(key, value)
-                        else:
-                            span.set_attribute(key, str(value))
+                self._set_span_attributes(span, details)
 
                 yield self
 
             except Exception as e:
+                # Apply any late-mutated attributes before closing the span.
+                self._set_span_attributes(span, details)
                 # Record exception in span
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -119,5 +126,7 @@ class AzureMonitorTraceProvider(SparkTraceProvider):
                 if reraise:
                     raise
             else:
+                # Apply any late-mutated attributes before marking success.
+                self._set_span_attributes(span, details)
                 # Mark span as successful
                 span.set_status(Status(StatusCode.OK))

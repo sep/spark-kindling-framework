@@ -194,12 +194,17 @@ class EventBasedSparkTrace(SparkTraceProvider):
         reraise: bool = False,
     ):
         id = str(self._increment_activity())
+        live_details = details if details is not None else {}
 
         current_span = SparkSpan(
             id=id,
             component=component or (self.current_span.component if self.current_span else None),
             operation=operation or (self.current_span.operation if self.current_span else None),
-            attributes=details or (self.current_span.attributes if self.current_span else None),
+            attributes=(
+                live_details
+                if details is not None
+                else (self.current_span.attributes if self.current_span else None)
+            ),
             start_time=datetime.now(),
             traceId=self.current_span.traceId if self.current_span else uuid.uuid4(),
             reraise=reraise or (self.current_span.reraise if self.current_span else None),
@@ -214,7 +219,7 @@ class EventBasedSparkTrace(SparkTraceProvider):
             operation=current_span.operation,
         ):
             start_details = self._add_timestamp_to_dict(
-                details or {}, "startTime", current_span.start_time
+                live_details, "startTime", current_span.start_time
             )
             try:
                 self.emitter.emit_custom_event(
@@ -228,7 +233,10 @@ class EventBasedSparkTrace(SparkTraceProvider):
 
             except Exception as e:
                 error_time = datetime.now()
-                error_details = self._add_timestamp_to_dict(start_details, "errorTime", error_time)
+                error_base = self._add_timestamp_to_dict(
+                    live_details, "startTime", current_span.start_time
+                )
+                error_details = self._add_timestamp_to_dict(error_base, "errorTime", error_time)
                 error_details["exception"] = traceback.format_exc()
                 self.emitter.emit_custom_event(
                     current_span.component,
@@ -242,8 +250,11 @@ class EventBasedSparkTrace(SparkTraceProvider):
 
             finally:
                 current_span.end_time = datetime.now()
+                end_base = self._add_timestamp_to_dict(
+                    live_details, "startTime", current_span.start_time
+                )
                 end_details = self._add_timestamp_to_dict(
-                    start_details, "endTime", current_span.end_time
+                    end_base, "endTime", current_span.end_time
                 )
                 end_details["totalTime"] = self._calculate_time_diff(
                     current_span.start_time, current_span.end_time
