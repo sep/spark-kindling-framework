@@ -13,8 +13,19 @@ from kindling.injection import *
 from kindling.spark_config import *
 from kindling.spark_session import *
 from py4j.java_gateway import JavaObject
+from py4j.protocol import Py4JError
 
 from .spark_log_provider import *
+
+_mdc_api_blocked = False
+
+
+def _is_mdc_api_blocked_exception(exc: Exception) -> bool:
+    """Detect Databricks Py4J whitelist errors for org.apache.log4j.MDC calls."""
+    if not isinstance(exc, Py4JError):
+        return False
+    message = str(exc)
+    return "Py4JSecurityException" in message and "org.apache.log4j.MDC" in message
 
 
 class CustomEventEmitter(ABC):
@@ -90,16 +101,35 @@ class AzureEventEmitter(CustomEventEmitter):
 
 @contextmanager
 def mdc_context(**kwargs):
+    global _mdc_api_blocked
+
     spark = get_or_create_spark_session()
-    mdc = spark._jvm.org.apache.log4j.MDC
+    mdc = spark._jvm.org.apache.log4j.MDC if not _mdc_api_blocked else None
     try:
         for key, value in kwargs.items():
             spark.sparkContext.setLocalProperty("mdc." + key, value)
-            mdc.put(key, value)
+            if mdc is None:
+                continue
+            try:
+                mdc.put(key, value)
+            except Exception as exc:
+                if _is_mdc_api_blocked_exception(exc):
+                    _mdc_api_blocked = True
+                    mdc = None
+                else:
+                    raise
         yield
     finally:
         for key in kwargs:
-            mdc.remove(key)
+            if mdc is not None:
+                try:
+                    mdc.remove(key)
+                except Exception as exc:
+                    if _is_mdc_api_blocked_exception(exc):
+                        _mdc_api_blocked = True
+                        mdc = None
+                    else:
+                        raise
             spark.sparkContext.setLocalProperty("mdc." + key, "")
 
 

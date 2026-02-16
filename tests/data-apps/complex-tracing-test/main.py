@@ -16,6 +16,7 @@ This test simulates realistic data processing patterns with:
 import random
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime
 
 from kindling.injection import get_kindling_service
@@ -30,9 +31,38 @@ def get_logger():
     return logger_provider.get_logger("complex-tracing-test")
 
 
+class KindlingSpanAdapter:
+    """Minimal span adapter exposing OpenTelemetry-like set_attribute()."""
+
+    def __init__(self, attributes):
+        self._attributes = attributes
+
+    def set_attribute(self, key, value):
+        self._attributes[key] = value
+
+
+class KindlingTracerAdapter:
+    """Adapter that maps span() to Kindling's span() API."""
+
+    def __init__(self, trace_provider, component):
+        self._trace_provider = trace_provider
+        self._component = component
+
+    @contextmanager
+    def span(self, operation):
+        attributes = {}
+        with self._trace_provider.span(
+            operation=operation,
+            component=self._component,
+            details=attributes,
+            reraise=True,
+        ):
+            yield KindlingSpanAdapter(attributes)
+
+
 def simulate_data_validation(tracer, logger, record_count):
     """Simulate data validation with variable duration"""
-    with tracer.start_as_current_span("validate_data") as span:
+    with tracer.span("validate_data") as span:
         span.set_attribute("record_count", record_count)
         span.set_attribute("validation.type", "schema_and_quality")
 
@@ -53,7 +83,7 @@ def simulate_data_validation(tracer, logger, record_count):
 
 def simulate_data_transformation(tracer, logger, record_count, batch_size=1000):
     """Simulate data transformation in batches"""
-    with tracer.start_as_current_span("transform_data") as span:
+    with tracer.span("transform_data") as span:
         span.set_attribute("record_count", record_count)
         span.set_attribute("batch_size", batch_size)
 
@@ -63,7 +93,7 @@ def simulate_data_transformation(tracer, logger, record_count, batch_size=1000):
         logger.info(f"Transforming {record_count} records in {num_batches} batches...")
 
         for batch_num in range(num_batches):
-            with tracer.start_as_current_span(f"transform_batch_{batch_num}") as batch_span:
+            with tracer.span(f"transform_batch_{batch_num}") as batch_span:
                 current_batch_size = min(batch_size, record_count - (batch_num * batch_size))
                 batch_span.set_attribute("batch.number", batch_num)
                 batch_span.set_attribute("batch.record_count", current_batch_size)
@@ -85,7 +115,7 @@ def simulate_data_transformation(tracer, logger, record_count, batch_size=1000):
 
 def simulate_data_enrichment(tracer, logger, record_count):
     """Simulate data enrichment with external lookups"""
-    with tracer.start_as_current_span("enrich_data") as span:
+    with tracer.span("enrich_data") as span:
         span.set_attribute("record_count", record_count)
 
         logger.info(f"Enriching {record_count} records...")
@@ -94,7 +124,7 @@ def simulate_data_enrichment(tracer, logger, record_count):
         enrichment_sources = ["customer_db", "product_catalog", "geo_location"]
 
         for source in enrichment_sources:
-            with tracer.start_as_current_span(f"lookup_{source}") as lookup_span:
+            with tracer.span(f"lookup_{source}") as lookup_span:
                 lookup_span.set_attribute("source.name", source)
                 lookup_span.set_attribute("source.record_count", record_count)
 
@@ -118,13 +148,13 @@ def simulate_data_enrichment(tracer, logger, record_count):
 
 def simulate_data_aggregation(tracer, logger, record_count):
     """Simulate data aggregation with grouping and calculations"""
-    with tracer.start_as_current_span("aggregate_data") as span:
+    with tracer.span("aggregate_data") as span:
         span.set_attribute("record_count", record_count)
 
         logger.info(f"Aggregating {record_count} records...")
 
         # Simulate grouping
-        with tracer.start_as_current_span("group_by_operation") as group_span:
+        with tracer.span("group_by_operation") as group_span:
             group_span.set_attribute("group_by.columns", "customer_id,product_category,date")
             time.sleep(random.randint(40, 80) / 1000.0)
 
@@ -135,7 +165,7 @@ def simulate_data_aggregation(tracer, logger, record_count):
         # Simulate calculations
         calculations = ["sum", "avg", "count", "min", "max"]
         for calc in calculations:
-            with tracer.start_as_current_span(f"calculate_{calc}") as calc_span:
+            with tracer.span(f"calculate_{calc}") as calc_span:
                 calc_span.set_attribute("calculation.type", calc)
                 time.sleep(random.randint(10, 30) / 1000.0)
                 calc_span.set_attribute("calculation.status", "completed")
@@ -146,7 +176,7 @@ def simulate_data_aggregation(tracer, logger, record_count):
 
 def simulate_error_handling(tracer, logger):
     """Simulate error handling within spans"""
-    with tracer.start_as_current_span("error_prone_operation") as span:
+    with tracer.span("error_prone_operation") as span:
         span.set_attribute("operation.type", "network_request")
 
         try:
@@ -168,7 +198,7 @@ def simulate_error_handling(tracer, logger):
             logger.error(f"Operation failed: {e}")
 
             # Simulate retry
-            with tracer.start_as_current_span("retry_operation") as retry_span:
+            with tracer.span("retry_operation") as retry_span:
                 logger.info("Retrying operation...")
                 time.sleep(random.randint(30, 60) / 1000.0)
                 retry_span.set_attribute("retry.attempt", 1)
@@ -180,7 +210,7 @@ def simulate_error_handling(tracer, logger):
 
 def run_complex_pipeline(tracer, logger, pipeline_id):
     """Run a complete data processing pipeline"""
-    with tracer.start_as_current_span("data_pipeline") as pipeline_span:
+    with tracer.span("data_pipeline") as pipeline_span:
         pipeline_span.set_attribute("pipeline.id", pipeline_id)
         pipeline_span.set_attribute("pipeline.start_time", datetime.utcnow().isoformat())
 
@@ -219,7 +249,7 @@ def run_complex_pipeline(tracer, logger, pipeline_id):
 # Main execution
 logger = get_logger()
 trace_provider = get_kindling_service(SparkTraceProvider)
-tracer = trace_provider.get_tracer("complex-tracing-test")
+tracer = KindlingTracerAdapter(trace_provider, "complex-tracing-test")
 
 logger.info("=" * 60)
 logger.info("Complex Tracing System Test")
@@ -230,7 +260,7 @@ trace_class = f"{trace_provider.__class__.__module__}.{trace_provider.__class__.
 logger.info(f"Trace Provider: {trace_class}")
 
 # Create top-level span for entire test
-with tracer.start_as_current_span("tracing_system_test") as test_span:
+with tracer.span("tracing_system_test") as test_span:
     test_span.set_attribute("test.type", "complex_tracing")
     test_span.set_attribute("test.start_time", datetime.utcnow().isoformat())
 

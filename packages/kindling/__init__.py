@@ -38,3 +38,12 @@ from .bootstrap import (
     is_framework_initialized,
 )
 from .platform_provider import PlatformAPI
+
+
+def initialize(config=None, app_name=None):
+    """Public initialize entrypoint for pre-installed kindling usage."""
+    config = dict(config or {})
+    if app_name is not None:
+        config["app_name"] = app_name
+
+    return initialize_framework(config, app_name=config.get("app_name"))
