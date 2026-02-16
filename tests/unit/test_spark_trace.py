@@ -727,6 +727,20 @@ class TestEventBasedSparkTrace:
         assert "user" in start_details, "Custom details should be in START event"
         assert start_details["user"] == "test_user", "Custom detail values should be preserved"
 
+    def test_span_end_includes_late_mutated_details(self, mock_emitter):
+        """END event should include attributes added after span entry."""
+        trace = EventBasedSparkTrace(mock_emitter)
+        dynamic_details = {}
+
+        with trace.span(operation="TestOp", component="TestComp", details=dynamic_details):
+            dynamic_details["late_attr"] = "value-added-in-body"
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        end_call = [c for c in calls if "END" in c[0][1]][0]
+        end_details = end_call[0][2]
+
+        assert end_details.get("late_attr") == "value-added-in-body"
+
     def test_span_uses_mdc_context(self, mock_emitter, mock_spark_for_trace):
         """span should set up MDC context during execution."""
         trace = EventBasedSparkTrace(mock_emitter)
