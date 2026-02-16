@@ -7,6 +7,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+import kindling.spark_trace as spark_trace_module
 from kindling.spark_trace import (
     AzureEventEmitter,
     CustomEventEmitter,
@@ -24,6 +25,14 @@ def mock_spark_session_for_mdc(mock_spark_for_trace):
         "kindling.spark_trace.get_or_create_spark_session", return_value=mock_spark_for_trace
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def reset_mdc_block_flag():
+    """Ensure MDC fallback state doesn't leak between tests."""
+    spark_trace_module._mdc_api_blocked = False
+    yield
+    spark_trace_module._mdc_api_blocked = False
 
 
 class TestCustomEventEmitter:
@@ -304,6 +313,41 @@ class TestMdcContext:
         # Verify MDC.remove was still called
         remove_calls = [call for call in mock_mdc.remove.call_args_list]
         assert len(remove_calls) >= 1, "Should clear MDC even when exception occurs"
+
+    def test_mdc_context_reraises_non_whitelist_mdc_errors(self, mock_spark_for_trace):
+        """mdc_context should still raise unexpected MDC failures."""
+        mock_mdc = mock_spark_for_trace._jvm.org.apache.log4j.MDC
+        mock_mdc.put.side_effect = RuntimeError("Unexpected MDC failure")
+
+        with pytest.raises(RuntimeError, match="Unexpected MDC failure"):
+            with mdc_context(trace_id="trace-123", span_id="span-456"):
+                pass
+
+    def test_mdc_context_disables_mdc_after_py4j_whitelist_error(self, mock_spark_for_trace):
+        """Once blocked, mdc_context should skip direct log4j MDC calls."""
+        mock_mdc = mock_spark_for_trace._jvm.org.apache.log4j.MDC
+
+        class FakePy4JError(Exception):
+            pass
+
+        with patch("kindling.spark_trace.Py4JError", FakePy4JError):
+            mock_mdc.put.side_effect = FakePy4JError(
+                "Py4JSecurityException: Method public static void org.apache.log4j.MDC.put "
+                "(java.lang.String,java.lang.String) is not whitelisted"
+            )
+            with mdc_context(trace_id="trace-123"):
+                pass
+
+            assert spark_trace_module._mdc_api_blocked is True
+
+            mock_mdc.put.reset_mock()
+            mock_mdc.remove.reset_mock()
+
+            with mdc_context(trace_id="trace-456"):
+                pass
+
+        mock_mdc.put.assert_not_called()
+        mock_mdc.remove.assert_not_called()
 
 
 class TestSparkSpan:

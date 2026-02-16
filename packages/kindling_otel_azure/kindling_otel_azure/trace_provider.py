@@ -61,19 +61,6 @@ class AzureMonitorTraceProvider(SparkTraceProvider):
                 f"✅ Trace provider: Azure Monitor initialized, tracer: {self._tracer is not None}"
             )
 
-    def get_tracer(self, name: str):
-        """Get OpenTelemetry tracer instance.
-
-        Args:
-            name: Name for the tracer
-
-        Returns:
-            OpenTelemetry Tracer instance
-        """
-        if not self._tracer:
-            return trace.get_tracer(name)
-        return self._tracer
-
     @contextmanager
     def span(
         self,
