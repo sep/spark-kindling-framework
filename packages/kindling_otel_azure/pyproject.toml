@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling-otel-azure"
-version = "0.3.0"
+version = "0.3.1"
 description = "Azure Monitor OpenTelemetry integration for Kindling framework"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
