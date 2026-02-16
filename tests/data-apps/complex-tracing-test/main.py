@@ -39,6 +39,19 @@ class KindlingSpanAdapter:
 
     def set_attribute(self, key, value):
         self._attributes[key] = value
+        # If OpenTelemetry is active, also set attributes on the current span
+        # so late mutations are reflected before the span closes.
+        try:
+            from opentelemetry import trace as otel_trace
+
+            current_span = otel_trace.get_current_span()
+            if current_span is not None and hasattr(current_span, "set_attribute"):
+                if isinstance(value, (str, int, float, bool)):
+                    current_span.set_attribute(key, value)
+                else:
+                    current_span.set_attribute(key, str(value))
+        except Exception:
+            pass
 
 
 class KindlingTracerAdapter:
