@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,82 @@ level_hierarchy = {
     "FATAL": 5,
     "OFF": 6,
 }
+
+
+def _parse_spark_conf_value(value: Any) -> Any:
+    """Parse Spark config string values into native Python types when possible."""
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    lowered = stripped.lower()
+
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered in {"null", "none"}:
+        return None
+
+    try:
+        return json.loads(stripped)
+    except Exception:
+        return value
+
+
+def _get_spark_kindling_config() -> Dict[str, Any]:
+    """Read spark.kindling.* keys from SparkConf and map into bootstrap/config keys."""
+    try:
+        spark = get_or_create_spark_session()
+        conf_items = spark.conf.getAll()
+        iterator = conf_items.items() if isinstance(conf_items, dict) else conf_items
+    except Exception:
+        return {}
+
+    mapped: Dict[str, Any] = {}
+    prefix = "spark.kindling."
+    bootstrap_prefix = "bootstrap."
+    bootstrap_aliases = {
+        "load_lake": "use_lake_packages",
+        "load_local": "load_local_packages",
+    }
+
+    for item in iterator:
+        try:
+            key, raw_value = item
+        except Exception:
+            continue
+
+        if not isinstance(key, str) or not key.startswith(prefix):
+            continue
+
+        suffix = key[len(prefix) :]
+        if not suffix:
+            continue
+
+        value = _parse_spark_conf_value(raw_value)
+
+        if suffix.startswith(bootstrap_prefix):
+            bootstrap_key = suffix[len(bootstrap_prefix) :]
+            if not bootstrap_key:
+                continue
+            mapped[bootstrap_aliases.get(bootstrap_key, bootstrap_key)] = value
+        else:
+            mapped[f"kindling.{suffix}"] = value
+
+    return mapped
+
+
+def _merge_with_spark_kindling_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge SparkConf-derived config with explicit config (explicit wins)."""
+    spark_kindling_config = _get_spark_kindling_config()
+    if not spark_kindling_config:
+        return dict(config or {})
+
+    merged = dict(spark_kindling_config)
+    merged.update(config or {})
+    print(f"Merged {len(spark_kindling_config)} SparkConf settings from spark.kindling.*")
+    return merged
 
 
 def get_temp_path() -> str:
@@ -510,14 +587,62 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
     def get_package_name(package_spec: str) -> str:
         """Extract base package name (with dashes) from package spec"""
-        return package_spec.split(">=")[0].split("==")[0].split("[")[0].strip()
-
-    def is_package_installed(package_spec):
-        """Check if package is installed by checking if module can be imported"""
         try:
+            from packaging.requirements import Requirement
+
+            return Requirement(package_spec).name
+        except Exception:
+            splitters = [">=", "==", "<=", "!=", "~=", ">", "<", "["]
+            base = package_spec
+            for splitter in splitters:
+                if splitter in base:
+                    base = base.split(splitter, 1)[0]
+            return base.strip()
+
+    def get_version_specifier(package_spec: str):
+        """Extract version specifier from package requirement."""
+        try:
+            from packaging.requirements import Requirement
+
+            return Requirement(package_spec).specifier
+        except Exception:
+            return None
+
+    def get_installed_version(package_name: str) -> Optional[str]:
+        """Get installed package version by distribution name."""
+        try:
+            from importlib import metadata as importlib_metadata
+
+            return importlib_metadata.version(package_name)
+        except Exception:
+            try:
+                from importlib import metadata as importlib_metadata
+
+                return importlib_metadata.version(package_name.replace("-", "_"))
+            except Exception:
+                return None
+
+    def is_package_installed(package_spec, check_version: bool = False):
+        """Check if package is installed and optionally satisfies requested version."""
+        try:
+            package_name = get_package_name(package_spec)
             import_name = get_import_name(package_spec)
             spec = importlib.util.find_spec(import_name)
-            return spec is not None
+            if spec is None:
+                return False
+
+            if not check_version:
+                return True
+
+            version_specifier = get_version_specifier(package_spec)
+            if not version_specifier:
+                return True
+
+            installed_version = get_installed_version(package_name)
+            if not installed_version:
+                return False
+
+            return version_specifier.contains(installed_version, prereleases=True)
         except ValueError as e:
             if ".__spec__ is None" in str(e):
                 return False
@@ -570,11 +695,15 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
     def load_extension_wheel(package_spec, storage_utils, artifacts_path, temp_path=None):
         """Install extension wheel from artifacts storage (like kindling-otel-azure)"""
-        if is_package_installed(package_spec):
+        if is_package_installed(package_spec, check_version=True):
             import_name = get_import_name(package_spec)
             print(f"✓ Extension already installed: {import_name}")
             logger.info(f"Extension already installed: {import_name}")
             return
+
+        if is_package_installed(package_spec, check_version=False):
+            print(f"↻ Extension installed but version does not satisfy '{package_spec}', upgrading")
+            logger.info(f"Extension version mismatch, upgrading to satisfy: {package_spec}")
 
         import os
         import tempfile
@@ -863,6 +992,10 @@ def load_workspace_packages(platform, packages, logger):
 
 def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None):
     """Linear framework initialization with Dynaconf config loading"""
+
+    config = _merge_with_spark_kindling_config(dict(config or {}))
+    if app_name is None:
+        app_name = config.get("app_name")
 
     print(f"initialize_framework: initial_config = {config}")
 
