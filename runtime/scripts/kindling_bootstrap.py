@@ -2,6 +2,7 @@ import importlib
 import os
 import subprocess
 import sys
+import json
 from datetime import datetime
 from typing import Any, Dict, Union
 
@@ -11,6 +12,75 @@ except ImportError:
     # Fallback if packaging not available (shouldn't happen in modern Python)
     Version = None
     InvalidVersion = None
+
+
+def _parse_spark_conf_value(value: Any) -> Any:
+    """Parse Spark config string values into native Python types when possible."""
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    lowered = stripped.lower()
+
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered in {"null", "none"}:
+        return None
+
+    try:
+        return json.loads(stripped)
+    except Exception:
+        return value
+
+
+def _get_spark_kindling_config() -> Dict[str, Any]:
+    """Read spark.kindling.* keys from SparkConf and map into bootstrap/config keys."""
+    try:
+        from pyspark.sql import SparkSession
+
+        spark = SparkSession.getActiveSession()
+        if not spark:
+            return {}
+
+        conf_items = spark.conf.getAll()
+        iterator = conf_items.items() if isinstance(conf_items, dict) else conf_items
+    except Exception:
+        return {}
+
+    mapped: Dict[str, Any] = {}
+    prefix = "spark.kindling."
+    bootstrap_prefix = "bootstrap."
+    bootstrap_aliases = {
+        "load_lake": "use_lake_packages",
+        "load_local": "load_local_packages",
+    }
+
+    for item in iterator:
+        try:
+            key, raw_value = item
+        except Exception:
+            continue
+
+        if not isinstance(key, str) or not key.startswith(prefix):
+            continue
+
+        suffix = key[len(prefix) :]
+        if not suffix:
+            continue
+
+        value = _parse_spark_conf_value(raw_value)
+
+        if suffix.startswith(bootstrap_prefix):
+            bootstrap_key = suffix[len(bootstrap_prefix) :]
+            if not bootstrap_key:
+                continue
+            mapped[bootstrap_aliases.get(bootstrap_key, bootstrap_key)] = value
+        else:
+            mapped[f"kindling.{suffix}"] = value
+
+    return mapped
 
 # DEBUG: Track script execution to detect duplicate runs
 now = datetime.now()
@@ -63,6 +133,19 @@ except (ImportError, AttributeError):
             for key, value in parsed_config.items():
                 if isinstance(value, bool) or str(value).lower() in ("true", "false"):
                     print(f"  DEBUG: {key} = {value} (type: {type(value).__name__})")
+
+
+spark_kindling_config = _get_spark_kindling_config()
+if spark_kindling_config:
+    print(f"Loaded {len(spark_kindling_config)} settings from SparkConf (spark.kindling.*)")
+
+if "BOOTSTRAP_CONFIG" in globals() and isinstance(BOOTSTRAP_CONFIG, dict):
+    merged_config = dict(spark_kindling_config)
+    merged_config.update(BOOTSTRAP_CONFIG)
+    BOOTSTRAP_CONFIG = merged_config
+elif spark_kindling_config:
+    BOOTSTRAP_CONFIG = spark_kindling_config
+    print("Using SparkConf-derived BOOTSTRAP_CONFIG")
 
 
 def get_storage_utils():
@@ -700,9 +783,16 @@ def bootstrap(config_or_filename: Union[Dict[str, Any], str], artifacts_path: st
         print("Configuration loaded")
 
         # Step 3: Ensure kindling availability
-        # Always install from lake when use_lake_packages=True to ensure correct version
-        if config.get("use_lake_packages", True):
-            print("Installing kindling from datalake (use_lake_packages=True)...")
+        # Default behavior: install from lake only when kindling is missing
+        use_lake_packages = config.get("use_lake_packages", True)
+        force_reinstall = config.get("force_reinstall", False)
+        kindling_available = is_kindling_available()
+
+        if kindling_available and not force_reinstall:
+            print("Kindling already available, skipping install (install-if-missing behavior)")
+        elif use_lake_packages:
+            reason = "force_reinstall=True" if force_reinstall else "kindling not available"
+            print(f"Installing kindling from datalake ({reason})...")
             if not install_kindling_from_datalake(config, storage_utils):
                 raise Exception("Failed to install kindling from datalake")
 
@@ -711,7 +801,7 @@ def bootstrap(config_or_filename: Union[Dict[str, Any], str], artifacts_path: st
                 raise Exception("Kindling still not available after installation")
 
             print("Kindling successfully installed and available")
-        elif is_kindling_available():
+        elif kindling_available:
             print("Kindling already available (use_lake_packages=False)")
         else:
             raise Exception("Kindling not available and use_lake_packages=False")
