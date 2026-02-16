@@ -77,6 +77,17 @@ class TestComplexTracing:
 
         job_config = apply_env_config_overrides(job_config, platform)
 
+        # Force true "default telemetry" behavior for this test path even if
+        # global CONFIG__ env overrides enable extensions.
+        if not use_azure_monitor:
+            config_overrides = job_config.setdefault("config_overrides", {})
+            kindling_overrides = config_overrides.setdefault("kindling", {})
+            kindling_overrides["extensions"] = []
+            telemetry_overrides = kindling_overrides.setdefault("telemetry", {})
+            azure_monitor_overrides = telemetry_overrides.setdefault("azure_monitor", {})
+            azure_monitor_overrides["enable_logging"] = False
+            azure_monitor_overrides["enable_tracing"] = False
+
         # Deploy app and create job (separate operations)
         print(f"📂 Deploying app: {app_name}")
         client.deploy_app(app_name, app_files)
@@ -93,18 +104,75 @@ class TestComplexTracing:
         timeout = 600  # 10 minutes (complex test takes longer)
         start_time = time.time()
         final_status = None
+        final_result_state = None
+        job_failed = False
 
         while time.time() - start_time < timeout:
             status_info = client.get_job_status(run_id=run_id)
-            status = status_info["status"]
+            status = (status_info.get("status") or "").upper()
+            result_state = (status_info.get("result_state") or "").upper()
+            elapsed = int(time.time() - start_time)
+            print(
+                f"   status poll ({elapsed}s): lifecycle={status or 'N/A'} result={result_state or 'N/A'}"
+            )
 
-            if status.upper() in ["COMPLETED", "SUCCESS"]:
-                print(f"✅ Job completed successfully")
+            failed_result_states = {
+                "FAILED",
+                "ERROR",
+                "CANCELED",
+                "CANCELLED",
+                "INTERNAL_ERROR",
+                "TIMEDOUT",
+                "UPSTREAM_FAILED",
+                "UPSTREAM_CANCELED",
+                "MAXIMUM_CONCURRENT_RUNS_REACHED",
+            }
+            terminal_lifecycle_states = {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}
+
+            # Treat classic statuses as terminal.
+            if status in ["COMPLETED", "SUCCESS"]:
+                print("✅ Job completed successfully")
                 final_status = status
+                final_result_state = result_state
                 break
-            elif status.upper() in ["FAILED", "ERROR", "CANCELLED"]:
-                print(f"❌ Job failed with status: {status}")
+            if status in ["FAILED", "ERROR", "CANCELLED", "CANCELED"]:
+                print(f"❌ Job failed with status: {status} (result_state: {result_state or 'N/A'})")
                 final_status = status
+                final_result_state = result_state
+                job_failed = True
+                break
+
+            # Databricks lifecycle can be TERMINATED/SKIPPED/INTERNAL_ERROR with
+            # result_state carrying success/failure detail.
+            if status in terminal_lifecycle_states:
+                if status == "INTERNAL_ERROR" or result_state in failed_result_states:
+                    print(
+                        f"❌ Job failed with lifecycle={status} (result_state: {result_state or 'N/A'})"
+                    )
+                    final_status = status
+                    final_result_state = result_state
+                    job_failed = True
+                    break
+                print(f"✅ Job completed with lifecycle={status} (result_state: {result_state or 'N/A'})")
+                final_status = status
+                final_result_state = result_state
+                break
+
+            # Some Databricks runs remain in TERMINATING while result_state is final.
+            if status == "TERMINATING" and result_state:
+                if result_state in failed_result_states:
+                    print(
+                        f"❌ Job failed while terminating (result_state: {result_state or 'N/A'})"
+                    )
+                    final_status = status
+                    final_result_state = result_state
+                    job_failed = True
+                    break
+                print(
+                    f"✅ Job completed while terminating (result_state: {result_state or 'N/A'})"
+                )
+                final_status = status
+                final_result_state = result_state
                 break
 
             time.sleep(15)
@@ -132,8 +200,10 @@ class TestComplexTracing:
             print(log_content[-5000:])
 
         # Verify job succeeded
-        if final_status and final_status.upper() in ["FAILED", "ERROR", "CANCELLED"]:
-            pytest.fail(f"Job failed with status: {final_status}")
+        if job_failed:
+            pytest.fail(
+                f"Job failed with lifecycle={final_status} (result_state: {final_result_state or 'N/A'})"
+            )
 
         # Verify test execution
         assert "Complex Tracing System Test" in log_content, "Test app did not start properly"

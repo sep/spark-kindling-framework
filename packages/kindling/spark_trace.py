@@ -13,8 +13,19 @@ from kindling.injection import *
 from kindling.spark_config import *
 from kindling.spark_session import *
 from py4j.java_gateway import JavaObject
+from py4j.protocol import Py4JError
 
 from .spark_log_provider import *
+
+_mdc_api_blocked = False
+
+
+def _is_mdc_api_blocked_exception(exc: Exception) -> bool:
+    """Detect Databricks Py4J whitelist errors for org.apache.log4j.MDC calls."""
+    if not isinstance(exc, Py4JError):
+        return False
+    message = str(exc)
+    return "Py4JSecurityException" in message and "org.apache.log4j.MDC" in message
 
 
 class CustomEventEmitter(ABC):
@@ -90,16 +101,35 @@ class AzureEventEmitter(CustomEventEmitter):
 
 @contextmanager
 def mdc_context(**kwargs):
+    global _mdc_api_blocked
+
     spark = get_or_create_spark_session()
-    mdc = spark._jvm.org.apache.log4j.MDC
+    mdc = spark._jvm.org.apache.log4j.MDC if not _mdc_api_blocked else None
     try:
         for key, value in kwargs.items():
             spark.sparkContext.setLocalProperty("mdc." + key, value)
-            mdc.put(key, value)
+            if mdc is None:
+                continue
+            try:
+                mdc.put(key, value)
+            except Exception as exc:
+                if _is_mdc_api_blocked_exception(exc):
+                    _mdc_api_blocked = True
+                    mdc = None
+                else:
+                    raise
         yield
     finally:
         for key in kwargs:
-            mdc.remove(key)
+            if mdc is not None:
+                try:
+                    mdc.remove(key)
+                except Exception as exc:
+                    if _is_mdc_api_blocked_exception(exc):
+                        _mdc_api_blocked = True
+                        mdc = None
+                    else:
+                        raise
             spark.sparkContext.setLocalProperty("mdc." + key, "")
 
 
@@ -164,12 +194,17 @@ class EventBasedSparkTrace(SparkTraceProvider):
         reraise: bool = False,
     ):
         id = str(self._increment_activity())
+        live_details = details if details is not None else {}
 
         current_span = SparkSpan(
             id=id,
             component=component or (self.current_span.component if self.current_span else None),
             operation=operation or (self.current_span.operation if self.current_span else None),
-            attributes=details or (self.current_span.attributes if self.current_span else None),
+            attributes=(
+                live_details
+                if details is not None
+                else (self.current_span.attributes if self.current_span else None)
+            ),
             start_time=datetime.now(),
             traceId=self.current_span.traceId if self.current_span else uuid.uuid4(),
             reraise=reraise or (self.current_span.reraise if self.current_span else None),
@@ -184,7 +219,7 @@ class EventBasedSparkTrace(SparkTraceProvider):
             operation=current_span.operation,
         ):
             start_details = self._add_timestamp_to_dict(
-                details or {}, "startTime", current_span.start_time
+                live_details, "startTime", current_span.start_time
             )
             try:
                 self.emitter.emit_custom_event(
@@ -198,7 +233,10 @@ class EventBasedSparkTrace(SparkTraceProvider):
 
             except Exception as e:
                 error_time = datetime.now()
-                error_details = self._add_timestamp_to_dict(start_details, "errorTime", error_time)
+                error_base = self._add_timestamp_to_dict(
+                    live_details, "startTime", current_span.start_time
+                )
+                error_details = self._add_timestamp_to_dict(error_base, "errorTime", error_time)
                 error_details["exception"] = traceback.format_exc()
                 self.emitter.emit_custom_event(
                     current_span.component,
@@ -212,8 +250,11 @@ class EventBasedSparkTrace(SparkTraceProvider):
 
             finally:
                 current_span.end_time = datetime.now()
+                end_base = self._add_timestamp_to_dict(
+                    live_details, "startTime", current_span.start_time
+                )
                 end_details = self._add_timestamp_to_dict(
-                    start_details, "endTime", current_span.end_time
+                    end_base, "endTime", current_span.end_time
                 )
                 end_details["totalTime"] = self._calculate_time_diff(
                     current_span.start_time, current_span.end_time
