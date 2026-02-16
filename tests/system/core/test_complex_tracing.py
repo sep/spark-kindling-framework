@@ -104,6 +104,8 @@ class TestComplexTracing:
         timeout = 600  # 10 minutes (complex test takes longer)
         start_time = time.time()
         final_status = None
+        final_result_state = None
+        job_failed = False
 
         while time.time() - start_time < timeout:
             status_info = client.get_job_status(run_id=run_id)
@@ -131,10 +133,13 @@ class TestComplexTracing:
             if status in ["COMPLETED", "SUCCESS"]:
                 print("✅ Job completed successfully")
                 final_status = status
+                final_result_state = result_state
                 break
             if status in ["FAILED", "ERROR", "CANCELLED", "CANCELED"]:
                 print(f"❌ Job failed with status: {status} (result_state: {result_state or 'N/A'})")
                 final_status = status
+                final_result_state = result_state
+                job_failed = True
                 break
 
             # Databricks lifecycle can be TERMINATED/SKIPPED/INTERNAL_ERROR with
@@ -145,9 +150,12 @@ class TestComplexTracing:
                         f"❌ Job failed with lifecycle={status} (result_state: {result_state or 'N/A'})"
                     )
                     final_status = status
+                    final_result_state = result_state
+                    job_failed = True
                     break
                 print(f"✅ Job completed with lifecycle={status} (result_state: {result_state or 'N/A'})")
                 final_status = status
+                final_result_state = result_state
                 break
 
             # Some Databricks runs remain in TERMINATING while result_state is final.
@@ -157,11 +165,14 @@ class TestComplexTracing:
                         f"❌ Job failed while terminating (result_state: {result_state or 'N/A'})"
                     )
                     final_status = status
+                    final_result_state = result_state
+                    job_failed = True
                     break
                 print(
                     f"✅ Job completed while terminating (result_state: {result_state or 'N/A'})"
                 )
                 final_status = status
+                final_result_state = result_state
                 break
 
             time.sleep(15)
@@ -189,8 +200,10 @@ class TestComplexTracing:
             print(log_content[-5000:])
 
         # Verify job succeeded
-        if final_status and final_status.upper() in ["FAILED", "ERROR", "CANCELLED"]:
-            pytest.fail(f"Job failed with status: {final_status}")
+        if job_failed:
+            pytest.fail(
+                f"Job failed with lifecycle={final_status} (result_state: {final_result_state or 'N/A'})"
+            )
 
         # Verify test execution
         assert "Complex Tracing System Test" in log_content, "Test app did not start properly"
