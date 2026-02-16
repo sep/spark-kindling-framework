@@ -12,7 +12,8 @@ Configuration files are loaded in the following order (lowest to highest priorit
 2. **`platform_{platform}.yaml`** - Platform-specific settings (fabric, synapse, databricks)
 3. **`workspace_{workspace_id}.yaml`** - Workspace-specific settings
 4. **`env_{environment}.yaml`** - Environment-specific settings (dev, prod, etc.)
-5. **Bootstrap Config** - In-memory overrides from BOOTSTRAP_CONFIG dict (highest priority)
+5. **SparkConf** - `spark.kindling.*` pool/session settings
+6. **Bootstrap Config** - In-memory overrides from BOOTSTRAP_CONFIG dict (highest priority)
 
 Each layer can override values from previous layers, allowing precise control over configuration at different organizational levels.
 
@@ -238,7 +239,7 @@ spark.conf.get("spark.databricks.workspaceUrl")
 
 ## Bootstrap Configuration
 
-Bootstrap config (in-memory dict) always has **highest priority** and overrides all YAML configs:
+Bootstrap config (in-memory dict) always has **highest priority** and overrides all YAML and SparkConf settings:
 
 ```python
 BOOTSTRAP_CONFIG = {
@@ -250,6 +251,18 @@ BOOTSTRAP_CONFIG = {
 
 initialize_framework(BOOTSTRAP_CONFIG)
 ```
+
+Spark pool/session config can also provide defaults via `spark.kindling.*`:
+
+```text
+spark.kindling.bootstrap.environment=prod
+spark.kindling.bootstrap.use_lake_packages=true
+spark.kindling.extensions=["kindling-otel-azure>=0.3.0"]
+```
+
+Mapping rules:
+- `spark.kindling.bootstrap.<key>` -> bootstrap key `<key>`
+- `spark.kindling.<key>` -> `kindling.<key>`
 
 ## Example Scenarios
 

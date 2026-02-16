@@ -67,7 +67,8 @@ Kindling uses a layered configuration approach with YAML files:
 2. `platform_{platform}.yaml` - Platform-specific (fabric/synapse/databricks)
 3. `workspace_{workspace_id}.yaml` - Workspace-specific
 4. `env_{environment}.yaml` - Environment-specific (dev/prod/etc)
-5. `BOOTSTRAP_CONFIG` - Runtime overrides
+5. `spark.kindling.*` - Spark pool/session config overrides
+6. `BOOTSTRAP_CONFIG` - Runtime overrides (highest)
 
 See [Hierarchical Configuration Guide](./platform_workspace_config.md) for complete details.
 
@@ -102,6 +103,24 @@ BOOTSTRAP_CONFIG = {
 
 %run environment_bootstrap
 ```
+
+### Pool Configuration via SparkConf
+
+You can set startup config in pool/session Spark config using `spark.kindling.*`:
+
+```text
+spark.kindling.bootstrap.artifacts_storage_path=abfss://artifacts@<storage>.dfs.core.windows.net/
+spark.kindling.bootstrap.environment=dev
+spark.kindling.bootstrap.use_lake_packages=true
+spark.kindling.bootstrap.load_local=false
+spark.kindling.extensions=["kindling-otel-azure>=0.3.0"]
+```
+
+Mapping rules:
+- `spark.kindling.bootstrap.<key>` -> bootstrap key `<key>` (with `load_lake`/`load_local` compatibility aliases)
+- `spark.kindling.<key>` -> `kindling.<key>` config key
+
+`BOOTSTRAP_CONFIG` still wins over SparkConf when both are present.
 
 ## Required Dependencies
 

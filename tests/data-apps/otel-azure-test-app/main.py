@@ -103,24 +103,30 @@ def test_provider_override(logger):
 
 
 def test_trace_generation(logger):
-    """Test 2: Generate spans and verify tracer works"""
+    """Test 2: Generate spans and verify Kindling tracing API works."""
     logger.info("TEST 2: Testing trace generation...")
 
     try:
         trace_provider = get_kindling_service(SparkTraceProvider)
-        tracer = trace_provider.get_tracer("otel-azure-test")
 
-        # Generate a test span
-        with tracer.start_as_current_span("test_operation") as span:
-            span.set_attribute("test.attribute", "test_value")
-            span.set_attribute("test.timestamp", datetime.utcnow().isoformat())
-
-            # Nested span
-            with tracer.start_as_current_span("nested_operation") as nested_span:
-                nested_span.set_attribute("nested.data", "nested_value")
+        with trace_provider.span(
+            component="otel-azure-test",
+            operation="test_operation",
+            details={
+                "test.attribute": "test_value",
+                "test.timestamp": datetime.utcnow().isoformat(),
+            },
+            reraise=True,
+        ):
+            with trace_provider.span(
+                component="otel-azure-test",
+                operation="nested_operation",
+                details={"nested.data": "nested_value"},
+                reraise=True,
+            ):
                 time.sleep(0.1)  # Simulate work
 
-            logger.info(f"Generated span: {span.get_span_context().span_id}")
+            logger.info("Generated test_operation span with nested_operation child span")
 
         logger.info("✅ TEST 2 PASSED: Trace generation successful")
         return True
@@ -159,11 +165,16 @@ def test_trace_and_log_correlation(logger):
     logger.info("TEST 4: Testing trace/log correlation...")
 
     try:
-        trace_provider = get_kindling_service(SparkTraceProvider)
-        tracer = trace_provider.get_tracer("otel-azure-test")
+        from opentelemetry import trace
 
-        with tracer.start_as_current_span("correlated_operation") as span:
-            span_context = span.get_span_context()
+        trace_provider = get_kindling_service(SparkTraceProvider)
+        with trace_provider.span(
+            component="otel-azure-test",
+            operation="correlated_operation",
+            details={},
+            reraise=True,
+        ):
+            span_context = trace.get_current_span().get_span_context()
             trace_id = format(span_context.trace_id, "032x")
             span_id = format(span_context.span_id, "016x")
 
