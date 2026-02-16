@@ -46,4 +46,4 @@ def initialize(config=None, app_name=None):
     if app_name is not None:
         config["app_name"] = app_name
 
-    return initialize_framework(config, app_name=config.get("app_name"))
+    return initialize_framework(config)
