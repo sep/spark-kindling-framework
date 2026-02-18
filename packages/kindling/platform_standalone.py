@@ -191,6 +191,23 @@ class StandaloneService(PlatformService):
         self.logger.debug(f"Standalone platform does not use real tokens. Audience: {audience}")
         return "standalone-dummy-token"
 
+    def get_secret(self, secret_name: str, default: Optional[str] = None) -> str:
+        """Resolve secret from environment variables in standalone mode."""
+        env_key = (
+            secret_name.upper().replace("-", "_").replace(".", "_").replace(":", "_")
+        )
+        candidates = [secret_name, env_key, f"KINDLING_SECRET_{env_key}"]
+
+        for key in candidates:
+            value = os.getenv(key)
+            if value is not None:
+                return value
+
+        if default is not None:
+            return default
+
+        raise KeyError(f"Secret not found in environment: {secret_name}")
+
     def exists(self, path: str) -> bool:
         """Check if a file exists (supports local and distributed storage)"""
         try:
