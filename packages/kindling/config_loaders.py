@@ -13,6 +13,7 @@ Key Features:
 - Support for nested secrets in complex structures
 """
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -39,8 +40,9 @@ def load_secrets_from_provider(obj, env: str = None, silent: bool = True, key: s
         key: Specific key to resolve (None = resolve all)
 
     Syntax:
-        # Simple secret reference
+        # Simple secret reference (space or colon delimiter)
         password: "@secret my-password"
+        password_alt: "@secret:my-password"
 
         # Secret in interpolated string (works with @format)
         auth_header: "@format Bearer {@secret api-token}"
@@ -97,10 +99,17 @@ def load_secrets_from_provider(obj, env: str = None, silent: bool = True, key: s
             Resolved value with secrets replaced
         """
         if isinstance(value, str):
-            # Check for secret reference syntax
+            # Check for secret reference syntax.
+            # We support both:
+            # - "@secret my-secret-name"
+            # - "@secret:my-secret-name"
+            secret_name = None
             if value.startswith("@secret "):
-                # Extract secret name: "@secret my-secret-name"
-                secret_name = value.replace("@secret ", "").strip()
+                secret_name = value[len("@secret ") :].strip()
+            elif value.startswith("@secret:"):
+                secret_name = value[len("@secret:") :].strip()
+
+            if secret_name:
 
                 try:
                     # Fetch from platform-specific secret provider
@@ -127,10 +136,29 @@ def load_secrets_from_provider(obj, env: str = None, silent: bool = True, key: s
             return value
 
         elif isinstance(value, dict):
-            # Recursively resolve secrets in nested dicts
-            return {
-                k: resolve_secret(v, path=f"{path}.{k}" if path else k) for k, v in value.items()
-            }
+            # Recursively resolve secrets in nested dicts.
+            # Dynaconf DynaBox may lazily evaluate values when iterated via items(),
+            # so prefer bypass_eval mode when available.
+            try:
+                if hasattr(value, "items"):
+                    try:
+                        items_iter = value.items(bypass_eval=True)
+                    except TypeError:
+                        items_iter = value.items()
+                else:
+                    items_iter = []
+            except Exception:
+                # If iteration itself triggers evaluation errors, keep original value.
+                return value
+
+            resolved_dict = {}
+            for k, v in items_iter:
+                try:
+                    resolved_dict[k] = resolve_secret(v, path=f"{path}.{k}" if path else k)
+                except Exception:
+                    # Preserve unresolved value to avoid breaking lazy interpolation paths.
+                    resolved_dict[k] = v
+            return resolved_dict
 
         elif isinstance(value, list):
             # Recursively resolve secrets in lists
@@ -162,6 +190,29 @@ def load_secrets_from_provider(obj, env: str = None, silent: bool = True, key: s
             if resolved_value != original_value:
                 obj.set(setting_key, resolved_value)
                 logger.debug(f"Updated '{setting_key}' with resolved secrets")
+
+
+def load(obj, env: str = None, silent: bool = True, key: str = None):
+    """
+    Dynaconf custom loader entrypoint.
+
+    Dynaconf imports loader modules and calls their `load()` function.
+    """
+    return load_secrets_from_provider(obj=obj, env=env, silent=silent, key=key)
+
+
+def _parse_existing_loaders(raw_value: str) -> List[str]:
+    """Parse LOADERS_FOR_DYNACONF from JSON/TOML list or comma-separated string."""
+    if not raw_value:
+        return []
+
+    parsed = parse_conf_data(raw_value, tomlfy=True)
+    if isinstance(parsed, list):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    if isinstance(parsed, str):
+        return [item.strip() for item in parsed.split(",") if item.strip()]
+
+    return [str(parsed).strip()] if str(parsed).strip() else []
 
 
 def register_kindling_loaders():
@@ -199,30 +250,30 @@ def register_kindling_loaders():
             "dynaconf.loaders.yaml_loader",  # Load .yaml files
             "dynaconf.loaders.toml_loader",  # Load .toml files
             "dynaconf.loaders.json_loader",  # Load .json files
-            "kindling.config_loaders.load_secrets_from_provider",  # ← Our custom loader
+            "kindling.config_loaders",  # ← Our custom loader module (provides load())
             "dynaconf.loaders.env_loader",  # Override with env vars (highest priority)
         ]
 
-        os.environ["LOADERS_FOR_DYNACONF"] = ",".join(loaders)
+        os.environ["LOADERS_FOR_DYNACONF"] = json.dumps(loaders)
         logger.info("Registered Kindling custom loaders for Dynaconf")
 
     else:
         # Loaders already configured - check if ours is included
-        loaders = existing_loaders.split(",")
+        loaders = _parse_existing_loaders(existing_loaders)
 
-        if "kindling.config_loaders.load_secrets_from_provider" not in loaders:
+        if "kindling.config_loaders" not in loaders:
             # Insert our loader before env_loader (if it exists)
             try:
                 env_loader_idx = loaders.index("dynaconf.loaders.env_loader")
-                loaders.insert(env_loader_idx, "kindling.config_loaders.load_secrets_from_provider")
+                loaders.insert(env_loader_idx, "kindling.config_loaders")
 
-                os.environ["LOADERS_FOR_DYNACONF"] = ",".join(loaders)
+                os.environ["LOADERS_FOR_DYNACONF"] = json.dumps(loaders)
                 logger.info("Added Kindling secret loader to existing loader chain")
 
             except ValueError:
                 # env_loader not in chain - append our loader at the end
-                loaders.append("kindling.config_loaders.load_secrets_from_provider")
-                os.environ["LOADERS_FOR_DYNACONF"] = ",".join(loaders)
+                loaders.append("kindling.config_loaders")
+                os.environ["LOADERS_FOR_DYNACONF"] = json.dumps(loaders)
                 logger.info("Appended Kindling secret loader to loader chain")
 
         else:
@@ -246,11 +297,11 @@ def unregister_kindling_loaders():
     existing_loaders = os.environ.get("LOADERS_FOR_DYNACONF", "")
 
     if existing_loaders:
-        loaders = existing_loaders.split(",")
+        loaders = _parse_existing_loaders(existing_loaders)
         loaders = [loader for loader in loaders if "kindling.config_loaders" not in loader]
 
         if loaders:
-            os.environ["LOADERS_FOR_DYNACONF"] = ",".join(loaders)
+            os.environ["LOADERS_FOR_DYNACONF"] = json.dumps(loaders)
         else:
             # No loaders left - remove env var
             os.environ.pop("LOADERS_FOR_DYNACONF", None)

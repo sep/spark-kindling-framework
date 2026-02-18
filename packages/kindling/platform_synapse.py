@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import types
 from datetime import datetime, timedelta
@@ -142,10 +143,60 @@ class SynapseService(PlatformService):
     def get_platform_name(self):
         return "synapse"
 
+    def _config_get(self, key: str, default=None):
+        try:
+            if hasattr(self.config, "get"):
+                return self.config.get(key, default)
+        except Exception:
+            pass
+        if isinstance(self.config, dict):
+            return self.config.get(key, default)
+        return getattr(self.config, key, default)
+
     def get_token(self, audience: str) -> str:
         """Get access token for the specified audience"""
         token = self.credential.get_token(audience)
         return token.token
+
+    def get_secret(self, secret_name: str, default: Optional[str] = None) -> str:
+        """Resolve secret using Synapse notebook credentials API."""
+        import os
+
+        mssparkutils = _get_mssparkutils()
+        linked_service = self._config_get("kindling.secrets.linked_service")
+        key_vault_url = self._config_get("kindling.secrets.key_vault_url")
+
+        last_error = None
+        if linked_service:
+            try:
+                return mssparkutils.credentials.getSecret(linked_service, secret_name)
+            except Exception as exc:
+                last_error = exc
+        if key_vault_url:
+            try:
+                return mssparkutils.credentials.getSecret(key_vault_url, secret_name)
+            except Exception as exc:
+                last_error = exc
+
+        # Fallback for local/testing contexts where Key Vault integration isn't configured.
+        env_key = secret_name.upper().replace("-", "_").replace(".", "_").replace(":", "_")
+        for candidate in [secret_name, env_key, f"KINDLING_SECRET_{env_key}"]:
+            value = os.getenv(candidate)
+            if value is not None:
+                return value
+
+        if default is not None:
+            return default
+        if last_error is not None:
+            raise KeyError(
+                f"Failed to resolve Synapse secret '{secret_name}' "
+                f"(linked_service={linked_service}, key_vault_url={key_vault_url}): {last_error}"
+            ) from last_error
+
+        raise KeyError(
+            f"Synapse secret not found: {secret_name}. Configure kindling.secrets.linked_service "
+            "or kindling.secrets.key_vault_url, or set environment fallback."
+        )
 
     def exists(self, path: str) -> bool:
         """Check if a file exists"""
@@ -1052,6 +1103,78 @@ class SynapseAPI(PlatformAPI):
         """Get platform name"""
         return "synapse"
 
+    def _resolve_key_vault_url(self, secret_config: Optional[Dict[str, Any]] = None) -> str:
+        cfg = secret_config or {}
+        return str(cfg.get("key_vault_url") or os.getenv("SYSTEM_TEST_KEY_VAULT_URL") or "").strip()
+
+    def set_secret(
+        self,
+        secret_name: str,
+        secret_value: str,
+        secret_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Create/update a Key Vault secret for Synapse/Fabric-compatible secret providers."""
+        key_vault_url = self._resolve_key_vault_url(secret_config)
+        if not key_vault_url:
+            raise ValueError(
+                "Synapse secret provisioning requires key_vault_url. "
+                "Set kindling.secrets.key_vault_url or SYSTEM_TEST_KEY_VAULT_URL."
+            )
+
+        import requests
+
+        token = self.credential.get_token("https://vault.azure.net/.default").token
+        encoded_name = quote(secret_name, safe="")
+        url = f"{key_vault_url.rstrip('/')}/secrets/{encoded_name}?api-version=7.4"
+        response = requests.put(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"value": secret_value},
+            timeout=30,
+        )
+        if response.status_code == 403:
+            raise PermissionError(
+                "Synapse secret provisioning was forbidden by Key Vault. "
+                "Grant this principal secret write permissions (set/get/delete), "
+                "for example 'Key Vault Secrets Officer' (RBAC) or equivalent access policy. "
+                f"vault={key_vault_url} secret={secret_name} details={response.text}"
+            )
+        response.raise_for_status()
+
+    def delete_secret(
+        self,
+        secret_name: str,
+        secret_config: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Delete Key Vault secret used by Synapse/Fabric-compatible secret providers."""
+        key_vault_url = self._resolve_key_vault_url(secret_config)
+        if not key_vault_url:
+            return False
+
+        import requests
+
+        token = self.credential.get_token("https://vault.azure.net/.default").token
+        encoded_name = quote(secret_name, safe="")
+        url = f"{key_vault_url.rstrip('/')}/secrets/{encoded_name}?api-version=7.4"
+        response = requests.delete(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        if response.status_code in (200, 404):
+            return True
+        if response.status_code == 403:
+            raise PermissionError(
+                "Synapse secret cleanup was forbidden by Key Vault. "
+                "Grant this principal secret delete permissions. "
+                f"vault={key_vault_url} secret={secret_name} details={response.text}"
+            )
+        response.raise_for_status()
+        return True
+
     def deploy_app(self, app_name: str, app_files: Dict[str, str]) -> str:
         """Deploy app files to platform storage
 
@@ -1344,6 +1467,21 @@ class SynapseAPI(PlatformAPI):
         # Add test_id if provided (for test tracking)
         if "test_id" in job_config:
             bootstrap_params["test_id"] = job_config["test_id"]
+
+        overrides = job_config.get("config_overrides", {})
+        if overrides:
+
+            def flatten_dict(d, parent_key=""):
+                items = []
+                for k, v in d.items():
+                    new_key = f"{parent_key}.{k}" if parent_key else k
+                    if isinstance(v, dict):
+                        items.extend(flatten_dict(v, new_key).items())
+                    else:
+                        items.append((new_key, v))
+                return dict(items)
+
+            bootstrap_params.update(flatten_dict(overrides))
 
         config_args = [f"config:{k}={v}" for k, v in bootstrap_params.items()]
         additional_args = job_config.get("command_line_args", "").split()

@@ -1144,6 +1144,16 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         platformservice = initialize_platform_services(platform, config_service, logger)
         logger.info("Platform services initialized")
 
+        # Resolve any @secret references now that platform services are available.
+        try:
+            from kindling.config_loaders import load_secrets_from_provider
+
+            if hasattr(config_service, "dynaconf") and config_service.dynaconf is not None:
+                load_secrets_from_provider(config_service.dynaconf, silent=True)
+                logger.debug("Resolved @secret references with platform secret provider")
+        except Exception as secret_resolution_error:
+            logger.warning(f"Secret resolution pass failed: {secret_resolution_error}")
+
         # DEBUG: Check what the config value actually is
         load_local_value = config_service.get("kindling.bootstrap.load_local", True)
         print(

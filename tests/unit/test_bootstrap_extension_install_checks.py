@@ -8,10 +8,11 @@ def test_extension_install_skips_when_installed_version_satisfies_requirement():
     storage_utils = MagicMock()
     storage_utils.fs = MagicMock()
 
-    with patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils), patch(
-        "kindling.bootstrap.importlib.util.find_spec", return_value=object()
-    ), patch("importlib.metadata.version", return_value="0.4.0"), patch(
-        "kindling.bootstrap.importlib.import_module", return_value=object()
+    with (
+        patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
+        patch("kindling.bootstrap.importlib.util.find_spec", return_value=object()),
+        patch("importlib.metadata.version", return_value="0.4.0"),
+        patch("kindling.bootstrap.importlib.import_module", return_value=object()),
     ):
         install_bootstrap_dependencies(
             logger,
@@ -31,10 +32,11 @@ def test_extension_install_attempts_when_installed_version_does_not_satisfy_requ
     storage_utils.fs = MagicMock()
     storage_utils.fs.ls.return_value = []
 
-    with patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils), patch(
-        "kindling.bootstrap.importlib.util.find_spec", return_value=object()
-    ), patch("importlib.metadata.version", return_value="0.1.0"), patch(
-        "kindling.bootstrap.importlib.import_module", return_value=object()
+    with (
+        patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
+        patch("kindling.bootstrap.importlib.util.find_spec", return_value=object()),
+        patch("importlib.metadata.version", return_value="0.1.0"),
+        patch("kindling.bootstrap.importlib.import_module", return_value=object()),
     ):
         install_bootstrap_dependencies(
             logger,

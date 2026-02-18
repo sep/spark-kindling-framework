@@ -179,6 +179,33 @@ class PlatformAPI(ABC):
         pass
 
     # =========================================================================
+    # Secret Management — provision test/runtime secrets
+    # =========================================================================
+
+    @abstractmethod
+    def set_secret(
+        self,
+        secret_name: str,
+        secret_value: str,
+        secret_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Create or update a secret for the target platform."""
+        pass
+
+    @abstractmethod
+    def delete_secret(
+        self,
+        secret_name: str,
+        secret_config: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Delete a secret for the target platform.
+
+        Returns:
+            True when the delete operation succeeds or the secret is already absent.
+        """
+        pass
+
+    # =========================================================================
     # Backward compatibility — convenience method combining app + job
     # =========================================================================
 
@@ -228,6 +255,35 @@ class SparkPlatformServiceProvider(PlatformServiceProvider):
 
     def get_service(self):
         return self.svc
+
+
+class SecretProvider(ABC):
+    """Abstract secret lookup contract used by config loaders and runtime services."""
+
+    @abstractmethod
+    def get_secret(self, secret_name: str, default: Optional[str] = None) -> str:
+        """Resolve secret value by name."""
+        pass
+
+
+@GlobalInjector.singleton_autobind(SecretProvider)
+class PlatformServiceSecretProvider(SecretProvider):
+    """Secret provider backed by the currently active PlatformService."""
+
+    def get_secret(self, secret_name: str, default: Optional[str] = None) -> str:
+        platform_provider = get_kindling_service(PlatformServiceProvider)
+        platform_service = platform_provider.get_service() if platform_provider else None
+
+        if platform_service and hasattr(platform_service, "get_secret"):
+            return platform_service.get_secret(secret_name, default=default)
+
+        if default is not None:
+            return default
+
+        raise KeyError(
+            f"No platform secret provider available for '{secret_name}'. "
+            "Ensure platform services are initialized."
+        )
 
 
 # =============================================================================
