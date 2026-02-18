@@ -37,7 +37,9 @@ class TestSecretProviderContract:
         from kindling.platform_synapse import SynapseService
 
         for svc_class in (DatabricksService, FabricService, SynapseService, StandaloneService):
-            assert hasattr(svc_class, "get_secret"), f"{svc_class.__name__} should expose get_secret()"
+            assert hasattr(
+                svc_class, "get_secret"
+            ), f"{svc_class.__name__} should expose get_secret()"
 
 
 class TestSecretLoaderResolution:
@@ -169,9 +171,12 @@ class TestSecretLoaderRegistration:
         import kindling.spark_config as spark_config_module
 
         importlib.reload(spark_config_module)
-        with patch.object(
-            spark_config_module, "get_or_create_spark_session", return_value=MagicMock()
-        ), patch.object(spark_config_module, "Dynaconf", return_value=MagicMock()):
+        with (
+            patch.object(
+                spark_config_module, "get_or_create_spark_session", return_value=MagicMock()
+            ),
+            patch.object(spark_config_module, "Dynaconf", return_value=MagicMock()),
+        ):
             spark_config_module.configure_injector_with_config(
                 config_files=[],
                 initial_config={},

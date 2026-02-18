@@ -195,11 +195,7 @@ class TestPlatformSecretProvider:
             "app_name": app_name,
             "entry_point": "main.py",
             "test_id": test_id,
-            "config_overrides": {
-                "kindling": {
-                    "secrets": platform_secrets_config
-                }
-            },
+            "config_overrides": {"kindling": {"secrets": platform_secrets_config}},
         }
 
         from tests.system.test_helpers import apply_env_config_overrides

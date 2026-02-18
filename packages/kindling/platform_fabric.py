@@ -1534,6 +1534,7 @@ class FabricAPI(PlatformAPI):
 
         overrides = job_config.get("config_overrides", {})
         if overrides:
+
             def flatten_dict(d, parent_key=""):
                 items = []
                 for k, v in d.items():

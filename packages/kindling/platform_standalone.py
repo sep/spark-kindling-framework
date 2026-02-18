@@ -193,9 +193,7 @@ class StandaloneService(PlatformService):
 
     def get_secret(self, secret_name: str, default: Optional[str] = None) -> str:
         """Resolve secret from environment variables in standalone mode."""
-        env_key = (
-            secret_name.upper().replace("-", "_").replace(".", "_").replace(":", "_")
-        )
+        env_key = secret_name.upper().replace("-", "_").replace(".", "_").replace(":", "_")
         candidates = [secret_name, env_key, f"KINDLING_SECRET_{env_key}"]
 
         for key in candidates:

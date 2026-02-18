@@ -146,7 +146,9 @@ class TestComplexTracing:
                 final_result_state = result_state
                 break
             if status in ["FAILED", "ERROR", "CANCELLED", "CANCELED"]:
-                print(f"❌ Job failed with status: {status} (result_state: {result_state or 'N/A'})")
+                print(
+                    f"❌ Job failed with status: {status} (result_state: {result_state or 'N/A'})"
+                )
                 final_status = status
                 final_result_state = result_state
                 job_failed = True
@@ -163,7 +165,9 @@ class TestComplexTracing:
                     final_result_state = result_state
                     job_failed = True
                     break
-                print(f"✅ Job completed with lifecycle={status} (result_state: {result_state or 'N/A'})")
+                print(
+                    f"✅ Job completed with lifecycle={status} (result_state: {result_state or 'N/A'})"
+                )
                 final_status = status
                 final_result_state = result_state
                 break
@@ -178,9 +182,7 @@ class TestComplexTracing:
                     final_result_state = result_state
                     job_failed = True
                     break
-                print(
-                    f"✅ Job completed while terminating (result_state: {result_state or 'N/A'})"
-                )
+                print(f"✅ Job completed while terminating (result_state: {result_state or 'N/A'})")
                 final_status = status
                 final_result_state = result_state
                 break
@@ -268,9 +270,13 @@ class TestComplexTracing:
                         "No Azure Monitor connection string",
                     ]
                 ), "Azure Monitor extension appears disabled or misconfigured"
-                print("ℹ️  Azure Monitor markers not found, but no disable/misconfig markers detected")
+                print(
+                    "ℹ️  Azure Monitor markers not found, but no disable/misconfig markers detected"
+                )
             else:
-                print("ℹ️  Azure Monitor marker validation skipped (log source does not include app stdout)")
+                print(
+                    "ℹ️  Azure Monitor marker validation skipped (log source does not include app stdout)"
+                )
         else:
             # Should use default provider
             assert (
@@ -286,7 +292,9 @@ class TestComplexTracing:
             '"test.pipeline_count": 3',
             '"test.pipelines_completed": 3',
         ]
-        has_detailed_pipeline_markers = all(marker in log_content for marker in detailed_pipeline_markers)
+        has_detailed_pipeline_markers = all(
+            marker in log_content for marker in detailed_pipeline_markers
+        )
         has_pipeline_summary = any(marker in log_content for marker in pipeline_summary_markers)
         if has_detailed_pipeline_markers or has_pipeline_summary:
             print("✅ Pipeline execution markers found")
