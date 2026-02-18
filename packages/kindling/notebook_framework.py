@@ -634,6 +634,10 @@ class PlatformService:
         pass
 
     @abstractmethod
+    def get_secret(self, secret_name: str, default: Optional[str] = None) -> str:
+        pass
+
+    @abstractmethod
     def exists(self, path: str) -> bool:
         pass
 

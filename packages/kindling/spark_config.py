@@ -473,6 +473,11 @@ def configure_injector_with_config(
     # print(f"initial_config : {initial_config}")
     # print(f"artifacts_storage_path: {artifacts_storage_path}")
 
+    # Ensure Dynaconf runs Kindling's custom secret loader.
+    from kindling.config_loaders import register_kindling_loaders
+
+    register_kindling_loaders()
+
     # Build reload context for hot-reload capability
     reload_context = None
     if artifacts_storage_path:

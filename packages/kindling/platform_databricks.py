@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 import sys
@@ -158,6 +159,16 @@ class DatabricksService(PlatformService):
     def get_platform_name(self):
         return "databricks"
 
+    def _config_get(self, key: str, default=None):
+        try:
+            if hasattr(self.config, "get"):
+                return self.config.get(key, default)
+        except Exception:
+            pass
+        if isinstance(self.config, dict):
+            return self.config.get(key, default)
+        return getattr(self.config, key, default)
+
     def get_token(self, audience: str = None) -> str:
         """Get Databricks authentication token using dbutils"""
         try:
@@ -198,6 +209,51 @@ class DatabricksService(PlatformService):
             if token:
                 return token
             raise Exception(f"Failed to get Databricks token: {e}")
+
+    def get_secret(self, secret_name: str, default: Optional[str] = None) -> str:
+        """Resolve secret from Databricks secret scopes."""
+        import __main__
+        import os
+
+        scope = (
+            self._config_get("kindling.secrets.secret_scope")
+            or self._config_get("secret_scope")
+            or self._config_get("secrets.secret_scope")
+        )
+        key = secret_name
+        if ":" in secret_name:
+            possible_scope, possible_key = secret_name.split(":", 1)
+            if possible_scope and possible_key:
+                scope = possible_scope
+                key = possible_key
+
+        dbutils = getattr(__main__, "dbutils", None)
+        if dbutils and hasattr(dbutils, "secrets") and scope:
+            try:
+                return dbutils.secrets.get(scope=scope, key=key)
+            except Exception as exc:
+                if default is not None:
+                    return default
+                raise KeyError(
+                    f"Failed to resolve Databricks secret '{secret_name}' from scope '{scope}': {exc}"
+                ) from exc
+
+        # Fallback for local/testing contexts where dbutils is unavailable.
+        env_key = key.upper().replace("-", "_").replace(".", "_").replace(":", "_")
+        for candidate in [secret_name, env_key, f"KINDLING_SECRET_{env_key}"]:
+            value = os.getenv(candidate)
+            if value is not None:
+                return value
+
+        if default is not None:
+            return default
+
+        if not scope:
+            raise KeyError(
+                f"Databricks secret scope is not configured for '{secret_name}'. "
+                "Set kindling.secrets.secret_scope or pass scope:name."
+            )
+        raise KeyError(f"Databricks secret not found: {secret_name}")
 
     def exists(self, path: str) -> bool:
         """Check if file/path exists using dbutils"""
@@ -1087,6 +1143,64 @@ class DatabricksAPI(PlatformAPI):
     def get_platform_name(self) -> str:
         """Get platform name"""
         return "databricks"
+
+    def _resolve_databricks_secret_target(
+        self,
+        secret_name: str,
+        secret_config: Optional[Dict[str, Any]] = None,
+    ) -> tuple[str, str]:
+        cfg = secret_config or {}
+        scope = str(
+            cfg.get("secret_scope")
+            or os.getenv("SYSTEM_TEST_DATABRICKS_SECRET_SCOPE")
+            or "kindling-system-tests"
+        ).strip()
+        key = secret_name
+
+        if ":" in secret_name:
+            possible_scope, possible_key = secret_name.split(":", 1)
+            if possible_scope and possible_key:
+                scope = possible_scope
+                key = possible_key
+
+        return scope, key
+
+    def set_secret(
+        self,
+        secret_name: str,
+        secret_value: str,
+        secret_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Create/update a Databricks secret in the target secret scope."""
+        scope, key = self._resolve_databricks_secret_target(secret_name, secret_config)
+        scopes_response = self.client.secrets.list_scopes()
+        existing_scopes = {s.name for s in (getattr(scopes_response, "scopes", None) or [])}
+
+        if scope not in existing_scopes:
+            try:
+                self.client.secrets.create_scope(scope=scope, initial_manage_principal="users")
+            except Exception as exc:
+                # Scope may have been created concurrently.
+                if "already exists" not in str(exc).lower():
+                    raise
+
+        self.client.secrets.put_secret(scope=scope, key=key, string_value=secret_value)
+
+    def delete_secret(
+        self,
+        secret_name: str,
+        secret_config: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Delete a Databricks secret from the target secret scope."""
+        scope, key = self._resolve_databricks_secret_target(secret_name, secret_config)
+        try:
+            self.client.secrets.delete_secret(scope=scope, key=key)
+            return True
+        except Exception as exc:
+            message = str(exc).lower()
+            if "not found" in message or "does not exist" in message:
+                return True
+            raise
 
     def deploy_app(self, app_name: str, app_files: Dict[str, str]) -> str:
         """Upload app files to ABFSS storage
