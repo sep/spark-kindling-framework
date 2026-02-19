@@ -44,7 +44,7 @@ This document evaluates what it would take to support domain-specific package de
 | Local development | Pipe functions are already testable; missing fixtures/harness | **Medium** | Low-Medium (1-2 weeks) |
 | Documentation for consumers | Intro docs exist, no tutorial | **Medium** | Low-Medium (1-2 weeks) |
 
-**Recommendation:** Build a `kindling` CLI using `click` or `typer` that serves as the single entry point for domain package developers. Start with `kindling init`, `kindling add entity`, and `kindling dev test` commands. Critically, **don't** try to replicate the full bootstrap locally — instead lean into the fact that pipe transforms are plain PySpark functions and make that the primary local dev loop.
+**Recommendation:** Build a `kindling` CLI using `click` or `typer` that serves as the single entry point for domain package developers. Start with `kindling init`, `kindling config init`, `kindling env check`, `kindling workspace check`, `kindling workspace init`, and `kindling dev test` commands. Package this as `kindling-cli`, backed by a separate `kindling-sdk` package for design-time platform operations. Critically, **don't** try to replicate the full bootstrap locally — instead lean into the fact that pipe transforms are plain PySpark functions and make that the primary local dev loop.
 
 ---
 
@@ -353,6 +353,8 @@ To build a domain-specific package on Kindling, a developer currently needs to u
 
 ### 5.2 CLI Command Design
 
+**Naming convention:** Use `kindling <area> <action>` for operational commands (for example: `kindling workspace check`), while keeping `kindling init` as the project scaffold entry point.
+
 ```
 kindling
 ├── init                    # Scaffold a new domain package project
@@ -360,6 +362,16 @@ kindling
 │   ├── --template package  # Reusable library package
 │   ├── --template notebook # Notebook-first project
 │   └── --platform fabric|synapse|databricks|all
+│
+├── config                  # Config file management
+│   └── init                # Generate initial settings.yaml
+│
+├── env                     # Environment validation
+│   ├── check               # Validate local prerequisites from settings.yaml
+│
+├── workspace               # Workspace readiness and setup
+│   ├── check               # Validate workspace prereqs, auth, and permissions
+│   └── init                # Create bootstrap and starter notebooks
 │
 ├── add                     # Generate framework primitives
 │   ├── entity              # Add entity definition stub
@@ -1258,7 +1270,7 @@ This phase delivers the highest-value items: project scaffolding and the `confte
 | Add `LocalEntityPathLocator` default | 4h | P2 | For Delta paths locally |
 | `kindling dev run` command (full local execution) | 2d | P2 | For teams that need it |
 | Walk-through tutorial document | 2d | P1 | General |
-| `kindling doctor` — diagnose environment issues | 1d | P2 | General |
+| `kindling env check` — diagnose environment issues | 1d | P2 | General |
 
 ### Revised Total Effort Estimate
 
