@@ -6,14 +6,15 @@ This directory contains helper scripts for development workflows.
 
 ### `build_platform_wheels.sh`
 
-Builds platform-specific wheels using Poetry for each supported platform (Synapse, Databricks, Fabric).
+Builds runtime wheels for each supported platform (Synapse, Databricks, Fabric) plus design-time `kindling-sdk` and `kindling-cli` wheels.
 
 **Features:**
 - ✅ Creates single wheel per platform containing core + platform-specific code
-- ✅ Uses standard Poetry build system (replaces custom 400+ line script)
+- ✅ Builds design-time wheels used for local tooling (`kindling-sdk`, `kindling-cli`)
+- ✅ Uses standard Poetry build system
 - ✅ Maintains platform tag naming for app_framework.py compatibility
 - ✅ Excludes other platform files to reduce wheel size
-- ✅ Clean, maintainable 89-line shell script
+- ✅ Places all artifacts in `dist/`
 
 **Usage:**
 
@@ -24,10 +25,12 @@ Builds platform-specific wheels using Poetry for each supported platform (Synaps
 
 **Output:**
 ```
-output/wheels/
-├── kindling-0.1.0-py3-none-synapse.whl      # Core + Synapse platform
-├── kindling-0.1.0-py3-none-databricks.whl   # Core + Databricks platform
-└── kindling-0.1.0-py3-none-fabric.whl       # Core + Fabric platform
+dist/
+├── kindling_synapse-<version>-py3-none-any.whl
+├── kindling_databricks-<version>-py3-none-any.whl
+├── kindling_fabric-<version>-py3-none-any.whl
+├── kindling_sdk-<version>-py3-none-any.whl
+└── kindling_cli-<version>-py3-none-any.whl
 ```
 
 **Each wheel contains:**
@@ -42,7 +45,7 @@ output/wheels/
 **Installation:**
 ```bash
 # Install platform-specific wheel
-pip install output/wheels/kindling-0.1.0-py3-none-synapse.whl
+pip install dist/kindling_synapse-<version>-py3-none-any.whl
 ```
 
 ## Azure Development Environment Setup

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Build platform-specific wheels using Poetry with isolated build directories.
-Creates pythonic wheels: kindling-synapse, kindling-databricks, kindling-fabric
+Creates runtime wheels plus design-time wheels (kindling-sdk, kindling-cli).
 Never modifies source files - builds in isolation.
 """
 
@@ -12,11 +12,11 @@ import sys
 import tempfile
 import zipfile
 from datetime import datetime
+from os import environ
 from pathlib import Path
-from typing import List
-
 PLATFORMS = ["synapse", "databricks", "fabric"]
 DIST_DIR = Path("dist")
+DESIGN_TIME_PACKAGE_DIRS = [Path("packages/kindling_sdk"), Path("packages/kindling_cli")]
 
 # Platform file filtering - remove other platform files
 PLATFORM_FILES_TO_REMOVE = {
@@ -54,6 +54,15 @@ def get_version_from_pyproject() -> str:
 
 def ensure_poetry_installed() -> None:
     """Check if Poetry is available"""
+    environ.setdefault("POETRY_CACHE_DIR", "/tmp/poetry-cache")
+    environ.setdefault("POETRY_VIRTUALENVS_PATH", "/tmp/poetry-virtualenvs")
+    environ.setdefault("VIRTUALENV_OVERRIDE_APP_DATA", "/tmp/virtualenv-app-data")
+    environ.setdefault("XDG_DATA_HOME", "/tmp/xdg-data")
+    Path(environ["POETRY_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(environ["POETRY_VIRTUALENVS_PATH"]).mkdir(parents=True, exist_ok=True)
+    Path(environ["VIRTUALENV_OVERRIDE_APP_DATA"]).mkdir(parents=True, exist_ok=True)
+    Path(environ["XDG_DATA_HOME"]).mkdir(parents=True, exist_ok=True)
+
     try:
         subprocess.run(["poetry", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -155,6 +164,39 @@ def build_platform_wheel(platform: str, version: str) -> tuple[str, int]:
         return wheel_name, size_kb
 
 
+def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
+    """Build a design-time wheel in-place and copy it to dist/."""
+    package_name = package_dir.name
+    print(f"\n📦 Building {package_name} wheel...")
+
+    if not (package_dir / "pyproject.toml").exists():
+        raise FileNotFoundError(f"Missing pyproject.toml in {package_dir}")
+
+    package_dist = package_dir / "dist"
+    if package_dist.exists():
+        shutil.rmtree(package_dist)
+
+    result = subprocess.run(
+        ["poetry", "build", "--format", "wheel"],
+        cwd=package_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Error building {package_name} wheel:\n{result.stderr}")
+
+    wheels = sorted(package_dist.glob("*.whl"))
+    if not wheels:
+        raise FileNotFoundError(f"No wheel generated for {package_name}")
+
+    source_wheel = wheels[0]
+    output_path = DIST_DIR / source_wheel.name
+    shutil.copy2(source_wheel, output_path)
+    size_kb = output_path.stat().st_size // 1024
+    print(f"   ✅ Built: {source_wheel.name} ({size_kb}K)")
+    return source_wheel.name, size_kb
+
+
 def main():
     """Build all platform-specific wheels"""
     print("🔥 Building platform-specific kindling wheels (isolated builds)...")
@@ -177,18 +219,29 @@ def main():
         shutil.rmtree(DIST_DIR)
     DIST_DIR.mkdir()
 
-    # Build each platform wheel
-    results = []
+    # Build each runtime platform wheel
+    runtime_results = []
     for platform in PLATFORMS:
         try:
             wheel_name, size_kb = build_platform_wheel(platform, version)
-            results.append((platform, wheel_name, size_kb, True))
+            runtime_results.append((platform, wheel_name, size_kb, True))
         except Exception as e:
             print(f"   ❌ Failed: {e}")
-            results.append((platform, None, 0, False))
+            runtime_results.append((platform, None, 0, False))
+
+    # Build design-time wheels
+    design_results = []
+    for package_dir in DESIGN_TIME_PACKAGE_DIRS:
+        package_name = package_dir.name
+        try:
+            wheel_name, size_kb = build_design_time_wheel(package_dir)
+            design_results.append((package_name, wheel_name, size_kb, True))
+        except Exception as e:
+            print(f"   ❌ Failed: {e}")
+            design_results.append((package_name, None, 0, False))
 
     # Summary
-    print("\n🎉 All platform wheels built successfully!")
+    print("\n🎉 All wheels built successfully!")
     print(f"📍 Output directory: {DIST_DIR}")
     print(f"\n📦 Built packages:")
 
@@ -197,18 +250,23 @@ def main():
         print(f"   {file_path.name} ({size}K)")
 
     print("\n📊 Build summary:")
-    for platform, wheel_name, size_kb, success in results:
+    for platform, wheel_name, size_kb, success in runtime_results:
         if success:
             print(f"   ✅ {platform}: {size_kb}K")
         else:
             print(f"   ❌ {platform}: FAILED")
+    for package_name, wheel_name, size_kb, success in design_results:
+        if success:
+            print(f"   ✅ {package_name}: {size_kb}K")
+        else:
+            print(f"   ❌ {package_name}: FAILED")
 
     # Check if any failed
-    if not all(result[3] for result in results):
+    if not all(result[3] for result in runtime_results + design_results):
         print("\n❌ Some builds failed")
         sys.exit(1)
 
-    print("\n🚀 Ready for deployment! Each wheel contains:")
+    print("\n🚀 Ready for release/deployment! Runtime wheels contain:")
     print("   📁 Core kindling framework")
     print("   🎯 Platform-specific implementation")
     print("   📦 Platform-specific dependencies")
@@ -218,6 +276,8 @@ def main():
     print(f"   pip install {DIST_DIR}/kindling_synapse-{version}-py3-none-any.whl")
     print(f"   pip install {DIST_DIR}/kindling_databricks-{version}-py3-none-any.whl")
     print(f"   pip install {DIST_DIR}/kindling_fabric-{version}-py3-none-any.whl")
+    print(f"   pip install {DIST_DIR}/kindling_sdk-<version>-py3-none-any.whl")
+    print(f"   pip install {DIST_DIR}/kindling_cli-<version>-py3-none-any.whl")
 
     print("\n📤 Next step:")
     print("   poetry run poe deploy       # Deploy to Azure Storage (testing)")

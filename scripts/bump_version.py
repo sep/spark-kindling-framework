@@ -11,6 +11,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+VERSIONED_PYPROJECTS = [
+    Path("pyproject.toml"),
+    Path("packages/kindling_sdk/pyproject.toml"),
+    Path("packages/kindling_cli/pyproject.toml"),
+]
+
 
 def get_current_version() -> str:
     """Read current version from pyproject.toml"""
@@ -85,21 +91,28 @@ def bump_version(current: str, bump_type: str) -> str:
         raise ValueError(f"Invalid bump type: {bump_type}")
 
 
-def update_pyproject(new_version: str) -> None:
-    """Update version in pyproject.toml"""
-    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
-    content = pyproject_path.read_text()
+def update_pyprojects(new_version: str) -> list[Path]:
+    """Update version in root and design-time package pyproject files."""
+    repo_root = Path(__file__).parent.parent
+    updated_paths: list[Path] = []
 
-    # Replace version line
-    new_content = re.sub(
-        r'^version\s*=\s*"[^"]+"',
-        f'version = "{new_version}"',
-        content,
-        count=1,
-        flags=re.MULTILINE,
-    )
+    for relative_path in VERSIONED_PYPROJECTS:
+        pyproject_path = repo_root / relative_path
+        if not pyproject_path.exists():
+            continue
 
-    pyproject_path.write_text(new_content)
+        content = pyproject_path.read_text()
+        new_content = re.sub(
+            r'^version\s*=\s*"[^"]+"',
+            f'version = "{new_version}"',
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        pyproject_path.write_text(new_content)
+        updated_paths.append(pyproject_path)
+
+    return updated_paths
 
 
 def run_command(cmd: list) -> int:
@@ -138,9 +151,11 @@ def main(
 
         print(f"📌 Version bump: {current} → {new_version}")
 
-        # Update pyproject.toml
-        update_pyproject(new_version)
-        print(f"✅ Updated pyproject.toml")
+        # Update versioned pyproject files
+        updated_paths = update_pyprojects(new_version)
+        for updated_path in updated_paths:
+            rel_path = updated_path.relative_to(Path(__file__).parent.parent)
+            print(f"✅ Updated {rel_path}")
 
         # Determine if we need to build/deploy
         should_build = build or deploy or bool(platform)
