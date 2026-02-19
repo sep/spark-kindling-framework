@@ -2,16 +2,22 @@
 # scripts/build_platform_wheels.sh
 #
 # Builds platform-specific wheels using Poetry with isolated build directories
-# Creates pythonic wheels: kindling-synapse, kindling-databricks, kindling-fabric
+# Creates runtime wheels plus design-time wheels (kindling-sdk, kindling-cli)
 # Never modifies source files - builds in isolation
 
 set -e
 
 # Add Poetry to PATH
 export PATH="/home/vscode/.local/bin:$PATH"
+export POETRY_CACHE_DIR="${POETRY_CACHE_DIR:-/tmp/poetry-cache}"
+export POETRY_VIRTUALENVS_PATH="${POETRY_VIRTUALENVS_PATH:-/tmp/poetry-virtualenvs}"
+export VIRTUALENV_OVERRIDE_APP_DATA="${VIRTUALENV_OVERRIDE_APP_DATA:-/tmp/virtualenv-app-data}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-/tmp/xdg-data}"
+mkdir -p "$POETRY_CACHE_DIR" "$POETRY_VIRTUALENVS_PATH" "$VIRTUALENV_OVERRIDE_APP_DATA" "$XDG_DATA_HOME"
 
 PLATFORMS=("synapse" "databricks" "fabric")
 DIST_DIR="dist"
+DESIGN_TIME_PACKAGE_DIRS=("packages/kindling_sdk" "packages/kindling_cli")
 
 # Detect version from pyproject.toml (single source of truth)
 VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
@@ -113,7 +119,38 @@ for platform in "${PLATFORMS[@]}"; do
 done
 
 echo ""
-echo "🎉 All platform wheels built successfully!"
+echo "🧰 Building design-time wheels..."
+for package_dir in "${DESIGN_TIME_PACKAGE_DIRS[@]}"; do
+    package_name=$(basename "$package_dir")
+    echo ""
+    echo "📦 Building ${package_name} wheel..."
+
+    if [ ! -f "${package_dir}/pyproject.toml" ]; then
+        echo "❌ Error: Missing pyproject.toml in ${package_dir}"
+        exit 1
+    fi
+
+    rm -rf "${package_dir}/dist"
+    (
+        cd "${package_dir}"
+        echo "   🔨 Running: poetry build --format wheel"
+        poetry build --format wheel
+    )
+
+    wheel_file=$(ls "${package_dir}"/dist/*.whl | head -1)
+    if [ ! -f "$wheel_file" ]; then
+        echo "❌ Error: No wheel generated for ${package_name}"
+        exit 1
+    fi
+
+    cp "$wheel_file" "$DIST_DIR/"
+    wheel_name=$(basename "$wheel_file")
+    wheel_size=$(du -h "$DIST_DIR/$wheel_name" | cut -f1)
+    echo "   ✅ Built: ${wheel_name} (${wheel_size})"
+done
+
+echo ""
+echo "🎉 All wheels built successfully!"
 echo "📍 Output directory: $DIST_DIR"
 echo "📦 Built packages:"
 ls -la "$DIST_DIR"
@@ -130,9 +167,19 @@ for platform in "${PLATFORMS[@]}"; do
         echo "   ❌ $platform: FAILED"
     fi
 done
+for package_dir in "${DESIGN_TIME_PACKAGE_DIRS[@]}"; do
+    package_name=$(basename "$package_dir")
+    wheel_file=$(ls "$DIST_DIR"/${package_name}-*.whl 2>/dev/null | head -1)
+    if [ -f "$wheel_file" ]; then
+        size=$(du -h "$wheel_file" | cut -f1)
+        echo "   ✅ ${package_name}: $size"
+    else
+        echo "   ❌ ${package_name}: FAILED"
+    fi
+done
 
 echo ""
-echo "🚀 Ready for deployment! Each wheel contains:"
+echo "🚀 Ready for release/deployment! Runtime wheels contain:"
 echo "   📁 Core kindling framework"
 echo "   🎯 Platform-specific implementation"
 echo "   📦 Platform-specific dependencies"
@@ -143,3 +190,5 @@ echo "💡 Usage:"
 echo "   pip install $DIST_DIR/kindling_synapse-${VERSION}-py3-none-any.whl"
 echo "   pip install $DIST_DIR/kindling_databricks-${VERSION}-py3-none-any.whl"
 echo "   pip install $DIST_DIR/kindling_fabric-${VERSION}-py3-none-any.whl"
+echo "   pip install $DIST_DIR/kindling_sdk-<version>-py3-none-any.whl"
+echo "   pip install $DIST_DIR/kindling_cli-<version>-py3-none-any.whl"

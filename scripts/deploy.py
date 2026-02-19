@@ -27,6 +27,7 @@ CONTAINER = os.getenv("AZURE_CONTAINER", "artifacts")
 BASE_PATH = os.getenv("AZURE_BASE_PATH", "")  # Root for all conventional paths
 PACKAGES_PATH = f"{BASE_PATH}/packages" if BASE_PATH else "packages"
 SCRIPTS_PATH = f"{BASE_PATH}/scripts" if BASE_PATH else "scripts"
+RUNTIME_PLATFORMS = ("synapse", "databricks", "fabric")
 
 
 def get_version_from_pyproject() -> str:
@@ -116,7 +117,7 @@ def download_release_wheels(version: str, repo: str, temp_dir: Path) -> None:
 
 
 def get_wheels(wheels_dir: Path, platform: Optional[str] = None) -> List[Path]:
-    """Get list of wheel files from directory, optionally filtered by platform"""
+    """Get runtime wheel files from directory, optionally filtered by platform."""
     if platform:
         pattern = f"kindling_{platform}-*.whl"
         wheels = list(wheels_dir.glob(pattern))
@@ -126,9 +127,14 @@ def get_wheels(wheels_dir: Path, platform: Optional[str] = None) -> List[Path]:
                 f"Available platforms: synapse, databricks, fabric"
             )
     else:
-        wheels = list(wheels_dir.glob("*.whl"))
+        wheels = []
+        for runtime_platform in RUNTIME_PLATFORMS:
+            wheels.extend(wheels_dir.glob(f"kindling_{runtime_platform}-*.whl"))
         if not wheels:
-            raise FileNotFoundError(f"No wheels found in {wheels_dir}")
+            raise FileNotFoundError(
+                f"No runtime wheels found in {wheels_dir}. "
+                "Expected kindling_{synapse|databricks|fabric}-*.whl."
+            )
     return sorted(wheels)
 
 
