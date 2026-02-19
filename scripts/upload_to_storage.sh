@@ -20,6 +20,7 @@ BASE_PATH="${AZURE_BASE_PATH:-packages}"  # Base path in storage: packages/...
 
 USE_RELEASE=false
 VERSION=""
+RUNTIME_PATTERNS=("kindling_synapse-*.whl" "kindling_databricks-*.whl" "kindling_fabric-*.whl")
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -111,22 +112,45 @@ else
     fi
     echo "📌 Using local build version: ${VERSION}"
 
-    # Check if dist/ has wheels
-    if [ ! -d "dist" ] || [ -z "$(ls -A dist/*.whl 2>/dev/null)" ]; then
-        echo "❌ Error: No wheels found in dist/"
+    # Check if dist/ has runtime wheels
+    runtime_count=0
+    if [ -d "dist" ]; then
+        for pattern in "${RUNTIME_PATTERNS[@]}"; do
+            if ls dist/$pattern >/dev/null 2>&1; then
+                runtime_count=$((runtime_count + 1))
+            fi
+        done
+    fi
+    if [ "$runtime_count" -eq 0 ]; then
+        echo "❌ Error: No runtime wheels found in dist/"
         echo "Run: bash scripts/build_platform_wheels.sh"
         exit 1
     fi
 
     WHEELS_DIR="dist"
-    echo "📦 Using local wheels from: ${WHEELS_DIR}"
+    echo "📦 Using local runtime wheels from: ${WHEELS_DIR}"
 fi
 
 echo ""
 
+# Build runtime wheel list
+WHEELS_TO_UPLOAD=()
+for pattern in "${RUNTIME_PATTERNS[@]}"; do
+    for wheel in "$WHEELS_DIR"/$pattern; do
+        if [ -f "$wheel" ]; then
+            WHEELS_TO_UPLOAD+=("$wheel")
+        fi
+    done
+done
+
+if [ ${#WHEELS_TO_UPLOAD[@]} -eq 0 ]; then
+    echo "❌ Error: No runtime wheels found to upload in ${WHEELS_DIR}"
+    exit 1
+fi
+
 # List wheels to upload
-echo "📦 Wheels to upload:"
-ls -lh "$WHEELS_DIR"/*.whl
+echo "📦 Runtime wheels to upload:"
+ls -lh "${WHEELS_TO_UPLOAD[@]}"
 echo ""
 
 # Check Azure CLI authentication
@@ -144,7 +168,7 @@ echo "☁️  Uploading to: ${STORAGE_ACCOUNT}/${CONTAINER}/${BASE_PATH}/"
 echo ""
 
 UPLOAD_COUNT=0
-for wheel in "$WHEELS_DIR"/*.whl; do
+for wheel in "${WHEELS_TO_UPLOAD[@]}"; do
     wheel_name=$(basename "$wheel")
     DEST_PATH="${BASE_PATH}/${wheel_name}"
 

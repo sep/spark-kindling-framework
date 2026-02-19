@@ -368,9 +368,26 @@ jobs:
       contains(github.event.head_commit.message, '[build wheels]') ||
       (github.event_name == 'push' && (
         contains(github.event.commits.*.modified, 'packages/kindling/') ||
+        contains(github.event.commits.*.added, 'packages/kindling/') ||
+        contains(github.event.commits.*.removed, 'packages/kindling/') ||
+        contains(github.event.commits.*.modified, 'packages/kindling_sdk/') ||
+        contains(github.event.commits.*.added, 'packages/kindling_sdk/') ||
+        contains(github.event.commits.*.removed, 'packages/kindling_sdk/') ||
+        contains(github.event.commits.*.modified, 'packages/kindling_cli/') ||
+        contains(github.event.commits.*.added, 'packages/kindling_cli/') ||
+        contains(github.event.commits.*.removed, 'packages/kindling_cli/') ||
         contains(github.event.commits.*.modified, 'build-configs/') ||
+        contains(github.event.commits.*.added, 'build-configs/') ||
+        contains(github.event.commits.*.removed, 'build-configs/') ||
         contains(github.event.commits.*.modified, 'scripts/build_platform_wheels.sh') ||
-        contains(github.event.commits.*.modified, 'pyproject.toml')
+        contains(github.event.commits.*.added, 'scripts/build_platform_wheels.sh') ||
+        contains(github.event.commits.*.removed, 'scripts/build_platform_wheels.sh') ||
+        contains(github.event.commits.*.modified, 'scripts/build.py') ||
+        contains(github.event.commits.*.added, 'scripts/build.py') ||
+        contains(github.event.commits.*.removed, 'scripts/build.py') ||
+        contains(github.event.commits.*.modified, 'pyproject.toml') ||
+        contains(github.event.commits.*.added, 'pyproject.toml') ||
+        contains(github.event.commits.*.removed, 'pyproject.toml')
       ))
 
     steps:
@@ -404,7 +421,7 @@ jobs:
           echo "$CHANGED_FILES"
 
           # Check if any relevant files changed
-          if echo "$CHANGED_FILES" | grep -qE '^packages/kindling/|^build-configs/|^scripts/build_platform_wheels\.sh|^pyproject\.toml'; then
+          if echo "$CHANGED_FILES" | grep -qE '^packages/kindling/|^packages/kindling_sdk/|^packages/kindling_cli/|^build-configs/|^scripts/build_platform_wheels\.sh|^scripts/build\.py|^pyproject\.toml'; then
             echo "✅ Found changes that affect wheel content"
             echo "needs_rebuild=true" >> $GITHUB_OUTPUT
           else
@@ -423,6 +440,21 @@ jobs:
         run: |
           echo "📦 Built wheels:"
           ls -lh dist/
+
+      - name: Smoke test SDK and CLI wheels
+        if: steps.check-changes.outputs.needs_rebuild == 'true'
+        run: |
+          python -m venv /tmp/kindling-wheel-smoke
+          source /tmp/kindling-wheel-smoke/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install dist/kindling_sdk-*.whl dist/kindling_cli-*.whl
+          kindling --help > /tmp/kindling-help.txt
+          python - <<'PY'
+          from kindling_sdk.platform_api import list_supported_platforms
+          platforms = list_supported_platforms()
+          print("SDK platforms:", platforms)
+          assert platforms == ["databricks", "fabric", "synapse"]
+          PY
 
       - name: Skip message
         if: steps.check-changes.outputs.needs_rebuild == 'false'
