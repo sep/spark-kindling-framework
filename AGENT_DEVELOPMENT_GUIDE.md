@@ -1,782 +1,392 @@
-# Agentic Development Guide - Kindling Framework Roadmap
+# Agent Development Guide - Big Feature SOP
 
-> **Purpose:** Instructions for AI agents (and developers) on how to work with the Kindling Framework roadmap and deliver high-quality implementations.
-
----
-
-## Table of Contents
-
-1. [Roadmap Structure](#roadmap-structure)
-2. [Development Workflow](#development-workflow)
-3. [Picking Work](#picking-work)
-4. [Implementation Standards](#implementation-standards)
-5. [Testing Requirements](#testing-requirements)
-6. [Documentation Requirements](#documentation-requirements)
-7. [Pull Request Process](#pull-request-process)
-8. [Updating Project Status](#updating-project-status)
-9. [Handling Blockers](#handling-blockers)
-10. [Code Quality Standards](#code-quality-standards)
+> Purpose: A repeatable operating procedure for delivering any major feature in this repo.
+>
+> Trigger phrase: "Do this for [next big feature]".
+>
+> When that phrase is used, follow this guide end-to-end unless the user explicitly overrides a step.
 
 ---
 
-## Roadmap Structure
+## 1) Scope and Intent
 
-### Issue Hierarchy
+Use this SOP for any feature that is more than a one-file fix, and for any work that affects release, tests, or platform behavior.
 
-```
-Capability (Parent Issue)
-├── Feature 1 (Child Issue)
-├── Feature 2 (Child Issue)
-└── Feature 3 (Child Issue)
-```
-
-**Capabilities** are high-level containers with:
-- Multiple features linked via task lists
-- Success criteria for the overall capability
-- Effort estimates (total weeks)
-- Dependencies on other capabilities
-
-**Features** are deliverable work items with:
-- Detailed implementation tasks (checkboxes)
-- Acceptance criteria (must be met for completion)
-- Files to create/modify
-- Effort estimates (S/M/L)
-- Dependencies (blocked by other features)
-
-### Priority Levels
-
-- **P0 (Critical)**: Must be completed ASAP - active production needs
-- **P1 (High)**: Important for framework functionality
-- **P2 (Medium)**: Valuable enhancements, not blocking
-- **P3 (Low)**: Future enhancements, nice-to-have
-
-### Labels
-
-- `capability` - Parent container issue
-- `feature` - Deliverable feature
-- `streaming`, `dag`, `providers`, `config` - Domain area
-- `P0`, `P1`, `P2`, `P3` - Priority
+A "big feature" usually has at least one of these:
+- New module/package or significant architectural change
+- Runtime behavior changes across platforms
+- CI/build/release/deploy workflow changes
+- New config surface or breaking/compatibility implications
+- Multi-PR or multi-issue effort
 
 ---
 
-## Development Workflow
+## 2) Non-Negotiables
 
-### Standard Workflow
+These happen every time unless the user says otherwise:
+- Review existing open issues and priorities before starting implementation.
+- Track work in GitHub Issues and GitHub Project (create/update items as needed).
+- Update design/docs and implementation docs as part of delivery.
+- Add/adjust tests for the changed behavior.
+- Create a PR and address review feedback before merge.
+- Verify merge state and release/version impact.
+- Report status clearly: what changed, what passed, what is left.
 
-```
-1. Pick Work (check dependencies)
-   ↓
-2. Create Branch (from main)
-   ↓
-3. Implement Feature (follow standards)
-   ↓
-4. Write Tests (unit + integration)
-   ↓
-5. Update Documentation
-   ↓
-6. Run Pre-commit Hooks
-   ↓
-7. Create Pull Request
-   ↓
-8. Address Review Feedback
-   ↓
-9. Merge to Main
-   ↓
-10. Update Project Status
-```
+---
 
-### Branch Naming
+## 3) Standard Delivery Lifecycle
 
+### Phase 0 - Intake and Alignment
+
+Objective: Confirm goal, scope, and constraints before coding.
+
+Checklist:
+- Restate the requested outcome in concrete terms.
+- Identify dependencies, risks, and likely affected areas.
+- Confirm branch strategy (feature branch vs direct-to-main).
+- Confirm release expectations (none, patch, alpha, etc.).
+
+Exit criteria:
+- Clear implementation target and acceptance criteria.
+
+### Phase 1 - Issue and Project Hygiene
+
+Objective: Ensure planning artifacts exist and are current.
+
+Checklist:
+- Review related issues for duplicates/conflicts.
+- Create issue(s) if missing (feature issue + follow-ups if needed).
+- Add issue(s) to the active GitHub Project.
+- Set/confirm priority, status, and ownership.
+- Add a concise implementation plan comment in the issue.
+
+Exit criteria:
+- Work is represented in issues and project board with current status.
+
+### Phase 2 - Design and Documentation Plan
+
+Objective: Lock in design direction before broad edits.
+
+Checklist:
+- Review existing proposals/docs and align to current intent.
+- Create/update proposal docs for non-trivial behavior changes.
+- Document migration/compatibility behavior if any.
+- Document config contract changes and examples.
+
+Exit criteria:
+- Design decisions and behavior are documented enough to implement.
+
+### Phase 3 - Implementation
+
+Objective: Deliver the feature with focused, reviewable changes.
+
+Checklist:
+- Implement in small, coherent commits.
+- Keep runtime vs design-time boundaries explicit.
+- Avoid hidden breaking changes; preserve compatibility when expected.
+- Update entrypoints, packaging, scripts, and automation where needed.
+- Ensure logs/errors are actionable and non-ambiguous.
+
+Exit criteria:
+- Feature behavior implemented and locally verifiable.
+
+### Phase 4 - Verification
+
+Objective: Prove correctness at the right test depth.
+
+Checklist:
+- Run targeted unit tests for touched code paths.
+- Run integration/system tests where behavior risk warrants it.
+- Run build smoke checks for produced artifacts.
+- Validate docs/examples still match actual behavior.
+
+Exit criteria:
+- Relevant tests/build checks pass or known failures are documented with reason.
+
+### Phase 5 - PR and Review
+
+Objective: Land high-quality changes with complete context.
+
+Checklist:
+- Open PR with clear summary, risk, and validation evidence.
+- Link issues and project item(s).
+- Include explicit "what changed / why / how verified".
+- Address reviewer comments (human + bot) with code/doc changes or rationale.
+- Re-run required checks after each fix push.
+
+Exit criteria:
+- Required reviews/checks are green and comments are resolved.
+
+### Phase 6 - Merge, Release, and Deploy
+
+Objective: Complete delivery and publish artifacts safely.
+
+Checklist:
+- Merge according to repo policy.
+- Confirm merge commit and branch cleanup.
+- If version/release required:
+  - bump versions consistently across affected packages
+  - build artifacts
+  - deploy required runtime artifacts
+  - create GitHub release with expected assets
+- Verify release artifacts and paths.
+
+Exit criteria:
+- Changes merged and, if requested, released/deployed successfully.
+
+### Phase 7 - Post-Delivery Closure
+
+Objective: Ensure tracking and docs reflect reality.
+
+Checklist:
+- Update issue status and close completed issues.
+- Update parent/capability issues and project status columns.
+- Note any follow-up tasks as explicit issues.
+- Provide final summary to user with links and identifiers.
+
+Exit criteria:
+- Project/issue/docs state matches delivered implementation.
+
+---
+
+## 4) Required Reviews Per Big Feature
+
+Review these every time:
+
+### A) Product/Planning Review
+- Related issues and priorities
+- Dependencies and blockers
+- GitHub Project placement and status
+
+### B) Technical Review
+- API/config compatibility
+- Runtime vs design-time boundaries
+- Error handling and telemetry impact
+- Build/release automation impact
+
+### C) Quality Review
+- Unit/integration/system test relevance
+- CI check coverage for changed surfaces
+- Artifact smoke checks for packaged outputs
+
+### D) Documentation Review
+- Proposal docs
+- Development guides
+- README or usage docs
+- Release notes impact
+
+### E) Delivery Review
+- Commit history clarity
+- PR review comments fully addressed
+- Merge/release/deploy status verified
+
+---
+
+## 5) Git and Branching Policy
+
+Default flow:
+- Start from up-to-date `main`.
+- Create feature branch: `feature/<short-topic>`.
+- Commit logical units with clear messages.
+- Push branch and open PR.
+- Merge after checks/reviews are complete.
+
+When direct-to-main is requested:
+- Explicitly confirm user intent.
+- Still run all validation and review steps possible.
+- Document any skipped guardrails.
+
+Never:
+- Rewrite shared history without explicit instruction.
+- Revert unrelated user changes.
+- Use destructive git commands unless explicitly requested.
+
+---
+
+## 6) Commit and PR Standards
+
+Commit message format:
+- `feat: ...`
+- `fix: ...`
+- `refactor: ...`
+- `docs: ...`
+- `test: ...`
+- `chore: ...`
+
+PR body must include:
+- Summary
+- Related issues
+- Design notes/decisions
+- Validation evidence (tests/build/deploy)
+- Risk and rollback notes (if relevant)
+- Any exceptions (for example, hooks bypassed due env constraints)
+
+---
+
+## 7) Testing and Validation Requirements
+
+Minimum for big features:
+- Targeted unit tests for changed logic
+- Targeted integration tests for boundary/contract changes
+- Build validation for touched package artifacts
+- CI checks green before merge
+
+When platform behavior changes:
+- Run/verify impacted system tests
+- Confirm logs/status from each affected platform
+
+When packaging/release changes:
+- Build all expected wheels
+- Install smoke test of new artifacts (CLI help, imports, entrypoints)
+- Verify release asset list
+
+---
+
+## 8) Documentation Requirements
+
+Every big feature updates docs at two levels:
+
+1. Design intent:
+- Proposal or architecture doc updates
+- Compatibility/migration notes
+
+2. Operational usage:
+- User/developer-facing commands and examples
+- Build/deploy/release instructions
+
+If docs and implementation differ, implementation is not done.
+
+---
+
+## 9) Versioning, Release, and Deploy Rules
+
+When release is requested:
+- Bump versions consistently for all changed/distributed packages.
+- Align cross-package dependency floors (for example, CLI -> SDK).
+- Build artifacts from the bumped version.
+- Deploy runtime artifacts to required storage paths.
+- Create release tag and attach expected wheel assets.
+- Confirm release page contents and artifact names.
+
+Release verification checklist:
+- Tag exists and points to expected commit.
+- Release contains all required wheel files.
+- Deployed runtime artifacts are present in storage.
+- Bootstrap/runtime paths are valid.
+
+---
+
+## 10) Blockers and Escalation
+
+If blocked:
+- Document blocker in issue and PR thread.
+- Propose concrete options and recommended path.
+- Continue parallelizable tasks (docs/tests/refactors) while blocked.
+
+If tooling/network constraints prevent a step:
+- State exact command + failure reason.
+- Use the safest fallback.
+- Record deviation in PR notes.
+
+---
+
+## 11) Execution Checklist (Copy/Paste)
+
+Use this checklist for every new big feature.
+
+- [ ] Confirm scope, constraints, acceptance criteria
+- [ ] Review related issues and priorities
+- [ ] Create/update feature issue(s)
+- [ ] Add/update GitHub Project item(s)
+- [ ] Draft/update proposal/design docs
+- [ ] Create feature branch (unless direct-to-main requested)
+- [ ] Implement feature changes
+- [ ] Add/update tests (unit/integration/system as needed)
+- [ ] Run local validation (tests/build/smoke)
+- [ ] Update user/developer docs
+- [ ] Open PR with complete summary + evidence
+- [ ] Address review comments (human + bot)
+- [ ] Ensure required checks are green
+- [ ] Merge PR and verify merge state
+- [ ] Bump version(s) if release needed
+- [ ] Build/deploy/release artifacts if requested
+- [ ] Verify release assets and deploy paths
+- [ ] Update issues/project status to done
+- [ ] Provide final delivery report
+
+---
+
+## 12) Suggested Command Set
+
+Issue and project workflow:
 ```bash
-# Format: <type>/<issue-number>-<short-description>
-feature/18-streaming-query-manager
-feature/22-dependency-graph-builder
-fix/123-watermark-bug
-docs/update-streaming-guide
+gh issue list --state open --repo sep/spark-kindling-framework
+gh issue create --repo sep/spark-kindling-framework --title "..." --body-file ...
+gh project list --owner sep
+gh project item-list <project-number> --owner sep --format json
 ```
 
-### Commit Messages
-
+Branch and PR workflow:
 ```bash
-# Format:
-# <type>: <description>
-#
-# <body with details>
-#
-# Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
-
-# Example:
-git commit -m "feat: implement StreamingQueryManager
-
-- Add query registration with builder functions
-- Implement start/stop/restart lifecycle methods
-- Add query status tracking with StreamingQueryInfo
-- Emit signals for query lifecycle events
-
-Implements #18
-
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
+git checkout main && git pull
+git checkout -b feature/<topic>
+git add ... && git commit -m "feat: ..."
+git push -u origin feature/<topic>
+gh pr create --base main --head feature/<topic> --title "..." --body-file ...
+gh pr checks <pr-number>
+gh pr view <pr-number> --comments
+gh pr merge <pr-number> --merge --delete-branch
 ```
 
-**Commit Types:**
-- `feat:` - New feature
-- `fix:` - Bug fix
-- `refactor:` - Code refactoring
-- `test:` - Add/update tests
-- `docs:` - Documentation only
-- `chore:` - Maintenance tasks
-
----
-
-## Picking Work
-
-### Step 1: Check Available Work
-
+Build/deploy/release workflow (current repo conventions):
 ```bash
-# List P0 features not blocked
-gh issue list --label "feature,P0" --state open --repo sep/spark-kindling-framework
-
-# Check specific capability's features
-gh issue view 14 --repo sep/spark-kindling-framework  # View Capability #14
-```
-
-### Step 2: Verify Dependencies
-
-**Before starting work on a feature:**
-
-1. **Check "Blocked By" section** in the issue description
-2. **Verify blocking issues are completed:**
-   ```bash
-   gh issue view <blocking-issue-number> --repo sep/spark-kindling-framework
-   ```
-3. **Only start if all dependencies are closed or in review**
-
-**Example:**
-```
-Feature #20 (Auto-Recovery Manager) shows:
-"Dependencies: #18 (needs StreamingQueryManager)"
-
-Action: Check if #18 is complete before starting #20
-```
-
-### Step 3: Claim the Work
-
-**Comment on the issue:**
-```
-Starting work on this feature.
-
-**Approach:**
-- [Brief description of implementation approach]
-
-**Estimated completion:** [timeframe]
+poe version --bump_type patch
+poe build
+poe deploy
+gh release create v<version> dist/*.whl --title "Release v<version>" --generate-notes
 ```
 
 ---
 
-## Implementation Standards
+## 13) Definition of Done (Big Feature)
 
-### File Organization
-
-```
-packages/kindling/
-├── streaming_query_manager.py    # New feature file
-├── streaming_watchdog.py          # Another feature
-├── pipe_streaming.py              # Existing file to modify
-└── tests/
-    └── unit/
-        └── test_streaming_query_manager.py
-```
-
-### Code Structure
-
-**Every new module should include:**
-
-1. **Module docstring:**
-   ```python
-   """
-   Streaming Query Manager
-
-   Manages lifecycle of Spark streaming queries with health monitoring
-   and automatic recovery capabilities.
-
-   Key Components:
-   - StreamingQueryManager: Main lifecycle management
-   - StreamingQueryInfo: Query state and metrics
-   - StreamingQueryState: Enum for query states
-
-   Related:
-   - Issue #18: https://github.com/sep/spark-kindling-framework/issues/18
-   - Proposal: docs/proposals/signal_dag_streaming_proposal.md
-   """
-   ```
-
-2. **Class docstrings with examples:**
-   ```python
-   class StreamingQueryManager(SignalEmitter):
-       """
-       Manages Spark streaming query lifecycle.
-
-       Example:
-           >>> manager = StreamingQueryManager()
-           >>> manager.register_query(
-           ...     "my_stream",
-           ...     lambda: spark.readStream.format("delta").load(...)
-           ... )
-           >>> query_info = manager.start_query("my_stream")
-       """
-   ```
-
-3. **Type hints everywhere:**
-   ```python
-   def start_query(
-       self,
-       query_id: str,
-       config: Optional[StreamingQueryConfig] = None
-   ) -> StreamingQueryInfo:
-       """Start a registered streaming query."""
-   ```
-
-4. **Dependency injection:**
-   ```python
-   from kindling.injection import inject
-   from kindling.signaling import SignalProvider
-
-   @inject
-   class StreamingQueryManager:
-       def __init__(
-           self,
-           signal_provider: SignalProvider,
-           logger_provider: SparkLoggerProvider
-       ):
-           self.signals = signal_provider
-           self.logger = logger_provider.get_logger("streaming")
-   ```
-
-5. **Signal emissions:**
-   ```python
-   class StreamingQueryManager(SignalEmitter):
-       EMITS = [
-           "streaming.query_started",
-           "streaming.query_stopped",
-           "streaming.query_failed",
-       ]
-
-       def start_query(self, query_id: str) -> StreamingQueryInfo:
-           self.emit("streaming.query_started", query_id=query_id, ...)
-   ```
-
-### Error Handling
-
-**Always handle errors gracefully:**
-
-```python
-def stop_query(self, query_id: str, await_termination: bool = True) -> bool:
-    """Stop a streaming query."""
-    try:
-        query_info = self._queries.get(query_id)
-        if not query_info:
-            self.logger.warning(f"Query {query_id} not found")
-            return False
-
-        query_info.query.stop()
-
-        if await_termination:
-            query_info.query.awaitTermination()
-
-        self.emit("streaming.query_stopped", query_id=query_id)
-        return True
-
-    except Exception as e:
-        self.logger.error(f"Failed to stop query {query_id}: {e}")
-        self.emit("streaming.query_failed", query_id=query_id, error=str(e))
-        return False
-```
-
-### Configuration
-
-**Use existing config system:**
-
-```python
-from kindling.spark_config import ConfigService
-
-@inject
-class StreamingWatchdog:
-    def __init__(self, config: ConfigService):
-        # Read from settings.yaml
-        self.poll_interval = config.get("STREAMING_WATCHDOG_POLL_INTERVAL", default=30)
-        self.stall_threshold = config.get("STREAMING_STALL_THRESHOLD", default=300)
-```
+A big feature is done only when all are true:
+- Code implemented and tested for expected scope
+- Docs/proposals updated to match behavior
+- Issues and project board accurately reflect completion
+- PR reviews addressed, checks green, and changes merged
+- Version/release/deploy steps completed if requested
+- Final summary with links/identifiers is provided
 
 ---
 
-## Testing Requirements
+## 14) Final Status Report Template
 
-### Test Coverage Requirements
+Use this exact structure in completion updates:
 
-**Every feature MUST have:**
+1. Outcome
+- What was delivered
 
-1. **Unit tests** - Test individual components in isolation
-2. **Integration tests** - Test components working together
-3. **Minimum coverage:** 80% for new code
+2. Code and Docs
+- Key files changed
+- Key docs/proposals updated
 
-### Unit Test Structure
+3. Validation
+- Tests/checks run and results
 
-```python
-# tests/unit/test_streaming_query_manager.py
+4. GitHub Tracking
+- Issue(s)
+- Project item status
+- PR link and merge commit
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
-from kindling.streaming_query_manager import (
-    StreamingQueryManager,
-    StreamingQueryInfo,
-    StreamingQueryState
-)
+5. Release/Deploy (if applicable)
+- Version/tag
+- Assets published
+- Deploy locations
 
-class TestStreamingQueryManager:
-    """Test suite for StreamingQueryManager."""
-
-    @pytest.fixture
-    def mock_signal_provider(self):
-        """Mock signal provider for testing."""
-        provider = Mock()
-        provider.create_signal = Mock()
-        return provider
-
-    @pytest.fixture
-    def manager(self, mock_signal_provider):
-        """Create manager instance for testing."""
-        return StreamingQueryManager(
-            signal_provider=mock_signal_provider,
-            logger_provider=Mock()
-        )
-
-    def test_register_query(self, manager):
-        """Test query registration."""
-        builder = Mock()
-
-        manager.register_query("test_query", builder)
-
-        assert "test_query" in manager._registered_queries
-        assert manager._registered_queries["test_query"] == builder
-
-    def test_start_query_success(self, manager):
-        """Test successful query start."""
-        # Setup
-        mock_query = Mock()
-        builder = Mock(return_value=mock_query)
-        manager.register_query("test_query", builder)
-
-        # Execute
-        result = manager.start_query("test_query")
-
-        # Assert
-        assert result.query_id == "test_query"
-        assert result.status == StreamingQueryState.RUNNING
-        builder.assert_called_once()
-
-    def test_start_query_not_registered(self, manager):
-        """Test starting unregistered query raises error."""
-        with pytest.raises(ValueError, match="not registered"):
-            manager.start_query("unknown_query")
-```
-
-### Integration Test Structure
-
-```python
-# tests/integration/test_streaming_lifecycle.py
-
-import pytest
-from pyspark.sql import SparkSession
-from kindling.streaming_query_manager import StreamingQueryManager
-from kindling.streaming_watchdog import StreamingWatchdog
-
-@pytest.fixture(scope="module")
-def spark():
-    """Create Spark session for testing."""
-    return SparkSession.builder \
-        .master("local[2]") \
-        .appName("streaming-test") \
-        .getOrCreate()
-
-class TestStreamingLifecycle:
-    """Integration tests for streaming lifecycle."""
-
-    def test_query_start_stop_lifecycle(self, spark):
-        """Test complete query lifecycle."""
-        # This would test with a real streaming query
-        # using in-memory source/sink
-        pass
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run specific test file
-pytest tests/unit/test_streaming_query_manager.py
-
-# Run with coverage
-pytest --cov=packages/kindling --cov-report=html
-
-# Run only fast tests (skip integration)
-pytest -m "not integration"
-```
+6. Follow-ups
+- Remaining work as explicit next issues
 
 ---
 
-## Documentation Requirements
-
-### Code Documentation
-
-**Every public class/function needs:**
-
-1. **Docstring** with description
-2. **Args section** (Google style)
-3. **Returns section**
-4. **Raises section** (if applicable)
-5. **Example** (for complex APIs)
-
-```python
-def start_query(
-    self,
-    query_id: str,
-    config: Optional[StreamingQueryConfig] = None
-) -> StreamingQueryInfo:
-    """
-    Start a registered streaming query.
-
-    Args:
-        query_id: Unique identifier for the query
-        config: Optional configuration overrides
-
-    Returns:
-        StreamingQueryInfo with query state and metrics
-
-    Raises:
-        ValueError: If query_id not registered
-        RuntimeError: If query fails to start
-
-    Example:
-        >>> manager.register_query("my_query", builder_fn)
-        >>> info = manager.start_query("my_query")
-        >>> assert info.status == StreamingQueryState.RUNNING
-    """
-```
-
-### Feature Documentation
-
-**After implementing a feature, update:**
-
-1. **Module docstring** - Add overview of feature
-2. **README.md** - Update if user-facing
-3. **Proposal docs** - Mark sections as implemented
-
-**Example update to README.md:**
-
-```markdown
-## Streaming Support
-
-Kindling provides comprehensive streaming query lifecycle management:
-
-- **Query Manager**: Register, start, stop, and restart queries
-- **Health Monitoring**: Automatic detection of stale/failed queries
-- **Auto-Recovery**: Exponential backoff retry with configurable limits
-- **Event Processing**: Non-blocking listener for query events
-
-See [Streaming Guide](docs/streaming.md) for details.
-```
-
----
-
-## Pull Request Process
-
-### PR Title Format
-
-```
-<type>(<scope>): <description>
-
-Examples:
-feat(streaming): add StreamingQueryManager
-feat(dag): implement dependency graph builder
-fix(streaming): handle query timeout in watchdog
-docs(streaming): add query manager examples
-```
-
-### PR Description Template
-
-```markdown
-## Summary
-Brief description of what this PR does.
-
-## Related Issues
-Closes #18
-
-## Implementation Details
-- Key design decisions
-- Notable code changes
-- Any deviations from original plan
-
-## Testing
-- [ ] Unit tests added/updated
-- [ ] Integration tests added/updated
-- [ ] All tests passing locally
-- [ ] Coverage maintained at 80%+
-
-## Documentation
-- [ ] Code docstrings added
-- [ ] README updated (if needed)
-- [ ] Proposal marked as implemented
-
-## Checklist
-- [ ] Pre-commit hooks passing
-- [ ] No merge conflicts
-- [ ] Branch up to date with main
-- [ ] Self-review completed
-- [ ] Breaking changes documented (if any)
-
-## Screenshots/Output
-(If applicable - test results, examples, etc.)
-```
-
-### PR Review Process
-
-**Lightweight Self-Merge (Current Process):**
-
-1. **Create PR** with template filled out
-2. **Verify all checks pass:**
-   - ✅ All tests pass
-   - ✅ Coverage ≥80%
-   - ✅ Pre-commit hooks pass
-   - ✅ No merge conflicts
-3. **Self-merge** using squash and merge
-4. **Delete feature branch** after merge
-
-**Future Enhancement:**
-- PRs serve as checkpoint for potential automated review (e.g., CodeRabbit)
-- Manual review can be requested if needed for complex changes
-
-### Merge Strategy
-
-**Use "Squash and Merge"** for clean history:
-- All commits squashed into one
-- Single commit message in main branch
-- Co-author attribution preserved
-
----
-
-## Updating Project Status
-
-### After Starting Work
-
-1. **Comment on issue**: "Starting work on this feature"
-2. **Move to "In Progress"** in project board (if not auto-moved)
-
-### After Creating PR
-
-1. **Comment on issue**: "PR created: #[PR_NUMBER]"
-2. **Link PR to issue**: Use "Closes #18" in PR description
-
-### After Merging PR
-
-1. **Issue auto-closes** when PR merges (if "Closes #" used)
-2. **Update parent Capability issue**:
-   - Check off the feature in task list
-   - Example: `- [x] #18 - Streaming Query Manager`
-
-3. **Project auto-moves to "Done"** (if automation enabled)
-
-### Capability Completion
-
-When all features in a Capability are complete:
-
-1. **Verify all task list items checked**
-2. **Close the Capability issue** with summary comment:
-   ```
-   All features complete:
-   - ✅ #18 - Streaming Query Manager
-   - ✅ #19 - Streaming Health Watchdog
-   - ✅ #20 - Auto-Recovery Manager
-   - ✅ #21 - Queue-Based Event Processing
-
-   Total effort: 4-5 weeks (as estimated)
-   ```
-
----
-
-## Handling Blockers
-
-### If You Encounter a Blocker
-
-1. **Document the blocker** in issue comment:
-   ```
-   **Blocker identified:**
-
-   Cannot implement auto-recovery without StreamingQueryManager (#18)
-   being complete. Manager provides query state tracking needed for
-   recovery decisions.
-
-   **Status:** Pausing work until #18 is merged.
-   ```
-
-2. **Update project status** - Move back to "Blocked" or "Backlog"
-
-3. **Pick different work** - Find unblocked feature to work on
-
-### If Requirements Unclear
-
-1. **Comment on issue** with specific questions:
-   ```
-   **Clarification needed:**
-
-   The acceptance criteria mentions "exponential backoff" but doesn't
-   specify:
-   - Initial backoff duration (1s? 5s?)
-   - Max backoff duration (5min? 10min?)
-   - Backoff multiplier (2x? 1.5x?)
-
-   **Proposal:** Use 1s initial, 300s max, 2x multiplier (matches proposal doc)
-
-   Please confirm or provide guidance.
-   ```
-
-2. **Wait for response** or make reasonable assumption (document it)
-
-### If You Find a Bug
-
-1. **Create bug issue** with:
-   - Clear description of bug
-   - Steps to reproduce
-   - Expected vs actual behavior
-   - Error messages/stack traces
-
-2. **Link to related feature** if applicable
-
-3. **Fix in same PR** if small, or create separate PR for complex bugs
-
----
-
-## Code Quality Standards
-
-### Pre-commit Hooks
-
-**Always run before committing:**
-
-```bash
-# Automatically run by git commit
-# Or manually run:
-pre-commit run --all-files
-```
-
-**Hooks enforce:**
-- Black formatting
-- isort import ordering
-- flake8 linting
-- Trailing whitespace removal
-- YAML syntax validation
-
-### Code Review Checklist
-
-Before creating PR, self-review:
-
-- [ ] **Functionality**: Does it meet all acceptance criteria?
-- [ ] **Tests**: 80%+ coverage, all passing?
-- [ ] **Documentation**: Docstrings, README updates?
-- [ ] **Error Handling**: Graceful failures with logging?
-- [ ] **Type Hints**: All functions typed?
-- [ ] **DI Pattern**: Uses `@inject` for dependencies?
-- [ ] **Signals**: Emits appropriate signals?
-- [ ] **Config**: Uses ConfigService for settings?
-- [ ] **Logging**: Uses injected logger, not print()?
-- [ ] **No Hardcoding**: No magic numbers, use config/constants
-- [ ] **Single Responsibility**: Each class/function has one job
-- [ ] **DRY**: No duplicated code
-- [ ] **Performance**: No obvious performance issues
-
-### Anti-Patterns to Avoid
-
-❌ **Don't:**
-- Use `print()` - use injected logger
-- Hardcode values - use config
-- Skip tests - 80% coverage required
-- Skip docstrings - all public APIs need docs
-- Use `Any` type hints - be specific
-- Catch bare `except:` - catch specific exceptions
-- Ignore errors silently - log and emit signals
-- Create circular imports - use dependency injection
-- Mix concerns - separate business logic from infrastructure
-
-✅ **Do:**
-- Use dependency injection
-- Emit signals for all lifecycle events
-- Log important operations
-- Handle errors gracefully
-- Write descriptive commit messages
-- Keep functions small and focused
-- Follow existing code patterns
-- Update documentation
-
----
-
-## Quick Reference
-
-### Essential Commands
-
-```bash
-# Pick work
-gh issue list --label "feature,P0" --state open --repo sep/spark-kindling-framework
-
-# Create branch
-git checkout -b feature/18-streaming-query-manager
-
-# Run tests
-pytest --cov=packages/kindling
-
-# Pre-commit
-pre-commit run --all-files
-
-# Create PR
-gh pr create --title "feat(streaming): add StreamingQueryManager" --body "Closes #18"
-
-# Check issue status
-gh issue view 18 --repo sep/spark-kindling-framework
-```
-
-### File Locations
-
-```
-packages/kindling/          # Framework code
-tests/unit/                 # Unit tests
-tests/integration/          # Integration tests
-docs/proposals/             # Design proposals
-examples/                   # Example usage
-```
-
-### Getting Help
-
-- **Technical questions**: Comment on related issue
-- **Blocker**: Document in issue, pick different work
-- **Bug found**: Create bug issue with reproduction steps
-- **Unclear requirements**: Comment on issue asking for clarification
-
----
-
-## Summary
-
-**Remember:**
-1. ✅ Check dependencies before starting
-2. ✅ Follow coding standards (DI, signals, logging, types)
-3. ✅ Write tests (80%+ coverage)
-4. ✅ Document your code (docstrings, README)
-5. ✅ Create descriptive PRs
-6. ✅ Update project status
-7. ✅ Handle errors gracefully
-8. ✅ Ask questions when blocked
-
-**Goal:** Deliver high-quality, well-tested, documented features that integrate seamlessly with the existing framework.
-
----
-
-*Last updated: 2026-02-03*
-*For questions or improvements to this guide, open an issue.*
+Last updated: 2026-02-19
