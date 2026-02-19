@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling-sdk"
-version = "0.6.5"
+version = "0.6.6"
 description = "Design-time platform SDK for Kindling"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
