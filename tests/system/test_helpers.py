@@ -424,7 +424,7 @@ def create_platform_client(platform: str):
     """
     Create platform API client for testing.
 
-    Uses kindling.platform_provider factory to create clients from environment variables.
+    Uses kindling_sdk platform API factory to create clients from environment variables.
     Wraps ValueError exceptions as pytest.skip for missing configuration.
 
     Args:
@@ -434,7 +434,7 @@ def create_platform_client(platform: str):
         Tuple of (client, platform_name)
     """
     import pytest
-    from kindling.platform_provider import create_platform_api_from_env
+    from kindling_sdk.platform_api import create_platform_api_from_env
 
     try:
         client, platform_name = create_platform_api_from_env(platform)

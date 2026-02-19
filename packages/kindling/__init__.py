@@ -37,7 +37,6 @@ from .bootstrap import (
     initialize_framework,
     is_framework_initialized,
 )
-from .platform_provider import PlatformAPI
 
 
 def initialize(config=None, app_name=None):
