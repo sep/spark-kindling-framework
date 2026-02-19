@@ -20,7 +20,7 @@ Builds runtime wheels for each supported platform (Synapse, Databricks, Fabric) 
 
 ```bash
 # Build all platform wheels
-./scripts/build_platform_wheels.sh
+poetry run poe build-wheels
 ```
 
 **Output:**
