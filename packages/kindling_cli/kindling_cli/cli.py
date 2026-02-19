@@ -53,7 +53,9 @@ def _load_yaml_config(config_path: Path) -> Dict[str, Any]:
         raise click.ClickException(f"Failed to parse config file `{config_path}`: {exc}") from exc
 
     if not isinstance(data, dict):
-        raise click.ClickException(f"Config file `{config_path}` must contain a YAML object at root.")
+        raise click.ClickException(
+            f"Config file `{config_path}` must contain a YAML object at root."
+        )
     return data
 
 

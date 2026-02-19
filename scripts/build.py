@@ -14,6 +14,7 @@ import zipfile
 from datetime import datetime
 from os import environ
 from pathlib import Path
+
 PLATFORMS = ["synapse", "databricks", "fabric"]
 DIST_DIR = Path("dist")
 DESIGN_TIME_PACKAGE_DIRS = [Path("packages/kindling_sdk"), Path("packages/kindling_cli")]
