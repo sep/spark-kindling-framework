@@ -108,9 +108,7 @@ class PlatformAPIRegistry:
 
         if platform_name not in cls._registry:
             available = ", ".join(cls._registry.keys()) if cls._registry else "none"
-            raise ValueError(
-                f"Unknown platform: {platform_name}. Available platforms: {available}"
-            )
+            raise ValueError(f"Unknown platform: {platform_name}. Available platforms: {available}")
         return cls._registry[platform_name]
 
     @classmethod
