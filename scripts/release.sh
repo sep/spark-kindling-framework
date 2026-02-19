@@ -69,13 +69,21 @@ else
         sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
         echo "  ✓ Updated pyproject.toml"
     fi
+
+    # Update version in design-time package pyproject files if present
+    for pkg_pyproject in packages/kindling_sdk/pyproject.toml packages/kindling_cli/pyproject.toml; do
+        if [ -f "$pkg_pyproject" ]; then
+            sed -i "s/^version = .*/version = \"${VERSION}\"/" "$pkg_pyproject"
+            echo "  ✓ Updated ${pkg_pyproject}"
+        fi
+    done
     VERSION_UPDATED=true
 
     echo ""
 
     # Show what changed
     echo "📋 Version changes:"
-    git diff build-configs/*.toml pyproject.toml 2>/dev/null || true
+    git diff build-configs/*.toml pyproject.toml packages/kindling_sdk/pyproject.toml packages/kindling_cli/pyproject.toml 2>/dev/null || true
 fi
 
 echo ""
@@ -83,7 +91,7 @@ echo ""
 # Commit and push version changes if they were made
 if [ "$VERSION_UPDATED" = true ]; then
     echo "💾 Committing version changes..."
-    git add build-configs/*.toml pyproject.toml 2>/dev/null || true
+    git add build-configs/*.toml pyproject.toml packages/kindling_sdk/pyproject.toml packages/kindling_cli/pyproject.toml 2>/dev/null || true
     git commit -m "Bump version to ${VERSION} [skip ci]"
     echo ""
 
@@ -121,7 +129,7 @@ echo ""
 echo "✅ Release ${TAG} created!"
 echo ""
 echo "🔄 GitHub Actions is now:"
-echo "  1. Building platform wheels (databricks, fabric, synapse)"
+echo "  1. Building wheels (runtime + kindling-sdk + kindling-cli)"
 echo "  2. Running tests"
 echo "  3. Attaching wheels to the release"
 echo ""

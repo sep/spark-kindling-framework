@@ -182,10 +182,22 @@ def add_packages_to_path(packages_dir):
     packages_path = str(packages_dir)
     if packages_path not in sys.path:
         sys.path.insert(0, packages_path)
+
+    kindling_sdk_path = str(packages_dir / "kindling_sdk")
+    if kindling_sdk_path not in sys.path:
+        sys.path.insert(0, kindling_sdk_path)
+
+    kindling_cli_path = str(packages_dir / "kindling_cli")
+    if kindling_cli_path not in sys.path:
+        sys.path.insert(0, kindling_cli_path)
     yield
     # Cleanup
     if packages_path in sys.path:
         sys.path.remove(packages_path)
+    if kindling_sdk_path in sys.path:
+        sys.path.remove(kindling_sdk_path)
+    if kindling_cli_path in sys.path:
+        sys.path.remove(kindling_cli_path)
 
 
 @pytest.fixture
