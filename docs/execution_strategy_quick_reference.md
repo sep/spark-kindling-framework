@@ -7,7 +7,7 @@ The execution strategy module provides strategy pattern implementations for batc
 **Module:** `packages/kindling/execution_strategy.py`  
 **Dependencies:** `pipe_graph.py`, `data_pipes.py`  
 **Tests:** 31 unit + 13 integration = 44 total  
-**Coverage:** 87% on new module
+**Coverage:** 94% on `execution_strategy.py` (latest targeted test run)
 
 ## Core Classes
 
@@ -298,22 +298,21 @@ print(viz)
 # ...
 ```
 
-## Integration with DataPipesExecuter
+## Integration with Execution
 
-The execution strategies are designed to integrate with the eventual `DataPipesExecuter` enhancement:
+Execution strategies are currently integrated with `ExecutionPlanGenerator` and `GenerationExecutor`:
 
 ```python
-# Future integration (not yet implemented):
-from kindling.data_pipes import DataPipesExecuter
 from kindling.execution_strategy import ExecutionPlanGenerator
+from kindling.generation_executor import GenerationExecutor
 
 # Generate execution plan
 generator = ExecutionPlanGenerator(...)
 plan = generator.generate_batch_plan(pipe_ids)
 
-# Execute with parallel generations
-executer = DataPipesExecuter(...)
-executer.execute_plan(plan)  # Will parallelize within generations
+# Execute by generation (sequential or parallel per generation)
+executor = GenerationExecutor(...)
+result = executor.execute_batch(plan, parallel=True, max_workers=4)
 ```
 
 ## Performance Characteristics
@@ -413,29 +412,28 @@ pytest tests/integration/test_execution_strategy_integration.py -v
 
 ## Future Enhancements
 
-**Planned for Issue #24: Generation Executor**
-- Parallel execution within generations
-- ThreadPoolExecutor for pipe parallelism
-- Timeout and error handling strategies
-- Progress monitoring and cancellation
-
 **Planned for Issue #25: Cache Optimization**
 - Shared entity read detection
 - LRU cache for frequently read entities
 - Cache recommendation signals
 - Memory-aware caching strategies
 
+**Additional DAG capability closure work**
+- `ExecutionOrchestrator` facade wiring
+- Optional `DataPipesExecuter` DAG entrypoint compatibility helpers
+- Project/issue status cleanup for capability `#15`
+
 ## Related Documentation
 
 - [Pipe Graph Quick Reference](pipe_graph_quick_reference.md) - Foundation for execution strategies
 - [docs/graph_based_pipe_execution_plan.md](../docs/graph_based_pipe_execution_plan.md) - Overall design document
-- [GitHub Issue #23](https://github.com/your-repo/issues/23) - Execution Strategies feature
+- [GitHub Issue #23](https://github.com/sep/spark-kindling-framework/issues/23) - Execution Strategies feature
 
 ## Summary
 
 The execution strategy module provides clean separation between:
 1. **What to execute** (PipeGraph - dependency structure)
 2. **When to execute** (ExecutionStrategy - ordering logic)
-3. **How to execute** (Future: GenerationExecutor - parallel execution)
+3. **How to execute** (GenerationExecutor - sequential/parallel generation execution)
 
 Use `BatchExecutionStrategy` for traditional ETL and `StreamingExecutionStrategy` for real-time processing.
