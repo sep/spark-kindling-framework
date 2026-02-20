@@ -15,7 +15,7 @@ resource "databricks_secret_scope" "scopes" {
 # Service Principals
 # -----------------------------------------------------------------------------
 resource "databricks_service_principal" "sp" {
-  for_each = { for sp in var.service_principals : sp.application_id => sp }
+  for_each = local.service_principals_effective_by_key
 
   application_id = each.value.application_id
   display_name   = each.value.display_name
@@ -37,13 +37,25 @@ resource "databricks_service_principal" "sp" {
 # -----------------------------------------------------------------------------
 locals {
   all_users = toset(concat(var.admin_users, var.workspace_users))
+  sp_entitlements_non_runtime = [
+    for spe in var.sp_entitlements : spe
+    if spe.application_id != var.runtime_sp_principal_alias
+  ]
+  sp_entitlements_runtime = [
+    for spe in var.sp_entitlements : spe
+    if spe.application_id == var.runtime_sp_principal_alias
+  ]
 }
 
 data "databricks_group" "admins" {
+  count = var.manage_system_group_memberships && length(var.admin_users) > 0 ? 1 : 0
+
   display_name = "admins"
 }
 
 data "databricks_group" "users" {
+  count = var.manage_system_group_memberships && (length(var.workspace_users) > 0 || length(local.service_principals_effective_by_key) > 0) ? 1 : 0
+
   display_name = "users"
 }
 
@@ -68,9 +80,9 @@ resource "databricks_user" "users" {
 # Admin Group Membership
 # -----------------------------------------------------------------------------
 resource "databricks_group_member" "admins" {
-  for_each = toset(var.admin_users)
+  for_each = var.manage_system_group_memberships ? toset(var.admin_users) : []
 
-  group_id  = data.databricks_group.admins.id
+  group_id  = data.databricks_group.admins[0].id
   member_id = databricks_user.users[each.value].id
 }
 
@@ -78,9 +90,9 @@ resource "databricks_group_member" "admins" {
 # Users Group Membership - humans
 # -----------------------------------------------------------------------------
 resource "databricks_group_member" "workspace_users" {
-  for_each = toset(var.workspace_users)
+  for_each = var.manage_system_group_memberships ? toset(var.workspace_users) : []
 
-  group_id  = data.databricks_group.users.id
+  group_id  = data.databricks_group.users[0].id
   member_id = databricks_user.users[each.value].id
 }
 
@@ -88,9 +100,9 @@ resource "databricks_group_member" "workspace_users" {
 # Users Group Membership - service principals
 # -----------------------------------------------------------------------------
 resource "databricks_group_member" "sp_users" {
-  for_each = { for sp in var.service_principals : sp.application_id => sp }
+  for_each = var.manage_system_group_memberships ? local.service_principals_effective_by_key : {}
 
-  group_id  = data.databricks_group.users.id
+  group_id  = data.databricks_group.users[0].id
   member_id = databricks_service_principal.sp[each.key].id
 }
 
@@ -124,9 +136,21 @@ resource "databricks_entitlements" "users" {
 # Service Principal Entitlements
 # -----------------------------------------------------------------------------
 resource "databricks_entitlements" "service_principals" {
-  for_each = { for spe in var.sp_entitlements : spe.application_id => spe }
+  for_each = { for spe in local.sp_entitlements_non_runtime : spe.application_id => spe }
 
-  service_principal_id       = databricks_service_principal.sp[each.key].id
+  service_principal_id       = databricks_service_principal.sp["app:${each.key}"].id
+  allow_cluster_create       = each.value.allow_cluster_create
+  allow_instance_pool_create = each.value.allow_instance_pool_create
+  workspace_access           = each.value.workspace_access
+  databricks_sql_access      = each.value.databricks_sql_access
+}
+
+resource "databricks_entitlements" "runtime_service_principal" {
+  for_each = local.runtime_sp_enabled && length(local.sp_entitlements_runtime) > 0 ? {
+    runtime = local.sp_entitlements_runtime[0]
+  } : {}
+
+  service_principal_id       = databricks_service_principal.sp[local.runtime_sp_workspace_key].id
   allow_cluster_create       = each.value.allow_cluster_create
   allow_instance_pool_create = each.value.allow_instance_pool_create
   workspace_access           = each.value.workspace_access

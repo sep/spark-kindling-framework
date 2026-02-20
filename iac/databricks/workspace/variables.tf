@@ -11,6 +11,12 @@ variable "azure_tenant_id" {
   type        = string
 }
 
+variable "azure_environment" {
+  description = "Azure cloud environment for providers (public or usgovernment)"
+  type        = string
+  default     = "public"
+}
+
 # -----------------------------------------------------------------------------
 # Databricks Workspace
 # -----------------------------------------------------------------------------
@@ -33,9 +39,141 @@ variable "datalake_storage_account" {
   type        = string
 }
 
-variable "access_connector_id" {
-  description = "Full resource ID of the Databricks access connector for managed identity auth to ADLS"
+variable "adls_dfs_domain" {
+  description = "ADLS DFS endpoint domain (public Azure: dfs.core.windows.net, US Gov: dfs.core.usgovcloudapi.net)"
   type        = string
+  default     = "dfs.core.windows.net"
+}
+
+variable "artifacts_container_name" {
+  description = "ADLS container used for the single Kindling external location"
+  type        = string
+  default     = "artifacts"
+}
+
+variable "artifacts_external_location_name" {
+  description = "Unity Catalog external location name for the artifacts container"
+  type        = string
+  default     = "artifacts"
+}
+
+variable "access_connector_id" {
+  description = "Full resource ID of an existing Databricks access connector (used when create_access_connector=false)"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "create_access_connector" {
+  description = "Whether Terraform should create a Databricks access connector"
+  type        = bool
+  default     = false
+
+  validation {
+    condition = var.storage_credential_auth_type == "access_connector" ? (
+      var.create_access_connector ? (
+        var.access_connector_resource_group_name != null &&
+        var.access_connector_resource_group_name != "" &&
+        var.access_connector_location != null &&
+        var.access_connector_location != ""
+        ) : (
+        var.access_connector_id != null &&
+        var.access_connector_id != ""
+      )
+    ) : true
+    error_message = "When storage_credential_auth_type=access_connector: if create_access_connector=true set access_connector_resource_group_name/access_connector_location; if false set access_connector_id."
+  }
+
+  validation {
+    condition     = !var.create_access_connector || var.azure_environment != "usgovernment"
+    error_message = "create_access_connector=true is not supported in Azure US Gov. Use storage_credential_auth_type=\"service_principal\"."
+  }
+}
+
+variable "storage_credential_auth_type" {
+  description = "Storage credential auth type: access_connector (managed identity) or service_principal"
+  type        = string
+  default     = "access_connector"
+
+  validation {
+    condition     = contains(["access_connector", "service_principal"], var.storage_credential_auth_type)
+    error_message = "storage_credential_auth_type must be one of: access_connector, service_principal."
+  }
+}
+
+variable "storage_credential_sp_application_id" {
+  description = "Application (client) ID for storage credential service principal (required when storage_credential_auth_type=service_principal)"
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.storage_credential_auth_type != "service_principal" || (
+      var.storage_credential_sp_application_id != null &&
+      var.storage_credential_sp_application_id != ""
+    )
+    error_message = "storage_credential_sp_application_id is required when storage_credential_auth_type=service_principal."
+  }
+}
+
+variable "storage_credential_sp_client_secret" {
+  description = "Client secret for storage credential service principal (required when storage_credential_auth_type=service_principal)"
+  type        = string
+  default     = null
+  nullable    = true
+  sensitive   = true
+
+  validation {
+    condition = var.storage_credential_auth_type != "service_principal" || (
+      var.storage_credential_sp_client_secret != null &&
+      var.storage_credential_sp_client_secret != ""
+    )
+    error_message = "storage_credential_sp_client_secret is required when storage_credential_auth_type=service_principal."
+  }
+}
+
+variable "access_connector_name" {
+  description = "Name of the Databricks access connector to create"
+  type        = string
+  default     = "kindling-access-connector"
+}
+
+variable "access_connector_resource_group_name" {
+  description = "Resource group name for the Databricks access connector when create_access_connector=true"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "access_connector_location" {
+  description = "Azure region for the Databricks access connector when create_access_connector=true"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "datalake_storage_account_resource_group_name" {
+  description = "Resource group of the ADLS storage account (used for RBAC assignment lookup when datalake_storage_account_id is not set)"
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      !(var.storage_credential_auth_type == "access_connector" && var.create_access_connector) ||
+      var.datalake_storage_account_id != null ||
+      (var.datalake_storage_account_resource_group_name != null &&
+      var.datalake_storage_account_resource_group_name != "")
+    )
+    error_message = "When create_access_connector=true and datalake_storage_account_id is not set, datalake_storage_account_resource_group_name is required."
+  }
+}
+
+variable "datalake_storage_account_id" {
+  description = "Optional full resource ID of the ADLS storage account for RBAC scope"
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "storage_credential_name" {
@@ -44,19 +182,11 @@ variable "storage_credential_name" {
   default     = "datalake_managed_identity"
 }
 
-variable "datalake_containers" {
-  description = "ADLS containers to expose as UC external locations"
-  type = list(object({
-    name      = string
-    container = string # container name in storage account
-  }))
-  default = [
-    { name = "artifacts", container = "artifacts" },
-    { name = "bronze", container = "bronze" },
-    { name = "gold", container = "gold" },
-    { name = "landing", container = "landing" },
-    { name = "silver", container = "silver" },
-  ]
+variable "storage_credential_sp_directory_id" {
+  description = "Optional directory/tenant ID for storage credential service principal (defaults to azure_tenant_id)"
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 # -----------------------------------------------------------------------------
@@ -68,20 +198,50 @@ variable "catalog_name" {
   default     = "medallion"
 }
 
+variable "create_catalog" {
+  description = "Whether Terraform should create the medallion catalog (false = use existing catalog_name)"
+  type        = bool
+  default     = true
+}
+
 variable "catalog_storage_container" {
-  description = "ADLS container for catalog managed storage"
+  description = "ADLS container for catalog managed storage (typically artifacts_container_name)"
   type        = string
   default     = "artifacts"
 }
 
 variable "catalog_storage_path" {
-  description = "Path within the container for catalog managed storage"
+  description = "Path within the container for medallion catalog managed storage"
   type        = string
   default     = "catalog"
 }
 
+variable "kindling_catalog_name" {
+  description = "Name of the Kindling infrastructure catalog"
+  type        = string
+  default     = "kindling"
+}
+
+variable "create_kindling_catalog" {
+  description = "Whether Terraform should create the kindling catalog (false = use existing kindling_catalog_name)"
+  type        = bool
+  default     = true
+}
+
+variable "kindling_catalog_storage_container" {
+  description = "ADLS container for kindling catalog managed storage"
+  type        = string
+  default     = "artifacts"
+}
+
+variable "kindling_catalog_storage_path" {
+  description = "Path within the container for kindling catalog managed storage"
+  type        = string
+  default     = "kindling/catalog"
+}
+
 variable "schemas" {
-  description = "Schemas to create in the primary catalog. Set storage_root to override managed location."
+  description = "Schemas to create in the medallion catalog. Set storage_root to override managed location."
   type = list(object({
     name         = string
     storage_root = optional(string, null) # full abfss:// path, or null for managed
@@ -93,26 +253,34 @@ variable "schemas" {
   ]
 }
 
-variable "external_volumes" {
-  description = "External volumes to create in {catalog}.default"
-  type = list(object({
-    name      = string
-    container = string # container name in storage account
-    path      = string # path within container
-  }))
-  default = [
-    { name = "config", container = "artifacts", path = "config" },
-    { name = "data_apps", container = "artifacts", path = "data-apps" },
-    { name = "logs", container = "artifacts", path = "logs" },
-    { name = "packages", container = "artifacts", path = "packages" },
-    { name = "scripts", container = "artifacts", path = "scripts" },
-  ]
+variable "create_base_schemas" {
+  description = "Whether Terraform should create medallion schemas listed in var.schemas"
+  type        = bool
+  default     = true
+}
+
+variable "kindling_schema_name" {
+  description = "Schema used to host Kindling UC volumes"
+  type        = string
+  default     = "kindling"
+}
+
+variable "kindling_artifacts_volume_name" {
+  description = "External UC volume name that maps to artifacts container/path"
+  type        = string
+  default     = "artifacts"
+}
+
+variable "kindling_artifacts_subpath" {
+  description = "Subdirectory inside artifacts container to back the Kindling artifacts volume"
+  type        = string
+  default     = "kindling/artifacts"
 }
 
 variable "managed_volumes" {
-  description = "Managed volumes to create in {catalog}.default"
+  description = "Additional managed volumes to create in {catalog}.{kindling_schema_name}"
   type        = list(string)
-  default     = ["temp"]
+  default     = []
 }
 
 # -----------------------------------------------------------------------------
@@ -136,6 +304,31 @@ variable "service_principals" {
   default = []
 }
 
+variable "create_runtime_service_principal" {
+  description = "Whether Terraform should create a runtime Entra app + service principal and auto-wire it into Databricks grants"
+  type        = bool
+  default     = false
+}
+
+variable "runtime_service_principal_display_name" {
+  description = "Display name for the runtime Entra app/service principal"
+  type        = string
+  default     = "kindling-runtime"
+}
+
+variable "runtime_service_principal_application_id" {
+  description = "Existing runtime SP app/client ID (used when create_runtime_service_principal=false and you still want auto-wiring)"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "runtime_sp_principal_alias" {
+  description = "Principal alias in tfvars grants that should be replaced with the effective runtime SP app/client ID"
+  type        = string
+  default     = "TODO_RUNTIME_SP_APP_ID"
+}
+
 # -----------------------------------------------------------------------------
 # Users & Groups
 # -----------------------------------------------------------------------------
@@ -149,6 +342,12 @@ variable "workspace_users" {
   description = "User emails to add to the workspace users group"
   type        = list(string)
   default     = []
+}
+
+variable "manage_system_group_memberships" {
+  description = "Whether Terraform should manage memberships in Databricks system groups (admins/users)"
+  type        = bool
+  default     = true
 }
 
 # -----------------------------------------------------------------------------
@@ -177,17 +376,17 @@ variable "clusters" {
 variable "dlt_pipelines" {
   description = "Delta Live Tables pipelines to create"
   type = list(object({
-    name           = string
-    catalog        = optional(string, null) # defaults to var.catalog_name
-    target_schema  = string
-    notebook_path  = optional(string, null)
-    file_glob      = optional(string, null)
-    node_type_id   = optional(string, "Standard_DS3_v2")
-    num_workers    = optional(number, 1)
-    development    = optional(bool, true)
-    continuous     = optional(bool, false)
-    photon         = optional(bool, false)
-    configuration  = optional(map(string), {})
+    name          = string
+    catalog       = optional(string, null) # defaults to var.catalog_name
+    target_schema = string
+    notebook_path = optional(string, null)
+    file_glob     = optional(string, null)
+    node_type_id  = optional(string, "Standard_DS3_v2")
+    num_workers   = optional(number, 1)
+    development   = optional(bool, true)
+    continuous    = optional(bool, false)
+    photon        = optional(bool, false)
+    configuration = optional(map(string), {})
   }))
   default = []
 }
@@ -205,7 +404,16 @@ variable "workspace_conf" {
 # Unity Catalog Grants
 # -----------------------------------------------------------------------------
 variable "catalog_grants" {
-  description = "Grants on the primary catalog"
+  description = "Grants on the medallion catalog"
+  type = list(object({
+    principal  = string
+    privileges = list(string)
+  }))
+  default = []
+}
+
+variable "kindling_catalog_grants" {
+  description = "Grants on the kindling catalog"
   type = list(object({
     principal  = string
     privileges = list(string)
@@ -214,7 +422,17 @@ variable "catalog_grants" {
 }
 
 variable "schema_grants" {
-  description = "Per-schema grants (schema_name + principal + privileges)"
+  description = "Per-schema grants in the kindling catalog (schema_name + principal + privileges)"
+  type = list(object({
+    schema_name = string
+    principal   = string
+    privileges  = list(string)
+  }))
+  default = []
+}
+
+variable "medallion_schema_grants" {
+  description = "Per-schema grants in the medallion catalog (schema_name + principal + privileges)"
   type = list(object({
     schema_name = string
     principal   = string
@@ -234,7 +452,7 @@ variable "external_location_grants" {
 }
 
 variable "volume_grants" {
-  description = "Per-volume grants (volume in catalog.default)"
+  description = "Per-volume grants (volumes in catalog.kindling_schema_name)"
   type = list(object({
     volume_name = string
     principal   = string

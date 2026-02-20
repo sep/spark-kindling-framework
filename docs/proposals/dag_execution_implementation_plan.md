@@ -1,8 +1,18 @@
 # DAG/Execution Framework Implementation Plan
 
 > **Created:** 2026-02-02
-> **Status:** Planned
+> **Status:** In Progress (Reconciled 2026-02-19)
 > **Reference:** [signal_dag_streaming_proposal.md](signal_dag_streaming_proposal.md)
+
+## Reconciliation Snapshot (2026-02-19)
+
+| Scope | Tracking | Implementation Status | Evidence |
+|-------|----------|-----------------------|----------|
+| Dependency Graph Builder | Issue #22 | ✅ Implemented | `packages/kindling/pipe_graph.py`, `tests/unit/test_pipe_graph.py`, `tests/integration/test_pipe_graph_integration.py` |
+| Execution Strategies | Issue #23 | ✅ Implemented | `packages/kindling/execution_strategy.py`, `tests/unit/test_execution_strategy.py`, `tests/integration/test_execution_strategy_integration.py` |
+| Generation Executor | Issue #24 | ✅ Implemented | `packages/kindling/generation_executor.py`, `tests/unit/test_generation_executor.py`, `tests/integration/test_generation_executor_integration.py` |
+| Cache Optimization | Issue #25 | ⏳ Pending | No `packages/kindling/cache_optimizer.py` yet |
+| Unified DAG Orchestrator capability closure | Issue #15 | ⏳ Pending | Blocked on cache optimization + tracking cleanup |
 
 ## Current State Assessment
 
@@ -21,13 +31,10 @@
 
 ### What Needs to Be Built
 
-- DAG-based execution planning and orchestration
-- Execution strategies (batch vs streaming)
-- Parallel generation execution
-- Streaming query lifecycle management
-- Streaming watchdog and recovery
-- Dimension change detection and stream restart
-- Transform version lineage tracking
+- Cache optimization (`#25`)
+- Capability closure and status alignment for Unified DAG Orchestrator (`#15`)
+- Optional orchestrator facade + `DataPipesExecuter` DAG entrypoint wiring
+- Optional typed signal payloads and lineage phases from this plan
 
 ---
 
@@ -95,6 +102,16 @@ Enable introspection and documentation generation.
 
 **Estimated Time:** 3-4 weeks
 **Dependencies:** Phase 1
+
+**Reconciled status (2026-02-19):**
+- ✅ 2.1 `pipe_graph.py` implemented and tested
+- ✅ 2.2 `execution_strategy.py` implemented and tested
+- ✅ 2.3 `ExecutionPlanGenerator` implemented and tested
+- ✅ 2.4 `GenerationExecutor` implemented and tested
+- ⏳ 2.5 `ExecutionOrchestrator` facade still pending
+- ⏳ 2.6 `DataPipesExecuter` DAG mode wiring still pending
+- ⏳ 2.7 Cache recommendation/auto-caching still pending
+- ✅ 2.8 Core DAG integration tests exist (except cache-specific checks)
 
 ### 2.1 Create pipe_graph.py Module
 
@@ -259,6 +276,11 @@ Optimize execution by identifying reusable DataFrames.
 
 **Estimated Time:** 4-5 weeks
 **Dependencies:** Phase 1, Phase 2
+
+**Reconciled status (2026-02-19):**
+- ✅ `streaming_query_manager.py`, `streaming_health_monitor.py`, `streaming_recovery_manager.py`, and `streaming_listener.py` exist
+- ✅ Streaming system tests exist under `tests/system/core/`
+- ⏳ Full validation against every Phase 3 checklist item remains to be reconciled separately
 
 ### 3.1 Enhance pipe_streaming.py Module
 
@@ -611,11 +633,11 @@ Hybrid batch/streaming support.
 
 ## Recommended Starting Point
 
-**Start with Phase 2.1-2.3** (DAG core) because:
-1. Signal infrastructure already exists and works
-2. DAG execution is the most impactful feature for users
-3. Can be developed and tested independently
-4. Streaming (Phase 3) depends on DAG for execution strategy
+**Start with Phase 2.7 (Cache Optimization, Issue #25)** because:
+1. Core DAG building/planning/execution is already implemented and tested
+2. `#25` is the remaining P0 DAG feature gap
+3. Closing `#25` unblocks capability-level closure for `#15`
+4. It improves runtime efficiency without requiring architecture churn
 
 ## Key Design Principles
 

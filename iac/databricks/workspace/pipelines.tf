@@ -6,7 +6,7 @@ resource "databricks_pipeline" "pipelines" {
   for_each = { for p in var.dlt_pipelines : p.name => p }
 
   name          = each.value.name
-  catalog       = coalesce(each.value.catalog, var.catalog_name)
+  catalog       = coalesce(each.value.catalog, local.medallion_catalog_name_effective)
   target        = each.value.target_schema
   development   = each.value.development
   continuous    = each.value.continuous
@@ -35,9 +35,9 @@ resource "databricks_pipeline" "pipelines" {
   }
 
   cluster {
-    label         = "default"
-    node_type_id  = each.value.node_type_id
-    num_workers   = each.value.num_workers
+    label        = "default"
+    node_type_id = each.value.node_type_id
+    num_workers  = each.value.num_workers
   }
 
   depends_on = [
