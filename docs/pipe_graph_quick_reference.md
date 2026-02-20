@@ -178,11 +178,15 @@ except GraphValidationError as e:
 
 ## Next Steps
 
-This module is **Issue #22** of the Unified DAG Orchestrator capability. Remaining features:
+This module is **Issue #22** of the Unified DAG Orchestrator capability and is implemented.
 
+Implemented alongside this module:
 - **Issue #23**: Execution Strategies (batch vs streaming)
 - **Issue #24**: Generation Executor (parallel execution)
+
+Remaining DAG feature work:
 - **Issue #25**: Cache Optimization (auto-caching shared entities)
+- **Issue #15**: Capability closure and status reconciliation for Unified DAG Orchestrator
 
 ## Related Documentation
 
