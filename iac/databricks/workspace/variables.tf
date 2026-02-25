@@ -32,6 +32,15 @@ variable "environment" {
 }
 
 # -----------------------------------------------------------------------------
+# Feature Toggles
+# -----------------------------------------------------------------------------
+variable "enable_unity_catalog" {
+  description = "Whether Unity Catalog resources (storage credential, external location, catalogs, schemas, volumes, grants) should be managed"
+  type        = bool
+  default     = true
+}
+
+# -----------------------------------------------------------------------------
 # Storage / Data Lake
 # -----------------------------------------------------------------------------
 variable "datalake_storage_account" {
@@ -70,7 +79,7 @@ variable "create_access_connector" {
   default     = false
 
   validation {
-    condition = var.storage_credential_auth_type == "access_connector" ? (
+    condition = var.enable_unity_catalog && var.storage_credential_auth_type == "access_connector" ? (
       var.create_access_connector ? (
         var.access_connector_resource_group_name != null &&
         var.access_connector_resource_group_name != "" &&
@@ -85,7 +94,7 @@ variable "create_access_connector" {
   }
 
   validation {
-    condition     = !var.create_access_connector || var.azure_environment != "usgovernment"
+    condition     = !var.enable_unity_catalog || !var.create_access_connector || var.azure_environment != "usgovernment"
     error_message = "create_access_connector=true is not supported in Azure US Gov. Use storage_credential_auth_type=\"service_principal\"."
   }
 }
@@ -108,7 +117,7 @@ variable "storage_credential_sp_application_id" {
   nullable    = true
 
   validation {
-    condition = var.storage_credential_auth_type != "service_principal" || (
+    condition = !var.enable_unity_catalog || var.storage_credential_auth_type != "service_principal" || (
       var.storage_credential_sp_application_id != null &&
       var.storage_credential_sp_application_id != ""
     )
@@ -124,7 +133,7 @@ variable "storage_credential_sp_client_secret" {
   sensitive   = true
 
   validation {
-    condition = var.storage_credential_auth_type != "service_principal" || (
+    condition = !var.enable_unity_catalog || var.storage_credential_auth_type != "service_principal" || (
       var.storage_credential_sp_client_secret != null &&
       var.storage_credential_sp_client_secret != ""
     )
@@ -160,6 +169,7 @@ variable "datalake_storage_account_resource_group_name" {
 
   validation {
     condition = (
+      !var.enable_unity_catalog ||
       !(var.storage_credential_auth_type == "access_connector" && var.create_access_connector) ||
       var.datalake_storage_account_id != null ||
       (var.datalake_storage_account_resource_group_name != null &&

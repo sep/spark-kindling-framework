@@ -79,6 +79,8 @@ locals {
 # Catalog Grants
 # -----------------------------------------------------------------------------
 resource "databricks_grants" "catalog" {
+  count = var.enable_unity_catalog ? 1 : 0
+
   catalog = local.medallion_catalog_name_effective
 
   dynamic "grant" {
@@ -91,6 +93,8 @@ resource "databricks_grants" "catalog" {
 }
 
 resource "databricks_grants" "kindling_catalog" {
+  count = var.enable_unity_catalog ? 1 : 0
+
   catalog = local.kindling_catalog_name_effective
 
   dynamic "grant" {
@@ -111,6 +115,7 @@ resource "databricks_grants" "kindling_schemas" {
   for_each = {
     for k, v in local.kindling_schema_grants_grouped : k => v
     if k != "default" # default schema grants must be applied via API/SQL
+    && var.enable_unity_catalog
   }
 
   schema = "${local.kindling_catalog_name_effective}.${each.key}"
@@ -130,6 +135,7 @@ resource "databricks_grants" "medallion_schemas" {
   for_each = {
     for k, v in local.medallion_schema_grants_grouped : k => v
     if k != "default" # default schema grants must be applied via API/SQL
+    && var.enable_unity_catalog
   }
 
   schema = "${local.medallion_catalog_name_effective}.${each.key}"
@@ -149,7 +155,7 @@ resource "databricks_grants" "medallion_schemas" {
 # External Location Grants (one resource per location, all principals inside)
 # -----------------------------------------------------------------------------
 resource "databricks_grants" "external_locations" {
-  for_each = local.ext_loc_grants_grouped
+  for_each = var.enable_unity_catalog ? local.ext_loc_grants_grouped : {}
 
   external_location = each.key
 
@@ -168,7 +174,7 @@ resource "databricks_grants" "external_locations" {
 # Volume Grants (one resource per volume, all principals inside)
 # -----------------------------------------------------------------------------
 resource "databricks_grants" "volumes" {
-  for_each = local.volume_grants_grouped
+  for_each = var.enable_unity_catalog ? local.volume_grants_grouped : {}
 
   volume = "${local.kindling_catalog_name_effective}.${var.kindling_schema_name}.${each.key}"
 
@@ -187,9 +193,9 @@ resource "databricks_grants" "volumes" {
 # Storage Credential Grants
 # -----------------------------------------------------------------------------
 resource "databricks_grants" "storage_credential" {
-  count = length(local.storage_credential_grants_resolved) > 0 ? 1 : 0
+  count = var.enable_unity_catalog && length(local.storage_credential_grants_resolved) > 0 ? 1 : 0
 
-  storage_credential = databricks_storage_credential.datalake.id
+  storage_credential = databricks_storage_credential.datalake[0].id
 
   dynamic "grant" {
     for_each = local.storage_credential_grants_resolved

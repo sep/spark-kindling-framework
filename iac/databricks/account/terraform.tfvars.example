@@ -1,0 +1,29 @@
+# =============================================================================
+# Databricks Account Terraform Variables (Unity Catalog Metastore)
+# =============================================================================
+# Copy this file to <env>.tfvars and fill in your values.
+#
+# Usage:
+#   terraform plan  -var-file=account.dev.tfvars
+#   terraform apply -var-file=account.dev.tfvars
+# =============================================================================
+
+# Databricks account-level endpoint and account ID.
+databricks_account_host = "https://accounts.azuredatabricks.net"
+databricks_account_id   = ""
+
+# Option A: Create a new metastore.
+create_metastore       = true
+metastore_name         = "my-usgov-metastore"
+metastore_storage_root = "abfss://artifacts@yourstorageaccount.dfs.core.usgovcloudapi.net/metastore"
+metastore_region       = "usgovvirginia"
+metastore_owner        = null
+metastore_force_destroy = false
+
+# Option B: Reuse an existing metastore (set create_metastore=false).
+existing_metastore_id = null
+
+# Assign the effective metastore to one or more workspaces.
+assign_workspaces    = false
+workspace_ids        = []
+default_catalog_name = null

@@ -6,7 +6,7 @@ resource "databricks_pipeline" "pipelines" {
   for_each = { for p in var.dlt_pipelines : p.name => p }
 
   name          = each.value.name
-  catalog       = coalesce(each.value.catalog, local.medallion_catalog_name_effective)
+  catalog       = var.enable_unity_catalog ? coalesce(each.value.catalog, local.medallion_catalog_name_effective) : null
   target        = each.value.target_schema
   development   = each.value.development
   continuous    = each.value.continuous
