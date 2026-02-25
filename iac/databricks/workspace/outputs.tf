@@ -4,17 +4,17 @@
 
 output "catalog_name" {
   description = "Medallion catalog name used by this stack (created or existing)"
-  value       = local.medallion_catalog_name_effective
+  value       = var.enable_unity_catalog ? local.medallion_catalog_name_effective : null
 }
 
 output "kindling_catalog_name" {
   description = "Kindling catalog name used by this stack (created or existing)"
-  value       = local.kindling_catalog_name_effective
+  value       = var.enable_unity_catalog ? local.kindling_catalog_name_effective : null
 }
 
 output "storage_credential_name" {
   description = "Name of the storage credential"
-  value       = databricks_storage_credential.datalake.name
+  value       = var.enable_unity_catalog ? databricks_storage_credential.datalake[0].name : null
 }
 
 output "access_connector_id" {
@@ -24,25 +24,25 @@ output "access_connector_id" {
 
 output "external_location_urls" {
   description = "Map of managed external location names to their ABFSS URLs"
-  value       = { (databricks_external_location.artifacts.name) = databricks_external_location.artifacts.url }
+  value       = var.enable_unity_catalog ? { (databricks_external_location.artifacts[0].name) = databricks_external_location.artifacts[0].url } : {}
 }
 
 output "schema_names" {
   description = "List of created schema names"
-  value       = concat([for s in databricks_schema.schemas : s.name], [databricks_schema.kindling.name])
+  value       = var.enable_unity_catalog ? concat([for s in databricks_schema.schemas : s.name], [databricks_schema.kindling[0].name]) : []
 }
 
 output "volume_paths" {
   description = "Map of volume names to their catalog paths"
-  value = merge(
-    { (databricks_volume.kindling_artifacts.name) = "${databricks_volume.kindling_artifacts.catalog_name}.${databricks_volume.kindling_artifacts.schema_name}.${databricks_volume.kindling_artifacts.name}" },
+  value = var.enable_unity_catalog ? merge(
+    { (databricks_volume.kindling_artifacts[0].name) = "${databricks_volume.kindling_artifacts[0].catalog_name}.${databricks_volume.kindling_artifacts[0].schema_name}.${databricks_volume.kindling_artifacts[0].name}" },
     { for k, v in databricks_volume.managed : k => "${v.catalog_name}.${v.schema_name}.${v.name}" },
-  )
+  ) : {}
 }
 
 output "artifacts_volume_path" {
   description = "Databricks /Volumes path for the Kindling artifacts volume"
-  value       = "/Volumes/${local.kindling_catalog_name_effective}/${var.kindling_schema_name}/${var.kindling_artifacts_volume_name}"
+  value       = var.enable_unity_catalog ? "/Volumes/${local.kindling_catalog_name_effective}/${var.kindling_schema_name}/${var.kindling_artifacts_volume_name}" : null
 }
 
 output "cluster_ids" {
