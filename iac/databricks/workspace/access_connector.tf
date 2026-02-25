@@ -3,7 +3,7 @@
 # =============================================================================
 
 locals {
-  access_connector_mode_enabled = var.storage_credential_auth_type == "access_connector"
+  access_connector_mode_enabled = var.enable_unity_catalog && var.storage_credential_auth_type == "access_connector"
   access_connector_id_effective = local.access_connector_mode_enabled ? (var.create_access_connector ? azurerm_databricks_access_connector.this[0].id : var.access_connector_id) : null
   datalake_storage_scope_effective = (
     var.datalake_storage_account_id != null

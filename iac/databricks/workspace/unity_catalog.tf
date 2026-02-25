@@ -20,6 +20,8 @@ locals {
 # Storage Credential
 # -----------------------------------------------------------------------------
 resource "databricks_storage_credential" "datalake" {
+  count = var.enable_unity_catalog ? 1 : 0
+
   name    = var.storage_credential_name
   comment = "Storage credential for ${var.datalake_storage_account}"
 
@@ -41,14 +43,14 @@ resource "databricks_storage_credential" "datalake" {
 
   lifecycle {
     precondition {
-      condition = var.storage_credential_auth_type != "access_connector" || (
+      condition = !var.enable_unity_catalog || var.storage_credential_auth_type != "access_connector" || (
         local.access_connector_id_effective != null &&
         local.access_connector_id_effective != ""
       )
       error_message = "storage_credential_auth_type=access_connector requires a valid access connector ID."
     }
     precondition {
-      condition = var.storage_credential_auth_type != "service_principal" || (
+      condition = !var.enable_unity_catalog || var.storage_credential_auth_type != "service_principal" || (
         var.storage_credential_sp_application_id != null &&
         var.storage_credential_sp_application_id != "" &&
         var.storage_credential_sp_client_secret != null &&
@@ -63,9 +65,11 @@ resource "databricks_storage_credential" "datalake" {
 # External Locations
 # -----------------------------------------------------------------------------
 resource "databricks_external_location" "artifacts" {
+  count = var.enable_unity_catalog ? 1 : 0
+
   name            = var.artifacts_external_location_name
   url             = local.artifacts_external_location_url
-  credential_name = databricks_storage_credential.datalake.name
+  credential_name = databricks_storage_credential.datalake[0].name
   comment         = "External location for ${var.artifacts_container_name} container"
 
   depends_on = [databricks_storage_credential.datalake]
@@ -75,7 +79,7 @@ resource "databricks_external_location" "artifacts" {
 # Catalog
 # -----------------------------------------------------------------------------
 resource "databricks_catalog" "main" {
-  count = var.create_catalog ? 1 : 0
+  count = var.enable_unity_catalog && var.create_catalog ? 1 : 0
 
   name           = var.catalog_name
   storage_root   = "${format(local.abfss_base, var.catalog_storage_container)}/${var.catalog_storage_path}"
@@ -86,7 +90,7 @@ resource "databricks_catalog" "main" {
 }
 
 resource "databricks_catalog" "kindling" {
-  count = var.create_kindling_catalog ? 1 : 0
+  count = var.enable_unity_catalog && var.create_kindling_catalog ? 1 : 0
 
   name           = var.kindling_catalog_name
   storage_root   = "${format(local.abfss_base, var.kindling_catalog_storage_container)}/${var.kindling_catalog_storage_path}"
@@ -100,7 +104,7 @@ resource "databricks_catalog" "kindling" {
 # Schemas
 # -----------------------------------------------------------------------------
 resource "databricks_schema" "schemas" {
-  for_each = var.create_base_schemas ? { for s in var.schemas : s.name => s } : {}
+  for_each = var.enable_unity_catalog && var.create_base_schemas ? { for s in var.schemas : s.name => s } : {}
 
   catalog_name = local.medallion_catalog_name_effective
   name         = each.value.name
@@ -109,6 +113,8 @@ resource "databricks_schema" "schemas" {
 }
 
 resource "databricks_schema" "kindling" {
+  count = var.enable_unity_catalog ? 1 : 0
+
   catalog_name = local.kindling_catalog_name_effective
   name         = var.kindling_schema_name
   comment      = "Schema for Kindling UC volumes"
@@ -118,8 +124,10 @@ resource "databricks_schema" "kindling" {
 # Kindling Artifacts External Volume (single artifacts-backed volume)
 # -----------------------------------------------------------------------------
 resource "databricks_volume" "kindling_artifacts" {
+  count = var.enable_unity_catalog ? 1 : 0
+
   catalog_name     = local.kindling_catalog_name_effective
-  schema_name      = databricks_schema.kindling.name
+  schema_name      = databricks_schema.kindling[0].name
   name             = var.kindling_artifacts_volume_name
   volume_type      = "EXTERNAL"
   storage_location = local.kindling_artifacts_storage_target
@@ -132,10 +140,10 @@ resource "databricks_volume" "kindling_artifacts" {
 # Managed Volumes (in catalog.kindling_schema_name)
 # -----------------------------------------------------------------------------
 resource "databricks_volume" "managed" {
-  for_each = toset(var.managed_volumes)
+  for_each = var.enable_unity_catalog ? toset(var.managed_volumes) : toset([])
 
   catalog_name = local.kindling_catalog_name_effective
-  schema_name  = databricks_schema.kindling.name
+  schema_name  = databricks_schema.kindling[0].name
   name         = each.value
   volume_type  = "MANAGED"
   comment      = "Managed volume: ${each.value}"

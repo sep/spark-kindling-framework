@@ -4,7 +4,7 @@ Infrastructure as Code for provisioning a Databricks workspace with all Kindling
 
 ## What This Manages
 
-- **Unity Catalog**: Storage credential, single artifacts external location, medallion catalog + kindling catalog (optional create/reuse), schemas, volumes
+- **Unity Catalog (optional)**: Storage credential, single artifacts external location, medallion catalog + kindling catalog (optional create/reuse), schemas, volumes
 - **Security**: Secret scopes, service principals, group memberships
 - **Compute**: Interactive clusters
 - **DLT Pipelines**: Delta Live Tables pipeline definitions
@@ -56,6 +56,7 @@ export ARM_TENANT_ID="..."
 
 ## Access Connector & RBAC
 
+- These settings are used only when `enable_unity_catalog = true`.
 - Set `storage_credential_auth_type = "access_connector"` to use managed identity auth.
 - Existing connector mode: set `create_access_connector = false` and provide `access_connector_id`.
 - Managed mode: set `create_access_connector = true` and provide:
@@ -87,6 +88,8 @@ terraform apply -var-file=prod.tfvars      # Production
 
 ## Unity Catalog Model
 
+- If your workspace does not yet have a metastore assignment, run `../account` first to create/reuse a metastore and assign it.
+- Set `enable_unity_catalog = false` to skip all Unity Catalog resources and grants when UC APIs are unavailable.
 - One external location is managed for the artifacts container (`artifacts_external_location_name`).
 - Medallion data schemas (for example bronze/silver/gold) live in `catalog_name`.
 - Kindling infrastructure schema/volume live in `kindling_catalog_name`.
