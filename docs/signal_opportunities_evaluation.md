@@ -3,8 +3,13 @@
 **Purpose**: Comprehensive evaluation of where signals would add value across all providers and services in the Kindling framework.
 
 **Evaluation Date**: January 2025
-**Status**: Analysis Only - No Implementation
-**Signal Convention**: Django-style `pre_/post_` prefix pattern (established in ConfigService)
+**Status**: Historical analysis snapshot (superseded by implemented runtime signals)
+**Signal Convention at evaluation time**: Django-style `pre_/post_` prefix pattern
+
+> [!IMPORTANT]
+> This document captures pre-implementation analysis from January 2025.
+> Many items discussed here are now implemented in code.
+> For current signal names and usage, use `docs/signal_quick_reference.md`.
 
 ---
 

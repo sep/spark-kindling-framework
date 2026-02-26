@@ -1,6 +1,7 @@
 from . import bootstrap  # This imports all platform modules
 from . import data_apps  # Renamed from app_framework
 from . import (
+    cache_optimizer,
     common_transforms,
     data_entities,
     data_pipes,
