@@ -24,6 +24,7 @@ from kindling.generation_executor import (
     GenerationResult,
     PipeResult,
 )
+from kindling.pipe_graph import PipeGraph, PipeNode
 
 # ---- Fixtures ----
 
@@ -156,6 +157,14 @@ def make_plan(pipe_ids, generations, strategy="batch", metadata=None):
         strategy=strategy,
         metadata=metadata or {},
     )
+
+
+def make_graph_with_shared_input():
+    """Create a graph where two pipes read the same input entity."""
+    graph = PipeGraph()
+    graph.add_node(PipeNode("pipe1", ["entity.shared"], "entity.out1"))
+    graph.add_node(PipeNode("pipe2", ["entity.shared"], "entity.out2"))
+    return graph
 
 
 def setup_streaming_mocks(
@@ -405,6 +414,82 @@ class TestBatchExecution:
         assert result.success_count == 2
         assert result.all_succeeded is True
         assert len(result.generation_results) == 2
+
+    def test_batch_shared_input_cache_hit_miss_metrics(
+        self, executor, pipes_registry, persist_strategy, entity_registry, signal_provider
+    ):
+        """Shared input should emit recommendation and track hit/miss metrics."""
+        pipe1 = make_pipe("pipe1", inputs=["entity.shared"], output="entity.out1")
+        pipe2 = make_pipe("pipe2", inputs=["entity.shared"], output="entity.out2")
+        pipes_registry.get_pipe_definition.side_effect = lambda pid: {
+            "pipe1": pipe1,
+            "pipe2": pipe2,
+        }[pid]
+
+        entity_registry.get_entity_definition.side_effect = lambda eid: Mock(entityid=eid)
+        mock_df = Mock()
+        read_calls = []
+
+        def reader(entity, usewm):
+            read_calls.append(entity.entityid)
+            return mock_df
+
+        persist_strategy.create_pipe_entity_reader.return_value = reader
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        plan = ExecutionPlan(
+            pipe_ids=["pipe1", "pipe2"],
+            generations=[Generation(number=0, pipe_ids=["pipe1", "pipe2"], dependencies=[])],
+            graph=make_graph_with_shared_input(),
+            strategy="batch",
+            metadata={"cache_recommendations": {"entity.shared": "MEMORY_AND_DISK"}},
+        )
+
+        result = executor.execute(plan)
+
+        assert result.success_count == 2
+        assert read_calls == ["entity.shared"]
+        assert result.cache_metrics["enabled"] is True
+        assert result.cache_metrics["recommended_count"] == 1
+        assert result.cache_metrics["miss_count"] == 1
+        assert result.cache_metrics["hit_count"] == 1
+        assert result.cache_metrics["hits_by_entity"]["entity.shared"] == 1
+        assert result.cache_metrics["misses_by_entity"]["entity.shared"] == 1
+        signal_provider.get_signal.assert_any_call("orchestrator.cache_recommended")
+        signal_provider.get_signal.assert_any_call("orchestrator.cache_hit")
+        signal_provider.get_signal.assert_any_call("orchestrator.cache_miss")
+
+    def test_batch_auto_cache_persists_and_unpersists_shared_frame(
+        self, executor, pipes_registry, persist_strategy, entity_registry
+    ):
+        """auto_cache should persist on first miss and unpersist after execution."""
+        pipe1 = make_pipe("pipe1", inputs=["entity.shared"], output="entity.out1")
+        pipe2 = make_pipe("pipe2", inputs=["entity.shared"], output="entity.out2")
+        pipes_registry.get_pipe_definition.side_effect = lambda pid: {
+            "pipe1": pipe1,
+            "pipe2": pipe2,
+        }[pid]
+
+        entity_registry.get_entity_definition.side_effect = lambda eid: Mock(entityid=eid)
+        cached_df = Mock()
+
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=cached_df)
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        plan = ExecutionPlan(
+            pipe_ids=["pipe1", "pipe2"],
+            generations=[Generation(number=0, pipe_ids=["pipe1", "pipe2"], dependencies=[])],
+            graph=make_graph_with_shared_input(),
+            strategy="batch",
+            metadata={"cache_recommendations": {"entity.shared": "MEMORY_AND_DISK"}},
+        )
+
+        result = executor.execute_batch(plan, auto_cache=True)
+
+        assert result.success_count == 2
+        assert result.cache_metrics["auto_cache"] is True
+        cached_df.persist.assert_called_once()
+        cached_df.unpersist.assert_called_once_with(blocking=False)
 
     def test_batch_pipe_skipped_no_data(
         self, executor, pipes_registry, persist_strategy, entity_registry

@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from kindling.cache_optimizer import CacheOptimizer
 from injector import inject
 from kindling.data_pipes import DataPipesRegistry
 from kindling.pipe_graph import PipeGraph, PipeGraphBuilder
@@ -254,6 +255,10 @@ class BatchExecutionStrategy(ExecutionStrategy):
                 f"({', '.join(current_gen_pipes[:3])}{'...' if len(current_gen_pipes) > 3 else ''})"
             )
 
+        cache_optimizer = CacheOptimizer()
+        recommendations = cache_optimizer.recommend(graph, pipe_ids)
+        recommendation_levels = cache_optimizer.as_level_map(recommendations)
+
         plan = ExecutionPlan(
             pipe_ids=pipe_ids,
             generations=generations_list,
@@ -262,6 +267,9 @@ class BatchExecutionStrategy(ExecutionStrategy):
             metadata={
                 "execution_order": "forward",
                 "description": "Sources → Sinks (batch processing)",
+                "cache_recommendations": recommendation_levels,
+                "cache_candidate_count": len(recommendation_levels),
+                "cache_candidate_entities": sorted(recommendation_levels.keys()),
             },
         )
 
@@ -359,6 +367,9 @@ class StreamingExecutionStrategy(ExecutionStrategy):
                 "execution_order": "reverse",
                 "description": "Sinks → Sources (streaming processing)",
                 "checkpoint_order": "downstream_first",
+                "cache_recommendations": {},
+                "cache_candidate_count": 0,
+                "cache_candidate_entities": [],
             },
         )
 
