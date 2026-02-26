@@ -773,28 +773,37 @@ def test_write_to_abfss(spark_with_azure):
 Configure DeltaEntityProvider to use ABFSS paths:
 
 ```python
-from kindling.data_entities import DataEntityManager
-from kindling.entity_provider_delta import DeltaEntityProvider
+from pyspark.sql.types import StructField, StructType, IntegerType, StringType
 
-# Initialize providers
-entity_registry = DataEntityManager()
-entity_provider = DeltaEntityProvider(
-    spark=spark,
-    entity_registry=entity_registry,
-    access_mode="path"  # Use path-based access for ABFSS
+from kindling.data_entities import DataEntities, DataEntityRegistry
+from kindling.entity_provider import EntityProvider
+from kindling.injection import get_kindling_service
+
+# Register entity with ABFSS overrides in tags
+DataEntities.entity(
+    entityid="bronze.sales",
+    name="Bronze Sales",
+    partition_columns=[],
+    merge_columns=["id"],
+    tags={
+        "provider_type": "delta",
+        "provider.path": "abfss://data@mystorageacct.dfs.core.windows.net/bronze/sales",
+        "provider.access_mode": "forPath",
+    },
+    schema=[
+        StructField("id", IntegerType(), False),
+        StructField("value", StringType(), True),
+    ],
 )
 
-# Register entity with ABFSS path
-entity_registry.register_entity(
-    entity_id="bronze.sales",
-    layer="bronze",
-    entity_type="fact",
-    path="abfss://data@mystorageacct.dfs.core.windows.net/bronze/sales"
-)
+# Resolve registered entity + provider from DI
+entity_registry = get_kindling_service(DataEntityRegistry)
+entity_provider = get_kindling_service(EntityProvider)
+entity = entity_registry.get_entity_definition("bronze.sales")
 
 # Read/write using entity
-df = entity_provider.read_entity(entity_registry.get_entity_definition("bronze.sales"))
-entity_provider.write_to_entity(df, entity_registry.get_entity_definition("bronze.sales"))
+df = entity_provider.read_entity(entity)
+entity_provider.write_to_entity(df, entity)
 ```
 
 ## Common Issues & Solutions

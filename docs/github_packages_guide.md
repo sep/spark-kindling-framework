@@ -318,7 +318,7 @@ jobs:
 
 ### 2. User Installation Instructions
 
-Create `docs/installation.md`:
+Add installation instructions to `docs/setup_guide.md` (or create a dedicated installation doc):
 
 ```markdown
 # Installing Kindling from GitHub Packages
@@ -385,7 +385,7 @@ pip install kindling-databricks --extra-index-url https://pypi.pkg.github.com/se
 pip install kindling-fabric --extra-index-url https://pypi.pkg.github.com/sep/simple/
 \`\`\`
 
-See [Installation Guide](docs/installation.md) for details.
+See [Setup Guide](./setup_guide.md) for details.
 ```
 
 ## 💰 Pricing & Limits
