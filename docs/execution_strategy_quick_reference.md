@@ -410,13 +410,19 @@ pytest tests/integration/test_execution_strategy_integration.py -v
 - No breaking changes when adding new fields
 - Easy to serialize/deserialize
 
+## Recent Enhancements
+
+**Delivered in Issue #25: Cache Optimization**
+- Shared entity read detection via `cache_optimizer.py`
+- Batch plan metadata now includes cache recommendations
+- `GenerationExecutor` emits cache recommendation/hit/miss signals
+- Runtime cache metrics are included in execution summaries
+- Optional `auto_cache` support in batch execution
+
 ## Future Enhancements
 
-**Planned for Issue #25: Cache Optimization**
-- Shared entity read detection
-- LRU cache for frequently read entities
-- Cache recommendation signals
-- Memory-aware caching strategies
+- Cost/size-aware cache heuristics (beyond shared-input detection)
+- More granular cache levels per entity type/platform
 
 **Additional DAG capability closure work**
 - `ExecutionOrchestrator` facade wiring
