@@ -202,9 +202,13 @@ def test_pipe_registration():
 
     # Register pipe
     manager.register_pipe(
-        pipe_id="test_pipe",
+        pipeid="test_pipe",
         name="Test Pipe",
-        transform=lambda df: df
+        execute=lambda df: df,
+        tags={},
+        input_entity_ids=["bronze.input"],
+        output_entity_id="silver.output",
+        output_type="table"
     )
 
     # Verify registration
@@ -216,33 +220,44 @@ def test_pipe_registration():
 ### Pattern 2: Integration Test with Real Spark
 
 ```python
-from kindling.data_entities import DataEntityManager
-from kindling.data_pipes import DataPipesManager, DataPipesExecutor
+from kindling.data_entities import DataEntities
+from kindling.data_pipes import DataPipes, DataPipesExecuter
+from kindling.injection import GlobalInjector
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DoubleType
 
 def test_end_to_end_pipeline(spark):
     """Test complete pipeline execution"""
-    # Setup
-    entity_registry = DataEntityManager()
-    pipes_registry = DataPipesManager(mock_logger)
+    schema = StructType([
+        StructField("id", IntegerType(), False),
+        StructField("product", StringType(), True),
+        StructField("amount", DoubleType(), True),
+    ])
 
-    # Register entity
-    entity_registry.register_entity(
-        entity_id="bronze.sales",
-        layer="bronze",
-        entity_type="fact"
+    DataEntities.entity(
+        entityid="bronze.sales",
+        name="Bronze Sales",
+        partition_columns=[],
+        merge_columns=["id"],
+        tags={"layer": "bronze"},
+        schema=schema
     )
 
-    # Create test data
-    test_df = spark.createDataFrame([
-        (1, "Product A", 100.0),
-        (2, "Product B", 200.0)
-    ], ["id", "product", "amount"])
+    DataEntities.entity(
+        entityid="silver.sales_summary",
+        name="Sales Summary",
+        partition_columns=[],
+        merge_columns=["product"],
+        tags={"layer": "silver"},
+        schema=schema
+    )
 
-    # Register and execute pipe
-    @pipes_registry.register_transform_pipe(
-        pipe_id="aggregate",
+    @DataPipes.pipe(
+        pipeid="aggregate",
         name="Aggregate Sales",
-        output_entity="silver.sales_summary"
+        tags={},
+        input_entity_ids=["bronze.sales"],
+        output_entity_id="silver.sales_summary",
+        output_type="table",
     )
     def aggregate(bronze_sales):
         from pyspark.sql import functions as F
@@ -250,18 +265,8 @@ def test_end_to_end_pipeline(spark):
             F.sum("amount").alias("total_amount")
         )
 
-    # Execute
-    executor = DataPipesExecutor(
-        entity_registry=entity_registry,
-        pipes_registry=pipes_registry,
-        entity_provider=in_memory_provider,
-        strategy=test_strategy
-    )
+    executor = GlobalInjector.get(DataPipesExecuter)
     executor.run_datapipes(["aggregate"])
-
-    # Verify
-    result = in_memory_provider.read_entity("silver.sales_summary")
-    assert result.count() == 2
 ```
 
 ### Pattern 3: Testing with In-Memory Storage
@@ -275,16 +280,16 @@ class TestEntityReadPersistStrategy:
         self.data_store = {}      # Input data
         self.written_data = {}    # Output data
 
-    def create_pipe_entity_reader(self, entity, pipe):
+    def create_pipe_entity_reader(self, pipe):
         """Return DataFrame from memory"""
-        def reader():
-            return self.data_store.get(entity.entity_id)
+        def reader(entity, usewm):
+            return self.data_store.get(entity.entityid)
         return reader
 
-    def create_pipe_persist_activator(self, entity, pipe):
+    def create_pipe_persist_activator(self, pipe):
         """Capture output to memory"""
         def persister(df):
-            self.written_data[entity.entity_id] = df
+            self.written_data[pipe.output_entity_id] = df
         return persister
 ```
 
