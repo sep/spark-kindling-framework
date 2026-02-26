@@ -231,6 +231,9 @@ class TestBatchExecutionStrategy:
         assert plan.generations[0].pipe_ids == ["pipe1"]
         assert set(plan.generations[1].pipe_ids) == {"pipe2", "pipe3"}
         assert plan.max_parallelism() == 2
+        assert plan.metadata["cache_recommendations"] == {"entity.a": "MEMORY_AND_DISK"}
+        assert plan.metadata["cache_candidate_count"] == 1
+        assert plan.metadata["cache_candidate_entities"] == ["entity.a"]
 
     def test_diamond_graph(self, strategy):
         """Test batch strategy on diamond graph."""
@@ -338,6 +341,21 @@ class TestStreamingExecutionStrategy:
     def test_strategy_name(self, strategy):
         """Test strategy name."""
         assert strategy.get_strategy_name() == "streaming"
+
+    def test_streaming_has_no_cache_recommendations(self, strategy):
+        """Streaming plans should not include cache recommendations."""
+        graph = self.create_graph(
+            [
+                ("source", [], "entity.a"),
+                ("sink", ["entity.a"], "entity.b"),
+            ]
+        )
+
+        plan = strategy.plan(graph, ["source", "sink"])
+
+        assert plan.metadata["cache_recommendations"] == {}
+        assert plan.metadata["cache_candidate_count"] == 0
+        assert plan.metadata["cache_candidate_entities"] == []
 
     def test_linear_graph(self, strategy):
         """Test streaming strategy on linear graph."""
