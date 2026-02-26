@@ -23,9 +23,11 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from threading import Lock
+from typing import Any, Callable, Dict, List, Optional
 
 from injector import inject
+from kindling.cache_optimizer import CacheOptimizer
 from kindling.data_entities import DataEntityRegistry, EntityPathLocator
 from kindling.data_pipes import (
     DataPipesExecution,
@@ -110,6 +112,7 @@ class ExecutionResult:
     duration_seconds: float = 0.0
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     streaming_queries: Dict[str, Any] = field(default_factory=dict)
+    cache_metrics: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def success_count(self) -> int:
@@ -146,6 +149,7 @@ class ExecutionResult:
             "duration_seconds": round(self.duration_seconds, 2),
             "all_succeeded": self.all_succeeded,
             "failed_pipes": self.failed_pipes,
+            "cache_metrics": self.cache_metrics,
         }
 
 
@@ -175,6 +179,9 @@ class GenerationExecutor(SignalEmitter):
         - orchestrator.pipe_completed
         - orchestrator.pipe_failed
         - orchestrator.pipe_skipped
+        - orchestrator.cache_recommended
+        - orchestrator.cache_hit
+        - orchestrator.cache_miss
     """
 
     EMITS = [
@@ -187,6 +194,9 @@ class GenerationExecutor(SignalEmitter):
         "orchestrator.pipe_completed",
         "orchestrator.pipe_failed",
         "orchestrator.pipe_skipped",
+        "orchestrator.cache_recommended",
+        "orchestrator.cache_hit",
+        "orchestrator.cache_miss",
     ]
 
     @inject
@@ -211,6 +221,9 @@ class GenerationExecutor(SignalEmitter):
         self.tp = trace_provider
         self.logger = logger_provider.get_logger("generation_executor")
         self._init_signal_emitter(signal_provider)
+        self._cache_optimizer = CacheOptimizer()
+        self._cache_lock = Lock()
+        self._reset_cache_state()
 
     def execute(
         self,
@@ -220,6 +233,7 @@ class GenerationExecutor(SignalEmitter):
         error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
         pipe_timeout: Optional[float] = None,
         streaming_options: Optional[Dict[str, Any]] = None,
+        auto_cache: bool = False,
     ) -> ExecutionResult:
         """Execute an ExecutionPlan generation by generation.
 
@@ -238,6 +252,8 @@ class GenerationExecutor(SignalEmitter):
             streaming_options: Options passed to stream orchestrator per pipe.
                 Can be a dict of {pipe_id: options_dict} or a single dict
                 applied to all pipes.
+            auto_cache: If True, call `persist()/cache()` on recommended shared
+                entities when first read in batch mode.
 
         Returns:
             ExecutionResult with per-pipe and per-generation results
@@ -252,7 +268,7 @@ class GenerationExecutor(SignalEmitter):
             f"Executing plan: {plan.strategy} mode={mode} "
             f"pipes={plan.total_pipes()} generations={plan.total_generations()} "
             f"parallel={parallel} error_strategy={error_strategy.value} "
-            f"run_id={run_id}"
+            f"auto_cache={auto_cache} run_id={run_id}"
         )
 
         self.emit(
@@ -266,6 +282,8 @@ class GenerationExecutor(SignalEmitter):
         )
 
         result = ExecutionResult(plan=plan, run_id=run_id)
+        self._initialize_cache_state(plan=plan, is_streaming=is_streaming, auto_cache=auto_cache)
+        self._emit_cache_recommendations(plan=plan, run_id=run_id)
 
         try:
             with self.tp.span(
@@ -304,6 +322,8 @@ class GenerationExecutor(SignalEmitter):
                                 pipe_result.streaming_query
                             )
 
+            result.cache_metrics = self._build_cache_metrics()
+
             self.logger.info(
                 f"Execution completed: {result.success_count} succeeded, "
                 f"{result.failed_count} failed, {result.skipped_count} skipped "
@@ -318,12 +338,14 @@ class GenerationExecutor(SignalEmitter):
                 skipped_count=result.skipped_count,
                 duration_seconds=result.duration_seconds,
                 all_succeeded=result.all_succeeded,
+                cache_metrics=result.cache_metrics,
             )
 
             return result
 
         except Exception as e:
             result.duration_seconds = time.time() - start_time
+            result.cache_metrics = self._build_cache_metrics()
 
             self.logger.error(
                 f"Execution failed after {result.duration_seconds:.2f}s: {e}",
@@ -337,9 +359,13 @@ class GenerationExecutor(SignalEmitter):
                 error_type=type(e).__name__,
                 duration_seconds=result.duration_seconds,
                 failed_pipes=result.failed_pipes,
+                cache_metrics=result.cache_metrics,
             )
 
             raise
+        finally:
+            self._cleanup_cached_frames()
+            self._reset_cache_state()
 
     def execute_batch(
         self,
@@ -348,6 +374,7 @@ class GenerationExecutor(SignalEmitter):
         max_workers: int = 4,
         error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
         pipe_timeout: Optional[float] = None,
+        auto_cache: bool = False,
     ) -> ExecutionResult:
         """Execute a batch plan (convenience method).
 
@@ -359,6 +386,7 @@ class GenerationExecutor(SignalEmitter):
             max_workers=max_workers,
             error_strategy=error_strategy,
             pipe_timeout=pipe_timeout,
+            auto_cache=auto_cache,
         )
 
     def execute_streaming(
@@ -396,6 +424,100 @@ class GenerationExecutor(SignalEmitter):
             detected = plan.metadata.get("detected_mode", "batch")
             return detected == "streaming"
         return False
+
+    def _reset_cache_state(self):
+        """Reset per-run cache tracking state."""
+        self._cache_enabled = False
+        self._auto_cache_enabled = False
+        self._cache_recommendations: Dict[str, str] = {}
+        self._cached_entities: Dict[str, Any] = {}
+        self._cache_hits_by_entity: Dict[str, int] = {}
+        self._cache_misses_by_entity: Dict[str, int] = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    def _initialize_cache_state(
+        self,
+        plan: ExecutionPlan,
+        is_streaming: bool,
+        auto_cache: bool,
+    ):
+        """Initialize cache recommendations and runtime cache state."""
+        self._reset_cache_state()
+
+        if is_streaming:
+            return
+
+        recommendations = plan.metadata.get("cache_recommendations")
+        if isinstance(recommendations, dict):
+            self._cache_recommendations = {
+                str(entity_id): str(level)
+                for entity_id, level in recommendations.items()
+                if level
+            }
+        else:
+            self._cache_recommendations = self._cache_optimizer.as_level_map(
+                self._cache_optimizer.recommend(plan.graph, plan.pipe_ids)
+            )
+
+        self._cache_enabled = bool(self._cache_recommendations)
+        self._auto_cache_enabled = auto_cache and self._cache_enabled
+
+    def _emit_cache_recommendations(self, plan: ExecutionPlan, run_id: str):
+        """Emit cache recommendation signals for observability."""
+        if not self._cache_enabled:
+            return
+
+        for entity_id in sorted(self._cache_recommendations.keys()):
+            consumers = sorted(plan.graph.entity_consumers.get(entity_id, []))
+            self.emit(
+                "orchestrator.cache_recommended",
+                run_id=run_id,
+                entity_id=entity_id,
+                consumer_pipes=consumers,
+                cache_level=self._cache_recommendations[entity_id],
+                auto_cache=self._auto_cache_enabled,
+            )
+
+    def _build_cache_metrics(self) -> Dict[str, Any]:
+        """Build cache metrics payload for result summary and signals."""
+        if not self._cache_enabled:
+            return {
+                "enabled": False,
+                "auto_cache": False,
+                "recommended_count": 0,
+                "recommended_entities": [],
+                "hit_count": 0,
+                "miss_count": 0,
+                "hits_by_entity": {},
+                "misses_by_entity": {},
+            }
+
+        return {
+            "enabled": True,
+            "auto_cache": self._auto_cache_enabled,
+            "recommended_count": len(self._cache_recommendations),
+            "recommended_entities": sorted(self._cache_recommendations.keys()),
+            "hit_count": self._cache_hits,
+            "miss_count": self._cache_misses,
+            "hits_by_entity": dict(self._cache_hits_by_entity),
+            "misses_by_entity": dict(self._cache_misses_by_entity),
+        }
+
+    def _cleanup_cached_frames(self):
+        """Best-effort unpersist for auto-cached frames after execution."""
+        if not self._auto_cache_enabled:
+            return
+
+        for frame in self._cached_entities.values():
+            if frame is None or not hasattr(frame, "unpersist"):
+                continue
+            try:
+                frame.unpersist(blocking=False)
+            except TypeError:
+                frame.unpersist()
+            except Exception:
+                self.logger.debug("Failed to unpersist cached entity frame")
 
     def _execute_generation(
         self,
@@ -550,7 +672,7 @@ class GenerationExecutor(SignalEmitter):
             if is_streaming:
                 result = self._execute_pipe_streaming(pipe, streaming_options)
             else:
-                result = self._execute_pipe_batch(pipe)
+                result = self._execute_pipe_batch(pipe, run_id)
 
             duration = time.time() - pipe_start
             result.duration_seconds = duration
@@ -600,7 +722,7 @@ class GenerationExecutor(SignalEmitter):
                 error_type=type(e).__name__,
             )
 
-    def _execute_pipe_batch(self, pipe: PipeMetadata) -> PipeResult:
+    def _execute_pipe_batch(self, pipe: PipeMetadata, run_id: str) -> PipeResult:
         """Execute a pipe in batch mode (read → transform → persist)."""
         entity_reader = self.persist_strategy.create_pipe_entity_reader(pipe)
         activator = self.persist_strategy.create_pipe_persist_activator(pipe)
@@ -609,9 +731,13 @@ class GenerationExecutor(SignalEmitter):
         input_entities = {}
         for i, entity_id in enumerate(pipe.input_entity_ids):
             is_first = i == 0
-            entity = self.entity_registry.get_entity_definition(entity_id)
             key = entity_id.replace(".", "_")
-            input_entities[key] = entity_reader(entity, is_first)
+            input_entities[key] = self._read_batch_input_entity(
+                entity_id=entity_id,
+                entity_reader=entity_reader,
+                is_first=is_first,
+                run_id=run_id,
+            )
 
         # Check if first source has data (only if there are inputs)
         if input_entities:
@@ -626,6 +752,67 @@ class GenerationExecutor(SignalEmitter):
         activator(processed_df)
 
         return PipeResult(pipe_id=pipe.pipeid, status="success")
+
+    def _read_batch_input_entity(
+        self,
+        entity_id: str,
+        entity_reader: Callable[[Any, bool], Any],
+        is_first: bool,
+        run_id: str,
+    ) -> Any:
+        """Read an input entity with shared-entity cache tracking."""
+        entity = self.entity_registry.get_entity_definition(entity_id)
+
+        if not self._cache_enabled or entity_id not in self._cache_recommendations:
+            return entity_reader(entity, is_first)
+
+        with self._cache_lock:
+            if entity_id in self._cached_entities:
+                self._cache_hits += 1
+                self._cache_hits_by_entity[entity_id] = (
+                    self._cache_hits_by_entity.get(entity_id, 0) + 1
+                )
+                self.emit(
+                    "orchestrator.cache_hit",
+                    run_id=run_id,
+                    entity_id=entity_id,
+                    hit_count=self._cache_hits_by_entity[entity_id],
+                )
+                return self._cached_entities[entity_id]
+
+            frame = entity_reader(entity, is_first)
+            self._cached_entities[entity_id] = frame
+            self._cache_misses += 1
+            self._cache_misses_by_entity[entity_id] = (
+                self._cache_misses_by_entity.get(entity_id, 0) + 1
+            )
+
+        self._maybe_auto_cache_frame(entity_id, frame)
+        self.emit(
+            "orchestrator.cache_miss",
+            run_id=run_id,
+            entity_id=entity_id,
+            miss_count=self._cache_misses_by_entity[entity_id],
+            cache_level=self._cache_recommendations.get(entity_id),
+            auto_cached=self._auto_cache_enabled,
+        )
+
+        return frame
+
+    def _maybe_auto_cache_frame(self, entity_id: str, frame: Any):
+        """Persist/cache a recommended entity frame when auto_cache is enabled."""
+        if not self._auto_cache_enabled or frame is None:
+            return
+
+        try:
+            if hasattr(frame, "persist"):
+                frame.persist()
+            elif hasattr(frame, "cache"):
+                frame.cache()
+        except Exception:
+            self.logger.debug(
+                f"Auto-cache failed for entity '{entity_id}', continuing without persistence"
+            )
 
     def _execute_pipe_streaming(
         self,
