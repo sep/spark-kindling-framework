@@ -2,79 +2,49 @@
 
 ## Overview
 
-The Kindling framework separates platform operations into two categories:
+Kindling uses two platform layers with different responsibilities.
 
-1. **Runtime Services** - For operations within notebook runtime that require platform-specific utilities like mssparkutils or dbutils
-2. **Remote API Clients** - For operations performed remotely via REST APIs from local dev, CI/CD, or tests
+1. Runtime platform services (`kindling` package)
+- Used inside Spark execution environments.
+- Backed by runtime utilities and DI wiring.
+- Primary files: `packages/kindling/platform_fabric.py`, `packages/kindling/platform_synapse.py`, `packages/kindling/platform_databricks.py`.
 
-## PlatformAPI Interface
+2. Design-time remote API clients (`kindling_sdk` package)
+- Used from local dev, CI/CD, and system tests.
+- No runtime notebook utilities required.
+- Primary files: `packages/kindling_sdk/kindling_sdk/platform_*.py`.
 
-All remote API clients implement the `PlatformAPI` abstract base class, ensuring interchangeability.
+## Design-Time Interface
 
-### Benefits
+Remote clients implement `PlatformAPI` in:
+- `packages/kindling_sdk/kindling_sdk/platform_provider.py`
 
-- **Interchangeability** - Any PlatformAPI implementation can be used wherever the interface is expected
-- **Type Safety** - IDEs and type checkers validate correct usage
-- **Contract Enforcement** - All implementations must provide all required methods
-- **Testability** - Easy to create mock implementations
-- **Documentation** - Interface serves as living documentation
+That interface enforces consistent operations across platforms (deploy/create/run/status/logs/cleanup/secrets).
 
-## Usage Patterns
+## Factory Pattern
 
-### Runtime Context (Inside Notebooks)
-
-```python
-from kindling import bootstrap_framework
-
-# Uses DI, requires runtime utilities
-config, services = bootstrap_framework()
-fabric_service = services['platform_service']
-
-# These operations need mssparkutils
-df = fabric_service.read_parquet("Files/data/input.parquet")
-```
-
-### Remote Context (Local Dev, CI/CD, Tests)
+Use the SDK factory when selecting a platform by environment/config:
 
 ```python
-from kindling.fabric_api import FabricAPI
+from kindling_sdk.platform_api import create_platform_api_from_env
 
-# No DI, no runtime utils needed
-api = FabricAPI(workspace_id="...", lakehouse_id="...")
-
-# Deploy via REST API
-job = api.create_spark_job("my-job", config)
-api.upload_files(files, "Files/jobs/my-app")
-run_id = api.run_job(job["job_id"])
+api, platform_name = create_platform_api_from_env("synapse")
+result = api.create_job("orders-job", {"job_name": "orders-job", "app_name": "orders-app"})
+run_id = api.run_job(result["job_id"])
+status = api.get_job_status(run_id)
 ```
 
-### Polymorphic Usage
+## Implementations
 
-```python
-from kindling.platform_api import PlatformAPI
+- `FabricAPI` (`platform_fabric.py`)
+- `SynapseAPI` (`platform_synapse.py`)
+- `DatabricksAPI` (`platform_databricks.py`)
 
-def deploy_to_platform(api: PlatformAPI, app_path: str, config: dict):
-    """Deploy to any platform implementing PlatformAPI"""
-    files = prepare_files(app_path)
-    job = api.create_spark_job(config["job_name"], config)
-    api.upload_files(files, f"apps/{config['job_name']}")
-    return job
-
-# Works with any platform
-fabric_api = FabricAPI(workspace_id, lakehouse_id)
-deploy_to_platform(fabric_api, "./app", config)
-```
-
-## Implementation Status
-
-- ✅ **FabricAPI** - Complete implementation
-- 🚧 **DatabricksAPI** - Interface defined, implementation pending
-- 🚧 **SynapseAPI** - Interface defined, implementation pending
+Each is registered in `PlatformAPIRegistry` and can be resolved via `create_platform_api_from_env()`.
 
 ## Design Principles
 
-1. **Separation of Concerns** - Runtime vs remote operations
-2. **No DI for API Clients** - Simple utilities, direct instantiation
-3. **Interface-Based Design** - All implement PlatformAPI ABC
-4. **Authentication Flexibility** - Support multiple auth methods
-5. **Pure REST APIs** - No platform runtime dependencies
+1. Separation of concerns: runtime notebook services vs remote automation clients.
+2. Interface-first: one cross-platform contract for tests and tooling.
+3. Registry/factory discovery: platform selection via config/env.
+4. Operational parity: same core workflow across platforms (`deploy_app` -> `create_job` -> `run_job` -> `monitor/logs`).
