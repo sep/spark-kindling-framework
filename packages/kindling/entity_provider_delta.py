@@ -13,6 +13,7 @@ from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
+from kindling.features import get_feature_bool, set_runtime_feature
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
 
@@ -166,9 +167,17 @@ class DeltaEntityProvider(
         return bool(getattr(entity, "partition_columns", None))
 
     def _ensure_clustering(self, entity, table_ref: DeltaTableReference) -> None:
-        """Best-effort: apply CLUSTER BY when supported by the engine."""
+        """Best-effort: apply CLUSTER BY when supported by the engine.
+
+        This is state-aware when DESCRIBE DETAIL exposes clusteringColumns; in that
+        case we only run ALTER TABLE when the desired columns differ.
+        """
         cluster_cols = self._get_cluster_columns(entity)
         if not cluster_cols:
+            return
+
+        if get_feature_bool(self.config, "delta.cluster_by", default=True) is False:
+            self.logger.debug("Skipping CLUSTER BY: feature flag delta.cluster_by is false")
             return
 
         # Prefer catalog table name; fall back to path-based delta.`...` reference when available.
@@ -189,14 +198,103 @@ class DeltaEntityProvider(
             )
             return
 
+        # If the engine reports current clustering, avoid redundant ALTER.
+        current = self._get_current_clustering_columns(table_ref)
+        desired = [str(c) for c in cluster_cols]
+        if current is not None:
+            cur_norm = [c.lower() for c in current]
+            des_norm = [c.lower() for c in desired]
+            if set(cur_norm) == set(des_norm):
+                return
+
         cols_sql = ", ".join([f"`{c.replace('`', '``')}`" for c in cluster_cols])
         try:
             self.spark.sql(f"ALTER TABLE {target} CLUSTER BY ({cols_sql})")
         except Exception as e:
+            # If we hit a parser error, persist a computed runtime feature so future
+            # ensures don't keep retrying in this process.
+            msg = str(e).lower()
+            if "parseexception" in msg or ("mismatched input" in msg and "cluster" in msg):
+                try:
+                    set_runtime_feature(self.config, "delta.cluster_by", False)
+                except Exception:
+                    pass
             # Non-fatal: clustering support varies by platform/engine.
             self.logger.warning(
                 f"Unable to apply CLUSTER BY for target '{target}' (columns={cluster_cols}): {e}"
             )
+
+    def _extract_detail_field(self, row, field_name: str):
+        if row is None:
+            return None
+        try:
+            d = row.asDict(recursive=True)
+        except Exception:
+            try:
+                d = dict(row)
+            except Exception:
+                d = {}
+
+        for k, v in d.items():
+            if str(k).lower() == str(field_name).lower():
+                return v
+        return None
+
+    def _get_current_clustering_columns(self, table_ref: DeltaTableReference):
+        """Return current clustering columns if reported by DESCRIBE DETAIL, else None."""
+        try:
+            if table_ref.table_name:
+                quoted = self._quote_table_identifier(table_ref.table_name)
+                row = self.spark.sql(f"DESCRIBE DETAIL {quoted}").first()
+            elif table_ref.table_path:
+                escaped = table_ref.table_path.replace("`", "``")
+                row = self.spark.sql(f"DESCRIBE DETAIL delta.`{escaped}`").first()
+            else:
+                return None
+
+            # Record whether DESCRIBE DETAIL exposes the clusteringColumns field.
+            try:
+                d = row.asDict(recursive=True)
+            except Exception:
+                try:
+                    d = dict(row)
+                except Exception:
+                    d = {}
+
+            keys = {str(k).lower() for k in d.keys()}
+            if "clusteringcolumns" in keys:
+                try:
+                    set_runtime_feature(self.config, "delta.describe_detail.has_clustering_columns", True)
+                except Exception:
+                    pass
+            else:
+                try:
+                    set_runtime_feature(self.config, "delta.describe_detail.has_clustering_columns", False)
+                except Exception:
+                    pass
+
+            val = self._extract_detail_field(row, "clusteringColumns")
+            if val is None:
+                return None
+            # Databricks returns array<string>. Be liberal.
+            if isinstance(val, list):
+                out = []
+                for item in val:
+                    if item is None:
+                        continue
+                    if isinstance(item, str):
+                        out.append(item)
+                        continue
+                    if isinstance(item, dict) and "name" in item:
+                        out.append(str(item["name"]))
+                        continue
+                    out.append(str(item))
+                return out
+            if isinstance(val, str):
+                return [val]
+            return None
+        except Exception:
+            return None
 
     def _get_table_reference(self, entity) -> DeltaTableReference:
         """

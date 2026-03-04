@@ -1072,6 +1072,15 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     logger = get_kindling_service(PythonLoggerProvider).get_logger("KindlingBootstrap")
     logger.info("Starting framework initialization")
 
+    # Best-effort runtime feature discovery. These values are written into
+    # kindling.runtime.features.* and can be overridden by kindling.features.*.
+    try:
+        from kindling.features import discover_runtime_features
+
+        discover_runtime_features(config_service, logger=logger)
+    except Exception as feature_error:
+        logger.debug(f"Runtime feature discovery failed (non-fatal): {feature_error}")
+
     try:
         # Read from general kindling config (not bootstrap namespace)
         # bootstrap is just for temp backwards compatibility mapping
