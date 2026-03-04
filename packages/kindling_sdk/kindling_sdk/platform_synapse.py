@@ -706,6 +706,27 @@ class SynapseAPI(PlatformAPI):
             Dictionary with log lines and total count
         """
         try:
+            # Preferred: Livy log endpoint (returns incremental logs).
+            # This captures driver stdout/stderr much better than the batch "log" field.
+            try:
+                log_url = (
+                    f"{self.base_url}/livyApi/versions/2019-11-01-preview/sparkPools/"
+                    f"{self.spark_pool_name}/batches/{run_id}/log?from={from_line}&size={size}"
+                )
+                log_response = self._make_request("GET", log_url)
+                log_result = log_response.json() or {}
+                log_lines = log_result.get("log", []) or []
+                return {
+                    "id": run_id,
+                    "from": from_line,
+                    "total": from_line + len(log_lines),
+                    "log": log_lines,
+                    "source": "livy_log_endpoint",
+                }
+            except Exception:
+                # Fall back to batch status payload below.
+                pass
+
             # First, get batch info to find the application ID
             url = f"{self.base_url}/livyApi/versions/2019-11-01-preview/sparkPools/{self.spark_pool_name}/batches/{run_id}"
             response = self._make_request("GET", url)
