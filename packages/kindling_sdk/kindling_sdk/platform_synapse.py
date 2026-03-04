@@ -723,9 +723,14 @@ class SynapseAPI(PlatformAPI):
                     "log": log_lines,
                     "source": "livy_log_endpoint",
                 }
-            except Exception:
+            except Exception as e:
                 # Fall back to batch status payload below.
-                pass
+                #
+                # Keep this noisy: when stdout streaming is broken, this is the most actionable
+                # clue for fixing the API path/permissions in a given Synapse workspace.
+                print(
+                    f"⚠️  Livy log endpoint failed for batch {run_id}: {type(e).__name__}: {e}"
+                )
 
             # First, get batch info to find the application ID
             url = f"{self.base_url}/livyApi/versions/2019-11-01-preview/sparkPools/{self.spark_pool_name}/batches/{run_id}"
@@ -733,6 +738,17 @@ class SynapseAPI(PlatformAPI):
             result = response.json()
 
             app_id = result.get("appId")
+
+            # Some Synapse/Livy variants return logs directly on the batch payload.
+            payload_logs = result.get("log")
+            if isinstance(payload_logs, list) and payload_logs:
+                return {
+                    "id": run_id,
+                    "from": from_line,
+                    "total": from_line + len(payload_logs[from_line : from_line + size]),
+                    "log": payload_logs[from_line : from_line + size],
+                    "source": "batch_payload",
+                }
 
             # If we have storage configured, try to read event logs from Azure Storage
             if self.storage_account and self.container and app_id:
@@ -1220,18 +1236,19 @@ class SynapseAPI(PlatformAPI):
         Returns:
             Tuple of (new_lines, new_byte_offset)
         """
-        # Fallback: Livy "log" field (works even when diagnostic emitters are not configured).
+        # Prefer the Livy logs endpoint when available. It is the only reliable way to
+        # get near-real-time driver stdout in many Synapse workspaces.
         #
-        # Note: when using this fallback, byte_offset is treated as a *line offset*
-        # (not a byte offset). This is fine because the caller only needs monotonic
-        # offsets to avoid re-reading already-seen content.
-        if not app_id or not self.storage_account or not self.container:
-            try:
-                logs = self.get_job_logs(run_id=run_id, from_line=byte_offset, size=1000000)
-                new_lines = logs.get("log", []) or []
+        # IMPORTANT: we treat byte_offset as a *line offset* for both Livy and storage logs.
+        # This keeps offsets monotonic even when we fall back between sources.
+        try:
+            logs = self.get_job_logs(run_id=run_id, from_line=byte_offset, size=1000000)
+            new_lines = logs.get("log", []) or []
+            if new_lines:
                 return list(new_lines), byte_offset + len(new_lines)
-            except Exception:
-                return [], byte_offset
+        except Exception:
+            # Keep going; we'll try storage logs below.
+            pass
 
         try:
             import json
@@ -1256,23 +1273,15 @@ class SynapseAPI(PlatformAPI):
 
             file_client = file_system_client.get_file_client(log_path)
 
-            # Get file properties to check size
-            properties = file_client.get_file_properties()
-            file_size = properties.size
-
-            if file_size <= byte_offset:
-                # No new content
-                return [], byte_offset
-
-            # Read new content from byte_offset
-            download = file_client.download_file(offset=byte_offset, length=file_size - byte_offset)
+            # Read the whole file and treat byte_offset as a line offset.
+            # This avoids mixing byte offsets (storage) with line offsets (Livy).
+            download = file_client.download_file()
             content = download.readall()
-            new_text = content.decode("utf-8")
-            new_byte_offset = byte_offset + len(content)
+            text = content.decode("utf-8", errors="replace")
 
             # Parse JSON lines and extract log messages
-            new_lines = []
-            for line in new_text.splitlines():
+            all_messages: List[str] = []
+            for line in text.splitlines():
                 if not line.strip():
                     continue
                 try:
@@ -1288,22 +1297,20 @@ class SynapseAPI(PlatformAPI):
                     if category == "Log":
                         message = properties_dict.get("message", "")
                         if message:
-                            new_lines.append(message)
+                            all_messages.append(message)
 
                 except json.JSONDecodeError:
                     continue
 
-            return new_lines, new_byte_offset
+            if byte_offset >= len(all_messages):
+                return [], byte_offset
+
+            new_lines = all_messages[byte_offset:]
+            return list(new_lines), len(all_messages)
 
         except Exception as e:
             # Expected during early execution - logs not available yet.
-            # Fall back to Livy logs so system tests can still capture failures.
-            try:
-                logs = self.get_job_logs(run_id=run_id, from_line=byte_offset, size=1000000)
-                new_lines = logs.get("log", []) or []
-                return list(new_lines), byte_offset + len(new_lines)
-            except Exception:
-                return [], byte_offset
+            return [], byte_offset
 
     def delete_job(self, job_id: str) -> bool:
         """Delete a job definition
