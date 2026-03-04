@@ -291,6 +291,7 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
         if storage_account
         else None
     )
+    synapse_schema = os.getenv("KINDLING_SYSTEM_TEST_SYNAPSE_SCHEMA", "kindling_system_tests")
 
     platform_config = {
         "fabric": {
@@ -314,10 +315,19 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
         },
         "synapse": {
             "kindling": {
+                "delta": {
+                    "tablerefmode": "forName",
+                },
                 "storage": {
                     # Avoid Fabric-relative paths on Synapse.
                     "table_root": f"{synapse_root}/tables" if synapse_root else "tables",
                     "checkpoint_root": f"{synapse_root}/checkpoints" if synapse_root else "checkpoints",
+                    # Use a dedicated DB with LOCATION for name-based table creation.
+                    "table_catalog": "spark_catalog",
+                    "table_schema": synapse_schema,
+                    "table_name_prefix": f"streaming_pipes_test_{(test_id or '').replace('-', '_')}_"
+                    if test_id
+                    else "",
                 }
             }
         },

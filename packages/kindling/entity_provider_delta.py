@@ -414,6 +414,20 @@ class DeltaEntityProvider(
         if entity.schema:
             dt = dt.addColumns(entity.schema)
 
+        # Liquid clustering: enable at creation time when possible.
+        # Some engines do not allow ALTER TABLE ... CLUSTER BY unless the table was created
+        # with clustering enabled.
+        cluster_cols = self._get_cluster_columns(entity)
+        if cluster_cols and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False:
+            try:
+                dt = dt.clusterBy(*cluster_cols)
+            except Exception as e:
+                # Best-effort: don't fail table creation if clustering isn't supported.
+                self.logger.warning(
+                    f"Unable to enable clustering at table creation for '{table_ref.table_name}' "
+                    f"(columns={cluster_cols}): {e}"
+                )
+
         if self._should_partition_files(entity):
             dt = dt.partitionedBy(*entity.partition_columns)
 
