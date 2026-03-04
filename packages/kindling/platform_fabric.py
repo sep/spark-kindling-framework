@@ -11,10 +11,13 @@ from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
 import __main__
+from injector import inject
 import requests
 from azure.core.exceptions import *
 from azure.identity import DefaultAzureCredential
+from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
+from kindling.spark_config import ConfigService
 
 
 def _get_mssparkutils():
@@ -35,6 +38,19 @@ def _get_mssparkutils():
     raise Exception(
         "mssparkutils not available - neither in __main__ nor importable from notebookutils"
     )
+
+
+def _bind_default_entity_services(logger) -> None:
+    """Bind Fabric defaults for config when no explicit setting exists."""
+    # Default to name-based Delta access on Fabric (Lakehouse tables).
+    # Users can override per-entity via `provider.access_mode` or globally via config.
+    try:
+        cs = GlobalInjector.get(ConfigService)
+        if cs.get("kindling.delta.tablerefmode") is None:
+            cs.set("kindling.delta.tablerefmode", "forName")
+            logger.info("Defaulted kindling.delta.tablerefmode=forName (Fabric convention)")
+    except Exception:
+        pass
 
 
 class FabricService(PlatformService):
@@ -1081,4 +1097,5 @@ class FabricService(PlatformService):
 
 @PlatformServices.register(name="fabric", description="Fabric platform service")
 def create_platform_service(config, logger):
+    _bind_default_entity_services(logger)
     return FabricService(config, logger)

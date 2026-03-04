@@ -240,7 +240,7 @@ def onQueryTerminated(self, event):
 - Implement comprehensive manager
 - Add queue-based listener processing
 - Add restart throttling
-- Integrate with existing SimplePipeStreamOrchestrator
+- Integrate with existing SimplePipeStreamStarter
 
 #### Phase 4: Dimension Restarts (3-4 weeks) ✅ **PROCEED**
 - Implement as proposed with evaluation modifications

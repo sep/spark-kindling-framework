@@ -19,6 +19,7 @@ from pyspark.sql import DataFrame
 from .data_entities import *
 from .entity_provider import (
     BaseEntityProvider,
+    DestinationEnsuringProvider,
     StreamableEntityProvider,
     StreamWritableEntityProvider,
     WritableEntityProvider,
@@ -36,7 +37,7 @@ class DeltaAccessMode:
 class DeltaTableReference:
     """Encapsulates how to reference a Delta table"""
 
-    def __init__(self, table_name: str, table_path: str, access_mode: DeltaAccessMode):
+    def __init__(self, table_name: str, table_path: Optional[str], access_mode: DeltaAccessMode):
         self.table_name = table_name
         self.table_path = table_path
         self.access_mode = access_mode
@@ -84,6 +85,7 @@ class DeltaTableReference:
 class DeltaEntityProvider(
     EntityProvider,
     BaseEntityProvider,
+    DestinationEnsuringProvider,
     StreamableEntityProvider,
     WritableEntityProvider,
     StreamWritableEntityProvider,
@@ -137,9 +139,15 @@ class DeltaEntityProvider(
         self.config = config
         self.epl = path_locator
         self.enm = entity_name_mapper
-        self.access_mode = self.config.get("DELTA_TABLE_ACCESS_MODE") or "AUTO"
+        self.access_mode = self.config.get("kindling.delta.tablerefmode") or "auto"
         self.spark = get_or_create_spark_session()
         self.logger = tp.get_logger("DeltaEntityProvider")
+
+    def _is_for_name_mode(self, access_mode: str) -> bool:
+        return str(access_mode or "").lower() == "forname"
+
+    def _is_for_path_mode(self, access_mode: str) -> bool:
+        return str(access_mode or "").lower() == "forpath"
 
     def _get_table_reference(self, entity) -> DeltaTableReference:
         """
@@ -155,8 +163,6 @@ class DeltaEntityProvider(
         # Get tag-based configuration
         config = self._get_provider_config(entity)
 
-        # Use tag overrides if provided, otherwise fall back to services
-        table_path = config.get("path") or self.epl.get_table_path(entity)
         table_name = config.get("table_name") or self.enm.get_table_name(entity)
 
         # Check for access_mode override in tags
@@ -173,17 +179,76 @@ class DeltaEntityProvider(
         else:
             access_mode = self.access_mode
 
+        # Use tag override path if provided. Otherwise try locator, but allow
+        # path-less table bootstrap for name-oriented modes.
+        table_path = config.get("path")
+        if not table_path:
+            try:
+                table_path = self.epl.get_table_path(entity)
+            except Exception as path_error:
+                if self._is_for_name_mode(access_mode) or str(access_mode).lower() == "auto":
+                    self.logger.debug(
+                        f"Path lookup unavailable for {table_name}; proceeding with name-based bootstrap: {path_error}"
+                    )
+                    table_path = None
+                else:
+                    raise
+
         return DeltaTableReference(
             table_name=table_name,
             table_path=table_path,
             access_mode=access_mode,
         )
 
+    def _quote_table_identifier(self, table_name: str) -> str:
+        parts = [part.strip() for part in table_name.split(".") if part.strip()]
+        if not parts:
+            raise ValueError("Table name cannot be empty")
+        return ".".join([f"`{part.replace('`', '``')}`" for part in parts])
+
+    def _resolve_catalog_table_location(self, table_name: str) -> Optional[str]:
+        try:
+            quoted = self._quote_table_identifier(table_name)
+            row = self.spark.sql(f"DESCRIBE DETAIL {quoted}").select("location").first()
+            if row is None:
+                return None
+            try:
+                return row["location"]
+            except Exception:
+                return getattr(row, "location", None)
+        except Exception:
+            return None
+
+    def _create_managed_table(self, entity, table_ref: DeltaTableReference):
+        """Create a managed Delta table by name (catalog decides location)."""
+        if not table_ref.table_name:
+            raise ValueError(f"Table name is required for managed table creation: {entity.entityid}")
+
+        dt = (
+            DeltaTable.createIfNotExists(self.spark)
+            .tableName(table_ref.table_name)
+            .property("delta.enableChangeDataFeed", "true")
+        )
+
+        if entity.schema:
+            dt = dt.addColumns(entity.schema)
+
+        if entity.partition_columns:
+            dt = dt.partitionedBy(*entity.partition_columns)
+
+        dt.execute()
+        table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
+
     def _ensure_schema_applied(self, entity, table_ref: DeltaTableReference):
         """Check if table has schema, apply if missing"""
         try:
             # Read existing table to check schema
-            existing_df = self.spark.read.format("delta").load(table_ref.table_path)
+            if self._is_for_name_mode(table_ref.access_mode):
+                existing_df = self.spark.read.table(table_ref.table_name)
+            elif table_ref.table_path:
+                existing_df = self.spark.read.format("delta").load(table_ref.table_path)
+            else:
+                existing_df = self.spark.read.table(table_ref.table_name)
             existing_fields = existing_df.schema.fields
 
             # If table has no columns, write empty df with schema
@@ -197,9 +262,13 @@ class DeltaEntityProvider(
                 empty_df = self.spark.createDataFrame([], schema=StructType(entity.schema))
 
                 # Write with mergeSchema to add columns
-                empty_df.write.format("delta").mode("append").option("mergeSchema", "true").save(
-                    table_ref.table_path
-                )
+                writer = empty_df.write.format("delta").mode("append").option("mergeSchema", "true")
+                if self._is_for_name_mode(table_ref.access_mode):
+                    writer.saveAsTable(table_ref.table_name)
+                elif table_ref.table_path:
+                    writer.save(table_ref.table_path)
+                else:
+                    writer.saveAsTable(table_ref.table_name)
 
                 self.logger.info(f"Schema applied to {table_ref.table_name}")
             else:
@@ -221,7 +290,7 @@ class DeltaEntityProvider(
             self.logger.debug(f"get_delta_table failed: {e1}")
 
             # For FOR_NAME mode, only check catalog (don't check path)
-            if table_ref.access_mode == DeltaAccessMode.FOR_NAME:
+            if self._is_for_name_mode(table_ref.access_mode):
                 try:
                     self.spark.read.table(table_ref.table_name)
                     return True
@@ -232,6 +301,8 @@ class DeltaEntityProvider(
             # For FOR_PATH mode, check if path has Delta files
             else:
                 try:
+                    if not table_ref.table_path:
+                        return False
                     self.spark.read.format("delta").load(table_ref.table_path)
                     return True
                 except Exception as e2:
@@ -241,7 +312,30 @@ class DeltaEntityProvider(
     def _ensure_table_exists(self, entity, table_ref: DeltaTableReference):
         """Ensure table exists, create if needed"""
 
-        # Validate paths exist
+        if self._is_for_name_mode(table_ref.access_mode):
+            catalog_exists = self._check_catalog_table_exists(table_ref)
+
+            if not catalog_exists:
+                self.logger.info(f"Creating managed table by name: {table_ref.table_name}")
+                self._create_managed_table(entity, table_ref)
+
+            if entity.schema:
+                self._ensure_schema_applied(entity, table_ref)
+
+            if not table_ref.table_path:
+                table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
+
+            return
+
+        if not table_ref.table_path and str(table_ref.access_mode).lower() == "auto":
+            catalog_exists = self._check_catalog_table_exists(table_ref)
+            if catalog_exists:
+                if entity.schema:
+                    self._ensure_schema_applied(entity, table_ref)
+                table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
+                if table_ref.table_path:
+                    return
+
         if not table_ref.table_path:
             raise ValueError(f"Table path is None for entity {entity.name}")
 
@@ -272,6 +366,8 @@ class DeltaEntityProvider(
 
     def _check_physical_table_exists(self, table_ref: DeltaTableReference) -> bool:
         """Check if physical Delta files exist at the path"""
+        if not table_ref.table_path:
+            return False
         try:
             self.spark.read.format("delta").load(table_ref.table_path)
             return True
@@ -293,44 +389,47 @@ class DeltaEntityProvider(
 
     def _create_physical_table(self, entity, table_ref: DeltaTableReference):
         """Create physical Delta table files - no catalog interaction"""
+        if not table_ref.table_path:
+            raise ValueError(f"Cannot create physical table without table path: {entity.entityid}")
         try:
             self.logger.debug(f"Creating physical Delta table at {table_ref.table_path}")
+            # Avoid metastore/catalog DDL entirely for FOR_PATH mode.
+            # Creating the Delta log by writing an empty dataframe is the most
+            # portable approach across Fabric/Synapse/Databricks.
+            from pyspark.sql.types import StructType
 
-            # Save current database and switch to default to avoid Hive metastore issues
-            current_db = self.spark.sql("SELECT current_database()").collect()[0][0]
-            if current_db != "default":
-                self.logger.debug(
-                    f"Switching from database '{current_db}' to 'default' for table creation"
+            if not entity.schema:
+                # A Delta table can't be bootstrapped without a schema. If the caller
+                # wants to "ensure" forPath destinations, they must provide schema;
+                # otherwise rely on the first write (which has a schema) to create it.
+                raise ValueError(
+                    f"Cannot create physical Delta table at '{table_ref.table_path}' without schema "
+                    f"for entity '{entity.entityid}'. Provide entity.schema or skip ensure."
                 )
-                self.spark.sql("USE default")
 
+            schema = entity.schema or StructType([])
+            empty_df = self.spark.createDataFrame([], schema=schema)
+            writer = empty_df.write.format("delta").mode("overwrite").option(
+                "overwriteSchema", "true"
+            )
+            # Keep behavior aligned with DeltaTable.create*() path: set CDF table property when possible.
+            writer = writer.option("delta.enableChangeDataFeed", "true")
+            if entity.partition_columns:
+                writer = writer.partitionBy(*entity.partition_columns)
+            writer.save(table_ref.table_path)
+
+            # Best-effort: ensure the table property is persisted even if the writer option is ignored.
             try:
-                # Always use location-only to avoid Hive metastore issues
-                dt = (
-                    DeltaTable.createIfNotExists(self.spark)
-                    .location(table_ref.table_path)
-                    .property("delta.enableChangeDataFeed", "true")
+                escaped = table_ref.table_path.replace("`", "``")
+                self.spark.sql(
+                    f"ALTER TABLE delta.`{escaped}` SET TBLPROPERTIES (delta.enableChangeDataFeed = true)"
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"Unable to set delta.enableChangeDataFeed for path '{table_ref.table_path}': {e}"
                 )
 
-                # Add columns if schema provided
-                if entity.schema:
-                    dt = dt.addColumns(entity.schema)
-
-                # Then partition
-                if entity.partition_columns:
-                    dt = dt.partitionedBy(*entity.partition_columns)
-
-                self.logger.debug(f"Executing Delta table creation")
-                dt.execute()
-                self.logger.info(
-                    f"Successfully created physical Delta table at {table_ref.table_path}"
-                )
-
-            finally:
-                # Restore original database
-                if current_db != "default":
-                    self.logger.debug(f"Restoring database to '{current_db}'")
-                    self.spark.sql(f"USE {current_db}")
+            self.logger.info(f"Successfully created physical Delta table at {table_ref.table_path}")
 
         except Exception as e:
             self.logger.error(
@@ -347,8 +446,14 @@ class DeltaEntityProvider(
         FOR_NAME mode: Logs an error but doesn't fail since table still works via path
         """
         # Skip catalog registration entirely for FOR_PATH mode
-        if self.access_mode == DeltaAccessMode.FOR_PATH:
+        if self._is_for_path_mode(table_ref.access_mode):
             self.logger.debug(f"Skipping catalog registration for FOR_PATH mode")
+            return
+
+        if not table_ref.table_path:
+            self.logger.debug(
+                f"Skipping explicit LOCATION registration for {table_ref.table_name}: path unavailable"
+            )
             return
 
         try:
@@ -376,7 +481,7 @@ class DeltaEntityProvider(
                 self.logger.error(
                     f"Cannot register table {table_ref.table_name} in catalog - database '{database}' has no location in Hive metastore. "
                     f"The table is still accessible via path: {table_ref.table_path}. "
-                    f"To fix: Switch to FOR_PATH access mode (DELTA_TABLE_ACCESS_MODE='forPath') "
+                    f"To fix: Switch to FOR_PATH access mode (kindling.delta.tablerefmode='forPath') "
                     f"or recreate database with: CREATE DATABASE {database} LOCATION 'abfss://...';"
                 )
             else:
@@ -386,7 +491,7 @@ class DeltaEntityProvider(
                 )
 
             # For FOR_NAME mode, this is a problem but don't fail - table still works via path
-            if self.access_mode == DeltaAccessMode.FOR_NAME:
+            if self._is_for_name_mode(table_ref.access_mode):
                 self.logger.warning(
                     f"FOR_NAME mode requested but catalog registration failed. Table will work via path access only."
                 )
@@ -416,16 +521,32 @@ class DeltaEntityProvider(
             df.write.format("delta")
             .option("delta.enableChangeDataFeed", "true")
             .option("mergeSchema", "true")
-            .option("path", table_ref.table_path)
         )
+        wrote_managed_by_name = False
 
         if entity.partition_columns:
             df_writer = df_writer.partitionBy(*entity.partition_columns)
 
-        df_writer.save()
+        # Keep forName semantics table-oriented even when catalog location is known.
+        if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+            df_writer.mode("append").saveAsTable(table_ref.table_name)
+            wrote_managed_by_name = True
+            table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
+        elif table_ref.table_path:
+            df_writer = df_writer.option("path", table_ref.table_path)
+            df_writer.save()
+        else:
+            raise ValueError(
+                f"Cannot write entity '{entity.entityid}' without table path in access mode '{table_ref.access_mode}'"
+            )
 
         # Register table if using named access
-        if self.access_mode == DeltaAccessMode.FOR_NAME and table_ref.table_name:
+        if (
+            table_ref.table_path
+            and self._is_for_name_mode(table_ref.access_mode)
+            and table_ref.table_name
+            and not wrote_managed_by_name
+        ):
             self.spark.sql(
                 f"""
                 CREATE TABLE IF NOT EXISTS {table_ref.table_name}
@@ -455,7 +576,15 @@ class DeltaEntityProvider(
             writer = writer.partitionBy(*entity.partition_columns)
 
         writer.option("mergeSchema", "true")  # Schema evolution
-        writer.save(table_ref.table_path)
+        if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+            writer.saveAsTable(table_ref.table_name)
+            table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
+        elif table_ref.table_path:
+            writer.save(table_ref.table_path)
+        else:
+            raise ValueError(
+                f"Cannot append entity '{entity.entityid}' without table path in access mode '{table_ref.access_mode}'"
+            )
 
     def _get_table_version(self, table_ref: DeltaTableReference) -> int:
         """Get current version of Delta table"""
@@ -504,16 +633,18 @@ class DeltaEntityProvider(
     def ensure_entity_table(self, entity):
         """Ensure entity table exists"""
         start_time = time.time()
-        table_ref = self._get_table_reference(entity)
+        config = self._get_provider_config(entity)
 
         self.emit(
             "entity.before_ensure_table",
             entity_id=entity.entityid,
             entity_name=entity.name,
-            table_path=table_ref.table_path,
+            table_path=config.get("path"),
+            table_name=config.get("table_name"),
         )
 
         try:
+            table_ref = self._get_table_reference(entity)
             self._ensure_table_exists(entity, table_ref)
             duration = time.time() - start_time
 
@@ -521,6 +652,8 @@ class DeltaEntityProvider(
                 "entity.after_ensure_table",
                 entity_id=entity.entityid,
                 entity_name=entity.name,
+                table_path=table_ref.table_path,
+                table_name=table_ref.table_name,
                 duration_seconds=duration,
             )
         except Exception as e:
@@ -528,11 +661,18 @@ class DeltaEntityProvider(
             self.emit(
                 "entity.ensure_failed",
                 entity_id=entity.entityid,
+                entity_name=entity.name,
+                table_path=config.get("path"),
+                table_name=config.get("table_name"),
                 error=str(e),
                 error_type=type(e).__name__,
                 duration_seconds=duration,
             )
             raise
+
+    def ensure_destination(self, entity_metadata: EntityMetadata) -> None:
+        # Delta destinations are tables/paths; reuse the existing ensure hook.
+        self.ensure_entity_table(entity_metadata)
 
     def check_entity_exists(self, entity) -> bool:
         """Check if entity table exists"""

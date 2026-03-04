@@ -1,0 +1,5 @@
+kindling:
+  telemetry:
+    logging:
+      level: INFO
+      print: true
