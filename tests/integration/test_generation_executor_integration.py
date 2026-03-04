@@ -24,6 +24,7 @@ from kindling.generation_executor import (
     PipeResult,
 )
 from kindling.pipe_graph import PipeGraphBuilder
+from kindling.pipe_streaming import SimplePipeStreamStarter
 
 # ---- Fixtures ----
 
@@ -137,11 +138,18 @@ def executor(
     logger_provider,
     signal_provider,
 ):
+    pipe_stream_starter = SimplePipeStreamStarter(
+        cs=config_service,
+        dpr=pipes_manager,
+        provider_registry=provider_registry,
+        der=entity_registry,
+        epl=entity_path_locator,
+        plp=logger_provider,
+    )
     return GenerationExecutor(
         pipes_registry=pipes_manager,
         entity_registry=entity_registry,
-        provider_registry=provider_registry,
-        entity_path_locator=entity_path_locator,
+        pipe_stream_starter=pipe_stream_starter,
         config_service=config_service,
         persist_strategy=persist_strategy,
         trace_provider=trace_provider,

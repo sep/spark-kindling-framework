@@ -108,9 +108,19 @@ except (ImportError, AttributeError):
     if len(sys.argv) > 1:
         parsed_config = {}
         for arg in sys.argv[1:]:
-            if arg.startswith("config:"):
+            # Some platforms may wrap arguments in quotes when values contain
+            # shell-special characters (for example ';' in connection strings).
+            normalized_arg = arg.strip()
+            if (
+                len(normalized_arg) >= 2
+                and normalized_arg[0] == normalized_arg[-1]
+                and normalized_arg[0] in ("'", '"')
+            ):
+                normalized_arg = normalized_arg[1:-1]
+
+            if normalized_arg.startswith("config:"):
                 # Remove 'config:' prefix and split on '='
-                key_value = arg[7:]  # Skip 'config:'
+                key_value = normalized_arg[7:]  # Skip 'config:'
                 if "=" in key_value:
                     key, value = key_value.split("=", 1)
                     # Try to parse as JSON for complex values, otherwise string

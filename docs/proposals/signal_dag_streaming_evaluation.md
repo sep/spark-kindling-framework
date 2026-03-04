@@ -273,7 +273,7 @@ class GenerationExecutor:
 **Weaknesses:**
 - ⚠️ Complex implementation (4-5 weeks)
 - ⚠️ Thread-based monitoring adds complexity
-- ⚠️ No integration with existing `SimplePipeStreamOrchestrator`
+- ⚠️ No integration with existing `SimplePipeStreamStarter`
 
 **Component Evaluation:**
 
@@ -657,7 +657,7 @@ class StreamRestartController:
 - ✅ Implement comprehensive manager approach
 - ⚠️ Add queue-based listener processing
 - ⚠️ Add restart throttling and coordination
-- ✅ Integrate with existing `SimplePipeStreamOrchestrator`
+- ✅ Integrate with existing `SimplePipeStreamStarter`
 
 ### Phase 4: Dimension Restarts (Defer or refine)
 

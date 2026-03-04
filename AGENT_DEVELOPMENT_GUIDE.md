@@ -234,6 +234,12 @@ Minimum for big features:
 When platform behavior changes:
 - Run/verify impacted system tests
 - Confirm logs/status from each affected platform
+- Before running any platform system test, publish fresh artifacts first:
+  - bump version (alpha is acceptable for iterative validation)
+  - build wheels
+  - deploy the specific platform wheel(s)
+  - then run `poe test-system`
+- Do not assume local workspace edits are used by remote platform tests.
 
 When packaging/release changes:
 - Build all expected wheels
@@ -303,6 +309,7 @@ Use this checklist for every new big feature.
 - [ ] Implement feature changes
 - [ ] Add/update tests (unit/integration/system as needed)
 - [ ] Run local validation (tests/build/smoke)
+- [ ] For platform system tests: bump version, build, and deploy target platform wheel(s) first
 - [ ] Update user/developer docs
 - [ ] Open PR with complete summary + evidence
 - [ ] Address review comments (human + bot)
@@ -340,6 +347,14 @@ gh pr merge <pr-number> --merge --delete-branch
 
 Build/deploy/release workflow (current repo conventions):
 ```bash
+poe version                # default alpha bump for iterative testing
+poe build
+poe deploy --platform fabric
+poe deploy --platform synapse
+poe deploy --platform databricks
+poe test-system --platform <platform> --test <name>
+
+# release-oriented example
 poe version --bump_type patch
 poe build
 poe deploy
