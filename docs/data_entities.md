@@ -28,6 +28,7 @@ class EntityMetadata:
     merge_columns: List[str]
     tags: Dict[str, str]
     schema: Any
+    cluster_columns: List[str] = field(default_factory=list)
 ```
 
 **Purpose**: Defines comprehensive metadata for a data entity.
@@ -36,6 +37,7 @@ class EntityMetadata:
 - `entityid`: Unique identifier for the entity
 - `name`: Human-readable name for the entity
 - `partition_columns`: Columns used for partitioning the underlying table
+- `cluster_columns`: Optional clustering columns (for engines that support liquid clustering / `CLUSTER BY`)
 - `merge_columns`: Columns used as keys for merge operations (typically primary keys)
 - `tags`: Key-value pairs for categorization and metadata
 - `schema`: Spark schema definition for the entity
@@ -58,7 +60,7 @@ class EntityMetadata:
 **Parameters**: All parameters correspond to `EntityMetadata` fields.
 
 **Usage Notes**:
-- All parameters are required
+- All parameters except `cluster_columns` are required
 - Returns `None` (used for registration side effects only)
 - Must be called at module level for proper registration
 - Schema can be a Spark StructType or string representation
