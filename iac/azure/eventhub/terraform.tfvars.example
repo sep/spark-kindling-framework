@@ -1,0 +1,29 @@
+# =============================================================================
+# Event Hub Terraform Variables (System Testing)
+# =============================================================================
+# Copy this file to <env>.tfvars and fill in your values.
+#
+# Usage:
+#   terraform init
+#   terraform plan  -var-file=eventhub.dev.tfvars
+#   terraform apply -var-file=eventhub.dev.tfvars
+# =============================================================================
+
+azure_subscription_id = ""
+azure_tenant_id       = null
+azure_environment     = "public"
+
+# Use an existing resource group by default
+create_resource_group   = false
+resource_group_name     = "rg-kindling-dev"
+resource_group_location = "eastus2"
+
+namespace_name = "kindling-eventhub-dev"
+namespace_sku  = "Standard"
+
+eventhub_name              = "kindling-provider-test-hub"
+eventhub_partition_count   = 2
+eventhub_message_retention = 1
+
+authorization_rule_name = "kindling-system-tests"
+consumer_group_name     = "$Default"

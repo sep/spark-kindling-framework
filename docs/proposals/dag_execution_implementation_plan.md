@@ -26,7 +26,7 @@
 | Basic signal emissions in `DataEntityManager` | `data_entities.py` | ✅ Complete |
 | `EMITS` class attribute convention | `signaling.py` | ✅ Complete |
 | `SignalPayload` base class | `signaling.py` | ✅ Complete |
-| Basic `SimplePipeStreamOrchestrator` | `pipe_streaming.py` | ✅ Basic |
+| Basic `SimplePipeStreamStarter` | `pipe_streaming.py` | ✅ Basic |
 | Unit tests for signaling module | `tests/unit/test_signaling.py` | ✅ Complete |
 
 ### What Needs to Be Built
@@ -284,7 +284,7 @@ Optimize execution by identifying reusable DataFrames.
 
 ### 3.1 Enhance pipe_streaming.py Module
 
-Build on existing `SimplePipeStreamOrchestrator`.
+Build on existing `SimplePipeStreamStarter`.
 
 ```
 - [ ] Create StreamingQueryInfo dataclass
