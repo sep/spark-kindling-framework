@@ -278,7 +278,20 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
     """
     import yaml
 
+    import os
+
     # Platform-specific config
+    #
+    # NOTE: Fabric supports lakehouse-relative paths like Tables/ and Files/.
+    # Synapse does not; it requires explicit ABFSS paths for file-based tables/checkpoints.
+    storage_account = (os.getenv("AZURE_STORAGE_ACCOUNT") or "").strip()
+    container = (os.getenv("AZURE_CONTAINER") or "artifacts").strip()
+    synapse_root = (
+        f"abfss://{container}@{storage_account}.dfs.core.windows.net/kindling_system_tests"
+        if storage_account
+        else None
+    )
+
     platform_config = {
         "fabric": {
             "kindling": {
@@ -296,14 +309,15 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
                 "storage": {
                     "table_root": "/Volumes/medallion/default/temp/tables",
                     "checkpoint_root": "/Volumes/medallion/default/temp/checkpoints",
-                }
+                },
             }
         },
         "synapse": {
             "kindling": {
                 "storage": {
-                    "table_root": "Tables",
-                    "checkpoint_root": "Files/checkpoints",
+                    # Avoid Fabric-relative paths on Synapse.
+                    "table_root": f"{synapse_root}/tables" if synapse_root else "tables",
+                    "checkpoint_root": f"{synapse_root}/checkpoints" if synapse_root else "checkpoints",
                 }
             }
         },
