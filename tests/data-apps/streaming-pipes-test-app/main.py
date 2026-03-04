@@ -4,7 +4,7 @@ Streaming Pipes Test App
 
 Tests the Unified DAG Orchestrator in streaming mode:
 - Define entities and pipes via framework decorators
-- Bind a concrete EntityPathLocator (the one ABC users must provide)
+- Use platform-provided default EntityPathLocator and EntityNameMapper bindings
 - Execute streaming plan via GenerationExecutor
 - Verify data flows through bronze → silver → gold
 
@@ -14,16 +14,12 @@ Pipeline: bronze stream → silver stream → gold stream (joined with static lo
 import sys
 import time
 
-from kindling.data_entities import (
-    DataEntities,
-    DataEntityRegistry,
-    EntityNameMapper,
-    EntityPathLocator,
-)
+from kindling.data_entities import DataEntities, DataEntityRegistry
 from kindling.data_pipes import DataPipes
 from kindling.execution_strategy import ExecutionPlanGenerator
 from kindling.generation_executor import GenerationExecutor
 from kindling.injection import GlobalInjector, get_kindling_service
+from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
@@ -67,30 +63,44 @@ try:
     gold_path = f"{base_path}/gold"
     lookup_path = f"{base_path}/lookup"
 
-    # ---- Bind EntityPathLocator (user-provided ABC) ----
-    # EntityPathLocator has no framework default — users bind their own.
-    # This implementation uses provider.path tags set on entity definitions.
+    platform_service = get_kindling_service(PlatformServiceProvider).get_service()
+    platform_name = platform_service.get_platform_name() if platform_service else "unknown"
+    is_databricks = platform_name == "databricks"
+    table_name_prefix = f"streaming_pipes_test_{str(test_id).replace('-', '_')}"
 
-    class TagBasedPathLocator(EntityPathLocator):
-        """Resolves table paths from entity provider.path tags."""
+    def _quote_table_identifier(table_name: str) -> str:
+        parts = [part.strip() for part in table_name.split(".") if part.strip()]
+        if not parts:
+            raise ValueError("Table name cannot be empty")
+        return ".".join([f"`{part.replace('`', '``')}`" for part in parts])
 
-        def get_table_path(self, entity):
-            path = entity.tags.get("provider.path")
-            if path:
-                return path
-            # Fallback: derive from entity id
-            entity_id = entity.entityid if hasattr(entity, "entityid") else str(entity)
-            if "." in entity_id:
-                layer, name = entity_id.split(".", 1)
-                return f"{base_path}/{layer}/{name}"
-            return f"{base_path}/{entity_id}"
+    if is_databricks:
+        table_catalog = config_service.get("kindling.storage.table_catalog")
+        table_schema = config_service.get("kindling.storage.table_schema")
 
-    class SimpleEntityNameMapper(EntityNameMapper):
-        """Maps entity to a table name derived from its entityid."""
+        # Reuse catalog/schema from the configured UC volume path when available.
+        if not table_catalog or not table_schema:
+            temp_path = str(config_service.get("kindling.temp_path", "") or "")
+            temp_parts = [part for part in temp_path.split("/") if part]
+            if len(temp_parts) >= 3 and temp_parts[0].lower() == "volumes":
+                table_catalog = table_catalog or temp_parts[1]
+                table_schema = table_schema or temp_parts[2]
 
-        def get_table_name(self, entity):
-            entity_id = entity.entityid if hasattr(entity, "entityid") else str(entity)
-            return entity_id.replace(".", "_")
+        if not table_catalog or not table_schema:
+            current_context = spark.sql(
+                "SELECT current_catalog() AS catalog, current_schema() AS schema"
+            ).first()
+            table_catalog = table_catalog or current_context["catalog"]
+            table_schema = table_schema or current_context["schema"]
+
+    def _entity_tags(layer_name: str, path: str):
+        if is_databricks:
+            return {
+                "provider_type": "delta",
+                "provider.access_mode": "forName",
+                "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_{layer_name}",
+            }
+        return {"provider_type": "delta", "provider.path": path}
 
     class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
         """Provides watermark entities for streaming test - minimal implementation."""
@@ -128,8 +138,6 @@ try:
         def get_watermark_entity_for_layer(self, _layer: str):
             return self.watermark_entity
 
-    GlobalInjector.bind(EntityPathLocator, TagBasedPathLocator)
-    GlobalInjector.bind(EntityNameMapper, SimpleEntityNameMapper)
     GlobalInjector.bind(WatermarkEntityFinder, SimpleWatermarkEntityFinder)
 
     # ---- Define entity schemas ----
@@ -176,7 +184,7 @@ try:
         name="bronze_events",
         partition_columns=[],
         merge_columns=["event_id"],
-        tags={"provider_type": "delta", "provider.path": bronze_path},
+        tags=_entity_tags("bronze", bronze_path),
         schema=bronze_schema,
     )
 
@@ -185,7 +193,7 @@ try:
         name="silver_events",
         partition_columns=[],
         merge_columns=["event_id"],
-        tags={"provider_type": "delta", "provider.path": silver_path},
+        tags=_entity_tags("silver", silver_path),
         schema=silver_schema,
     )
 
@@ -194,7 +202,7 @@ try:
         name="gold_events",
         partition_columns=[],
         merge_columns=["event_id"],
-        tags={"provider_type": "delta", "provider.path": gold_path},
+        tags=_entity_tags("gold", gold_path),
         schema=gold_schema,
     )
 
@@ -203,7 +211,7 @@ try:
         name="lookup_events",
         partition_columns=[],
         merge_columns=["lookup_key"],
-        tags={"provider_type": "delta", "provider.path": lookup_path},
+        tags=_entity_tags("lookup", lookup_path),
         schema=lookup_schema,
     )
 
@@ -399,19 +407,19 @@ try:
 
     # ---- Verify data in each layer ----
 
-    for path, label in [
-        (bronze_path, "bronze_data"),
-        (silver_path, "silver_data"),
-        (gold_path, "gold_data"),
+    for entity, label in [
+        (bronze_entity, "bronze_data"),
+        (silver_entity, "silver_data"),
+        (gold_entity, "gold_data"),
     ]:
-        count = spark.read.format("delta").load(path).count()
+        count = entity_provider.read_entity(entity).count()
         ok = count > 0
         msg = f"TEST_ID={test_id} test={label} status={'PASSED' if ok else 'FAILED'} count={count}"
         logger.info(msg)
         print(msg, flush=True)
         test_results[label] = ok
 
-    gold_df = spark.read.format("delta").load(gold_path)
+    gold_df = entity_provider.read_entity(gold_entity)
     matched_lookup_rows = gold_df.filter(col("category").isNotNull()).count()
     multi_input_ok = matched_lookup_rows > 0
     msg = (
@@ -465,23 +473,59 @@ try:
     platform_service_provider = get_kindling_service(PlatformServiceProvider)
     platform_service = platform_service_provider.get_service()
 
-    for path, label in [
-        (bronze_path, "bronze"),
-        (silver_path, "silver"),
-        (gold_path, "gold"),
-        (lookup_path, "lookup"),
-        (chk_base, "checkpoints"),
-    ]:
+    if is_databricks:
+        for entity, label in [
+            (bronze_entity, "bronze_table"),
+            (silver_entity, "silver_table"),
+            (gold_entity, "gold_table"),
+            (lookup_entity, "lookup_table"),
+        ]:
+            try:
+                table_name = (entity.tags or {}).get("provider.table_name")
+                if table_name:
+                    spark.sql(f"DROP TABLE IF EXISTS {_quote_table_identifier(table_name)}")
+                msg = f"TEST_ID={test_id} cleanup={label} status=dropped"
+                logger.info(msg)
+                print(msg)
+            except Exception as cleanup_error:
+                msg = (
+                    f"TEST_ID={test_id} cleanup={label} status=failed "
+                    f"error={str(cleanup_error)}"
+                )
+                logger.warning(msg)
+                print(msg)
+
         try:
-            if platform_service.exists(path):
-                platform_service.delete(path, recurse=True)
-            msg = f"TEST_ID={test_id} cleanup={label} status=deleted"
+            if platform_service.exists(chk_base):
+                platform_service.delete(chk_base, recurse=True)
+            msg = f"TEST_ID={test_id} cleanup=checkpoints status=deleted"
             logger.info(msg)
             print(msg)
         except Exception as cleanup_error:
-            msg = f"TEST_ID={test_id} cleanup={label} status=failed error={str(cleanup_error)}"
+            msg = (
+                f"TEST_ID={test_id} cleanup=checkpoints status=failed "
+                f"error={str(cleanup_error)}"
+            )
             logger.warning(msg)
             print(msg)
+    else:
+        for path, label in [
+            (bronze_path, "bronze"),
+            (silver_path, "silver"),
+            (gold_path, "gold"),
+            (lookup_path, "lookup"),
+            (chk_base, "checkpoints"),
+        ]:
+            try:
+                if platform_service.exists(path):
+                    platform_service.delete(path, recurse=True)
+                msg = f"TEST_ID={test_id} cleanup={label} status=deleted"
+                logger.info(msg)
+                print(msg)
+            except Exception as cleanup_error:
+                msg = f"TEST_ID={test_id} cleanup={label} status=failed error={str(cleanup_error)}"
+                logger.warning(msg)
+                print(msg)
 
 except Exception as e:
     msg = f"TEST_ID={test_id} status=FAILED error={str(e)}"

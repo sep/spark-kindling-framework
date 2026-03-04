@@ -183,6 +183,16 @@ class DynaconfConfig(ConfigService):
                 self.dynaconf.set(old_key, value)
                 print(f"  - Reverse translation: {new_key} → {old_key} = {value}")
 
+        # Canonicalize legacy YAML keys into the lower-case kindling.* namespace used by providers.
+        # (Keep the legacy keys and flat keys too; this is additive.)
+        try:
+            if self.dynaconf.get("kindling.delta.tablerefmode") is None:
+                legacy_mode = self.dynaconf.get("kindling.DELTA.tablerefmode")
+                if legacy_mode is not None:
+                    self.dynaconf.set("kindling.delta.tablerefmode", legacy_mode)
+        except Exception:
+            pass
+
     def _translate_bootstrap_to_nested(self):
         """Translate bootstrap flat keys to nested structure"""
         merged_initial = self._apply_bootstrap_overrides(self.initial_config)
@@ -238,6 +248,34 @@ class DynaconfConfig(ConfigService):
                     current = current[part]
                 current[parts[-1]] = bootstrap_config[old_key]
                 processed_keys.add(old_key)
+
+        def _set_transformed_dot_key(dot_key: str, value: Any) -> None:
+            parts = dot_key.split(".")
+            current = transformed
+            for part in parts[:-1]:
+                if part not in current or not isinstance(current[part], dict):
+                    current[part] = {}
+                current = current[part]
+            current[parts[-1]] = value
+
+        # Provider/global configs should be available under kindling.* as canonical keys,
+        # even if bootstrap passes legacy flat keys.
+        if "DELTA_TABLE_ACCESS_MODE" in bootstrap_config:
+            _set_transformed_dot_key(
+                "kindling.delta.tablerefmode", bootstrap_config["DELTA_TABLE_ACCESS_MODE"]
+            )
+        if "base_checkpoint_path" in bootstrap_config:
+            _set_transformed_dot_key(
+                "kindling.storage.checkpoint_root", bootstrap_config["base_checkpoint_path"]
+            )
+        if "temp_path" in bootstrap_config:
+            _set_transformed_dot_key("kindling.temp_path", bootstrap_config["temp_path"])
+        if "platform" in bootstrap_config:
+            _set_transformed_dot_key("kindling.platform.name", bootstrap_config["platform"])
+        elif "platform_environment" in bootstrap_config:
+            _set_transformed_dot_key(
+                "kindling.platform.name", bootstrap_config["platform_environment"]
+            )
 
         if "spark_configs" in bootstrap_config:
             transformed["SPARK_CONFIGS"] = bootstrap_config["spark_configs"]

@@ -290,9 +290,12 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
         },
         "databricks": {
             "kindling": {
+                "delta": {
+                    "tablerefmode": "forName",
+                },
                 "storage": {
-                    "table_root": "/tmp",
-                    "checkpoint_root": "/tmp/checkpoints",
+                    "table_root": "/Volumes/medallion/default/temp/tables",
+                    "checkpoint_root": "/Volumes/medallion/default/temp/checkpoints",
                 }
             }
         },

@@ -6,13 +6,16 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
+from injector import inject
 # Azure Synapse imports - always available in Synapse wheel
 from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import *
 from azure.synapse.artifacts import ArtifactsClient
 from azure.synapse.artifacts.models import *
 from kindling.data_apps import AppDeploymentService
+from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
+from kindling.spark_config import ConfigService
 from kindling.spark_session import *
 
 mssparkutils = None
@@ -37,6 +40,19 @@ def _get_mssparkutils():
 
     # Final fallback - raise error
     raise ImportError("mssparkutils not available in this environment")
+
+
+def _bind_default_entity_services(logger) -> None:
+    """Bind Synapse defaults for config when no explicit setting exists."""
+    # Default to name-based Delta access on Synapse (Spark catalog tables).
+    # Users can override per-entity via `provider.access_mode` or globally via config.
+    try:
+        cs = GlobalInjector.get(ConfigService)
+        if cs.get("kindling.delta.tablerefmode") is None:
+            cs.set("kindling.delta.tablerefmode", "forName")
+            logger.info("Defaulted kindling.delta.tablerefmode=forName (Synapse convention)")
+    except Exception:
+        pass
 
 
 class SynapseTokenCredential(TokenCredential):
@@ -982,4 +998,5 @@ class SynapseService(PlatformService):
 
 @PlatformServices.register(name="synapse", description="Synapse platform service")
 def create_platform_service(config, logger):
+    _bind_default_entity_services(logger)
     return SynapseService(config, logger)
