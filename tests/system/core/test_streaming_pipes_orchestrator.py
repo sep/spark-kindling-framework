@@ -133,6 +133,8 @@ class TestStreamingPipesOrchestrator:
             expected_tests = [
                 "entity_definitions",
                 "pipe_definitions",
+                "delta_partitioning",
+                "delta_clustering",
                 "lookup_data",
                 "executor_streaming",
                 "bronze_data",

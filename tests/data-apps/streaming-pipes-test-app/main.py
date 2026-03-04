@@ -62,6 +62,8 @@ try:
     silver_path = f"{base_path}/silver"
     gold_path = f"{base_path}/gold"
     lookup_path = f"{base_path}/lookup"
+    partition_test_path = f"{base_path}/partition_test"
+    clustering_test_path = f"{base_path}/clustering_test"
 
     platform_service = get_kindling_service(PlatformServiceProvider).get_service()
     platform_name = platform_service.get_platform_name() if platform_service else "unknown"
@@ -101,6 +103,47 @@ try:
                 "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_{layer_name}",
             }
         return {"provider_type": "delta", "provider.path": path}
+
+    def _partition_test_tags(path: str):
+        # Always test file partitioning via forPath to avoid platform catalog differences.
+        return {
+            "provider_type": "delta",
+            "provider.access_mode": "forPath",
+            "provider.path": path,
+        }
+
+    def _clustering_test_tags(path: str):
+        # Databricks is the only platform we currently expect to support CLUSTER BY.
+        if is_databricks:
+            return {
+                "provider_type": "delta",
+                "provider.access_mode": "forName",
+                "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_clustering_test",
+            }
+        return {
+            "provider_type": "delta",
+            "provider.access_mode": "forPath",
+            "provider.path": path,
+        }
+
+    def _get_row_field(row, field_name: str):
+        if row is None:
+            return None
+        try:
+            d = row.asDict(recursive=True)
+        except Exception:
+            d = dict(row) if isinstance(row, dict) else {}
+        for k, v in d.items():
+            if str(k).lower() == str(field_name).lower():
+                return v
+        return None
+
+    def _describe_detail_for_path(path: str):
+        escaped = str(path).replace("`", "``")
+        return spark.sql(f"DESCRIBE DETAIL delta.`{escaped}`").first()
+
+    def _describe_detail_for_table(table_name: str):
+        return spark.sql(f"DESCRIBE DETAIL {_quote_table_identifier(table_name)}").first()
 
     class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
         """Provides watermark entities for streaming test - minimal implementation."""
@@ -215,6 +258,37 @@ try:
         schema=lookup_schema,
     )
 
+    # ---- Delta layout tests: partitioning + clustering ----
+
+    layout_schema = StructType(
+        [
+            StructField("id", StringType(), False),
+            StructField("pdate", StringType(), False),
+            StructField("value", StringType(), True),
+        ]
+    )
+
+    DataEntities.entity(
+        entityid="system.delta_partitioning",
+        name="delta_partitioning",
+        partition_columns=["pdate"],
+        merge_columns=["id"],
+        tags=_partition_test_tags(partition_test_path),
+        schema=layout_schema,
+    )
+
+    # Intentionally specify both partition_columns and cluster_columns to validate
+    # provider behavior: prefer clustering and skip partitionBy().
+    DataEntities.entity(
+        entityid="system.delta_clustering",
+        name="delta_clustering",
+        partition_columns=["pdate"],
+        cluster_columns=["id"],
+        merge_columns=["id"],
+        tags=_clustering_test_tags(clustering_test_path),
+        schema=layout_schema,
+    )
+
     msg = f"TEST_ID={test_id} test=entity_definitions status=PASSED"
     logger.info(msg)
     print(msg, flush=True)
@@ -274,12 +348,64 @@ try:
     silver_entity = entity_registry.get_entity_definition("stream.silver")
     gold_entity = entity_registry.get_entity_definition("stream.gold")
     lookup_entity = entity_registry.get_entity_definition("stream.lookup")
+    partition_entity = entity_registry.get_entity_definition("system.delta_partitioning")
+    clustering_entity = entity_registry.get_entity_definition("system.delta_clustering")
 
     # Write empty DataFrames to create Delta tables at specified paths
     entity_provider.write_to_entity(spark.createDataFrame([], bronze_schema), bronze_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], silver_schema), silver_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], gold_schema), gold_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], lookup_schema), lookup_entity)
+
+    # ---- Validate partitioning ----
+    try:
+        entity_provider.ensure_entity_table(partition_entity)
+        detail = _describe_detail_for_path(partition_test_path)
+        partition_cols = _get_row_field(detail, "partitionColumns") or []
+        ok = list(partition_cols) == ["pdate"]
+        msg = (
+            f"TEST_ID={test_id} test=delta_partitioning status={'PASSED' if ok else 'FAILED'} "
+            f"partitionColumns={partition_cols}"
+        )
+        logger.info(msg)
+        print(msg, flush=True)
+        test_results["delta_partitioning"] = ok
+    except Exception as e:
+        msg = f"TEST_ID={test_id} test=delta_partitioning status=FAILED error={type(e).__name__}:{e}"
+        logger.error(msg)
+        print(msg, flush=True)
+        test_results["delta_partitioning"] = False
+
+    # ---- Validate clustering ----
+    try:
+        entity_provider.ensure_entity_table(clustering_entity)
+
+        # Always validate that clustering config prevents file partitioning.
+        if is_databricks:
+            clustering_table_name = clustering_entity.tags.get("provider.table_name")
+            detail = _describe_detail_for_table(clustering_table_name)
+        else:
+            detail = _describe_detail_for_path(clustering_test_path)
+
+        partition_cols = _get_row_field(detail, "partitionColumns") or []
+        clustering_cols = _get_row_field(detail, "clusteringColumns") or []
+
+        ok = list(partition_cols) == []
+        if is_databricks:
+            ok = ok and ("id" in list(clustering_cols))
+
+        msg = (
+            f"TEST_ID={test_id} test=delta_clustering status={'PASSED' if ok else 'FAILED'} "
+            f"partitionColumns={partition_cols} clusteringColumns={clustering_cols}"
+        )
+        logger.info(msg)
+        print(msg, flush=True)
+        test_results["delta_clustering"] = ok
+    except Exception as e:
+        msg = f"TEST_ID={test_id} test=delta_clustering status=FAILED error={type(e).__name__}:{e}"
+        logger.error(msg)
+        print(msg, flush=True)
+        test_results["delta_clustering"] = False
 
     # Seed static lookup data (read as direct/batch input while silver is streaming)
     lookup_rows = [{"lookup_key": str(i), "category": f"group_{i % 5}"} for i in range(100)]
