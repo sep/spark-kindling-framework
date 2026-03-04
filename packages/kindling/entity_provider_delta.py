@@ -149,6 +149,55 @@ class DeltaEntityProvider(
     def _is_for_path_mode(self, access_mode: str) -> bool:
         return str(access_mode or "").lower() == "forpath"
 
+    def _get_cluster_columns(self, entity) -> list[str]:
+        cols = getattr(entity, "cluster_columns", None) or []
+        return list(cols)
+
+    def _should_partition_files(self, entity) -> bool:
+        """True when we should physically partition data files by partition_columns."""
+        cluster_cols = self._get_cluster_columns(entity)
+        if cluster_cols:
+            if getattr(entity, "partition_columns", None):
+                self.logger.warning(
+                    f"Entity '{getattr(entity, 'entityid', entity)}' specifies both partition_columns "
+                    f"and cluster_columns. Preferring cluster_columns and skipping partitionBy."
+                )
+            return False
+        return bool(getattr(entity, "partition_columns", None))
+
+    def _ensure_clustering(self, entity, table_ref: DeltaTableReference) -> None:
+        """Best-effort: apply CLUSTER BY when supported by the engine."""
+        cluster_cols = self._get_cluster_columns(entity)
+        if not cluster_cols:
+            return
+
+        # Prefer catalog table name; fall back to path-based delta.`...` reference when available.
+        target = None
+        if table_ref.table_name:
+            try:
+                target = self._quote_table_identifier(table_ref.table_name)
+            except Exception:
+                target = table_ref.table_name
+        elif table_ref.table_path:
+            escaped = table_ref.table_path.replace("`", "``")
+            target = f"delta.`{escaped}`"
+
+        if not target:
+            self.logger.warning(
+                f"Unable to apply clustering for entity '{getattr(entity, 'entityid', entity)}': "
+                "no table_name or table_path available."
+            )
+            return
+
+        cols_sql = ", ".join([f"`{c.replace('`', '``')}`" for c in cluster_cols])
+        try:
+            self.spark.sql(f"ALTER TABLE {target} CLUSTER BY ({cols_sql})")
+        except Exception as e:
+            # Non-fatal: clustering support varies by platform/engine.
+            self.logger.warning(
+                f"Unable to apply CLUSTER BY for target '{target}' (columns={cluster_cols}): {e}"
+            )
+
     def _get_table_reference(self, entity) -> DeltaTableReference:
         """
         Create table reference for entity.
@@ -233,7 +282,7 @@ class DeltaEntityProvider(
         if entity.schema:
             dt = dt.addColumns(entity.schema)
 
-        if entity.partition_columns:
+        if self._should_partition_files(entity):
             dt = dt.partitionedBy(*entity.partition_columns)
 
         dt.execute()
@@ -325,6 +374,7 @@ class DeltaEntityProvider(
             if not table_ref.table_path:
                 table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
 
+            self._ensure_clustering(entity, table_ref)
             return
 
         if not table_ref.table_path and str(table_ref.access_mode).lower() == "auto":
@@ -334,6 +384,7 @@ class DeltaEntityProvider(
                     self._ensure_schema_applied(entity, table_ref)
                 table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
                 if table_ref.table_path:
+                    self._ensure_clustering(entity, table_ref)
                     return
 
         if not table_ref.table_path:
@@ -355,6 +406,7 @@ class DeltaEntityProvider(
                 self.logger.info(
                     f"Table {table_ref.table_name} already exists (physical and catalog)"
                 )
+            self._ensure_clustering(entity, table_ref)
             return
 
         if not physical_exists:
@@ -363,6 +415,8 @@ class DeltaEntityProvider(
 
         if not catalog_exists and table_ref.table_name and "." in table_ref.table_name:
             self._attempt_catalog_registration(table_ref)
+
+        self._ensure_clustering(entity, table_ref)
 
     def _check_physical_table_exists(self, table_ref: DeltaTableReference) -> bool:
         """Check if physical Delta files exist at the path"""
@@ -414,7 +468,7 @@ class DeltaEntityProvider(
             )
             # Keep behavior aligned with DeltaTable.create*() path: set CDF table property when possible.
             writer = writer.option("delta.enableChangeDataFeed", "true")
-            if entity.partition_columns:
+            if self._should_partition_files(entity):
                 writer = writer.partitionBy(*entity.partition_columns)
             writer.save(table_ref.table_path)
 
@@ -428,6 +482,9 @@ class DeltaEntityProvider(
                 self.logger.warning(
                     f"Unable to set delta.enableChangeDataFeed for path '{table_ref.table_path}': {e}"
                 )
+
+            # Best-effort clustering for path-based tables (engine support varies).
+            self._ensure_clustering(entity, table_ref)
 
             self.logger.info(f"Successfully created physical Delta table at {table_ref.table_path}")
 
@@ -524,7 +581,7 @@ class DeltaEntityProvider(
         )
         wrote_managed_by_name = False
 
-        if entity.partition_columns:
+        if self._should_partition_files(entity):
             df_writer = df_writer.partitionBy(*entity.partition_columns)
 
         # Keep forName semantics table-oriented even when catalog location is known.
@@ -572,7 +629,7 @@ class DeltaEntityProvider(
         """Append DataFrame to existing Delta table"""
         writer = df.write.format("delta").mode("append")
 
-        if entity.partition_columns:
+        if self._should_partition_files(entity):
             writer = writer.partitionBy(*entity.partition_columns)
 
         writer.option("mergeSchema", "true")  # Schema evolution

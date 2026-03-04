@@ -1,7 +1,7 @@
 import logging
 import time
 from abc import ABC, abstractmethod
-from dataclasses import MISSING, dataclass, fields, replace
+from dataclasses import MISSING, dataclass, field, fields, replace
 from typing import Any, Callable, Dict, List
 
 from delta.tables import DeltaTable
@@ -111,6 +111,9 @@ class EntityMetadata:
     merge_columns: List[str]
     tags: Dict[str, str]
     schema: Any
+    # Optional: Databricks liquid clustering (or best-effort on other platforms).
+    # If set, Delta writes should generally avoid file partitioning (partition_columns).
+    cluster_columns: List[str] = field(default_factory=list)
 
 
 class DataEntities:
