@@ -291,7 +291,9 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
         if storage_account
         else None
     )
-    synapse_schema = os.getenv("KINDLING_SYSTEM_TEST_SYNAPSE_SCHEMA", "kindling_system_tests")
+    # Optional: provide a dedicated schema/database for Synapse name-based tests.
+    # If not set, apps should fall back to current_database()/default.
+    synapse_schema = (os.getenv("KINDLING_SYSTEM_TEST_SYNAPSE_SCHEMA") or "").strip() or None
 
     platform_config = {
         "fabric": {
@@ -316,22 +318,27 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
         "synapse": {
             "kindling": {
                 "delta": {
+                    # Synapse convention: prefer catalog-registered tables by name.
                     "tablerefmode": "forName",
                 },
                 "storage": {
                     # Avoid Fabric-relative paths on Synapse.
                     "table_root": f"{synapse_root}/tables" if synapse_root else "tables",
                     "checkpoint_root": f"{synapse_root}/checkpoints" if synapse_root else "checkpoints",
-                    # Use a dedicated DB with LOCATION for name-based table creation.
-                    "table_catalog": "spark_catalog",
-                    "table_schema": synapse_schema,
-                    "table_name_prefix": f"streaming_pipes_test_{(test_id or '').replace('-', '_')}_"
-                    if test_id
-                    else "",
                 }
             }
         },
     }
+
+    # Prefer a deterministic schema/database for Synapse system tests so table names are stable and
+    # table auto-creation by name has a predictable metastore location.
+    if platform_name == "synapse":
+        effective_schema = synapse_schema or "kindling_system_tests"
+        platform_config["synapse"]["kindling"]["storage"]["table_schema"] = effective_schema
+        if synapse_root:
+            platform_config["synapse"]["kindling"]["storage"]["table_schema_location"] = (
+                f"{synapse_root}/schemas/{effective_schema}"
+            )
 
     config_to_merge = platform_config.get(platform_name, {})
 
