@@ -607,6 +607,33 @@ class DeltaEntityProvider(
                     f"for entity '{entity.entityid}'. Provide entity.schema or skip ensure."
                 )
 
+            # Prefer Delta's table builder API when clustering is requested. Some engines
+            # (Synapse in particular) reject `ALTER TABLE ... CLUSTER BY` unless the table
+            # was created with clustering enabled.
+            cluster_cols = self._get_cluster_columns(entity)
+            if cluster_cols and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False:
+                try:
+                    dt = (
+                        DeltaTable.createIfNotExists(self.spark)
+                        .location(table_ref.table_path)
+                        .property("delta.enableChangeDataFeed", "true")
+                    )
+                    dt = dt.addColumns(entity.schema)
+                    dt = dt.clusterBy(*cluster_cols)
+                    # If the user provided partition_columns too, _should_partition_files() will return False.
+                    if self._should_partition_files(entity):
+                        dt = dt.partitionedBy(*entity.partition_columns)
+                    dt.execute()
+                    self.logger.info(
+                        f"Successfully created physical Delta table at {table_ref.table_path} (clustered={cluster_cols})"
+                    )
+                    return
+                except Exception as e:
+                    self.logger.warning(
+                        "Unable to create physical Delta table via DeltaTable builder with clustering "
+                        f"at '{table_ref.table_path}' (columns={cluster_cols}); falling back to dataframe bootstrap: {e}"
+                    )
+
             schema = entity.schema or StructType([])
             empty_df = self.spark.createDataFrame([], schema=schema)
             writer = empty_df.write.format("delta").mode("overwrite").option(
