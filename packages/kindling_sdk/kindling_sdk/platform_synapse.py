@@ -1191,12 +1191,18 @@ class SynapseAPI(PlatformAPI):
         Returns:
             Tuple of (new_lines, new_byte_offset)
         """
-        if not app_id:
-            # Can't read logs without application ID
-            return [], byte_offset
-
-        if not self.storage_account or not self.container:
-            return [], byte_offset
+        # Fallback: Livy "log" field (works even when diagnostic emitters are not configured).
+        #
+        # Note: when using this fallback, byte_offset is treated as a *line offset*
+        # (not a byte offset). This is fine because the caller only needs monotonic
+        # offsets to avoid re-reading already-seen content.
+        if not app_id or not self.storage_account or not self.container:
+            try:
+                logs = self.get_job_logs(run_id=run_id, from_line=byte_offset, size=1000000)
+                new_lines = logs.get("log", []) or []
+                return list(new_lines), byte_offset + len(new_lines)
+            except Exception:
+                return [], byte_offset
 
         try:
             import json
@@ -1261,8 +1267,14 @@ class SynapseAPI(PlatformAPI):
             return new_lines, new_byte_offset
 
         except Exception as e:
-            # Expected during early execution - logs not available yet
-            return [], byte_offset
+            # Expected during early execution - logs not available yet.
+            # Fall back to Livy logs so system tests can still capture failures.
+            try:
+                logs = self.get_job_logs(run_id=run_id, from_line=byte_offset, size=1000000)
+                new_lines = logs.get("log", []) or []
+                return list(new_lines), byte_offset + len(new_lines)
+            except Exception:
+                return [], byte_offset
 
     def delete_job(self, job_id: str) -> bool:
         """Delete a job definition
