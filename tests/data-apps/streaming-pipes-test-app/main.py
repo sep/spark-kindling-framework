@@ -68,6 +68,7 @@ try:
     platform_service = get_kindling_service(PlatformServiceProvider).get_service()
     platform_name = platform_service.get_platform_name() if platform_service else "unknown"
     is_databricks = platform_name == "databricks"
+    is_synapse = platform_name == "synapse"
     table_name_prefix = f"streaming_pipes_test_{str(test_id).replace('-', '_')}"
 
     def _quote_table_identifier(table_name: str) -> str:
@@ -95,6 +96,13 @@ try:
             table_catalog = table_catalog or current_context["catalog"]
             table_schema = table_schema or current_context["schema"]
 
+    if is_synapse:
+        table_catalog = config_service.get("kindling.storage.table_catalog") or "spark_catalog"
+        table_schema = config_service.get("kindling.storage.table_schema")
+        if not table_schema:
+            current_context = spark.sql("SELECT current_database() AS schema").first()
+            table_schema = current_context["schema"]
+
     def _entity_tags(layer_name: str, path: str):
         if is_databricks:
             return {
@@ -113,8 +121,15 @@ try:
         }
 
     def _clustering_test_tags(path: str):
-        # Databricks is the only platform we currently expect to support CLUSTER BY.
+        # Prefer name-based clustering on engines that support it.
         if is_databricks:
+            return {
+                "provider_type": "delta",
+                "provider.access_mode": "forName",
+                "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_clustering_test",
+            }
+        if is_synapse:
+            # Use the system test schema (pre-created with LOCATION) so managed tables can be created by name.
             return {
                 "provider_type": "delta",
                 "provider.access_mode": "forName",
@@ -393,8 +408,8 @@ try:
         entity_provider.ensure_entity_table(clustering_entity)
 
         # Always validate that clustering config prevents file partitioning.
-        if is_databricks:
-            clustering_table_name = clustering_entity.tags.get("provider.table_name")
+        clustering_table_name = (clustering_entity.tags or {}).get("provider.table_name")
+        if clustering_table_name:
             detail = _describe_detail_for_table(clustering_table_name)
         else:
             detail = _describe_detail_for_path(clustering_test_path)
@@ -421,8 +436,8 @@ try:
     try:
         entity_provider.ensure_entity_table(clustering_entity_v2)
 
-        if is_databricks:
-            clustering_table_name = clustering_entity_v2.tags.get("provider.table_name")
+        clustering_table_name = (clustering_entity_v2.tags or {}).get("provider.table_name")
+        if clustering_table_name:
             detail = _describe_detail_for_table(clustering_table_name)
         else:
             detail = _describe_detail_for_path(clustering_test_path)
