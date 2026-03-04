@@ -1124,15 +1124,23 @@ class SynapseAPI(PlatformAPI):
                 if status in ["COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED"]:
                     print(f"✅ Job {status.lower()} - doing final log read")
                     sys.stdout.flush()
-                    # Read final logs
-                    new_logs, last_byte_offset = self._read_stdout_chunk_synapse(
-                        run_id, app_id, last_byte_offset
-                    )
-                    if new_logs:
-                        all_logs.extend(new_logs)
-                        for log_line in new_logs:
-                            if callback:
-                                callback(log_line)
+                    # Synapse log materialization can be delayed (even after the batch enters a
+                    # terminal state). Retry for a short grace period so tests can see failures.
+                    grace_deadline = time.time() + 180.0
+                    while True:
+                        new_logs, last_byte_offset = self._read_stdout_chunk_synapse(
+                            run_id, app_id, last_byte_offset
+                        )
+                        if new_logs:
+                            all_logs.extend(new_logs)
+                            for log_line in new_logs:
+                                if callback:
+                                    callback(log_line)
+
+                        if all_logs or time.time() >= grace_deadline:
+                            break
+
+                        time.sleep(poll_interval)
                     break
 
                 # If job not started yet, wait
