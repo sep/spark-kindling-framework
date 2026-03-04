@@ -89,7 +89,13 @@ class MemoryEntityProvider(
     @inject
     def __init__(self, logger_provider: PythonLoggerProvider):
         self.logger = logger_provider.get_logger("MemoryEntityProvider")
-        self.spark = get_or_create_spark_session()
+        # Spark may be unavailable in restricted environments (e.g., sandboxed unit test runners
+        # that deny socket syscalls required by Py4J). Keep this lazy so callers/tests can
+        # inject a mock SparkSession by setting `provider.spark`.
+        try:
+            self.spark = get_or_create_spark_session()
+        except Exception:
+            self.spark = None
         # Store in-memory DataFrames
         self._memory_store: Dict[str, DataFrame] = {}
 

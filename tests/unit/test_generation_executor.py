@@ -913,7 +913,9 @@ class TestStreamingExecution:
             "entity.src": stream_provider,
             "entity.dst": output_provider,
         }[entity.entityid]
-        config_service.get.side_effect = lambda key: "/checkpoints" if key == "base_checkpoint_path" else None
+        config_service.get.side_effect = (
+            lambda key: "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
+        )
 
         plan = make_plan(
             ["pipe1"],
