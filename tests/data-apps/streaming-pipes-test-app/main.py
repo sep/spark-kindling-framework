@@ -289,6 +289,17 @@ try:
         schema=layout_schema,
     )
 
+    # Same destination as delta_clustering, but a different clustering spec to validate updates.
+    DataEntities.entity(
+        entityid="system.delta_clustering_v2",
+        name="delta_clustering_v2",
+        partition_columns=["pdate"],
+        cluster_columns=["pdate"],
+        merge_columns=["id"],
+        tags=_clustering_test_tags(clustering_test_path),
+        schema=layout_schema,
+    )
+
     msg = f"TEST_ID={test_id} test=entity_definitions status=PASSED"
     logger.info(msg)
     print(msg, flush=True)
@@ -350,6 +361,7 @@ try:
     lookup_entity = entity_registry.get_entity_definition("stream.lookup")
     partition_entity = entity_registry.get_entity_definition("system.delta_partitioning")
     clustering_entity = entity_registry.get_entity_definition("system.delta_clustering")
+    clustering_entity_v2 = entity_registry.get_entity_definition("system.delta_clustering_v2")
 
     # Write empty DataFrames to create Delta tables at specified paths
     entity_provider.write_to_entity(spark.createDataFrame([], bronze_schema), bronze_entity)
@@ -390,9 +402,7 @@ try:
         partition_cols = _get_row_field(detail, "partitionColumns") or []
         clustering_cols = _get_row_field(detail, "clusteringColumns") or []
 
-        ok = list(partition_cols) == []
-        if is_databricks:
-            ok = ok and ("id" in list(clustering_cols))
+        ok = list(partition_cols) == [] and ("id" in [str(c).lower() for c in list(clustering_cols)])
 
         msg = (
             f"TEST_ID={test_id} test=delta_clustering status={'PASSED' if ok else 'FAILED'} "
@@ -406,6 +416,37 @@ try:
         logger.error(msg)
         print(msg, flush=True)
         test_results["delta_clustering"] = False
+
+    # ---- Validate clustering updates ----
+    try:
+        entity_provider.ensure_entity_table(clustering_entity_v2)
+
+        if is_databricks:
+            clustering_table_name = clustering_entity_v2.tags.get("provider.table_name")
+            detail = _describe_detail_for_table(clustering_table_name)
+        else:
+            detail = _describe_detail_for_path(clustering_test_path)
+
+        partition_cols = _get_row_field(detail, "partitionColumns") or []
+        clustering_cols = _get_row_field(detail, "clusteringColumns") or []
+
+        ok = list(partition_cols) == []
+        desired = {"pdate"}
+        actual = {str(c).lower() for c in list(clustering_cols)}
+        ok = ok and (actual == desired)
+
+        msg = (
+            f"TEST_ID={test_id} test=delta_clustering_update status={'PASSED' if ok else 'FAILED'} "
+            f"partitionColumns={partition_cols} clusteringColumns={clustering_cols}"
+        )
+        logger.info(msg)
+        print(msg, flush=True)
+        test_results["delta_clustering_update"] = ok
+    except Exception as e:
+        msg = f"TEST_ID={test_id} test=delta_clustering_update status=FAILED error={type(e).__name__}:{e}"
+        logger.error(msg)
+        print(msg, flush=True)
+        test_results["delta_clustering_update"] = False
 
     # Seed static lookup data (read as direct/batch input while silver is streaming)
     lookup_rows = [{"lookup_key": str(i), "category": f"group_{i % 5}"} for i in range(100)]
