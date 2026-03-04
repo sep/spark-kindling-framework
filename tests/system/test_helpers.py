@@ -125,6 +125,15 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
             overrides["kindling_version"] = repo_version
             merged_config["config_overrides"] = overrides
 
+    # System tests should be deterministic: Synapse/Databricks pools can retain installed
+    # packages across runs. The runtime bootstrap defaults to "install if missing", so
+    # without this a job can silently run with an older kindling already present.
+    overrides = merged_config.get("config_overrides") or {}
+    if "force_reinstall" not in overrides:
+        overrides = dict(overrides)
+        overrides["force_reinstall"] = True
+        merged_config["config_overrides"] = overrides
+
     # Synapse doesn't reliably expose driver stdout via API; system tests depend on logs,
     # so enable diagnostic emitters by default for Synapse jobs.
     if platform_name == "synapse" and "configure_diagnostic_emitters" not in merged_config:
