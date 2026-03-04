@@ -9,7 +9,9 @@ Provides reusable patterns for:
 """
 
 import os
+import re
 import sys
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 
@@ -85,6 +87,20 @@ def get_env_config_overrides(platform_name: str) -> Dict[str, Any]:
     return overrides
 
 
+def _get_repo_version() -> Optional[str]:
+    """Return the version from pyproject.toml for pinning remote installs in system tests."""
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        pyproject_path = repo_root / "pyproject.toml"
+        content = pyproject_path.read_text(encoding="utf-8")
+        match = re.search(r'^version\\s*=\\s*"([^"]+)"\\s*$', content, re.MULTILINE)
+        if not match:
+            return None
+        return match.group(1)
+    except Exception:
+        return None
+
+
 def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -> Dict[str, Any]:
     """Merge CONFIG__ env overrides into a job_config payload for create_job()."""
     merged_config = dict(job_config)
@@ -97,6 +113,22 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
         merged_config["config_overrides"] = env_overrides
     elif existing_overrides:
         merged_config["config_overrides"] = existing_overrides
+
+    # Pin the remote runtime install to the local repo version by default.
+    # This avoids "latest" selecting a stable release that sorts higher than our alpha bump,
+    # and makes system tests deterministic after bump+deploy.
+    overrides = merged_config.get("config_overrides") or {}
+    if "kindling_version" not in overrides:
+        repo_version = _get_repo_version()
+        if repo_version:
+            overrides = dict(overrides)
+            overrides["kindling_version"] = repo_version
+            merged_config["config_overrides"] = overrides
+
+    # Synapse doesn't reliably expose driver stdout via API; system tests depend on logs,
+    # so enable diagnostic emitters by default for Synapse jobs.
+    if platform_name == "synapse" and "configure_diagnostic_emitters" not in merged_config:
+        merged_config["configure_diagnostic_emitters"] = True
 
     return merged_config
 
