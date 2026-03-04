@@ -14,7 +14,15 @@ def provider_and_mocks(monkeypatch):
     monkeypatch.setattr("kindling.entity_provider_delta.get_or_create_spark_session", lambda: spark)
 
     config = MagicMock(spec=ConfigService)
-    config.get.return_value = "forName"
+    def _get(key, default=None):
+        if key == "kindling.delta.tablerefmode":
+            return "forName"
+        # No explicit feature overrides in unit tests
+        if key.startswith("kindling.features.") or key.startswith("kindling.runtime.features."):
+            return default
+        return default
+
+    config.get.side_effect = _get
 
     entity_name_mapper = MagicMock(spec=EntityNameMapper)
     entity_name_mapper.get_table_name.return_value = "main.default.my_table"
@@ -122,7 +130,8 @@ def test_ensure_clustering_runs_alter_table(provider_and_mocks):
 
     provider._ensure_clustering(entity, table_ref)
 
-    assert spark.sql.call_count == 1
-    sql = spark.sql.call_args[0][0]
+    # One DESCRIBE DETAIL probe + one ALTER TABLE CLUSTER BY.
+    assert spark.sql.call_count == 2
+    sql = spark.sql.call_args_list[-1][0][0]
     assert "ALTER TABLE" in sql
     assert "CLUSTER BY" in sql
