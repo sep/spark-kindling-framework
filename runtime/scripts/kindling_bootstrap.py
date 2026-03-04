@@ -793,15 +793,17 @@ def bootstrap(config_or_filename: Union[Dict[str, Any], str], artifacts_path: st
         print("Configuration loaded")
 
         # Step 3: Ensure kindling availability
-        # Default behavior: install from lake only when kindling is missing
+        #
+        # IMPORTANT: Spark pools (especially Synapse/Databricks) can retain installed packages
+        # across runs. If we only install when missing, jobs can silently run with an older
+        # kindling already present on the cluster. Default to always installing from the lake
+        # when lake packages are enabled; opt out by setting use_lake_packages=False.
         use_lake_packages = config.get("use_lake_packages", True)
         force_reinstall = config.get("force_reinstall", False)
         kindling_available = is_kindling_available()
 
-        if kindling_available and not force_reinstall:
-            print("Kindling already available, skipping install (install-if-missing behavior)")
-        elif use_lake_packages:
-            reason = "force_reinstall=True" if force_reinstall else "kindling not available"
+        if use_lake_packages:
+            reason = "force_reinstall=True" if force_reinstall else "use_lake_packages=True"
             print(f"Installing kindling from datalake ({reason})...")
             if not install_kindling_from_datalake(config, storage_utils):
                 raise Exception("Failed to install kindling from datalake")
