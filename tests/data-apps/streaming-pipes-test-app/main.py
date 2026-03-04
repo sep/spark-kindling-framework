@@ -70,6 +70,8 @@ try:
     is_databricks = platform_name == "databricks"
     is_synapse = platform_name == "synapse"
     table_name_prefix = f"streaming_pipes_test_{str(test_id).replace('-', '_')}"
+    table_catalog = None
+    table_schema = None
 
     def _quote_table_identifier(table_name: str) -> str:
         parts = [part.strip() for part in table_name.split(".") if part.strip()]
@@ -97,11 +99,18 @@ try:
             table_schema = table_schema or current_context["schema"]
 
     if is_synapse:
-        table_catalog = config_service.get("kindling.storage.table_catalog") or "spark_catalog"
+        # Synapse convention: 2-part identifiers (<database>.<table>) work broadly.
+        # Allow an explicit catalog override when the engine supports it.
+        table_catalog = config_service.get("kindling.storage.table_catalog")
         table_schema = config_service.get("kindling.storage.table_schema")
         if not table_schema:
             current_context = spark.sql("SELECT current_database() AS schema").first()
             table_schema = current_context["schema"]
+
+    def _qualified_table_name(schema: str, leaf: str) -> str:
+        if table_catalog:
+            return f"{table_catalog}.{schema}.{leaf}"
+        return f"{schema}.{leaf}"
 
     def _entity_tags(layer_name: str, path: str):
         if is_databricks:
@@ -109,6 +118,14 @@ try:
                 "provider_type": "delta",
                 "provider.access_mode": "forName",
                 "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_{layer_name}",
+            }
+        if is_synapse:
+            return {
+                "provider_type": "delta",
+                "provider.access_mode": "forName",
+                "provider.table_name": _qualified_table_name(
+                    table_schema, f"{table_name_prefix}_{layer_name}"
+                ),
             }
         return {"provider_type": "delta", "provider.path": path}
 
@@ -133,7 +150,9 @@ try:
             return {
                 "provider_type": "delta",
                 "provider.access_mode": "forName",
-                "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_clustering_test",
+                "provider.table_name": _qualified_table_name(
+                    table_schema, f"{table_name_prefix}_clustering_test"
+                ),
             }
         return {
             "provider_type": "delta",
