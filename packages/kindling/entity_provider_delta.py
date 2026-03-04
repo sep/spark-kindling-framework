@@ -180,16 +180,33 @@ class DeltaEntityProvider(
             self.logger.debug("Skipping CLUSTER BY: feature flag delta.cluster_by is false")
             return
 
-        # Prefer catalog table name; fall back to path-based delta.`...` reference when available.
+        # Choose the correct ALTER TABLE target.
+        #
+        # For FOR_PATH mode, we must reference the path-based Delta identifier
+        # (delta.`abfss://...`) because the table may not be registered in the catalog.
+        # For FOR_NAME mode, use the catalog name.
+        # For AUTO, prefer the catalog name only when it actually exists.
         target = None
-        if table_ref.table_name:
-            try:
-                target = self._quote_table_identifier(table_ref.table_name)
-            except Exception:
-                target = table_ref.table_name
-        elif table_ref.table_path:
-            escaped = table_ref.table_path.replace("`", "``")
-            target = f"delta.`{escaped}`"
+        if self._is_for_path_mode(table_ref.access_mode):
+            if table_ref.table_path:
+                escaped = table_ref.table_path.replace("`", "``")
+                target = f"delta.`{escaped}`"
+        elif self._is_for_name_mode(table_ref.access_mode):
+            if table_ref.table_name:
+                try:
+                    target = self._quote_table_identifier(table_ref.table_name)
+                except Exception:
+                    target = table_ref.table_name
+        else:
+            # AUTO / unknown: prefer the catalog target only when resolvable.
+            if table_ref.table_name and self._check_catalog_table_exists(table_ref):
+                try:
+                    target = self._quote_table_identifier(table_ref.table_name)
+                except Exception:
+                    target = table_ref.table_name
+            elif table_ref.table_path:
+                escaped = table_ref.table_path.replace("`", "``")
+                target = f"delta.`{escaped}`"
 
         if not target:
             self.logger.warning(
@@ -243,14 +260,31 @@ class DeltaEntityProvider(
     def _get_current_clustering_columns(self, table_ref: DeltaTableReference):
         """Return current clustering columns if reported by DESCRIBE DETAIL, else None."""
         try:
-            if table_ref.table_name:
-                quoted = self._quote_table_identifier(table_ref.table_name)
-                row = self.spark.sql(f"DESCRIBE DETAIL {quoted}").first()
-            elif table_ref.table_path:
+            row = None
+            # Mirror the target selection logic from _ensure_clustering.
+            if self._is_for_path_mode(table_ref.access_mode):
+                if not table_ref.table_path:
+                    return None
                 escaped = table_ref.table_path.replace("`", "``")
                 row = self.spark.sql(f"DESCRIBE DETAIL delta.`{escaped}`").first()
+            elif self._is_for_name_mode(table_ref.access_mode):
+                if not table_ref.table_name:
+                    return None
+                quoted = self._quote_table_identifier(table_ref.table_name)
+                row = self.spark.sql(f"DESCRIBE DETAIL {quoted}").first()
             else:
-                return None
+                # AUTO: attempt name first, fall back to path when name isn't resolvable.
+                if table_ref.table_name:
+                    try:
+                        quoted = self._quote_table_identifier(table_ref.table_name)
+                        row = self.spark.sql(f"DESCRIBE DETAIL {quoted}").first()
+                    except Exception:
+                        row = None
+                if row is None and table_ref.table_path:
+                    escaped = table_ref.table_path.replace("`", "``")
+                    row = self.spark.sql(f"DESCRIBE DETAIL delta.`{escaped}`").first()
+                if row is None:
+                    return None
 
             # Record whether DESCRIBE DETAIL exposes the clusteringColumns field.
             try:
