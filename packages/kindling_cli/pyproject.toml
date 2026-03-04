@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling-cli"
-version = "0.6.7a10"
+version = "0.6.7a12"
 description = "Command-line tooling for Kindling"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"

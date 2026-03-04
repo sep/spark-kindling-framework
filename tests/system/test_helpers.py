@@ -134,10 +134,10 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
         overrides["force_reinstall"] = True
         merged_config["config_overrides"] = overrides
 
-    # Synapse doesn't reliably expose driver stdout via API; system tests depend on logs,
-    # so enable diagnostic emitters by default for Synapse jobs.
+    # Synapse stdout is retrieved via the sparkhistory driverlog endpoint; diagnostic emitters
+    # often require storage access configuration and are not needed by default.
     if platform_name == "synapse" and "configure_diagnostic_emitters" not in merged_config:
-        merged_config["configure_diagnostic_emitters"] = True
+        merged_config["configure_diagnostic_emitters"] = False
 
     return merged_config
 

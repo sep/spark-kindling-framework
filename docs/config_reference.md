@@ -75,6 +75,7 @@ These keys are used by the config-driven `EntityNameMapper`/`EntityPathLocator` 
 
 - `kindling.storage.table_catalog`: Default catalog for `forName` tables (when the engine supports catalogs).
 - `kindling.storage.table_schema`: Default schema/database for `forName` tables.
+- `kindling.storage.table_schema_location`: Optional schema/database LOCATION for engines that require it for managed table creation (notably Synapse). When set, Kindling may `CREATE SCHEMA IF NOT EXISTS ... LOCATION ...` as a best-effort convenience before name-based table writes.
 - `kindling.storage.table_name_prefix`: Optional prefix added to the generated leaf table name.
 - `kindling.storage.table_root`: Default path root for `forPath` entities (default `Tables`).
 - `kindling.storage.checkpoint_root`: Default checkpoint root used by system test apps (common default `Files/checkpoints`).

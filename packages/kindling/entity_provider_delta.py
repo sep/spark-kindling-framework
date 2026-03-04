@@ -387,6 +387,55 @@ class DeltaEntityProvider(
             raise ValueError("Table name cannot be empty")
         return ".".join([f"`{part.replace('`', '``')}`" for part in parts])
 
+    def _ensure_configured_table_schema_exists(self) -> None:
+        """Best-effort: ensure the configured table schema/database exists.
+
+        This is primarily useful for Synapse-style name-based table creation where
+        `saveAsTable()` fails with SCHEMA_NOT_FOUND unless the schema exists and
+        has a LOCATION configured.
+
+        No-op unless:
+        - `kindling.storage.table_schema` is set
+        - `kindling.storage.table_schema_location` is set
+        """
+        raw_catalog = self.config.get("kindling.storage.table_catalog")
+        raw_schema = self.config.get("kindling.storage.table_schema")
+        raw_location = self.config.get("kindling.storage.table_schema_location")
+
+        catalog = raw_catalog.strip() if isinstance(raw_catalog, str) else None
+        schema = raw_schema.strip() if isinstance(raw_schema, str) else None
+        location = raw_location.strip() if isinstance(raw_location, str) else None
+
+        catalog = catalog or None
+        schema = schema or None
+        location = location or None
+        if schema and schema.lower() in {"auto", "none", "null"}:
+            schema = None
+        if location and location.lower() in {"auto", "none", "null"}:
+            location = None
+        if catalog and catalog.lower() in {"auto", "none", "null"}:
+            catalog = None
+        if not schema or not location:
+            return
+
+        ident = f"{catalog}.{schema}" if catalog else schema
+        quoted_ident = self._quote_table_identifier(ident)
+        escaped_loc = location.replace("'", "''")
+
+        # Prefer CREATE SCHEMA (Spark SQL), fall back to CREATE DATABASE for older engines.
+        try:
+            self.spark.sql(f"CREATE SCHEMA IF NOT EXISTS {quoted_ident} LOCATION '{escaped_loc}'")
+        except Exception:
+            try:
+                self.spark.sql(
+                    f"CREATE DATABASE IF NOT EXISTS {quoted_ident} LOCATION '{escaped_loc}'"
+                )
+            except Exception as e:
+                # Best-effort: don't fail the caller; downstream writes will raise a clear error.
+                self.logger.warning(
+                    f"Unable to auto-create schema '{ident}' at location '{location}': {e}"
+                )
+
     def _resolve_catalog_table_location(self, table_name: str) -> Optional[str]:
         try:
             quoted = self._quote_table_identifier(table_name)
@@ -404,6 +453,9 @@ class DeltaEntityProvider(
         """Create a managed Delta table by name (catalog decides location)."""
         if not table_ref.table_name:
             raise ValueError(f"Table name is required for managed table creation: {entity.entityid}")
+
+        # Ensure schema exists when a schema LOCATION is configured (Synapse convention).
+        self._ensure_configured_table_schema_exists()
 
         dt = (
             DeltaTable.createIfNotExists(self.spark)
@@ -759,6 +811,7 @@ class DeltaEntityProvider(
 
         # Keep forName semantics table-oriented even when catalog location is known.
         if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+            self._ensure_configured_table_schema_exists()
             df_writer.mode("append").saveAsTable(table_ref.table_name)
             wrote_managed_by_name = True
             table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
@@ -807,6 +860,7 @@ class DeltaEntityProvider(
 
         writer.option("mergeSchema", "true")  # Schema evolution
         if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+            self._ensure_configured_table_schema_exists()
             writer.saveAsTable(table_ref.table_name)
             table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
         elif table_ref.table_path:
