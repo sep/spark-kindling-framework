@@ -135,6 +135,7 @@ class TestStreamingPipesOrchestrator:
                 "pipe_definitions",
                 "delta_partitioning",
                 "delta_clustering",
+                "delta_clustering_update",
                 "lookup_data",
                 "executor_streaming",
                 "bronze_data",
