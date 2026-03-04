@@ -111,16 +111,16 @@ class SimplePipeStreamStarter(PipeStreamStarter):
             or "auto"
         ).lower()
 
-        # Only ensure tables for name-based sinks. Path-based sinks can be created
-        # by the streaming write itself and some platforms don't support schema DDL.
-        if mode == "forname":
-            if can_ensure_destination(output_provider):
-                output_provider.ensure_destination(output_entity)
-            else:
-                # Backward compatibility: older providers expose `ensure_entity_table()`.
-                ensure_output_table = getattr(output_provider, "ensure_entity_table", None)
-                if callable(ensure_output_table):
-                    ensure_output_table(output_entity)
+        # Ensure destination up front when the provider supports it.
+        # This is important for streaming because some sinks require the destination
+        # (table/path/topic/etc.) to exist before the query can start.
+        if can_ensure_destination(output_provider):
+            output_provider.ensure_destination(output_entity)
+        else:
+            # Backward compatibility: older providers expose `ensure_entity_table()`.
+            ensure_output_table = getattr(output_provider, "ensure_entity_table", None)
+            if callable(ensure_output_table):
+                ensure_output_table(output_entity)
 
         stream_handle = output_provider.append_as_stream(
             transformed_stream, output_entity, f"{base_chkpt_path}/{pipe.pipeid}"
