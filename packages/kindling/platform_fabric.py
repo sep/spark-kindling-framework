@@ -1,7 +1,6 @@
 import base64
 import json
 import os
-import shlex
 import subprocess
 import sys
 import time
@@ -11,10 +10,8 @@ from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
 import __main__
-from injector import inject
 import requests
 from azure.core.exceptions import *
-from azure.identity import DefaultAzureCredential
 from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
 from kindling.spark_config import ConfigService
