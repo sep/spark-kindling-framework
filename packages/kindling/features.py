@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from kindling.spark_session import get_or_create_spark_session
@@ -77,3 +78,41 @@ def discover_runtime_features(config_service, logger=None) -> None:
             # imply the engine understands the syntax.
             set_runtime_feature(config_service, "delta.cluster_by", True)
 
+    # Databricks-specific: detect runtime version and whether CLUSTER BY AUTO parses.
+    # This enables liquid clustering "auto" mode, where the engine chooses clustering columns.
+    #
+    # NOTE: Databricks exposes the runtime in spark.conf "spark.databricks.clusterUsageTags.sparkVersion"
+    # with values like "15.4.x-scala2.12" (format varies by cloud/cluster type).
+    dbr_version_raw = None
+    try:
+        dbr_version_raw = spark.conf.get("spark.databricks.clusterUsageTags.sparkVersion")
+    except Exception:
+        dbr_version_raw = None
+
+    major_minor = None
+    if isinstance(dbr_version_raw, str) and dbr_version_raw.strip():
+        match = re.search(r"(\\d+)\\.(\\d+)", dbr_version_raw)
+        if match:
+            try:
+                major_minor = (int(match.group(1)), int(match.group(2)))
+            except Exception:
+                major_minor = None
+        set_runtime_feature(config_service, "databricks.runtime_version", dbr_version_raw.strip())
+        if major_minor:
+            set_runtime_feature(config_service, "databricks.runtime_major", major_minor[0])
+            set_runtime_feature(config_service, "databricks.runtime_minor", major_minor[1])
+
+    # Default to False unless we can positively detect support.
+    auto_ok = False
+    if major_minor is not None and major_minor >= (15, 2):
+        try:
+            spark.sql("EXPLAIN ALTER TABLE `__kindling__nonexistent__` CLUSTER BY AUTO").collect()
+            auto_ok = True
+        except Exception as e:
+            msg = str(e).lower()
+            if "parseexception" in msg or ("mismatched input" in msg and "cluster" in msg):
+                auto_ok = False
+            else:
+                # Non-parse failures still imply syntax support.
+                auto_ok = True
+    set_runtime_feature(config_service, "delta.auto_clustering", auto_ok)

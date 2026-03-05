@@ -17,6 +17,8 @@ def provider_and_mocks(monkeypatch):
     def _get(key, default=None):
         if key == "kindling.delta.tablerefmode":
             return "forName"
+        if key == "kindling.features.delta.auto_clustering":
+            return True
         # No explicit feature overrides in unit tests
         if key.startswith("kindling.features.") or key.startswith("kindling.runtime.features."):
             return default
@@ -135,3 +137,45 @@ def test_ensure_clustering_runs_alter_table(provider_and_mocks):
     sql = spark.sql.call_args_list[-1][0][0]
     assert "ALTER TABLE" in sql
     assert "CLUSTER BY" in sql
+
+
+def test_ensure_clustering_auto_uses_cluster_by_auto(provider_and_mocks):
+    provider, spark, _logger = provider_and_mocks
+
+    entity = EntityMetadata(
+        entityid="e1",
+        name="E1",
+        partition_columns=[],
+        merge_columns=[],
+        tags={},
+        schema=None,
+        cluster_columns=["auto"],
+    )
+    table_ref = DeltaTableReference(
+        table_name="main.default.my_table", table_path=None, access_mode="forName"
+    )
+
+    provider._ensure_clustering(entity, table_ref)
+
+    sql = spark.sql.call_args_list[-1][0][0]
+    assert "CLUSTER BY AUTO" in sql
+
+
+def test_ensure_clustering_auto_rejects_for_path(provider_and_mocks):
+    provider, _spark, _logger = provider_and_mocks
+
+    entity = EntityMetadata(
+        entityid="e1",
+        name="E1",
+        partition_columns=[],
+        merge_columns=[],
+        tags={},
+        schema=None,
+        cluster_columns="auto",
+    )
+    table_ref = DeltaTableReference(
+        table_name="main.default.my_table", table_path="Tables/my_table", access_mode="forPath"
+    )
+
+    with pytest.raises(ValueError):
+        provider._ensure_clustering(entity, table_ref)
