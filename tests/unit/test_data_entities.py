@@ -34,6 +34,7 @@ class TestEntityMetadata:
             "merge_columns",
             "tags",
             "schema",
+            "cluster_columns",
         }
 
         assert (
@@ -54,11 +55,17 @@ class TestEntityMetadata:
         ), "EntityMetadata should have 'merge_columns' field"
         assert "tags" in field_annotations, "EntityMetadata should have 'tags' field"
         assert "schema" in field_annotations, "EntityMetadata should have 'schema' field"
+        assert (
+            "cluster_columns" in field_annotations
+        ), "EntityMetadata should have 'cluster_columns' field"
 
         # Check that collection types are correct
         assert (
             field_annotations["partition_columns"] == List[str]
         ), "partition_columns should be List[str]"
+        assert (
+            field_annotations["cluster_columns"] == List[str]
+        ), "cluster_columns should be List[str]"
         assert field_annotations["merge_columns"] == List[str], "merge_columns should be List[str]"
         assert field_annotations["tags"] == Dict[str, str], "tags should be Dict[str, str]"
         assert field_annotations["schema"] == Any, "schema should be Any type"
@@ -72,6 +79,7 @@ class TestEntityMetadata:
             merge_columns=["id"],
             tags={"source": "test", "owner": "data_team"},
             schema={"id": "string", "value": "int"},
+            cluster_columns=["id"],
         )
 
         assert metadata.entityid == "test_entity", "EntityMetadata.entityid should be 'test_entity'"
@@ -89,6 +97,7 @@ class TestEntityMetadata:
             "id": "string",
             "value": "int",
         }, "EntityMetadata.schema should match expected dict"
+        assert metadata.cluster_columns == ["id"], "EntityMetadata.cluster_columns should be ['id']"
 
     def test_entity_metadata_empty_collections(self):
         """Test EntityMetadata with empty lists and dicts"""
@@ -102,6 +111,7 @@ class TestEntityMetadata:
         )
 
         assert metadata.partition_columns == [], "partition_columns should be empty list"
+        assert metadata.cluster_columns == [], "cluster_columns should be empty list"
         assert metadata.merge_columns == [], "merge_columns should be empty list"
         assert metadata.tags == {}, "tags should be empty dict"
         assert metadata.schema is None, "schema should be None"
@@ -321,9 +331,6 @@ class TestDataEntitiesDecorator:
         ), "Error should mention 'Missing required fields'"
         assert "name" in error_message, "Error should mention missing 'name' field"
         assert (
-            "partition_columns" in error_message
-        ), "Error should mention missing 'partition_columns' field"
-        assert (
             "merge_columns" in error_message
         ), "Error should mention missing 'merge_columns' field"
         assert "tags" in error_message, "Error should mention missing 'tags' field"
@@ -338,7 +345,6 @@ class TestDataEntitiesDecorator:
             DataEntities.entity(
                 entityid="test_entity",
                 name="Test Entity",
-                partition_columns=["date"],
                 # Missing: merge_columns, tags, schema
             )
 
@@ -827,7 +833,7 @@ class TestDataEntitiesEdgeCases:
 
         # All fields except entityid should be listed as missing
         error_msg = str(exc_info.value)
-        required_fields = ["name", "partition_columns", "merge_columns", "tags", "schema"]
+        required_fields = ["name", "merge_columns", "tags", "schema"]
         for field in required_fields:
             assert field in error_msg, f"Error message should mention missing field '{field}'"
 

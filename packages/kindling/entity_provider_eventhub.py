@@ -78,7 +78,9 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
         self.logger = logger_provider.get_logger("EventHubEntityProvider")
         self.config_service = config_service
         self.spark = get_or_create_spark_session()
-        self.platform = self.config_service.get("platform", "fabric").lower()
+        self.platform = str(
+            self.config_service.get("kindling.platform.name", "fabric") or "fabric"
+        ).lower()
 
     def _build_eventhub_config(self, provider_config: dict) -> dict:
         """
@@ -105,9 +107,11 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
         if not eventhub_name:
             raise ValueError("Event Hub provider requires 'eventhub.name' in provider_config")
 
+        encrypted_connection_string = self._encrypt_connection_string(connection_string)
+
         # Build configuration
         eh_config = {
-            "eventhubs.connectionString": connection_string,
+            "eventhubs.connectionString": encrypted_connection_string,
             "eventhubs.eventHubName": eventhub_name,
         }
 
@@ -141,6 +145,29 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             eh_config["eventhubs.operationTimeout"] = str(provider_config["operationTimeout"])
 
         return eh_config
+
+    def _encrypt_connection_string(self, connection_string: str) -> str:
+        """
+        Encrypt Event Hub connection string for Spark connector when possible.
+
+        Spark Event Hubs connector expects an encrypted connection string value.
+        If encryption helper is not available, return raw value as fallback.
+        """
+        # Already encrypted or non-standard format; leave as-is.
+        if "Endpoint=" not in connection_string or "SharedAccessKey=" not in connection_string:
+            return connection_string
+
+        try:
+            jvm = getattr(self.spark, "_jvm", None)
+            if jvm is None:
+                return connection_string
+            encrypted = jvm.org.apache.spark.eventhubs.EventHubsUtils.encrypt(connection_string)
+            return str(encrypted)
+        except Exception:
+            self.logger.warning(
+                "Event Hubs connection string encryption helper unavailable; using raw connection string"
+            )
+            return connection_string
 
     def read_entity(self, entity_metadata: EntityMetadata) -> DataFrame:
         """
@@ -244,10 +271,11 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
 
     def check_entity_exists(self, entity_metadata: EntityMetadata) -> bool:
         """
-        Check if Event Hub connection is valid.
+        Check if Event Hub configuration is valid.
 
-        Note: This performs a lightweight check by attempting to create a reader.
-        It does not verify message availability.
+        Event Hubs are streaming resources, so an "exists" check should avoid
+        triggering a full batch load that can fail for transient runtime reasons
+        unrelated to metadata validity.
 
         Args:
             entity_metadata: Entity metadata with tags containing provider config
@@ -258,11 +286,25 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
         config = self._get_provider_config(entity_metadata)
 
         try:
-            # Validate configuration can be built
-            eh_config = self._build_eventhub_config(config)
+            connection_string = str(config.get("eventhub.connectionString", ""))
+            has_entity_path = "EntityPath=" in connection_string
+            has_eventhub_name = bool(config.get("eventhub.name"))
+            required_segments = ("Endpoint=", "SharedAccessKeyName=", "SharedAccessKey=")
 
-            # Try to create a reader (this validates connection string format)
-            self.spark.read.format("eventhubs").options(**eh_config).load()
+            if not all(segment in connection_string for segment in required_segments):
+                self.logger.warning(
+                    f"Event Hub entity '{entity_metadata.entityid}' check failed: connection string missing required segments"
+                )
+                return False
+
+            if not has_eventhub_name and not has_entity_path:
+                self.logger.warning(
+                    f"Event Hub entity '{entity_metadata.entityid}' check failed: missing event hub name and EntityPath"
+                )
+                return False
+
+            # Validate config shape and connector options construction.
+            self._build_eventhub_config(config)
 
             self.logger.debug(
                 f"Event Hub entity '{entity_metadata.entityid}' configuration is valid"
@@ -270,5 +312,5 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             return True
 
         except Exception as e:
-            self.logger.debug(f"Event Hub entity '{entity_metadata.entityid}' check failed: {e}")
+            self.logger.warning(f"Event Hub entity '{entity_metadata.entityid}' check failed: {e}")
             return False

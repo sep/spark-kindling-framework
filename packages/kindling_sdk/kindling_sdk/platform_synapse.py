@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import time
 import types
 from datetime import datetime, timedelta
@@ -85,6 +86,9 @@ class SynapseAPI(PlatformAPI):
         self._last_request_time = 0
         # 600ms between requests = ~1.67 req/sec (safe margin)
         self._min_request_interval = 0.6
+        # Track batches where the diagnostic emitter root doesn't exist in storage (PathNotFound).
+        # In those cases, waiting a long grace period for logs is wasted time.
+        self._diag_root_missing: set[str] = set()
 
     @classmethod
     def from_env(cls):
@@ -570,6 +574,19 @@ class SynapseAPI(PlatformAPI):
 
                 # Use AccessKey authentication if provided in job config, otherwise try ManagedIdentity
                 storage_key = job_config.get("storage_access_key")
+                if not storage_key:
+                    # Best-effort: derive an access key using the current login creds.
+                    #
+                    # Rationale: Synapse diagnostic emitters run inside the Spark environment and
+                    # frequently cannot use the user's token to write to storage. Using an AccessKey
+                    # makes stdout streaming deterministic for system tests.
+                    storage_key = self._try_get_storage_access_key()
+                    if storage_key:
+                        print(
+                            "🔑 Using Storage Account AccessKey for Synapse diagnostic emitters "
+                            "(derived via ARM using current login)."
+                        )
+
                 if storage_key:
                     conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = (
                         "AccessKey"
@@ -579,6 +596,10 @@ class SynapseAPI(PlatformAPI):
                     )
                 else:
                     # Fallback to managed identity (may not work without proper permissions)
+                    print(
+                        "ℹ️  No storage_access_key available; configuring Synapse diagnostic emitters "
+                        "with ManagedIdentity (stdout streaming may be unavailable if MI lacks storage access)."
+                    )
                     conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = (
                         "ManagedIdentity"
                     )
@@ -615,6 +636,75 @@ class SynapseAPI(PlatformAPI):
         self._job_mapping[job_id]["created_at"] = result.get("submittedAt")
 
         return str(batch_id)
+
+    def _try_get_storage_access_key(self) -> Optional[str]:
+        """Best-effort: fetch a storage account access key using ARM.
+
+        Used only to configure Synapse diagnostic emitters for system tests.
+        If RBAC doesn't permit listing keys, returns None.
+        """
+        import os
+        import time
+
+        # Allow callers to provide the key explicitly (useful when ARM access is restricted).
+        for env_key in [
+            "AZURE_STORAGE_ACCESS_KEY",
+            "AZURE_STORAGE_KEY",
+            "KINDLING_STORAGE_ACCESS_KEY",
+            "KINDLING_SYSTEM_TEST_STORAGE_ACCESS_KEY",
+        ]:
+            val = (os.getenv(env_key) or "").strip()
+            if val:
+                return val
+
+        subscription_id = (os.getenv("AZURE_SUBSCRIPTION_ID") or "").strip()
+        resource_group = (os.getenv("AZURE_RESOURCE_GROUP") or "").strip()
+        account_name = (self.storage_account or "").strip()
+        if not subscription_id or not resource_group or not account_name:
+            return None
+
+        last_error: Optional[str] = None
+        for attempt in range(1, 4):
+            try:
+                import requests
+
+                token = self.credential.get_token("https://management.azure.com/.default").token
+                url = (
+                    "https://management.azure.com/subscriptions/"
+                    f"{subscription_id}/resourceGroups/{resource_group}/providers/"
+                    f"Microsoft.Storage/storageAccounts/{account_name}/listKeys"
+                    "?api-version=2023-01-01"
+                )
+                resp = requests.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=30,
+                )
+                if resp.status_code >= 400:
+                    last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
+                else:
+                    data = resp.json() or {}
+                    keys = data.get("keys") or []
+                    for item in keys:
+                        value = item.get("value")
+                        if value:
+                            return str(value)
+                    last_error = "No keys returned by ARM listKeys"
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
+            time.sleep(1.0 * attempt)
+
+        if last_error:
+            print(
+                "ℹ️  Unable to fetch storage access key via ARM for diagnostic emitters: "
+                f"storage_account={account_name} resource_group={resource_group} subscription_id={subscription_id} "
+                f"error={last_error}"
+            )
+
+        return None
 
     def get_job_status(self, run_id: str) -> Dict[str, Any]:
         """Get job execution status
@@ -705,12 +795,106 @@ class SynapseAPI(PlatformAPI):
             Dictionary with log lines and total count
         """
         try:
-            # First, get batch info to find the application ID
+            # First, get batch info to find the application ID. We use this for the
+            # sparkhistory driver log endpoint which is the most reliable source of
+            # driver stdout/stderr in many Synapse workspaces.
             url = f"{self.base_url}/livyApi/versions/2019-11-01-preview/sparkPools/{self.spark_pool_name}/batches/{run_id}"
             response = self._make_request("GET", url)
             result = response.json()
 
             app_id = result.get("appId")
+
+            # Preferred: Spark History "driverlog" endpoint (plain text download).
+            # Example paths:
+            #   /sparkhistory/api/v1/sparkpools/{pool}/livyid/{livyId}/applications/{appId}/driverlog/stdout/?isDownload=true
+            #   /sparkhistory/api/v1/sparkpools/{pool}/livyid/{livyId}/applications/{appId}/driverlog/stderr/?isDownload=true
+            if app_id:
+                try:
+                    token = self._get_access_token()
+                    stdout_url = (
+                        f"{self.base_url}/sparkhistory/api/v1/sparkpools/{self.spark_pool_name}"
+                        f"/livyid/{run_id}/applications/{app_id}/driverlog/stdout/?isDownload=true"
+                    )
+                    stderr_url = (
+                        f"{self.base_url}/sparkhistory/api/v1/sparkpools/{self.spark_pool_name}"
+                        f"/livyid/{run_id}/applications/{app_id}/driverlog/stderr/?isDownload=true"
+                    )
+
+                    def _fetch_text(url: str) -> str:
+                        # Don't use _make_request() because these endpoints return text.
+                        resp = requests.get(
+                            url,
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=30,
+                        )
+                        if resp.status_code >= 400:
+                            raise Exception(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                        return resp.text or ""
+
+                    out_text = _fetch_text(stdout_url)
+                    err_text = _fetch_text(stderr_url)
+                    lines: List[str] = []
+                    if out_text:
+                        lines.extend(out_text.splitlines())
+                    if err_text:
+                        # Keep stderr lines distinguishable; marker matching only needs substrings.
+                        lines.extend([f"[stderr] {line}" for line in err_text.splitlines()])
+
+                    if lines:
+                        # Reduce noise: system tests validate via TEST_ID markers; keep those
+                        # plus a small set of error/debug lines.
+                        keep_tokens = (
+                            "TEST_ID=",
+                            "BOOTSTRAP",
+                            "Traceback",
+                            "AnalysisException",
+                            "Exception:",
+                            "ERROR:",
+                            "status=FAILED",
+                            "status=COMPLETED",
+                            "status=STARTED",
+                            "KindlingBootstrap",
+                            "streaming-pipes-test-app",
+                        )
+                        filtered_all = [ln for ln in lines if any(tok in ln for tok in keep_tokens)]
+                        # If filtering produces nothing (unexpected), fall back to raw lines.
+                        if filtered_all:
+                            lines = filtered_all
+
+                        filtered = lines[from_line : from_line + size]
+                        return {
+                            "id": run_id,
+                            "from": from_line,
+                            "total": len(lines),
+                            "log": filtered,
+                            "source": "sparkhistory_driverlog",
+                        }
+                except Exception as e:
+                    print(f"⚠️  sparkhistory driverlog endpoint failed for batch {run_id}: {e}")
+
+            # Preferred: Livy log endpoint (returns incremental logs).
+            # This captures driver stdout/stderr much better than the batch "log" field.
+            try:
+                log_url = (
+                    f"{self.base_url}/livyApi/versions/2019-11-01-preview/sparkPools/"
+                    f"{self.spark_pool_name}/batches/{run_id}/log?from={from_line}&size={size}"
+                )
+                log_response = self._make_request("GET", log_url)
+                log_result = log_response.json() or {}
+                log_lines = log_result.get("log", []) or []
+                return {
+                    "id": run_id,
+                    "from": from_line,
+                    "total": from_line + len(log_lines),
+                    "log": log_lines,
+                    "source": "livy_log_endpoint",
+                }
+            except Exception as e:
+                # Fall back to batch status payload below.
+                #
+                # Keep this noisy: when stdout streaming is broken, this is the most actionable
+                # clue for fixing the API path/permissions in a given Synapse workspace.
+                print(f"⚠️  Livy log endpoint failed for batch {run_id}: {type(e).__name__}: {e}")
 
             # If we have storage configured, try to read event logs from Azure Storage
             if self.storage_account and self.container and app_id:
@@ -740,6 +924,18 @@ class SynapseAPI(PlatformAPI):
 
                     traceback.print_exc()
                     print(f"   Falling back to Livy API logs")
+
+            # Some Synapse/Livy variants return logs directly on the batch payload.
+            # Keep this as a fallback: it is often incomplete.
+            payload_logs = result.get("log")
+            if isinstance(payload_logs, list) and payload_logs:
+                return {
+                    "id": run_id,
+                    "from": from_line,
+                    "total": from_line + len(payload_logs[from_line : from_line + size]),
+                    "log": payload_logs[from_line : from_line + size],
+                    "source": "batch_payload",
+                }
 
             # Fallback to Livy API logs (incomplete but better than nothing)
             log_lines = result.get("log", [])
@@ -800,85 +996,97 @@ class SynapseAPI(PlatformAPI):
 
         print(f"📂 Reading logs from: {log_path}")
 
-        log_lines = []
+        def _extract_lines_from_content(raw: bytes) -> List[str]:
+            out: List[str] = []
+            for line in raw.decode("utf-8", errors="replace").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-        try:
-            # Read the driver spark-logs file
-            file_client = file_system_client.get_file_client(log_path)
+                # Filter to only this application
+                if entry.get("applicationId") != app_id:
+                    continue
 
-            # Check if file exists first
-            try:
-                file_props = file_client.get_file_properties()
-            except Exception as exists_error:
-                # File doesn't exist yet (diagnostic emitters may not have written logs)
-                print(f"ℹ️  Log file not found (may not be written yet): {log_path}")
-                print(
-                    f"   This is normal if the job just completed or diagnostic emitters are not configured"
-                )
-                return []
+                category = entry.get("category", "")
+                properties = entry.get("properties", {}) or {}
+                timestamp = entry.get("timestamp", "")
 
+                if category == "Log":
+                    level = properties.get("level", "INFO")
+                    message = properties.get("message", "")
+                    logger_name = properties.get("logger_name", "")
+                    out.append(f"[{timestamp}] {level} {logger_name}: {message}")
+                elif category == "EventLog":
+                    event_data = properties.get("Event", {})
+                    if isinstance(event_data, str):
+                        out.append(f"[{timestamp}] EVENT: {event_data}")
+                    elif isinstance(event_data, dict):
+                        event_type = event_data.get("type", "Unknown")
+                        out.append(f"[{timestamp}] EVENT: {event_type}")
+                elif category == "Metrics":
+                    metric_name = properties.get("name", "")
+                    metric_value = properties.get("value", "")
+                    if metric_name:
+                        out.append(f"[{timestamp}] METRIC {metric_name}: {metric_value}")
+
+            return out
+
+        def _read_file(path: str) -> List[str]:
+            file_client = file_system_client.get_file_client(path)
             download = file_client.download_file()
             content = download.readall()
-
-            # Logs may be compressed
-            if log_path.endswith(".gz"):
+            if path.endswith(".gz"):
                 content = gzip.decompress(content)
+            return _extract_lines_from_content(content)
 
-            # Parse diagnostic log entries (JSON lines format)
-            # Format: {timestamp, category, workspaceName, sparkPool, applicationId, executorId, properties: {message, level, ...}}
-            for line in content.decode("utf-8").splitlines():
-                if line.strip():
-                    try:
-                        entry = json.loads(line)
+        # First try the documented single-file path.
+        try:
+            file_client = file_system_client.get_file_client(log_path)
+            file_client.get_file_properties()
+            return _read_file(log_path)
+        except Exception:
+            pass
 
-                        # Filter to only this application
-                        if entry.get("applicationId") != app_id:
-                            continue
-
-                        category = entry.get("category", "")
-                        properties = entry.get("properties", {})
-                        timestamp = entry.get("timestamp", "")
-
-                        # Extract log messages
-                        if category == "Log":
-                            # Driver and executor logs
-                            level = properties.get("level", "INFO")
-                            message = properties.get("message", "")
-                            logger_name = properties.get("logger_name", "")
-
-                            # Format like standard Spark logs
-                            log_line = f"[{timestamp}] {level} {logger_name}: {message}"
-                            log_lines.append(log_line)
-
-                        elif category == "EventLog":
-                            # Spark events
-                            event_data = properties.get("Event", {})
-                            if isinstance(event_data, str):
-                                log_lines.append(f"[{timestamp}] EVENT: {event_data}")
-                            elif isinstance(event_data, dict):
-                                event_type = event_data.get("type", "Unknown")
-                                log_lines.append(f"[{timestamp}] EVENT: {event_type}")
-
-                        elif category == "Metrics":
-                            # Optionally include metrics
-                            metric_name = properties.get("name", "")
-                            metric_value = properties.get("value", "")
-                            if metric_name:
-                                log_lines.append(
-                                    f"[{timestamp}] METRIC {metric_name}: {metric_value}"
-                                )
-
-                    except json.JSONDecodeError:
-                        # Skip invalid JSON lines
-                        continue
-
-            return log_lines
-
+        # Fallback: some workspaces emit a directory tree (multiple files) instead of a single file.
+        driver_root = f"logs/{log_folder}/driver"
+        candidates: List[str] = []
+        try:
+            for p in file_system_client.get_paths(path=driver_root, recursive=True):
+                if p.is_directory:
+                    continue
+                name = p.name or ""
+                # Capture the common patterns we've seen in Synapse workspaces.
+                if (
+                    "/spark-logs" in name
+                    or name.endswith("spark-logs")
+                    or name.endswith("spark-logs.gz")
+                ):
+                    candidates.append(name)
         except Exception as e:
-            print(f"⚠️  Error reading diagnostic logs from {log_path}: {e}")
+            print(f"⚠️  Could not list diagnostic log paths under {driver_root}: {e}")
+            msg = str(e)
+            if "PathNotFound" in msg or "specified path does not exist" in msg.lower():
+                self._diag_root_missing.add(str(batch_id))
             return []
 
-        log_lines = []
+        if not candidates:
+            print(
+                f"ℹ️  Log file(s) not found under {driver_root} (not written yet or emitters disabled)."
+            )
+            return []
+
+        all_lines: List[str] = []
+        for path in sorted(candidates):
+            try:
+                all_lines.extend(_read_file(path))
+            except Exception as e:
+                print(f"⚠️  Error reading diagnostic log file {path}: {e}")
+                continue
+
+        return all_lines
 
         try:
             # List all subdirectories in synapse-logs to find the one matching our app
@@ -1102,15 +1310,40 @@ class SynapseAPI(PlatformAPI):
                 if status in ["COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED"]:
                     print(f"✅ Job {status.lower()} - doing final log read")
                     sys.stdout.flush()
-                    # Read final logs
-                    new_logs, last_byte_offset = self._read_stdout_chunk_synapse(
-                        run_id, app_id, last_byte_offset
-                    )
-                    if new_logs:
-                        all_logs.extend(new_logs)
-                        for log_line in new_logs:
-                            if callback:
-                                callback(log_line)
+                    # Synapse log materialization can be delayed (even after the batch enters a
+                    # terminal state). Retry for a short grace period so tests can see failures.
+                    grace_seconds = 60.0 if str(run_id) in self._diag_root_missing else 600.0
+                    grace_deadline = time.time() + grace_seconds
+                    seen_useful = False
+                    stagnant_polls = 0
+                    while True:
+                        new_logs, last_byte_offset = self._read_stdout_chunk_synapse(
+                            run_id, app_id, last_byte_offset
+                        )
+                        if new_logs:
+                            all_logs.extend(new_logs)
+                            for log_line in new_logs:
+                                if callback:
+                                    callback(log_line)
+                            stagnant_polls = 0
+                        else:
+                            stagnant_polls += 1
+
+                        if not seen_useful and all_logs:
+                            # Wait for actual app output (TEST_ID markers) instead of exiting just
+                            # because we got minimal batch payload logs.
+                            upper = "\n".join(all_logs[-200:]).upper()
+                            if "TEST_ID=" in upper or "BOOTSTRAP SCRIPT" in upper:
+                                seen_useful = True
+
+                        # If we've seen useful output, allow an early exit once logs have stopped changing.
+                        if seen_useful and stagnant_polls >= 2:
+                            break
+
+                        if time.time() >= grace_deadline:
+                            break
+
+                        time.sleep(poll_interval)
                     break
 
                 # If job not started yet, wait
@@ -1190,12 +1423,21 @@ class SynapseAPI(PlatformAPI):
         Returns:
             Tuple of (new_lines, new_byte_offset)
         """
-        if not app_id:
-            # Can't read logs without application ID
-            return [], byte_offset
-
-        if not self.storage_account or not self.container:
-            return [], byte_offset
+        # IMPORTANT: we treat byte_offset as a *line offset* for both Livy and storage logs.
+        # This keeps offsets monotonic even when we fall back between sources.
+        fallback_lines: List[str] = []
+        try:
+            logs = self.get_job_logs(run_id=run_id, from_line=byte_offset, size=1000000)
+            src = (logs.get("source") or "").lower()
+            new_lines = logs.get("log", []) or []
+            # Only short-circuit for the incremental Livy endpoint. Batch payload logs are often
+            # incomplete, and returning them here can prevent storage-based stdout from being read.
+            if new_lines and src in ("livy_log_endpoint", "sparkhistory_driverlog"):
+                return list(new_lines), byte_offset + len(new_lines)
+            if new_lines:
+                fallback_lines = list(new_lines)
+        except Exception:
+            pass
 
         try:
             import json
@@ -1220,23 +1462,15 @@ class SynapseAPI(PlatformAPI):
 
             file_client = file_system_client.get_file_client(log_path)
 
-            # Get file properties to check size
-            properties = file_client.get_file_properties()
-            file_size = properties.size
-
-            if file_size <= byte_offset:
-                # No new content
-                return [], byte_offset
-
-            # Read new content from byte_offset
-            download = file_client.download_file(offset=byte_offset, length=file_size - byte_offset)
+            # Read the whole file and treat byte_offset as a line offset.
+            # This avoids mixing byte offsets (storage) with line offsets (Livy).
+            download = file_client.download_file()
             content = download.readall()
-            new_text = content.decode("utf-8")
-            new_byte_offset = byte_offset + len(content)
+            text = content.decode("utf-8", errors="replace")
 
             # Parse JSON lines and extract log messages
-            new_lines = []
-            for line in new_text.splitlines():
+            all_messages: List[str] = []
+            for line in text.splitlines():
                 if not line.strip():
                     continue
                 try:
@@ -1252,15 +1486,22 @@ class SynapseAPI(PlatformAPI):
                     if category == "Log":
                         message = properties_dict.get("message", "")
                         if message:
-                            new_lines.append(message)
+                            all_messages.append(message)
 
                 except json.JSONDecodeError:
                     continue
 
-            return new_lines, new_byte_offset
+            if byte_offset < len(all_messages):
+                new_lines = all_messages[byte_offset:]
+                return list(new_lines), len(all_messages)
+
+            # No new storage logs since last read.
+            return [], byte_offset
 
         except Exception as e:
-            # Expected during early execution - logs not available yet
+            # Expected during early execution - logs not available yet.
+            if fallback_lines:
+                return fallback_lines, byte_offset + len(fallback_lines)
             return [], byte_offset
 
     def delete_job(self, job_id: str) -> bool:

@@ -5,9 +5,52 @@ Test runner utilities for poe tasks.
 Provides flexible test execution with optional platform and test filtering.
 """
 
+import os
 import subprocess
 import sys
 from typing import List, Optional
+
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Best-effort loader for .env files used in local system testing.
+
+    We intentionally keep this minimal (no dependencies). It supports lines like:
+      - export KEY=value
+      - KEY=value
+    and ignores comments/blank lines.
+
+    Values are treated as literals (no shell expansion), which is important for
+    entries like EVENTHUB_TEST_CONSUMER_GROUP="$Default".
+    """
+    if os.environ.get("KINDLING_SKIP_DOTENV", "").strip().lower() in {"1", "true", "yes"}:
+        return
+
+    try:
+        if not os.path.exists(path):
+            return
+        with open(path, encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export ") :].strip()
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if not key:
+                    continue
+                # Don't overwrite values already set in the environment.
+                if key in os.environ:
+                    continue
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                os.environ[key] = value
+    except Exception:
+        # Non-fatal: this is just a convenience for local runs.
+        return
 
 
 def build_pytest_args(
@@ -61,9 +104,19 @@ def run_system_tests(platform: str = "", test: str = "") -> int:
         poe test-system --test deploy_app_as_job # Run specific test on all platforms
         poe test-system --platform fabric --test deploy_app_as_job  # Specific test on Fabric
     """
+    _load_dotenv()
+
     # Convert empty strings to None for clarity
     platform_filter = platform if platform else None
     test_filter = test if test else None
+
+    # Avoid coverage file collisions when running multiple system tests concurrently.
+    # pytest-cov uses COVERAGE_FILE for the sqlite db path.
+    try:
+        suffix = platform_filter or "all"
+        os.environ.setdefault("COVERAGE_FILE", f".coverage.system.{suffix}")
+    except Exception:
+        pass
 
     # Build pytest command
     args = build_pytest_args(

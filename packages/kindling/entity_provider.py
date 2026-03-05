@@ -213,6 +213,20 @@ class StreamWritableEntityProvider(ABC):
         pass
 
 
+class DestinationEnsuringProvider(ABC):
+    """
+    Optional interface for providers that can ensure a write destination exists.
+
+    This is intentionally separated from write interfaces so it remains an opt-in
+    capability: most sinks don't need pre-creation, and some platforms forbid DDL.
+    """
+
+    @abstractmethod
+    def ensure_destination(self, entity_metadata: EntityMetadata) -> None:
+        """Ensure the destination exists (provider-specific semantics)."""
+        pass
+
+
 # Type aliases for checking capabilities
 def is_streamable(provider: BaseEntityProvider) -> bool:
     """Check if provider supports streaming reads."""
@@ -227,3 +241,8 @@ def is_writable(provider: BaseEntityProvider) -> bool:
 def is_stream_writable(provider: BaseEntityProvider) -> bool:
     """Check if provider supports streaming writes."""
     return isinstance(provider, StreamWritableEntityProvider)
+
+
+def can_ensure_destination(provider: BaseEntityProvider) -> bool:
+    """Check if provider supports destination ensuring."""
+    return isinstance(provider, DestinationEnsuringProvider)
