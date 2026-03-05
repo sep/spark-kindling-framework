@@ -6,13 +6,11 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
-from injector import inject
 # Azure Synapse imports - always available in Synapse wheel
 from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import *
 from azure.synapse.artifacts import ArtifactsClient
 from azure.synapse.artifacts.models import *
-from kindling.data_apps import AppDeploymentService
 from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
 from kindling.spark_config import ConfigService
