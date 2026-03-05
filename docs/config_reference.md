@@ -68,6 +68,7 @@ Legacy/compat keys (still accepted by config translation):
 ### Delta
 
 - `kindling.delta.tablerefmode`: Default Delta access mode (`forName`, `forPath`, `auto`).
+- `kindling.features.delta.auto_clustering`: Static feature flag override to allow `cluster_columns: auto` (Databricks only; Kindling also computes a default under `kindling.runtime.features.delta.auto_clustering` during startup).
 
 ### Storage (Delta Table Naming/Paths)
 
