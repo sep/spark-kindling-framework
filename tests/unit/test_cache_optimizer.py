@@ -33,9 +33,7 @@ class TestCacheOptimizer:
         graph = _build_shared_input_graph()
         optimizer = CacheOptimizer()
 
-        no_recommendations = optimizer.recommend(
-            graph, pipe_ids=["pipe_source", "pipe_consumer_a"]
-        )
+        no_recommendations = optimizer.recommend(graph, pipe_ids=["pipe_source", "pipe_consumer_a"])
         assert no_recommendations == {}
 
         scoped_recommendations = optimizer.recommend(
