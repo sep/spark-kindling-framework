@@ -82,6 +82,7 @@ def _get_spark_kindling_config() -> Dict[str, Any]:
 
     return mapped
 
+
 # DEBUG: Track script execution to detect duplicate runs
 now = datetime.now()
 execution_id = now.strftime("%Y%m%d_%H%M%S_%f")

@@ -443,9 +443,7 @@ class GenerationExecutor(SignalEmitter):
         recommendations = plan.metadata.get("cache_recommendations")
         if isinstance(recommendations, dict):
             self._cache_recommendations = {
-                str(entity_id): str(level)
-                for entity_id, level in recommendations.items()
-                if level
+                str(entity_id): str(level) for entity_id, level in recommendations.items() if level
             }
         else:
             self._cache_recommendations = self._cache_optimizer.as_level_map(

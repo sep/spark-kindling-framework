@@ -14,6 +14,7 @@ def provider_and_mocks(monkeypatch):
     monkeypatch.setattr("kindling.entity_provider_delta.get_or_create_spark_session", lambda: spark)
 
     config = MagicMock(spec=ConfigService)
+
     def _get(key, default=None):
         if key == "kindling.delta.tablerefmode":
             return "forName"

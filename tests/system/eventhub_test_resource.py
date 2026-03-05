@@ -74,8 +74,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 def _ensure_terraform_cli() -> None:
     if shutil.which("terraform") is None:
         raise EventHubResourceResolutionError(
-            "Terraform is not installed or not in PATH. "
-            "Install Terraform to read IaC outputs."
+            "Terraform is not installed or not in PATH. " "Install Terraform to read IaC outputs."
         )
 
 
@@ -95,8 +94,7 @@ def _run_terraform_output(iac_dir: str) -> dict[str, Any]:
     stdout = (result.stdout or "").strip()
     if not stdout:
         raise EventHubResourceResolutionError(
-            f"Terraform output is empty in {iac_dir}. "
-            "Apply the Event Hub IaC stack first."
+            f"Terraform output is empty in {iac_dir}. " "Apply the Event Hub IaC stack first."
         )
 
     try:
