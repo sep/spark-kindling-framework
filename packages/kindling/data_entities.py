@@ -107,10 +107,12 @@ class EntityProvider(ABC):
 class EntityMetadata:
     entityid: str
     name: str
-    partition_columns: List[str]
     merge_columns: List[str]
     tags: Dict[str, str]
     schema: Any
+    # Optional: physical file partitioning columns (Delta partitionBy).
+    # If omitted, defaults to no file partitioning.
+    partition_columns: List[str] = field(default_factory=list)
     # Optional: Databricks liquid clustering (or best-effort on other platforms).
     # If set, Delta writes should generally avoid file partitioning (partition_columns).
     cluster_columns: List[str] = field(default_factory=list)
