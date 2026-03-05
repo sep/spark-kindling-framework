@@ -110,6 +110,14 @@ def run_system_tests(platform: str = "", test: str = "") -> int:
     platform_filter = platform if platform else None
     test_filter = test if test else None
 
+    # Avoid coverage file collisions when running multiple system tests concurrently.
+    # pytest-cov uses COVERAGE_FILE for the sqlite db path.
+    try:
+        suffix = platform_filter or "all"
+        os.environ.setdefault("COVERAGE_FILE", f".coverage.system.{suffix}")
+    except Exception:
+        pass
+
     # Build pytest command
     args = build_pytest_args(
         test_path="tests/system/core/",
