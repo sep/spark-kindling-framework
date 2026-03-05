@@ -179,6 +179,37 @@ try:
     def _describe_detail_for_table(table_name: str):
         return spark.sql(f"DESCRIBE DETAIL {_quote_table_identifier(table_name)}").first()
 
+    def _coerce_cluster_columns(raw_value, default_cols):
+        """Coerce a config value into the cluster_columns shape expected by DataEntities.entity."""
+        if raw_value is None:
+            return list(default_cols)
+        if isinstance(raw_value, str):
+            return [raw_value]
+        try:
+            return [str(v) for v in list(raw_value)]
+        except Exception:
+            return list(default_cols)
+
+    def _is_auto_cluster_columns(cluster_cols) -> bool:
+        if cluster_cols is None:
+            return False
+        if isinstance(cluster_cols, str):
+            vals = [cluster_cols]
+        else:
+            try:
+                vals = list(cluster_cols)
+            except Exception:
+                vals = [cluster_cols]
+        return len(vals) == 1 and str(vals[0]).strip().lower() == "auto"
+
+    def _auto_clustering_enabled() -> bool:
+        try:
+            from kindling.features import get_feature_bool
+
+            return get_feature_bool(config_service, "delta.auto_clustering", default=False) is True
+        except Exception:
+            return False
+
     class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
         """Provides watermark entities for streaming test - minimal implementation."""
 
@@ -313,22 +344,30 @@ try:
 
     # Intentionally specify both partition_columns and cluster_columns to validate
     # provider behavior: prefer clustering and skip partitionBy().
+    # In system tests, allow overriding cluster columns via config so we can validate
+    # "auto" liquid clustering behavior without cloning the app.
+    cluster_cols_v1 = _coerce_cluster_columns(
+        config_service.get("kindling.system_tests.streaming_pipes.cluster_columns"), ["id"]
+    )
     DataEntities.entity(
         entityid="system.delta_clustering",
         name="delta_clustering",
         partition_columns=["pdate"],
-        cluster_columns=["id"],
+        cluster_columns=cluster_cols_v1,
         merge_columns=["id"],
         tags=_clustering_test_tags(clustering_test_path),
         schema=layout_schema,
     )
 
     # Same destination as delta_clustering, but a different clustering spec to validate updates.
+    cluster_cols_v2 = _coerce_cluster_columns(
+        config_service.get("kindling.system_tests.streaming_pipes.cluster_columns_v2"), ["pdate"]
+    )
     DataEntities.entity(
         entityid="system.delta_clustering_v2",
         name="delta_clustering_v2",
         partition_columns=["pdate"],
-        cluster_columns=["pdate"],
+        cluster_columns=cluster_cols_v2,
         merge_columns=["id"],
         tags=_clustering_test_tags(clustering_test_path),
         schema=layout_schema,
@@ -424,63 +463,128 @@ try:
 
     # ---- Validate clustering ----
     try:
+        auto_requested = _is_auto_cluster_columns(getattr(clustering_entity, "cluster_columns", None))
+        auto_enabled = _auto_clustering_enabled()
+
         entity_provider.ensure_entity_table(clustering_entity)
 
-        # Always validate that clustering config prevents file partitioning.
-        clustering_table_name = (clustering_entity.tags or {}).get("provider.table_name")
-        if clustering_table_name:
-            detail = _describe_detail_for_table(clustering_table_name)
+        if auto_requested and not auto_enabled:
+            ok = False
+            partition_cols, clustering_cols = [], []
         else:
-            detail = _describe_detail_for_path(clustering_test_path)
+            # Always validate that clustering config prevents file partitioning.
+            clustering_table_name = (clustering_entity.tags or {}).get("provider.table_name")
+            if clustering_table_name:
+                detail = _describe_detail_for_table(clustering_table_name)
+            else:
+                detail = _describe_detail_for_path(clustering_test_path)
 
-        partition_cols = _get_row_field(detail, "partitionColumns") or []
-        clustering_cols = _get_row_field(detail, "clusteringColumns") or []
+            partition_cols = _get_row_field(detail, "partitionColumns") or []
+            clustering_cols = _get_row_field(detail, "clusteringColumns") or []
 
-        ok = list(partition_cols) == [] and ("id" in [str(c).lower() for c in list(clustering_cols)])
+            if auto_requested:
+                # For AUTO we don't assert exact engine-chosen columns; we just ensure we did not
+                # physically partition files even though partition_columns were provided.
+                ok = list(partition_cols) == []
+            else:
+                ok = list(partition_cols) == [] and (
+                    "id" in [str(c).lower() for c in list(clustering_cols)]
+                )
 
         msg = (
             f"TEST_ID={test_id} test=delta_clustering status={'PASSED' if ok else 'FAILED'} "
-            f"partitionColumns={partition_cols} clusteringColumns={clustering_cols}"
+            f"partitionColumns={partition_cols} clusteringColumns={clustering_cols} "
+            f"auto_requested={auto_requested} auto_enabled={auto_enabled}"
         )
         logger.info(msg)
         print(msg, flush=True)
         test_results["delta_clustering"] = ok
     except Exception as e:
-        msg = f"TEST_ID={test_id} test=delta_clustering status=FAILED error={type(e).__name__}:{e}"
-        logger.error(msg)
-        print(msg, flush=True)
-        test_results["delta_clustering"] = False
+        auto_requested = _is_auto_cluster_columns(getattr(clustering_entity, "cluster_columns", None))
+        auto_enabled = _auto_clustering_enabled()
+
+        if auto_requested and not auto_enabled:
+            # Expected: provider should reject auto clustering when feature is not enabled.
+            msg = (
+                f"TEST_ID={test_id} test=delta_clustering status=PASSED "
+                f"auto_requested=true auto_enabled=false expected_rejection=true "
+                f"error={type(e).__name__}:{e}"
+            )
+            logger.info(msg)
+            print(msg, flush=True)
+            test_results["delta_clustering"] = True
+        else:
+            msg = (
+                f"TEST_ID={test_id} test=delta_clustering status=FAILED "
+                f"auto_requested={auto_requested} auto_enabled={auto_enabled} "
+                f"error={type(e).__name__}:{e}"
+            )
+            logger.error(msg)
+            print(msg, flush=True)
+            test_results["delta_clustering"] = False
 
     # ---- Validate clustering updates ----
     try:
+        auto_requested = _is_auto_cluster_columns(
+            getattr(clustering_entity_v2, "cluster_columns", None)
+        )
+        auto_enabled = _auto_clustering_enabled()
+
         entity_provider.ensure_entity_table(clustering_entity_v2)
 
-        clustering_table_name = (clustering_entity_v2.tags or {}).get("provider.table_name")
-        if clustering_table_name:
-            detail = _describe_detail_for_table(clustering_table_name)
+        if auto_requested and not auto_enabled:
+            ok = False
+            partition_cols, clustering_cols = [], []
         else:
-            detail = _describe_detail_for_path(clustering_test_path)
+            clustering_table_name = (clustering_entity_v2.tags or {}).get("provider.table_name")
+            if clustering_table_name:
+                detail = _describe_detail_for_table(clustering_table_name)
+            else:
+                detail = _describe_detail_for_path(clustering_test_path)
 
-        partition_cols = _get_row_field(detail, "partitionColumns") or []
-        clustering_cols = _get_row_field(detail, "clusteringColumns") or []
+            partition_cols = _get_row_field(detail, "partitionColumns") or []
+            clustering_cols = _get_row_field(detail, "clusteringColumns") or []
 
-        ok = list(partition_cols) == []
-        desired = {"pdate"}
-        actual = {str(c).lower() for c in list(clustering_cols)}
-        ok = ok and (actual == desired)
+            if auto_requested:
+                ok = list(partition_cols) == []
+            else:
+                ok = list(partition_cols) == []
+                desired = {"pdate"}
+                actual = {str(c).lower() for c in list(clustering_cols)}
+                ok = ok and (actual == desired)
 
         msg = (
             f"TEST_ID={test_id} test=delta_clustering_update status={'PASSED' if ok else 'FAILED'} "
-            f"partitionColumns={partition_cols} clusteringColumns={clustering_cols}"
+            f"partitionColumns={partition_cols} clusteringColumns={clustering_cols} "
+            f"auto_requested={auto_requested} auto_enabled={auto_enabled}"
         )
         logger.info(msg)
         print(msg, flush=True)
         test_results["delta_clustering_update"] = ok
     except Exception as e:
-        msg = f"TEST_ID={test_id} test=delta_clustering_update status=FAILED error={type(e).__name__}:{e}"
-        logger.error(msg)
-        print(msg, flush=True)
-        test_results["delta_clustering_update"] = False
+        auto_requested = _is_auto_cluster_columns(
+            getattr(clustering_entity_v2, "cluster_columns", None)
+        )
+        auto_enabled = _auto_clustering_enabled()
+
+        if auto_requested and not auto_enabled:
+            msg = (
+                f"TEST_ID={test_id} test=delta_clustering_update status=PASSED "
+                f"auto_requested=true auto_enabled=false expected_rejection=true "
+                f"error={type(e).__name__}:{e}"
+            )
+            logger.info(msg)
+            print(msg, flush=True)
+            test_results["delta_clustering_update"] = True
+        else:
+            msg = (
+                f"TEST_ID={test_id} test=delta_clustering_update status=FAILED "
+                f"auto_requested={auto_requested} auto_enabled={auto_enabled} "
+                f"error={type(e).__name__}:{e}"
+            )
+            logger.error(msg)
+            print(msg, flush=True)
+            test_results["delta_clustering_update"] = False
 
     # Seed static lookup data (read as direct/batch input while silver is streaming)
     lookup_rows = [{"lookup_key": str(i), "category": f"group_{i % 5}"} for i in range(100)]
