@@ -151,8 +151,18 @@ class DeltaEntityProvider(
         return str(access_mode or "").lower() == "forpath"
 
     def _get_cluster_columns(self, entity) -> list[str]:
-        cols = getattr(entity, "cluster_columns", None) or []
-        return list(cols)
+        cols = getattr(entity, "cluster_columns", None)
+        if cols is None:
+            return []
+        if isinstance(cols, str):
+            return [cols]
+        try:
+            return list(cols)
+        except Exception:
+            return []
+
+    def _is_auto_clustering_requested(self, cluster_cols: list[str]) -> bool:
+        return len(cluster_cols) == 1 and str(cluster_cols[0]).strip().lower() == "auto"
 
     def _should_partition_files(self, entity) -> bool:
         """True when we should physically partition data files by partition_columns."""
@@ -175,6 +185,20 @@ class DeltaEntityProvider(
         cluster_cols = self._get_cluster_columns(entity)
         if not cluster_cols:
             return
+
+        auto_requested = self._is_auto_clustering_requested(cluster_cols)
+        if any(str(c).strip().lower() == "auto" for c in cluster_cols) and not auto_requested:
+            raise ValueError(
+                f"Entity '{getattr(entity, 'entityid', entity)}' uses cluster_columns containing 'auto' "
+                "alongside other columns. Use exactly ['auto'] (or 'auto') to request auto clustering."
+            )
+
+        if auto_requested and get_feature_bool(self.config, "delta.auto_clustering", default=False) is not True:
+            raise ValueError(
+                "Auto clustering was requested (cluster_columns='auto'), but the feature flag "
+                "`kindling.features.delta.auto_clustering` (or computed "
+                "`kindling.runtime.features.delta.auto_clustering`) is not enabled for this runtime."
+            )
 
         if get_feature_bool(self.config, "delta.cluster_by", default=True) is False:
             self.logger.debug("Skipping CLUSTER BY: feature flag delta.cluster_by is false")
@@ -216,7 +240,8 @@ class DeltaEntityProvider(
             return
 
         # If the engine reports current clustering, avoid redundant ALTER.
-        current = self._get_current_clustering_columns(table_ref)
+        # For auto clustering we can't reliably compare engine-chosen columns, so always apply.
+        current = None if auto_requested else self._get_current_clustering_columns(table_ref)
         desired = [str(c) for c in cluster_cols]
         if current is not None:
             cur_norm = [c.lower() for c in current]
@@ -224,9 +249,18 @@ class DeltaEntityProvider(
             if set(cur_norm) == set(des_norm):
                 return
 
-        cols_sql = ", ".join([f"`{c.replace('`', '``')}`" for c in cluster_cols])
+        if auto_requested and self._is_for_path_mode(table_ref.access_mode):
+            raise ValueError(
+                "Auto clustering requires a catalog table target (forName). "
+                f"Entity '{getattr(entity, 'entityid', entity)}' is configured for forPath."
+            )
+
         try:
-            self.spark.sql(f"ALTER TABLE {target} CLUSTER BY ({cols_sql})")
+            if auto_requested:
+                self.spark.sql(f"ALTER TABLE {target} CLUSTER BY AUTO")
+            else:
+                cols_sql = ", ".join([f"`{c.replace('`', '``')}`" for c in cluster_cols])
+                self.spark.sql(f"ALTER TABLE {target} CLUSTER BY ({cols_sql})")
         except Exception as e:
             # If we hit a parser error, persist a computed runtime feature so future
             # ensures don't keep retrying in this process.
@@ -470,7 +504,11 @@ class DeltaEntityProvider(
         # Some engines do not allow ALTER TABLE ... CLUSTER BY unless the table was created
         # with clustering enabled.
         cluster_cols = self._get_cluster_columns(entity)
-        if cluster_cols and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False:
+        if (
+            cluster_cols
+            and not self._is_auto_clustering_requested(cluster_cols)
+            and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False
+        ):
             try:
                 dt = dt.clusterBy(*cluster_cols)
             except Exception as e:
@@ -663,7 +701,11 @@ class DeltaEntityProvider(
             # (Synapse in particular) reject `ALTER TABLE ... CLUSTER BY` unless the table
             # was created with clustering enabled.
             cluster_cols = self._get_cluster_columns(entity)
-            if cluster_cols and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False:
+            if (
+                cluster_cols
+                and not self._is_auto_clustering_requested(cluster_cols)
+                and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False
+            ):
                 try:
                     dt = (
                         DeltaTable.createIfNotExists(self.spark)
