@@ -1081,6 +1081,22 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     except Exception as feature_error:
         logger.debug(f"Runtime feature discovery failed (non-fatal): {feature_error}")
 
+    # Helpful diagnostics for system tests / feature-gated behavior.
+    # These keys are safe to log (no secrets) and explain why certain Delta operations
+    # (like CLUSTER BY AUTO) may be enabled/disabled on a given runtime.
+    try:
+        dbr_version = config_service.get("kindling.runtime.features.databricks.runtime_version")
+        auto_clustering = config_service.get("kindling.runtime.features.delta.auto_clustering")
+        auto_clustering_static = config_service.get("kindling.features.delta.auto_clustering")
+        logger.info(
+            "Runtime features: "
+            f"databricks.runtime_version={dbr_version!r} "
+            f"delta.auto_clustering={auto_clustering!r} "
+            f"(static_override={auto_clustering_static!r})"
+        )
+    except Exception:
+        pass
+
     try:
         # Read from general kindling config (not bootstrap namespace)
         # bootstrap is just for temp backwards compatibility mapping
