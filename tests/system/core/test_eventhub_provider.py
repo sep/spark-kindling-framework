@@ -208,8 +208,7 @@ class TestEventHubProvider:
             status_result = api_client.get_job_status(run_id=run_id)
             final_status = str(status_result.get("status", "UNKNOWN")).upper()
             assert final_status in ["TERMINATED", "COMPLETED", "SUCCESS"], (
-                f"Unexpected final status: {final_status}. "
-                f"Publisher stats: {publisher_stats}"
+                f"Unexpected final status: {final_status}. " f"Publisher stats: {publisher_stats}"
             )
 
             expected_tests = [
@@ -228,7 +227,9 @@ class TestEventHubProvider:
                 f"Publisher stats: {publisher_stats}"
             )
 
-            failed_tests = [name for name, result in validation_results.items() if not result["passed"]]
+            failed_tests = [
+                name for name, result in validation_results.items() if not result["passed"]
+            ]
             assert not failed_tests, (
                 f"Event Hub provider checks failed: {failed_tests}. "
                 f"Validation results: {validation_results}"

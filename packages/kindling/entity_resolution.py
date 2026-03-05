@@ -154,4 +154,3 @@ class ConfigDrivenEntityPathLocator(EntityPathLocator):
         suffix = "/".join(parts) if parts else str(entity_id).replace(".", "/")
 
         return f"{str(table_root).rstrip('/')}/{suffix}"
-

@@ -175,4 +175,3 @@ class TestStreamingPipesOrchestratorAuto:
                 print(f"✅ Cleaned up app: {app_name}")
             except Exception as e:
                 print(f"⚠️  Failed to cleanup app {app_name}: {e}")
-

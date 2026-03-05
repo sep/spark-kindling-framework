@@ -324,8 +324,10 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
                 "storage": {
                     # Avoid Fabric-relative paths on Synapse.
                     "table_root": f"{synapse_root}/tables" if synapse_root else "tables",
-                    "checkpoint_root": f"{synapse_root}/checkpoints" if synapse_root else "checkpoints",
-                }
+                    "checkpoint_root": (
+                        f"{synapse_root}/checkpoints" if synapse_root else "checkpoints"
+                    ),
+                },
             }
         },
     }
@@ -336,9 +338,9 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
         effective_schema = synapse_schema or "kindling_system_tests"
         platform_config["synapse"]["kindling"]["storage"]["table_schema"] = effective_schema
         if synapse_root:
-            platform_config["synapse"]["kindling"]["storage"]["table_schema_location"] = (
-                f"{synapse_root}/schemas/{effective_schema}"
-            )
+            platform_config["synapse"]["kindling"]["storage"][
+                "table_schema_location"
+            ] = f"{synapse_root}/schemas/{effective_schema}"
 
     config_to_merge = platform_config.get(platform_name, {})
 

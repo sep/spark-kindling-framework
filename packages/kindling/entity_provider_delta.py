@@ -193,7 +193,10 @@ class DeltaEntityProvider(
                 "alongside other columns. Use exactly ['auto'] (or 'auto') to request auto clustering."
             )
 
-        if auto_requested and get_feature_bool(self.config, "delta.auto_clustering", default=False) is not True:
+        if (
+            auto_requested
+            and get_feature_bool(self.config, "delta.auto_clustering", default=False) is not True
+        ):
             raise ValueError(
                 "Auto clustering was requested (cluster_columns='auto'), but the feature flag "
                 "`kindling.features.delta.auto_clustering` (or computed "
@@ -332,12 +335,16 @@ class DeltaEntityProvider(
             keys = {str(k).lower() for k in d.keys()}
             if "clusteringcolumns" in keys:
                 try:
-                    set_runtime_feature(self.config, "delta.describe_detail.has_clustering_columns", True)
+                    set_runtime_feature(
+                        self.config, "delta.describe_detail.has_clustering_columns", True
+                    )
                 except Exception:
                     pass
             else:
                 try:
-                    set_runtime_feature(self.config, "delta.describe_detail.has_clustering_columns", False)
+                    set_runtime_feature(
+                        self.config, "delta.describe_detail.has_clustering_columns", False
+                    )
                 except Exception:
                     pass
 
@@ -486,7 +493,9 @@ class DeltaEntityProvider(
     def _create_managed_table(self, entity, table_ref: DeltaTableReference):
         """Create a managed Delta table by name (catalog decides location)."""
         if not table_ref.table_name:
-            raise ValueError(f"Table name is required for managed table creation: {entity.entityid}")
+            raise ValueError(
+                f"Table name is required for managed table creation: {entity.entityid}"
+            )
 
         # Ensure schema exists when a schema LOCATION is configured (Synapse convention).
         self._ensure_configured_table_schema_exists()
@@ -730,8 +739,8 @@ class DeltaEntityProvider(
 
             schema = entity.schema or StructType([])
             empty_df = self.spark.createDataFrame([], schema=schema)
-            writer = empty_df.write.format("delta").mode("overwrite").option(
-                "overwriteSchema", "true"
+            writer = (
+                empty_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true")
             )
             # Keep behavior aligned with DeltaTable.create*() path: set CDF table property when possible.
             writer = writer.option("delta.enableChangeDataFeed", "true")
