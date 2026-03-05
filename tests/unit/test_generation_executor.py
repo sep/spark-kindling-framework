@@ -913,8 +913,8 @@ class TestStreamingExecution:
             "entity.src": stream_provider,
             "entity.dst": output_provider,
         }[entity.entityid]
-        config_service.get.side_effect = (
-            lambda key: "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
+        config_service.get.side_effect = lambda key: (
+            "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
         )
 
         plan = make_plan(
@@ -984,7 +984,9 @@ class TestStreamingExecution:
         pipes_registry.get_pipe_definition.return_value = pipe
 
         src_entity = Mock(entityid="entity.src", tags={"provider_type": "delta"})
-        dst_entity = Mock(entityid="entity.dst", tags={"provider_type": "delta", "provider.path": "/out"})
+        dst_entity = Mock(
+            entityid="entity.dst", tags={"provider_type": "delta", "provider.path": "/out"}
+        )
         entity_registry.get_entity_definition.side_effect = lambda eid: {
             "entity.src": src_entity,
             "entity.dst": dst_entity,

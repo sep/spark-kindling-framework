@@ -19,8 +19,8 @@ def _make_pipe(pipe_id="pipe1", output_entity_id="entity.dst"):
 
 def test_start_pipe_streaming_for_name_uses_to_table():
     cs = Mock()
-    cs.get.side_effect = (
-        lambda key: "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
+    cs.get.side_effect = lambda key: (
+        "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
     )
     dpr = Mock()
     der = Mock()
@@ -72,8 +72,8 @@ def test_start_pipe_streaming_for_name_uses_to_table():
 
 def test_start_pipe_streaming_for_path_uses_start_with_path():
     cs = Mock()
-    cs.get.side_effect = (
-        lambda key: "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
+    cs.get.side_effect = lambda key: (
+        "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
     )
     dpr = Mock()
     der = Mock()
@@ -117,8 +117,8 @@ def test_start_pipe_streaming_for_path_uses_start_with_path():
 
 def test_start_pipe_streaming_for_name_resolves_table_from_mapper_when_missing_tag():
     cs = Mock()
-    cs.get.side_effect = (
-        lambda key: "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
+    cs.get.side_effect = lambda key: (
+        "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
     )
     dpr = Mock()
     der = Mock()

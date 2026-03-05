@@ -21,7 +21,9 @@ class TestDeltaEntityProviderConfig:
     @pytest.fixture(autouse=True)
     def mock_spark_session(self, monkeypatch):
         spark = MagicMock()
-        monkeypatch.setattr("kindling.entity_provider_delta.get_or_create_spark_session", lambda: spark)
+        monkeypatch.setattr(
+            "kindling.entity_provider_delta.get_or_create_spark_session", lambda: spark
+        )
         return spark
 
     @pytest.fixture
@@ -309,7 +311,9 @@ class TestDeltaEntityProviderConfig:
         provider._create_managed_table = MagicMock(
             side_effect=lambda _entity, ref: setattr(ref, "table_path", "abfss://managed/location")
         )
-        provider._resolve_catalog_table_location = MagicMock(return_value="abfss://managed/location")
+        provider._resolve_catalog_table_location = MagicMock(
+            return_value="abfss://managed/location"
+        )
 
         provider._ensure_table_exists(entity, table_ref)
 
@@ -434,9 +438,7 @@ class TestDeltaEntityProviderConfig:
         writer.saveAsTable.assert_called_once_with("default_catalog.default_db.default_table")
         writer.save.assert_not_called()
 
-    def test_append_for_name_prefers_save_as_table_when_location_is_known(
-        self, mock_dependencies
-    ):
+    def test_append_for_name_prefers_save_as_table_when_location_is_known(self, mock_dependencies):
         """forName append should keep table-name writes, even when table location is known."""
         provider = DeltaEntityProvider(
             config=mock_dependencies["config"],
@@ -537,5 +539,7 @@ class TestDeltaEntityProviderConfig:
 
         provider._ensure_schema_applied(entity, table_ref)
 
-        provider.spark.read.table.assert_called_once_with("default_catalog.default_db.default_table")
+        provider.spark.read.table.assert_called_once_with(
+            "default_catalog.default_db.default_table"
+        )
         provider.spark.read.format.return_value.load.assert_not_called()

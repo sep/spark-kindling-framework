@@ -125,15 +125,21 @@ def _find_marker_in_stream(spark, provider, entity, marker: str, query_name: str
     query = None
 
     try:
-        stream_df = provider.read_entity_as_stream(entity).selectExpr("cast(body as string) as body_str")
+        stream_df = provider.read_entity_as_stream(entity).selectExpr(
+            "cast(body as string) as body_str"
+        )
         filtered = stream_df.filter(col("body_str").contains(marker))
 
-        query = filtered.writeStream.format("memory").queryName(query_name).outputMode("append").start()
+        query = (
+            filtered.writeStream.format("memory").queryName(query_name).outputMode("append").start()
+        )
 
         deadline = time.time() + 90
         while time.time() < deadline:
             try:
-                marker_count = spark.sql(f"SELECT count(1) AS c FROM {query_name}").collect()[0]["c"]
+                marker_count = spark.sql(f"SELECT count(1) AS c FROM {query_name}").collect()[0][
+                    "c"
+                ]
             except Exception:
                 marker_count = 0
 
@@ -156,10 +162,13 @@ def _resolve_pipe_paths(config_service: ConfigService, test_id: str) -> tuple[st
         return f"{base}/sink", f"{base}/checkpoints"
 
     table_root = str(config_service.get("kindling.storage.table_root") or "Tables").rstrip("/")
-    checkpoint_root = str(config_service.get("kindling.storage.checkpoint_root") or "Files/checkpoints").rstrip(
-        "/"
+    checkpoint_root = str(
+        config_service.get("kindling.storage.checkpoint_root") or "Files/checkpoints"
+    ).rstrip("/")
+    return (
+        f"{table_root}/eventhub_pipe_test_{test_id}/sink",
+        f"{checkpoint_root}/eventhub_pipe_test_{test_id}",
     )
-    return f"{table_root}/eventhub_pipe_test_{test_id}/sink", f"{checkpoint_root}/eventhub_pipe_test_{test_id}"
 
 
 def _cleanup_pipe_paths(logger, sink_path: str, checkpoint_base: str):

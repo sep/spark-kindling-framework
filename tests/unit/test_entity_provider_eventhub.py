@@ -13,7 +13,9 @@ def provider():
     config_service = MagicMock()
     config_service.get.return_value = "fabric"
 
-    with patch("kindling.entity_provider_eventhub.get_or_create_spark_session", return_value=MagicMock()):
+    with patch(
+        "kindling.entity_provider_eventhub.get_or_create_spark_session", return_value=MagicMock()
+    ):
         return EventHubEntityProvider(logger_provider, config_service)
 
 
@@ -76,7 +78,9 @@ def test_check_entity_exists_false_when_eventhub_name_missing(provider):
 
 
 def test_build_eventhub_config_encrypts_connection_string(provider):
-    provider.spark._jvm.org.apache.spark.eventhubs.EventHubsUtils.encrypt.return_value = "encrypted_conn"
+    provider.spark._jvm.org.apache.spark.eventhubs.EventHubsUtils.encrypt.return_value = (
+        "encrypted_conn"
+    )
 
     config = {
         "eventhub.connectionString": (
@@ -94,7 +98,9 @@ def test_build_eventhub_config_encrypts_connection_string(provider):
     provider.spark._jvm.org.apache.spark.eventhubs.EventHubsUtils.encrypt.assert_called_once()
 
 
-def test_build_eventhub_config_falls_back_to_raw_connection_string_when_encrypt_unavailable(provider):
+def test_build_eventhub_config_falls_back_to_raw_connection_string_when_encrypt_unavailable(
+    provider,
+):
     provider.spark._jvm.org.apache.spark.eventhubs.EventHubsUtils.encrypt.side_effect = Exception(
         "encrypt unavailable"
     )

@@ -99,4 +99,3 @@ class TestConfigDrivenEntityPathLocatorDatabricksFallbacks:
 
         locator = ConfigDrivenEntityPathLocator(config, logger_provider)
         assert locator.get_table_path(entity) == "/tmp/tables/stream/orders"
-
