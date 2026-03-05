@@ -331,9 +331,6 @@ class TestDataEntitiesDecorator:
         ), "Error should mention 'Missing required fields'"
         assert "name" in error_message, "Error should mention missing 'name' field"
         assert (
-            "partition_columns" in error_message
-        ), "Error should mention missing 'partition_columns' field"
-        assert (
             "merge_columns" in error_message
         ), "Error should mention missing 'merge_columns' field"
         assert "tags" in error_message, "Error should mention missing 'tags' field"
@@ -348,7 +345,6 @@ class TestDataEntitiesDecorator:
             DataEntities.entity(
                 entityid="test_entity",
                 name="Test Entity",
-                partition_columns=["date"],
                 # Missing: merge_columns, tags, schema
             )
 
@@ -837,7 +833,7 @@ class TestDataEntitiesEdgeCases:
 
         # All fields except entityid should be listed as missing
         error_msg = str(exc_info.value)
-        required_fields = ["name", "partition_columns", "merge_columns", "tags", "schema"]
+        required_fields = ["name", "merge_columns", "tags", "schema"]
         for field in required_fields:
             assert field in error_msg, f"Error message should mention missing field '{field}'"
 
