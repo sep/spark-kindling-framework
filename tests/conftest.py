@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "kindling_cli
 # Platform-Specific Test Markers Configuration
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def _sockets_permitted() -> bool:
     """Return True if this environment permits creating sockets.
 
@@ -208,7 +209,9 @@ def spark_session():
     This uses local mode Spark suitable for testing.
     """
     if not _sockets_permitted():
-        pytest.skip("Sockets are not permitted in this environment; cannot start a real SparkSession.")
+        pytest.skip(
+            "Sockets are not permitted in this environment; cannot start a real SparkSession."
+        )
     from tests.spark_test_helper import get_local_spark_session
 
     spark = get_local_spark_session("KindlingTests")

@@ -78,7 +78,9 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
         self.logger = logger_provider.get_logger("EventHubEntityProvider")
         self.config_service = config_service
         self.spark = get_or_create_spark_session()
-        self.platform = str(self.config_service.get("kindling.platform.name", "fabric") or "fabric").lower()
+        self.platform = str(
+            self.config_service.get("kindling.platform.name", "fabric") or "fabric"
+        ).lower()
 
     def _build_eventhub_config(self, provider_config: dict) -> dict:
         """
@@ -304,7 +306,9 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             # Validate config shape and connector options construction.
             self._build_eventhub_config(config)
 
-            self.logger.debug(f"Event Hub entity '{entity_metadata.entityid}' configuration is valid")
+            self.logger.debug(
+                f"Event Hub entity '{entity_metadata.entityid}' configuration is valid"
+            )
             return True
 
         except Exception as e:

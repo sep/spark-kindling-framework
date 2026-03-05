@@ -456,14 +456,18 @@ try:
         print(msg, flush=True)
         test_results["delta_partitioning"] = ok
     except Exception as e:
-        msg = f"TEST_ID={test_id} test=delta_partitioning status=FAILED error={type(e).__name__}:{e}"
+        msg = (
+            f"TEST_ID={test_id} test=delta_partitioning status=FAILED error={type(e).__name__}:{e}"
+        )
         logger.error(msg)
         print(msg, flush=True)
         test_results["delta_partitioning"] = False
 
     # ---- Validate clustering ----
     try:
-        auto_requested = _is_auto_cluster_columns(getattr(clustering_entity, "cluster_columns", None))
+        auto_requested = _is_auto_cluster_columns(
+            getattr(clustering_entity, "cluster_columns", None)
+        )
         auto_enabled = _auto_clustering_enabled()
 
         entity_provider.ensure_entity_table(clustering_entity)
@@ -500,7 +504,9 @@ try:
         print(msg, flush=True)
         test_results["delta_clustering"] = ok
     except Exception as e:
-        auto_requested = _is_auto_cluster_columns(getattr(clustering_entity, "cluster_columns", None))
+        auto_requested = _is_auto_cluster_columns(
+            getattr(clustering_entity, "cluster_columns", None)
+        )
         auto_enabled = _auto_clustering_enabled()
 
         if auto_requested and not auto_enabled:

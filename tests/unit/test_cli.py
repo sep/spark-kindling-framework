@@ -67,9 +67,15 @@ class TestConfigSetBasic:
     def test_creates_file_when_missing(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.telemetry.logging.level", "DEBUG",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.telemetry.logging.level",
+                    "DEBUG",
+                ],
+            )
             assert result.exit_code == 0
             data = yaml.safe_load(Path("settings.yaml").read_text())
             assert data["kindling"]["telemetry"]["logging"]["level"] == "DEBUG"
@@ -78,9 +84,15 @@ class TestConfigSetBasic:
         runner = CliRunner()
         with runner.isolated_filesystem():
             runner.invoke(cli, ["config", "init", "--name", "test-app"])
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.telemetry.logging.level", "ERROR",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.telemetry.logging.level",
+                    "ERROR",
+                ],
+            )
             assert result.exit_code == 0
             data = yaml.safe_load(Path("settings.yaml").read_text())
             assert data["kindling"]["telemetry"]["logging"]["level"] == "ERROR"
@@ -89,9 +101,15 @@ class TestConfigSetBasic:
     def test_adds_new_nested_key(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.new_section.nested.key", "value",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.new_section.nested.key",
+                    "value",
+                ],
+            )
             assert result.exit_code == 0
             data = yaml.safe_load(Path("settings.yaml").read_text())
             assert data["kindling"]["new_section"]["nested"]["key"] == "value"
@@ -99,9 +117,15 @@ class TestConfigSetBasic:
     def test_output_shows_confirmation(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.telemetry.logging.level", "WARN",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.telemetry.logging.level",
+                    "WARN",
+                ],
+            )
             assert result.exit_code == 0
             assert "kindling.telemetry.logging.level" in result.output
             assert "settings.yaml" in result.output
@@ -157,10 +181,19 @@ class TestConfigSetLevelRouting:
     def test_platform_level(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.secrets.scope", "fabric-scope",
-                "--level", "platform", "--platform", "fabric",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.secrets.scope",
+                    "fabric-scope",
+                    "--level",
+                    "platform",
+                    "--platform",
+                    "fabric",
+                ],
+            )
             assert result.exit_code == 0
             path = Path("platform_fabric.yaml")
             assert path.exists()
@@ -170,10 +203,19 @@ class TestConfigSetLevelRouting:
     def test_env_level(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.telemetry.logging.level", "ERROR",
-                "--level", "env", "--env", "prod",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.telemetry.logging.level",
+                    "ERROR",
+                    "--level",
+                    "env",
+                    "--env",
+                    "prod",
+                ],
+            )
             assert result.exit_code == 0
             path = Path("env_prod.yaml")
             assert path.exists()
@@ -183,18 +225,34 @@ class TestConfigSetLevelRouting:
     def test_platform_level_requires_platform(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.x", "y", "--level", "platform",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.x",
+                    "y",
+                    "--level",
+                    "platform",
+                ],
+            )
             assert result.exit_code != 0
             assert "--platform is required" in result.output
 
     def test_env_level_requires_env(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.x", "y", "--level", "env",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.x",
+                    "y",
+                    "--level",
+                    "env",
+                ],
+            )
             assert result.exit_code != 0
             assert "--env is required" in result.output
 
@@ -203,9 +261,17 @@ class TestConfigSetAppScope:
     def test_app_base(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "name", "my-app", "--app", "my-data-app",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "name",
+                    "my-app",
+                    "--app",
+                    "my-data-app",
+                ],
+            )
             assert result.exit_code == 0
             path = Path("data-apps/my-data-app/settings.yaml")
             assert path.exists()
@@ -215,10 +281,21 @@ class TestConfigSetAppScope:
     def test_app_with_platform_level(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.secrets.scope", "db-scope",
-                "--app", "ingest-app", "--level", "platform", "--platform", "databricks",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.secrets.scope",
+                    "db-scope",
+                    "--app",
+                    "ingest-app",
+                    "--level",
+                    "platform",
+                    "--platform",
+                    "databricks",
+                ],
+            )
             assert result.exit_code == 0
             path = Path("data-apps/ingest-app/platform_databricks.yaml")
             assert path.exists()
@@ -230,8 +307,16 @@ class TestConfigSetConfigDir:
     def test_custom_config_dir(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, [
-                "config", "set", "kindling.x", "y", "--config-dir", "my/configs",
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "config",
+                    "set",
+                    "kindling.x",
+                    "y",
+                    "--config-dir",
+                    "my/configs",
+                ],
+            )
             assert result.exit_code == 0
             assert Path("my/configs/settings.yaml").exists()

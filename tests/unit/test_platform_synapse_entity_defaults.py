@@ -98,4 +98,3 @@ class TestConfigDrivenEntityPathLocatorSynapseFallbacks:
 
         locator = ConfigDrivenEntityPathLocator(config, logger_provider)
         assert locator.get_table_path(entity) == "Tables/base/stream/orders"
-

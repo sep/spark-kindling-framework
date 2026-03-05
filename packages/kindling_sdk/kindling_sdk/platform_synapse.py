@@ -677,7 +677,10 @@ class SynapseAPI(PlatformAPI):
                 )
                 resp = requests.post(
                     url,
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
                     timeout=30,
                 )
                 if resp.status_code >= 400:
@@ -853,9 +856,7 @@ class SynapseAPI(PlatformAPI):
                             "KindlingBootstrap",
                             "streaming-pipes-test-app",
                         )
-                        filtered_all = [
-                            ln for ln in lines if any(tok in ln for tok in keep_tokens)
-                        ]
+                        filtered_all = [ln for ln in lines if any(tok in ln for tok in keep_tokens)]
                         # If filtering produces nothing (unexpected), fall back to raw lines.
                         if filtered_all:
                             lines = filtered_all
@@ -893,9 +894,7 @@ class SynapseAPI(PlatformAPI):
                 #
                 # Keep this noisy: when stdout streaming is broken, this is the most actionable
                 # clue for fixing the API path/permissions in a given Synapse workspace.
-                print(
-                    f"⚠️  Livy log endpoint failed for batch {run_id}: {type(e).__name__}: {e}"
-                )
+                print(f"⚠️  Livy log endpoint failed for batch {run_id}: {type(e).__name__}: {e}")
 
             # If we have storage configured, try to read event logs from Azure Storage
             if self.storage_account and self.container and app_id:
@@ -1060,7 +1059,11 @@ class SynapseAPI(PlatformAPI):
                     continue
                 name = p.name or ""
                 # Capture the common patterns we've seen in Synapse workspaces.
-                if "/spark-logs" in name or name.endswith("spark-logs") or name.endswith("spark-logs.gz"):
+                if (
+                    "/spark-logs" in name
+                    or name.endswith("spark-logs")
+                    or name.endswith("spark-logs.gz")
+                ):
                     candidates.append(name)
         except Exception as e:
             print(f"⚠️  Could not list diagnostic log paths under {driver_root}: {e}")
@@ -1070,7 +1073,9 @@ class SynapseAPI(PlatformAPI):
             return []
 
         if not candidates:
-            print(f"ℹ️  Log file(s) not found under {driver_root} (not written yet or emitters disabled).")
+            print(
+                f"ℹ️  Log file(s) not found under {driver_root} (not written yet or emitters disabled)."
+            )
             return []
 
         all_lines: List[str] = []
