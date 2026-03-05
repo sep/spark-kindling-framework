@@ -120,8 +120,8 @@ class TestEventHubProvider:
     ):
         api_client, platform_name = platform_client
 
-        unique_suffix = str(uuid.uuid4())[:8]
-        test_id = unique_suffix
+        test_id = uuid.uuid4().hex
+        unique_suffix = test_id[:8]
         app_name = f"eventhub-provider-test-app-{unique_suffix}"
         marker = f"kindling-eventhub-marker-{unique_suffix}"
 

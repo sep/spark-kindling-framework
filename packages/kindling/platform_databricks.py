@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
 import requests
-from injector import inject
 from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
 from kindling.notebook_framework import *
