@@ -38,7 +38,8 @@ def streaming_pipes_app_path():
 @pytest.fixture
 def streaming_pipes_job_config():
     """Provides job config for streaming pipes tests"""
-    unique_suffix = str(uuid.uuid4())[:8]
+    # Prefix with alpha to avoid scientific-notation coercion in bootstrap config parsing.
+    unique_suffix = f"t{str(uuid.uuid4())[:7]}"
 
     config = {
         "job_name": f"systest-streaming-pipes-{unique_suffix}",
@@ -132,6 +133,9 @@ class TestStreamingPipesOrchestrator:
             expected_tests = [
                 "entity_definitions",
                 "pipe_definitions",
+                "delta_partitioning",
+                "delta_clustering",
+                "delta_clustering_update",
                 "lookup_data",
                 "executor_streaming",
                 "bronze_data",

@@ -8,7 +8,7 @@ Tests the complete streaming data pipeline pattern using Kindling framework comp
 
 - **Entity definitions** with tag-based configuration
 - **Pipe definitions** with streaming transformations
-- **SimplePipeStreamOrchestrator** for streaming query management
+- **SimplePipeStreamStarter** for streaming query management
 - **SimpleReadPersistStrategy** for persist operations
 - **Signal emissions** throughout the pipeline
 - **Multi-layer data flow** (bronze → silver → gold)
@@ -60,7 +60,7 @@ Gold Layer (aggregated metrics by time window)
 - ✅ Entity definitions registered correctly
 - ✅ Pipe definitions registered correctly
 - ✅ DI services resolved successfully
-- ✅ SimplePipeStreamOrchestrator starts streaming queries
+- ✅ SimplePipeStreamStarter starts streaming queries
 - ✅ SimpleReadPersistStrategy handles persist operations
 
 ### Data Flow

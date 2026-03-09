@@ -31,8 +31,8 @@ NC='\033[0m' # No Color
 
 # Default Configuration (can be overridden via arguments or auto-detected)
 AZURE_CLOUD=""  # Auto-detect if not specified
-STORAGE_ACCOUNT_NAME="rrdefcfesffawkes"
-STORAGE_CONTAINER="dev-fawkes-prod-data"
+STORAGE_ACCOUNT_NAME=""
+STORAGE_CONTAINER=""
 
 # Parse command line arguments
 VERIFY_ACCOUNT=false

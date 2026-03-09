@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.entity_provider import (
-    StreamableEntityProvider,
+    can_ensure_destination,
     is_stream_writable,
     is_streamable,
 )
@@ -14,14 +14,14 @@ from kindling.spark_log_provider import *
 from kindling.spark_trace import *
 
 
-class PipeStreamOrchestrator(ABC):
+class PipeStreamStarter(ABC):
     @abstractmethod
-    def start_pipe_as_stream_processor(self, pipeid, options=None) -> object:
+    def start_pipe_stream(self, pipeid, options=None) -> object:
         pass
 
 
 @GlobalInjector.singleton_autobind()
-class SimplePipeStreamOrchestrator(PipeStreamOrchestrator):
+class SimplePipeStreamStarter(PipeStreamStarter):
     @inject
     def __init__(
         self,
@@ -36,11 +36,11 @@ class SimplePipeStreamOrchestrator(PipeStreamOrchestrator):
         self.provider_registry = provider_registry
         self.der = der
         self.epl = epl
-        self.logger = plp.get_logger("SimplePipeStreamOrchestrator")
-        self.logger.debug(f"SimplePipeStreamOrchestrator initialized")
+        self.logger = plp.get_logger("SimplePipeStreamStarter")
+        self.logger.debug("SimplePipeStreamStarter initialized")
         self.cs = cs
 
-    def start_pipe_as_stream_processor(self, pipeid, options=None) -> object:
+    def start_pipe_stream(self, pipeid, options=None) -> object:
         options = options or {}
         pipe = self.dpr.get_pipe_definition(pipeid)
         if not pipe.input_entity_ids:
@@ -74,15 +74,29 @@ class SimplePipeStreamOrchestrator(PipeStreamOrchestrator):
             )
 
         # Transform
-        if len(input_entity_frames) == 1:
-            transformed_stream = pipe.execute(stream)
-        else:
+        # Prefer kwargs execution (consistent with batch pipe execution), but keep
+        # backwards compatibility for single-input pipes declared as `def pipe(df): ...`.
+        try:
             transformed_stream = pipe.execute(**input_entity_frames)
+        except TypeError as kw_err:
+            # Fall back to positional-only execution for legacy single-input pipes.
+            if len(input_entity_frames) != 1:
+                raise
+            try:
+                transformed_stream = pipe.execute(stream)
+            except TypeError:
+                # Preserve the more-informative kwargs failure.
+                raise kw_err
 
         # Write output as stream
-        base_chkpt_path = options.get("base_checkpoint_path", None) or self.cs.get(
-            "base_checkpoint_path"
+        base_chkpt_path = options.get("base_checkpoint_path") or self.cs.get(
+            "kindling.storage.checkpoint_root"
         )
+        if not base_chkpt_path:
+            raise ValueError(
+                "Missing streaming checkpoint root. "
+                "Set kindling.storage.checkpoint_root or pass streaming_options['base_checkpoint_path']."
+            )
         if not is_stream_writable(output_provider) and not hasattr(
             output_provider, "append_as_stream"
         ):
@@ -91,12 +105,48 @@ class SimplePipeStreamOrchestrator(PipeStreamOrchestrator):
                 f"(type={output_entity.tags.get('provider_type')}) "
                 f"does not support streaming writes"
             )
+        mode = str(
+            output_entity.tags.get("provider.access_mode")
+            or self.cs.get("kindling.delta.tablerefmode")
+            or "auto"
+        ).lower()
+
+        # Ensure destination up front when the provider supports it.
+        # This is important for streaming because some sinks require the destination
+        # (table/path/topic/etc.) to exist before the query can start.
+        if can_ensure_destination(output_provider):
+            output_provider.ensure_destination(output_entity)
+        else:
+            # Backward compatibility: older providers expose `ensure_entity_table()`.
+            ensure_output_table = getattr(output_provider, "ensure_entity_table", None)
+            if callable(ensure_output_table):
+                ensure_output_table(output_entity)
+
         stream_handle = output_provider.append_as_stream(
             transformed_stream, output_entity, f"{base_chkpt_path}/{pipe.pipeid}"
         )
-        output_path = output_entity.tags.get("provider.path") or self.epl.get_table_path(
-            output_entity
-        )
-        return (
-            stream_handle.start(output_path) if hasattr(stream_handle, "start") else stream_handle
-        )
+        output_table = output_entity.tags.get("provider.table_name")
+        output_path = output_entity.tags.get("provider.path")
+
+        if mode == "forname":
+            if not output_table:
+                enm = GlobalInjector.get(EntityNameMapper)
+                output_table = enm.get_table_name(output_entity)
+            if hasattr(stream_handle, "toTable"):
+                return stream_handle.toTable(output_table)
+            raise TypeError(
+                f"Streaming sink for entity '{output_entity.entityid}' does not support table writes via toTable()"
+            )
+
+        if hasattr(stream_handle, "start"):
+            # Non-file sinks (e.g., Kafka) commonly use `start()` with no path.
+            # Table/path sinks should supply `provider.path` or be resolvable via EntityPathLocator.
+            if not output_path:
+                try:
+                    output_path = self.epl.get_table_path(output_entity)
+                except Exception:
+                    output_path = None
+            return stream_handle.start(output_path) if output_path else stream_handle.start()
+
+        # Providers may choose to start the stream internally and return a StreamingQuery.
+        return stream_handle
