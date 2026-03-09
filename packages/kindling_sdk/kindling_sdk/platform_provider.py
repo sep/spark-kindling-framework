@@ -1,3 +1,4 @@
+import os
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional
 
@@ -121,3 +122,41 @@ def create_platform_api_from_env(platform: str):
     platform_name = (platform or "").strip().lower()
     api_class = PlatformAPIRegistry.get(platform_name)
     return api_class.from_env(), platform_name
+
+
+def create_azure_credential(
+    credential: Optional[Any] = None,
+    tenant_id: Optional[str] = None,
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+) -> Any:
+    """Create an Azure credential, preferring explicit service principal auth.
+
+    If a credential object is already provided, it is returned unchanged.
+    Otherwise, when all three service principal values are present, this returns
+    ClientSecretCredential for deterministic auth in CI and system tests.
+    Falls back to DefaultAzureCredential only when explicit SP credentials are
+    not available.
+    """
+    if credential is not None:
+        return credential
+
+    try:
+        from azure.identity import ClientSecretCredential, DefaultAzureCredential
+    except ImportError as exc:
+        raise ImportError(
+            "azure-identity not installed. Install with: pip install azure-identity"
+        ) from exc
+
+    resolved_tenant = (tenant_id or os.getenv("AZURE_TENANT_ID") or "").strip()
+    resolved_client_id = (client_id or os.getenv("AZURE_CLIENT_ID") or "").strip()
+    resolved_client_secret = (client_secret or os.getenv("AZURE_CLIENT_SECRET") or "").strip()
+
+    if resolved_tenant and resolved_client_id and resolved_client_secret:
+        return ClientSecretCredential(
+            tenant_id=resolved_tenant,
+            client_id=resolved_client_id,
+            client_secret=resolved_client_secret,
+        )
+
+    return DefaultAzureCredential()

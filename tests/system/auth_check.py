@@ -1,150 +1,197 @@
 #!/usr/bin/env python3
 """
-Test script to verify Azure authentication is working.
+Preflight checks for Azure-backed system tests.
 
-This script tests whether you can authenticate to Azure using either:
-1. Service principal (environment variables)
-2. Azure CLI (az login)
+Validates:
+1. Explicit service principal credentials when present
+2. Default/system Azure credential fallback otherwise
+3. ADLS Gen2 access used for app uploads
+4. Platform-specific configuration required by system tests
 """
 
+import argparse
 import os
 import sys
+from typing import Iterable, Optional
 
-try:
+
+ALL_PLATFORMS = ("fabric", "synapse", "databricks")
+
+
+def _masked(value: str) -> str:
+    return f"{value[:8]}..." if value else "<missing>"
+
+
+def _create_credential():
     from azure.identity import ClientSecretCredential, DefaultAzureCredential
 
-    print("✅ Azure Identity SDK available")
-except ImportError as e:
-    print(f"❌ Azure Identity SDK not installed: {e}")
-    print("   Install with: pip install azure-identity")
-    sys.exit(1)
+    tenant_id = (os.getenv("AZURE_TENANT_ID") or "").strip()
+    client_id = (os.getenv("AZURE_CLIENT_ID") or "").strip()
+    client_secret = (os.getenv("AZURE_CLIENT_SECRET") or "").strip()
+
+    has_sp = bool(tenant_id and client_id and client_secret)
+    if has_sp:
+        print("\n📋 Found service principal environment variables")
+        print(f"   AZURE_TENANT_ID: {_masked(tenant_id)}")
+        print(f"   AZURE_CLIENT_ID: {_masked(client_id)}")
+        print("   AZURE_CLIENT_SECRET: ********************")
+        print("\n🔐 Using explicit ClientSecretCredential...")
+        return (
+            ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            ),
+            "service_principal",
+        )
+
+    print("\n📋 Service principal environment variables not fully set")
+    print("🔐 Falling back to DefaultAzureCredential...")
+    return DefaultAzureCredential(), "default"
 
 
-def check_authentication():
-    """Test Azure authentication"""
+def check_authentication() -> bool:
+    """Validate Azure credential acquisition for ARM and Storage."""
     print("\n" + "=" * 60)
     print("Azure Authentication Test")
     print("=" * 60)
 
-    # Check for service principal credentials
-    has_sp = all(
-        [
-            os.getenv("AZURE_TENANT_ID"),
-            os.getenv("AZURE_CLIENT_ID"),
-            os.getenv("AZURE_CLIENT_SECRET"),
-        ]
-    )
+    try:
+        from azure.identity import ClientSecretCredential, DefaultAzureCredential  # noqa: F401
 
-    if has_sp:
-        print("\n📋 Found service principal environment variables")
-        print(f"   AZURE_TENANT_ID: {os.getenv('AZURE_TENANT_ID')[:8]}...")
-        print(f"   AZURE_CLIENT_ID: {os.getenv('AZURE_CLIENT_ID')[:8]}...")
-        print(f"   AZURE_CLIENT_SECRET: {'*' * 20}")
-
-        # Test service principal authentication
-        print("\n🔐 Testing service principal authentication...")
-        try:
-            credential = ClientSecretCredential(
-                tenant_id=os.getenv("AZURE_TENANT_ID"),
-                client_id=os.getenv("AZURE_CLIENT_ID"),
-                client_secret=os.getenv("AZURE_CLIENT_SECRET"),
-            )
-            # Try to get a token (for Azure Resource Manager)
-            token = credential.get_token("https://management.azure.com/.default")
-            print(f"✅ Service principal authentication successful!")
-            print(f"   Token expires: {token.expires_on}")
-            return True
-        except Exception as e:
-            print(f"❌ Service principal authentication failed: {e}")
-            return False
-    else:
-        print("\n📋 No service principal credentials found")
-        print("   Will try DefaultAzureCredential (az login, managed identity, etc.)")
-
-    # Test DefaultAzureCredential
-    print("\n🔐 Testing DefaultAzureCredential...")
-    print("   This will try multiple auth methods in order:")
-    print("   1. Environment variables (service principal)")
-    print("   2. Managed identity")
-    print("   3. Azure CLI (az login)")
-    print("   4. Visual Studio Code")
-    print("   5. Azure PowerShell")
-    print("   6. Interactive browser")
-    print()
+        print("✅ Azure Identity SDK available")
+    except ImportError as exc:
+        print(f"❌ Azure Identity SDK not installed: {exc}")
+        return False
 
     try:
-        credential = DefaultAzureCredential()
-        # Try to get a token
-        token = credential.get_token("https://management.azure.com/.default")
-        print(f"✅ DefaultAzureCredential authentication successful!")
-        print(f"   Token expires: {token.expires_on}")
-
-        # Try to determine which method worked
-        print("\n💡 Authentication method used:")
-        if has_sp:
-            print("   → Service Principal (environment variables)")
-        else:
-            print("   → Likely Azure CLI (az login)")
-            print("   → Run 'az account show' to verify")
-
+        credential, credential_mode = _create_credential()
+        arm_token = credential.get_token("https://management.azure.com/.default")
+        storage_token = credential.get_token("https://storage.azure.com/.default")
+        mode_label = (
+            "Service principal authentication successful"
+            if credential_mode == "service_principal"
+            else "DefaultAzureCredential authentication successful"
+        )
+        print(f"✅ {mode_label}!")
+        print(f"   ARM token expires: {arm_token.expires_on}")
+        print(f"   Storage token expires: {storage_token.expires_on}")
         return True
-    except Exception as e:
-        print(f"❌ DefaultAzureCredential authentication failed: {e}")
-        print("\n💡 Troubleshooting:")
-        print("   1. Run 'az login' to authenticate with Azure CLI")
-        print("   2. Or set service principal environment variables:")
-        print("      export AZURE_TENANT_ID='...'")
-        print("      export AZURE_CLIENT_ID='...'")
-        print("      export AZURE_CLIENT_SECRET='...'")
-        print("   3. Verify your account has access to Azure resources")
+    except Exception as exc:
+        print(f"❌ Azure authentication failed: {exc}")
         return False
 
 
-def check_fabric_config():
-    """Test Fabric configuration"""
+def check_storage_access() -> bool:
+    """Validate ADLS Gen2 access used for deploy_app uploads."""
     print("\n" + "=" * 60)
-    print("Fabric Configuration Test")
+    print("Storage Access Test")
     print("=" * 60)
 
-    workspace_id = os.getenv("FABRIC_WORKSPACE_ID")
-    lakehouse_id = os.getenv("FABRIC_LAKEHOUSE_ID")
+    storage_account = (os.getenv("AZURE_STORAGE_ACCOUNT") or "").strip()
+    container = (os.getenv("AZURE_CONTAINER") or "artifacts").strip()
 
-    if workspace_id and lakehouse_id:
-        print(f"\n✅ Fabric configuration found")
-        print(f"   Workspace ID: {workspace_id}")
-        print(f"   Lakehouse ID: {lakehouse_id}")
+    if not storage_account:
+        print("❌ Missing AZURE_STORAGE_ACCOUNT")
+        return False
+
+    try:
+        from azure.storage.filedatalake import DataLakeServiceClient
+    except ImportError as exc:
+        print(f"❌ azure-storage-file-datalake not installed: {exc}")
+        return False
+
+    try:
+        credential, _ = _create_credential()
+        account_url = f"https://{storage_account}.dfs.core.windows.net"
+        service_client = DataLakeServiceClient(account_url=account_url, credential=credential)
+        file_system_client = service_client.get_file_system_client(file_system=container)
+        props = file_system_client.get_file_system_properties()
+        print("✅ ADLS access successful!")
+        print(f"   Storage account: {storage_account}")
+        print(f"   Container: {container}")
+        print(f"   ETag: {props.get('etag')}")
         return True
-    else:
-        print(f"\n❌ Fabric configuration missing")
-        if not workspace_id:
-            print("   Missing: FABRIC_WORKSPACE_ID")
-        if not lakehouse_id:
-            print("   Missing: FABRIC_LAKEHOUSE_ID")
-
-        print("\n💡 To set up:")
-        print("   export FABRIC_WORKSPACE_ID='your-workspace-id'")
-        print("   export FABRIC_LAKEHOUSE_ID='your-lakehouse-id'")
+    except Exception as exc:
+        print(f"❌ ADLS access failed: {exc}")
         return False
 
 
-def main():
-    """Main test runner"""
+def check_platform_config(platform: str) -> bool:
+    """Validate platform-specific environment variables used by system tests."""
+    print("\n" + "=" * 60)
+    print(f"{platform.capitalize()} Configuration Test")
+    print("=" * 60)
+
+    if platform == "fabric":
+        required = ["FABRIC_WORKSPACE_ID", "FABRIC_LAKEHOUSE_ID"]
+    elif platform == "synapse":
+        required = ["SYNAPSE_WORKSPACE_NAME"]
+    elif platform == "databricks":
+        required = ["DATABRICKS_HOST", "DATABRICKS_CLUSTER_ID"]
+    else:
+        print(f"❌ Unsupported platform: {platform}")
+        return False
+
+    missing = [key for key in required if not (os.getenv(key) or "").strip()]
+    if missing:
+        print(f"❌ Missing {platform} configuration: {', '.join(missing)}")
+        return False
+
+    print(f"✅ {platform.capitalize()} configuration found")
+    for key in required:
+        value = (os.getenv(key) or "").strip()
+        print(f"   {key}: {value}")
+
+    if platform in {"fabric", "synapse"}:
+        key_vault_url = (
+            os.getenv(f"CONFIG__platform_{platform}__kindling__secrets__key_vault_url") or ""
+        ).strip() or (os.getenv("SYSTEM_TEST_KEY_VAULT_URL") or "").strip()
+        if not key_vault_url:
+            print(
+                f"❌ Missing runtime secret provider config for {platform}: "
+                f"CONFIG__platform_{platform}__kindling__secrets__key_vault_url or SYSTEM_TEST_KEY_VAULT_URL"
+            )
+            return False
+        print(f"   key_vault_url: {key_vault_url}")
+
+    return True
+
+
+def _resolve_platforms(requested: Optional[str]) -> Iterable[str]:
+    if requested:
+        return (requested.strip().lower(),)
+    return ALL_PLATFORMS
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate auth/config for system tests")
+    parser.add_argument(
+        "--platform",
+        choices=list(ALL_PLATFORMS),
+        default="",
+        help="Validate config for a single platform. Defaults to all platforms.",
+    )
+    args = parser.parse_args()
+
     auth_ok = check_authentication()
-    config_ok = check_fabric_config()
+    storage_ok = check_storage_access()
+    platform_results = [
+        check_platform_config(platform) for platform in _resolve_platforms(args.platform)
+    ]
+    platform_ok = all(platform_results)
 
     print("\n" + "=" * 60)
     print("Summary")
     print("=" * 60)
 
-    if auth_ok and config_ok:
+    if auth_ok and storage_ok and platform_ok:
         print("✅ All checks passed! You're ready to run system tests.")
-        print("\nRun tests with:")
-        print("   pytest tests/system/ -v -s -m fabric")
-        sys.exit(0)
-    else:
-        print("❌ Some checks failed. See troubleshooting above.")
-        sys.exit(1)
+        return 0
+
+    print("❌ Some checks failed. Fix the reported auth/config issues before running system tests.")
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

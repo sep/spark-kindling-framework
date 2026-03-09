@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import requests
 
-from .platform_provider import PlatformAPI, PlatformAPIRegistry
+from .platform_provider import PlatformAPI, PlatformAPIRegistry, create_azure_credential
 
 # Databricks REST API Client (for remote operations)
 # ============================================================================
@@ -69,7 +69,12 @@ class DatabricksAPI(PlatformAPI):
         """
         self.workspace_url = workspace_url.rstrip("/")
         self.token = token
-        self.credential = credential
+        self.credential = create_azure_credential(
+            credential=credential,
+            tenant_id=azure_tenant_id,
+            client_id=azure_client_id,
+            client_secret=azure_client_secret,
+        )
         self.storage_account = storage_account
         self.container = container
         self.base_path = base_path
@@ -513,6 +518,7 @@ class DatabricksAPI(PlatformAPI):
 
         # Upload each file
         uploaded_count = 0
+        failed_uploads: list[str] = []
         for filename, content in files.items():
             file_path = f"{full_target_path}/{filename}"
             try:
@@ -527,11 +533,19 @@ class DatabricksAPI(PlatformAPI):
                 uploaded_count += 1
             except Exception as e:
                 print(f"⚠️  Failed to upload {filename}: {e}")
+                failed_uploads.append(f"{filename}: {e}")
 
         # Construct ABFSS path
         abfss_path = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/{full_target_path}"
 
         print(f"📂 Uploaded {uploaded_count}/{len(files)} files to: {abfss_path}")
+
+        if uploaded_count != len(files):
+            failure_summary = "; ".join(failed_uploads) if failed_uploads else "unknown error"
+            raise RuntimeError(
+                f"Failed to upload all app files to {abfss_path}: "
+                f"uploaded {uploaded_count}/{len(files)} files. Details: {failure_summary}"
+            )
 
         return abfss_path
 
