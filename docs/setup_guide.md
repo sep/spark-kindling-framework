@@ -228,7 +228,7 @@ If you encounter issues with Delta table access, configure the appropriate acces
 ```python
 # In your configuration
 'spark_configs': {
-    'delta_table_access_mode': 'forPath'  # or 'forName', 'auto'
+    'delta_table_access_mode': 'forName'  # or 'forPath', 'auto'
 }
 ```
 

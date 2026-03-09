@@ -5,6 +5,7 @@ from . import (
     common_transforms,
     data_entities,
     data_pipes,
+    entity_resolution,
     entity_provider,
     entity_provider_csv,
     entity_provider_delta,

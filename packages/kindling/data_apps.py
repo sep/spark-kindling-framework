@@ -8,7 +8,7 @@ import uuid
 import zipfile
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -44,6 +44,11 @@ class DataAppConstants:
 
     # Pip common arguments
     PIP_COMMON_ARGS = ["--disable-pip-version-check", "--no-warn-conflicts"]
+
+
+def _utc_now_iso() -> str:
+    # Use timezone-aware UTC timestamps; datetime.utcnow() is deprecated.
+    return datetime.now(timezone.utc).isoformat()
 
 
 class DataAppRunner(ABC):
@@ -304,7 +309,7 @@ class DataAppPackage:
                 lake_requirements=DataAppPackage._load_lake_requirements(app_path),
                 environment=config_data.get("environment", "production"),
                 metadata=config_data.get("metadata", {}),
-                created_at=datetime.utcnow().isoformat(),
+                created_at=_utc_now_iso(),
                 kda_version=DataAppConstants.KDA_VERSION,
             )
 
@@ -746,7 +751,7 @@ class DataAppManager(DataAppRunner):
             lake_requirements=lake_reqs,
             environment=config.environment,
             metadata=metadata,
-            created_at=datetime.now().isoformat(),
+            created_at=_utc_now_iso(),
         )
 
     def _load_app_config_from_directory(self, app_path: Path) -> DataAppConfig:

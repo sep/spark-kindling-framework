@@ -116,6 +116,33 @@ pytest tests/system/ -v -m "not slow"
 TEST_TIMEOUT=600 pytest tests/system/ -v -s
 ```
 
+### Prepare Event Hub Provider Test Resources
+```bash
+cd iac/azure/eventhub
+cp terraform.tfvars.example eventhub.dev.tfvars
+terraform init
+terraform apply -var-file=eventhub.dev.tfvars
+
+# Back at repo root: resolve IaC outputs to env exports
+python tests/system/eventhub_test_resource.py --iac-dir iac/azure/eventhub
+```
+
+Event Hub create/manage is handled by Terraform. The helper script reads Terraform outputs and
+prints `export` commands including `EVENTHUB_TEST_CONNECTION_STRING` for Event Hub provider tests.
+
+Run the Event Hub provider system test:
+```bash
+poe test-system --test eventhub_provider
+```
+
+Run the default name mapper system test:
+```bash
+poe test-system --test name_mapper
+poe test-system --platform fabric --test name_mapper
+poe test-system --platform databricks --test name_mapper
+poe test-system --platform synapse --test name_mapper
+```
+
 ## Test Markers
 
 Tests use pytest markers to categorize:

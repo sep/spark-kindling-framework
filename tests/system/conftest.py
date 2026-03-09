@@ -278,7 +278,23 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
     """
     import yaml
 
+    import os
+
     # Platform-specific config
+    #
+    # NOTE: Fabric supports lakehouse-relative paths like Tables/ and Files/.
+    # Synapse does not; it requires explicit ABFSS paths for file-based tables/checkpoints.
+    storage_account = (os.getenv("AZURE_STORAGE_ACCOUNT") or "").strip()
+    container = (os.getenv("AZURE_CONTAINER") or "artifacts").strip()
+    synapse_root = (
+        f"abfss://{container}@{storage_account}.dfs.core.windows.net/kindling_system_tests"
+        if storage_account
+        else None
+    )
+    # Optional: provide a dedicated schema/database for Synapse name-based tests.
+    # If not set, apps should fall back to current_database()/default.
+    synapse_schema = (os.getenv("KINDLING_SYSTEM_TEST_SYNAPSE_SCHEMA") or "").strip() or None
+
     platform_config = {
         "fabric": {
             "kindling": {
@@ -290,21 +306,41 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
         },
         "databricks": {
             "kindling": {
+                "delta": {
+                    "tablerefmode": "forName",
+                },
                 "storage": {
-                    "table_root": "/tmp",
-                    "checkpoint_root": "/tmp/checkpoints",
-                }
+                    "table_root": "/Volumes/medallion/default/temp/tables",
+                    "checkpoint_root": "/Volumes/medallion/default/temp/checkpoints",
+                },
             }
         },
         "synapse": {
             "kindling": {
+                "delta": {
+                    # Synapse convention: prefer catalog-registered tables by name.
+                    "tablerefmode": "forName",
+                },
                 "storage": {
-                    "table_root": "Tables",
-                    "checkpoint_root": "Files/checkpoints",
-                }
+                    # Avoid Fabric-relative paths on Synapse.
+                    "table_root": f"{synapse_root}/tables" if synapse_root else "tables",
+                    "checkpoint_root": (
+                        f"{synapse_root}/checkpoints" if synapse_root else "checkpoints"
+                    ),
+                },
             }
         },
     }
+
+    # Prefer a deterministic schema/database for Synapse system tests so table names are stable and
+    # table auto-creation by name has a predictable metastore location.
+    if platform_name == "synapse":
+        effective_schema = synapse_schema or "kindling_system_tests"
+        platform_config["synapse"]["kindling"]["storage"]["table_schema"] = effective_schema
+        if synapse_root:
+            platform_config["synapse"]["kindling"]["storage"][
+                "table_schema_location"
+            ] = f"{synapse_root}/schemas/{effective_schema}"
 
     config_to_merge = platform_config.get(platform_name, {})
 

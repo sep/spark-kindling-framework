@@ -645,11 +645,11 @@ class StageProcessor(StageProcessingService):
 
 **Modify:** `packages/kindling/pipe_streaming.py`
 
-Update `SimplePipeStreamOrchestrator` to use graph-based streaming execution:
+Update `SimplePipeStreamStarter` to use graph-based streaming execution:
 
 ```python
 @GlobalInjector.singleton_autobind()
-class SimplePipeStreamOrchestrator(PipeStreamOrchestrator):
+class SimplePipeStreamStarter(PipeStreamStarter):
     @inject
     def __init__(
         self,
@@ -666,7 +666,7 @@ class SimplePipeStreamOrchestrator(PipeStreamOrchestrator):
         self.der = der
         self.epl = epl
         self.dep = dep
-        self.logger = plp.get_logger("SimplePipeStreamOrchestrator")
+        self.logger = plp.get_logger("SimplePipeStreamStarter")
         self.cs = cs
 
     def start_pipes_as_streams(self, pipe_ids: List[str], options: Dict = None):
@@ -697,7 +697,7 @@ class SimplePipeStreamOrchestrator(PipeStreamOrchestrator):
             self.logger.info(f"Starting generation {gen_idx}: {generation}")
 
             for pipeid in generation:
-                handle = self.start_pipe_as_stream_processor(pipeid, options)
+                handle = self.start_pipe_stream(pipeid, options)
                 stream_handles.append((pipeid, handle))
 
         return stream_handles
@@ -1091,7 +1091,7 @@ def aggregate_events(stream_clean_events):
     return stream_clean_events.groupBy(...).agg(...)
 
 # Start streaming pipes with graph-based ordering
-orchestrator = GlobalInjector.get(SimplePipeStreamOrchestrator)
+orchestrator = GlobalInjector.get(SimplePipeStreamStarter)
 stream_handles = orchestrator.start_pipes_as_streams([
     "stream_ingest_raw",
     "stream_clean",

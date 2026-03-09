@@ -1,0 +1,32 @@
+# Event Hub IaC vars template for system testing
+#
+# Usage:
+#   cp eventhub.test.tfvars.template eventhub.test.tfvars
+#   terraform init -input=false
+#   terraform plan  -input=false -out=tfplan -var-file=eventhub.test.tfvars
+#   terraform apply -input=false tfplan
+#
+# You can also reference env vars inline:
+#   terraform plan -var-file=eventhub.test.tfvars \
+#     -var="azure_subscription_id=$AZURE_SUBSCRIPTION_ID" \
+#     -var="azure_tenant_id=$AZURE_TENANT_ID"
+
+azure_subscription_id = "<subscription-id>"
+azure_tenant_id       = "<tenant-id>"
+azure_environment     = "public"
+
+# Existing resource group (recommended)
+create_resource_group   = false
+resource_group_name     = "<resource-group-name>"
+resource_group_location = "eastus2"
+
+# Must be globally unique
+namespace_name = "<unique-eventhub-namespace>"
+namespace_sku  = "Standard"
+
+eventhub_name              = "kindling-provider-test-hub"
+eventhub_partition_count   = 2
+eventhub_message_retention = 1
+
+authorization_rule_name = "kindling-system-tests"
+consumer_group_name     = "$Default"

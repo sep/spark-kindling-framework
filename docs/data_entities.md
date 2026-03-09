@@ -24,10 +24,11 @@ All entities are registered in a central registry that enables discovery, metada
 class EntityMetadata:
     entityid: str
     name: str
-    partition_columns: List[str]
     merge_columns: List[str]
     tags: Dict[str, str]
     schema: Any
+    partition_columns: List[str] = field(default_factory=list)
+    cluster_columns: List[str] = field(default_factory=list)
 ```
 
 **Purpose**: Defines comprehensive metadata for a data entity.
@@ -35,7 +36,8 @@ class EntityMetadata:
 **Fields**:
 - `entityid`: Unique identifier for the entity
 - `name`: Human-readable name for the entity
-- `partition_columns`: Columns used for partitioning the underlying table
+- `partition_columns`: Optional columns used for file partitioning the underlying table (Delta `partitionBy`)
+- `cluster_columns`: Optional clustering columns (for engines that support liquid clustering / `CLUSTER BY`)
 - `merge_columns`: Columns used as keys for merge operations (typically primary keys)
 - `tags`: Key-value pairs for categorization and metadata
 - `schema`: Spark schema definition for the entity
@@ -58,7 +60,7 @@ class EntityMetadata:
 **Parameters**: All parameters correspond to `EntityMetadata` fields.
 
 **Usage Notes**:
-- All parameters are required
+- `partition_columns` and `cluster_columns` are optional (default: `[]`)
 - Returns `None` (used for registration side effects only)
 - Must be called at module level for proper registration
 - Schema can be a Spark StructType or string representation
