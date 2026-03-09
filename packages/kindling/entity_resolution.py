@@ -64,7 +64,10 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
 
     Conventions:
     - Per-entity override via tag: `provider.table_name`
-    - Default leaf name is derived from entityid: dots and hyphens -> underscores
+    - If storage namespace config is present, leaf name is derived from entityid: dots and hyphens -> underscores
+    - If no storage namespace config is present, entity IDs are treated as already-qualified names:
+      - x.y.z -> catalog.schema.table
+      - y.z   -> schema.table (uses current catalog if available)
     - Optional namespace overrides via config:
       - `kindling.storage.table_catalog`
       - `kindling.storage.table_schema`
@@ -76,26 +79,54 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
         self.config = config
         self.logger = tp.get_logger("ConfigDrivenEntityNameMapper")
 
+    def _clean_config_value(self, value: object) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            value = str(value)
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if cleaned.lower() in {"auto", "none", "null"}:
+            return None
+        return cleaned
+
+    def _has_storage_namespace_config(self) -> bool:
+        # Treat platform fallbacks as config too. The key behavior change is that we no longer
+        # infer catalog/schema from Spark when config is absent; instead we interpret entity IDs
+        # as qualified names.
+        for key in (
+            "kindling.storage.table_catalog",
+            "kindling.storage.table_schema",
+            "kindling.storage.table_name_prefix",
+            "kindling.databricks.catalog",
+            "kindling.databricks.schema",
+            "kindling.fabric.catalog",
+            "kindling.fabric.schema",
+            "kindling.synapse.schema",
+        ):
+            if self._clean_config_value(self.config.get(key)) is not None:
+                return True
+        return False
+
     def _config_namespace(self) -> Tuple[Optional[str], Optional[str]]:
-        catalog = self.config.get("kindling.storage.table_catalog")
-        schema = self.config.get("kindling.storage.table_schema")
+        catalog = self._clean_config_value(self.config.get("kindling.storage.table_catalog"))
+        schema = self._clean_config_value(self.config.get("kindling.storage.table_schema"))
 
         # Backward-compatible fallbacks (older platform-specific keys).
         if catalog is None:
-            catalog = self.config.get("kindling.databricks.catalog") or self.config.get(
-                "kindling.fabric.catalog"
+            catalog = self._clean_config_value(self.config.get("kindling.databricks.catalog")) or (
+                self._clean_config_value(self.config.get("kindling.fabric.catalog"))
             )
         if schema is None:
             schema = (
-                self.config.get("kindling.databricks.schema")
-                or self.config.get("kindling.fabric.schema")
-                or self.config.get("kindling.synapse.schema")
+                self._clean_config_value(self.config.get("kindling.databricks.schema"))
+                or self._clean_config_value(self.config.get("kindling.fabric.schema"))
+                or self._clean_config_value(self.config.get("kindling.synapse.schema"))
             )
 
-        if catalog is None and schema is None:
-            # Last resort: ask Spark session for current namespace.
-            return _get_current_namespace()
-
+        # Important: do not fall back to Spark current namespace here. If config is absent,
+        # we should interpret entity IDs as already-qualified names.
         return catalog, schema
 
     def get_table_name(self, entity):
@@ -104,13 +135,29 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
         if explicit_table_name:
             return explicit_table_name
 
-        leaf = _normalize_table_leaf(_get_entity_id(entity))
-        prefix = self.config.get("kindling.storage.table_name_prefix") or ""
+        entity_id = _get_entity_id(entity)
+
+        # If no namespace config is provided, treat entity IDs as already-qualified names.
+        # x.y.z -> catalog.schema.table; y.z -> schema.table (default catalog if available).
+        if not self._has_storage_namespace_config():
+            raw = str(entity_id).strip()
+            parts = [p.strip() for p in raw.split(".") if p.strip()]
+            if len(parts) == 3:
+                return ".".join(parts)
+            if len(parts) == 2:
+                catalog, _schema = _get_current_namespace()
+                if catalog:
+                    return f"{catalog}.{parts[0]}.{parts[1]}"
+                return ".".join(parts)
+            # One-part (or weird) names: return as-is to avoid surprising remaps.
+            return raw
+
+        leaf = _normalize_table_leaf(entity_id)
+        prefix = self._clean_config_value(self.config.get("kindling.storage.table_name_prefix")) or ""
         if prefix:
             leaf = f"{prefix}{leaf}"
 
         catalog, schema = self._config_namespace()
-
         if catalog and schema:
             return f"{catalog}.{schema}.{leaf}"
         if schema:

@@ -103,6 +103,7 @@ def run_system_tests(platform: str = "", test: str = "") -> int:
         poe test-system --platform fabric         # Run all Fabric tests
         poe test-system --test deploy_app_as_job # Run specific test on all platforms
         poe test-system --platform fabric --test deploy_app_as_job  # Specific test on Fabric
+        poe test-system --test name_mapper       # Run default name mapper test on all platforms
     """
     _load_dotenv()
 
