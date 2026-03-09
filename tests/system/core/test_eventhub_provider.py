@@ -119,6 +119,7 @@ class TestEventHubProvider:
         stdout_validator,
     ):
         api_client, platform_name = platform_client
+        max_wait_s = 900.0
 
         test_id = uuid.uuid4().hex
         unique_suffix = test_id[:8]
@@ -166,7 +167,12 @@ class TestEventHubProvider:
         publisher_stats = {"attempted": 0, "succeeded": 0, "failed": 0}
 
         def publish_during_run():
-            deadline = time.time() + 120
+            # Important: the streaming portion of the app reads from Event Hubs using
+            # startingPosition="latest". Platform job submission can return long before
+            # the Spark driver starts executing user code (notably on Fabric), so we
+            # must keep publishing long enough that events are emitted after the stream
+            # query is actually running.
+            deadline = time.time() + float(max_wait_s)
             while time.time() < deadline and not publisher_stop.is_set():
                 publisher_stats["attempted"] += 1
                 payload = {
@@ -202,14 +208,11 @@ class TestEventHubProvider:
                 run_id=run_id,
                 print_lines=True,
                 poll_interval=10.0,
-                max_wait=900.0,
+                max_wait=max_wait_s,
             )
 
             status_result = api_client.get_job_status(run_id=run_id)
             final_status = str(status_result.get("status", "UNKNOWN")).upper()
-            assert final_status in ["TERMINATED", "COMPLETED", "SUCCESS"], (
-                f"Unexpected final status: {final_status}. " f"Publisher stats: {publisher_stats}"
-            )
 
             expected_tests = [
                 "provider_resolution",
@@ -224,7 +227,7 @@ class TestEventHubProvider:
 
             assert publisher_stats["succeeded"] > 0, (
                 "No events were published during run, cannot validate stream-read behavior. "
-                f"Publisher stats: {publisher_stats}"
+                f"Publisher stats: {publisher_stats}. Final status: {final_status}"
             )
 
             failed_tests = [
@@ -232,11 +235,16 @@ class TestEventHubProvider:
             ]
             assert not failed_tests, (
                 f"Event Hub provider checks failed: {failed_tests}. "
-                f"Validation results: {validation_results}"
+                f"Validation results: {validation_results}. Final status: {final_status}"
             )
             assert completion_result["passed"], (
                 "Event Hub provider test did not complete successfully: "
-                f"{completion_result}. Publisher stats: {publisher_stats}"
+                f"{completion_result}. Publisher stats: {publisher_stats}. Final status: {final_status}"
+            )
+
+            assert final_status in ["TERMINATED", "COMPLETED", "SUCCESS"], (
+                f"Unexpected final status: {final_status}. Publisher stats: {publisher_stats}. "
+                f"Validation results: {validation_results}"
             )
 
             print(f"[OK] Event Hub provider test passed. Publisher stats: {publisher_stats}")
