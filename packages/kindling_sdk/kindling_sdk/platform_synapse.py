@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import requests
 
-from .platform_provider import PlatformAPI, PlatformAPIRegistry
+from .platform_provider import PlatformAPI, PlatformAPIRegistry, create_azure_credential
 
 # Synapse REST API Client (for remote operations)
 # ============================================================================
@@ -64,17 +64,7 @@ class SynapseAPI(PlatformAPI):
         self.base_path = base_path
         self.base_url = f"https://{workspace_name}.dev.azuresynapse.net"
 
-        # Initialize credential
-        if credential is None:
-            try:
-                from azure.identity import DefaultAzureCredential
-
-                self.credential = DefaultAzureCredential()
-            except ImportError:
-                print("⚠️  azure-identity not installed. Install with: pip install azure-identity")
-                self.credential = None
-        else:
-            self.credential = credential
+        self.credential = create_azure_credential(credential=credential)
 
         # Storage client (lazy initialized)
         self._storage_client = None
@@ -387,6 +377,7 @@ class SynapseAPI(PlatformAPI):
 
         # Upload each file
         uploaded_count = 0
+        failed_uploads: list[str] = []
         for filename, content in files.items():
             file_path = f"{full_target_path}/{filename}"
             try:
@@ -401,11 +392,19 @@ class SynapseAPI(PlatformAPI):
                 uploaded_count += 1
             except Exception as e:
                 print(f"⚠️  Failed to upload {filename}: {e}")
+                failed_uploads.append(f"{filename}: {e}")
 
         # Construct ABFSS path
         abfss_path = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/{full_target_path}"
 
         print(f"📂 Uploaded {uploaded_count}/{len(files)} files to: {abfss_path}")
+
+        if uploaded_count != len(files):
+            failure_summary = "; ".join(failed_uploads) if failed_uploads else "unknown error"
+            raise RuntimeError(
+                f"Failed to upload all app files to {abfss_path}: "
+                f"uploaded {uploaded_count}/{len(files)} files. Details: {failure_summary}"
+            )
 
         return abfss_path
 
