@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling"
-version = "0.7.1"
+version = "0.7.2"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -62,13 +62,17 @@ release = { shell = "bash scripts/release.sh" }
 
 # Development environment setup
 init-azure = { shell = "source scripts/init_azure_dev.sh" }
-setup-github-secrets = { shell = "bash scripts/set_github_secrets.sh" }
+setup-github-secrets = { script = "scripts.test_runner:run_setup_github_secrets", args = [{name = "environment", default = "", positional = false, help = "Optional GitHub environment name (e.g. dev, test)"}, {name = "name", default = "", positional = false, help = "Optional single variable name to publish from .env"}] }
+publish-github-secrets = { script = "scripts.test_runner:run_setup_github_secrets", args = [{name = "environment", default = "", positional = false, help = "Optional GitHub environment name (e.g. dev, test)"}, {name = "name", default = "", positional = false, help = "Optional single variable name to publish from .env"}] }
 
 # Testing tasks
 test = "pytest tests/ -v"
 test-unit = "pytest tests/unit/ -v"
+test-unit-ci = { script = "scripts.test_runner:run_unit_tests_ci" }
 test-integration = "pytest tests/integration/ -v"
+test-integration-ci = { script = "scripts.test_runner:run_integration_tests_ci" }
 test-system = { script = "scripts.test_runner:run_system_tests", help = "Run system tests. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}] }
+test-system-ci = { script = "scripts.test_runner:run_system_tests_ci", help = "Run system tests with CI reporting. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}] }
 test-extension = { script = "scripts.test_runner:run_extension_tests", help = "Run extension tests", args = [{name = "extension", default = "azure-monitor", positional = false, help = "Extension name to test (e.g., azure-monitor)"}, {name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}] }
 test-quick = "pytest tests/unit/ tests/integration/ -v"
 test-coverage = "pytest tests/ -v --cov=kindling --cov-report=html --cov-report=term"
