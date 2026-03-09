@@ -153,7 +153,9 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
             return raw
 
         leaf = _normalize_table_leaf(entity_id)
-        prefix = self._clean_config_value(self.config.get("kindling.storage.table_name_prefix")) or ""
+        prefix = (
+            self._clean_config_value(self.config.get("kindling.storage.table_name_prefix")) or ""
+        )
         if prefix:
             leaf = f"{prefix}{leaf}"
 

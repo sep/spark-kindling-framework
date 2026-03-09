@@ -30,7 +30,9 @@ def test_name_mapper_without_config_treats_two_part_entityid_as_schema_table_wit
     entity.tags = {}
     entity.entityid = "event_hub_raw.raw_telemetry_events"
 
-    with patch("kindling.entity_resolution._get_current_namespace", return_value=("main", "default")):
+    with patch(
+        "kindling.entity_resolution._get_current_namespace", return_value=("main", "default")
+    ):
         assert mapper.get_table_name(entity) == "main.event_hub_raw.raw_telemetry_events"
 
 
