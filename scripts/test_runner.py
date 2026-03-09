@@ -87,6 +87,18 @@ def build_pytest_args(
     return args
 
 
+def _run_system_test_preflight(platform: Optional[str]) -> int:
+    """Run auth/config preflight checks for a specific platform."""
+    if not platform:
+        return 0
+
+    cmd = [sys.executable, "tests/system/auth_check.py", "--platform", platform]
+    print(f"Running preflight: {' '.join(cmd)}")
+    print()
+    result = subprocess.run(cmd)
+    return result.returncode
+
+
 def run_unit_tests_ci() -> int:
     """
     Run unit tests with CI-specific reporting outputs.
@@ -202,6 +214,10 @@ def run_system_tests_ci(platform: str = "", test: str = "") -> int:
 
     platform_filter = platform if platform else None
     test_filter = test if test else None
+
+    preflight_rc = _run_system_test_preflight(platform_filter)
+    if preflight_rc != 0:
+        return preflight_rc
 
     os.makedirs("test-results", exist_ok=True)
 
