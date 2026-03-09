@@ -87,6 +87,58 @@ def build_pytest_args(
     return args
 
 
+def run_unit_tests_ci() -> int:
+    """
+    Run unit tests with CI-specific reporting outputs.
+
+    Returns:
+        Exit code from pytest
+    """
+    args = build_pytest_args(
+        test_path="tests/unit/",
+        extra_args=[
+            "--cov=packages/kindling",
+            "--cov-report=xml",
+            "--cov-report=html:htmlcov",
+            "--junit-xml=test-results/unit-test-results.xml",
+            "--json-report",
+            "--json-report-file=test-results/unit-test-report.json",
+        ],
+    )
+
+    os.makedirs("test-results", exist_ok=True)
+
+    print(f"Running: {' '.join(args)}")
+    print()
+
+    result = subprocess.run(args)
+    return result.returncode
+
+
+def run_integration_tests_ci() -> int:
+    """
+    Run integration tests with CI-specific reporting outputs.
+
+    Returns:
+        Exit code from pytest
+    """
+    args = build_pytest_args(
+        test_path="tests/integration/",
+        extra_args=[
+            "--junit-xml=test-results/integration-test-results.xml",
+            "--no-cov",
+        ],
+    )
+
+    os.makedirs("test-results", exist_ok=True)
+
+    print(f"Running: {' '.join(args)}")
+    print()
+
+    result = subprocess.run(args)
+    return result.returncode
+
+
 def run_system_tests(platform: str = "", test: str = "") -> int:
     """
     Run system tests with optional platform and test filtering.
@@ -135,6 +187,44 @@ def run_system_tests(platform: str = "", test: str = "") -> int:
     return result.returncode
 
 
+def run_system_tests_ci(platform: str = "", test: str = "") -> int:
+    """
+    Run system tests with CI-specific reporting outputs.
+
+    Args:
+        platform: Platform to test (fabric, synapse, databricks)
+        test: Specific test name or pattern
+
+    Returns:
+        Exit code from pytest
+    """
+    _load_dotenv()
+
+    platform_filter = platform if platform else None
+    test_filter = test if test else None
+
+    os.makedirs("test-results", exist_ok=True)
+
+    extra_args = [
+        f"--junit-xml=test-results/system-test-results-{platform_filter or 'all'}.xml",
+        "--json-report",
+        f"--json-report-file=test-results/system-test-report-{platform_filter or 'all'}.json",
+    ]
+
+    args = build_pytest_args(
+        test_path="tests/system/core/",
+        platform=platform_filter,
+        test=test_filter,
+        extra_args=extra_args,
+    )
+
+    print(f"Running: {' '.join(args)}")
+    print()
+
+    result = subprocess.run(args)
+    return result.returncode
+
+
 def run_extension_tests(extension: str = "azure-monitor", platform: str = "") -> int:
     """
     Run extension tests with optional platform filtering.
@@ -168,6 +258,31 @@ def run_extension_tests(extension: str = "azure-monitor", platform: str = "") ->
 
     # Execute pytest
     result = subprocess.run(args)
+    return result.returncode
+
+
+def run_setup_github_secrets(environment: str = "", name: str = "") -> int:
+    """
+    Publish .env variables to GitHub repository or environment secrets.
+
+    Args:
+        environment: Optional GitHub environment name (e.g. dev, test)
+        name: Optional single variable name to publish
+
+    Returns:
+        Exit code from the shell script
+    """
+    cmd = ["bash", "scripts/set_github_secrets.sh"]
+
+    if environment:
+        cmd.extend(["--environment", environment])
+    if name:
+        cmd.extend(["--name", name])
+
+    print(f"Running: {' '.join(cmd)}")
+    print()
+
+    result = subprocess.run(cmd)
     return result.returncode
 
 

@@ -97,14 +97,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
         run: |
-          mkdir -p test-results
-          pytest tests/unit/ \
-            --cov=packages/kindling \
-            --cov-report=xml \
-            --cov-report=html:htmlcov \
-            --junit-xml=test-results/unit-test-results.xml \
-            --json-report --json-report-file=test-results/unit-test-report.json \
-            -v
+          poe test-unit-ci
 
       - name: Create output directory for backwards compatibility
         run: mkdir -p output && cp -r htmlcov test-results/unit-test-results.xml output/ 2>/dev/null || true
@@ -196,10 +189,7 @@ jobs:
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
           AZURE_BASE_PATH: ci-tests/${{ github.run_id }}
         run: |
-          pytest tests/integration/ \
-            --junit-xml=test-results/integration-test-results.xml \
-            --no-cov \
-            -v
+          poe test-integration-ci
 
       - name: Upload integration test results
         uses: actions/upload-artifact@v4
@@ -288,8 +278,10 @@ jobs:
           # Platform-specific credentials
           FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
           FABRIC_LAKEHOUSE_ID: ${{ secrets.FABRIC_LAKEHOUSE_ID }}
+          CONFIG__platform_fabric__kindling__secrets__key_vault_url: ${{ secrets.CONFIG__platform_fabric__kindling__secrets__key_vault_url }}
           SYNAPSE_WORKSPACE_NAME: ${{ secrets.SYNAPSE_WORKSPACE_NAME }}
           SYNAPSE_SPARK_POOL: ${{ secrets.SYNAPSE_SPARK_POOL }}
+          CONFIG__platform_synapse__kindling__secrets__key_vault_url: ${{ secrets.CONFIG__platform_synapse__kindling__secrets__key_vault_url }}
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
           # Azure authentication (shared) - using both AZURE_* and ARM_* for compatibility
@@ -305,12 +297,7 @@ jobs:
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
           AZURE_BASE_PATH: ""
         run: |
-          mkdir -p test-results
-          pytest tests/system/ \
-            -m ${{ matrix.platform }} \
-            --junit-xml=test-results/system-test-results-${{ matrix.platform }}.xml \
-            --json-report --json-report-file=test-results/system-test-report-${{ matrix.platform }}.json \
-            -v -s
+          poe test-system-ci --platform ${{ matrix.platform }}
 
       - name: Upload system test results
         uses: actions/upload-artifact@v4
@@ -445,11 +432,10 @@ jobs:
         if: steps.check-changes.outputs.needs_rebuild == 'true'
         run: |
           python -m venv /tmp/kindling-wheel-smoke
-          source /tmp/kindling-wheel-smoke/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install dist/kindling_sdk-*.whl dist/kindling_cli-*.whl
-          kindling --help > /tmp/kindling-help.txt
-          python - <<'PY'
+          /tmp/kindling-wheel-smoke/bin/python -m pip install --upgrade pip
+          /tmp/kindling-wheel-smoke/bin/python -m pip install dist/kindling_sdk-*.whl dist/kindling_cli-*.whl
+          /tmp/kindling-wheel-smoke/bin/kindling --help > /tmp/kindling-help.txt
+          /tmp/kindling-wheel-smoke/bin/python - <<'PY'
           from kindling_sdk.platform_api import list_supported_platforms
           platforms = list_supported_platforms()
           print("SDK platforms:", platforms)
