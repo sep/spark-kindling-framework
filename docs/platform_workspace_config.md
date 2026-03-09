@@ -4,6 +4,8 @@
 
 Kindling supports a **hierarchical configuration system** with multiple layers of YAML configuration files. This allows you to organize settings from most general (base settings) to most specific (environment overrides).
 
+See `docs/config_reference.md` for an exhaustive list of Kindling config keys and provider tag settings.
+
 ## Configuration Priority
 
 Configuration files are loaded in the following order (lowest to highest priority):
@@ -77,6 +79,20 @@ kindling:
 ```
 
 **Upload to:** `{artifacts_storage_path}/config/platform_fabric.yaml`
+
+## Delta Table Conventions (Fabric / Synapse / Databricks)
+
+Kindling's **default convention is name-based Delta tables** (`forName`).
+
+- **Databricks:** Use Unity Catalog / metastore-managed table names. Databricks manages the physical table location.
+- **Synapse:** Create your target database with an explicit `LOCATION` so `saveAsTable("schema.table")` creates tables under that storage location by default.
+- **Fabric:** Lakehouse tables are created under the Lakehouse `Tables/` area; `saveAsTable("table")` uses the Lakehouse context.
+
+Exceptions (cross-Lakehouse writes, streaming sink limitations, or platform-specific constraints) should be handled via per-entity overrides:
+
+- `provider.access_mode`: `forName` | `forPath` | `auto`
+- `provider.table_name`: fully qualified table name (when using `forName`)
+- `provider.path`: explicit storage path (when using `forPath`)
 
 See [examples/config/](../examples/config/) for complete examples of all platform configs.
 

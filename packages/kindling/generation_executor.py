@@ -28,20 +28,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from injector import inject
 from kindling.cache_optimizer import CacheOptimizer
-from kindling.data_entities import DataEntityRegistry, EntityPathLocator
+from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import (
     DataPipesExecution,
     DataPipesRegistry,
     EntityReadPersistStrategy,
     PipeMetadata,
 )
-from kindling.entity_provider import (
-    StreamableEntityProvider,
-    StreamWritableEntityProvider,
-    is_stream_writable,
-    is_streamable,
-)
-from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.execution_strategy import (
     ExecutionPlan,
     ExecutionPlanGenerator,
@@ -49,6 +42,7 @@ from kindling.execution_strategy import (
     StreamingExecutionStrategy,
 )
 from kindling.injection import GlobalInjector
+from kindling.pipe_streaming import PipeStreamStarter
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
@@ -165,7 +159,7 @@ class GenerationExecutor(SignalEmitter):
         can run sequentially or in parallel.
 
     **Streaming mode**:
-        Uses PipeStreamOrchestrator to start each pipe as a streaming
+        Uses PipeStreamStarter to start each pipe as a streaming
         processor. Streaming plans start sinks first (reverse topo order).
         Returns streaming queries for monitoring.
 
@@ -204,8 +198,7 @@ class GenerationExecutor(SignalEmitter):
         self,
         pipes_registry: DataPipesRegistry,
         entity_registry: DataEntityRegistry,
-        provider_registry: EntityProviderRegistry,
-        entity_path_locator: EntityPathLocator,
+        pipe_stream_starter: PipeStreamStarter,
         config_service: ConfigService,
         persist_strategy: EntityReadPersistStrategy,
         trace_provider: SparkTraceProvider,
@@ -214,8 +207,7 @@ class GenerationExecutor(SignalEmitter):
     ):
         self.pipes_registry = pipes_registry
         self.entity_registry = entity_registry
-        self.provider_registry = provider_registry
-        self.entity_path_locator = entity_path_locator
+        self.pipe_stream_starter = pipe_stream_starter
         self.config_service = config_service
         self.persist_strategy = persist_strategy
         self.tp = trace_provider
@@ -249,7 +241,7 @@ class GenerationExecutor(SignalEmitter):
             max_workers: Max parallel workers (only used if parallel=True)
             error_strategy: How to handle errors (FAIL_FAST or CONTINUE)
             pipe_timeout: Per-pipe timeout in seconds (None = no timeout)
-            streaming_options: Options passed to stream orchestrator per pipe.
+            streaming_options: Options passed to stream starter per pipe.
                 Can be a dict of {pipe_id: options_dict} or a single dict
                 applied to all pipes.
             auto_cache: If True, call `persist()/cache()` on recommended shared
@@ -402,7 +394,7 @@ class GenerationExecutor(SignalEmitter):
 
         Args:
             plan: Streaming execution plan (reverse topo order)
-            streaming_options: Options for stream orchestrator.
+            streaming_options: Options for stream starter.
                 Can be {pipe_id: {options}} or single dict for all pipes.
             error_strategy: How to handle errors
         """
@@ -451,9 +443,7 @@ class GenerationExecutor(SignalEmitter):
         recommendations = plan.metadata.get("cache_recommendations")
         if isinstance(recommendations, dict):
             self._cache_recommendations = {
-                str(entity_id): str(level)
-                for entity_id, level in recommendations.items()
-                if level
+                str(entity_id): str(level) for entity_id, level in recommendations.items() if level
             }
         else:
             self._cache_recommendations = self._cache_optimizer.as_level_map(
@@ -819,12 +809,7 @@ class GenerationExecutor(SignalEmitter):
         pipe: PipeMetadata,
         streaming_options: Optional[Dict[str, Any]],
     ) -> PipeResult:
-        """Execute a pipe in streaming mode via entity providers.
-
-        Reads the input entity as a stream (via its provider),
-        applies the pipe transformation, and writes to the output
-        entity as a stream (via its provider).
-        """
+        """Execute a pipe in streaming mode by delegating stream startup."""
         # Resolve per-pipe options
         pipe_options = {}
         if streaming_options:
@@ -833,71 +818,7 @@ class GenerationExecutor(SignalEmitter):
             elif not any(isinstance(v, dict) for v in streaming_options.values()):
                 pipe_options = streaming_options
 
-        if not pipe.input_entity_ids:
-            raise ValueError(f"Streaming pipe '{pipe.pipeid}' has no input entities")
-
-        # Convention:
-        # - first input entity is streaming input
-        # - remaining input entities are direct (batch/static) reads for joins/lookups
-        input_entity_frames: Dict[str, Any] = {}
-
-        stream_input_entity_id = pipe.input_entity_ids[0]
-        stream_input_entity = self.entity_registry.get_entity_definition(stream_input_entity_id)
-        stream_input_provider = self.provider_registry.get_provider_for_entity(stream_input_entity)
-
-        if not is_streamable(stream_input_provider):
-            raise TypeError(
-                f"Input provider for entity '{stream_input_entity.entityid}' "
-                f"(type={stream_input_entity.tags.get('provider_type')}) "
-                f"does not support streaming reads"
-            )
-
-        stream_df = stream_input_provider.read_entity_as_stream(stream_input_entity)
-        input_entity_frames[stream_input_entity_id.replace(".", "_")] = stream_df
-
-        for static_entity_id in pipe.input_entity_ids[1:]:
-            static_entity = self.entity_registry.get_entity_definition(static_entity_id)
-            static_provider = self.provider_registry.get_provider_for_entity(static_entity)
-            static_df = static_provider.read_entity(static_entity)
-            input_entity_frames[static_entity_id.replace(".", "_")] = static_df
-
-        # Backwards compatible invocation:
-        # - single input pipes may define execute(df)
-        # - multi input pipes should use named kwargs keyed by entity ids
-        if len(input_entity_frames) == 1:
-            transformed_df = pipe.execute(next(iter(input_entity_frames.values())))
-        else:
-            transformed_df = pipe.execute(**input_entity_frames)
-
-        # Resolve output entity and its provider
-        output_entity = self.entity_registry.get_entity_definition(pipe.output_entity_id)
-        output_provider = self.provider_registry.get_provider_for_entity(output_entity)
-        if not is_stream_writable(output_provider) and not hasattr(
-            output_provider, "append_as_stream"
-        ):
-            raise TypeError(
-                f"Output provider for entity '{output_entity.entityid}' "
-                f"(type={output_entity.tags.get('provider_type')}) "
-                f"does not support streaming writes"
-            )
-
-        # Determine checkpoint path
-        base_chkpt = pipe_options.get("base_checkpoint_path") or self.config_service.get(
-            "base_checkpoint_path"
-        )
-        checkpoint_path = f"{base_chkpt}/{pipe.pipeid}"
-
-        # Write as stream — resolve output path from entity tags first,
-        # falling back to entity_path_locator (matching DeltaEntityProvider logic)
-        output_path = output_entity.tags.get(
-            "provider.path"
-        ) or self.entity_path_locator.get_table_path(output_entity)
-        stream_handle = output_provider.append_as_stream(
-            transformed_df, output_entity, checkpoint_path
-        )
-        query = (
-            stream_handle.start(output_path) if hasattr(stream_handle, "start") else stream_handle
-        )
+        query = self.pipe_stream_starter.start_pipe_stream(pipe.pipeid, pipe_options)
 
         return PipeResult(
             pipe_id=pipe.pipeid,

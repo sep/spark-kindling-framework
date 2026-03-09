@@ -91,5 +91,6 @@ override.tf.json
 .terraformrc
 terraform.rc
 *.tfplan
+tfplan
 iac/databricks/workspace/tfplan
 iac/databricks/account/tfplan
