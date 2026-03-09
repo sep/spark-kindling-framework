@@ -135,6 +135,14 @@ Run the Event Hub provider system test:
 poe test-system --test eventhub_provider
 ```
 
+Run the default name mapper system test:
+```bash
+poe test-system --test name_mapper
+poe test-system --platform fabric --test name_mapper
+poe test-system --platform databricks --test name_mapper
+poe test-system --platform synapse --test name_mapper
+```
+
 ## Test Markers
 
 Tests use pytest markers to categorize:
