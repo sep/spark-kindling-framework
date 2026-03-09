@@ -491,7 +491,7 @@ class GenerationExecutor:
 ### Current State
 
 - Basic streaming support in [packages/kindling/pipe_streaming.py](../../packages/kindling/pipe_streaming.py)
-- `SimplePipeStreamOrchestrator` starts individual streams
+- `SimplePipeStreamStarter` starts individual streams
 - No monitoring, recovery, or coordination features
 
 ### Proposed Architecture

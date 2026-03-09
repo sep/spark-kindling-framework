@@ -10,7 +10,22 @@ from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
 import requests
+from kindling.injection import GlobalInjector
+from kindling.spark_config import ConfigService
 from kindling.notebook_framework import *
+
+
+def _bind_default_entity_services(logger) -> None:
+    """Bind Databricks defaults for config when no explicit setting exists."""
+    # Default to name-based Delta access on Databricks (Unity Catalog / metastore).
+    # Users can override per-entity via `provider.access_mode` or globally via config.
+    try:
+        cs = GlobalInjector.get(ConfigService)
+        if cs.get("kindling.delta.tablerefmode") is None:
+            cs.set("kindling.delta.tablerefmode", "forName")
+            logger.info("Defaulted kindling.delta.tablerefmode=forName (Databricks convention)")
+    except Exception:
+        pass
 
 
 class DatabricksService(PlatformService):
@@ -999,4 +1014,5 @@ class DatabricksService(PlatformService):
 
 @PlatformServices.register(name="databricks", description="Databricks platform service")
 def create_platform_service(config, logger):
+    _bind_default_entity_services(logger)
     return DatabricksService(config, logger)

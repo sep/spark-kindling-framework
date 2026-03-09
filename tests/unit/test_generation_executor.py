@@ -25,6 +25,7 @@ from kindling.generation_executor import (
     PipeResult,
 )
 from kindling.pipe_graph import PipeGraph, PipeNode
+from kindling.pipe_streaming import SimplePipeStreamStarter
 
 # ---- Fixtures ----
 
@@ -119,11 +120,18 @@ def executor(
     signal_provider,
 ):
     """Create GenerationExecutor with mocked dependencies."""
+    pipe_stream_starter = SimplePipeStreamStarter(
+        cs=config_service,
+        dpr=pipes_registry,
+        provider_registry=provider_registry,
+        der=entity_registry,
+        epl=entity_path_locator,
+        plp=logger_provider,
+    )
     return GenerationExecutor(
         pipes_registry=pipes_registry,
         entity_registry=entity_registry,
-        provider_registry=provider_registry,
-        entity_path_locator=entity_path_locator,
+        pipe_stream_starter=pipe_stream_starter,
         config_service=config_service,
         persist_strategy=persist_strategy,
         trace_provider=trace_provider,
@@ -191,8 +199,10 @@ def setup_streaming_mocks(
     provider = Mock(spec=StreamableEntityProvider)
     stream_df = Mock()
     provider.read_entity_as_stream = Mock(return_value=stream_df)
+    provider.ensure_entity_table = Mock()
     writer = Mock()
     writer.start = Mock(return_value=mock_query)
+    writer.toTable = Mock(return_value=mock_query)
     provider.append_as_stream = Mock(return_value=writer)
 
     # Entity registry returns mock entities
@@ -691,6 +701,7 @@ class TestStreamingExecution:
         assert "pipe1" in result.streaming_queries
         assert result.streaming_queries["pipe1"] is mock_query
         provider.read_entity_as_stream.assert_called_once()
+        provider.ensure_entity_table.assert_called_once()
         provider.append_as_stream.assert_called_once()
 
     def test_streaming_with_per_pipe_options(
@@ -782,6 +793,7 @@ class TestStreamingExecution:
         lookup_provider.read_entity.return_value = lookup_df
 
         output_provider = Mock(spec=StreamWritableEntityProvider)
+        output_provider.ensure_entity_table = Mock()
         writer = Mock()
         query = Mock(id="query-123")
         writer.start.return_value = query
@@ -813,6 +825,7 @@ class TestStreamingExecution:
             out_entity,
             "/checkpoints/join_pipe",
         )
+        output_provider.ensure_entity_table.assert_called_once_with(out_entity)
 
     def test_streaming_with_global_options(
         self,
@@ -850,6 +863,73 @@ class TestStreamingExecution:
         call_args = provider.append_as_stream.call_args[0]
         assert call_args[2] == "/custom/checkpoints/pipe1"
 
+    def test_streaming_for_name_uses_table_target(
+        self,
+        executor,
+        pipes_registry,
+        entity_registry,
+        provider_registry,
+        entity_path_locator,
+        config_service,
+    ):
+        """forName mode should write stream via table target (toTable), not path."""
+        transformed_df = Mock(name="transformed_df")
+        pipe = PipeMetadata(
+            pipeid="pipe1",
+            name="pipe1",
+            execute=Mock(return_value=transformed_df),
+            tags={},
+            input_entity_ids=["entity.src"],
+            output_entity_id="entity.dst",
+            output_type="delta",
+        )
+        pipes_registry.get_pipe_definition.return_value = pipe
+
+        src_entity = Mock(entityid="entity.src", tags={"provider_type": "delta"})
+        dst_entity = Mock(
+            entityid="entity.dst",
+            tags={
+                "provider_type": "delta",
+                "provider.access_mode": "forName",
+                "provider.table_name": "main.analytics.entity_dst",
+            },
+        )
+        entity_registry.get_entity_definition.side_effect = lambda eid: {
+            "entity.src": src_entity,
+            "entity.dst": dst_entity,
+        }[eid]
+
+        stream_provider = Mock(spec=StreamableEntityProvider)
+        stream_provider.read_entity_as_stream.return_value = Mock(name="stream_df")
+
+        output_provider = Mock(spec=StreamWritableEntityProvider)
+        output_provider.ensure_entity_table = Mock()
+        writer = Mock()
+        writer.toTable.return_value = Mock(id="query-1")
+        writer.start.return_value = Mock(id="query-start")
+        output_provider.append_as_stream.return_value = writer
+
+        provider_registry.get_provider_for_entity.side_effect = lambda entity: {
+            "entity.src": stream_provider,
+            "entity.dst": output_provider,
+        }[entity.entityid]
+        config_service.get.side_effect = lambda key: (
+            "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
+        )
+
+        plan = make_plan(
+            ["pipe1"],
+            [Generation(number=0, pipe_ids=["pipe1"], dependencies=[])],
+            strategy="streaming",
+        )
+
+        result = executor.execute(plan)
+
+        assert result.success_count == 1
+        writer.toTable.assert_called_once_with("main.analytics.entity_dst")
+        writer.start.assert_not_called()
+        entity_path_locator.get_table_path.assert_not_called()
+
     def test_streaming_failure_captured(
         self,
         executor,
@@ -882,6 +962,60 @@ class TestStreamingExecution:
         result = executor.execute(plan)
         assert result.failed_count == 1
         assert result.failed_pipes == ["pipe1"]
+
+    def test_streaming_no_ensure_method_still_starts(
+        self,
+        executor,
+        pipes_registry,
+        entity_registry,
+        provider_registry,
+    ):
+        """Streaming sink starts even if provider does not expose ensure_entity_table."""
+        transformed_df = Mock(name="transformed_df")
+        pipe = PipeMetadata(
+            pipeid="pipe1",
+            name="pipe1",
+            execute=Mock(return_value=transformed_df),
+            tags={},
+            input_entity_ids=["entity.src"],
+            output_entity_id="entity.dst",
+            output_type="delta",
+        )
+        pipes_registry.get_pipe_definition.return_value = pipe
+
+        src_entity = Mock(entityid="entity.src", tags={"provider_type": "delta"})
+        dst_entity = Mock(
+            entityid="entity.dst", tags={"provider_type": "delta", "provider.path": "/out"}
+        )
+        entity_registry.get_entity_definition.side_effect = lambda eid: {
+            "entity.src": src_entity,
+            "entity.dst": dst_entity,
+        }[eid]
+
+        src_provider = Mock(spec=StreamableEntityProvider)
+        src_provider.read_entity_as_stream.return_value = Mock(name="stream_df")
+
+        output_provider = Mock(spec=StreamWritableEntityProvider)
+        writer = Mock()
+        writer.start.return_value = Mock(id="q-1")
+        output_provider.append_as_stream.return_value = writer
+        # intentionally no ensure_entity_table attribute
+
+        provider_registry.get_provider_for_entity.side_effect = lambda entity: {
+            "entity.src": src_provider,
+            "entity.dst": output_provider,
+        }[entity.entityid]
+
+        plan = make_plan(
+            ["pipe1"],
+            [Generation(number=0, pipe_ids=["pipe1"], dependencies=[])],
+            strategy="streaming",
+        )
+
+        result = executor.execute(plan)
+
+        assert result.success_count == 1
+        output_provider.append_as_stream.assert_called_once()
 
     def test_streaming_multi_generation_ordering(
         self,

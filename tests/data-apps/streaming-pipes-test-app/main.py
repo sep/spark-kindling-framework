@@ -4,7 +4,7 @@ Streaming Pipes Test App
 
 Tests the Unified DAG Orchestrator in streaming mode:
 - Define entities and pipes via framework decorators
-- Bind a concrete EntityPathLocator (the one ABC users must provide)
+- Use platform-provided default EntityPathLocator and EntityNameMapper bindings
 - Execute streaming plan via GenerationExecutor
 - Verify data flows through bronze → silver → gold
 
@@ -14,16 +14,12 @@ Pipeline: bronze stream → silver stream → gold stream (joined with static lo
 import sys
 import time
 
-from kindling.data_entities import (
-    DataEntities,
-    DataEntityRegistry,
-    EntityNameMapper,
-    EntityPathLocator,
-)
+from kindling.data_entities import DataEntities, DataEntityRegistry
 from kindling.data_pipes import DataPipes
 from kindling.execution_strategy import ExecutionPlanGenerator
 from kindling.generation_executor import GenerationExecutor
 from kindling.injection import GlobalInjector, get_kindling_service
+from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
@@ -66,31 +62,153 @@ try:
     silver_path = f"{base_path}/silver"
     gold_path = f"{base_path}/gold"
     lookup_path = f"{base_path}/lookup"
+    partition_test_path = f"{base_path}/partition_test"
+    clustering_test_path = f"{base_path}/clustering_test"
 
-    # ---- Bind EntityPathLocator (user-provided ABC) ----
-    # EntityPathLocator has no framework default — users bind their own.
-    # This implementation uses provider.path tags set on entity definitions.
+    platform_service = get_kindling_service(PlatformServiceProvider).get_service()
+    platform_name = platform_service.get_platform_name() if platform_service else "unknown"
+    is_databricks = platform_name == "databricks"
+    is_synapse = platform_name == "synapse"
+    table_name_prefix = f"streaming_pipes_test_{str(test_id).replace('-', '_')}"
+    table_catalog = None
+    table_schema = None
 
-    class TagBasedPathLocator(EntityPathLocator):
-        """Resolves table paths from entity provider.path tags."""
+    def _quote_table_identifier(table_name: str) -> str:
+        parts = [part.strip() for part in table_name.split(".") if part.strip()]
+        if not parts:
+            raise ValueError("Table name cannot be empty")
+        return ".".join([f"`{part.replace('`', '``')}`" for part in parts])
 
-        def get_table_path(self, entity):
-            path = entity.tags.get("provider.path")
-            if path:
-                return path
-            # Fallback: derive from entity id
-            entity_id = entity.entityid if hasattr(entity, "entityid") else str(entity)
-            if "." in entity_id:
-                layer, name = entity_id.split(".", 1)
-                return f"{base_path}/{layer}/{name}"
-            return f"{base_path}/{entity_id}"
+    if is_databricks:
+        table_catalog = config_service.get("kindling.storage.table_catalog")
+        table_schema = config_service.get("kindling.storage.table_schema")
 
-    class SimpleEntityNameMapper(EntityNameMapper):
-        """Maps entity to a table name derived from its entityid."""
+        # Reuse catalog/schema from the configured UC volume path when available.
+        if not table_catalog or not table_schema:
+            temp_path = str(config_service.get("kindling.temp_path", "") or "")
+            temp_parts = [part for part in temp_path.split("/") if part]
+            if len(temp_parts) >= 3 and temp_parts[0].lower() == "volumes":
+                table_catalog = table_catalog or temp_parts[1]
+                table_schema = table_schema or temp_parts[2]
 
-        def get_table_name(self, entity):
-            entity_id = entity.entityid if hasattr(entity, "entityid") else str(entity)
-            return entity_id.replace(".", "_")
+        if not table_catalog or not table_schema:
+            current_context = spark.sql(
+                "SELECT current_catalog() AS catalog, current_schema() AS schema"
+            ).first()
+            table_catalog = table_catalog or current_context["catalog"]
+            table_schema = table_schema or current_context["schema"]
+
+    if is_synapse:
+        # Synapse convention: 2-part identifiers (<database>.<table>) work broadly.
+        # Allow an explicit catalog override when the engine supports it.
+        table_catalog = config_service.get("kindling.storage.table_catalog")
+        table_schema = config_service.get("kindling.storage.table_schema")
+        if not table_schema:
+            current_context = spark.sql("SELECT current_database() AS schema").first()
+            table_schema = current_context["schema"]
+
+    def _qualified_table_name(schema: str, leaf: str) -> str:
+        if table_catalog:
+            return f"{table_catalog}.{schema}.{leaf}"
+        return f"{schema}.{leaf}"
+
+    def _entity_tags(layer_name: str, path: str):
+        if is_databricks:
+            return {
+                "provider_type": "delta",
+                "provider.access_mode": "forName",
+                "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_{layer_name}",
+            }
+        if is_synapse:
+            return {
+                "provider_type": "delta",
+                "provider.access_mode": "forName",
+                "provider.table_name": _qualified_table_name(
+                    table_schema, f"{table_name_prefix}_{layer_name}"
+                ),
+            }
+        return {"provider_type": "delta", "provider.path": path}
+
+    def _partition_test_tags(path: str):
+        # Always test file partitioning via forPath to avoid platform catalog differences.
+        return {
+            "provider_type": "delta",
+            "provider.access_mode": "forPath",
+            "provider.path": path,
+        }
+
+    def _clustering_test_tags(path: str):
+        # Prefer name-based clustering on engines that support it.
+        if is_databricks:
+            return {
+                "provider_type": "delta",
+                "provider.access_mode": "forName",
+                "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_clustering_test",
+            }
+        if is_synapse:
+            # Use the system test schema (pre-created with LOCATION) so managed tables can be created by name.
+            return {
+                "provider_type": "delta",
+                "provider.access_mode": "forName",
+                "provider.table_name": _qualified_table_name(
+                    table_schema, f"{table_name_prefix}_clustering_test"
+                ),
+            }
+        return {
+            "provider_type": "delta",
+            "provider.access_mode": "forPath",
+            "provider.path": path,
+        }
+
+    def _get_row_field(row, field_name: str):
+        if row is None:
+            return None
+        try:
+            d = row.asDict(recursive=True)
+        except Exception:
+            d = dict(row) if isinstance(row, dict) else {}
+        for k, v in d.items():
+            if str(k).lower() == str(field_name).lower():
+                return v
+        return None
+
+    def _describe_detail_for_path(path: str):
+        escaped = str(path).replace("`", "``")
+        return spark.sql(f"DESCRIBE DETAIL delta.`{escaped}`").first()
+
+    def _describe_detail_for_table(table_name: str):
+        return spark.sql(f"DESCRIBE DETAIL {_quote_table_identifier(table_name)}").first()
+
+    def _coerce_cluster_columns(raw_value, default_cols):
+        """Coerce a config value into the cluster_columns shape expected by DataEntities.entity."""
+        if raw_value is None:
+            return list(default_cols)
+        if isinstance(raw_value, str):
+            return [raw_value]
+        try:
+            return [str(v) for v in list(raw_value)]
+        except Exception:
+            return list(default_cols)
+
+    def _is_auto_cluster_columns(cluster_cols) -> bool:
+        if cluster_cols is None:
+            return False
+        if isinstance(cluster_cols, str):
+            vals = [cluster_cols]
+        else:
+            try:
+                vals = list(cluster_cols)
+            except Exception:
+                vals = [cluster_cols]
+        return len(vals) == 1 and str(vals[0]).strip().lower() == "auto"
+
+    def _auto_clustering_enabled() -> bool:
+        try:
+            from kindling.features import get_feature_bool
+
+            return get_feature_bool(config_service, "delta.auto_clustering", default=False) is True
+        except Exception:
+            return False
 
     class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
         """Provides watermark entities for streaming test - minimal implementation."""
@@ -128,8 +246,6 @@ try:
         def get_watermark_entity_for_layer(self, _layer: str):
             return self.watermark_entity
 
-    GlobalInjector.bind(EntityPathLocator, TagBasedPathLocator)
-    GlobalInjector.bind(EntityNameMapper, SimpleEntityNameMapper)
     GlobalInjector.bind(WatermarkEntityFinder, SimpleWatermarkEntityFinder)
 
     # ---- Define entity schemas ----
@@ -176,7 +292,7 @@ try:
         name="bronze_events",
         partition_columns=[],
         merge_columns=["event_id"],
-        tags={"provider_type": "delta", "provider.path": bronze_path},
+        tags=_entity_tags("bronze", bronze_path),
         schema=bronze_schema,
     )
 
@@ -185,7 +301,7 @@ try:
         name="silver_events",
         partition_columns=[],
         merge_columns=["event_id"],
-        tags={"provider_type": "delta", "provider.path": silver_path},
+        tags=_entity_tags("silver", silver_path),
         schema=silver_schema,
     )
 
@@ -194,7 +310,7 @@ try:
         name="gold_events",
         partition_columns=[],
         merge_columns=["event_id"],
-        tags={"provider_type": "delta", "provider.path": gold_path},
+        tags=_entity_tags("gold", gold_path),
         schema=gold_schema,
     )
 
@@ -203,8 +319,58 @@ try:
         name="lookup_events",
         partition_columns=[],
         merge_columns=["lookup_key"],
-        tags={"provider_type": "delta", "provider.path": lookup_path},
+        tags=_entity_tags("lookup", lookup_path),
         schema=lookup_schema,
+    )
+
+    # ---- Delta layout tests: partitioning + clustering ----
+
+    layout_schema = StructType(
+        [
+            StructField("id", StringType(), False),
+            StructField("pdate", StringType(), False),
+            StructField("value", StringType(), True),
+        ]
+    )
+
+    DataEntities.entity(
+        entityid="system.delta_partitioning",
+        name="delta_partitioning",
+        partition_columns=["pdate"],
+        merge_columns=["id"],
+        tags=_partition_test_tags(partition_test_path),
+        schema=layout_schema,
+    )
+
+    # Intentionally specify both partition_columns and cluster_columns to validate
+    # provider behavior: prefer clustering and skip partitionBy().
+    # In system tests, allow overriding cluster columns via config so we can validate
+    # "auto" liquid clustering behavior without cloning the app.
+    cluster_cols_v1 = _coerce_cluster_columns(
+        config_service.get("kindling.system_tests.streaming_pipes.cluster_columns"), ["id"]
+    )
+    DataEntities.entity(
+        entityid="system.delta_clustering",
+        name="delta_clustering",
+        partition_columns=["pdate"],
+        cluster_columns=cluster_cols_v1,
+        merge_columns=["id"],
+        tags=_clustering_test_tags(clustering_test_path),
+        schema=layout_schema,
+    )
+
+    # Same destination as delta_clustering, but a different clustering spec to validate updates.
+    cluster_cols_v2 = _coerce_cluster_columns(
+        config_service.get("kindling.system_tests.streaming_pipes.cluster_columns_v2"), ["pdate"]
+    )
+    DataEntities.entity(
+        entityid="system.delta_clustering_v2",
+        name="delta_clustering_v2",
+        partition_columns=["pdate"],
+        cluster_columns=cluster_cols_v2,
+        merge_columns=["id"],
+        tags=_clustering_test_tags(clustering_test_path),
+        schema=layout_schema,
     )
 
     msg = f"TEST_ID={test_id} test=entity_definitions status=PASSED"
@@ -266,12 +432,165 @@ try:
     silver_entity = entity_registry.get_entity_definition("stream.silver")
     gold_entity = entity_registry.get_entity_definition("stream.gold")
     lookup_entity = entity_registry.get_entity_definition("stream.lookup")
+    partition_entity = entity_registry.get_entity_definition("system.delta_partitioning")
+    clustering_entity = entity_registry.get_entity_definition("system.delta_clustering")
+    clustering_entity_v2 = entity_registry.get_entity_definition("system.delta_clustering_v2")
 
     # Write empty DataFrames to create Delta tables at specified paths
     entity_provider.write_to_entity(spark.createDataFrame([], bronze_schema), bronze_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], silver_schema), silver_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], gold_schema), gold_entity)
     entity_provider.write_to_entity(spark.createDataFrame([], lookup_schema), lookup_entity)
+
+    # ---- Validate partitioning ----
+    try:
+        entity_provider.ensure_entity_table(partition_entity)
+        detail = _describe_detail_for_path(partition_test_path)
+        partition_cols = _get_row_field(detail, "partitionColumns") or []
+        ok = list(partition_cols) == ["pdate"]
+        msg = (
+            f"TEST_ID={test_id} test=delta_partitioning status={'PASSED' if ok else 'FAILED'} "
+            f"partitionColumns={partition_cols}"
+        )
+        logger.info(msg)
+        print(msg, flush=True)
+        test_results["delta_partitioning"] = ok
+    except Exception as e:
+        msg = (
+            f"TEST_ID={test_id} test=delta_partitioning status=FAILED error={type(e).__name__}:{e}"
+        )
+        logger.error(msg)
+        print(msg, flush=True)
+        test_results["delta_partitioning"] = False
+
+    # ---- Validate clustering ----
+    try:
+        auto_requested = _is_auto_cluster_columns(
+            getattr(clustering_entity, "cluster_columns", None)
+        )
+        auto_enabled = _auto_clustering_enabled()
+
+        entity_provider.ensure_entity_table(clustering_entity)
+
+        if auto_requested and not auto_enabled:
+            ok = False
+            partition_cols, clustering_cols = [], []
+        else:
+            # Always validate that clustering config prevents file partitioning.
+            clustering_table_name = (clustering_entity.tags or {}).get("provider.table_name")
+            if clustering_table_name:
+                detail = _describe_detail_for_table(clustering_table_name)
+            else:
+                detail = _describe_detail_for_path(clustering_test_path)
+
+            partition_cols = _get_row_field(detail, "partitionColumns") or []
+            clustering_cols = _get_row_field(detail, "clusteringColumns") or []
+
+            if auto_requested:
+                # For AUTO we don't assert exact engine-chosen columns; we just ensure we did not
+                # physically partition files even though partition_columns were provided.
+                ok = list(partition_cols) == []
+            else:
+                ok = list(partition_cols) == [] and (
+                    "id" in [str(c).lower() for c in list(clustering_cols)]
+                )
+
+        msg = (
+            f"TEST_ID={test_id} test=delta_clustering status={'PASSED' if ok else 'FAILED'} "
+            f"partitionColumns={partition_cols} clusteringColumns={clustering_cols} "
+            f"auto_requested={auto_requested} auto_enabled={auto_enabled}"
+        )
+        logger.info(msg)
+        print(msg, flush=True)
+        test_results["delta_clustering"] = ok
+    except Exception as e:
+        auto_requested = _is_auto_cluster_columns(
+            getattr(clustering_entity, "cluster_columns", None)
+        )
+        auto_enabled = _auto_clustering_enabled()
+
+        if auto_requested and not auto_enabled:
+            # Expected: provider should reject auto clustering when feature is not enabled.
+            msg = (
+                f"TEST_ID={test_id} test=delta_clustering status=PASSED "
+                f"auto_requested=true auto_enabled=false expected_rejection=true "
+                f"error={type(e).__name__}:{e}"
+            )
+            logger.info(msg)
+            print(msg, flush=True)
+            test_results["delta_clustering"] = True
+        else:
+            msg = (
+                f"TEST_ID={test_id} test=delta_clustering status=FAILED "
+                f"auto_requested={auto_requested} auto_enabled={auto_enabled} "
+                f"error={type(e).__name__}:{e}"
+            )
+            logger.error(msg)
+            print(msg, flush=True)
+            test_results["delta_clustering"] = False
+
+    # ---- Validate clustering updates ----
+    try:
+        auto_requested = _is_auto_cluster_columns(
+            getattr(clustering_entity_v2, "cluster_columns", None)
+        )
+        auto_enabled = _auto_clustering_enabled()
+
+        entity_provider.ensure_entity_table(clustering_entity_v2)
+
+        if auto_requested and not auto_enabled:
+            ok = False
+            partition_cols, clustering_cols = [], []
+        else:
+            clustering_table_name = (clustering_entity_v2.tags or {}).get("provider.table_name")
+            if clustering_table_name:
+                detail = _describe_detail_for_table(clustering_table_name)
+            else:
+                detail = _describe_detail_for_path(clustering_test_path)
+
+            partition_cols = _get_row_field(detail, "partitionColumns") or []
+            clustering_cols = _get_row_field(detail, "clusteringColumns") or []
+
+            if auto_requested:
+                ok = list(partition_cols) == []
+            else:
+                ok = list(partition_cols) == []
+                desired = {"pdate"}
+                actual = {str(c).lower() for c in list(clustering_cols)}
+                ok = ok and (actual == desired)
+
+        msg = (
+            f"TEST_ID={test_id} test=delta_clustering_update status={'PASSED' if ok else 'FAILED'} "
+            f"partitionColumns={partition_cols} clusteringColumns={clustering_cols} "
+            f"auto_requested={auto_requested} auto_enabled={auto_enabled}"
+        )
+        logger.info(msg)
+        print(msg, flush=True)
+        test_results["delta_clustering_update"] = ok
+    except Exception as e:
+        auto_requested = _is_auto_cluster_columns(
+            getattr(clustering_entity_v2, "cluster_columns", None)
+        )
+        auto_enabled = _auto_clustering_enabled()
+
+        if auto_requested and not auto_enabled:
+            msg = (
+                f"TEST_ID={test_id} test=delta_clustering_update status=PASSED "
+                f"auto_requested=true auto_enabled=false expected_rejection=true "
+                f"error={type(e).__name__}:{e}"
+            )
+            logger.info(msg)
+            print(msg, flush=True)
+            test_results["delta_clustering_update"] = True
+        else:
+            msg = (
+                f"TEST_ID={test_id} test=delta_clustering_update status=FAILED "
+                f"auto_requested={auto_requested} auto_enabled={auto_enabled} "
+                f"error={type(e).__name__}:{e}"
+            )
+            logger.error(msg)
+            print(msg, flush=True)
+            test_results["delta_clustering_update"] = False
 
     # Seed static lookup data (read as direct/batch input while silver is streaming)
     lookup_rows = [{"lookup_key": str(i), "category": f"group_{i % 5}"} for i in range(100)]
@@ -399,19 +718,19 @@ try:
 
     # ---- Verify data in each layer ----
 
-    for path, label in [
-        (bronze_path, "bronze_data"),
-        (silver_path, "silver_data"),
-        (gold_path, "gold_data"),
+    for entity, label in [
+        (bronze_entity, "bronze_data"),
+        (silver_entity, "silver_data"),
+        (gold_entity, "gold_data"),
     ]:
-        count = spark.read.format("delta").load(path).count()
+        count = entity_provider.read_entity(entity).count()
         ok = count > 0
         msg = f"TEST_ID={test_id} test={label} status={'PASSED' if ok else 'FAILED'} count={count}"
         logger.info(msg)
         print(msg, flush=True)
         test_results[label] = ok
 
-    gold_df = spark.read.format("delta").load(gold_path)
+    gold_df = entity_provider.read_entity(gold_entity)
     matched_lookup_rows = gold_df.filter(col("category").isNotNull()).count()
     multi_input_ok = matched_lookup_rows > 0
     msg = (
@@ -465,23 +784,59 @@ try:
     platform_service_provider = get_kindling_service(PlatformServiceProvider)
     platform_service = platform_service_provider.get_service()
 
-    for path, label in [
-        (bronze_path, "bronze"),
-        (silver_path, "silver"),
-        (gold_path, "gold"),
-        (lookup_path, "lookup"),
-        (chk_base, "checkpoints"),
-    ]:
+    if is_databricks:
+        for entity, label in [
+            (bronze_entity, "bronze_table"),
+            (silver_entity, "silver_table"),
+            (gold_entity, "gold_table"),
+            (lookup_entity, "lookup_table"),
+        ]:
+            try:
+                table_name = (entity.tags or {}).get("provider.table_name")
+                if table_name:
+                    spark.sql(f"DROP TABLE IF EXISTS {_quote_table_identifier(table_name)}")
+                msg = f"TEST_ID={test_id} cleanup={label} status=dropped"
+                logger.info(msg)
+                print(msg)
+            except Exception as cleanup_error:
+                msg = (
+                    f"TEST_ID={test_id} cleanup={label} status=failed "
+                    f"error={str(cleanup_error)}"
+                )
+                logger.warning(msg)
+                print(msg)
+
         try:
-            if platform_service.exists(path):
-                platform_service.delete(path, recurse=True)
-            msg = f"TEST_ID={test_id} cleanup={label} status=deleted"
+            if platform_service.exists(chk_base):
+                platform_service.delete(chk_base, recurse=True)
+            msg = f"TEST_ID={test_id} cleanup=checkpoints status=deleted"
             logger.info(msg)
             print(msg)
         except Exception as cleanup_error:
-            msg = f"TEST_ID={test_id} cleanup={label} status=failed error={str(cleanup_error)}"
+            msg = (
+                f"TEST_ID={test_id} cleanup=checkpoints status=failed "
+                f"error={str(cleanup_error)}"
+            )
             logger.warning(msg)
             print(msg)
+    else:
+        for path, label in [
+            (bronze_path, "bronze"),
+            (silver_path, "silver"),
+            (gold_path, "gold"),
+            (lookup_path, "lookup"),
+            (chk_base, "checkpoints"),
+        ]:
+            try:
+                if platform_service.exists(path):
+                    platform_service.delete(path, recurse=True)
+                msg = f"TEST_ID={test_id} cleanup={label} status=deleted"
+                logger.info(msg)
+                print(msg)
+            except Exception as cleanup_error:
+                msg = f"TEST_ID={test_id} cleanup={label} status=failed error={str(cleanup_error)}"
+                logger.warning(msg)
+                print(msg)
 
 except Exception as e:
     msg = f"TEST_ID={test_id} status=FAILED error={str(e)}"
