@@ -102,9 +102,11 @@ class TestNameMapper:
             all_passed = all(r["passed"] for r in validation_results.values())
             assert all_passed, f"Validation failed: {validation_results}"
             assert completion_result["passed"], f"Completion failed: {completion_result}"
-            assert final_status in ["TERMINATED", "COMPLETED", "SUCCESS"], (
-                f"Unexpected final status: {final_status}. Validation: {validation_results}"
-            )
+            assert final_status in [
+                "TERMINATED",
+                "COMPLETED",
+                "SUCCESS",
+            ], f"Unexpected final status: {final_status}. Validation: {validation_results}"
         finally:
             try:
                 api_client.delete_job(job_id)
