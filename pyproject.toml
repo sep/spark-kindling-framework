@@ -64,6 +64,7 @@ release = { shell = "bash scripts/release.sh" }
 init-azure = { shell = "source scripts/init_azure_dev.sh" }
 setup-github-secrets = { script = "scripts.test_runner:run_setup_github_secrets", args = [{name = "environment", default = "", positional = false, help = "Optional GitHub environment name (e.g. dev, test)"}, {name = "name", default = "", positional = false, help = "Optional single variable name to publish from .env"}] }
 publish-github-secrets = { script = "scripts.test_runner:run_setup_github_secrets", args = [{name = "environment", default = "", positional = false, help = "Optional GitHub environment name (e.g. dev, test)"}, {name = "name", default = "", positional = false, help = "Optional single variable name to publish from .env"}] }
+auth-secret-fingerprints = { cmd = "python scripts/auth_secret_fingerprints.py" }
 
 # Testing tasks
 test = "pytest tests/ -v"

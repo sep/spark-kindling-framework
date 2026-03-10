@@ -85,11 +85,11 @@ set +a  # disable auto-export
 
 set_secret() {
     local key="$1"
-    value="${!key}"
+    local value="${!key}"
 
     if [ -n "$value" ]; then
         echo "Setting secret: $key"
-        cmd=(gh secret set "$key" --body -)
+        cmd=(gh secret set "$key")
         if [[ -n "$ENVIRONMENT" ]]; then
             cmd+=(--env "$ENVIRONMENT")
         fi
