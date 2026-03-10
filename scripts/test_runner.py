@@ -99,6 +99,11 @@ def _run_system_test_preflight(platform: Optional[str]) -> int:
     return result.returncode
 
 
+def _exit(code: int = 0) -> None:
+    """Exit explicitly so Poe script tasks propagate failure correctly."""
+    raise SystemExit(code)
+
+
 def run_unit_tests_ci() -> int:
     """
     Run unit tests with CI-specific reporting outputs.
@@ -124,7 +129,7 @@ def run_unit_tests_ci() -> int:
     print()
 
     result = subprocess.run(args)
-    return result.returncode
+    _exit(result.returncode)
 
 
 def run_integration_tests_ci() -> int:
@@ -148,7 +153,7 @@ def run_integration_tests_ci() -> int:
     print()
 
     result = subprocess.run(args)
-    return result.returncode
+    _exit(result.returncode)
 
 
 def run_system_tests(platform: str = "", test: str = "") -> int:
@@ -196,7 +201,7 @@ def run_system_tests(platform: str = "", test: str = "") -> int:
 
     # Execute pytest
     result = subprocess.run(args)
-    return result.returncode
+    _exit(result.returncode)
 
 
 def run_system_tests_ci(platform: str = "", test: str = "") -> int:
@@ -217,7 +222,7 @@ def run_system_tests_ci(platform: str = "", test: str = "") -> int:
 
     preflight_rc = _run_system_test_preflight(platform_filter)
     if preflight_rc != 0:
-        return preflight_rc
+        _exit(preflight_rc)
 
     os.makedirs("test-results", exist_ok=True)
 
@@ -238,7 +243,7 @@ def run_system_tests_ci(platform: str = "", test: str = "") -> int:
     print()
 
     result = subprocess.run(args)
-    return result.returncode
+    _exit(result.returncode)
 
 
 def run_extension_tests(extension: str = "azure-monitor", platform: str = "") -> int:
@@ -274,7 +279,7 @@ def run_extension_tests(extension: str = "azure-monitor", platform: str = "") ->
 
     # Execute pytest
     result = subprocess.run(args)
-    return result.returncode
+    _exit(result.returncode)
 
 
 def run_setup_github_secrets(environment: str = "", name: str = "") -> int:
@@ -299,7 +304,7 @@ def run_setup_github_secrets(environment: str = "", name: str = "") -> int:
     print()
 
     result = subprocess.run(cmd)
-    return result.returncode
+    _exit(result.returncode)
 
 
 def run_cleanup(platform: str = "", skip_packages: bool = False) -> int:
@@ -349,7 +354,7 @@ def run_cleanup(platform: str = "", skip_packages: bool = False) -> int:
     else:
         result = subprocess.run(cmd)
 
-    return result.returncode
+    _exit(result.returncode)
 
 
 def run_deploy_app(
@@ -384,12 +389,12 @@ def run_deploy_app(
 
     if not app_path:
         print("❌ --app-path is required")
-        return 1
+        _exit(1)
 
     app_path_obj = Path(app_path)
     if not app_path_obj.exists():
         print(f"❌ App path does not exist: {app_path}")
-        return 1
+        _exit(1)
 
     # Default app_name to directory/file name
     if not app_name:
@@ -402,7 +407,7 @@ def run_deploy_app(
 
     if not storage_account:
         print("❌ AZURE_STORAGE_ACCOUNT environment variable is required")
-        return 1
+        _exit(1)
 
     target_path = f"{base_path}/data-apps/{app_name}" if base_path else f"data-apps/{app_name}"
 
@@ -435,11 +440,11 @@ def run_deploy_app(
             upload_count += 1
 
         print(f"\n✅ Deployed {upload_count} files to data-apps/{app_name}/")
-        return 0
+        _exit(0)
 
     except Exception as e:
         print(f"❌ Deploy failed: {e}")
-        return 1
+        _exit(1)
 
 
 def run_deploy(platform: str = "", release: str = "") -> int:
@@ -482,7 +487,7 @@ def run_deploy(platform: str = "", release: str = "") -> int:
 
     # Execute deploy
     result = subprocess.run(cmd)
-    return result.returncode
+    _exit(result.returncode)
 
 
 if __name__ == "__main__":

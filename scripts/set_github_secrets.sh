@@ -93,7 +93,7 @@ set_secret() {
         if [[ -n "$ENVIRONMENT" ]]; then
             cmd+=(--env "$ENVIRONMENT")
         fi
-        echo "$value" | "${cmd[@]}"
+        printf '%s' "$value" | "${cmd[@]}"
     else
         echo "⚠️  Skipping $key (empty value)"
     fi
