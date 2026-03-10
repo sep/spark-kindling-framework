@@ -44,9 +44,7 @@ def _print_hash_diagnostics() -> None:
     for key in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
         value = os.getenv(key) or ""
         fingerprint = _fingerprint(value) if value else "<missing>"
-        print(
-            f"   {key}: len={len(value)} sha256={fingerprint}"
-        )
+        print(f"   {key}: len={len(value)} sha256={fingerprint}")
 
     secret = os.getenv("AZURE_CLIENT_SECRET") or ""
     print(
