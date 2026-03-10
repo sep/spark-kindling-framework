@@ -53,6 +53,7 @@ jobs:
           AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
           SYSTEM_TEST_KEY_VAULT_URL: ${{ secrets.SYSTEM_TEST_KEY_VAULT_URL }}
+          KINDLING_AUTH_DEBUG_HASHES: "true"
         run: |
           if [ "${{ inputs.platform }}" = "all" ]; then
             python tests/system/auth_check.py
