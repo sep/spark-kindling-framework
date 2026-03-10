@@ -1,0 +1,61 @@
+name: System Test Auth Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform to validate (all, fabric, synapse, databricks)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - fabric
+          - synapse
+          - databricks
+
+jobs:
+  auth-check:
+    name: Auth Check (${{ inputs.platform }})
+    runs-on: ubuntu-latest
+    environment: testing
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run auth preflight
+        env:
+          FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
+          FABRIC_LAKEHOUSE_ID: ${{ secrets.FABRIC_LAKEHOUSE_ID }}
+          CONFIG__platform_fabric__kindling__secrets__key_vault_url: ${{ secrets.CONFIG__platform_fabric__kindling__secrets__key_vault_url }}
+          SYNAPSE_WORKSPACE_NAME: ${{ secrets.SYNAPSE_WORKSPACE_NAME }}
+          SYNAPSE_SPARK_POOL: ${{ secrets.SYNAPSE_SPARK_POOL }}
+          CONFIG__platform_synapse__kindling__secrets__key_vault_url: ${{ secrets.CONFIG__platform_synapse__kindling__secrets__key_vault_url }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+          SYSTEM_TEST_KEY_VAULT_URL: ${{ secrets.SYSTEM_TEST_KEY_VAULT_URL }}
+        run: |
+          if [ "${{ inputs.platform }}" = "all" ]; then
+            python tests/system/auth_check.py
+          else
+            python tests/system/auth_check.py --platform "${{ inputs.platform }}"
+          fi
