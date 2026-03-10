@@ -10,6 +10,7 @@ Validates:
 """
 
 import argparse
+import hashlib
 import os
 import sys
 from typing import Iterable, Optional
@@ -20,6 +21,41 @@ ALL_PLATFORMS = ("fabric", "synapse", "databricks")
 
 def _masked(value: str) -> str:
     return f"{value[:8]}..." if value else "<missing>"
+
+
+def _should_print_hashes() -> bool:
+    return (os.getenv("KINDLING_AUTH_DEBUG_HASHES") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _print_hash_diagnostics() -> None:
+    if not _should_print_hashes():
+        return
+
+    print("\n🔎 Credential fingerprints")
+    for key in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
+        value = os.getenv(key) or ""
+        fingerprint = _fingerprint(value) if value else "<missing>"
+        print(
+            f"   {key}: len={len(value)} sha256={fingerprint}"
+        )
+
+    secret = os.getenv("AZURE_CLIENT_SECRET") or ""
+    print(
+        "   AZURE_CLIENT_SECRET flags: "
+        f"has_newline={'yes' if chr(10) in secret else 'no'} "
+        f"has_carriage_return={'yes' if chr(13) in secret else 'no'} "
+        f"leading_whitespace={'yes' if secret[:1].isspace() else 'no'} "
+        f"trailing_whitespace={'yes' if secret[-1:].isspace() else 'no'}"
+    )
 
 
 def _create_credential():
@@ -173,6 +209,8 @@ def main() -> int:
         help="Validate config for a single platform. Defaults to all platforms.",
     )
     args = parser.parse_args()
+
+    _print_hash_diagnostics()
 
     auth_ok = check_authentication()
     storage_ok = check_storage_access()
