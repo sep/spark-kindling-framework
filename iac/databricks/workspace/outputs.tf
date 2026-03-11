@@ -9,7 +9,25 @@ output "catalog_name" {
 
 output "kindling_catalog_name" {
   description = "Kindling catalog name used by this stack (created or existing)"
-  value       = var.enable_unity_catalog ? local.kindling_catalog_name_effective : null
+  value       = var.enable_unity_catalog && local.enable_kindling_artifacts_effective ? local.kindling_catalog_name_effective : null
+}
+
+output "kindling_runtime_volume_namespace" {
+  description = "Catalog/schema used for Kindling managed runtime volumes"
+  value = var.enable_unity_catalog && local.enable_kindling_runtime_volumes_effective ? {
+    catalog = local.kindling_runtime_volume_catalog_name_effective
+    schema  = local.kindling_runtime_volume_schema_name_effective
+  } : null
+}
+
+output "workspace_role_effective" {
+  description = "Effective workspace role and Kindling feature toggles"
+  value = {
+    workspace_role                   = var.workspace_role
+    enable_kindling_artifacts        = local.enable_kindling_artifacts_effective
+    enable_kindling_runtime_volumes  = local.enable_kindling_runtime_volumes_effective
+    enable_kindling_platform_support = local.enable_kindling_platform_support_effective
+  }
 }
 
 output "storage_credential_name" {
@@ -24,25 +42,72 @@ output "access_connector_id" {
 
 output "external_location_urls" {
   description = "Map of managed external location names to their ABFSS URLs"
-  value       = var.enable_unity_catalog ? { (databricks_external_location.artifacts[0].name) = databricks_external_location.artifacts[0].url } : {}
+  value       = var.enable_unity_catalog && local.enable_kindling_artifacts_effective ? { (databricks_external_location.artifacts[0].name) = databricks_external_location.artifacts[0].url } : {}
 }
 
 output "schema_names" {
   description = "List of created schema names"
-  value       = var.enable_unity_catalog ? concat([for s in databricks_schema.schemas : s.name], [databricks_schema.kindling[0].name]) : []
+  value = var.enable_unity_catalog ? concat(
+    [for s in databricks_schema.schemas : s.name],
+    local.enable_kindling_artifacts_effective ? [databricks_schema.kindling[0].name] : [],
+  ) : []
 }
 
 output "volume_paths" {
   description = "Map of volume names to their catalog paths"
   value = var.enable_unity_catalog ? merge(
-    { (databricks_volume.kindling_artifacts[0].name) = "${databricks_volume.kindling_artifacts[0].catalog_name}.${databricks_volume.kindling_artifacts[0].schema_name}.${databricks_volume.kindling_artifacts[0].name}" },
+    local.enable_kindling_artifacts_effective ? {
+      (databricks_volume.kindling_artifacts[0].name) = "${databricks_volume.kindling_artifacts[0].catalog_name}.${databricks_volume.kindling_artifacts[0].schema_name}.${databricks_volume.kindling_artifacts[0].name}"
+    } : {},
     { for k, v in databricks_volume.managed : k => "${v.catalog_name}.${v.schema_name}.${v.name}" },
   ) : {}
 }
 
 output "artifacts_volume_path" {
-  description = "Databricks /Volumes path for the Kindling artifacts volume"
-  value       = var.enable_unity_catalog ? "/Volumes/${local.kindling_catalog_name_effective}/${var.kindling_schema_name}/${var.kindling_artifacts_volume_name}" : null
+  description = "Databricks /Volumes path for the Kindling artifacts volume (UC mode only)"
+  value       = var.enable_unity_catalog && local.enable_kindling_artifacts_effective ? "/Volumes/${local.kindling_catalog_name_effective}/${var.kindling_schema_name}/${var.kindling_artifacts_volume_name}" : null
+}
+
+output "runtime_volume_paths" {
+  description = "Map of managed runtime volume names to /Volumes paths"
+  value = var.enable_unity_catalog && local.enable_kindling_runtime_volumes_effective ? {
+    for k, v in databricks_volume.managed :
+    k => "/Volumes/${v.catalog_name}/${v.schema_name}/${v.name}"
+  } : {}
+}
+
+output "artifacts_mount_path" {
+  description = "DBFS mount path for the Kindling artifacts (non-UC mode only)"
+  value = !var.enable_unity_catalog && local.enable_kindling_artifacts_effective && var.create_artifacts_mount ? (
+    local.kindling_artifacts_subpath_clean != ""
+    ? "/mnt/${var.artifacts_mount_name}/${local.kindling_artifacts_subpath_clean}"
+    : "/mnt/${var.artifacts_mount_name}"
+  ) : null
+}
+
+output "artifacts_storage_path" {
+  description = "Effective artifacts path for kindling bootstrap config (Volume path when UC, mount path when non-UC, abfss:// fallback)"
+  value = local.enable_kindling_artifacts_effective ? (
+    var.enable_unity_catalog ? (
+      "/Volumes/${local.kindling_catalog_name_effective}/${var.kindling_schema_name}/${var.kindling_artifacts_volume_name}"
+      ) : (
+      var.create_artifacts_mount ? (
+        local.kindling_artifacts_subpath_clean != ""
+        ? "/mnt/${var.artifacts_mount_name}/${local.kindling_artifacts_subpath_clean}"
+        : "/mnt/${var.artifacts_mount_name}"
+      ) : local.kindling_artifacts_storage_target
+    )
+  ) : null
+}
+
+output "mount_paths" {
+  description = "Map of additional DBFS mount names to their paths (non-UC mode only)"
+  value       = !var.enable_unity_catalog ? { for k, m in databricks_mount.additional : k => "/mnt/${m.name}" } : {}
+}
+
+output "kindling_platform_support_enabled" {
+  description = "Whether Kindling platform/test support is effectively enabled for this workspace"
+  value       = local.enable_kindling_platform_support_effective
 }
 
 output "cluster_ids" {
@@ -61,8 +126,11 @@ output "runtime_service_principal_application_id" {
 }
 
 output "secret_scope_names" {
-  description = "Created secret scope names"
-  value       = [for s in databricks_secret_scope.scopes : s.name]
+  description = "Created secret scope names (Databricks-backed and Key Vault-backed)"
+  value = concat(
+    [for s in databricks_secret_scope.scopes : s.name],
+    [for s in databricks_secret_scope.keyvault : s.name],
+  )
 }
 
 output "pipeline_ids" {

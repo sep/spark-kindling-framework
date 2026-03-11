@@ -47,6 +47,39 @@ def set_runtime_feature(config_service, key: str, value: Any) -> None:
     config_service.set(f"kindling.runtime.features.{key}", value)
 
 
+def _supports_databricks_volumes(spark) -> bool:
+    """Best-effort detection for Databricks UC volume path support."""
+    try:
+        from pyspark.dbutils import DBUtils
+
+        dbutils = DBUtils(spark)
+        dbutils.fs.ls("/Volumes")
+        return True
+    except Exception:
+        return False
+
+
+def _detect_databricks_uc_enabled(spark) -> bool:
+    """Best-effort detection for Unity Catalog support on Databricks."""
+    try:
+        current_catalog_rows = spark.sql("SELECT current_catalog() AS catalog").collect()
+        current_catalog = str(current_catalog_rows[0][0]).strip().lower() if current_catalog_rows else ""
+    except Exception:
+        current_catalog = ""
+
+    try:
+        catalog_rows = spark.sql("SHOW CATALOGS").collect()
+        catalogs = [str(row[0]).strip().lower() for row in catalog_rows if row and row[0]]
+    except Exception:
+        catalogs = []
+
+    if current_catalog and current_catalog != "spark_catalog":
+        return True
+    if catalogs and any(catalog != "spark_catalog" for catalog in catalogs):
+        return True
+    return False
+
+
 def discover_runtime_features(config_service, logger=None) -> None:
     """Populate kindling.runtime.features.* with best-effort runtime detection.
 
@@ -101,6 +134,21 @@ def discover_runtime_features(config_service, logger=None) -> None:
         if major_minor:
             set_runtime_feature(config_service, "databricks.runtime_major", major_minor[0])
             set_runtime_feature(config_service, "databricks.runtime_minor", major_minor[1])
+
+        uc_enabled = _detect_databricks_uc_enabled(spark)
+        volumes_enabled = uc_enabled and _supports_databricks_volumes(spark)
+        set_runtime_feature(config_service, "databricks.uc_enabled", uc_enabled)
+        set_runtime_feature(config_service, "databricks.volumes_enabled", volumes_enabled)
+        set_runtime_feature(
+            config_service,
+            "databricks.any_file_required_for_bootstrap",
+            not volumes_enabled,
+        )
+        set_runtime_feature(
+            config_service,
+            "databricks.name_mode_catalog_qualified",
+            uc_enabled,
+        )
 
     # Default to False unless we can positively detect support.
     auto_ok = False

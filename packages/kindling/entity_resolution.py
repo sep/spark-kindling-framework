@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 from injector import inject
 
 from kindling.data_entities import EntityNameMapper, EntityPathLocator
+from kindling.features import get_feature_bool
 from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
@@ -26,34 +27,54 @@ def _quote_ident(part: str) -> str:
 
 
 def _get_current_namespace() -> Tuple[Optional[str], Optional[str]]:
-    """Best-effort current (catalog, schema) for engines that support it."""
+    """Best-effort current (catalog, schema) for engines that support it.
+
+    When ``kindling.features.databricks.uc_enabled`` is explicitly ``False``
+    we skip the ``current_catalog()`` query (it is meaningless without Unity
+    Catalog) and only resolve the current database/schema.
+    """
     spark = get_or_create_spark_session()
     catalog = None
     schema = None
 
+    # Check whether UC is available.  We grab the ConfigService from the DI
+    # container (best-effort — during very early bootstrap it may not exist yet).
+    uc_enabled: Optional[bool] = None
     try:
-        row = (
-            spark.sql("SELECT current_catalog() AS catalog, current_database() AS schema")
-            .select("catalog", "schema")
-            .first()
-        )
-        if row is not None:
-            try:
-                catalog = row["catalog"]
-                schema = row["schema"]
-            except Exception:
-                catalog = getattr(row, "catalog", None)
-                schema = getattr(row, "schema", None)
+        cs = GlobalInjector.get(ConfigService)
+        uc_enabled = get_feature_bool(cs, "databricks.uc_enabled")
     except Exception:
+        pass
+
+    if uc_enabled is not False:
+        # UC is available (or unknown) — try the full catalog + schema query.
         try:
-            row = spark.sql("SELECT current_database() AS schema").select("schema").first()
+            row = (
+                spark.sql("SELECT current_catalog() AS catalog, current_database() AS schema")
+                .select("catalog", "schema")
+                .first()
+            )
             if row is not None:
                 try:
+                    catalog = row["catalog"]
                     schema = row["schema"]
                 except Exception:
+                    catalog = getattr(row, "catalog", None)
                     schema = getattr(row, "schema", None)
+            return catalog, schema
         except Exception:
             pass
+
+    # UC disabled or catalog query failed — resolve database/schema only.
+    try:
+        row = spark.sql("SELECT current_database() AS schema").select("schema").first()
+        if row is not None:
+            try:
+                schema = row["schema"]
+            except Exception:
+                schema = getattr(row, "schema", None)
+    except Exception:
+        pass
 
     return catalog, schema
 

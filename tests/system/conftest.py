@@ -45,6 +45,28 @@ def get_cloud_for_platform(platform_name: str) -> Optional[str]:
     return None
 
 
+def get_databricks_system_test_mode() -> str:
+    """Return the Databricks system-test profile.
+
+    `uc` validates UC/Volumes behavior.
+    `classic` validates DBFS/reference-oriented fallback behavior.
+    """
+    mode = (os.getenv("KINDLING_DATABRICKS_SYSTEM_TEST_MODE") or "uc").strip().lower()
+    return mode if mode in {"uc", "classic"} else "uc"
+
+
+def get_databricks_uc_volume_root() -> str:
+    """Return the Databricks UC /Volumes root for system tests.
+
+    This keeps the system test namespace environment-driven so Terraform and
+    runtime config can point at the same managed-volume namespace.
+    """
+    catalog = (os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG") or "medallion").strip()
+    schema = (os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA") or "default").strip()
+    volume = (os.getenv("KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME") or "temp").strip()
+    return f"/Volumes/{catalog}/{schema}/{volume}"
+
+
 def pytest_generate_tests(metafunc):
     """
     Dynamically parametrize tests that need a 'platform' fixture.
@@ -295,6 +317,48 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
     # If not set, apps should fall back to current_database()/default.
     synapse_schema = (os.getenv("KINDLING_SYSTEM_TEST_SYNAPSE_SCHEMA") or "").strip() or None
 
+    databricks_mode = get_databricks_system_test_mode()
+    databricks_suffix = f"/{test_id}" if test_id else ""
+    databricks_uc_root = get_databricks_uc_volume_root()
+    databricks_classic_root = f"dbfs:/tmp/kindling_system_tests{databricks_suffix}".rstrip("/")
+
+    databricks_config = {
+        "kindling": {
+            "delta": {
+                "tablerefmode": "forName",
+            },
+            "storage": {
+                "table_root": f"{databricks_uc_root}/tables",
+                "checkpoint_root": f"{databricks_uc_root}/checkpoints",
+            },
+            "databricks": {
+                "volume_staging_root": databricks_uc_root,
+            },
+            "system_tests": {
+                "databricks": {
+                    "mode": databricks_mode,
+                }
+            },
+        }
+    }
+    if databricks_mode == "classic":
+        databricks_config = {
+            "kindling": {
+                "delta": {
+                    "tablerefmode": "forPath",
+                },
+                "storage": {
+                    "table_root": f"{databricks_classic_root}/tables",
+                    "checkpoint_root": f"{databricks_classic_root}/checkpoints",
+                },
+                "system_tests": {
+                    "databricks": {
+                        "mode": databricks_mode,
+                    }
+                },
+            }
+        }
+
     platform_config = {
         "fabric": {
             "kindling": {
@@ -304,17 +368,7 @@ def inject_platform_config(app_files: dict, platform_name: str, test_id: str = N
                 }
             }
         },
-        "databricks": {
-            "kindling": {
-                "delta": {
-                    "tablerefmode": "forName",
-                },
-                "storage": {
-                    "table_root": "/Volumes/medallion/default/temp/tables",
-                    "checkpoint_root": "/Volumes/medallion/default/temp/checkpoints",
-                },
-            }
-        },
+        "databricks": databricks_config,
         "synapse": {
             "kindling": {
                 "delta": {
