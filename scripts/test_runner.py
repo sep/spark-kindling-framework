@@ -104,6 +104,15 @@ def _exit(code: int = 0) -> None:
     raise SystemExit(code)
 
 
+def _set_system_coverage_file(platform: Optional[str]) -> None:
+    """Avoid coverage sqlite collisions across concurrent system-test runs."""
+    if os.environ.get("COVERAGE_FILE"):
+        return
+
+    suffix = platform or "all"
+    os.environ["COVERAGE_FILE"] = f".coverage.system.{suffix}.{os.getpid()}"
+
+
 def run_unit_tests_ci() -> int:
     """
     Run unit tests with CI-specific reporting outputs.
@@ -180,13 +189,7 @@ def run_system_tests(platform: str = "", test: str = "") -> int:
     platform_filter = platform if platform else None
     test_filter = test if test else None
 
-    # Avoid coverage file collisions when running multiple system tests concurrently.
-    # pytest-cov uses COVERAGE_FILE for the sqlite db path.
-    try:
-        suffix = platform_filter or "all"
-        os.environ.setdefault("COVERAGE_FILE", f".coverage.system.{suffix}")
-    except Exception:
-        pass
+    _set_system_coverage_file(platform_filter)
 
     # Build pytest command
     args = build_pytest_args(
@@ -223,6 +226,8 @@ def run_system_tests_ci(platform: str = "", test: str = "") -> int:
     preflight_rc = _run_system_test_preflight(platform_filter)
     if preflight_rc != 0:
         _exit(preflight_rc)
+
+    _set_system_coverage_file(platform_filter)
 
     os.makedirs("test-results", exist_ok=True)
 

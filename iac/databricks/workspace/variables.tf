@@ -34,10 +34,42 @@ variable "environment" {
 # -----------------------------------------------------------------------------
 # Feature Toggles
 # -----------------------------------------------------------------------------
+variable "workspace_role" {
+  description = "Workspace operating model: platform or solution"
+  type        = string
+  default     = "solution"
+
+  validation {
+    condition     = contains(["platform", "solution"], var.workspace_role)
+    error_message = "workspace_role must be one of: platform, solution."
+  }
+}
+
 variable "enable_unity_catalog" {
   description = "Whether Unity Catalog resources (storage credential, external location, catalogs, schemas, volumes, grants) should be managed"
   type        = bool
   default     = true
+}
+
+variable "enable_kindling_artifacts" {
+  description = "Whether to provision Kindling artifacts namespace and artifacts volume/mount"
+  type        = bool
+  default     = null
+  nullable    = true
+}
+
+variable "enable_kindling_runtime_volumes" {
+  description = "Whether to provision Kindling managed runtime volumes"
+  type        = bool
+  default     = null
+  nullable    = true
+}
+
+variable "enable_kindling_platform_support" {
+  description = "Whether to enable Kindling platform/test scaffolding in this workspace"
+  type        = bool
+  default     = null
+  nullable    = true
 }
 
 # -----------------------------------------------------------------------------
@@ -215,15 +247,17 @@ variable "create_catalog" {
 }
 
 variable "catalog_storage_container" {
-  description = "ADLS container for catalog managed storage (typically artifacts_container_name)"
+  description = "Optional ADLS container for catalog managed storage. Leave null to let the metastore manage catalog storage."
   type        = string
-  default     = "artifacts"
+  default     = null
+  nullable    = true
 }
 
 variable "catalog_storage_path" {
-  description = "Path within the container for medallion catalog managed storage"
+  description = "Optional path within the container for primary catalog managed storage. Leave null to let the metastore manage catalog storage."
   type        = string
-  default     = "catalog"
+  default     = null
+  nullable    = true
 }
 
 variable "kindling_catalog_name" {
@@ -239,15 +273,17 @@ variable "create_kindling_catalog" {
 }
 
 variable "kindling_catalog_storage_container" {
-  description = "ADLS container for kindling catalog managed storage"
+  description = "Optional ADLS container for Kindling catalog managed storage. Leave null to let the metastore manage catalog storage."
   type        = string
-  default     = "artifacts"
+  default     = null
+  nullable    = true
 }
 
 variable "kindling_catalog_storage_path" {
-  description = "Path within the container for kindling catalog managed storage"
+  description = "Optional path within the container for Kindling catalog managed storage. Leave null to let the metastore manage catalog storage."
   type        = string
-  default     = "kindling/catalog"
+  default     = null
+  nullable    = true
 }
 
 variable "schemas" {
@@ -275,6 +311,20 @@ variable "kindling_schema_name" {
   default     = "kindling"
 }
 
+variable "kindling_runtime_volume_catalog_name" {
+  description = "Catalog used to host Kindling managed runtime volumes (defaults to kindling_catalog_name)"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "kindling_runtime_volume_schema_name" {
+  description = "Schema used to host Kindling managed runtime volumes (defaults to kindling_schema_name)"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
 variable "kindling_artifacts_volume_name" {
   description = "External UC volume name that maps to artifacts container/path"
   type        = string
@@ -288,18 +338,98 @@ variable "kindling_artifacts_subpath" {
 }
 
 variable "managed_volumes" {
-  description = "Additional managed volumes to create in {catalog}.{kindling_schema_name}"
+  description = "Additional managed volumes to create in the managed runtime volume namespace"
   type        = list(string)
   default     = []
+}
+
+# -----------------------------------------------------------------------------
+# DBFS Mounts (non-UC)
+# -----------------------------------------------------------------------------
+variable "create_artifacts_mount" {
+  description = "Whether to create a DBFS mount for the artifacts container (only when enable_unity_catalog=false)"
+  type        = bool
+  default     = false
+}
+
+variable "artifacts_mount_name" {
+  description = "DBFS mount point name for artifacts (accessible at /mnt/<name>)"
+  type        = string
+  default     = "artifacts"
+}
+
+variable "mount_sp_application_id" {
+  description = "Application (client) ID of the service principal used for DBFS mounts"
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.enable_unity_catalog || !var.create_artifacts_mount || (
+      var.mount_sp_application_id != null &&
+      var.mount_sp_application_id != ""
+    )
+    error_message = "mount_sp_application_id is required when create_artifacts_mount=true."
+  }
+}
+
+variable "mount_sp_secret_scope" {
+  description = "Databricks secret scope containing the mount service principal's client secret"
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.enable_unity_catalog || !var.create_artifacts_mount || (
+      var.mount_sp_secret_scope != null &&
+      var.mount_sp_secret_scope != ""
+    )
+    error_message = "mount_sp_secret_scope is required when create_artifacts_mount=true."
+  }
+}
+
+variable "mount_sp_secret_key" {
+  description = "Key within the secret scope that holds the mount service principal's client secret"
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.enable_unity_catalog || !var.create_artifacts_mount || (
+      var.mount_sp_secret_key != null &&
+      var.mount_sp_secret_key != ""
+    )
+    error_message = "mount_sp_secret_key is required when create_artifacts_mount=true."
+  }
+}
+
+variable "dbfs_mounts" {
+  description = "Additional DBFS mounts to create (only when enable_unity_catalog=false)"
+  type = list(object({
+    name            = string
+    container_name  = string
+    storage_account = optional(string, null) # defaults to datalake_storage_account
+  }))
+  default = []
 }
 
 # -----------------------------------------------------------------------------
 # Secret Scopes
 # -----------------------------------------------------------------------------
 variable "secret_scopes" {
-  description = "Databricks secret scopes to create"
+  description = "Databricks-backed secret scopes to create"
   type        = list(string)
   default     = ["sepdev-adls-scope"]
+}
+
+variable "keyvault_secret_scopes" {
+  description = "Key Vault-backed secret scopes to create (transparent to dbutils.secrets.get callers)"
+  type = list(object({
+    scope_name   = string
+    keyvault_id  = string # Full Azure resource ID of the Key Vault
+    keyvault_dns = string # DNS name of the Key Vault (e.g. https://my-vault.vault.azure.net/)
+  }))
+  default = []
 }
 
 # -----------------------------------------------------------------------------
@@ -378,6 +508,24 @@ variable "clusters" {
     custom_tags             = optional(map(string), {})
   }))
   default = []
+}
+
+variable "cluster_permissions" {
+  description = "Per-cluster permissions. Supported principal_type values: service_principal, group, user."
+  type = list(object({
+    cluster_name     = string
+    principal_type   = string
+    principal        = string
+    permission_level = string
+  }))
+  default = []
+
+  validation {
+    condition = alltrue([
+      for cp in var.cluster_permissions : contains(["service_principal", "group", "user"], cp.principal_type)
+    ])
+    error_message = "cluster_permissions.principal_type must be one of: service_principal, group, user."
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -462,17 +610,28 @@ variable "external_location_grants" {
 }
 
 variable "volume_grants" {
-  description = "Per-volume grants (volumes in catalog.kindling_schema_name)"
+  description = "Per-volume grants. catalog_name/schema_name are optional and default to the Kindling artifacts namespace."
   type = list(object({
-    volume_name = string
-    principal   = string
-    privileges  = list(string)
+    volume_name  = string
+    principal    = string
+    privileges   = list(string)
+    catalog_name = optional(string, null)
+    schema_name  = optional(string, null)
   }))
   default = []
 }
 
 variable "storage_credential_grants" {
   description = "Grants on the storage credential"
+  type = list(object({
+    principal  = string
+    privileges = list(string)
+  }))
+  default = []
+}
+
+variable "any_file_grants" {
+  description = "Grants on the Databricks ANY FILE securable"
   type = list(object({
     principal  = string
     privileges = list(string)

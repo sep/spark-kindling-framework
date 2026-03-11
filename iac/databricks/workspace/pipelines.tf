@@ -40,8 +40,10 @@ resource "databricks_pipeline" "pipelines" {
     num_workers  = each.value.num_workers
   }
 
+  # UC resources are conditional — only depend on them when they exist.
   depends_on = [
     databricks_catalog.main,
     databricks_schema.schemas,
+    databricks_mount.artifacts,
   ]
 }

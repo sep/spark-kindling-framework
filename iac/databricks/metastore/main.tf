@@ -27,5 +27,4 @@ resource "databricks_metastore_assignment" "workspace" {
 
   workspace_id         = each.value
   metastore_id         = local.metastore_id_effective
-  default_catalog_name = var.default_catalog_name
 }
