@@ -3,12 +3,26 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Secret Scopes
+# Secret Scopes — Databricks-backed
 # -----------------------------------------------------------------------------
 resource "databricks_secret_scope" "scopes" {
   for_each = toset(var.secret_scopes)
 
   name = each.value
+}
+
+# -----------------------------------------------------------------------------
+# Secret Scopes — Key Vault-backed
+# -----------------------------------------------------------------------------
+resource "databricks_secret_scope" "keyvault" {
+  for_each = { for s in var.keyvault_secret_scopes : s.scope_name => s }
+
+  name = each.value.scope_name
+
+  keyvault_metadata {
+    resource_id = each.value.keyvault_id
+    dns_name    = each.value.keyvault_dns
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -116,7 +130,7 @@ resource "databricks_secret_acl" "acls" {
   principal  = each.value.principal
   permission = each.value.permission
 
-  depends_on = [databricks_secret_scope.scopes]
+  depends_on = [databricks_secret_scope.scopes, databricks_secret_scope.keyvault]
 }
 
 # -----------------------------------------------------------------------------
