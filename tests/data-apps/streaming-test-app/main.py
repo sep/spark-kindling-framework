@@ -62,6 +62,49 @@ def create_restartable_sink_query(
     )
 
 
+def wait_for_health_state(health_monitor, query_id, timeout_seconds=20.0, poll_interval=1.0):
+    """Wait for the health monitor to observe a query."""
+    deadline = time.time() + timeout_seconds
+
+    while time.time() < deadline:
+        health_state = health_monitor.get_health_status(query_id)
+        if health_state is not None:
+            return health_state
+        time.sleep(poll_interval)
+
+    return health_monitor.get_health_status(query_id)
+
+
+def _join_path(root: str, suffix: str) -> str:
+    return f"{str(root).rstrip('/')}/{suffix.lstrip('/')}"
+
+
+def _resolve_stream_paths(config_service, platform: str, test_id: str, checkpoint_suffix: int):
+    run_suffix = f"streaming_test_{test_id}_{checkpoint_suffix}"
+
+    if platform == "databricks":
+        checkpoint_root = config_service.get("kindling.storage.checkpoint_root")
+        output_root = (
+            config_service.get("kindling.storage.table_root")
+            or config_service.get("kindling.temp_path")
+        )
+        if checkpoint_root and output_root:
+            return (
+                _join_path(checkpoint_root, run_suffix),
+                _join_path(output_root, f"streaming_output/{run_suffix}"),
+            )
+
+        return (
+            f"/tmp/checkpoints/{run_suffix}",
+            f"/tmp/streaming_output/{run_suffix}",
+        )
+
+    return (
+        f"Files/checkpoints/{run_suffix}",
+        f"Files/streaming_output/{run_suffix}",
+    )
+
+
 # Initialize
 logger = get_logger()
 test_id = get_test_id()
@@ -166,14 +209,9 @@ try:
     config_service = get_kindling_service(ConfigService)
     platform = config_service.get("platform", "fabric").lower()
 
-    if platform == "databricks":
-        # Databricks requires absolute paths - use DBFS
-        checkpoint_dir = f"/tmp/checkpoints/streaming_test_{test_id}_{checkpoint_suffix}"
-        output_dir = f"/tmp/streaming_output/streaming_test_{test_id}_{checkpoint_suffix}"
-    else:
-        # Fabric/Synapse use lakehouse Files path
-        checkpoint_dir = f"Files/checkpoints/streaming_test_{test_id}_{checkpoint_suffix}"
-        output_dir = f"Files/streaming_output/streaming_test_{test_id}_{checkpoint_suffix}"
+    checkpoint_dir, output_dir = _resolve_stream_paths(
+        config_service, platform, test_id, checkpoint_suffix
+    )
 
     def builder(spark, config):
         df = create_test_stream(spark, rate=10)
@@ -240,7 +278,7 @@ try:
         test_results["listener_events"] = False
 
     # Check health monitor
-    health_state = health_monitor.get_health_status(query_info.spark_query_id)
+    health_state = wait_for_health_state(health_monitor, query_info.spark_query_id)
     if health_state is not None:
         msg = f"TEST_ID={test_id} test=health_monitoring status=PASSED"
         logger.info(msg)

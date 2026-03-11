@@ -853,6 +853,7 @@ class SynapseAPI(PlatformAPI):
                             "status=COMPLETED",
                             "status=STARTED",
                             "KindlingBootstrap",
+                            "complex-tracing-test",
                             "streaming-pipes-test-app",
                         )
                         filtered_all = [ln for ln in lines if any(tok in ln for tok in keep_tokens)]

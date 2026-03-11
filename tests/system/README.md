@@ -143,6 +143,34 @@ poe test-system --platform databricks --test name_mapper
 poe test-system --platform synapse --test name_mapper
 ```
 
+### Databricks Profiles
+
+Databricks system tests support two explicit profiles via `KINDLING_DATABRICKS_SYSTEM_TEST_MODE`:
+
+- `uc` (default): UC/Volumes-oriented behavior
+  - `kindling.delta.tablerefmode=forName`
+  - `kindling.storage.table_root=/Volumes/...`
+  - `kindling.storage.checkpoint_root=/Volumes/...`
+  - `kindling.databricks.volume_staging_root=/Volumes/...`
+  - UC volume root is resolved from:
+    - `KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG`
+    - `KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA`
+    - `KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME`
+    - defaults remain `medallion.default.temp`
+- `classic`: reference/path-oriented fallback behavior
+  - `kindling.delta.tablerefmode=forPath`
+  - `kindling.storage.table_root=dbfs:/tmp/...`
+  - `kindling.storage.checkpoint_root=dbfs:/tmp/...`
+
+Examples:
+
+```bash
+KINDLING_DATABRICKS_SYSTEM_TEST_MODE=uc poe test-system --platform databricks --test streaming_pipes
+KINDLING_DATABRICKS_SYSTEM_TEST_MODE=classic poe test-system --platform databricks --test streaming_pipes
+KINDLING_DATABRICKS_SYSTEM_TEST_MODE=uc poe test-system --platform databricks --test name_mapper
+KINDLING_DATABRICKS_SYSTEM_TEST_MODE=classic poe test-system --platform databricks --test name_mapper
+```
+
 ## Test Markers
 
 Tests use pytest markers to categorize:
