@@ -64,7 +64,9 @@ class TestGetCurrentNamespaceUCAwareness:
 
         with (
             patch("kindling.entity_resolution.GlobalInjector.get", return_value=fake_cs),
-            patch("kindling.entity_resolution.get_or_create_spark_session", return_value=mock_spark),
+            patch(
+                "kindling.entity_resolution.get_or_create_spark_session", return_value=mock_spark
+            ),
         ):
             catalog, schema = _get_current_namespace()
 
@@ -89,7 +91,9 @@ class TestGetCurrentNamespaceUCAwareness:
 
         with (
             patch("kindling.entity_resolution.GlobalInjector.get", return_value=fake_cs),
-            patch("kindling.entity_resolution.get_or_create_spark_session", return_value=mock_spark),
+            patch(
+                "kindling.entity_resolution.get_or_create_spark_session", return_value=mock_spark
+            ),
         ):
             catalog, schema = _get_current_namespace()
 
@@ -105,12 +109,17 @@ class TestGetCurrentNamespaceUCAwareness:
 
         mock_spark = MagicMock()
         catalog_row = MagicMock()
-        catalog_row.__getitem__ = lambda self, k: {"catalog": "spark_catalog", "schema": "default"}.get(k)
+        catalog_row.__getitem__ = lambda self, k: {
+            "catalog": "spark_catalog",
+            "schema": "default",
+        }.get(k)
         mock_spark.sql.return_value.select.return_value.first.return_value = catalog_row
 
         with (
             patch("kindling.entity_resolution.GlobalInjector.get", return_value=fake_cs),
-            patch("kindling.entity_resolution.get_or_create_spark_session", return_value=mock_spark),
+            patch(
+                "kindling.entity_resolution.get_or_create_spark_session", return_value=mock_spark
+            ),
         ):
             catalog, schema = _get_current_namespace()
 
