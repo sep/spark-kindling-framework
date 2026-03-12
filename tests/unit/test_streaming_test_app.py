@@ -11,7 +11,9 @@ def _load_streaming_app_module():
         / "main.py"
     )
     source = app_path.read_text()
-    prefix = source.split("# Initialize", 1)[0]
+    marker = "# Initialize"
+    assert marker in source, "streaming-test-app unit loader marker not found"
+    prefix = source.split(marker, 1)[0]
     spec = importlib.util.spec_from_loader("streaming_test_app", loader=None)
     module = importlib.util.module_from_spec(spec)
     exec(prefix, module.__dict__)
