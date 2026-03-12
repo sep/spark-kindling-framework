@@ -23,16 +23,24 @@ locals {
     var.storage_credential_sp_application_id != ""
   )
 
-  runtime_sp_application_id_effective = var.create_runtime_service_principal ? azuread_application.runtime[0].client_id : coalesce(var.runtime_service_principal_application_id, var.storage_credential_sp_application_id)
+  runtime_sp_application_id_candidates = compact([
+    var.runtime_service_principal_application_id,
+    var.storage_credential_sp_application_id,
+  ])
+
+  runtime_sp_application_id_effective = var.create_runtime_service_principal ? azuread_application.runtime[0].client_id : (
+    length(local.runtime_sp_application_id_candidates) > 0 ? local.runtime_sp_application_id_candidates[0] : null
+  )
 
   configured_service_principals_by_key = {
     for sp in var.service_principals : "app:${sp.application_id}" => sp
   }
 
-  runtime_sp_already_configured = (
-    local.runtime_sp_application_id_effective != null &&
-    contains([for sp in var.service_principals : sp.application_id], local.runtime_sp_application_id_effective)
-  )
+  configured_service_principal_application_ids = [for sp in var.service_principals : sp.application_id]
+
+  runtime_sp_already_configured = local.runtime_sp_application_id_effective != null ? (
+    contains(local.configured_service_principal_application_ids, local.runtime_sp_application_id_effective)
+  ) : false
 
   runtime_service_principal_by_key = local.runtime_sp_enabled && !local.runtime_sp_already_configured ? {
     runtime = {
