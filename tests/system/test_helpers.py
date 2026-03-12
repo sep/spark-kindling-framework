@@ -36,6 +36,97 @@ def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str
     return merged
 
 
+def _get_databricks_bootstrap_overrides(test_id: Optional[str]) -> Dict[str, Any]:
+    from tests.system.conftest import get_databricks_system_test_mode, get_databricks_uc_volume_root
+
+    databricks_mode = get_databricks_system_test_mode()
+    databricks_suffix = f"/{test_id}" if test_id else ""
+    databricks_uc_root = get_databricks_uc_volume_root()
+    databricks_classic_root = f"dbfs:/tmp/kindling_system_tests{databricks_suffix}".rstrip("/")
+
+    if databricks_mode == "classic":
+        return {
+            "kindling": {
+                "temp_path": databricks_classic_root,
+                "delta": {"tablerefmode": "forPath"},
+                "storage": {
+                    "table_root": f"{databricks_classic_root}/tables",
+                    "checkpoint_root": f"{databricks_classic_root}/checkpoints",
+                },
+                "system_tests": {"databricks": {"mode": databricks_mode}},
+            }
+        }
+
+    return {
+        "kindling": {
+            "temp_path": databricks_uc_root,
+            "delta": {"tablerefmode": "forName"},
+            "storage": {
+                "table_root": f"{databricks_uc_root}/tables",
+                "checkpoint_root": f"{databricks_uc_root}/checkpoints",
+            },
+            "databricks": {
+                "volume_staging_root": databricks_uc_root,
+            },
+            "system_tests": {"databricks": {"mode": databricks_mode}},
+        }
+    }
+
+
+def get_system_platform_config_overrides(
+    platform_name: str, test_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Return framework/runtime config that should travel with BOOTSTRAP_CONFIG.
+
+    These are platform/runtime defaults used by the system-test harness. They
+    should be passed through job config overrides so bootstrap can use them
+    before application settings are loaded.
+    """
+    if platform_name == "databricks":
+        return _get_databricks_bootstrap_overrides(test_id)
+
+    if platform_name == "fabric":
+        return {
+            "kindling": {
+                "storage": {
+                    "table_root": "Tables",
+                    "checkpoint_root": "Files/checkpoints",
+                }
+            }
+        }
+
+    if platform_name == "synapse":
+        storage_account = (os.getenv("AZURE_STORAGE_ACCOUNT") or "").strip()
+        container = (os.getenv("AZURE_CONTAINER") or "artifacts").strip()
+        synapse_root = (
+            f"abfss://{container}@{storage_account}.dfs.core.windows.net/kindling_system_tests"
+            if storage_account
+            else None
+        )
+        synapse_schema = (os.getenv("KINDLING_SYSTEM_TEST_SYNAPSE_SCHEMA") or "").strip() or None
+        effective_schema = synapse_schema or "kindling_system_tests"
+
+        overrides: Dict[str, Any] = {
+            "kindling": {
+                "delta": {"tablerefmode": "forName"},
+                "storage": {
+                    "table_root": f"{synapse_root}/tables" if synapse_root else "tables",
+                    "checkpoint_root": (
+                        f"{synapse_root}/checkpoints" if synapse_root else "checkpoints"
+                    ),
+                    "table_schema": effective_schema,
+                },
+            }
+        }
+        if synapse_root:
+            overrides["kindling"]["storage"]["table_schema_location"] = (
+                f"{synapse_root}/schemas/{effective_schema}"
+            )
+        return overrides
+
+    return {}
+
+
 def get_env_config_overrides(platform_name: str) -> Dict[str, Any]:
     """
     Parse CONFIG__ environment variables into nested config overrides.
@@ -104,15 +195,19 @@ def _get_repo_version() -> Optional[str]:
 def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -> Dict[str, Any]:
     """Merge CONFIG__ env overrides into a job_config payload for create_job()."""
     merged_config = dict(job_config)
+    platform_overrides = get_system_platform_config_overrides(
+        platform_name, merged_config.get("test_id")
+    )
     env_overrides = get_env_config_overrides(platform_name)
     existing_overrides = merged_config.get("config_overrides") or {}
 
-    if env_overrides and existing_overrides:
-        merged_config["config_overrides"] = _deep_merge_dict(env_overrides, existing_overrides)
-    elif env_overrides:
-        merged_config["config_overrides"] = env_overrides
-    elif existing_overrides:
-        merged_config["config_overrides"] = existing_overrides
+    combined_overrides: Dict[str, Any] = {}
+    for override_source in [platform_overrides, env_overrides, existing_overrides]:
+        if override_source:
+            combined_overrides = _deep_merge_dict(combined_overrides, override_source)
+
+    if combined_overrides:
+        merged_config["config_overrides"] = combined_overrides
 
     # Pin the remote runtime install to the local repo version by default.
     # This avoids "latest" selecting a stable release that sorts higher than our alpha bump,
