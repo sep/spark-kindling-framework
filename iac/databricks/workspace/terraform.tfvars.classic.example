@@ -1,0 +1,108 @@
+# =============================================================================
+# Databricks Workspace Terraform Variables — Classic / Fallback Workspace
+# =============================================================================
+# Copy this file to <env>.classic.tfvars and fill in your values.
+# .tfvars files are gitignored — do NOT commit real values.
+#
+# This profile is intended for a separate Databricks workspace used to validate
+# classic/path-based fallback behavior. It is not a substitute for a truly
+# non-UC workspace if the target workspace is still attached to a metastore.
+# =============================================================================
+
+# -- Azure --------------------------------------------------------------------
+azure_subscription_id = ""
+azure_tenant_id       = ""
+azure_environment     = "public"
+
+# -- Databricks Workspace ----------------------------------------------------
+databricks_host                  = ""
+environment                      = "nonprod-classic"
+workspace_role                   = "platform"
+enable_unity_catalog             = false
+enable_kindling_artifacts        = true
+enable_kindling_runtime_volumes  = false
+enable_kindling_platform_support = true
+
+# -- Data Lake ----------------------------------------------------------------
+datalake_storage_account         = ""
+artifacts_container_name         = "artifacts"
+artifacts_external_location_name = "artifacts"
+adls_dfs_domain                  = "dfs.core.windows.net"
+
+# In non-UC mode, the module uses DBFS mounts instead of UC external locations.
+create_artifacts_mount = true
+artifacts_mount_name   = "artifacts"
+
+# Service principal used for DBFS mounts. The secret must already exist in the
+# Databricks secret scope referenced below.
+mount_sp_application_id = ""
+mount_sp_secret_scope   = "shared-adls-scope"
+mount_sp_secret_key     = "client-secret"
+
+dbfs_mounts = []
+
+# -- Secret Scopes ------------------------------------------------------------
+secret_scopes = ["shared-adls-scope"]
+
+# -- Service Principals -------------------------------------------------------
+service_principals = [
+  { display_name = "kindling-runtime", application_id = "00000000-0000-0000-0000-000000000000" }
+]
+
+# -- Users & Groups -----------------------------------------------------------
+admin_users = []
+
+workspace_users = [
+  "user@example.com",
+]
+
+# -- Clusters -----------------------------------------------------------------
+clusters = [
+  {
+    name                    = "Kindling Classic Test Cluster"
+    spark_version           = "13.3.x-scala2.12"
+    node_type_id            = "Standard_D4pls_v6"
+    num_workers             = 0
+    autotermination_minutes = 30
+    data_security_mode      = "USER_ISOLATION"
+    spot_policy             = "SPOT_WITH_FALLBACK_AZURE"
+  }
+]
+
+cluster_permissions = [
+  {
+    cluster_name     = "Kindling Classic Test Cluster"
+    principal_type   = "service_principal"
+    principal        = "dacf705a-49ca-4791-b6a3-c35448112241"
+    permission_level = "CAN_MANAGE"
+  },
+]
+
+# -- DLT Pipelines -----------------------------------------------------------
+dlt_pipelines = []
+
+# -- Workspace Config ---------------------------------------------------------
+workspace_conf = {
+  enableDbfsFileBrowser = "true"
+}
+
+# -- Non-UC Runtime Permissions ----------------------------------------------
+# Classic/path-based validation typically needs ANY FILE permissions because
+# DBFS/file-oriented staging is intentional in this workspace.
+any_file_grants = [
+  { principal = "00000000-0000-0000-0000-000000000000", privileges = ["SELECT", "MODIFY"] },
+]
+
+# -- Secret Scope ACLs -------------------------------------------------------
+secret_scope_acls = [
+  { scope = "shared-adls-scope", principal = "user@example.com", permission = "MANAGE" }
+]
+
+# -- Entitlements -------------------------------------------------------------
+user_entitlements = [
+  {
+    user_name                  = "user@example.com"
+    allow_cluster_create       = true
+    allow_instance_pool_create = true
+  },
+]

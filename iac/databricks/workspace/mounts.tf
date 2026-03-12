@@ -24,6 +24,8 @@ resource "databricks_mount" "artifacts" {
     client_secret_key      = var.mount_sp_secret_key
     initialize_file_system = false
   }
+
+  depends_on = [databricks_secret_scope.scopes, databricks_secret_scope.keyvault]
 }
 
 # -----------------------------------------------------------------------------
