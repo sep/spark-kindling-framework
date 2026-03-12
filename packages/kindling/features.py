@@ -63,7 +63,9 @@ def _detect_databricks_uc_enabled(spark) -> bool:
     """Best-effort detection for Unity Catalog support on Databricks."""
     try:
         current_catalog_rows = spark.sql("SELECT current_catalog() AS catalog").collect()
-        current_catalog = str(current_catalog_rows[0][0]).strip().lower() if current_catalog_rows else ""
+        current_catalog = (
+            str(current_catalog_rows[0][0]).strip().lower() if current_catalog_rows else ""
+        )
     except Exception:
         current_catalog = ""
 
