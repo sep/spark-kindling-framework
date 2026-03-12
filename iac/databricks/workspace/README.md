@@ -7,6 +7,7 @@ Infrastructure as Code for provisioning a Databricks workspace with all Kindling
 - **Unity Catalog (optional)**: Storage credential, single artifacts external location, medallion catalog + kindling catalog (optional create/reuse), schemas, volumes
 - **Security**: Secret scopes, service principals, group memberships
 - **Compute**: Interactive clusters
+- **Cluster ACLs**: Optional per-cluster permissions for users, groups, and service principals
 - **DLT Pipelines**: Delta Live Tables pipeline definitions
 - **Workspace Config**: Feature flags and settings
 
@@ -90,11 +91,22 @@ terraform apply -var-file=prod.tfvars      # Production
 
 - If your workspace does not yet have a metastore assignment, run `../account` first to create/reuse a metastore and assign it.
 - Set `enable_unity_catalog = false` to skip all Unity Catalog resources and grants when UC APIs are unavailable.
+- Set `workspace_role = "platform"` for an internal Kindling platform workspace and `workspace_role = "solution"` for a solution workspace that consumes Kindling.
+- Use `enable_kindling_artifacts`, `enable_kindling_runtime_volumes`, and `enable_kindling_platform_support` to override the role-driven defaults explicitly.
+- Use `cluster_permissions` to grant `CAN_ATTACH_TO` / `CAN_MANAGE` access on Terraform-created clusters. This is required when jobs run as a service principal that did not create the cluster.
+- Use `any_file_grants` to grant Databricks `ANY FILE` permissions when runtime paths or connectors require direct file access. For the Event Hubs Kafka path on Databricks, the Kindling run-as principal needs at least `SELECT`.
 - One external location is managed for the artifacts container (`artifacts_external_location_name`).
 - Medallion data schemas (for example bronze/silver/gold) live in `catalog_name`.
-- Kindling infrastructure schema/volume live in `kindling_catalog_name`.
+- Kindling artifacts live in `kindling_catalog_name.kindling_schema_name` by default.
+- Managed runtime volumes can live either in that same namespace or in an environment-specific namespace via `kindling_runtime_volume_catalog_name` / `kindling_runtime_volume_schema_name`.
 - Kindling assets are hosted in a configurable schema (`kindling_schema_name`) and external volume (`kindling_artifacts_volume_name`).
 - The volume storage path is configurable via `kindling_artifacts_subpath`.
+- Catalog `storage_root` is optional. Leave `catalog_storage_container/path` and `kindling_catalog_storage_container/path` unset to let the assigned UC metastore manage catalog storage. Only set them when you intentionally want explicit per-catalog managed locations.
+- If you point managed runtime volumes at a different namespace, that target schema must already exist or be created elsewhere in the stack.
+- Use the `runtime_volume_paths` and `kindling_runtime_volume_namespace` outputs to wire CI/runtime environment variables such as:
+  - `KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG`
+  - `KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA`
+  - `KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME`
 - Set `create_catalog = false` to reuse an existing medallion catalog named by `catalog_name`.
 - Set `create_kindling_catalog = false` to reuse an existing kindling catalog named by `kindling_catalog_name`.
 - Set `create_base_schemas = false` to skip creating bronze/silver/gold schemas in existing catalogs.

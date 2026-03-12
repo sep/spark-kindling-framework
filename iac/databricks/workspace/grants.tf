@@ -40,12 +40,20 @@ locals {
 
   volume_grants_resolved = [
     for g in var.volume_grants : merge(g, {
-      principal = g.principal == var.runtime_sp_principal_alias && local.runtime_sp_application_id_effective != null ? local.runtime_sp_application_id_effective : g.principal
+      principal    = g.principal == var.runtime_sp_principal_alias && local.runtime_sp_application_id_effective != null ? local.runtime_sp_application_id_effective : g.principal
+      catalog_name = coalesce(try(g.catalog_name, null), local.kindling_catalog_name_effective)
+      schema_name  = coalesce(try(g.schema_name, null), var.kindling_schema_name)
     })
   ]
 
   storage_credential_grants_resolved = [
     for g in var.storage_credential_grants : merge(g, {
+      principal = g.principal == var.runtime_sp_principal_alias && local.runtime_sp_application_id_effective != null ? local.runtime_sp_application_id_effective : g.principal
+    })
+  ]
+
+  any_file_grants_resolved = [
+    for g in var.any_file_grants : merge(g, {
       principal = g.principal == var.runtime_sp_principal_alias && local.runtime_sp_application_id_effective != null ? local.runtime_sp_application_id_effective : g.principal
     })
   ]
@@ -56,10 +64,12 @@ locals {
     loc_name => [for g in local.external_location_grants_resolved : g if g.location_name == loc_name]
   }
 
-  # Group volume_grants by volume_name
+  # Group volume_grants by fully qualified volume name
   volume_grants_grouped = {
-    for vol_name in distinct([for g in local.volume_grants_resolved : g.volume_name]) :
-    vol_name => [for g in local.volume_grants_resolved : g if g.volume_name == vol_name]
+    for volume_key in distinct([
+      for g in local.volume_grants_resolved : "${g.catalog_name}.${g.schema_name}.${g.volume_name}"
+    ]) :
+    volume_key => [for g in local.volume_grants_resolved : g if "${g.catalog_name}.${g.schema_name}.${g.volume_name}" == volume_key]
   }
 
   # Group kindling schema_grants by schema_name
@@ -93,7 +103,7 @@ resource "databricks_grants" "catalog" {
 }
 
 resource "databricks_grants" "kindling_catalog" {
-  count = var.enable_unity_catalog ? 1 : 0
+  count = var.enable_unity_catalog && local.enable_kindling_artifacts_effective ? 1 : 0
 
   catalog = local.kindling_catalog_name_effective
 
@@ -116,6 +126,7 @@ resource "databricks_grants" "kindling_schemas" {
     for k, v in local.kindling_schema_grants_grouped : k => v
     if k != "default" # default schema grants must be applied via API/SQL
     && var.enable_unity_catalog
+    && local.enable_kindling_artifacts_effective
   }
 
   schema = "${local.kindling_catalog_name_effective}.${each.key}"
@@ -174,9 +185,9 @@ resource "databricks_grants" "external_locations" {
 # Volume Grants (one resource per volume, all principals inside)
 # -----------------------------------------------------------------------------
 resource "databricks_grants" "volumes" {
-  for_each = var.enable_unity_catalog ? local.volume_grants_grouped : {}
+  for_each = var.enable_unity_catalog && (local.enable_kindling_artifacts_effective || local.enable_kindling_runtime_volumes_effective) ? local.volume_grants_grouped : {}
 
-  volume = "${local.kindling_catalog_name_effective}.${var.kindling_schema_name}.${each.key}"
+  volume = each.key
 
   dynamic "grant" {
     for_each = each.value
@@ -202,6 +213,23 @@ resource "databricks_grants" "storage_credential" {
     content {
       principal  = grant.value.principal
       privileges = grant.value.privileges
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ANY FILE Grants
+# -----------------------------------------------------------------------------
+resource "databricks_sql_permissions" "any_file" {
+  count = length(local.any_file_grants_resolved) > 0 ? 1 : 0
+
+  any_file = true
+
+  dynamic "privilege_assignments" {
+    for_each = local.any_file_grants_resolved
+    content {
+      principal  = privilege_assignments.value.principal
+      privileges = privilege_assignments.value.privileges
     }
   }
 }
