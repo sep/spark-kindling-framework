@@ -63,6 +63,11 @@ variable "enable_kindling_runtime_volumes" {
   type        = bool
   default     = null
   nullable    = true
+
+  validation {
+    condition     = var.enable_unity_catalog || !coalesce(var.enable_kindling_runtime_volumes, false)
+    error_message = "enable_kindling_runtime_volumes can only be true when enable_unity_catalog=true."
+  }
 }
 
 variable "enable_kindling_platform_support" {
@@ -316,6 +321,14 @@ variable "kindling_runtime_volume_catalog_name" {
   type        = string
   default     = null
   nullable    = true
+
+  validation {
+    condition = var.enable_unity_catalog || (
+      var.kindling_runtime_volume_catalog_name == null ||
+      try(trimspace(var.kindling_runtime_volume_catalog_name), "") == ""
+    )
+    error_message = "kindling_runtime_volume_catalog_name is only valid when enable_unity_catalog=true."
+  }
 }
 
 variable "kindling_runtime_volume_schema_name" {
@@ -323,6 +336,14 @@ variable "kindling_runtime_volume_schema_name" {
   type        = string
   default     = null
   nullable    = true
+
+  validation {
+    condition = var.enable_unity_catalog || (
+      var.kindling_runtime_volume_schema_name == null ||
+      try(trimspace(var.kindling_runtime_volume_schema_name), "") == ""
+    )
+    error_message = "kindling_runtime_volume_schema_name is only valid when enable_unity_catalog=true."
+  }
 }
 
 variable "kindling_artifacts_volume_name" {
@@ -341,6 +362,11 @@ variable "managed_volumes" {
   description = "Additional managed volumes to create in the managed runtime volume namespace"
   type        = list(string)
   default     = []
+
+  validation {
+    condition     = var.enable_unity_catalog || length(var.managed_volumes) == 0
+    error_message = "managed_volumes can only be set when enable_unity_catalog=true."
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -350,6 +376,11 @@ variable "create_artifacts_mount" {
   description = "Whether to create a DBFS mount for the artifacts container (only when enable_unity_catalog=false)"
   type        = bool
   default     = false
+
+  validation {
+    condition     = !var.enable_unity_catalog || !var.create_artifacts_mount
+    error_message = "create_artifacts_mount must be false when enable_unity_catalog=true."
+  }
 }
 
 variable "artifacts_mount_name" {
@@ -411,6 +442,11 @@ variable "dbfs_mounts" {
     storage_account = optional(string, null) # defaults to datalake_storage_account
   }))
   default = []
+
+  validation {
+    condition     = !var.enable_unity_catalog || length(var.dbfs_mounts) == 0
+    error_message = "dbfs_mounts can only be set when enable_unity_catalog=false."
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -568,6 +604,11 @@ variable "catalog_grants" {
     privileges = list(string)
   }))
   default = []
+
+  validation {
+    condition     = var.enable_unity_catalog || length(var.catalog_grants) == 0
+    error_message = "catalog_grants can only be set when enable_unity_catalog=true."
+  }
 }
 
 variable "kindling_catalog_grants" {
@@ -577,6 +618,11 @@ variable "kindling_catalog_grants" {
     privileges = list(string)
   }))
   default = []
+
+  validation {
+    condition     = var.enable_unity_catalog || length(var.kindling_catalog_grants) == 0
+    error_message = "kindling_catalog_grants can only be set when enable_unity_catalog=true."
+  }
 }
 
 variable "schema_grants" {
@@ -587,6 +633,11 @@ variable "schema_grants" {
     privileges  = list(string)
   }))
   default = []
+
+  validation {
+    condition     = var.enable_unity_catalog || length(var.schema_grants) == 0
+    error_message = "schema_grants can only be set when enable_unity_catalog=true."
+  }
 }
 
 variable "medallion_schema_grants" {
@@ -597,6 +648,11 @@ variable "medallion_schema_grants" {
     privileges  = list(string)
   }))
   default = []
+
+  validation {
+    condition     = var.enable_unity_catalog || length(var.medallion_schema_grants) == 0
+    error_message = "medallion_schema_grants can only be set when enable_unity_catalog=true."
+  }
 }
 
 variable "external_location_grants" {
@@ -607,6 +663,11 @@ variable "external_location_grants" {
     privileges    = list(string)
   }))
   default = []
+
+  validation {
+    condition     = var.enable_unity_catalog || length(var.external_location_grants) == 0
+    error_message = "external_location_grants can only be set when enable_unity_catalog=true."
+  }
 }
 
 variable "volume_grants" {
@@ -619,6 +680,11 @@ variable "volume_grants" {
     schema_name  = optional(string, null)
   }))
   default = []
+
+  validation {
+    condition     = var.enable_unity_catalog || length(var.volume_grants) == 0
+    error_message = "volume_grants can only be set when enable_unity_catalog=true."
+  }
 }
 
 variable "storage_credential_grants" {
@@ -628,6 +694,11 @@ variable "storage_credential_grants" {
     privileges = list(string)
   }))
   default = []
+
+  validation {
+    condition     = var.enable_unity_catalog || length(var.storage_credential_grants) == 0
+    error_message = "storage_credential_grants can only be set when enable_unity_catalog=true."
+  }
 }
 
 variable "any_file_grants" {

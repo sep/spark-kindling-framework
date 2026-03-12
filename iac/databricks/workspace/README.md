@@ -87,14 +87,36 @@ terraform apply -var-file=rrc.dev.tfvars   # RRC dev workspace
 terraform apply -var-file=prod.tfvars      # Production
 ```
 
+## Recommended Separation
+
+Use two different Databricks workspaces when you need both strict UC coverage
+and classic/path-based fallback coverage:
+
+- `UC workspace`
+  - `enable_unity_catalog = true`
+  - use UC volumes / external locations
+  - do not grant broad `ANY FILE MODIFY` to the runtime SP unless you
+    intentionally want DBFS fallback to succeed there
+- `Classic workspace`
+  - `enable_unity_catalog = false`
+  - use DBFS mounts and path-based staging
+  - grant `ANY FILE` as needed for the runtime SP in that workspace only
+
+This keeps the UC workspace strict so accidental path-based regressions still
+fail, while the classic workspace validates fallback behavior deliberately.
+
+The committed [`terraform.tfvars.classic.example`](terraform.tfvars.classic.example)
+shows the intended non-UC/classic workspace shape.
+
 ## Unity Catalog Model
 
 - If your workspace does not yet have a metastore assignment, run `../account` first to create/reuse a metastore and assign it.
 - Set `enable_unity_catalog = false` to skip all Unity Catalog resources and grants when UC APIs are unavailable.
+- When `enable_unity_catalog = false`, use DBFS mounts (`create_artifacts_mount` / `dbfs_mounts`) and avoid UC-only settings such as volume grants or runtime volume names.
 - Set `workspace_role = "platform"` for an internal Kindling platform workspace and `workspace_role = "solution"` for a solution workspace that consumes Kindling.
 - Use `enable_kindling_artifacts`, `enable_kindling_runtime_volumes`, and `enable_kindling_platform_support` to override the role-driven defaults explicitly.
 - Use `cluster_permissions` to grant `CAN_ATTACH_TO` / `CAN_MANAGE` access on Terraform-created clusters. This is required when jobs run as a service principal that did not create the cluster.
-- Use `any_file_grants` to grant Databricks `ANY FILE` permissions when runtime paths or connectors require direct file access. For the Event Hubs Kafka path on Databricks, the Kindling run-as principal needs at least `SELECT`.
+- Use `any_file_grants` to grant Databricks `ANY FILE` permissions when runtime paths or connectors require direct file access. For classic/path-based testing, the Kindling run-as principal typically needs `SELECT` and `MODIFY`.
 - One external location is managed for the artifacts container (`artifacts_external_location_name`).
 - Medallion data schemas (for example bronze/silver/gold) live in `catalog_name`.
 - Kindling artifacts live in `kindling_catalog_name.kindling_schema_name` by default.
