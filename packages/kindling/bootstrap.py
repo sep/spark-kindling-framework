@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from kindling.features import get_feature_bool
 from kindling.injection import *
 from kindling.spark_config import *
 from kindling.spark_session import *
@@ -103,6 +104,105 @@ def _merge_with_spark_kindling_config(config: Dict[str, Any]) -> Dict[str, Any]:
     merged.update(config or {})
     print(f"Merged {len(spark_kindling_config)} SparkConf settings from spark.kindling.*")
     return merged
+
+
+def _normalize_path_value(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _is_volume_path(path: Optional[str]) -> bool:
+    return isinstance(path, str) and path.strip().startswith("/Volumes/")
+
+
+def _parent_volume_path(path: Optional[str]) -> Optional[str]:
+    normalized = _normalize_path_value(path)
+    if not _is_volume_path(normalized):
+        return None
+    parent = str(Path(normalized).parent)
+    return parent if _is_volume_path(parent) else None
+
+
+def _resolve_databricks_staging_path(config_like) -> Optional[str]:
+    """Resolve a Databricks bootstrap staging path.
+
+    Preference order:
+    1. Explicit `kindling.temp_path` / `temp_path`
+    2. Explicit `kindling.databricks.volume_staging_root`
+    3. Parent of a volume-backed `kindling.storage.checkpoint_root`
+    4. Parent of a volume-backed `kindling.storage.table_root`
+
+    Only volume-backed derived paths are used automatically. If no governed
+    staging root can be found, callers should fall back to DBFS/reference mode.
+    """
+
+    explicit_temp_path = _normalize_path_value(
+        config_like.get("kindling.temp_path") or config_like.get("temp_path")
+    )
+    if explicit_temp_path:
+        return explicit_temp_path
+
+    volumes_enabled = get_feature_bool(config_like, "databricks.volumes_enabled", default=False)
+    if not volumes_enabled:
+        return None
+
+    explicit_volume_root = _normalize_path_value(
+        config_like.get("kindling.databricks.volume_staging_root")
+    )
+    if explicit_volume_root and _is_volume_path(explicit_volume_root):
+        return explicit_volume_root
+
+    checkpoint_root = _normalize_path_value(config_like.get("kindling.storage.checkpoint_root"))
+    checkpoint_parent = _parent_volume_path(checkpoint_root)
+    if checkpoint_parent:
+        return checkpoint_parent
+
+    table_root = _normalize_path_value(config_like.get("kindling.storage.table_root"))
+    table_parent = _parent_volume_path(table_root)
+    if table_parent:
+        return table_parent
+
+    return None
+
+
+def _resolve_bootstrap_temp_path(config_service, bootstrap_config: Dict[str, Any]) -> Optional[str]:
+    if config_service is None:
+        return _normalize_path_value(
+            bootstrap_config.get("kindling.temp_path") or bootstrap_config.get("temp_path")
+        )
+
+    platform_name = (
+        config_service.get("kindling.platform.environment")
+        or config_service.get("kindling.platform.name")
+        or bootstrap_config.get("platform_environment")
+        or bootstrap_config.get("platform")
+    )
+
+    if str(platform_name).strip().lower() == "databricks":
+        resolved = _resolve_databricks_staging_path(config_service)
+        if resolved and not _normalize_path_value(config_service.get("kindling.temp_path")):
+            config_service.set("kindling.temp_path", resolved)
+        config_service.set(
+            "kindling.runtime.features.databricks.any_file_required_for_bootstrap",
+            not _is_volume_path(resolved),
+        )
+        return resolved
+
+    return _normalize_path_value(
+        config_service.get("kindling.temp_path")
+        or bootstrap_config.get("kindling.temp_path")
+        or bootstrap_config.get("temp_path")
+    )
+
+
+def _resolve_initial_download_temp_path(
+    config: Dict[str, Any], platform: Optional[str]
+) -> Optional[str]:
+    if str(platform or "").strip().lower() == "databricks":
+        return _resolve_databricks_staging_path(config)
+    return _normalize_path_value(config.get("kindling.temp_path") or config.get("temp_path"))
 
 
 def get_temp_path() -> str:
@@ -1027,13 +1127,14 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
     config_files = None
     if use_lake_packages and artifacts_storage_path:
+        initial_temp_path = _resolve_initial_download_temp_path(config, platform)
         config_files = download_config_files(
             artifacts_storage_path=artifacts_storage_path,
             environment=environment,
             platform=platform,
             workspace_id=workspace_id,
             app_name=app_name,
-            temp_path=config.get("kindling.temp_path") or config.get("temp_path"),
+            temp_path=initial_temp_path,
         )
 
     from kindling.spark_config import configure_injector_with_config
@@ -1086,11 +1187,21 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     # (like CLUSTER BY AUTO) may be enabled/disabled on a given runtime.
     try:
         dbr_version = config_service.get("kindling.runtime.features.databricks.runtime_version")
+        dbr_uc_enabled = config_service.get("kindling.runtime.features.databricks.uc_enabled")
+        dbr_volumes_enabled = config_service.get(
+            "kindling.runtime.features.databricks.volumes_enabled"
+        )
+        dbr_any_file = config_service.get(
+            "kindling.runtime.features.databricks.any_file_required_for_bootstrap"
+        )
         auto_clustering = config_service.get("kindling.runtime.features.delta.auto_clustering")
         auto_clustering_static = config_service.get("kindling.features.delta.auto_clustering")
         logger.info(
             "Runtime features: "
             f"databricks.runtime_version={dbr_version!r} "
+            f"databricks.uc_enabled={dbr_uc_enabled!r} "
+            f"databricks.volumes_enabled={dbr_volumes_enabled!r} "
+            f"databricks.any_file_required_for_bootstrap={dbr_any_file!r} "
             f"delta.auto_clustering={auto_clustering!r} "
             f"(static_override={auto_clustering_static!r})"
         )
@@ -1144,12 +1255,18 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         print(f"🔌 Extensions: {extensions}")
 
         # Build bootstrap config including temp_path from original config
+        resolved_temp_path = _resolve_bootstrap_temp_path(config_service, config)
         bootstrap_deps_config = {
             "required_packages": required_packages,
             "extensions": extensions,
-            # Pass through from original config (generic temp_path for all platforms)
-            "temp_path": config.get("kindling.temp_path") or config.get("temp_path"),
+            # Resolve a governed staging path when the runtime supports it.
+            "temp_path": resolved_temp_path,
         }
+
+        if resolved_temp_path:
+            logger.info(f"Bootstrap staging path: {resolved_temp_path}")
+        else:
+            logger.info("Bootstrap staging path: default platform fallback")
 
         install_bootstrap_dependencies(
             logger,

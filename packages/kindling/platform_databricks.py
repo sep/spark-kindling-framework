@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
 import requests
+from kindling.features import get_feature_bool
 from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
 from kindling.notebook_framework import *
@@ -17,13 +18,16 @@ from kindling.notebook_framework import *
 
 def _bind_default_entity_services(logger) -> None:
     """Bind Databricks defaults for config when no explicit setting exists."""
-    # Default to name-based Delta access on Databricks (Unity Catalog / metastore).
+    # Default to name-based Delta access on Databricks when Unity Catalog is available.
+    # Without UC (gov cloud, legacy workspaces), default to path-based access instead.
     # Users can override per-entity via `provider.access_mode` or globally via config.
     try:
         cs = GlobalInjector.get(ConfigService)
         if cs.get("kindling.delta.tablerefmode") is None:
-            cs.set("kindling.delta.tablerefmode", "forName")
-            logger.info("Defaulted kindling.delta.tablerefmode=forName (Databricks convention)")
+            uc_enabled = get_feature_bool(cs, "databricks.uc_enabled", default=True)
+            mode = "forName" if uc_enabled else "forPath"
+            cs.set("kindling.delta.tablerefmode", mode)
+            logger.info(f"Defaulted kindling.delta.tablerefmode={mode} (uc_enabled={uc_enabled})")
     except Exception:
         pass
 
