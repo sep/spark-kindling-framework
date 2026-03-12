@@ -4,12 +4,7 @@ from types import SimpleNamespace
 
 
 def _load_streaming_app_module():
-    app_path = (
-        Path(__file__).resolve().parents[1]
-        / "data-apps"
-        / "streaming-test-app"
-        / "main.py"
-    )
+    app_path = Path(__file__).resolve().parents[1] / "data-apps" / "streaming-test-app" / "main.py"
     source = app_path.read_text()
     marker = "# Initialize"
     assert marker in source, "streaming-test-app unit loader marker not found"

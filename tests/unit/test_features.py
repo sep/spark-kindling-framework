@@ -58,7 +58,9 @@ def test_discover_runtime_features_sets_databricks_uc_and_volume_flags(monkeypat
     assert config.get("kindling.runtime.features.databricks.runtime_version") == "15.4.x-scala2.12"
     assert config.get("kindling.runtime.features.databricks.uc_enabled") is True
     assert config.get("kindling.runtime.features.databricks.volumes_enabled") is True
-    assert config.get("kindling.runtime.features.databricks.any_file_required_for_bootstrap") is False
+    assert (
+        config.get("kindling.runtime.features.databricks.any_file_required_for_bootstrap") is False
+    )
     assert config.get("kindling.runtime.features.databricks.name_mode_catalog_qualified") is True
 
 
@@ -78,5 +80,7 @@ def test_discover_runtime_features_sets_databricks_classic_flags(monkeypatch):
     assert config.get("kindling.runtime.features.databricks.runtime_version") == "13.3.x-scala2.12"
     assert config.get("kindling.runtime.features.databricks.uc_enabled") is False
     assert config.get("kindling.runtime.features.databricks.volumes_enabled") is False
-    assert config.get("kindling.runtime.features.databricks.any_file_required_for_bootstrap") is True
+    assert (
+        config.get("kindling.runtime.features.databricks.any_file_required_for_bootstrap") is True
+    )
     assert config.get("kindling.runtime.features.databricks.name_mode_catalog_qualified") is False

@@ -27,10 +27,13 @@ def test_get_job_logs_keeps_complex_tracing_app_lines(monkeypatch):
 
     responses = iter(
         [
-            MagicMock(status_code=200, text="INFO: (complex-tracing-test) Complex Tracing System Test\n"
-             "INFO: (complex-tracing-test) Pipeline pipeline-1 completed successfully\n"
-             "INFO: (complex-tracing-test)   Pipelines completed: 3\n"
-             "INFO: (complex-tracing-test) 🎉 Complex tracing test completed successfully!\n"),
+            MagicMock(
+                status_code=200,
+                text="INFO: (complex-tracing-test) Complex Tracing System Test\n"
+                "INFO: (complex-tracing-test) Pipeline pipeline-1 completed successfully\n"
+                "INFO: (complex-tracing-test)   Pipelines completed: 3\n"
+                "INFO: (complex-tracing-test) 🎉 Complex tracing test completed successfully!\n",
+            ),
             MagicMock(status_code=200, text=""),
         ]
     )
