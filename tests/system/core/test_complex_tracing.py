@@ -243,7 +243,9 @@ class TestComplexTracing:
         elif has_app_runtime_logs:
             pytest.fail("Test app did not start properly")
         else:
-            print("ℹ️  App startup marker validation skipped (log source does not include app stdout)")
+            print(
+                "ℹ️  App startup marker validation skipped (log source does not include app stdout)"
+            )
 
         assert any(
             marker in lower_log_content
