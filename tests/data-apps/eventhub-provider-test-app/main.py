@@ -344,7 +344,13 @@ def main() -> int:
     provider = registry.get_provider_for_entity(batch_entity)
     _emit(logger, test_id, "provider_resolution", provider is not None, "provider_type=eventhub")
     transport = getattr(provider, "resolve_transport", lambda _entity: "unknown")(batch_entity)
-    _emit(logger, test_id, "transport_selection", transport in {"eventhubs", "kafka"}, f"transport={transport}")
+    _emit(
+        logger,
+        test_id,
+        "transport_selection",
+        transport in {"eventhubs", "kafka"},
+        f"transport={transport}",
+    )
 
     exists = provider.check_entity_exists(batch_entity)
     _emit(logger, test_id, "check_entity_exists", exists)

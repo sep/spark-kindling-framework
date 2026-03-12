@@ -102,7 +102,9 @@ def test_resolve_bootstrap_temp_path_updates_any_file_flag_for_databricks():
 
     assert resolved == "/Volumes/medallion/default/temp"
     assert config.get("kindling.temp_path") == "/Volumes/medallion/default/temp"
-    assert config.get("kindling.runtime.features.databricks.any_file_required_for_bootstrap") is False
+    assert (
+        config.get("kindling.runtime.features.databricks.any_file_required_for_bootstrap") is False
+    )
 
 
 def test_resolve_bootstrap_temp_path_falls_back_when_no_volume_staging_root():
@@ -116,7 +118,9 @@ def test_resolve_bootstrap_temp_path_falls_back_when_no_volume_staging_root():
     resolved = _resolve_bootstrap_temp_path(config, {"platform": "databricks"})
 
     assert resolved is None
-    assert config.get("kindling.runtime.features.databricks.any_file_required_for_bootstrap") is True
+    assert (
+        config.get("kindling.runtime.features.databricks.any_file_required_for_bootstrap") is True
+    )
 
 
 def test_resolve_initial_download_temp_path_uses_databricks_volume_parent():

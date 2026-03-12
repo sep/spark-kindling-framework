@@ -91,18 +91,18 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
         return self._resolve_transport(config)
 
     def _resolve_transport(self, provider_config: dict) -> str:
-        configured_transport = str(
-            provider_config.get("transport", self.TRANSPORT_AUTO) or self.TRANSPORT_AUTO
-        ).strip().lower()
+        configured_transport = (
+            str(provider_config.get("transport", self.TRANSPORT_AUTO) or self.TRANSPORT_AUTO)
+            .strip()
+            .lower()
+        )
 
         if configured_transport not in {
             self.TRANSPORT_AUTO,
             self.TRANSPORT_EVENTHUBS,
             self.TRANSPORT_KAFKA,
         }:
-            raise ValueError(
-                "Event Hub provider transport must be one of: auto, eventhubs, kafka"
-            )
+            raise ValueError("Event Hub provider transport must be one of: auto, eventhubs, kafka")
 
         if configured_transport != self.TRANSPORT_AUTO:
             return configured_transport
@@ -266,9 +266,7 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             .withColumn("publisher", lit(None).cast("string"))
             .withColumn("partitionKey", lit(None).cast("string"))
             .withColumn("properties", lit(None).cast(MapType(StringType(), StringType())))
-            .withColumn(
-                "systemProperties", lit(None).cast(MapType(StringType(), StringType()))
-            )
+            .withColumn("systemProperties", lit(None).cast(MapType(StringType(), StringType())))
         )
 
     def _encrypt_connection_string(self, connection_string: str) -> str:

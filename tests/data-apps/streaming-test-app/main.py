@@ -84,9 +84,8 @@ def _resolve_stream_paths(config_service, platform: str, test_id: str, checkpoin
 
     if platform == "databricks":
         checkpoint_root = config_service.get("kindling.storage.checkpoint_root")
-        output_root = (
-            config_service.get("kindling.storage.table_root")
-            or config_service.get("kindling.temp_path")
+        output_root = config_service.get("kindling.storage.table_root") or config_service.get(
+            "kindling.temp_path"
         )
         if checkpoint_root and output_root:
             return (
