@@ -242,7 +242,7 @@ jobs:
           path: test-results/
 
   system-tests:
-    name: System Tests (${{ matrix.platform }})
+    name: System Tests (${{ matrix.label }})
     runs-on: ubuntu-latest
     needs: [build-ci-image, integration-tests, kda-packaging-tests]
     container:
@@ -256,7 +256,23 @@ jobs:
 
     strategy:
       matrix:
-        platform: [synapse, databricks, fabric]
+        include:
+          - platform: synapse
+            label: synapse
+            artifact_suffix: synapse
+            databricks_mode: ""
+          - platform: fabric
+            label: fabric
+            artifact_suffix: fabric
+            databricks_mode: ""
+          - platform: databricks
+            label: databricks-uc
+            artifact_suffix: databricks-uc
+            databricks_mode: uc
+          - platform: databricks
+            label: databricks-classic
+            artifact_suffix: databricks-classic
+            databricks_mode: classic
       fail-fast: false # Allow all platforms to run independently
 
     steps:
@@ -272,6 +288,33 @@ jobs:
           cd $GITHUB_WORKSPACE
           pip install -e .
 
+      - name: Resolve Databricks lane config
+        if: matrix.platform == 'databricks'
+        env:
+          DEFAULT_DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DEFAULT_DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
+          CLASSIC_DATABRICKS_HOST: ${{ secrets.DATABRICKS_CLASSIC_HOST }}
+          CLASSIC_DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLASSIC_CLUSTER_ID }}
+          UC_VOLUME_CATALOG: ${{ vars.KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG }}
+          UC_VOLUME_SCHEMA: ${{ vars.KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA }}
+          UC_TEMP_VOLUME: ${{ vars.KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME }}
+        run: |
+          if [ "${{ matrix.databricks_mode }}" = "classic" ]; then
+            echo "DATABRICKS_HOST=${CLASSIC_DATABRICKS_HOST:-$DEFAULT_DATABRICKS_HOST}" >> "$GITHUB_ENV"
+            echo "DATABRICKS_CLUSTER_ID=${CLASSIC_DATABRICKS_CLUSTER_ID:-$DEFAULT_DATABRICKS_CLUSTER_ID}" >> "$GITHUB_ENV"
+            echo "KINDLING_DATABRICKS_SYSTEM_TEST_MODE=classic" >> "$GITHUB_ENV"
+            echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG=" >> "$GITHUB_ENV"
+            echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA=" >> "$GITHUB_ENV"
+            echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=" >> "$GITHUB_ENV"
+          else
+            echo "DATABRICKS_HOST=$DEFAULT_DATABRICKS_HOST" >> "$GITHUB_ENV"
+            echo "DATABRICKS_CLUSTER_ID=$DEFAULT_DATABRICKS_CLUSTER_ID" >> "$GITHUB_ENV"
+            echo "KINDLING_DATABRICKS_SYSTEM_TEST_MODE=uc" >> "$GITHUB_ENV"
+            echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG=${UC_VOLUME_CATALOG:-kindling}" >> "$GITHUB_ENV"
+            echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA=${UC_VOLUME_SCHEMA:-kindling}" >> "$GITHUB_ENV"
+            echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=${UC_TEMP_VOLUME:-artifacts}" >> "$GITHUB_ENV"
+          fi
+
       - name: Run system tests
         env:
           PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
@@ -282,8 +325,6 @@ jobs:
           SYNAPSE_WORKSPACE_NAME: ${{ secrets.SYNAPSE_WORKSPACE_NAME }}
           SYNAPSE_SPARK_POOL: ${{ secrets.SYNAPSE_SPARK_POOL }}
           CONFIG__platform_synapse__kindling__secrets__key_vault_url: ${{ secrets.CONFIG__platform_synapse__kindling__secrets__key_vault_url }}
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
           # Azure authentication (shared) - using both AZURE_* and ARM_* for compatibility
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -303,7 +344,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: system-test-results-${{ matrix.platform }}
+          name: system-test-results-${{ matrix.artifact_suffix }}
           path: test-results/
 
   security-scan:
