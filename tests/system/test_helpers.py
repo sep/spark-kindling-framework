@@ -119,9 +119,9 @@ def get_system_platform_config_overrides(
             }
         }
         if synapse_root:
-            overrides["kindling"]["storage"]["table_schema_location"] = (
-                f"{synapse_root}/schemas/{effective_schema}"
-            )
+            overrides["kindling"]["storage"][
+                "table_schema_location"
+            ] = f"{synapse_root}/schemas/{effective_schema}"
         return overrides
 
     return {}
