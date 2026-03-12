@@ -197,7 +197,9 @@ def _resolve_bootstrap_temp_path(config_service, bootstrap_config: Dict[str, Any
     )
 
 
-def _resolve_initial_download_temp_path(config: Dict[str, Any], platform: Optional[str]) -> Optional[str]:
+def _resolve_initial_download_temp_path(
+    config: Dict[str, Any], platform: Optional[str]
+) -> Optional[str]:
     if str(platform or "").strip().lower() == "databricks":
         return _resolve_databricks_staging_path(config)
     return _normalize_path_value(config.get("kindling.temp_path") or config.get("temp_path"))
