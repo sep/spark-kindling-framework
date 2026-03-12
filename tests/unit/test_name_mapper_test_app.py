@@ -5,10 +5,7 @@ from types import SimpleNamespace
 
 def _load_name_mapper_app_module():
     app_path = (
-        Path(__file__).resolve().parents[1]
-        / "data-apps"
-        / "name-mapper-test-app"
-        / "main.py"
+        Path(__file__).resolve().parents[1] / "data-apps" / "name-mapper-test-app" / "main.py"
     )
     spec = importlib.util.spec_from_file_location("name_mapper_test_app", app_path)
     module = importlib.util.module_from_spec(spec)
