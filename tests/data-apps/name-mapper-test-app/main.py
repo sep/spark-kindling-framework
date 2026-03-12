@@ -12,12 +12,13 @@ from kindling.spark_session import get_or_create_spark_session
 from pyspark.sql.types import StringType, StructField, StructType
 
 
-def _emit(logger, test_id: str, test_name: str, passed: bool, details: str = "") -> None:
+def _emit(logger, test_id: str, test_name: str, passed: bool, details: str = "") -> str:
     status = "PASSED" if passed else "FAILED"
     suffix = f" {details}" if details else ""
     line = f"TEST_ID={test_id} test={test_name} status={status}{suffix}"
     logger.info(line)
     print(line, flush=True)
+    return line
 
 
 def _quote_table_identifier(table_name: str) -> str:
@@ -45,6 +46,104 @@ def _get_current_namespace(spark):
             pass
 
     return catalog, schema
+
+
+def _extract_schema_name(row) -> str | None:
+    """Best-effort schema name extraction across Spark row shapes."""
+    for key in ("namespace", "databaseName", "schemaName"):
+        try:
+            value = row[key]
+        except Exception:
+            value = getattr(row, key, None)
+        if value:
+            return str(value)
+    return None
+
+
+def _list_schemas(spark, catalog: str | None) -> set[str]:
+    queries = []
+    if catalog:
+        quoted_catalog = _quote_table_identifier(catalog)
+        queries.extend(
+            [
+                f"SHOW SCHEMAS IN {quoted_catalog}",
+                f"SHOW DATABASES IN {quoted_catalog}",
+            ]
+        )
+    else:
+        queries.extend(["SHOW SCHEMAS", "SHOW DATABASES"])
+
+    for query in queries:
+        try:
+            rows = spark.sql(query).collect()
+        except Exception:
+            continue
+
+        schemas = {
+            schema_name
+            for schema_name in (_extract_schema_name(row) for row in rows)
+            if schema_name
+        }
+        if schemas:
+            return schemas
+
+    return set()
+
+
+def _resolve_write_schema(spark, catalog: str | None, current_schema: str | None) -> str | None:
+    schemas = _list_schemas(spark, catalog)
+    if not schemas:
+        return current_schema
+
+    preferred = []
+    if current_schema:
+        preferred.append(current_schema)
+    preferred.extend(["kindling", "test", "default"])
+
+    for schema_name in preferred:
+        if schema_name in schemas:
+            return schema_name
+
+    for schema_name in sorted(schemas):
+        if schema_name.lower() != "information_schema":
+            return schema_name
+
+    return current_schema
+
+
+def _extract_volume_namespace(path: str | None) -> tuple[str | None, str | None]:
+    if not path:
+        return None, None
+
+    normalized = str(path).strip().rstrip("/")
+    if not normalized.startswith("/Volumes/"):
+        return None, None
+
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) < 4:
+        return None, None
+
+    return parts[1], parts[2]
+
+
+def _get_target_namespace(config_service, current_catalog: str | None, current_schema: str | None):
+    table_root = config_service.get("kindling.storage.table_root")
+    checkpoint_root = config_service.get("kindling.storage.checkpoint_root")
+
+    for candidate in (table_root, checkpoint_root):
+        catalog, schema = _extract_volume_namespace(candidate)
+        if catalog and schema:
+            return catalog, schema
+
+    return current_catalog, current_schema
+
+
+def _use_namespace(spark, catalog: str | None, schema: str | None) -> tuple[str | None, str | None]:
+    if catalog:
+        spark.sql(f"USE CATALOG {_quote_table_identifier(catalog)}")
+    if schema:
+        spark.sql(f"USE {_quote_table_identifier(schema)}")
+    return _get_current_namespace(spark)
 
 
 def _make_entity(entityid: str, schema: StructType) -> EntityMetadata:
@@ -75,9 +174,16 @@ def main() -> int:
     mapper = get_kindling_service(EntityNameMapper)
     provider_registry = get_kindling_service(EntityProviderRegistry)
     catalog, schema_name = _get_current_namespace(spark)
+    platform = str(config_service.get("platform") or "").strip().lower()
+    target_catalog, target_schema = _get_target_namespace(config_service, catalog, schema_name)
 
-    if not schema_name:
-        _emit(logger, test_id, "namespace_resolution", False, "schema=None")
+    if platform == "databricks" and (target_catalog, target_schema) != (catalog, schema_name):
+        catalog, schema_name = _use_namespace(spark, target_catalog, target_schema)
+
+    write_schema = _resolve_write_schema(spark, catalog, schema_name)
+
+    if not write_schema:
+        _emit(logger, test_id, "namespace_resolution", False, "schema=None write_schema=None")
         final_line = f"TEST_ID={test_id} status=COMPLETED result=FAILED"
         logger.info(final_line)
         print(final_line, flush=True)
@@ -88,7 +194,7 @@ def main() -> int:
         test_id,
         "namespace_resolution",
         True,
-        f"catalog={catalog} schema={schema_name}",
+        f"catalog={catalog} schema={schema_name} write_schema={write_schema}",
     )
 
     row_schema = StructType(
@@ -100,6 +206,7 @@ def main() -> int:
     base_leaf = f"name_mapper_{str(test_id).replace('-', '_')}"
     cleanup_tables = []
     test_results = []
+    emitted_lines = []
 
     def _run_case(test_prefix: str, entityid: str, expected_table_name: str) -> None:
         entity = _make_entity(entityid=entityid, schema=row_schema)
@@ -107,12 +214,14 @@ def main() -> int:
         resolved_table_name = mapper.get_table_name(entity)
 
         mapping_ok = resolved_table_name == expected_table_name
-        _emit(
-            logger,
-            test_id,
-            f"{test_prefix}_mapping",
-            mapping_ok,
-            f"resolved={resolved_table_name} expected={expected_table_name}",
+        emitted_lines.append(
+            _emit(
+                logger,
+                test_id,
+                f"{test_prefix}_mapping",
+                mapping_ok,
+                f"resolved={resolved_table_name} expected={expected_table_name}",
+            )
         )
         test_results.append(mapping_ok)
 
@@ -130,29 +239,35 @@ def main() -> int:
         count = spark.read.table(expected_table_name).count()
 
         write_ok = exists and count >= 1
-        _emit(
-            logger,
-            test_id,
-            f"{test_prefix}_write",
-            write_ok,
-            f"table={expected_table_name} count={count}",
+        emitted_lines.append(
+            _emit(
+                logger,
+                test_id,
+                f"{test_prefix}_write",
+                write_ok,
+                f"table={expected_table_name} count={count}",
+            )
         )
         test_results.append(write_ok)
 
     try:
         two_part_leaf = f"{base_leaf}_two_part"
-        two_part_entityid = f"{schema_name}.{two_part_leaf}"
+        two_part_entityid = f"{write_schema}.{two_part_leaf}"
         if catalog:
-            expected_two_part = f"{catalog}.{schema_name}.{two_part_leaf}"
+            expected_two_part = f"{catalog}.{write_schema}.{two_part_leaf}"
         else:
-            expected_two_part = f"{schema_name}.{two_part_leaf}"
+            expected_two_part = f"{write_schema}.{two_part_leaf}"
         _run_case("two_part_name", two_part_entityid, expected_two_part)
 
         if catalog:
             three_part_leaf = f"{base_leaf}_three_part"
-            three_part_entityid = f"{catalog}.{schema_name}.{three_part_leaf}"
-            expected_three_part = f"{catalog}.{schema_name}.{three_part_leaf}"
+            three_part_entityid = f"{catalog}.{write_schema}.{three_part_leaf}"
+            expected_three_part = f"{catalog}.{write_schema}.{three_part_leaf}"
             _run_case("three_part_name", three_part_entityid, expected_three_part)
+
+        for line in emitted_lines:
+            logger.info(line)
+            print(line, flush=True)
 
         passed = all(test_results)
         final_result = "PASSED" if passed else "FAILED"

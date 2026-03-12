@@ -70,6 +70,20 @@ Legacy/compat keys (still accepted by config translation):
 - `kindling.delta.tablerefmode`: Default Delta access mode (`forName`, `forPath`, `auto`).
 - `kindling.features.delta.auto_clustering`: Static feature flag override to allow `cluster_columns: auto` (Databricks only; Kindling also computes a default under `kindling.runtime.features.delta.auto_clustering` during startup).
 
+### Runtime Feature Flags
+
+These are primarily runtime-discovered keys under `kindling.runtime.features.*`. Static overrides may be supplied under `kindling.features.*` where appropriate.
+
+- `kindling.runtime.features.databricks.runtime_version`: Best-effort Databricks runtime version string (for example `15.4.x-scala2.12`).
+- `kindling.runtime.features.databricks.runtime_major`: Parsed Databricks runtime major version when available.
+- `kindling.runtime.features.databricks.runtime_minor`: Parsed Databricks runtime minor version when available.
+- `kindling.runtime.features.databricks.uc_enabled`: Best-effort detection that Databricks Unity Catalog is active.
+- `kindling.runtime.features.databricks.volumes_enabled`: Best-effort detection that Databricks `/Volumes/...` paths are available.
+- `kindling.runtime.features.databricks.any_file_required_for_bootstrap`: Indicates Databricks bootstrap staging will need URI/DBFS fallback rather than governed volume staging.
+- `kindling.runtime.features.databricks.name_mode_catalog_qualified`: Indicates Databricks name-based defaults should assume catalog-qualified names.
+- `kindling.runtime.features.delta.cluster_by`: Best-effort detection that the runtime parser supports `ALTER TABLE ... CLUSTER BY`.
+- `kindling.runtime.features.delta.auto_clustering`: Best-effort detection that `CLUSTER BY AUTO` is supported.
+
 ### Storage (Delta Table Naming/Paths)
 
 These keys are used by the config-driven `EntityNameMapper`/`EntityPathLocator` defaults.
@@ -80,6 +94,7 @@ These keys are used by the config-driven `EntityNameMapper`/`EntityPathLocator` 
 - `kindling.storage.table_name_prefix`: Optional prefix added to the generated leaf table name.
 - `kindling.storage.table_root`: Default path root for `forPath` entities (default `Tables`).
 - `kindling.storage.checkpoint_root`: Default checkpoint root used by system test apps (common default `Files/checkpoints`).
+- `kindling.databricks.volume_staging_root`: Optional Databricks-specific governed staging root for bootstrap wheel/config temp files. When omitted, Databricks bootstrap will try to derive a volume-backed staging root from `kindling.storage.checkpoint_root` or `kindling.storage.table_root` before falling back to DBFS.
 
 Backward-compatible fallbacks that are still read if the generic keys are not set:
 

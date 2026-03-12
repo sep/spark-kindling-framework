@@ -11,9 +11,45 @@ locals {
     ? "${format(local.abfss_base, var.artifacts_container_name)}/${local.kindling_artifacts_subpath_clean}"
     : "${format(local.abfss_base, var.artifacts_container_name)}/"
   )
-  medallion_catalog_name_effective             = try(databricks_catalog.main[0].name, var.catalog_name)
-  kindling_catalog_name_effective              = try(databricks_catalog.kindling[0].name, var.kindling_catalog_name)
+  medallion_catalog_name_effective = try(databricks_catalog.main[0].name, var.catalog_name)
+  kindling_catalog_name_effective  = try(databricks_catalog.kindling[0].name, var.kindling_catalog_name)
+  kindling_runtime_volume_catalog_name_effective = coalesce(
+    var.kindling_runtime_volume_catalog_name,
+    local.kindling_catalog_name_effective,
+  )
+  kindling_runtime_volume_schema_name_effective = coalesce(
+    var.kindling_runtime_volume_schema_name,
+    var.kindling_schema_name,
+  )
+  enable_kindling_artifacts_effective = coalesce(
+    var.enable_kindling_artifacts,
+    var.workspace_role == "platform",
+  )
+  enable_kindling_runtime_volumes_effective = coalesce(
+    var.enable_kindling_runtime_volumes,
+    var.workspace_role == "platform",
+  )
+  enable_kindling_platform_support_effective = coalesce(
+    var.enable_kindling_platform_support,
+    var.workspace_role == "platform",
+  )
   storage_credential_sp_directory_id_effective = coalesce(var.storage_credential_sp_directory_id, var.azure_tenant_id)
+  catalog_storage_root_effective = (
+    var.catalog_storage_container != null &&
+    var.catalog_storage_container != "" &&
+    var.catalog_storage_path != null &&
+    var.catalog_storage_path != ""
+    ? "${format(local.abfss_base, var.catalog_storage_container)}/${trim(var.catalog_storage_path, "/")}"
+    : null
+  )
+  kindling_catalog_storage_root_effective = (
+    var.kindling_catalog_storage_container != null &&
+    var.kindling_catalog_storage_container != "" &&
+    var.kindling_catalog_storage_path != null &&
+    var.kindling_catalog_storage_path != ""
+    ? "${format(local.abfss_base, var.kindling_catalog_storage_container)}/${trim(var.kindling_catalog_storage_path, "/")}"
+    : null
+  )
 }
 
 # -----------------------------------------------------------------------------
@@ -82,7 +118,7 @@ resource "databricks_catalog" "main" {
   count = var.enable_unity_catalog && var.create_catalog ? 1 : 0
 
   name           = var.catalog_name
-  storage_root   = "${format(local.abfss_base, var.catalog_storage_container)}/${var.catalog_storage_path}"
+  storage_root   = local.catalog_storage_root_effective
   comment        = "Primary ${var.environment} catalog"
   isolation_mode = "OPEN"
 
@@ -90,10 +126,10 @@ resource "databricks_catalog" "main" {
 }
 
 resource "databricks_catalog" "kindling" {
-  count = var.enable_unity_catalog && var.create_kindling_catalog ? 1 : 0
+  count = var.enable_unity_catalog && local.enable_kindling_artifacts_effective && var.create_kindling_catalog ? 1 : 0
 
   name           = var.kindling_catalog_name
-  storage_root   = "${format(local.abfss_base, var.kindling_catalog_storage_container)}/${var.kindling_catalog_storage_path}"
+  storage_root   = local.kindling_catalog_storage_root_effective
   comment        = "Kindling infrastructure ${var.environment} catalog"
   isolation_mode = "OPEN"
 
@@ -113,7 +149,7 @@ resource "databricks_schema" "schemas" {
 }
 
 resource "databricks_schema" "kindling" {
-  count = var.enable_unity_catalog ? 1 : 0
+  count = var.enable_unity_catalog && local.enable_kindling_artifacts_effective ? 1 : 0
 
   catalog_name = local.kindling_catalog_name_effective
   name         = var.kindling_schema_name
@@ -124,7 +160,7 @@ resource "databricks_schema" "kindling" {
 # Kindling Artifacts External Volume (single artifacts-backed volume)
 # -----------------------------------------------------------------------------
 resource "databricks_volume" "kindling_artifacts" {
-  count = var.enable_unity_catalog ? 1 : 0
+  count = var.enable_unity_catalog && local.enable_kindling_artifacts_effective ? 1 : 0
 
   catalog_name     = local.kindling_catalog_name_effective
   schema_name      = databricks_schema.kindling[0].name
@@ -140,13 +176,13 @@ resource "databricks_volume" "kindling_artifacts" {
 # Managed Volumes (in catalog.kindling_schema_name)
 # -----------------------------------------------------------------------------
 resource "databricks_volume" "managed" {
-  for_each = var.enable_unity_catalog ? toset(var.managed_volumes) : toset([])
+  for_each = var.enable_unity_catalog && local.enable_kindling_runtime_volumes_effective ? toset(var.managed_volumes) : toset([])
 
-  catalog_name = local.kindling_catalog_name_effective
-  schema_name  = databricks_schema.kindling[0].name
+  catalog_name = local.kindling_runtime_volume_catalog_name_effective
+  schema_name  = local.kindling_runtime_volume_schema_name_effective
   name         = each.value
   volume_type  = "MANAGED"
   comment      = "Managed volume: ${each.value}"
 
-  depends_on = [databricks_schema.kindling]
+  depends_on = [databricks_schema.kindling, databricks_schema.schemas]
 }
