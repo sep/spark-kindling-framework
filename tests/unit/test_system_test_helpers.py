@@ -21,7 +21,9 @@ def test_apply_env_config_overrides_adds_databricks_uc_bootstrap_paths(monkeypat
     kindling = merged["config_overrides"]["kindling"]
     assert kindling["temp_path"] == "/Volumes/kindling/kindling/artifacts"
     assert kindling["storage"]["table_root"] == "/Volumes/kindling/kindling/artifacts/tables"
-    assert kindling["storage"]["checkpoint_root"] == "/Volumes/kindling/kindling/artifacts/checkpoints"
+    assert (
+        kindling["storage"]["checkpoint_root"] == "/Volumes/kindling/kindling/artifacts/checkpoints"
+    )
     assert kindling["databricks"]["volume_staging_root"] == "/Volumes/kindling/kindling/artifacts"
     assert kindling["delta"]["tablerefmode"] == "forName"
 
