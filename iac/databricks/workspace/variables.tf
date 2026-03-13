@@ -434,6 +434,14 @@ variable "mount_sp_secret_key" {
   }
 }
 
+variable "mount_sp_secret_value" {
+  description = "Optional client secret value to write into mount_sp_secret_scope/mount_sp_secret_key. Prefer passing via TF_VAR_mount_sp_secret_value from AZURE_CLIENT_SECRET."
+  type        = string
+  default     = null
+  nullable    = true
+  sensitive   = true
+}
+
 variable "dbfs_mounts" {
   description = "Additional DBFS mounts to create (only when enable_unity_catalog=false)"
   type = list(object({
