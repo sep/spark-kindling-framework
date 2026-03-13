@@ -10,6 +10,8 @@ import sys
 import time
 import uuid
 
+from azure.identity import ClientSecretCredential
+from azure.storage.filedatalake import DataLakeServiceClient
 from databricks.sdk import WorkspaceClient
 
 
@@ -21,12 +23,26 @@ from pyspark.sql import SparkSession
 
 
 def _rows_to_values(rows):
+    preferred_keys = (
+        "volume_name",
+        "name",
+        "schema_name",
+        "namespace",
+        "catalog_name",
+        "catalog",
+        "database",
+    )
     values = []
     for row in rows:
         if hasattr(row, "asDict"):
             data = row.asDict()
             if data:
-                values.append(str(next(iter(data.values()))))
+                for key in preferred_keys:
+                    if key in data and data[key] is not None:
+                        values.append(str(data[key]))
+                        break
+                else:
+                    values.append(str(next(iter(data.values()))))
                 continue
         try:
             values.append(str(row[0]))
@@ -97,7 +113,8 @@ ok = (
 )
 
 print("KINDLING_DATABRICKS_PREFLIGHT " + json.dumps(result, sort_keys=True))
-sys.exit(0 if ok else 1)
+if not ok:
+    raise RuntimeError("Databricks UC preflight checks failed")
 """
 
 
@@ -125,15 +142,56 @@ def _volume_bits() -> tuple[str, str, str, str]:
     return catalog, schema, volume, f"/Volumes/{catalog}/{schema}/{volume}"
 
 
-def _upload_remote_script(client: WorkspaceClient, script_contents: str) -> str:
-    dbfs_path = f"dbfs:/FileStore/kindling/preflight/databricks_uc_preflight_{uuid.uuid4().hex}.py"
-    client.dbfs.upload(dbfs_path, io.BytesIO(script_contents.encode("utf-8")), overwrite=True)
-    return dbfs_path
+def _storage_bits() -> tuple[str, str]:
+    account = (os.getenv("AZURE_STORAGE_ACCOUNT") or "").strip()
+    container = (os.getenv("AZURE_CONTAINER") or "").strip()
+    if not account or not container:
+        raise SystemExit(
+            "Missing required environment variables for ADLS staging: "
+            "AZURE_STORAGE_ACCOUNT and AZURE_CONTAINER"
+        )
+    return account, container
 
 
-def _delete_remote_script(client: WorkspaceClient, dbfs_path: str) -> None:
+def _upload_remote_script(script_contents: str) -> str:
+    storage_account, container = _storage_bits()
+    tenant_id = _require_env("AZURE_TENANT_ID")
+    client_id = _require_env("AZURE_CLIENT_ID")
+    client_secret = _require_env("AZURE_CLIENT_SECRET")
+    path = f"scripts/databricks_uc_preflight_{uuid.uuid4().hex}.py"
+
+    credential = ClientSecretCredential(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+    account_url = f"https://{storage_account}.dfs.core.windows.net"
+    storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
+    file_system = storage_client.get_file_system_client(container)
+    file_client = file_system.get_file_client(path)
+    file_client.upload_data(io.BytesIO(script_contents.encode("utf-8")), overwrite=True)
+
+    return f"abfss://{container}@{storage_account}.dfs.core.windows.net/{path}"
+
+
+def _delete_remote_script(script_path: str) -> None:
     try:
-        client.dbfs.delete(dbfs_path)
+        storage_account, container = _storage_bits()
+        tenant_id = _require_env("AZURE_TENANT_ID")
+        client_id = _require_env("AZURE_CLIENT_ID")
+        client_secret = _require_env("AZURE_CLIENT_SECRET")
+        credential = ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        account_url = f"https://{storage_account}.dfs.core.windows.net"
+        storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
+        file_system = storage_client.get_file_system_client(container)
+        prefix = f"abfss://{container}@{storage_account}.dfs.core.windows.net/"
+        if script_path.startswith(prefix):
+            relative_path = script_path[len(prefix) :]
+            file_system.delete_file(relative_path)
     except Exception:
         pass
 
@@ -183,7 +241,7 @@ def main() -> int:
     cluster_id = _require_env("DATABRICKS_CLUSTER_ID")
     client = _workspace_client()
     catalog, schema, volume, volume_path = _volume_bits()
-    dbfs_script = _upload_remote_script(client, REMOTE_SCRIPT_TEMPLATE)
+    remote_script = _upload_remote_script(REMOTE_SCRIPT_TEMPLATE)
 
     print(
         json.dumps(
@@ -191,14 +249,14 @@ def main() -> int:
                 "host": _require_env("DATABRICKS_HOST"),
                 "cluster_id": cluster_id,
                 "volume_path": volume_path,
-                "dbfs_script": dbfs_script,
+                "remote_script": remote_script,
             },
             indent=2,
         )
     )
 
     try:
-        run_id = _submit_run(client, cluster_id, dbfs_script, [catalog, schema, volume, volume_path])
+        run_id = _submit_run(client, cluster_id, remote_script, [catalog, schema, volume, volume_path])
         print(f"Submitted Databricks UC preflight run: {run_id}")
         run = _wait_for_run(client, run_id)
         state = run.get("state", {})
@@ -210,7 +268,7 @@ def main() -> int:
         result_state = (state.get("result_state") or "").upper()
         return 0 if result_state == "SUCCESS" else 1
     finally:
-        _delete_remote_script(client, dbfs_script)
+        _delete_remote_script(remote_script)
 
 
 if __name__ == "__main__":
