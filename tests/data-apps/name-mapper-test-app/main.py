@@ -220,6 +220,10 @@ def _build_entity_case(
     return entity_id, expected_table_name
 
 
+def _supports_three_part_names(platform: str, catalog: str | None) -> bool:
+    return platform in {"fabric", "databricks"} and bool(catalog)
+
+
 def _make_entity(entityid: str, schema: StructType) -> EntityMetadata:
     return EntityMetadata(
         entityid=entityid,
@@ -339,7 +343,7 @@ def main() -> int:
         )
         _run_case("two_part_name", two_part_entityid, expected_two_part)
 
-        if catalog:
+        if _supports_three_part_names(platform, catalog):
             three_part_leaf = f"{base_leaf}_three_part"
             three_part_entityid = f"{catalog}.{write_schema}.{three_part_leaf}"
             expected_three_part = f"{catalog}.{write_schema}.{three_part_leaf}"
