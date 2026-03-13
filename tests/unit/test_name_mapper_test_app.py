@@ -98,3 +98,12 @@ def test_build_entity_case_keeps_two_part_entity_leaf_when_namespace_is_configur
 
     assert entity_id == "name_mapper_t123_two_part"
     assert expected_table_name == "kindling_system_tests.name_mapper_t123_two_part"
+
+
+def test_supports_three_part_names_only_on_fabric_and_databricks():
+    module = _load_name_mapper_app_module()
+
+    assert module._supports_three_part_names("databricks", "kindling") is True
+    assert module._supports_three_part_names("fabric", "kindling") is True
+    assert module._supports_three_part_names("synapse", "spark_catalog") is False
+    assert module._supports_three_part_names("databricks", None) is False
