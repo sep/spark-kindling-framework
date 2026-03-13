@@ -178,10 +178,11 @@ class DatabricksAPI(PlatformAPI):
             return explicit_path
 
         if mode == "classic":
-            return (
-                str(os.getenv("KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH") or "").strip()
-                or "dbfs:/mnt/artifacts"
-            )
+            classic_override = str(
+                os.getenv("KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH") or ""
+            ).strip()
+            if classic_override:
+                return classic_override
 
         if self.storage_account and self.container:
             base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
@@ -203,16 +204,17 @@ class DatabricksAPI(PlatformAPI):
             return explicit_python_file
 
         if mode == "classic":
-            bootstrap_root = (
+            explicit_bootstrap_root = (
                 str(job_config.get("bootstrap_script_root") or "").strip()
                 or str(os.getenv("KINDLING_DATABRICKS_CLASSIC_BOOTSTRAP_ROOT") or "").strip()
-                or (
-                    artifacts_storage_path
-                    if str(artifacts_storage_path).strip().startswith("dbfs:/")
-                    else "dbfs:/mnt/artifacts"
-                )
             )
-            return f"{bootstrap_root.rstrip('/')}/scripts/{main_file}"
+            if explicit_bootstrap_root:
+                return f"{explicit_bootstrap_root.rstrip('/')}/scripts/{main_file}"
+
+            if self.storage_account and self.container:
+                return f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/scripts/{main_file}"
+
+            return f"dbfs:/FileStore/scripts/{main_file}"
 
         if self.storage_account and self.container:
             return f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/scripts/{main_file}"

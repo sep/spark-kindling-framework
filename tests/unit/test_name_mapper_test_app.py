@@ -72,6 +72,18 @@ def test_has_explicit_namespace_config_detects_synapse_schema():
     assert module._has_explicit_namespace_config(config) is True
 
 
+def test_get_config_namespace_prefers_storage_schema_and_synapse_fallback():
+    module = _load_name_mapper_app_module()
+    config = SimpleNamespace(
+        get=lambda key, default=None: {
+            "kindling.storage.table_schema": "kindling_system_tests",
+            "kindling.synapse.schema": "ignored_fallback",
+        }.get(key, default)
+    )
+
+    assert module._get_config_namespace(config) == (None, "kindling_system_tests")
+
+
 def test_build_entity_case_keeps_two_part_entity_leaf_when_namespace_is_configured():
     module = _load_name_mapper_app_module()
 
@@ -80,6 +92,8 @@ def test_build_entity_case_keeps_two_part_entity_leaf_when_namespace_is_configur
         write_schema="kindling_system_tests",
         catalog=None,
         use_config_namespace=True,
+        config_catalog=None,
+        config_schema="kindling_system_tests",
     )
 
     assert entity_id == "name_mapper_t123_two_part"
