@@ -157,6 +157,33 @@ def _has_explicit_namespace_config(config_service) -> bool:
     return False
 
 
+def _clean_config_namespace_value(value: object) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned or cleaned.lower() in {"auto", "none", "null"}:
+        return None
+    return cleaned
+
+
+def _get_config_namespace(config_service) -> tuple[str | None, str | None]:
+    catalog = _clean_config_namespace_value(config_service.get("kindling.storage.table_catalog"))
+    schema = _clean_config_namespace_value(config_service.get("kindling.storage.table_schema"))
+
+    if catalog is None:
+        catalog = _clean_config_namespace_value(
+            config_service.get("kindling.databricks.catalog")
+        ) or _clean_config_namespace_value(config_service.get("kindling.fabric.catalog"))
+    if schema is None:
+        schema = (
+            _clean_config_namespace_value(config_service.get("kindling.databricks.schema"))
+            or _clean_config_namespace_value(config_service.get("kindling.fabric.schema"))
+            or _clean_config_namespace_value(config_service.get("kindling.synapse.schema"))
+        )
+
+    return catalog, schema
+
+
 def _use_namespace(spark, catalog: str | None, schema: str | None) -> tuple[str | None, str | None]:
     if catalog:
         spark.sql(f"USE CATALOG {_quote_table_identifier(catalog)}")
@@ -170,16 +197,25 @@ def _build_entity_case(
     write_schema: str,
     catalog: str | None,
     use_config_namespace: bool,
+    config_catalog: str | None = None,
+    config_schema: str | None = None,
 ) -> tuple[str, str]:
     if use_config_namespace:
         entity_id = leaf_name
+        if config_catalog and config_schema:
+            expected_table_name = f"{config_catalog}.{config_schema}.{leaf_name}"
+        elif config_schema:
+            expected_table_name = f"{config_schema}.{leaf_name}"
+        elif catalog:
+            expected_table_name = f"{catalog}.{write_schema}.{leaf_name}"
+        else:
+            expected_table_name = f"{write_schema}.{leaf_name}"
     else:
         entity_id = f"{write_schema}.{leaf_name}"
-
-    if catalog:
-        expected_table_name = f"{catalog}.{write_schema}.{leaf_name}"
-    else:
-        expected_table_name = f"{write_schema}.{leaf_name}"
+        if catalog:
+            expected_table_name = f"{catalog}.{write_schema}.{leaf_name}"
+        else:
+            expected_table_name = f"{write_schema}.{leaf_name}"
 
     return entity_id, expected_table_name
 
@@ -215,6 +251,7 @@ def main() -> int:
     platform = str(config_service.get("platform") or "").strip().lower()
     target_catalog, target_schema = _get_target_namespace(config_service, catalog, schema_name)
     use_config_namespace = _has_explicit_namespace_config(config_service)
+    config_catalog, config_schema = _get_config_namespace(config_service)
 
     if platform == "databricks" and (target_catalog, target_schema) != (catalog, schema_name):
         catalog, schema_name = _use_namespace(spark, target_catalog, target_schema)
@@ -228,14 +265,6 @@ def main() -> int:
         print(final_line, flush=True)
         return 1
 
-    _emit(
-        logger,
-        test_id,
-        "namespace_resolution",
-        True,
-        f"catalog={catalog} schema={schema_name} write_schema={write_schema}",
-    )
-
     row_schema = StructType(
         [
             StructField("id", StringType(), False),
@@ -246,6 +275,15 @@ def main() -> int:
     cleanup_tables = []
     test_results = []
     emitted_lines = []
+    emitted_lines.append(
+        _emit(
+            logger,
+            test_id,
+            "namespace_resolution",
+            True,
+            f"catalog={catalog} schema={schema_name} write_schema={write_schema}",
+        )
+    )
 
     def _run_case(test_prefix: str, entityid: str, expected_table_name: str) -> None:
         entity = _make_entity(entityid=entityid, schema=row_schema)
@@ -296,6 +334,8 @@ def main() -> int:
             write_schema=write_schema,
             catalog=catalog,
             use_config_namespace=use_config_namespace,
+            config_catalog=config_catalog,
+            config_schema=config_schema,
         )
         _run_case("two_part_name", two_part_entityid, expected_two_part)
 

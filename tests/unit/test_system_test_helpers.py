@@ -45,6 +45,38 @@ def test_apply_env_config_overrides_adds_databricks_classic_bootstrap_paths(monk
     assert "databricks" not in kindling or "volume_staging_root" not in kindling["databricks"]
 
 
+def test_apply_env_config_overrides_classic_ignores_uc_env_path_defaults(monkeypatch):
+    _clear_config_env(monkeypatch)
+    monkeypatch.setenv("KINDLING_DATABRICKS_SYSTEM_TEST_MODE", "classic")
+    monkeypatch.setenv(
+        "CONFIG__platform_databricks__kindling__temp_path",
+        "/Volumes/kindling/kindling/artifacts/temp",
+    )
+    monkeypatch.setenv(
+        "CONFIG__platform_databricks__kindling__databricks__volume_staging_root",
+        "/Volumes/kindling/kindling/artifacts/temp",
+    )
+    monkeypatch.setenv(
+        "CONFIG__platform_databricks__kindling__storage__table_root",
+        "/Volumes/kindling/kindling/artifacts/temp/tables",
+    )
+    monkeypatch.setenv(
+        "CONFIG__platform_databricks__kindling__storage__checkpoint_root",
+        "/Volumes/kindling/kindling/artifacts/temp/checkpoints",
+    )
+
+    merged = apply_env_config_overrides({"job_name": "job", "test_id": "abc123"}, "databricks")
+
+    kindling = merged["config_overrides"]["kindling"]
+    assert kindling["temp_path"] == "dbfs:/tmp/kindling_system_tests/abc123"
+    assert kindling["storage"]["table_root"] == "dbfs:/tmp/kindling_system_tests/abc123/tables"
+    assert (
+        kindling["storage"]["checkpoint_root"]
+        == "dbfs:/tmp/kindling_system_tests/abc123/checkpoints"
+    )
+    assert "databricks" not in kindling or "volume_staging_root" not in kindling["databricks"]
+
+
 def test_apply_env_config_overrides_keeps_explicit_job_overrides_winning(monkeypatch):
     _clear_config_env(monkeypatch)
     monkeypatch.setenv("KINDLING_DATABRICKS_SYSTEM_TEST_MODE", "uc")
