@@ -178,6 +178,52 @@ def get_env_config_overrides(platform_name: str) -> Dict[str, Any]:
     return overrides
 
 
+def _remove_nested_key(config: Dict[str, Any], path: List[str]) -> None:
+    current = config
+    parents: List[tuple[Dict[str, Any], str]] = []
+    for part in path[:-1]:
+        next_value = current.get(part)
+        if not isinstance(next_value, dict):
+            return
+        parents.append((current, part))
+        current = next_value
+
+    current.pop(path[-1], None)
+
+    for parent, key in reversed(parents):
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            parent.pop(key, None)
+
+
+def _sanitize_platform_env_overrides(
+    platform_name: str,
+    overrides: Dict[str, Any],
+    platform_overrides: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Drop env overrides that would break a platform/system-test mode contract."""
+    cleaned = dict(overrides)
+
+    if platform_name != "databricks":
+        return cleaned
+
+    kindling_overrides = platform_overrides.get("kindling") or {}
+    databricks_mode = (
+        (((kindling_overrides.get("system_tests") or {}).get("databricks")) or {}).get("mode") or ""
+    ).strip()
+    if databricks_mode != "classic":
+        return cleaned
+
+    for path in [
+        ["kindling", "databricks", "volume_staging_root"],
+        ["kindling", "storage", "logs_root"],
+        ["kindling", "storage", "packages_root"],
+    ]:
+        _remove_nested_key(cleaned, path)
+
+    return cleaned
+
+
 def _get_repo_version() -> Optional[str]:
     """Return the version from pyproject.toml for pinning remote installs in system tests."""
     try:
@@ -198,11 +244,18 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
     platform_overrides = get_system_platform_config_overrides(
         platform_name, merged_config.get("test_id")
     )
-    env_overrides = get_env_config_overrides(platform_name)
+    env_overrides = _sanitize_platform_env_overrides(
+        platform_name,
+        get_env_config_overrides(platform_name),
+        platform_overrides,
+    )
     existing_overrides = merged_config.get("config_overrides") or {}
 
     combined_overrides: Dict[str, Any] = {}
-    for override_source in [platform_overrides, env_overrides, existing_overrides]:
+    # Mode/platform-owned bootstrap defaults must win over ambient CONFIG__ env values
+    # so the system-test lane (for example Databricks classic vs uc) stays deterministic.
+    # Explicit job_config overrides still win last.
+    for override_source in [env_overrides, platform_overrides, existing_overrides]:
         if override_source:
             combined_overrides = _deep_merge_dict(combined_overrides, override_source)
 

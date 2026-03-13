@@ -236,6 +236,21 @@ def detect_platform() -> str:
         return "unknown"
 
 
+def _is_volume_path(path: Optional[str]) -> bool:
+    return str(path or "").strip().startswith("/Volumes/")
+
+
+def _is_dbfs_path(path: Optional[str]) -> bool:
+    return str(path or "").strip().startswith("dbfs:/")
+
+
+def _dbfs_uri_to_local_path(path: str) -> str:
+    normalized = str(path).strip()
+    if normalized.startswith("dbfs:/"):
+        return f"/dbfs{normalized[len('dbfs:'):]}"
+    return normalized
+
+
 def load_config(
     config_or_filename: Union[Dict, str], artifacts_path: str, storage_utils
 ) -> Dict[str, Any]:
@@ -573,34 +588,37 @@ def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
                         "temp_path"
                     )
 
-                if temp_path:
-                    # Use configured temp path (typically UC Volume for Databricks)
+                if temp_path and _is_volume_path(temp_path):
+                    # Use configured UC volume staging path.
                     print(f"   Using Unity Catalog Volume: {temp_path}")
                     volume_file = f"{temp_path.rstrip('/')}/{filename}"
 
                     print(f"   Source: {remote_path}")
                     print(f"   Volume target: {volume_file}")
 
-                    # Copy to volume
                     storage_utils.fs.cp(remote_path, volume_file, recurse=False)
                     print(f"   ✅ Copied to volume")
 
                     local_path = volume_file
 
                 else:
-                    # Fallback to DBFS /tmp
-                    print(f"   Using DBFS (set kindling.temp_path in config to use volumes)")
-                    dbfs_temp_path = f"/tmp/{filename}"
+                    # Classic mode can provide an explicit DBFS temp path; otherwise use /tmp.
+                    if _is_dbfs_path(temp_path):
+                        dbfs_target = f"{temp_path.rstrip('/')}/{filename}"
+                        print(f"   Using configured DBFS staging path: {temp_path}")
+                    else:
+                        print(
+                            f"   Using DBFS (set kindling.temp_path to a UC volume to use volumes)"
+                        )
+                        dbfs_target = f"dbfs:/tmp/{filename}"
 
                     print(f"   Source: {remote_path}")
-                    print(f"   DBFS target: dbfs:{dbfs_temp_path}")
+                    print(f"   DBFS target: {dbfs_target}")
 
-                    # Copy from ABFSS to DBFS (cloud-to-cloud copy)
-                    storage_utils.fs.cp(remote_path, f"dbfs:{dbfs_temp_path}", recurse=False)
+                    storage_utils.fs.cp(remote_path, dbfs_target, recurse=False)
                     print(f"   ✅ Copied to DBFS")
 
-                    # Access via /dbfs/ mount for pip
-                    local_path = f"/dbfs{dbfs_temp_path}"
+                    local_path = _dbfs_uri_to_local_path(dbfs_target)
 
                 # Verify it exists and is readable
                 if not os.path.exists(local_path):
@@ -617,10 +635,10 @@ def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
                     print(f"⚠️  WARNING: File is not a valid zip/wheel")
                     # Try to clean up
                     try:
-                        if volume_path:
+                        if temp_path and _is_volume_path(temp_path):
                             storage_utils.fs.rm(volume_file)
                         else:
-                            storage_utils.fs.rm(f"dbfs:{dbfs_temp_path}")
+                            storage_utils.fs.rm(dbfs_target)
                     except:
                         pass
                     return False
@@ -743,12 +761,21 @@ def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
                         "temp_path"
                     )
                 if temp_path:
-                    volume_file = f"{temp_path.rstrip('/')}/{filename}"
-                    storage_utils.fs.rm(volume_file)
-                    print(f"   🧹 Cleaned up volume file")
+                    if _is_volume_path(temp_path):
+                        volume_file = f"{temp_path.rstrip('/')}/{filename}"
+                        storage_utils.fs.rm(volume_file)
+                        print(f"   🧹 Cleaned up volume file")
+                    else:
+                        dbfs_target = (
+                            f"{temp_path.rstrip('/')}/{filename}"
+                            if _is_dbfs_path(temp_path)
+                            else f"dbfs:/tmp/{filename}"
+                        )
+                        storage_utils.fs.rm(dbfs_target)
+                        print(f"   🧹 Cleaned up DBFS temp file")
                 else:
-                    dbfs_temp_path = f"/tmp/{filename}"
-                    storage_utils.fs.rm(f"dbfs:{dbfs_temp_path}")
+                    dbfs_target = f"dbfs:/tmp/{filename}"
+                    storage_utils.fs.rm(dbfs_target)
                     print(f"   🧹 Cleaned up DBFS temp file")
             except Exception as e:
                 print(f"   ⚠️  Could not clean up temp file: {e}")

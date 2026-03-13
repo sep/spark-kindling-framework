@@ -117,6 +117,17 @@ def _is_volume_path(path: Optional[str]) -> bool:
     return isinstance(path, str) and path.strip().startswith("/Volumes/")
 
 
+def _is_dbfs_path(path: Optional[str]) -> bool:
+    return isinstance(path, str) and path.strip().startswith("dbfs:/")
+
+
+def _dbfs_uri_to_local_path(path: str) -> str:
+    normalized = path.strip()
+    if normalized.startswith("dbfs:/"):
+        return f"/dbfs{normalized[len('dbfs:'):]}"
+    return normalized
+
+
 def _parent_volume_path(path: Optional[str]) -> Optional[str]:
     normalized = _normalize_path_value(path)
     if not _is_volume_path(normalized):
@@ -916,17 +927,21 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                     # Databricks: Use Volume or DBFS (same pattern as runtime bootstrap)
                     volume_path = temp_path
 
-                    if volume_path:
+                    if volume_path and _is_volume_path(volume_path):
                         # Use Unity Catalog Volume
                         local_path = f"{volume_path.rstrip('/')}/{wheel_filename}"
                         print(f"   Downloading to volume: {local_path}")
                         storage_utils.fs.cp(remote_wheel_path, local_path, recurse=False)
                     else:
-                        # Fallback to DBFS
-                        dbfs_path = f"/tmp/{wheel_filename}"
-                        print(f"   Downloading to DBFS: dbfs:{dbfs_path}")
-                        storage_utils.fs.cp(remote_wheel_path, f"dbfs:{dbfs_path}", recurse=False)
-                        local_path = f"/dbfs{dbfs_path}"
+                        # Fallback to DBFS, preserving an explicit DBFS temp path when provided.
+                        dbfs_target = (
+                            f"{volume_path.rstrip('/')}/{wheel_filename}"
+                            if _is_dbfs_path(volume_path)
+                            else f"dbfs:/tmp/{wheel_filename}"
+                        )
+                        print(f"   Downloading to DBFS: {dbfs_target}")
+                        storage_utils.fs.cp(remote_wheel_path, dbfs_target, recurse=False)
+                        local_path = _dbfs_uri_to_local_path(dbfs_target)
                 else:
                     # Fabric/Synapse: Use file:// with temp directory
                     local_path = os.path.join(temp_dir, wheel_filename)
@@ -977,13 +992,17 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                     # Clean up from volume or DBFS
                     try:
                         volume_path = temp_path
-                        if volume_path:
+                        if volume_path and _is_volume_path(volume_path):
                             cleanup_path = f"{volume_path.rstrip('/')}/{wheel_filename}"
                             storage_utils.fs.rm(cleanup_path)
                             print(f"   🧹 Cleaned up volume file")
                         else:
-                            dbfs_path = f"/tmp/{wheel_filename}"
-                            storage_utils.fs.rm(f"dbfs:{dbfs_path}")
+                            cleanup_path = (
+                                f"{volume_path.rstrip('/')}/{wheel_filename}"
+                                if _is_dbfs_path(volume_path)
+                                else f"dbfs:/tmp/{wheel_filename}"
+                            )
+                            storage_utils.fs.rm(cleanup_path)
                             print(f"   🧹 Cleaned up DBFS file")
                     except Exception as e:
                         print(f"   ⚠️  Could not clean up temp file: {e}")
