@@ -1,0 +1,92 @@
+name: Databricks System Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Optional poe system test name (for example: name_mapper, default_telemetry, streaming_pipes)"
+        required: false
+        default: ""
+      ref:
+        description: "Git ref to test"
+        required: false
+        default: "main"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/ci
+
+jobs:
+  databricks-system-tests:
+    name: Databricks System Tests
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    environment: testing
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Activate virtualenv and install project
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> "$GITHUB_ENV"
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> "$GITHUB_ENV"
+          cd "$GITHUB_WORKSPACE"
+          pip install -e .
+
+      - name: Resolve Databricks UC config
+        env:
+          DEFAULT_DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DEFAULT_DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
+          UC_VOLUME_CATALOG: ${{ vars.KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG }}
+          UC_VOLUME_SCHEMA: ${{ vars.KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA }}
+          UC_TEMP_VOLUME: ${{ vars.KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME }}
+        run: |
+          echo "DATABRICKS_HOST=$DEFAULT_DATABRICKS_HOST" >> "$GITHUB_ENV"
+          echo "DATABRICKS_CLUSTER_ID=$DEFAULT_DATABRICKS_CLUSTER_ID" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_SYSTEM_TEST_MODE=uc" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG=${UC_VOLUME_CATALOG:-kindling}" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA=${UC_VOLUME_SCHEMA:-kindling}" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=${UC_TEMP_VOLUME:-artifacts}" >> "$GITHUB_ENV"
+
+      - name: Run Databricks UC preflight
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          python scripts/databricks_uc_preflight.py
+
+      - name: Run Databricks system tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+          AZURE_BASE_PATH: ""
+        run: |
+          if [ -n "${{ inputs.test }}" ]; then
+            poe test-system --platform databricks --test "${{ inputs.test }}"
+          else
+            poe test-system-ci --platform databricks
+          fi
+
+      - name: Upload system test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: databricks-system-test-results
+          path: test-results/
