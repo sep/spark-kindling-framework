@@ -260,19 +260,13 @@ jobs:
           - platform: synapse
             label: synapse
             artifact_suffix: synapse
-            databricks_mode: ""
           - platform: fabric
             label: fabric
             artifact_suffix: fabric
-            databricks_mode: ""
           - platform: databricks
             label: databricks-uc
             artifact_suffix: databricks-uc
             databricks_mode: uc
-          - platform: databricks
-            label: databricks-classic
-            artifact_suffix: databricks-classic
-            databricks_mode: classic
       fail-fast: false # Allow all platforms to run independently
 
     steps:
@@ -293,27 +287,16 @@ jobs:
         env:
           DEFAULT_DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DEFAULT_DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
-          CLASSIC_DATABRICKS_HOST: ${{ secrets.DATABRICKS_CLASSIC_HOST }}
-          CLASSIC_DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLASSIC_CLUSTER_ID }}
           UC_VOLUME_CATALOG: ${{ vars.KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG }}
           UC_VOLUME_SCHEMA: ${{ vars.KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA }}
           UC_TEMP_VOLUME: ${{ vars.KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME }}
         run: |
-          if [ "${{ matrix.databricks_mode }}" = "classic" ]; then
-            echo "DATABRICKS_HOST=${CLASSIC_DATABRICKS_HOST:-$DEFAULT_DATABRICKS_HOST}" >> "$GITHUB_ENV"
-            echo "DATABRICKS_CLUSTER_ID=${CLASSIC_DATABRICKS_CLUSTER_ID:-$DEFAULT_DATABRICKS_CLUSTER_ID}" >> "$GITHUB_ENV"
-            echo "KINDLING_DATABRICKS_SYSTEM_TEST_MODE=classic" >> "$GITHUB_ENV"
-            echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG=" >> "$GITHUB_ENV"
-            echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA=" >> "$GITHUB_ENV"
-            echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=" >> "$GITHUB_ENV"
-          else
-            echo "DATABRICKS_HOST=$DEFAULT_DATABRICKS_HOST" >> "$GITHUB_ENV"
-            echo "DATABRICKS_CLUSTER_ID=$DEFAULT_DATABRICKS_CLUSTER_ID" >> "$GITHUB_ENV"
-            echo "KINDLING_DATABRICKS_SYSTEM_TEST_MODE=uc" >> "$GITHUB_ENV"
-            echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG=${UC_VOLUME_CATALOG:-kindling}" >> "$GITHUB_ENV"
-            echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA=${UC_VOLUME_SCHEMA:-kindling}" >> "$GITHUB_ENV"
-            echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=${UC_TEMP_VOLUME:-artifacts}" >> "$GITHUB_ENV"
-          fi
+          echo "DATABRICKS_HOST=$DEFAULT_DATABRICKS_HOST" >> "$GITHUB_ENV"
+          echo "DATABRICKS_CLUSTER_ID=$DEFAULT_DATABRICKS_CLUSTER_ID" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_SYSTEM_TEST_MODE=uc" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG=${UC_VOLUME_CATALOG:-kindling}" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA=${UC_VOLUME_SCHEMA:-kindling}" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=${UC_TEMP_VOLUME:-artifacts}" >> "$GITHUB_ENV"
 
       - name: Run system tests
         env:
