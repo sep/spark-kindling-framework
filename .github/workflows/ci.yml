@@ -298,6 +298,15 @@ jobs:
           echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA=${UC_VOLUME_SCHEMA:-kindling}" >> "$GITHUB_ENV"
           echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=${UC_TEMP_VOLUME:-artifacts}" >> "$GITHUB_ENV"
 
+      - name: Run Databricks UC preflight
+        if: matrix.platform == 'databricks'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          python scripts/databricks_uc_preflight.py
+
       - name: Run system tests
         env:
           PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
