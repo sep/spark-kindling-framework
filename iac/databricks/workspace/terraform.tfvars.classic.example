@@ -34,7 +34,8 @@ create_artifacts_mount = true
 artifacts_mount_name   = "artifacts"
 
 # Service principal used for DBFS mounts. The secret must already exist in the
-# Databricks secret scope referenced below.
+# Databricks secret scope referenced below, unless you provide
+# TF_VAR_mount_sp_secret_value at apply time.
 mount_sp_application_id = ""
 mount_sp_secret_scope   = "shared-adls-scope"
 mount_sp_secret_key     = "client-secret"

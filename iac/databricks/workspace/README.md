@@ -101,6 +101,8 @@ and classic/path-based fallback coverage:
   - `enable_unity_catalog = false`
   - use DBFS mounts and path-based staging
   - grant `ANY FILE` as needed for the runtime SP in that workspace only
+  - if you want Terraform to populate the Databricks secret used by the mount,
+    pass `TF_VAR_mount_sp_secret_value="$AZURE_CLIENT_SECRET"` before `terraform apply`
 
 This keeps the UC workspace strict so accidental path-based regressions still
 fail, while the classic workspace validates fallback behavior deliberately.

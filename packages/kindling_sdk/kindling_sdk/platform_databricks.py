@@ -157,6 +157,68 @@ class DatabricksAPI(PlatformAPI):
         """Get platform name"""
         return "databricks"
 
+    def _resolve_system_test_mode(self, job_config: Dict[str, Any]) -> str:
+        mode = job_config.get("system_test_mode")
+        if not mode:
+            overrides = job_config.get("config_overrides", {}) or {}
+            mode = (
+                (
+                    ((overrides.get("kindling") or {}).get("system_tests") or {}).get("databricks")
+                    or {}
+                )
+            ).get("mode")
+        if not mode:
+            mode = os.getenv("KINDLING_DATABRICKS_SYSTEM_TEST_MODE")
+        cleaned = str(mode or "uc").strip().lower()
+        return cleaned if cleaned in {"uc", "classic"} else "uc"
+
+    def _resolve_artifacts_storage_path(self, job_config: Dict[str, Any], mode: str) -> str:
+        explicit_path = str(job_config.get("artifacts_storage_path") or "").strip()
+        if explicit_path:
+            return explicit_path
+
+        if mode == "classic":
+            return (
+                str(os.getenv("KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH") or "").strip()
+                or "dbfs:/mnt/artifacts"
+            )
+
+        if self.storage_account and self.container:
+            base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+            if self.base_path:
+                return f"{base_url}/{self.base_path.strip('/')}"
+            return base_url
+
+        return "artifacts"
+
+    def _resolve_python_file(
+        self,
+        main_file: str,
+        job_config: Dict[str, Any],
+        mode: str,
+        artifacts_storage_path: str,
+    ) -> str:
+        explicit_python_file = str(job_config.get("python_file") or "").strip()
+        if explicit_python_file:
+            return explicit_python_file
+
+        if mode == "classic":
+            bootstrap_root = (
+                str(job_config.get("bootstrap_script_root") or "").strip()
+                or str(os.getenv("KINDLING_DATABRICKS_CLASSIC_BOOTSTRAP_ROOT") or "").strip()
+                or (
+                    artifacts_storage_path
+                    if str(artifacts_storage_path).strip().startswith("dbfs:/")
+                    else "dbfs:/mnt/artifacts"
+                )
+            )
+            return f"{bootstrap_root.rstrip('/')}/scripts/{main_file}"
+
+        if self.storage_account and self.container:
+            return f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/scripts/{main_file}"
+
+        return f"dbfs:/FileStore/scripts/{main_file}"
+
     def _resolve_databricks_secret_target(
         self,
         secret_name: str,
@@ -320,19 +382,10 @@ class DatabricksAPI(PlatformAPI):
 
         app_name = job_config.get("app_name", job_name)
         main_file = job_config.get("main_file", "kindling_bootstrap.py")
+        system_test_mode = self._resolve_system_test_mode(job_config)
 
         # Build bootstrap parameters similar to Fabric/Synapse
-        # Construct full ABFSS path for artifacts_storage_path including base_path
-        if self.storage_account and self.container:
-            # Include base_path to ensure files are found in correct location
-            # e.g., abfss://container@storage.dfs.core.windows.net/system-tests/run-123/databricks
-            base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
-            if self.base_path:
-                artifacts_storage_path = f"{base_url}/{self.base_path.strip('/')}"
-            else:
-                artifacts_storage_path = base_url
-        else:
-            artifacts_storage_path = "artifacts"
+        artifacts_storage_path = self._resolve_artifacts_storage_path(job_config, system_test_mode)
 
         bootstrap_params = {
             "app_name": app_name,
@@ -406,15 +459,12 @@ class DatabricksAPI(PlatformAPI):
         )
 
         # Build Python task using SDK objects
-        # Use ABFSS path directly for the Python script
-        # Bootstrap script is deployed to scripts/ subdirectory
-        if self.storage_account and self.container:
-            # Bootstrap script is ALWAYS at scripts/kindling_bootstrap.py
-            python_file = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/scripts/{main_file}"
-        else:
-            # Fallback to dbfs:/FileStore if no storage configured
-            python_file = f"dbfs:/FileStore/scripts/{main_file}"
-
+        python_file = self._resolve_python_file(
+            main_file=main_file,
+            job_config=job_config,
+            mode=system_test_mode,
+            artifacts_storage_path=artifacts_storage_path,
+        )
         python_task = SparkPythonTask(python_file=python_file, parameters=all_args)
 
         # Build libraries list for the task
