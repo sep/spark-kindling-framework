@@ -12,16 +12,12 @@ on:
         required: false
         default: "main"
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/ci
-
 jobs:
   databricks-system-tests:
     name: Databricks System Tests
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      image: ghcr.io/sep/spark-kindling-framework/ci:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
