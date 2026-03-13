@@ -26,6 +26,22 @@ resource "databricks_secret_scope" "keyvault" {
 }
 
 # -----------------------------------------------------------------------------
+# Secret Values — Databricks-backed
+# -----------------------------------------------------------------------------
+resource "databricks_secret" "mount_sp" {
+  count = !var.enable_unity_catalog && var.create_artifacts_mount && (
+    var.mount_sp_secret_value != null &&
+    var.mount_sp_secret_value != ""
+  ) ? 1 : 0
+
+  scope        = var.mount_sp_secret_scope
+  key          = var.mount_sp_secret_key
+  string_value = var.mount_sp_secret_value
+
+  depends_on = [databricks_secret_scope.scopes]
+}
+
+# -----------------------------------------------------------------------------
 # Service Principals
 # -----------------------------------------------------------------------------
 resource "databricks_service_principal" "sp" {

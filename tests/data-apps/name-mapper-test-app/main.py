@@ -138,12 +138,50 @@ def _get_target_namespace(config_service, current_catalog: str | None, current_s
     return current_catalog, current_schema
 
 
+def _has_explicit_namespace_config(config_service) -> bool:
+    for key in (
+        "kindling.storage.table_catalog",
+        "kindling.storage.table_schema",
+        "kindling.databricks.catalog",
+        "kindling.databricks.schema",
+        "kindling.fabric.catalog",
+        "kindling.fabric.schema",
+        "kindling.synapse.schema",
+    ):
+        value = config_service.get(key)
+        if value is None:
+            continue
+        cleaned = str(value).strip()
+        if cleaned and cleaned.lower() not in {"auto", "none", "null"}:
+            return True
+    return False
+
+
 def _use_namespace(spark, catalog: str | None, schema: str | None) -> tuple[str | None, str | None]:
     if catalog:
         spark.sql(f"USE CATALOG {_quote_table_identifier(catalog)}")
     if schema:
         spark.sql(f"USE {_quote_table_identifier(schema)}")
     return _get_current_namespace(spark)
+
+
+def _build_entity_case(
+    leaf_name: str,
+    write_schema: str,
+    catalog: str | None,
+    use_config_namespace: bool,
+) -> tuple[str, str]:
+    if use_config_namespace:
+        entity_id = leaf_name
+    else:
+        entity_id = f"{write_schema}.{leaf_name}"
+
+    if catalog:
+        expected_table_name = f"{catalog}.{write_schema}.{leaf_name}"
+    else:
+        expected_table_name = f"{write_schema}.{leaf_name}"
+
+    return entity_id, expected_table_name
 
 
 def _make_entity(entityid: str, schema: StructType) -> EntityMetadata:
@@ -176,6 +214,7 @@ def main() -> int:
     catalog, schema_name = _get_current_namespace(spark)
     platform = str(config_service.get("platform") or "").strip().lower()
     target_catalog, target_schema = _get_target_namespace(config_service, catalog, schema_name)
+    use_config_namespace = _has_explicit_namespace_config(config_service)
 
     if platform == "databricks" and (target_catalog, target_schema) != (catalog, schema_name):
         catalog, schema_name = _use_namespace(spark, target_catalog, target_schema)
@@ -252,11 +291,12 @@ def main() -> int:
 
     try:
         two_part_leaf = f"{base_leaf}_two_part"
-        two_part_entityid = f"{write_schema}.{two_part_leaf}"
-        if catalog:
-            expected_two_part = f"{catalog}.{write_schema}.{two_part_leaf}"
-        else:
-            expected_two_part = f"{write_schema}.{two_part_leaf}"
+        two_part_entityid, expected_two_part = _build_entity_case(
+            leaf_name=two_part_leaf,
+            write_schema=write_schema,
+            catalog=catalog,
+            use_config_namespace=use_config_namespace,
+        )
         _run_case("two_part_name", two_part_entityid, expected_two_part)
 
         if catalog:
