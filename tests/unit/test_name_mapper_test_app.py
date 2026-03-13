@@ -59,3 +59,28 @@ def test_get_target_namespace_prefers_volume_backed_storage_root():
         "sep_db_kindling_np",
         "kindling",
     )
+
+
+def test_has_explicit_namespace_config_detects_synapse_schema():
+    module = _load_name_mapper_app_module()
+    config = SimpleNamespace(
+        get=lambda key, default=None: {
+            "kindling.synapse.schema": "kindling_system_tests",
+        }.get(key, default)
+    )
+
+    assert module._has_explicit_namespace_config(config) is True
+
+
+def test_build_entity_case_keeps_two_part_entity_leaf_when_namespace_is_configured():
+    module = _load_name_mapper_app_module()
+
+    entity_id, expected_table_name = module._build_entity_case(
+        leaf_name="name_mapper_t123_two_part",
+        write_schema="kindling_system_tests",
+        catalog=None,
+        use_config_namespace=True,
+    )
+
+    assert entity_id == "name_mapper_t123_two_part"
+    assert expected_table_name == "kindling_system_tests.name_mapper_t123_two_part"
