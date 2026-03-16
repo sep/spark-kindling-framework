@@ -228,3 +228,104 @@ export VALIDATE_APPINSIGHTS=true  # Enable App Insights validation
 - Extension tests: `tests/system/extensions/azure-monitor/test_azure_monitor_extension.py`
 - Azure Monitor Query SDK: https://learn.microsoft.com/python/api/azure-monitor-query/
 - Log Analytics Kusto queries: https://learn.microsoft.com/azure/azure-monitor/logs/log-query-overview
+
+---
+
+## In-Memory Entity Provider as Reusable Views
+
+### Idea
+
+Use the existing `MemoryEntityProvider` (`entity_provider_memory.py`) to store and read DataFrames as reusable "views" that can be shared across multiple pipes within a single execution run.
+
+### Motivation
+
+Some pipe graphs have intermediate results that are consumed by multiple downstream pipes. Today each downstream pipe either re-reads from a persisted table or re-computes the result. A memory-backed entity would let an upstream pipe write a DataFrame once to the in-memory store and have multiple downstream pipes read it cheaply — effectively a named, cached view with no I/O overhead.
+
+### How It Would Work
+
+1. **Upstream pipe** writes its output to a memory entity (e.g., `entityid="view.enriched_events"`, `provider_type="memory"`)
+2. **Multiple downstream pipes** declare the same memory entity as an input and read the cached DataFrame via `MemoryEntityProvider.read_entity()`
+3. The `_memory_store` dict on the singleton `MemoryEntityProvider` acts as the shared namespace
+4. Views are scoped to a single execution run — they do not survive job restarts
+
+### What Already Exists
+
+- `MemoryEntityProvider._memory_store: Dict[str, DataFrame]` — in-memory dict keyed by entity ID
+- `write_to_entity()` stores a DataFrame in both a Spark memory table and the dict
+- `read_entity()` reads from the Spark table first, falls back to the dict
+- The provider is registered as a singleton via `@GlobalInjector.singleton_autobind()`
+
+### What Would Be Needed
+
+- **Entity naming convention**: e.g., `view.*` prefix for memory-only entities, so they are visually distinct in configuration and logs
+- **Graph ordering guarantee**: the execution strategy must schedule the producing pipe before all consuming pipes — the existing `PipeGraph` topological sort already handles this
+- **Lifecycle / cleanup**: clear `_memory_store` entries after execution completes (or after all consumers have read) to avoid holding large DataFrames in driver memory indefinitely
+- **Unpersist integration**: call `df.unpersist()` on eviction if the DataFrame was cached, to free Spark executor memory
+- **Documentation / examples**: show the pattern in a data-app example so teams adopt it consistently
+
+### SQL View Pipe Registration
+
+Building on in-memory views, add a `DataPipes.view()` decorator that defines a pipe purely via SQL. The decorator takes incoming entity DataFrames, registers them as temporary Spark views, runs the SQL, and outputs the result to a memory entity — creating a reusable, named view available to downstream pipes.
+
+#### Proposed API
+
+```python
+@DataPipes.view(
+    pipeid="view.enriched_orders",
+    name="enriched_orders",
+    input_entity_ids=["bronze.orders", "bronze.customers"],
+    output_entity_id="view.enriched_orders",   # memory entity
+    output_type="memory",
+    sql="""
+        SELECT o.*, c.name AS customer_name, c.segment
+        FROM bronze_orders o
+        JOIN bronze_customers c ON o.customer_id = c.id
+        WHERE o.status = 'completed'
+    """,
+)
+def enriched_orders():
+    pass  # no-op — SQL does the work
+```
+
+Downstream pipes consume the view as a regular input entity:
+
+```python
+@DataPipes.pipe(
+    pipeid="gold.revenue_by_segment",
+    name="revenue_by_segment",
+    input_entity_ids=["view.enriched_orders"],
+    output_entity_id="gold.revenue_by_segment",
+    output_type="delta",
+    tags={},
+)
+def revenue_by_segment(view_enriched_orders):
+    return view_enriched_orders.groupBy("segment").agg(sum("amount").alias("total"))
+
+@DataPipes.pipe(
+    pipeid="gold.top_customers",
+    name="top_customers",
+    input_entity_ids=["view.enriched_orders"],
+    output_entity_id="gold.top_customers",
+    output_type="delta",
+    tags={},
+)
+def top_customers(view_enriched_orders):
+    return view_enriched_orders.groupBy("customer_name").agg(sum("amount").alias("total")).orderBy(desc("total"))
+```
+
+#### How It Would Work Internally
+
+1. `DataPipes.view()` registers a pipe whose `execute` function is auto-generated:
+   - For each `input_entity_id`, the corresponding DataFrame is registered as a Spark temp view using `df.createOrReplaceTempView(entity_id.replace(".", "_"))`
+   - `spark.sql(sql)` runs the provided query
+   - The result is returned as the pipe output
+2. The output entity uses `provider_type="memory"`, so it lands in `MemoryEntityProvider._memory_store`
+3. Downstream pipes read the view via normal entity reads — no re-computation
+4. If no `sql` is provided, a passthrough view is created (single input entity aliased as the output entity — useful for caching)
+
+#### Design Considerations
+
+- **No new abstractions**: `view()` is syntactic sugar that registers a normal `PipeMetadata` with an auto-generated `execute` function — the execution engine sees no difference
+- **SQL validation**: optionally validate the SQL at registration time by parsing it (e.g., via `spark.sessionState.sqlParser`) to catch typos early
+- **Hybrid pipes**: allow an optional `post_process` callable on `view()` for cases where SQL gets 90% of the way but a final PySpark transform is needed
+- **Tags**: auto-tag view pipes with `{"pipe_type": "view", "provider_type": "memory"}` so execution strategies and logging can distinguish them
