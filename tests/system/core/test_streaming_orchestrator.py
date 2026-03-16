@@ -158,7 +158,12 @@ class TestStreamingOrchestratorIntegration:
 
             assert not missing, f"Missing orchestrator markers: {missing}"
 
-            # Validate streaming trace spans appeared in stdout (print_trace=True)
+            # Validate streaming trace spans appeared in stdout (print_trace=True).
+            # Best-effort: some platforms filter or redirect TRACE: lines from
+            # stdout, so we only hard-assert when trace lines are actually
+            # captured.  When they are absent but the listener_metrics marker
+            # passed, the span lifecycle is still proven — we just cannot
+            # verify the emitter print path on this platform.
             trace_lines = [
                 line
                 for line in stdout_content.splitlines()
@@ -167,15 +172,18 @@ class TestStreamingOrchestratorIntegration:
             has_start_trace = any("streaming_query_START" in l for l in trace_lines)
             has_end_trace = any("streaming_query_END" in l for l in trace_lines)
             print(
-                f"\n📡 Streaming trace validation: "
+                f"\n📡 Streaming trace validation (best-effort): "
                 f"trace_lines={len(trace_lines)} "
                 f"has_start={has_start_trace} has_end={has_end_trace}"
             )
-            if has_start_trace and has_end_trace:
+            if trace_lines:
+                # Trace output was captured — assert both START and END present
+                assert has_start_trace, "TRACE lines captured but streaming_query_START missing"
+                assert has_end_trace, "TRACE lines captured but streaming_query_END missing"
                 print("   ✅ Streaming query trace spans emitted")
             elif final_success_marker in stdout_content:
-                # Trace printing may not reach stdout on all platforms;
-                # the listener_metrics marker already proves span lifecycle
+                # Trace printing not captured; listener_metrics marker proves
+                # span lifecycle ran correctly on this platform.
                 print("   ⚠️  Trace lines not captured (platform log filtering)")
             else:
                 print("   ❌ No streaming trace spans found")
