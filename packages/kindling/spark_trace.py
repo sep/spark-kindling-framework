@@ -156,6 +156,35 @@ class SparkTraceProvider(ABC):
     ):
         pass
 
+    @abstractmethod
+    def start_span(
+        self,
+        operation: str,
+        component: str,
+        details: dict = None,
+    ) -> "SparkSpan":
+        """Start a span manually. Returns the span for later add_event/end_span calls."""
+        pass
+
+    @abstractmethod
+    def add_event(
+        self,
+        span: "SparkSpan",
+        name: str,
+        attributes: dict = None,
+    ) -> None:
+        """Add a timestamped event marker to an active span."""
+        pass
+
+    @abstractmethod
+    def end_span(
+        self,
+        span: "SparkSpan",
+        error: Optional[str] = None,
+    ) -> None:
+        """End a manually started span. Optionally record an error."""
+        pass
+
 
 @GlobalInjector.singleton_autobind()
 class EventBasedSparkTrace(SparkTraceProvider):
@@ -266,3 +295,81 @@ class EventBasedSparkTrace(SparkTraceProvider):
                     current_span.id,
                     current_span.traceId,
                 )
+
+    def start_span(
+        self,
+        operation: str,
+        component: str,
+        details: dict = None,
+    ) -> SparkSpan:
+        span_id = str(self._increment_activity())
+        live_details = details if details is not None else {}
+
+        span = SparkSpan(
+            id=span_id,
+            component=component,
+            operation=operation,
+            attributes=live_details,
+            start_time=datetime.now(),
+            traceId=self.current_span.traceId if self.current_span else uuid.uuid4(),
+            reraise=False,
+        )
+
+        start_details = self._add_timestamp_to_dict(live_details, "startTime", span.start_time)
+        self.emitter.emit_custom_event(
+            span.component,
+            f"{span.operation}_START",
+            start_details,
+            span.id,
+            span.traceId,
+        )
+
+        return span
+
+    def add_event(
+        self,
+        span: SparkSpan,
+        name: str,
+        attributes: dict = None,
+    ) -> None:
+        event_details = dict(attributes) if attributes else {}
+        event_details = self._add_timestamp_to_dict(event_details, "eventTime", datetime.now())
+        event_details = self._add_timestamp_to_dict(event_details, "spanStartTime", span.start_time)
+
+        self.emitter.emit_custom_event(
+            span.component,
+            f"{span.operation}_EVENT_{name}",
+            event_details,
+            span.id,
+            span.traceId,
+        )
+
+    def end_span(
+        self,
+        span: SparkSpan,
+        error: Optional[str] = None,
+    ) -> None:
+        span.end_time = datetime.now()
+
+        if error:
+            error_details = self._add_timestamp_to_dict({}, "startTime", span.start_time)
+            error_details = self._add_timestamp_to_dict(error_details, "errorTime", span.end_time)
+            error_details["exception"] = error
+            self.emitter.emit_custom_event(
+                span.component,
+                f"{span.operation}_ERROR",
+                error_details,
+                span.id,
+                span.traceId,
+            )
+
+        end_details = self._add_timestamp_to_dict({}, "startTime", span.start_time)
+        end_details = self._add_timestamp_to_dict(end_details, "endTime", span.end_time)
+        end_details["totalTime"] = self._calculate_time_diff(span.start_time, span.end_time)
+        self.emitter.emit_custom_event(
+            span.component,
+            f"{span.operation}_END",
+            end_details,
+            span.id,
+            span.traceId,
+        )
