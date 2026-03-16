@@ -35,6 +35,43 @@ def _parse_spark_conf_value(value: Any) -> Any:
         return value
 
 
+def _parse_cli_config_value(value: str) -> Any:
+    """Parse command-line bootstrap values without coercing plain scalars.
+
+    Command-line args are passed as ``config:key=value`` strings. We want to keep
+    ordinary scalar values as strings so IDs like ``6e206823`` are not interpreted
+    as JSON scientific-notation numbers. Only structured JSON payloads and explicit
+    boolean/null literals should be coerced.
+    """
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    lowered = stripped.lower()
+
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered in {"null", "none"}:
+        return None
+
+    if stripped and stripped[0] in ("{", "["):
+        try:
+            return json.loads(stripped)
+        except Exception:
+            return value
+
+    # Preserve quoted JSON strings, but keep unquoted scalars as raw strings.
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
+        try:
+            return json.loads(stripped)
+        except Exception:
+            return value
+
+    return value
+
+
 def _get_spark_kindling_config() -> Dict[str, Any]:
     """Read spark.kindling.* keys from SparkConf and map into bootstrap/config keys."""
     try:
@@ -124,17 +161,7 @@ except (ImportError, AttributeError):
                 key_value = normalized_arg[7:]  # Skip 'config:'
                 if "=" in key_value:
                     key, value = key_value.split("=", 1)
-                    # Try to parse as JSON for complex values, otherwise string
-                    try:
-                        import json
-
-                        parsed_config[key] = json.loads(value)
-                    except:
-                        # Convert boolean strings to actual booleans
-                        if value.lower() in ("true", "false"):
-                            parsed_config[key] = value.lower() == "true"
-                        else:
-                            parsed_config[key] = value
+                    parsed_config[key] = _parse_cli_config_value(value)
 
         # Only set BOOTSTRAP_CONFIG if we found config args
         if parsed_config:
