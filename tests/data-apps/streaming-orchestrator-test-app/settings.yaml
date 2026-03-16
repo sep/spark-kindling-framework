@@ -1,0 +1,6 @@
+# Streaming Orchestrator Test App Configuration
+
+kindling:
+  telemetry:
+    logging:
+      level: DEBUG
