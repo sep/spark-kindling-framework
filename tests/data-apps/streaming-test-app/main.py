@@ -19,6 +19,7 @@ from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 from kindling.streaming_health_monitor import StreamingHealthMonitor
 from kindling.streaming_listener import KindlingStreamingListener
+from kindling.streaming_orchestrator import StreamingOrchestrator
 from kindling.streaming_query_manager import StreamingQueryManager
 from kindling.streaming_recovery_manager import StreamingRecoveryManager
 from pyspark.sql.functions import col
@@ -135,17 +136,7 @@ try:
     print(msg)
     test_results["di_services"] = True
 
-    # Get streaming components via DI (singletons ensure same instances throughout)
-    streaming_listener = get_kindling_service(KindlingStreamingListener)
-    streaming_listener.start()
-
-    # Register listener with Spark
-    spark.streams.addListener(streaming_listener)
-
-    msg = f"TEST_ID={test_id} test=streaming_listener status=STARTED"
-    logger.info(msg)
-    print(msg)
-
+    orchestrator = get_kindling_service(StreamingOrchestrator)
     # Get query manager via DI (singleton)
     query_manager = get_kindling_service(StreamingQueryManager)
 
@@ -155,19 +146,19 @@ try:
 
     # Get health monitor via DI (singleton)
     health_monitor = get_kindling_service(StreamingHealthMonitor)
-    health_monitor.start()
-
-    msg = f"TEST_ID={test_id} test=health_monitor status=STARTED"
-    logger.info(msg)
-    print(msg)
-
-    # Get recovery manager via DI (singleton)
     recovery_manager = get_kindling_service(StreamingRecoveryManager)
-    recovery_manager.start()
+    streaming_listener = get_kindling_service(KindlingStreamingListener)
 
-    msg = f"TEST_ID={test_id} test=recovery_manager status=STARTED"
-    logger.info(msg)
-    print(msg)
+    orchestrator.start_runtime()
+
+    for marker_name in [
+        "streaming_listener",
+        "health_monitor",
+        "recovery_manager",
+    ]:
+        msg = f"TEST_ID={test_id} test={marker_name} status=STARTED"
+        logger.info(msg)
+        print(msg)
     test_results["components_started"] = True
 
     msg = f"TEST_ID={test_id} test=components_started status=PASSED"
@@ -313,9 +304,7 @@ try:
     test_results["query_stop"] = True
 
     # Stop components
-    streaming_listener.stop()
-    health_monitor.stop()
-    recovery_manager.stop()
+    orchestrator.stop_runtime()
 
     msg = f"TEST_ID={test_id} test=components_cleanup status=PASSED"
     logger.info(msg)
