@@ -42,11 +42,40 @@ def mock_logger_provider():
 
 
 @pytest.fixture
-def listener(mock_signal_provider, mock_logger_provider):
+def mock_trace_provider():
+    """Mock trace provider for testing."""
+    from kindling.spark_trace import SparkSpan
+
+    provider = Mock()
+    # start_span returns a SparkSpan-like object with an id
+    span_counter = [0]
+
+    def mock_start_span(operation, component, details=None):
+        span_counter[0] += 1
+        import uuid
+
+        return SparkSpan(
+            id=str(span_counter[0]),
+            component=component,
+            operation=operation,
+            attributes=details or {},
+            traceId=uuid.uuid4(),
+            reraise=False,
+        )
+
+    provider.start_span = Mock(side_effect=mock_start_span)
+    provider.add_event = Mock()
+    provider.end_span = Mock()
+    return provider
+
+
+@pytest.fixture
+def listener(mock_signal_provider, mock_logger_provider, mock_trace_provider):
     """Create listener instance for testing."""
     return KindlingStreamingListener(
         signal_provider=mock_signal_provider,
         logger_provider=mock_logger_provider,
+        trace_provider=mock_trace_provider,
         max_queue_size=10,  # Small queue for testing overflow
     )
 
@@ -119,11 +148,12 @@ class TestStreamingEvent:
 class TestListenerInitialization:
     """Test listener initialization and lifecycle."""
 
-    def test_initialization(self, mock_signal_provider, mock_logger_provider):
+    def test_initialization(self, mock_signal_provider, mock_logger_provider, mock_trace_provider):
         """Test listener initialization."""
         listener = KindlingStreamingListener(
             signal_provider=mock_signal_provider,
             logger_provider=mock_logger_provider,
+            trace_provider=mock_trace_provider,
             max_queue_size=100,
         )
 
@@ -292,7 +322,7 @@ class TestQueueOverflow:
             or metrics["queue_size"] > 0
         )
 
-    def test_queue_full_logs_warning(self, started_listener, caplog):
+    def test_queue_full_logs_warning(self, started_listener, mock_trace_provider, caplog):
         """Test that queue full condition logs warning."""
         # Stop consumer to prevent processing
         started_listener._running = False
@@ -306,6 +336,7 @@ class TestQueueOverflow:
                 if hasattr(started_listener.logger, "logger_provider")
                 else Mock()
             ),
+            trace_provider=mock_trace_provider,
             max_queue_size=2,
         )
 
@@ -506,3 +537,275 @@ class TestCleanup:
         # May or may not complete depending on timing
         # Just check it returns a boolean
         assert isinstance(result, bool)
+
+    def test_stop_ends_orphaned_trace_spans(self, started_listener, mock_trace_provider):
+        """Test that stop() ends trace spans for queries that never terminated."""
+        mock_event = Mock()
+        mock_event.id = "query-orphan"
+        mock_event.runId = "run-orphan"
+        mock_event.name = "orphan_query"
+
+        started_listener.onQueryStarted(mock_event)
+        time.sleep(0.3)
+
+        started_listener.stop()
+
+        # The span should have been ended during stop
+        mock_trace_provider.end_span.assert_called()
+
+
+# =============================================================================
+# Tracing Tests
+# =============================================================================
+
+
+class TestTracing:
+    """Test trace span lifecycle for streaming queries."""
+
+    def test_query_started_opens_trace_span(self, started_listener, mock_trace_provider):
+        """onQueryStarted should open a trace span."""
+        mock_event = Mock()
+        mock_event.id = "query-123"
+        mock_event.runId = "run-456"
+        mock_event.name = "test_query"
+
+        started_listener.onQueryStarted(mock_event)
+        time.sleep(0.3)
+
+        mock_trace_provider.start_span.assert_called_once()
+        call_kwargs = mock_trace_provider.start_span.call_args
+        assert (
+            call_kwargs[1]["operation"] == "streaming_query"
+            or call_kwargs[0][0] == "streaming_query"
+        )
+
+    def test_query_progress_adds_span_event(self, started_listener, mock_trace_provider):
+        """onQueryProgress should add an event to the query's trace span."""
+        # First start a query
+        start_event = Mock()
+        start_event.id = "query-123"
+        start_event.runId = "run-456"
+        start_event.name = "test_query"
+        started_listener.onQueryStarted(start_event)
+        time.sleep(0.3)
+
+        # Then send progress
+        mock_progress = Mock()
+        mock_progress.id = "query-123"
+        mock_progress.runId = "run-456"
+        mock_progress.name = "test_query"
+        mock_progress.batchId = 42
+        mock_progress.numInputRows = 1000
+        mock_progress.inputRowsPerSecond = 100.0
+        mock_progress.processedRowsPerSecond = 95.0
+        mock_progress.batchDuration = 1000
+
+        progress_event = Mock()
+        progress_event.progress = mock_progress
+
+        started_listener.onQueryProgress(progress_event)
+        time.sleep(0.3)
+
+        mock_trace_provider.add_event.assert_called_once()
+        call_args = mock_trace_provider.add_event.call_args
+        assert call_args[0][1] == "batch_progress"
+        attrs = call_args[0][2]
+        assert attrs["batch_id"] == 42
+        assert attrs["num_input_rows"] == 1000
+
+    def test_query_terminated_ends_trace_span(self, started_listener, mock_trace_provider):
+        """onQueryTerminated should end the query's trace span."""
+        # Start query
+        start_event = Mock()
+        start_event.id = "query-123"
+        start_event.runId = "run-456"
+        start_event.name = "test_query"
+        started_listener.onQueryStarted(start_event)
+        time.sleep(0.3)
+
+        # Terminate query
+        term_event = Mock()
+        term_event.id = "query-123"
+        term_event.runId = "run-456"
+        term_event.exception = None
+        started_listener.onQueryTerminated(term_event)
+        time.sleep(0.3)
+
+        mock_trace_provider.end_span.assert_called_once()
+        call_kwargs = mock_trace_provider.end_span.call_args
+        # error should be None for clean termination
+        assert call_kwargs[1].get("error") is None or call_kwargs[0][1] is None
+
+    def test_query_terminated_with_error_records_error_on_span(
+        self, started_listener, mock_trace_provider
+    ):
+        """onQueryTerminated with exception should end span with error."""
+        # Start query
+        start_event = Mock()
+        start_event.id = "query-123"
+        start_event.runId = "run-456"
+        start_event.name = "test_query"
+        started_listener.onQueryStarted(start_event)
+        time.sleep(0.3)
+
+        # Terminate with error
+        term_event = Mock()
+        term_event.id = "query-123"
+        term_event.runId = "run-456"
+        term_event.exception = RuntimeError("Connection lost")
+        started_listener.onQueryTerminated(term_event)
+        time.sleep(0.3)
+
+        mock_trace_provider.end_span.assert_called_once()
+        call_args = mock_trace_provider.end_span.call_args
+        # error argument should contain the exception string
+        error_arg = call_args[1].get("error") if call_args[1] else call_args[0][1]
+        assert error_arg is not None
+        assert "Connection lost" in str(error_arg)
+
+    def test_progress_without_start_skips_trace(self, started_listener, mock_trace_provider):
+        """Progress for an untracked query should not fail, just skip tracing."""
+        mock_progress = Mock()
+        mock_progress.id = "unknown-query"
+        mock_progress.runId = "run-789"
+        mock_progress.name = "unknown"
+        mock_progress.batchId = 1
+        mock_progress.numInputRows = 10
+        mock_progress.inputRowsPerSecond = 5.0
+        mock_progress.processedRowsPerSecond = 5.0
+        mock_progress.batchDuration = 200
+
+        progress_event = Mock()
+        progress_event.progress = mock_progress
+
+        started_listener.onQueryProgress(progress_event)
+        time.sleep(0.3)
+
+        # Signal should still be emitted
+        started_listener.emit.assert_called()
+        # But add_event should not be called (no span to attach to)
+        mock_trace_provider.add_event.assert_not_called()
+
+
+# =============================================================================
+# Logging Tests
+# =============================================================================
+
+
+class TestLogging:
+    """Test structured logging for streaming events."""
+
+    def test_query_started_logs_at_info(self, started_listener):
+        """Query started should log at info level."""
+        mock_event = Mock()
+        mock_event.id = "query-123"
+        mock_event.runId = "run-456"
+        mock_event.name = "test_query"
+
+        started_listener.onQueryStarted(mock_event)
+        time.sleep(0.3)
+
+        info_calls = [str(c) for c in started_listener.logger.info.call_args_list]
+        assert any("Streaming query started" in c for c in info_calls)
+        assert any("test_query" in c for c in info_calls)
+
+    def test_query_terminated_with_error_logs_at_error(self, started_listener):
+        """Query terminated with exception should log at error level."""
+        # Start first so terminate can find the span
+        start_event = Mock()
+        start_event.id = "query-123"
+        start_event.runId = "run-456"
+        start_event.name = "test_query"
+        started_listener.onQueryStarted(start_event)
+        time.sleep(0.2)
+
+        term_event = Mock()
+        term_event.id = "query-123"
+        term_event.runId = "run-456"
+        term_event.exception = RuntimeError("Boom")
+
+        started_listener.onQueryTerminated(term_event)
+        time.sleep(0.3)
+
+        error_calls = [str(c) for c in started_listener.logger.error.call_args_list]
+        assert any("terminated with error" in c for c in error_calls)
+
+    def test_query_terminated_cleanly_logs_at_info(self, started_listener):
+        """Clean termination should log at info level."""
+        start_event = Mock()
+        start_event.id = "query-123"
+        start_event.runId = "run-456"
+        start_event.name = "test_query"
+        started_listener.onQueryStarted(start_event)
+        time.sleep(0.2)
+
+        term_event = Mock()
+        term_event.id = "query-123"
+        term_event.runId = "run-456"
+        term_event.exception = None
+        started_listener.onQueryTerminated(term_event)
+        time.sleep(0.3)
+
+        info_calls = [str(c) for c in started_listener.logger.info.call_args_list]
+        assert any("terminated" in c for c in info_calls)
+
+    def test_query_progress_logs_at_debug(self, started_listener):
+        """Progress should log at debug level."""
+        mock_progress = Mock()
+        mock_progress.id = "query-123"
+        mock_progress.runId = "run-456"
+        mock_progress.name = "test_query"
+        mock_progress.batchId = 42
+        mock_progress.numInputRows = 1000
+        mock_progress.inputRowsPerSecond = 100.0
+        mock_progress.processedRowsPerSecond = 95.0
+        mock_progress.batchDuration = 1000
+
+        mock_event = Mock()
+        mock_event.progress = mock_progress
+
+        started_listener.onQueryProgress(mock_event)
+        time.sleep(0.3)
+
+        debug_calls = [str(c) for c in started_listener.logger.debug.call_args_list]
+        assert any("progress" in c.lower() for c in debug_calls)
+
+
+# =============================================================================
+# Periodic Metrics Tests
+# =============================================================================
+
+
+class TestPeriodicMetrics:
+    """Test periodic metrics logging."""
+
+    def test_metrics_logged_after_interval(
+        self, mock_signal_provider, mock_logger_provider, mock_trace_provider
+    ):
+        """Metrics should be logged after the configured interval."""
+        listener = KindlingStreamingListener(
+            signal_provider=mock_signal_provider,
+            logger_provider=mock_logger_provider,
+            trace_provider=mock_trace_provider,
+            max_queue_size=100,
+            metrics_log_interval=0.5,  # Very short interval for testing
+        )
+        listener.emit = Mock()
+        listener.start()
+
+        try:
+            # Send a few events
+            for i in range(3):
+                mock_event = Mock()
+                mock_event.id = f"query-{i}"
+                mock_event.runId = f"run-{i}"
+                mock_event.name = f"q{i}"
+                listener.onQueryStarted(mock_event)
+
+            # Wait long enough for the metrics interval to fire
+            time.sleep(1.5)
+
+            info_calls = [str(c) for c in listener.logger.info.call_args_list]
+            assert any("Streaming listener metrics" in c for c in info_calls)
+        finally:
+            listener.stop()
