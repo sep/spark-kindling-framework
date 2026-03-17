@@ -1,12 +1,13 @@
 """Azure Monitor OpenTelemetry trace provider implementation."""
 
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from injector import inject
 from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
-from kindling.spark_trace import SparkTraceProvider
+from kindling.spark_trace import SparkSpan, SparkTraceProvider
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
@@ -130,3 +131,67 @@ class AzureMonitorTraceProvider(SparkTraceProvider):
                 self._set_span_attributes(span, details)
                 # Mark span as successful
                 span.set_status(Status(StatusCode.OK))
+
+    def start_span(
+        self,
+        operation: str,
+        component: str,
+        details: dict = None,
+    ) -> SparkSpan:
+        """Start a manual span backed by an OTEL span when the tracer is available."""
+        otel_span = None
+        if self._tracer:
+            span_name = (
+                f"{component}.{operation}"
+                if component and operation
+                else (operation or component or "span")
+            )
+            otel_span = self._tracer.start_span(span_name)
+            if component:
+                otel_span.set_attribute("component", component)
+            if operation:
+                otel_span.set_attribute("operation", operation)
+            self._set_span_attributes(otel_span, details)
+
+        spark_span = SparkSpan(
+            id=str(id(otel_span)) if otel_span else "noop",
+            component=component or "",
+            operation=operation or "",
+            attributes=details or {},
+            start_time=datetime.now(),
+            reraise=False,
+        )
+        # Stash the OTEL span so add_event/end_span can reference it
+        spark_span._otel_span = otel_span
+        return spark_span
+
+    def add_event(
+        self,
+        span: SparkSpan,
+        name: str,
+        attributes: dict = None,
+    ) -> None:
+        """Add a timestamped event to a manual span."""
+        otel_span = getattr(span, "_otel_span", None)
+        if otel_span:
+            otel_attrs = {}
+            if attributes:
+                for k, v in attributes.items():
+                    otel_attrs[k] = v if isinstance(v, (str, int, float, bool)) else str(v)
+            otel_span.add_event(name, attributes=otel_attrs)
+
+    def end_span(
+        self,
+        span: SparkSpan,
+        error: Optional[str] = None,
+    ) -> None:
+        """End a manual span, optionally recording an error."""
+        span.end_time = datetime.now()
+        otel_span = getattr(span, "_otel_span", None)
+        if otel_span:
+            if error:
+                otel_span.set_status(Status(StatusCode.ERROR, error))
+                otel_span.add_event("error", attributes={"exception.message": error})
+            else:
+                otel_span.set_status(Status(StatusCode.OK))
+            otel_span.end()

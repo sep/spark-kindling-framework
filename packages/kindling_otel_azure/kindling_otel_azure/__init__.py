@@ -8,7 +8,7 @@ __all__ = [
     "AzureMonitorTraceProvider",
 ]
 
-__version__ = "0.3.0-alpha.1"
+__version__ = "0.3.2a1"
 
 
 def _register_providers():
