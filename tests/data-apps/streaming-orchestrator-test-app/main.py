@@ -24,6 +24,7 @@ from kindling.signaling import SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
+from kindling.streaming_listener import KindlingStreamingListener
 from kindling.streaming_orchestrator import StreamingOrchestrator
 from kindling.streaming_query_manager import StreamingQueryManager
 from kindling.watermarking import WatermarkEntityFinder
@@ -214,6 +215,9 @@ def main() -> int:
         spark = get_or_create_spark_session()
         _emit(logger, test_id, "spark_session", True)
         test_results["spark_session"] = True
+
+        # Enable trace printing so streaming span events appear in stdout
+        config_service.set("print_trace", True)
 
         platform_name = _detect_platform(config_service)
         runtime_paths = _resolve_runtime_paths(config_service, platform_name, test_id)
@@ -452,6 +456,27 @@ def main() -> int:
             f"signals={sorted(set(signal_hits))}",
         )
         test_results["orchestrator_signals"] = got_required_signals
+
+        # --- Streaming listener observability validation ---
+        listener = get_kindling_service(KindlingStreamingListener)
+        metrics = listener.get_metrics()
+
+        # Listener should have processed events during the streaming lifecycle
+        listener_processed = metrics["events_processed"] > 0
+        # All query spans should be cleaned up after orchestrator shutdown
+        orphaned_spans = len(listener._query_spans)
+        _emit(
+            logger,
+            test_id,
+            "listener_metrics",
+            listener_processed and orphaned_spans == 0,
+            (
+                f"processed={metrics['events_processed']} "
+                f"dropped={metrics['events_dropped']} "
+                f"orphaned_spans={orphaned_spans}"
+            ),
+        )
+        test_results["listener_metrics"] = listener_processed and orphaned_spans == 0
 
         all_passed = all(test_results.values())
         final_line = (
