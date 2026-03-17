@@ -241,10 +241,69 @@ jobs:
           name: kda-test-results
           path: test-results/
 
+  deploy-system-test-artifacts:
+    name: Deploy System Test Artifacts
+    runs-on: ubuntu-latest
+    needs: [build-ci-image, build-wheels]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    environment: testing
+    outputs:
+      azure_base_path: ${{ steps.base-path.outputs.azure_base_path }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Activate virtualenv and install project
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          cd $GITHUB_WORKSPACE
+          pip install -e .
+
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: platform-wheels
+          path: dist/
+
+      - name: Resolve candidate storage path
+        id: base-path
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            base_path="release-candidates/${{ github.event.release.tag_name }}"
+          else
+            base_path="workflow-dispatch/${{ github.run_id }}"
+          fi
+          echo "azure_base_path=$base_path" >> "$GITHUB_OUTPUT"
+          echo "Using AZURE_BASE_PATH=$base_path"
+
+      - name: Deploy candidate wheels and bootstrap script
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+          AZURE_BASE_PATH: ${{ steps.base-path.outputs.azure_base_path }}
+        run: |
+          python scripts/deploy.py
+
+      - name: Create deployment summary
+        run: |
+          echo "# Staged System Test Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "AZURE_BASE_PATH: \`${{ steps.base-path.outputs.azure_base_path }}\`" >> $GITHUB_STEP_SUMMARY
+
   system-tests:
     name: System Tests (${{ matrix.label }})
     runs-on: ubuntu-latest
-    needs: [build-ci-image, integration-tests, kda-packaging-tests]
+    needs:
+      [build-ci-image, integration-tests, kda-packaging-tests, deploy-system-test-artifacts]
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
       credentials:
@@ -330,7 +389,7 @@ jobs:
           # Storage configuration
           AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
-          AZURE_BASE_PATH: ""
+          AZURE_BASE_PATH: ${{ needs.deploy-system-test-artifacts.outputs.azure_base_path }}
         run: |
           poe test-system-ci --platform ${{ matrix.platform }}
 
@@ -387,6 +446,7 @@ jobs:
     # or when source code that affects wheel content changes
     if: |
       github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
       contains(github.event.head_commit.message, '[build wheels]') ||
       (github.event_name == 'push' && (
         contains(github.event.commits.*.modified, 'packages/kindling/') ||
@@ -424,8 +484,8 @@ jobs:
           echo "Checking for changes that affect wheel content..."
 
           # Get list of changed files (comparing with previous commit)
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "Release event - always build wheels"
+          if [ "${{ github.event_name }}" = "release" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "${{ github.event_name }} event - always build wheels"
             echo "needs_rebuild=true" >> $GITHUB_OUTPUT
             exit 0
           fi
