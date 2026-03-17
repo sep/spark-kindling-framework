@@ -222,7 +222,12 @@ def deploy_wheels(wheels: List[Path], version: str) -> None:
     print()
     print("🔗 Bootstrap paths:")
     print(
-        f"   artifacts_storage_path: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/{PACKAGES_PATH}"
+        f"   artifacts_storage_path: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/{BASE_PATH}"
+        if BASE_PATH
+        else f"   artifacts_storage_path: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net"
+    )
+    print(
+        f"   wheel_root: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/{PACKAGES_PATH}"
     )
     print(
         f"   bootstrap_script: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/{SCRIPTS_PATH}/kindling_bootstrap.py"

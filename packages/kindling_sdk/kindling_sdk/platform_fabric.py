@@ -144,6 +144,16 @@ class FabricAPI(PlatformAPI):
         """Get platform name"""
         return "fabric"
 
+    def _resolve_default_main_file(self, job_config: Dict[str, Any]) -> str:
+        explicit_main_file = str(job_config.get("main_file") or "").strip()
+        if explicit_main_file:
+            return explicit_main_file
+
+        if self.base_path:
+            return f"{self.base_path.strip('/')}/scripts/kindling_bootstrap.py"
+
+        return "Files/scripts/kindling_bootstrap.py"
+
     def _resolve_key_vault_url(self, secret_config: Optional[Dict[str, Any]] = None) -> str:
         cfg = secret_config or {}
         return str(cfg.get("key_vault_url") or os.getenv("SYSTEM_TEST_KEY_VAULT_URL") or "").strip()
@@ -488,7 +498,7 @@ class FabricAPI(PlatformAPI):
         # Map our config to Fabric Spark Job Definition format
         # The definition payload must be base64 encoded
         # Note: executableFile must be an absolute ABFSS path in Fabric
-        main_file = job_config.get("main_file", "Files/scripts/kindling_bootstrap.py")
+        main_file = self._resolve_default_main_file(job_config)
 
         # Validate main_file
         if not main_file or not main_file.strip():
