@@ -192,6 +192,13 @@ class DatabricksAPI(PlatformAPI):
 
         return "artifacts"
 
+    @staticmethod
+    def _join_storage_path(root: str, *parts: str) -> str:
+        cleaned_parts = [str(part).strip("/") for part in parts if str(part).strip("/")]
+        if not cleaned_parts:
+            return root.rstrip("/")
+        return "/".join([root.rstrip("/"), *cleaned_parts])
+
     def _resolve_python_file(
         self,
         main_file: str,
@@ -212,14 +219,21 @@ class DatabricksAPI(PlatformAPI):
                 return f"{explicit_bootstrap_root.rstrip('/')}/scripts/{main_file}"
 
             if self.storage_account and self.container:
-                return f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/scripts/{main_file}"
+                base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+                if self.base_path:
+                    base_url = self._join_storage_path(base_url, self.base_path)
+                return self._join_storage_path(base_url, "scripts", main_file)
 
-            return f"dbfs:/FileStore/scripts/{main_file}"
+        if artifacts_storage_path:
+            return self._join_storage_path(artifacts_storage_path, "scripts", main_file)
 
         if self.storage_account and self.container:
-            return f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/scripts/{main_file}"
+            base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+            if self.base_path:
+                base_url = self._join_storage_path(base_url, self.base_path)
+            return self._join_storage_path(base_url, "scripts", main_file)
 
-        return f"dbfs:/FileStore/scripts/{main_file}"
+        return self._join_storage_path("dbfs:/FileStore", "scripts", main_file)
 
     def _resolve_databricks_secret_target(
         self,

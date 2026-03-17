@@ -119,6 +119,16 @@ class SynapseAPI(PlatformAPI):
         """Get platform name"""
         return "synapse"
 
+    def _resolve_default_main_file(self, job_config: Dict[str, Any]) -> str:
+        explicit_main_file = str(job_config.get("main_file") or "").strip()
+        if explicit_main_file:
+            return explicit_main_file
+
+        if self.base_path:
+            return f"{self.base_path.strip('/')}/scripts/kindling_bootstrap.py"
+
+        return "scripts/kindling_bootstrap.py"
+
     def _resolve_key_vault_url(self, secret_config: Optional[Dict[str, Any]] = None) -> str:
         cfg = secret_config or {}
         return str(cfg.get("key_vault_url") or os.getenv("SYSTEM_TEST_KEY_VAULT_URL") or "").strip()
@@ -444,7 +454,7 @@ class SynapseAPI(PlatformAPI):
         # Reference: https://docs.microsoft.com/en-us/rest/api/synapse/data-plane/spark-batch/create-spark-batch-job
 
         app_name = job_config.get("app_name", job_id)
-        main_file = job_config.get("main_file", "scripts/kindling_bootstrap.py")
+        main_file = self._resolve_default_main_file(job_config)
 
         # Convert to ABFSS path if needed
         if not main_file.startswith("abfss://"):
