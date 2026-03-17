@@ -63,7 +63,7 @@ def test_resolve_python_file_uses_abfss_for_classic_by_default(monkeypatch):
 
     assert (
         python_file
-        == "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/scripts/kindling_bootstrap.py"
+        == "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/system-tests/run-123/databricks/scripts/kindling_bootstrap.py"
     )
 
 
@@ -93,5 +93,5 @@ def test_resolve_python_file_uses_abfss_for_uc():
 
     assert (
         python_file
-        == "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/scripts/kindling_bootstrap.py"
+        == "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/system-tests/run-123/databricks/scripts/kindling_bootstrap.py"
     )
