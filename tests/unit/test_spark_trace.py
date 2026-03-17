@@ -6,8 +6,8 @@ import uuid
 from datetime import datetime
 from unittest.mock import MagicMock, Mock, call, patch
 
-import pytest
 import kindling.spark_trace as spark_trace_module
+import pytest
 from kindling.spark_trace import (
     AzureEventEmitter,
     CustomEventEmitter,
@@ -875,3 +875,225 @@ class TestEdgeCases:
             assert isinstance(args[2], dict), "Details should be dict"
             assert isinstance(args[3], str), "Event ID should be string"
             assert isinstance(args[4], uuid.UUID), "Trace ID should be UUID"
+
+
+class TestManualSpanLifecycle:
+    """Test start_span(), add_event(), end_span() manual span API."""
+
+    def test_start_span_emits_start_event(self, mock_emitter):
+        """start_span should emit a START event via the emitter."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp")
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        assert len(calls) == 1, "Should emit one event on start"
+        assert calls[0][0][1] == "TestOp_START", "Should emit _START event"
+        assert calls[0][0][0] == "TestComp", "Component should be correct"
+
+    def test_start_span_returns_spark_span(self, mock_emitter):
+        """start_span should return a SparkSpan with correct fields."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp", details={"key": "val"})
+
+        assert isinstance(span, SparkSpan)
+        assert span.component == "TestComp"
+        assert span.operation == "TestOp"
+        assert span.start_time is not None
+        assert span.end_time is None
+        assert isinstance(span.traceId, uuid.UUID)
+
+    def test_start_span_includes_details_in_start_event(self, mock_emitter):
+        """start_span should include custom details in the START event."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(
+            operation="TestOp", component="TestComp", details={"query_id": "abc"}
+        )
+
+        start_details = mock_emitter.emit_custom_event.call_args_list[0][0][2]
+        assert start_details.get("query_id") == "abc"
+        assert "startTime" in start_details
+
+    def test_end_span_emits_end_event(self, mock_emitter):
+        """end_span should emit an END event with timing."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp")
+        mock_emitter.emit_custom_event.reset_mock()
+
+        trace.end_span(span)
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        assert len(calls) == 1, "Should emit one END event"
+        assert calls[0][0][1] == "TestOp_END"
+        end_details = calls[0][0][2]
+        assert "startTime" in end_details
+        assert "endTime" in end_details
+        assert "totalTime" in end_details
+
+    def test_end_span_sets_end_time(self, mock_emitter):
+        """end_span should set the span's end_time."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp")
+        assert span.end_time is None
+
+        trace.end_span(span)
+        assert span.end_time is not None
+
+    def test_end_span_with_error_emits_error_then_end(self, mock_emitter):
+        """end_span with error should emit ERROR event before END event."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp")
+        mock_emitter.emit_custom_event.reset_mock()
+
+        trace.end_span(span, error="Query failed: timeout")
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        assert len(calls) == 2, "Should emit ERROR and END events"
+
+        operations = [c[0][1] for c in calls]
+        assert operations[0] == "TestOp_ERROR"
+        assert operations[1] == "TestOp_END"
+
+        error_details = calls[0][0][2]
+        assert error_details["exception"] == "Query failed: timeout"
+
+    def test_end_span_without_error_does_not_emit_error(self, mock_emitter):
+        """end_span without error should only emit END event."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp")
+        mock_emitter.emit_custom_event.reset_mock()
+
+        trace.end_span(span)
+
+        operations = [c[0][1] for c in mock_emitter.emit_custom_event.call_args_list]
+        assert "TestOp_ERROR" not in operations
+
+    def test_add_event_emits_event_marker(self, mock_emitter):
+        """add_event should emit an EVENT marker on the span."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp")
+        mock_emitter.emit_custom_event.reset_mock()
+
+        trace.add_event(span, "batch_progress", {"batch_id": 42, "rows": 1000})
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        assert len(calls) == 1
+        assert calls[0][0][1] == "TestOp_EVENT_batch_progress"
+        assert calls[0][0][0] == "TestComp"
+
+        event_details = calls[0][0][2]
+        assert event_details["batch_id"] == 42
+        assert event_details["rows"] == 1000
+        assert "eventTime" in event_details
+        assert "spanStartTime" in event_details
+
+    def test_add_event_uses_span_ids(self, mock_emitter):
+        """add_event should use the span's ID and trace ID."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp")
+        mock_emitter.emit_custom_event.reset_mock()
+
+        trace.add_event(span, "checkpoint", {})
+
+        call_args = mock_emitter.emit_custom_event.call_args_list[0][0]
+        assert call_args[3] == span.id, "Should use span ID"
+        assert call_args[4] == span.traceId, "Should use span trace ID"
+
+    def test_add_event_with_no_attributes(self, mock_emitter):
+        """add_event should work with no attributes."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp")
+        mock_emitter.emit_custom_event.reset_mock()
+
+        trace.add_event(span, "marker")
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        assert len(calls) == 1
+        event_details = calls[0][0][2]
+        assert "eventTime" in event_details
+
+    def test_multiple_add_events_on_same_span(self, mock_emitter):
+        """Multiple add_event calls should all emit on the same span."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="StreamQuery", component="Query")
+        mock_emitter.emit_custom_event.reset_mock()
+
+        trace.add_event(span, "batch_progress", {"batch_id": 1})
+        trace.add_event(span, "batch_progress", {"batch_id": 2})
+        trace.add_event(span, "batch_progress", {"batch_id": 3})
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        assert len(calls) == 3
+
+        for call_obj in calls:
+            assert call_obj[0][3] == span.id, "All events should share span ID"
+            assert call_obj[0][4] == span.traceId, "All events should share trace ID"
+
+    def test_full_manual_span_lifecycle(self, mock_emitter):
+        """Test complete lifecycle: start → add_event → add_event → end."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="streaming_query", component="query-orders")
+        trace.add_event(span, "batch_progress", {"batch_id": 0, "rows": 100})
+        trace.add_event(span, "batch_progress", {"batch_id": 1, "rows": 200})
+        trace.end_span(span)
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        operations = [c[0][1] for c in calls]
+
+        assert operations == [
+            "streaming_query_START",
+            "streaming_query_EVENT_batch_progress",
+            "streaming_query_EVENT_batch_progress",
+            "streaming_query_END",
+        ]
+
+        # All should share same span ID and trace ID
+        span_ids = set(c[0][3] for c in calls)
+        trace_ids = set(c[0][4] for c in calls)
+        assert len(span_ids) == 1
+        assert len(trace_ids) == 1
+
+    def test_full_manual_span_lifecycle_with_error(self, mock_emitter):
+        """Test lifecycle with error: start → add_event → end(error)."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="streaming_query", component="query-orders")
+        trace.add_event(span, "batch_progress", {"batch_id": 0})
+        trace.end_span(span, error="Connection lost")
+
+        operations = [c[0][1] for c in mock_emitter.emit_custom_event.call_args_list]
+        assert operations == [
+            "streaming_query_START",
+            "streaming_query_EVENT_batch_progress",
+            "streaming_query_ERROR",
+            "streaming_query_END",
+        ]
+
+    def test_start_span_inherits_trace_id_from_current_span(self, mock_emitter):
+        """start_span should inherit trace ID from an active context manager span."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with trace.span(operation="Outer", component="Parent"):
+            parent_trace_id = trace.current_span.traceId
+            manual_span = trace.start_span(operation="Inner", component="Child")
+
+        assert manual_span.traceId == parent_trace_id
+
+    def test_start_span_generates_new_trace_id_without_context(self, mock_emitter):
+        """start_span should generate a new trace ID when no parent exists."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="TestOp", component="TestComp")
+
+        assert isinstance(span.traceId, uuid.UUID)
