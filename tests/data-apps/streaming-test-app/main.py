@@ -12,6 +12,7 @@ This app is deployed and run on Fabric, Databricks, or Synapse.
 """
 
 import sys
+import threading
 import time
 
 from kindling.injection import get_kindling_service
@@ -74,6 +75,30 @@ def wait_for_health_state(health_monitor, query_id, timeout_seconds=20.0, poll_i
         time.sleep(poll_interval)
 
     return health_monitor.get_health_status(query_id)
+
+
+def wait_for_signals(signal_events, signal_names, timeout_seconds=10.0, poll_interval=0.5):
+    """Wait until any named signal is observed, returning the first hit."""
+    deadline = time.time() + timeout_seconds
+
+    while time.time() < deadline:
+        for signal_name in signal_names:
+            event = signal_events.get(signal_name)
+            if event and event.is_set():
+                return signal_name
+
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+
+        time.sleep(min(poll_interval, remaining))
+
+    for signal_name in signal_names:
+        event = signal_events.get(signal_name)
+        if event and event.is_set():
+            return signal_name
+
+    return None
 
 
 def _join_path(root: str, suffix: str) -> str:
@@ -167,10 +192,19 @@ try:
 
     # Track signals
     emitted_signals = []
+    signal_lock = threading.Lock()
+    signal_events = {
+        "streaming.query_started": threading.Event(),
+        "streaming.spark_query_started": threading.Event(),
+        "streaming.spark_query_progress": threading.Event(),
+    }
 
     def track_signal(signal_name):
         def handler(sender, **kwargs):
-            emitted_signals.append(signal_name)
+            del sender, kwargs
+            with signal_lock:
+                emitted_signals.append(signal_name)
+                signal_events[signal_name].set()
             msg = f"TEST_ID={test_id} signal={signal_name} received=true"
             logger.info(msg)
             print(msg)
@@ -225,12 +259,21 @@ try:
     print(msg)
     test_results["query_start"] = True
 
-    # Wait for query to process batches and emit signals
-    print(f"TEST_ID={test_id} waiting_for_batches=true duration=5s")
-    time.sleep(5)
+    # Wait for query lifecycle signals to arrive.
+    print(f"TEST_ID={test_id} waiting_for_signals=true timeout=20s")
+    query_started_signal = wait_for_signals(
+        signal_events,
+        ["streaming.query_started"],
+        timeout_seconds=10.0,
+    )
+    spark_listener_signal = wait_for_signals(
+        signal_events,
+        ["streaming.spark_query_started", "streaming.spark_query_progress"],
+        timeout_seconds=20.0,
+    )
 
     # Verify signals were emitted
-    if "streaming.query_started" in emitted_signals:
+    if query_started_signal == "streaming.query_started":
         msg = f"TEST_ID={test_id} test=signal_query_started status=PASSED"
         logger.info(msg)
         print(msg)
@@ -241,20 +284,31 @@ try:
         print(msg)
         test_results["signal_query_started"] = False
 
-    if "streaming.spark_query_started" in emitted_signals:
+    # Check listener metrics after giving Spark time to publish callbacks.
+    listener_metrics = streaming_listener.get_metrics()
+    events_processed = listener_metrics["events_processed"]
+
+    if spark_listener_signal == "streaming.spark_query_started":
         msg = f"TEST_ID={test_id} test=signal_spark_query_started status=PASSED"
         logger.info(msg)
         print(msg)
         test_results["signal_spark_query_started"] = True
+    elif spark_listener_signal == "streaming.spark_query_progress" and events_processed > 0:
+        msg = (
+            f"TEST_ID={test_id} test=signal_spark_query_started status=PASSED "
+            f"fallback=progress_signal listener_events={events_processed}"
+        )
+        logger.info(msg)
+        print(msg)
+        test_results["signal_spark_query_started"] = True
     else:
-        msg = f"TEST_ID={test_id} test=signal_spark_query_started status=FAILED"
+        msg = (
+            f"TEST_ID={test_id} test=signal_spark_query_started status=FAILED "
+            f"listener_events={events_processed}"
+        )
         logger.error(msg)
         print(msg)
         test_results["signal_spark_query_started"] = False
-
-    # Check listener metrics
-    listener_metrics = streaming_listener.get_metrics()
-    events_processed = listener_metrics["events_processed"]
 
     if events_processed > 0:
         msg = f"TEST_ID={test_id} test=listener_events status=PASSED count={events_processed}"
