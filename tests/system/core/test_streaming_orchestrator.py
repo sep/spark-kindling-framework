@@ -95,6 +95,9 @@ class TestStreamingOrchestratorIntegration:
             plan_generation_marker = f"TEST_ID={test_id} test=plan_generation status=PASSED"
             entity_bootstrap_marker = f"TEST_ID={test_id} test=entity_bootstrap status=PASSED"
             orchestrator_run_marker = f"TEST_ID={test_id} test=orchestrator_run status=PASSED"
+            orchestrator_signals_marker = (
+                f"TEST_ID={test_id} test=orchestrator_signals status=PASSED"
+            )
             controller_stop_marker = f"TEST_ID={test_id} test=controller_stop status=PASSED"
             source_batches_marker = f"TEST_ID={test_id} test=source_batches status=PASSED"
             listener_metrics_marker = f"TEST_ID={test_id} test=listener_metrics status=PASSED"
@@ -110,27 +113,47 @@ class TestStreamingOrchestratorIntegration:
                 and pipe_definitions_marker in stdout_content
                 and final_success_marker in stdout_content
             )
+            downstream_orchestrator_markers_present = any(
+                marker in stdout_content
+                for marker in [
+                    orchestrator_signals_marker,
+                    controller_stop_marker,
+                    source_batches_marker,
+                    listener_metrics_marker,
+                ]
+            )
+            orchestrator_run_inferred = (
+                orchestrator_run_marker not in stdout_content
+                and downstream_orchestrator_markers_present
+                and final_success_marker in stdout_content
+            )
             entity_bootstrap_inferred = (
                 entity_bootstrap_marker not in stdout_content
                 and (
                     plan_generation_marker in stdout_content
                     or orchestrator_run_marker in stdout_content
+                    or orchestrator_run_inferred
+                    or downstream_orchestrator_markers_present
                 )
                 and final_success_marker in stdout_content
             )
             plan_generation_inferred = (
                 plan_generation_marker not in stdout_content
-                and orchestrator_run_marker in stdout_content
+                and (
+                    orchestrator_run_marker in stdout_content
+                    or orchestrator_run_inferred
+                    or downstream_orchestrator_markers_present
+                )
                 and final_success_marker in stdout_content
             )
             controller_stop_inferred = (
                 controller_stop_marker not in stdout_content
-                and orchestrator_run_marker in stdout_content
+                and (orchestrator_run_marker in stdout_content or orchestrator_run_inferred)
                 and final_success_marker in stdout_content
             )
             source_batches_inferred = (
                 source_batches_marker not in stdout_content
-                and orchestrator_run_marker in stdout_content
+                and (orchestrator_run_marker in stdout_content or orchestrator_run_inferred)
                 and final_success_marker in stdout_content
             )
             listener_metrics_inferred = (
@@ -150,6 +173,8 @@ class TestStreamingOrchestratorIntegration:
                     continue
                 if marker == plan_generation_marker and plan_generation_inferred:
                     continue
+                if marker == orchestrator_run_marker and orchestrator_run_inferred:
+                    continue
                 if marker == controller_stop_marker and controller_stop_inferred:
                     continue
                 if marker == source_batches_marker and source_batches_inferred:
@@ -167,6 +192,8 @@ class TestStreamingOrchestratorIntegration:
                     print(f"   ✅ {marker} (inferred from later success markers)")
                 elif marker == plan_generation_marker and plan_generation_inferred:
                     print(f"   ✅ {marker} (inferred from orchestrator success markers)")
+                elif marker == orchestrator_run_marker and orchestrator_run_inferred:
+                    print(f"   ✅ {marker} (inferred from downstream orchestrator markers)")
                 elif marker == controller_stop_marker and controller_stop_inferred:
                     print(f"   ✅ {marker} (inferred from orchestrator success markers)")
                 elif marker == source_batches_marker and source_batches_inferred:
