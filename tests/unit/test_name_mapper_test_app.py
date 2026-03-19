@@ -107,3 +107,17 @@ def test_supports_three_part_names_only_on_fabric_and_databricks():
     assert module._supports_three_part_names("fabric", "kindling") is True
     assert module._supports_three_part_names("synapse", "spark_catalog") is False
     assert module._supports_three_part_names("databricks", None) is False
+
+
+def test_mapping_matches_accepts_synapse_leaf_name_fallback():
+    module = _load_name_mapper_app_module()
+
+    ok, effective = module._mapping_matches(
+        platform="synapse",
+        entityid="name_mapper_t123_two_part",
+        resolved_table_name="name_mapper_t123_two_part",
+        expected_table_name="kindling_system_tests.name_mapper_t123_two_part",
+    )
+
+    assert ok is True
+    assert effective == "name_mapper_t123_two_part"
