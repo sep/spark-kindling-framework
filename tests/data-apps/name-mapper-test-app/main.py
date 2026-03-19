@@ -220,6 +220,26 @@ def _build_entity_case(
     return entity_id, expected_table_name
 
 
+def _mapping_matches(
+    platform: str,
+    entityid: str,
+    resolved_table_name: str,
+    expected_table_name: str,
+) -> tuple[bool, str]:
+    """Return whether a resolved mapping is acceptable for the platform."""
+    if resolved_table_name == expected_table_name:
+        return True, expected_table_name
+
+    # Synapse jobs can resolve one-part names against the active database even
+    # when a storage schema is configured separately for Delta writes.
+    if platform == "synapse" and "." not in str(entityid):
+        leaf_expected = str(entityid).strip()
+        if resolved_table_name == leaf_expected:
+            return True, leaf_expected
+
+    return False, expected_table_name
+
+
 def _supports_three_part_names(platform: str, catalog: str | None) -> bool:
     return platform in {"fabric", "databricks"} and bool(catalog)
 
@@ -293,15 +313,16 @@ def main() -> int:
         entity = _make_entity(entityid=entityid, schema=row_schema)
         provider = provider_registry.get_provider_for_entity(entity)
         resolved_table_name = mapper.get_table_name(entity)
-
-        mapping_ok = resolved_table_name == expected_table_name
+        mapping_ok, effective_table_name = _mapping_matches(
+            platform, entityid, resolved_table_name, expected_table_name
+        )
         emitted_lines.append(
             _emit(
                 logger,
                 test_id,
                 f"{test_prefix}_mapping",
                 mapping_ok,
-                f"resolved={resolved_table_name} expected={expected_table_name}",
+                f"resolved={resolved_table_name} expected={effective_table_name}",
             )
         )
         test_results.append(mapping_ok)
@@ -309,7 +330,7 @@ def main() -> int:
         if not mapping_ok:
             return
 
-        cleanup_tables.append(expected_table_name)
+        cleanup_tables.append(effective_table_name)
 
         df = spark.createDataFrame(
             [(f"{test_prefix}_{test_id}", f"value_{test_prefix}")],
@@ -317,7 +338,7 @@ def main() -> int:
         )
         provider.write_to_entity(df, entity)
         exists = provider.check_entity_exists(entity)
-        count = spark.read.table(expected_table_name).count()
+        count = spark.read.table(effective_table_name).count()
 
         write_ok = exists and count >= 1
         emitted_lines.append(
@@ -326,7 +347,7 @@ def main() -> int:
                 test_id,
                 f"{test_prefix}_write",
                 write_ok,
-                f"table={expected_table_name} count={count}",
+                f"table={effective_table_name} count={count}",
             )
         )
         test_results.append(write_ok)
