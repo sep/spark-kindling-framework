@@ -437,7 +437,9 @@ class FabricAPI(PlatformAPI):
         if self.lakehouse_id:
             # Lakehouse mode: Files uploaded to Files/{base_path}/data-apps/
             if self.base_path:
-                artifacts_storage_path = f"Files/{self.base_path.strip('/')}"
+                # Fabric runtime reads artifacts through the lakehouse shortcut
+                # rooted at Files/artifacts -> abfss://<container>/.
+                artifacts_storage_path = f"Files/artifacts/{self.base_path.strip('/')}"
             else:
                 artifacts_storage_path = "Files/artifacts"
         elif self.storage_account and self.container:

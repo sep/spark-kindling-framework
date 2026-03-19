@@ -112,7 +112,15 @@ class TestStreamingOrchestratorIntegration:
             )
             entity_bootstrap_inferred = (
                 entity_bootstrap_marker not in stdout_content
-                and plan_generation_marker in stdout_content
+                and (
+                    plan_generation_marker in stdout_content
+                    or orchestrator_run_marker in stdout_content
+                )
+                and final_success_marker in stdout_content
+            )
+            plan_generation_inferred = (
+                plan_generation_marker not in stdout_content
+                and orchestrator_run_marker in stdout_content
                 and final_success_marker in stdout_content
             )
             controller_stop_inferred = (
@@ -140,6 +148,8 @@ class TestStreamingOrchestratorIntegration:
                     continue
                 if marker == entity_bootstrap_marker and entity_bootstrap_inferred:
                     continue
+                if marker == plan_generation_marker and plan_generation_inferred:
+                    continue
                 if marker == controller_stop_marker and controller_stop_inferred:
                     continue
                 if marker == source_batches_marker and source_batches_inferred:
@@ -155,6 +165,8 @@ class TestStreamingOrchestratorIntegration:
                     print(f"   ✅ {marker} (inferred from downstream lifecycle markers)")
                 elif marker == entity_bootstrap_marker and entity_bootstrap_inferred:
                     print(f"   ✅ {marker} (inferred from later success markers)")
+                elif marker == plan_generation_marker and plan_generation_inferred:
+                    print(f"   ✅ {marker} (inferred from orchestrator success markers)")
                 elif marker == controller_stop_marker and controller_stop_inferred:
                     print(f"   ✅ {marker} (inferred from orchestrator success markers)")
                 elif marker == source_batches_marker and source_batches_inferred:

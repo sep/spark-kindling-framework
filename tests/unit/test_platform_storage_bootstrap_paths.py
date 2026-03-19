@@ -34,6 +34,10 @@ def test_fabric_create_job_uses_base_path_for_default_bootstrap_script():
         == "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/release-candidates/v0.8.2/fabric/scripts/kindling_bootstrap.py"
     )
 
+    assert "config:artifacts_storage_path=Files/artifacts/release-candidates/v0.8.2/fabric" in (
+        definition_json["commandLineArguments"]
+    )
+
 
 def test_synapse_run_job_uses_base_path_for_default_bootstrap_script():
     api = SynapseAPI.__new__(SynapseAPI)
