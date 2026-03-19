@@ -101,6 +101,23 @@ def wait_for_signals(signal_events, signal_names, timeout_seconds=10.0, poll_int
     return None
 
 
+def wait_for_listener_events(streaming_listener, timeout_seconds=5.0, poll_interval=0.25):
+    """Wait for the listener metrics to reflect at least one processed event."""
+    deadline = time.time() + timeout_seconds
+    latest_metrics = streaming_listener.get_metrics()
+
+    while time.time() < deadline:
+        latest_metrics = streaming_listener.get_metrics()
+        if latest_metrics["events_processed"] > 0:
+            return latest_metrics
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval, remaining))
+
+    return latest_metrics
+
+
 def _join_path(root: str, suffix: str) -> str:
     return f"{str(root).rstrip('/')}/{suffix.lstrip('/')}"
 
@@ -284,8 +301,10 @@ try:
         print(msg)
         test_results["signal_query_started"] = False
 
-    # Check listener metrics after giving Spark time to publish callbacks.
-    listener_metrics = streaming_listener.get_metrics()
+    # Wait for listener metrics to catch up with the emitted callback signal.
+    # The listener increments its processed counter immediately after signal
+    # emission, so a direct read can observe a transient zero.
+    listener_metrics = wait_for_listener_events(streaming_listener)
     events_processed = listener_metrics["events_processed"]
 
     if spark_listener_signal == "streaming.spark_query_started":
