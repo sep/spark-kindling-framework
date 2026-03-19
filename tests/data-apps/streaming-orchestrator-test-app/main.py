@@ -76,6 +76,35 @@ def _emit_signal(logger, test_id: str, signal_name: str) -> None:
     print(line, flush=True)
 
 
+def _flush_azure_monitor(logger) -> None:
+    """Best-effort flush/shutdown for Azure Monitor-backed telemetry export."""
+    try:
+        from kindling_otel_azure.config import AzureMonitorConfig
+
+        logger.info("Azure Monitor extension detected - flushing telemetry...")
+        print("Azure Monitor extension detected - flushing telemetry...", flush=True)
+
+        flush_success = AzureMonitorConfig.force_flush(timeout_millis=10000)
+        if flush_success:
+            logger.info("Azure Monitor telemetry flush completed")
+            print("Azure Monitor telemetry flush completed", flush=True)
+        else:
+            logger.warning("Azure Monitor telemetry flush timed out")
+            print("Azure Monitor telemetry flush timed out", flush=True)
+
+        AzureMonitorConfig.shutdown()
+        logger.info("Azure Monitor shutdown complete")
+        print("Azure Monitor shutdown complete", flush=True)
+    except ImportError:
+        logger.info("Azure Monitor extension not loaded; skipping telemetry flush")
+    except Exception as exc:
+        logger.warning(f"Azure Monitor telemetry flush failed: {type(exc).__name__}:{exc}")
+        print(
+            f"Azure Monitor telemetry flush failed: {type(exc).__name__}:{exc}",
+            flush=True,
+        )
+
+
 def _get_test_id(config_service: ConfigService) -> str:
     value = config_service.get("test_id")
     return str(value) if value else "unknown"
@@ -484,12 +513,14 @@ def main() -> int:
         )
         logger.info(final_line)
         print(final_line, flush=True)
+        _flush_azure_monitor(logger)
         return 0 if all_passed else 1
 
     except Exception as exc:
         error_line = f"TEST_ID={test_id} status=FAILED error={type(exc).__name__}:{exc}"
         logger.error(error_line, include_traceback=True)
         print(error_line, flush=True)
+        _flush_azure_monitor(logger)
         return 1
 
 
