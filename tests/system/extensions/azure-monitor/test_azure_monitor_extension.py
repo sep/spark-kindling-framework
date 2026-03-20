@@ -70,6 +70,7 @@ class TestAzureMonitorExtension:
             "app_name": app_name,
             "entry_point": "main.py",
             "test_id": test_id,
+            "enable_system_test_azure_monitor": True,
         }
 
         # Step 1: Deploy app to storage
