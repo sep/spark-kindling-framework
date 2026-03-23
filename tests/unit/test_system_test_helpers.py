@@ -101,3 +101,52 @@ def test_apply_env_config_overrides_keeps_explicit_job_overrides_winning(monkeyp
     kindling = merged["config_overrides"]["kindling"]
     assert kindling["temp_path"] == "/Volumes/custom/schema/temp"
     assert kindling["storage"]["table_root"] == "/Volumes/custom/schema/temp/custom_tables"
+
+
+def test_apply_env_config_overrides_always_enables_azure_monitor_for_databricks(monkeypatch):
+    _clear_config_env(monkeypatch)
+    monkeypatch.setenv("KINDLING_DATABRICKS_SYSTEM_TEST_MODE", "uc")
+    monkeypatch.setenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG", "kindling")
+    monkeypatch.setenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA", "kindling")
+    monkeypatch.setenv("KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME", "artifacts")
+    monkeypatch.setenv(
+        "APPLICATIONINSIGHTS_CONNECTION_STRING",
+        "InstrumentationKey=test-key;IngestionEndpoint=https://example.invalid/",
+    )
+
+    merged = apply_env_config_overrides({"job_name": "job", "test_id": "abc123"}, "databricks")
+
+    kindling = merged["config_overrides"]["kindling"]
+    assert "extensions" in kindling
+    assert any(spec.startswith("kindling-otel-azure==") for spec in kindling["extensions"])
+    assert kindling["telemetry"]["azure_monitor"]["enable_logging"] is True
+    assert kindling["telemetry"]["azure_monitor"]["enable_tracing"] is True
+    assert (
+        kindling["telemetry"]["azure_monitor"]["connection_string"]
+        == "InstrumentationKey=test-key;IngestionEndpoint=https://example.invalid/"
+    )
+
+
+def test_apply_env_config_overrides_explicitly_enables_azure_monitor_for_non_databricks(
+    monkeypatch,
+):
+    _clear_config_env(monkeypatch)
+    monkeypatch.setenv(
+        "APPLICATIONINSIGHTS_CONNECTION_STRING",
+        "InstrumentationKey=test-key;IngestionEndpoint=https://example.invalid/",
+    )
+
+    merged = apply_env_config_overrides(
+        {
+            "job_name": "job",
+            "test_id": "abc123",
+            "enable_system_test_azure_monitor": True,
+        },
+        "fabric",
+    )
+
+    kindling = merged["config_overrides"]["kindling"]
+    assert "extensions" in kindling
+    assert any(spec.startswith("kindling-otel-azure==") for spec in kindling["extensions"])
+    assert kindling["telemetry"]["azure_monitor"]["enable_logging"] is True
+    assert kindling["telemetry"]["azure_monitor"]["enable_tracing"] is True

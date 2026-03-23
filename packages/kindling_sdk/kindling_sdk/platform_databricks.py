@@ -420,6 +420,16 @@ class DatabricksAPI(PlatformAPI):
         # Config overrides are expected to be resolved by the caller/test harness.
         overrides = job_config.get("config_overrides", {})
         if overrides:
+
+            def serialize_config_value(value):
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value)
+                if isinstance(value, bool):
+                    return "true" if value else "false"
+                if value is None:
+                    return "null"
+                return str(value)
+
             # Flatten nested dict to dot notation
             def flatten_dict(d, parent_key=""):
                 items = []
@@ -428,7 +438,7 @@ class DatabricksAPI(PlatformAPI):
                     if isinstance(v, dict):
                         items.extend(flatten_dict(v, new_key).items())
                     else:
-                        items.append((new_key, v))
+                        items.append((new_key, serialize_config_value(v)))
                 return dict(items)
 
             flattened = flatten_dict(overrides)
