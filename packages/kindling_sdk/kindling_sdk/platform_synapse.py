@@ -506,6 +506,15 @@ class SynapseAPI(PlatformAPI):
         overrides = job_config.get("config_overrides", {})
         if overrides:
 
+            def serialize_config_value(value):
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value)
+                if isinstance(value, bool):
+                    return "true" if value else "false"
+                if value is None:
+                    return "null"
+                return str(value)
+
             def flatten_dict(d, parent_key=""):
                 items = []
                 for k, v in d.items():
@@ -513,7 +522,7 @@ class SynapseAPI(PlatformAPI):
                     if isinstance(v, dict):
                         items.extend(flatten_dict(v, new_key).items())
                     else:
-                        items.append((new_key, v))
+                        items.append((new_key, serialize_config_value(v)))
                 return dict(items)
 
             bootstrap_params.update(flatten_dict(overrides))

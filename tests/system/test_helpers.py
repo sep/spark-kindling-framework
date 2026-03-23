@@ -14,6 +14,11 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
+DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
+    "InstrumentationKey=00000000-0000-0000-0000-000000000000;"
+    "IngestionEndpoint=https://westus-0.in.applicationinsights.azure.com/"
+)
+
 
 def _coerce_env_config_value(raw_value: str) -> Any:
     """Coerce CONFIG__ env values to primitive Python types when obvious."""
@@ -37,7 +42,10 @@ def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str
 
 
 def _get_databricks_bootstrap_overrides(test_id: Optional[str]) -> Dict[str, Any]:
-    from tests.system.conftest import get_databricks_system_test_mode, get_databricks_uc_volume_root
+    from tests.system.conftest import (
+        get_databricks_system_test_mode,
+        get_databricks_uc_volume_root,
+    )
 
     databricks_mode = get_databricks_system_test_mode()
     databricks_suffix = f"/{test_id}" if test_id else ""
@@ -230,7 +238,7 @@ def _get_repo_version() -> Optional[str]:
         repo_root = Path(__file__).resolve().parents[2]
         pyproject_path = repo_root / "pyproject.toml"
         content = pyproject_path.read_text(encoding="utf-8")
-        match = re.search(r'^version\\s*=\\s*"([^"]+)"\\s*$', content, re.MULTILINE)
+        match = re.search(r'^version\s*=\s*"([^"]+)"\s*$', content, re.MULTILINE)
         if not match:
             return None
         return match.group(1)
@@ -238,9 +246,95 @@ def _get_repo_version() -> Optional[str]:
         return None
 
 
+def _get_otel_extension_version() -> Optional[str]:
+    """Return the version from the kindling-otel-azure package for deterministic installs."""
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        pyproject_path = repo_root / "packages" / "kindling_otel_azure" / "pyproject.toml"
+        content = pyproject_path.read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*"([^"]+)"\s*$', content, re.MULTILINE)
+        if not match:
+            return None
+        return match.group(1)
+    except Exception:
+        return None
+
+
+def _extension_package_name(spec: str) -> str:
+    """Extract the normalized package name from a requirement spec."""
+    return spec.split(">")[0].split("=")[0].split("<")[0].split("!")[0].strip()
+
+
+def _has_version_spec(spec: str) -> bool:
+    """Return True when a requirement string contains an explicit version operator."""
+    return any(op in spec for op in [">=", "<=", "==", "!=", ">", "<", "~="])
+
+
+def _merge_extension_specs(existing: Any, injected: List[str]) -> List[str]:
+    """Merge extension specs, preferring explicitly versioned requirements."""
+    merged: Dict[str, str] = {}
+
+    normalized_existing: List[str]
+    if not existing:
+        normalized_existing = []
+    elif isinstance(existing, str):
+        normalized_existing = [existing]
+    else:
+        normalized_existing = [str(item) for item in existing]
+
+    for spec in normalized_existing + [str(item) for item in injected if str(item).strip()]:
+        pkg_name = _extension_package_name(spec)
+        if not pkg_name:
+            continue
+
+        if pkg_name in merged:
+            if _has_version_spec(spec) and not _has_version_spec(merged[pkg_name]):
+                merged[pkg_name] = spec
+            continue
+
+        merged[pkg_name] = spec
+
+    return list(merged.values())
+
+
+def _get_system_test_azure_monitor_defaults(
+    platform_name: str, enable_system_test_azure_monitor: bool
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Return OTEL defaults for system-test runs that require Azure Monitor telemetry."""
+    requires_azure_monitor = platform_name == "databricks" or enable_system_test_azure_monitor
+    if not requires_azure_monitor:
+        return None, None
+
+    connection_string = (
+        os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING") or DEFAULT_APP_INSIGHTS_CONNECTION_STRING
+    ).strip()
+    extension_version = _get_otel_extension_version()
+    extension_spec = (
+        f"kindling-otel-azure=={extension_version}" if extension_version else "kindling-otel-azure"
+    )
+
+    return (
+        {
+            "kindling": {
+                "telemetry": {
+                    "azure_monitor": {
+                        "enable_logging": True,
+                        "enable_tracing": True,
+                        "connection_string": connection_string,
+                    }
+                }
+            }
+        },
+        extension_spec,
+    )
+
+
 def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -> Dict[str, Any]:
     """Merge CONFIG__ env overrides into a job_config payload for create_job()."""
     merged_config = dict(job_config)
+    enable_system_test_azure_monitor = bool(
+        merged_config.pop("enable_system_test_azure_monitor", False)
+    )
     platform_overrides = get_system_platform_config_overrides(
         platform_name, merged_config.get("test_id")
     )
@@ -250,14 +344,26 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
         platform_overrides,
     )
     existing_overrides = merged_config.get("config_overrides") or {}
+    azure_monitor_defaults, azure_monitor_extension_spec = _get_system_test_azure_monitor_defaults(
+        platform_name, enable_system_test_azure_monitor
+    )
 
     combined_overrides: Dict[str, Any] = {}
     # Mode/platform-owned bootstrap defaults must win over ambient CONFIG__ env values
     # so the system-test lane (for example Databricks classic vs uc) stays deterministic.
-    # Explicit job_config overrides still win last.
+    # Explicit job_config overrides still win last, except for Azure Monitor defaults
+    # that Databricks system tests require for observability.
     for override_source in [env_overrides, platform_overrides, existing_overrides]:
         if override_source:
             combined_overrides = _deep_merge_dict(combined_overrides, override_source)
+
+    if azure_monitor_defaults:
+        combined_overrides = _deep_merge_dict(combined_overrides, azure_monitor_defaults)
+        kindling_overrides = combined_overrides.setdefault("kindling", {})
+        kindling_overrides["extensions"] = _merge_extension_specs(
+            kindling_overrides.get("extensions"),
+            [azure_monitor_extension_spec] if azure_monitor_extension_spec else [],
+        )
 
     if combined_overrides:
         merged_config["config_overrides"] = combined_overrides
