@@ -38,8 +38,9 @@ class TestComplexTracing:
     def _run_tracing_test(self, platform_client, app_packager, use_azure_monitor=False):
         """Common test logic for both default and Azure Monitor telemetry"""
         client, platform = platform_client
+        effective_azure_monitor = use_azure_monitor or platform == "databricks"
 
-        test_type = "Azure Monitor" if use_azure_monitor else "Default Telemetry"
+        test_type = "Azure Monitor" if effective_azure_monitor else "Default Telemetry"
         print(f"\n🧪 Testing Complex Tracing with {test_type} on {platform.upper()}")
 
         # Get test app path
@@ -82,6 +83,7 @@ class TestComplexTracing:
             "app_name": app_name,
             "entry_point": "main.py",
             "test_id": test_id,
+            "enable_system_test_azure_monitor": use_azure_monitor,
         }
         from tests.system.test_helpers import apply_env_config_overrides
 
@@ -89,7 +91,7 @@ class TestComplexTracing:
 
         # Force true "default telemetry" behavior for this test path even if
         # global CONFIG__ env overrides enable extensions.
-        if not use_azure_monitor:
+        if not effective_azure_monitor:
             config_overrides = job_config.setdefault("config_overrides", {})
             kindling_overrides = config_overrides.setdefault("kindling", {})
             kindling_overrides["extensions"] = []
@@ -265,7 +267,7 @@ class TestComplexTracing:
             )
 
         # Verify telemetry provider type
-        if use_azure_monitor:
+        if effective_azure_monitor:
             # Should see Azure Monitor extension loaded
             azure_markers_found = any(
                 marker in log_content
@@ -337,7 +339,7 @@ class TestComplexTracing:
         print("   ✅ All stages completed (validate, transform, enrich, aggregate)")
         print("   ✅ Complex span hierarchy generated")
 
-        if use_azure_monitor:
+        if effective_azure_monitor:
             print("\n📍 Verify spans in Application Insights:")
             print("   Query: dependencies | where timestamp > ago(1h)")
             print("          | where name in ('data_pipeline', 'validate_data', 'transform_data')")
