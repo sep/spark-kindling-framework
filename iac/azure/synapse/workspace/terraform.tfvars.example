@@ -1,0 +1,149 @@
+# =============================================================================
+# Azure Synapse Workspace — Example Variable Values
+# =============================================================================
+# Copy this file to terraform.tfvars and fill in your values.
+
+# --- Azure -------------------------------------------------------------------
+azure_subscription_id = "00000000-0000-0000-0000-000000000000"
+azure_tenant_id       = "00000000-0000-0000-0000-000000000000"
+azure_environment     = "public"
+
+# --- Resource Group & Location -----------------------------------------------
+resource_group_name = "rg-synapse-dev"
+location            = "eastus2"
+environment         = "dev"
+
+tags = {
+  project = "data-platform"
+  team    = "data-engineering"
+}
+
+# --- Feature Toggles ---------------------------------------------------------
+enable_spark_pools                  = true
+enable_sql_pools                    = false
+enable_managed_vnet                 = true
+enable_data_exfiltration_protection = false
+enable_managed_private_endpoints    = false
+
+# --- Storage / Data Lake -----------------------------------------------------
+datalake_storage_account_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-storage/providers/Microsoft.Storage/storageAccounts/mydatalakedev"
+datalake_filesystem_name    = "synapse"
+create_datalake_filesystem  = true
+
+# additional_storage_accounts = [
+#   {
+#     storage_account_id = "/subscriptions/.../storageAccounts/otherstorage"
+#     role               = "Storage Blob Data Contributor"
+#   },
+# ]
+
+# --- Synapse Workspace -------------------------------------------------------
+workspace_name                   = "syndevworkspace01"
+sql_administrator_login          = "sqladmin"
+sql_administrator_login_password = "CHANGE_ME_use_TF_VAR_sql_administrator_login_password"
+
+# managed_resource_group_name = "syndevworkspace01-managed-rg"
+# purview_id                  = "/subscriptions/.../providers/Microsoft.Purview/accounts/my-purview"
+# public_network_access_enabled = true
+
+# --- Workspace AAD Admin -----------------------------------------------------
+# workspace_aad_admin = {
+#   login     = "DataEngineers"
+#   object_id = "00000000-0000-0000-0000-000000000000"
+# }
+
+# --- Spark Pools -------------------------------------------------------------
+spark_pools = [
+  {
+    name                        = "sparkdefault"
+    node_size_family            = "MemoryOptimized"
+    node_size                   = "Small"
+    spark_version               = "3.4"
+    autoscale_min_node_count    = 3
+    autoscale_max_node_count    = 10
+    auto_pause_delay_in_minutes = 15
+  },
+  # {
+  #   name                                = "sparklarge"
+  #   node_size                           = "Large"
+  #   spark_version                       = "3.4"
+  #   autoscale_min_node_count            = 3
+  #   autoscale_max_node_count            = 20
+  #   auto_pause_delay_in_minutes         = 15
+  #   dynamic_executor_allocation_enabled = true
+  #   min_executors                       = 1
+  #   max_executors                       = 10
+  # },
+]
+
+# spark_pool_library_requirements = [
+#   {
+#     pool_name = "sparkdefault"
+#     content   = "pyarrow==14.0.0\npandas==2.1.0\n"
+#   },
+# ]
+
+# --- SQL Pools ---------------------------------------------------------------
+# sql_pools = [
+#   {
+#     name     = "sqldedicated"
+#     sku_name = "DW100c"
+#   },
+# ]
+
+# --- Firewall Rules ----------------------------------------------------------
+allow_azure_services = true
+
+firewall_rules = [
+  # {
+  #   name             = "office-vpn"
+  #   start_ip_address = "203.0.113.0"
+  #   end_ip_address   = "203.0.113.255"
+  # },
+]
+
+# --- Managed Private Endpoints -----------------------------------------------
+# managed_private_endpoints = [
+#   {
+#     name               = "datalake-pe"
+#     target_resource_id = "/subscriptions/.../storageAccounts/mydatalakedev"
+#     subresource_name   = "dfs"
+#   },
+# ]
+
+# --- Role Assignments --------------------------------------------------------
+# synapse_role_assignments = [
+#   {
+#     role_name    = "Synapse Administrator"
+#     principal_id = "00000000-0000-0000-0000-000000000000"
+#   },
+#   {
+#     role_name    = "Synapse Contributor"
+#     principal_id = "00000000-0000-0000-0000-000000000000"
+#   },
+# ]
+
+# azure_role_assignments = [
+#   {
+#     role_definition_name = "Reader"
+#     principal_id         = "00000000-0000-0000-0000-000000000000"
+#   },
+# ]
+
+# --- Linked Services ---------------------------------------------------------
+# linked_services_keyvault = [
+#   {
+#     name        = "kv-linked"
+#     keyvault_id = "/subscriptions/.../providers/Microsoft.KeyVault/vaults/my-vault"
+#   },
+# ]
+
+# --- Git Integration ---------------------------------------------------------
+# git_repo = {
+#   account_name    = "my-ado-org"
+#   project_name    = "my-project"
+#   repository_name = "synapse-artifacts"
+#   branch_name     = "main"
+#   root_folder     = "/synapse"
+#   type            = "AzureDevOpsGit"
+# }
