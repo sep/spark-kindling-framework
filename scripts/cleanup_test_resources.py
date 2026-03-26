@@ -17,13 +17,20 @@ from pathlib import Path
 from azure.identity import DefaultAzureCredential
 from azure.storage.filedatalake import DataLakeServiceClient
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add repo and package roots so local script execution can import both the
+# framework package and the nested SDK package without requiring PYTHONPATH.
+REPO_ROOT = Path(__file__).parent.parent
+for path in [
+    REPO_ROOT,
+    REPO_ROOT / "packages",
+    REPO_ROOT / "packages" / "kindling_sdk",
+]:
+    sys.path.insert(0, str(path))
 
 
 def cleanup_fabric(storage_account: str, container: str, base_path: str = ""):
     """Clean up Fabric test resources"""
-    from kindling.platform_fabric import FabricAPI
+    from kindling_sdk.platform_fabric import FabricAPI
 
     print("🧹 Cleaning up Fabric test resources...")
 
@@ -68,7 +75,7 @@ def cleanup_fabric(storage_account: str, container: str, base_path: str = ""):
 
 def cleanup_synapse(storage_account: str, container: str, base_path: str = ""):
     """Clean up Synapse test resources"""
-    from kindling.platform_synapse import SynapseAPI
+    from kindling_sdk.platform_synapse import SynapseAPI
 
     print("🧹 Cleaning up Synapse test resources...")
 
@@ -112,7 +119,7 @@ def cleanup_synapse(storage_account: str, container: str, base_path: str = ""):
 
 def cleanup_databricks(storage_account: str, container: str, base_path: str = ""):
     """Clean up Databricks test resources"""
-    from kindling.platform_databricks import DatabricksAPI
+    from kindling_sdk.platform_databricks import DatabricksAPI
 
     print("🧹 Cleaning up Databricks test resources...")
 
@@ -131,6 +138,9 @@ def cleanup_databricks(storage_account: str, container: str, base_path: str = ""
         storage_account=storage_account,
         container=container,
         base_path=base_path,
+        azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
+        azure_client_id=os.getenv("AZURE_CLIENT_ID"),
+        azure_client_secret=os.getenv("AZURE_CLIENT_SECRET"),
     )
 
     # Delete all system test jobs (systest-*)

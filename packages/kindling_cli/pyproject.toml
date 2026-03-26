@@ -17,6 +17,12 @@ packages = [
 python = "^3.10"
 click = ">=8.1.0"
 pyyaml = ">=6.0"
+requests = {version = ">=2.31.0", optional = true}
+azure-identity = {version = ">=1.15.0", optional = true}
+azure-storage-blob = {version = ">=12.14.0", optional = true}
+
+[tool.poetry.extras]
+deploy = ["requests", "azure-identity", "azure-storage-blob"]
 
 [tool.poetry.scripts]
 kindling = "kindling_cli.cli:main"

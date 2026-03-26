@@ -94,3 +94,7 @@ terraform.rc
 tfplan
 iac/databricks/workspace/tfplan
 iac/databricks/account/tfplan
+.claude/*
+.kindling/
+.env*
+!.env.template
