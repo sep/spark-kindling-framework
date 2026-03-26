@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 import click
 import yaml
@@ -373,7 +374,7 @@ def workspace_init(output_dir: Path, platform: Optional[str], force: bool) -> No
     output_dir = output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    bootstrap_path = output_dir / "bootstrap_notebook.py"
+    bootstrap_path = output_dir / "environment_bootstrap.py"
     starter_path = output_dir / "starter_notebook.py"
 
     if (bootstrap_path.exists() or starter_path.exists()) and not force:
@@ -381,26 +382,815 @@ def workspace_init(output_dir: Path, platform: Optional[str], force: bool) -> No
             f"Target files already exist in `{output_dir}`. Use --force to overwrite."
         )
 
-    bootstrap_body = (
-        "# Bootstrap Notebook Template\n"
-        f"# Platform: {resolved_platform}\n\n"
-        "BOOTSTRAP_CONFIG = {\n"
-        "    # 'artifacts_storage_path': 'abfss://artifacts@<storage>.dfs.core.windows.net',\n"
-        "    # 'environment': 'development',\n"
-        "}\n\n"
-        "# Execute your runtime bootstrap script here.\n"
-    )
-    starter_body = (
-        "# Starter Notebook Template\n"
-        f"# Platform: {resolved_platform}\n\n"
-        "print('Kindling starter notebook ready')\n"
-    )
+    bootstrap_body = _render_environment_bootstrap_source(resolved_platform)
+    starter_body = _render_starter_notebook_source(resolved_platform)
 
     bootstrap_path.write_text(bootstrap_body, encoding="utf-8")
     starter_path.write_text(starter_body, encoding="utf-8")
 
     click.echo(f"Created `{bootstrap_path}`")
     click.echo(f"Created `{starter_path}`")
+
+
+# =============================================================================
+# workspace deploy
+# =============================================================================
+
+_DEPLOY_ENV_VARS = ("AZURE_STORAGE_ACCOUNT", "AZURE_CONTAINER", "AZURE_BASE_PATH")
+
+
+def _resolve_storage_env(
+    storage_account_override: Optional[str] = None,
+    container_override: Optional[str] = None,
+    base_path_override: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    """Return (storage_account, container, base_path) from overrides or environment."""
+    account = storage_account_override or os.getenv("AZURE_STORAGE_ACCOUNT", "")
+    container = container_override or os.getenv("AZURE_CONTAINER", "artifacts")
+    base_path = (
+        base_path_override if base_path_override is not None else os.getenv("AZURE_BASE_PATH", "")
+    )
+    if not account:
+        raise click.ClickException(
+            "Storage account is required. Use --storage-account or set AZURE_STORAGE_ACCOUNT."
+        )
+    return account, container, base_path
+
+
+def _resolve_account_url(storage_account: str) -> str:
+    """Resolve a storage account name or URL to a full blob endpoint URL.
+
+    Accepts:
+      - Just the account name: "mystorageacct" → "https://mystorageacct.blob.core.windows.net"
+      - Name with custom domain: "mystorageacct.blob.core.usgovcloudapi.net" → "https://..."
+      - Full URL: "https://mystorageacct.blob.core.usgovcloudapi.net" → passed through
+    """
+    if storage_account.startswith("https://"):
+        return storage_account
+    if "." in storage_account:
+        return f"https://{storage_account}"
+    return f"https://{storage_account}.blob.core.windows.net"
+
+
+def _get_blob_service_client(storage_account: str):
+    """Create a BlobServiceClient using DefaultAzureCredential."""
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.storage.blob import BlobServiceClient
+    except ImportError as exc:
+        raise click.ClickException(
+            "azure-identity and azure-storage-blob are required for deploy.\n"
+            "Install with: pip install 'kindling-cli[deploy]'"
+        ) from exc
+
+    account_url = _resolve_account_url(storage_account)
+    credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
+    client = BlobServiceClient(account_url=account_url, credential=credential)
+
+    # Verify connection
+    try:
+        client.get_account_information()
+    except Exception as exc:
+        raise click.ClickException(
+            f"Failed to authenticate to {account_url}. Try: az login\nError: {exc}"
+        ) from exc
+
+    return client
+
+
+def _upload_blob(
+    blob_service_client,
+    container: str,
+    blob_path: str,
+    data: bytes,
+    overwrite: bool = True,
+) -> bool:
+    """Upload a blob. Returns True if uploaded, False if skipped."""
+    blob_client = blob_service_client.get_blob_client(container=container, blob=blob_path)
+    if not overwrite:
+        try:
+            blob_client.get_blob_properties()
+            return False  # exists, skip
+        except Exception:
+            pass  # doesn't exist, proceed
+    blob_client.upload_blob(data, overwrite=True)
+    return True
+
+
+def _find_wheels(dist_dir: Path, platform: Optional[str] = None) -> List[Path]:
+    """Find kindling platform wheels in a directory."""
+    if platform:
+        wheels = sorted(dist_dir.glob(f"kindling_{platform}-*.whl"))
+    else:
+        wheels = []
+        for p in ("synapse", "databricks", "fabric"):
+            wheels.extend(dist_dir.glob(f"kindling_{p}-*.whl"))
+        wheels = sorted(wheels)
+    return wheels
+
+
+def _deploy_wheels(
+    blob_service_client,
+    container: str,
+    packages_path: str,
+    wheels: List[Path],
+) -> int:
+    """Upload wheel files. Always overwrites (wheels are versioned)."""
+    count = 0
+    for wheel in wheels:
+        dest = f"{packages_path}/{wheel.name}" if packages_path else wheel.name
+        click.echo(f"  {wheel.name}")
+        _upload_blob(blob_service_client, container, dest, wheel.read_bytes(), overwrite=True)
+        count += 1
+    return count
+
+
+def _deploy_bootstrap_script(
+    blob_service_client,
+    container: str,
+    scripts_path: str,
+    repo_root: Path,
+    overwrite: bool = True,
+) -> bool:
+    """Upload kindling_bootstrap.py. Returns True if found and uploaded."""
+    bootstrap = repo_root / "runtime" / "scripts" / "kindling_bootstrap.py"
+    if not bootstrap.exists():
+        return False
+    dest = f"{scripts_path}/kindling_bootstrap.py" if scripts_path else "kindling_bootstrap.py"
+    if _upload_blob(
+        blob_service_client, container, dest, bootstrap.read_bytes(), overwrite=overwrite
+    ):
+        click.echo(f"  kindling_bootstrap.py")
+    else:
+        click.echo(f"  kindling_bootstrap.py (exists, skipped)")
+    return True
+
+
+def _render_environment_bootstrap_source(platform: str) -> str:
+    return f'''"""
+Shared Kindling notebook bootstrap helper.
+
+Typical usage from another notebook:
+
+BOOTSTRAP_CONFIG = {{
+    "artifacts_storage_path": "abfss://artifacts@<storage>.dfs.core.windows.net",
+    "environment": "dev",
+    "platform": "{platform}",
+}}
+
+%run environment_bootstrap
+
+This notebook will:
+1. Normalize BOOTSTRAP_CONFIG and apply sensible defaults.
+2. Load scripts/kindling_bootstrap.py from your artifact storage.
+3. Initialize Kindling and expose the resulting framework as `framework`.
+"""
+
+import __main__
+import importlib.util
+
+DEFAULT_PLATFORM_ENVIRONMENT = "{platform}"
+BOOTSTRAP_SCRIPT_NAME = "kindling_bootstrap.py"
+
+
+def get_storage_utils():
+    """Return notebook storage utilities across Fabric, Synapse, and Databricks."""
+    return getattr(__main__, "mssparkutils", None) or getattr(__main__, "dbutils", None)
+
+
+def is_kindling_available():
+    """Check whether the kindling package can be imported without importing it."""
+    return importlib.util.find_spec("kindling") is not None
+
+
+def normalize_bootstrap_config(config):
+    """Apply helpful defaults and legacy-key compatibility."""
+    normalized = dict(config or {{}})
+
+    package_storage_path = normalized.get("package_storage_path")
+    if package_storage_path and not normalized.get("artifacts_storage_path"):
+        normalized["artifacts_storage_path"] = package_storage_path.rsplit("/", 2)[0]
+
+    normalized.setdefault("platform_environment", normalized.get("platform") or DEFAULT_PLATFORM_ENVIRONMENT)
+    normalized.setdefault("platform", normalized["platform_environment"])
+    normalized.setdefault("environment", "dev")
+    normalized.setdefault("use_lake_packages", True)
+    normalized.setdefault("load_local_packages", False)
+    normalized.setdefault("kindling_version", "latest")
+
+    workspace_endpoint = normalized.get("workspace_endpoint")
+    if workspace_endpoint and not normalized.get("workspace_id"):
+        normalized["workspace_id"] = workspace_endpoint
+
+    return normalized
+
+
+def _read_remote_bootstrap_script(storage_utils, script_path):
+    """Read the deployed runtime bootstrap script from storage."""
+    try:
+        return storage_utils.fs.head(script_path, max_bytes=1000000)
+    except TypeError:
+        return storage_utils.fs.head(script_path, 1000000)
+
+
+def execute_bootstrap_script(bootstrap_config):
+    """Load and execute the deployed runtime bootstrap script from artifact storage."""
+    storage_utils = get_storage_utils()
+    if not storage_utils:
+        raise RuntimeError("Notebook storage utilities are not available in this environment.")
+
+    artifacts_path = bootstrap_config.get("artifacts_storage_path")
+    if not artifacts_path:
+        raise ValueError("artifacts_storage_path is required in BOOTSTRAP_CONFIG.")
+
+    script_path = f"{{artifacts_path.rstrip('/')}}/scripts/{{BOOTSTRAP_SCRIPT_NAME}}"
+    print(f"Loading runtime bootstrap from: {{script_path}}")
+
+    globals()["BOOTSTRAP_CONFIG"] = bootstrap_config
+    script_body = _read_remote_bootstrap_script(storage_utils, script_path)
+    exec(compile(script_body, script_path, "exec"), globals())
+
+
+def _get_framework_service():
+    from kindling.bootstrap import initialize_framework, is_framework_initialized
+
+    if is_framework_initialized():
+        from kindling.injection import get_kindling_service
+        from kindling.platform_provider import PlatformServiceProvider
+
+        return get_kindling_service(PlatformServiceProvider).get_service()
+
+    return initialize_framework(globals()["BOOTSTRAP_CONFIG"], globals()["BOOTSTRAP_CONFIG"].get("app_name"))
+
+
+def bootstrap_notebook(bootstrap_config):
+    """Normalize notebook config, ensure Kindling is ready, and return the framework service."""
+    config = normalize_bootstrap_config(bootstrap_config)
+    globals()["BOOTSTRAP_CONFIG"] = config
+
+    print("=== Kindling Notebook Bootstrap ===")
+    print(f"Platform: {{config.get('platform')}}")
+    print(f"Environment: {{config.get('environment')}}")
+    print(f"Artifacts path: {{config.get('artifacts_storage_path')}}")
+    print(f"Use lake packages: {{config.get('use_lake_packages')}}")
+
+    if config.get("use_lake_packages", True):
+        execute_bootstrap_script(config)
+    elif not is_kindling_available():
+        raise RuntimeError(
+            "Kindling is not installed and use_lake_packages=False. "
+            "Either install Kindling in the runtime or enable lake packages."
+        )
+
+    if not is_kindling_available():
+        raise RuntimeError("Kindling is still unavailable after bootstrap.")
+
+    framework = _get_framework_service()
+    print("Kindling notebook bootstrap complete.")
+    return framework
+
+
+if "BOOTSTRAP_CONFIG" in globals():
+    framework = bootstrap_notebook(BOOTSTRAP_CONFIG)
+else:
+    print("BOOTSTRAP_CONFIG not defined. Call bootstrap_notebook(config) after setting it.")
+'''
+
+
+def _render_starter_notebook_source(platform: str) -> str:
+    run_target = (
+        "/Shared/kindling/environment_bootstrap"
+        if platform == "databricks"
+        else "environment_bootstrap"
+    )
+    return f"""# Kindling Starter Notebook
+# Platform: {platform}
+#
+# Update BOOTSTRAP_CONFIG for your environment, then run the notebook top to bottom.
+# After `%run`, the `framework` variable is available for deeper Kindling usage.
+
+BOOTSTRAP_CONFIG = {{
+    "app_name": "hello-world",
+    "artifacts_storage_path": "abfss://artifacts@<storage>.dfs.core.windows.net",
+    "environment": "dev",
+    "platform": "{platform}",
+    "use_lake_packages": True,
+    "load_local_packages": False,
+    # "extensions": ["kindling-otel-azure>=0.3.0"],
+}}
+
+# Run the shared notebook bootstrap helper.
+%run {run_target}
+
+from kindling.spark_log_provider import PythonLoggerProvider
+
+logger = PythonLoggerProvider().get_logger(BOOTSTRAP_CONFIG["app_name"])
+logger.info("Kindling starter notebook ready")
+print(f"Framework initialized for {{BOOTSTRAP_CONFIG['app_name']}}")
+"""
+
+
+def _deploy_config(
+    blob_service_client,
+    container: str,
+    base_path: str,
+    config_path: Path,
+    overwrite: bool = True,
+) -> None:
+    """Upload settings.yaml (and any platform_*/env_* companions) to storage."""
+    config_dir = config_path.parent
+    config_files = [config_path]
+    # Include platform and environment overlays from the same directory
+    config_files.extend(sorted(config_dir.glob("platform_*.yaml")))
+    config_files.extend(sorted(config_dir.glob("env_*.yaml")))
+    # De-duplicate while preserving order
+    seen: set = set()
+    unique: List[Path] = []
+    for f in config_files:
+        resolved = f.resolve()
+        if resolved not in seen and resolved.exists():
+            seen.add(resolved)
+            unique.append(f)
+
+    config_dest = f"{base_path}/config" if base_path else "config"
+    for f in unique:
+        dest = f"{config_dest}/{f.name}"
+        if _upload_blob(blob_service_client, container, dest, f.read_bytes(), overwrite=overwrite):
+            click.echo(f"  {f.name}")
+        else:
+            click.echo(f"  {f.name} (exists, skipped)")
+
+
+def _make_jupyter_notebook(cells: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build a minimal Jupyter notebook document from a list of cell dicts."""
+    return {
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3",
+            },
+            "language_info": {"name": "python", "version": "3.10.0"},
+        },
+        "cells": cells,
+    }
+
+
+def _code_cell(source: str) -> Dict[str, Any]:
+    return {
+        "cell_type": "code",
+        "metadata": {},
+        "outputs": [],
+        "source": source.splitlines(keepends=True),
+    }
+
+
+def _md_cell(source: str) -> Dict[str, Any]:
+    return {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": source.splitlines(keepends=True),
+    }
+
+
+def _generate_bootstrap_notebook(platform: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate a reusable environment_bootstrap notebook."""
+    secrets_section = config.get("kindling", {}).get("secrets", {})
+    secret_scope = secrets_section.get("secret_scope")
+    intro_lines = [
+        "# Kindling Environment Bootstrap",
+        "",
+        f"Platform: **{platform}**",
+        "",
+        "Set `BOOTSTRAP_CONFIG` in the calling notebook, then run this notebook with `%run`.",
+    ]
+    if secret_scope:
+        intro_lines.extend(["", f"Suggested secret scope: `{secret_scope}`"])
+
+    return _make_jupyter_notebook(
+        [
+            _md_cell("\n".join(intro_lines)),
+            _code_cell(_render_environment_bootstrap_source(platform)),
+        ]
+    )
+
+
+def _generate_sample_notebook(platform: str) -> Dict[str, Any]:
+    """Generate a sample notebook that uses the shared environment bootstrap helper."""
+    run_target = (
+        "%run /Shared/kindling/environment_bootstrap"
+        if platform == "databricks"
+        else "%run environment_bootstrap"
+    )
+    config_cell = (
+        f"BOOTSTRAP_CONFIG = {{\n"
+        f'    "app_name": "hello-world",\n'
+        f'    "artifacts_storage_path": "abfss://artifacts@<storage>.dfs.core.windows.net",\n'
+        f'    "environment": "dev",\n'
+        f'    "platform": "{platform}",\n'
+        f'    "use_lake_packages": True,\n'
+        f'    "load_local_packages": False,\n'
+        f"}}"
+    )
+
+    hello_cell = (
+        "from kindling.spark_log_provider import PythonLoggerProvider\n\n"
+        'logger = PythonLoggerProvider().get_logger("hello-world")\n'
+        'logger.info("Hello World from Kindling")'
+    )
+
+    return _make_jupyter_notebook(
+        [
+            _md_cell(
+                f"# Kindling Hello World\n\nPlatform: **{platform}**\n\nDefine `BOOTSTRAP_CONFIG`, run the shared bootstrap notebook, then start writing Kindling code."
+            ),
+            _code_cell(config_cell),
+            _code_cell(run_target),
+            _code_cell(hello_cell),
+        ]
+    )
+
+
+def _build_fabric_notebook_payload(
+    notebook_name: str,
+    notebook_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    import base64
+    import json
+
+    notebook_json = json.dumps(notebook_data).encode("utf-8")
+    return {
+        "displayName": notebook_name,
+        "type": "Notebook",
+        "definition": {
+            "parts": [
+                {
+                    "path": "notebook-content.ipynb",
+                    "payload": base64.b64encode(notebook_json).decode("utf-8"),
+                    "payloadType": "InlineBase64",
+                }
+            ]
+        },
+    }
+
+
+def _import_notebook_to_workspace(
+    platform: str,
+    workspace: str,
+    notebook_name: str,
+    notebook_data: Dict[str, Any],
+) -> None:
+    """Import a Jupyter notebook into the target workspace using platform-native APIs."""
+    import json
+
+    if platform == "databricks":
+        try:
+            import base64
+
+            import requests
+            from azure.identity import DefaultAzureCredential
+        except ImportError as exc:
+            raise click.ClickException(
+                "Notebook import requires the deploy extra.\n"
+                "Install with: pip install 'kindling-cli[deploy]'"
+            ) from exc
+
+        credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
+        token = credential.get_token("2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default").token
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        content_b64 = base64.b64encode(json.dumps(notebook_data).encode()).decode()
+        # Default to /Shared/kindling/ folder
+        nb_path = f"/Shared/kindling/{notebook_name}"
+
+        resp = requests.post(
+            f"{workspace}/api/2.0/workspace/import",
+            headers=headers,
+            json={"path": nb_path, "format": "JUPYTER", "content": content_b64, "overwrite": True},
+        )
+        if resp.status_code not in (200, 201):
+            raise click.ClickException(
+                f"Databricks import failed ({resp.status_code}): {resp.text}"
+            )
+        click.echo(f"  {notebook_name} → {nb_path}")
+
+    elif platform == "synapse":
+        try:
+            import requests
+            from azure.identity import DefaultAzureCredential
+        except ImportError as exc:
+            raise click.ClickException(
+                "Notebook import requires the deploy extra.\n"
+                "Install with: pip install 'kindling-cli[deploy]'"
+            ) from exc
+
+        credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
+        token = credential.get_token("https://dev.azuresynapse.net/.default").token
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        base_url = f"https://{workspace}.dev.azuresynapse.net"
+
+        # Build Synapse notebook resource
+        nb_resource = {
+            "name": notebook_name,
+            "properties": {
+                "nbformat": notebook_data.get("nbformat", 4),
+                "nbformat_minor": notebook_data.get("nbformat_minor", 5),
+                "metadata": notebook_data.get("metadata", {}),
+                "cells": notebook_data.get("cells", []),
+            },
+        }
+
+        resp = requests.put(
+            f"{base_url}/notebooks/{notebook_name}?api-version=2020-12-01",
+            headers=headers,
+            json=nb_resource,
+        )
+        if resp.status_code not in (200, 201, 202):
+            raise click.ClickException(
+                f"Synapse notebook create failed ({resp.status_code}): {resp.text}"
+            )
+
+        # Handle async operation
+        if resp.status_code == 202:
+            import time
+
+            location = resp.headers.get("Location", "")
+            for _ in range(30):
+                time.sleep(2)
+                poll = requests.get(location, headers=headers)
+                if poll.status_code == 200:
+                    break
+            else:
+                click.echo(f"  {notebook_name} (accepted, still provisioning)")
+                return
+
+        click.echo(f"  {notebook_name}")
+
+    elif platform == "fabric":
+        try:
+            import requests
+            from azure.identity import DefaultAzureCredential
+        except ImportError as exc:
+            raise click.ClickException(
+                "Notebook import requires the deploy extra.\n"
+                "Install with: pip install 'kindling-cli[deploy]'"
+            ) from exc
+
+        credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
+        token = credential.get_token("https://api.fabric.microsoft.com/.default").token
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        encoded_name = quote(notebook_name, safe="")
+
+        resp = requests.post(
+            f"https://api.fabric.microsoft.com/v1/workspaces/{workspace}/notebooks/{encoded_name}",
+            headers=headers,
+            json=_build_fabric_notebook_payload(notebook_name, notebook_data),
+        )
+        if resp.status_code not in (200, 201, 202):
+            raise click.ClickException(
+                f"Fabric notebook create failed ({resp.status_code}): {resp.text}"
+            )
+
+        if resp.status_code == 202:
+            import time
+
+            location = resp.headers.get("Location", "")
+            for _ in range(30):
+                time.sleep(2)
+                poll = requests.get(location, headers=headers)
+                if poll.status_code == 200:
+                    break
+            else:
+                click.echo(f"  {notebook_name} (accepted, still provisioning)")
+                return
+        click.echo(f"  {notebook_name}")
+
+    else:
+        raise click.ClickException(f"Unsupported platform for notebook import: {platform}")
+
+
+@workspace_group.command("deploy")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option(
+    "--config",
+    "config_path",
+    default="settings.yaml",
+    show_default=True,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Kindling settings file to deploy.",
+)
+@click.option(
+    "--dist-dir",
+    "dist_dir",
+    default="dist",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False, exists=False),
+    help="Directory containing built wheel files.",
+)
+@click.option(
+    "--storage-account",
+    "storage_account",
+    default=None,
+    help="Storage account: name (mystorageacct), name.domain (mystorageacct.blob.core.usgovcloudapi.net), "
+    "or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
+)
+@click.option(
+    "--container",
+    "container",
+    default=None,
+    help="Storage container name (overrides AZURE_CONTAINER env var, default: artifacts).",
+)
+@click.option(
+    "--base-path",
+    "base_path",
+    default=None,
+    help="Base path within container (overrides AZURE_BASE_PATH env var).",
+)
+@click.option(
+    "--skip-wheels",
+    is_flag=True,
+    help="Skip deploying kindling wheel packages.",
+)
+@click.option(
+    "--skip-bootstrap-script",
+    is_flag=True,
+    help="Skip deploying the kindling_bootstrap.py script.",
+)
+@click.option(
+    "--skip-config",
+    is_flag=True,
+    help="Skip deploying settings.yaml and overlay configs.",
+)
+@click.option(
+    "--create-notebooks",
+    is_flag=True,
+    help="Generate and import a bootstrap notebook and sample notebook into the workspace.",
+)
+@click.option(
+    "--workspace",
+    default=None,
+    help="Target workspace for notebook import. Databricks: host URL. Synapse: workspace name. Fabric: workspace ID.",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Overwrite existing scripts, config, and notebooks in storage. Without this flag, existing blobs are skipped.",
+)
+def workspace_deploy(
+    platform: Optional[str],
+    config_path: Path,
+    dist_dir: Path,
+    storage_account: Optional[str],
+    container: Optional[str],
+    base_path: Optional[str],
+    skip_wheels: bool,
+    skip_bootstrap_script: bool,
+    skip_config: bool,
+    create_notebooks: bool,
+    workspace: Optional[str],
+    overwrite: bool,
+) -> None:
+    """Deploy kindling packages, scripts, and config to Azure Storage.
+
+    \b
+    Deploys the following artifacts to the target storage account:
+
+      - Kindling platform wheel(s) → {base}/packages/
+      - kindling_bootstrap.py      → {base}/scripts/
+      - settings.yaml + overlays   → {base}/config/
+
+    \b
+    With --create-notebooks and --workspace, also imports starter notebooks
+    directly into the target workspace via platform APIs.
+
+    \b
+    Storage account accepts a plain name (appends .blob.core.windows.net),
+    a name.domain (e.g. myacct.blob.core.usgovcloudapi.net), or a full URL.
+
+    \b
+    Prerequisites:
+      - az login (or AZURE_CLIENT_ID/SECRET/TENANT_ID environment variables)
+
+    \b
+    Examples:
+      kindling workspace deploy --platform synapse --storage-account mystorageacct
+      kindling workspace deploy --platform synapse --storage-account rrdefcfesffwksshr.blob.core.usgovcloudapi.net
+      kindling workspace deploy --platform synapse --create-notebooks --workspace mysynapsews
+      kindling workspace deploy --platform databricks --create-notebooks --workspace https://adb-123.4.azuredatabricks.net
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    resolved_account, resolved_container, resolved_base = _resolve_storage_env(
+        storage_account,
+        container,
+        base_path,
+    )
+    packages_path = f"{resolved_base}/packages" if resolved_base else "packages"
+    scripts_path = f"{resolved_base}/scripts" if resolved_base else "scripts"
+    repo_root = Path.cwd()
+    for candidate in (repo_root, repo_root.parent, repo_root.parent.parent):
+        if (candidate / "runtime" / "scripts" / "kindling_bootstrap.py").exists():
+            repo_root = candidate
+            break
+
+    click.echo(
+        f"Deploying to {resolved_account}/{resolved_container}/ (platform: {resolved_platform})"
+    )
+    click.echo()
+
+    blob_service_client = _get_blob_service_client(resolved_account)
+
+    # -- Wheels ----------------------------------------------------------------
+    if not skip_wheels:
+        resolved_dist = dist_dir.expanduser().resolve()
+        if not resolved_dist.exists():
+            raise click.ClickException(
+                f"dist directory not found: {resolved_dist}\n"
+                "Build wheels first (poe build-wheels) or use --skip-wheels."
+            )
+        wheels = _find_wheels(resolved_dist, resolved_platform)
+        if not wheels:
+            raise click.ClickException(
+                f"No kindling_{resolved_platform} wheels found in {resolved_dist}."
+            )
+        click.echo(f"Packages → {packages_path}/")
+        count = _deploy_wheels(blob_service_client, resolved_container, packages_path, wheels)
+        click.echo(f"  ({count} wheel(s) uploaded)")
+        click.echo()
+
+    # -- Bootstrap script ------------------------------------------------------
+    if not skip_bootstrap_script:
+        click.echo(f"Scripts → {scripts_path}/")
+        if _deploy_bootstrap_script(
+            blob_service_client, resolved_container, scripts_path, repo_root, overwrite=overwrite
+        ):
+            click.echo()
+        else:
+            click.echo("  kindling_bootstrap.py not found, skipping.")
+            click.echo()
+
+    # -- Config ----------------------------------------------------------------
+    if not skip_config:
+        resolved_config = config_path.expanduser()
+        if not resolved_config.exists():
+            click.echo(f"Config file {resolved_config} not found, skipping config deploy.")
+        else:
+            config_dest = f"{resolved_base}/config" if resolved_base else "config"
+            click.echo(f"Config → {config_dest}/")
+            _deploy_config(
+                blob_service_client,
+                resolved_container,
+                resolved_base,
+                resolved_config,
+                overwrite=overwrite,
+            )
+            click.echo()
+
+    # -- Notebooks -------------------------------------------------------------
+    if create_notebooks:
+        if not workspace:
+            # Auto-detect workspace from environment
+            workspace = (
+                os.getenv("DATABRICKS_HOST")
+                or os.getenv("SYNAPSE_WORKSPACE_NAME")
+                or os.getenv("FABRIC_WORKSPACE_ID")
+            )
+        if not workspace:
+            raise click.ClickException(
+                "--workspace is required for --create-notebooks (or set "
+                "DATABRICKS_HOST / SYNAPSE_WORKSPACE_NAME / FABRIC_WORKSPACE_ID)."
+            )
+
+        resolved_config = config_path.expanduser()
+        config_data = _load_yaml_config(resolved_config) if resolved_config.exists() else {}
+
+        click.echo(f"Notebooks → {workspace}")
+
+        bootstrap_nb = _generate_bootstrap_notebook(resolved_platform, config_data)
+        _import_notebook_to_workspace(
+            resolved_platform, workspace, "environment_bootstrap", bootstrap_nb
+        )
+
+        sample_nb = _generate_sample_notebook(resolved_platform)
+        _import_notebook_to_workspace(
+            resolved_platform, workspace, "kindling_hello_world", sample_nb
+        )
+        click.echo()
+
+    click.echo("Deploy complete.")
 
 
 def main() -> None:
