@@ -5,7 +5,7 @@ Streaming Pipes Test App
 Tests the Unified DAG Orchestrator in streaming mode:
 - Define entities and pipes via framework decorators
 - Use platform-provided default EntityPathLocator and EntityNameMapper bindings
-- Execute streaming plan via GenerationExecutor
+- Execute streaming plan via ExecutionOrchestrator
 - Verify data flows through bronze → silver → gold
 
 Pipeline: bronze stream → silver stream → gold stream (joined with static lookup)
@@ -14,16 +14,6 @@ Pipeline: bronze stream → silver stream → gold stream (joined with static lo
 import sys
 import time
 
-from kindling.data_entities import DataEntities, DataEntityRegistry
-from kindling.data_pipes import DataPipes
-from kindling.execution_strategy import ExecutionPlanGenerator
-from kindling.generation_executor import GenerationExecutor
-from kindling.injection import GlobalInjector, get_kindling_service
-from kindling.platform_provider import PlatformServiceProvider
-from kindling.spark_config import ConfigService
-from kindling.spark_log_provider import SparkLoggerProvider
-from kindling.spark_session import get_or_create_spark_session
-from kindling.watermarking import WatermarkEntityFinder
 from pyspark.sql.functions import col, current_timestamp
 from pyspark.sql.types import (
     IntegerType,
@@ -32,6 +22,16 @@ from pyspark.sql.types import (
     StructType,
     TimestampType,
 )
+
+from kindling.data_entities import DataEntities, DataEntityRegistry
+from kindling.data_pipes import DataPipes
+from kindling.execution_orchestrator import ExecutionOrchestrator
+from kindling.injection import GlobalInjector, get_kindling_service
+from kindling.platform_provider import PlatformServiceProvider
+from kindling.spark_config import ConfigService
+from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_session import get_or_create_spark_session
+from kindling.watermarking import WatermarkEntityFinder
 
 # ---- Init ----
 
@@ -608,15 +608,13 @@ try:
     # ---- Execute streaming pipeline via Orchestrator FIRST ----
     # Start downstream queries (silver_to_gold, bronze_to_silver) - they wait for data
 
-    plan_generator = get_kindling_service(ExecutionPlanGenerator)
-    executor = get_kindling_service(GenerationExecutor)
+    orchestrator = get_kindling_service(ExecutionOrchestrator)
 
     pipe_ids = ["bronze_to_silver", "silver_to_gold"]
-    plan = plan_generator.generate_streaming_plan(pipe_ids)
 
     # Pass checkpoint base path for streaming queries
     streaming_options = {"base_checkpoint_path": chk_base}
-    result = executor.execute_streaming(plan, streaming_options=streaming_options)
+    result = orchestrator.execute_streaming(pipe_ids, streaming_options=streaming_options)
 
     ok = result.all_succeeded
     num_queries = len(result.streaming_queries) if hasattr(result, "streaming_queries") else 0
