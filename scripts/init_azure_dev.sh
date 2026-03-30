@@ -230,7 +230,8 @@ export AZURE_STORAGE_ENDPOINT_SUFFIX="$CLOUD_ENDPOINT_SUFFIX"
 
 # Also save to .env file for persistence
 echo -e "\n${BLUE}Step 5:${NC} Saving configuration to .env file..."
-ENV_FILE="/workspace/.env"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$REPO_ROOT/.env"
 
 # Create .env file with current configuration
 cat > "$ENV_FILE" << EOF

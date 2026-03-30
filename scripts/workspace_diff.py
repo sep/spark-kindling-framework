@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 
 
 def get_token():
@@ -791,17 +792,21 @@ def main():
     new_data = query_workspace(new_host, token, "NEW (Target)")
 
     # Save raw data
-    with open("/workspace/workspace_diff_raw.json", "w") as f:
+    repo_root = Path(__file__).resolve().parent.parent
+    raw_path = repo_root / "workspace_diff_raw.json"
+    report_path = repo_root / "workspace_diff_report.md"
+
+    with open(raw_path, "w") as f:
         json.dump({"original": old_data, "new": new_data}, f, indent=2, default=str)
-    print(f"\nRaw data saved to /workspace/workspace_diff_raw.json")
+    print(f"\nRaw data saved to {raw_path}")
 
     # Generate report
     report = generate_report(old_data, new_data, old_host, new_host)
 
-    with open("/workspace/workspace_diff_report.md", "w") as f:
+    with open(report_path, "w") as f:
         f.write(report)
 
-    print(f"Report saved to /workspace/workspace_diff_report.md")
+    print(f"Report saved to {report_path}")
     print(f"\nDone!")
 
 
