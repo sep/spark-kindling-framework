@@ -1,4 +1,4 @@
-# Status Reconciliation - 2026-02-19
+# Status Reconciliation - 2026-02-19 (Updated 2026-03-30)
 
 ## Scope
 
@@ -16,8 +16,8 @@ Reconcile implementation status, tests, and documentation for Unified DAG work:
 | `#22` Dependency Graph Builder | Closed | Implemented + unit/integration tests passing | Reconciled |
 | `#23` Execution Strategies | Closed | Implemented + unit/integration tests passing | Reconciled |
 | `#24` Generation Executor | Closed | Implemented + unit/integration tests passing | Reconciled |
-| `#25` Cache Optimization | Open / Todo | Not implemented (`cache_optimizer.py` missing) | Keep Open / Todo |
-| `#15` Unified DAG Orchestrator | Open / Todo | Partially complete (blocked by `#25` + tracking cleanup) | Keep Open until `#25` is complete |
+| `#25` Cache Optimization | Open / Todo (as of 2026-02-19 tracking snapshot) | Implemented (`packages/kindling/cache_optimizer.py`, executor cache signals/metrics, unit coverage) | Tracking/docs should be updated to close/reconcile `#25` |
+| `#15` Unified DAG Orchestrator | Open / Todo | Partially complete (remaining: orchestrator facade + `DataPipesExecuter` DAG entrypoint wiring + tracking cleanup) | Keep Open until remaining closure work is reconciled |
 
 ## Validation Evidence
 
@@ -39,11 +39,21 @@ Result:
   - `execution_strategy.py`: 94%
   - `generation_executor.py`: 94%
 
+Additional follow-up validation (2026-03-30):
+
+```bash
+pytest -q tests/unit/test_cache_optimizer.py tests/unit/test_generation_executor.py
+```
+
+Result:
+- 42 passed
+- `cache_optimizer.py`: 94% coverage in this run
+
 ## Documentation Updated
 
 - `docs/pipe_graph_quick_reference.md`
   - Removed stale "remaining features" language for `#23/#24`
-  - Clarified `#25` and capability closure as remaining
+  - Clarified `#25` delivery and `#15` capability closure as remaining
 - `docs/execution_strategy_quick_reference.md`
   - Replaced stale "future integration" with current `GenerationExecutor` integration
   - Updated stale issue link
@@ -51,16 +61,17 @@ Result:
 - `docs/proposals/dag_execution_implementation_plan.md`
   - Updated status from Planned to In Progress
   - Added reconciliation snapshot table with issue-by-issue status
-  - Updated recommended next step to `#25`
+  - Updated recommended next step to close `#15` gaps after `#25`
 
 ## Tracking Update
 
-Final issue state confirmation:
-- `#22` CLOSED
-- `#23` CLOSED
-- `#24` CLOSED
-- `#25` OPEN
-- `#15` OPEN
+Repository implementation reality confirmation:
+- `#22` implemented and reconciled
+- `#23` implemented and reconciled
+- `#24` implemented and reconciled
+- `#25` implemented in code/tests (tracking sync still required)
+- `#15` still open pending final capability-closure items
 
 Remaining tracking work:
-- Keep `#15` open until `#25` is implemented and reconciled.
+- Reconcile tracking/docs to reflect delivered `#25` cache optimization.
+- Keep `#15` open until orchestrator facade + `DataPipesExecuter` DAG wiring are reconciled.
