@@ -30,7 +30,7 @@ Updated from strict version pinning to semantic versioning for better cross-plat
 
 **Location:**
 ```
-/workspace/packages/kindling_otel_azure/dist/
+packages/kindling_otel_azure/dist/
 ```
 
 **Package Contents:**
@@ -43,7 +43,7 @@ Updated from strict version pinning to semantic versioning for better cross-plat
 
 ### From Built Package (Testing)
 ```bash
-pip install /workspace/packages/kindling_otel_azure/dist/kindling_otel_azure-0.3.0a1-py3-none-any.whl
+pip install packages/kindling_otel_azure/dist/kindling_otel_azure-0.3.0a1-py3-none-any.whl
 ```
 
 ### In Kindling Configuration
@@ -123,10 +123,10 @@ kindling:
 
 ## Files Modified
 
-- `/workspace/packages/kindling_otel_azure/pyproject.toml` - Updated dependencies and version
-- `/workspace/packages/kindling_otel_azure/kindling_otel_azure/__init__.py` - Updated version string
-- `/workspace/packages/kindling_otel_azure/README.md` - Added alpha installation instructions
-- `/workspace/packages/kindling_otel_azure/CHANGELOG.md` - Created (new file)
+- `packages/kindling_otel_azure/pyproject.toml` - Updated dependencies and version
+- `packages/kindling_otel_azure/kindling_otel_azure/__init__.py` - Updated version string
+- `packages/kindling_otel_azure/README.md` - Added alpha installation instructions
+- `packages/kindling_otel_azure/CHANGELOG.md` - Created (new file)
 
 ## Dependencies Analysis
 

@@ -98,3 +98,4 @@ iac/databricks/account/tfplan
 .kindling/
 .env*
 !.env.template
+.codex
