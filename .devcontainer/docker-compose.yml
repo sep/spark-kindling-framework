@@ -4,11 +4,11 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - ..:/workspace:cached
+      - ..:/workspaces/kindling:cached
       - spark-warehouse:/spark-warehouse
     command: sleep infinity
     environment:
-      - PYTHONPATH=/workspace
+      - PYTHONPATH=/workspaces/kindling
       - SPARK_LOCAL_IP=127.0.0.1
 
 volumes:

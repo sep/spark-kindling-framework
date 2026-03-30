@@ -2,7 +2,7 @@
 	"name": "Kindling Development",
 	"dockerComposeFile": "docker-compose.yml",
 	"service": "devcontainer",
-	"workspaceFolder": "/workspace",
+	"workspaceFolder": "/workspaces/kindling",
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -10,7 +10,10 @@
 				"ms-python.vscode-pylance",
 				"ms-toolsai.jupyter",
 				"redhat.vscode-yaml",
-				"ms-azuretools.vscode-docker"
+				"ms-azuretools.vscode-docker",
+				"GitHub.copilot",
+				"openai.chatgpt",
+				"anthropic.claude-code"
 			],
 			"settings": {
 				"python.defaultInterpreterPath": "/usr/local/bin/python",
@@ -37,8 +40,8 @@
 			}
 		}
 	},
-	"postCreateCommand": "poetry install --with dev && pip install -e .[dev] && pre-commit install",
-	"postStartCommand": "bash -c '[ -f /workspace/.env ] && echo \"# Auto-load .env file\" >> ~/.bashrc && echo \"[ -f /workspace/.env ] && set -a && source /workspace/.env && set +a\" >> ~/.bashrc && echo \"✅ .env will load in new terminals\" || echo \"⚠️  No .env file found\"'",
+	"postCreateCommand": "poetry env remove --all 2>/dev/null; poetry install --with dev && git config --unset-all core.hooksPath; pre-commit install && bash -lc 'grep -q \"# kindling .env auto-load\" ~/.bashrc || { echo \"# kindling .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/kindling/.env ] && set -a && source /workspaces/kindling/.env && set +a\" >> ~/.bashrc; }'",
+	"postStartCommand": "bash -c '[ -f \"/workspaces/kindling/.env\" ] && echo \"✅ .env will load in new terminals\" || echo \"⚠️  No .env file found\"'",
 	"initializeCommand": "echo '⚙️  Initializing devcontainer...'",
 	"forwardPorts": [
 		4040
