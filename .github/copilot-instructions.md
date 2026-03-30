@@ -174,4 +174,4 @@ tests/
 
 ---
 
-For more details, see [/workspace/.github/instructions/project.instructions.md](../instructions/project.instructions.md)
+For more details, see [project.instructions.md](../instructions/project.instructions.md)
