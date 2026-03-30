@@ -563,7 +563,7 @@ export AZURE_CLIENT_SECRET="..."
 - Validates cross-platform compatibility
 - Tests are designed to handle long-running operations
 
-**Documentation:** See `/workspace/tests/system/README.md` for complete details
+**Documentation:** See `tests/system/README.md` for complete details
 
 ## Three-Platform System Test Status - ✅ PRODUCTION READY
 
@@ -963,4 +963,4 @@ class NotebookAppBuilder:
 
 **System Tests (existing)**
 - Run existing system tests to ensure no regressions
-- Tests in `/workspace/tests/system/` should pass unchanged
+- Tests in `tests/system/` should pass unchanged
