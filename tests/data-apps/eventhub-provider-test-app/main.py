@@ -11,20 +11,26 @@ Validates EventHubEntityProvider through the framework registry by executing:
 import sys
 import time
 
+from pyspark.sql.functions import col, current_timestamp
+from pyspark.sql.types import (
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
+
 from kindling.data_entities import DataEntities, DataEntityRegistry, EntityMetadata
 from kindling.data_pipes import DataPipes
 from kindling.entity_provider import is_streamable
 from kindling.entity_provider_registry import EntityProviderRegistry
-from kindling.execution_strategy import ExecutionPlanGenerator
-from kindling.generation_executor import GenerationExecutor
+from kindling.execution_orchestrator import ExecutionOrchestrator
 from kindling.injection import GlobalInjector, get_kindling_service
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 from kindling.watermarking import WatermarkEntityFinder
-from pyspark.sql.functions import col, current_timestamp
-from pyspark.sql.types import IntegerType, StringType, StructField, StructType, TimestampType
 
 
 class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
@@ -256,11 +262,9 @@ def _run_pipe_to_table(
             "ingested_at", current_timestamp()
         )
 
-    plan_generator = get_kindling_service(ExecutionPlanGenerator)
-    executor = get_kindling_service(GenerationExecutor)
-    plan = plan_generator.generate_streaming_plan([pipe_id])
-    result = executor.execute_streaming(
-        plan, streaming_options={"base_checkpoint_path": checkpoint_base}
+    orchestrator = get_kindling_service(ExecutionOrchestrator)
+    result = orchestrator.execute_streaming(
+        [pipe_id], streaming_options={"base_checkpoint_path": checkpoint_base}
     )
 
     query = result.streaming_queries.get(pipe_id)
