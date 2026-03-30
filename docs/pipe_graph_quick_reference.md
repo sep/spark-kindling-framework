@@ -156,7 +156,7 @@ except GraphValidationError as e:
 
 **Unit Tests**: `tests/unit/test_pipe_graph.py` (32 tests)
 - Data structure tests
-- Graph building algorithms  
+- Graph building algorithms
 - Cycle detection
 - Topological sorting
 - Generation grouping
@@ -185,8 +185,8 @@ Implemented alongside this module:
 - **Issue #24**: Generation Executor (parallel execution)
 
 Remaining DAG feature work:
-- **Issue #25**: Cache Optimization (auto-caching shared entities)
 - **Issue #15**: Capability closure and status reconciliation for Unified DAG Orchestrator
+  Remaining gap is primarily orchestration entrypoint integration (`ExecutionOrchestrator` facade + `DataPipesExecuter` DAG wiring).
 
 ## Related Documentation
 
