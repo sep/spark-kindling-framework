@@ -7,11 +7,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
-from pyspark.sql import DataFrame
 
 from .data_entities import *
 
@@ -117,6 +118,10 @@ class DataPipesExecution(ABC):
     def run_datapipes(self, pipes):
         pass
 
+    @abstractmethod
+    def run_datapipes_dag(self, pipes, strategy=None, **kwargs):
+        pass
+
 
 @GlobalInjector.singleton_autobind()
 class DataPipesManager(DataPipesRegistry):
@@ -158,12 +163,24 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         self.logger = lp.get_logger("data_pipes_executer")
         self.tp = tp
 
-    def run_datapipes(self, pipes: List[str]):
+    def run_datapipes(
+        self,
+        pipes: List[str],
+        use_dag: bool = False,
+        dag_strategy: Optional[Any] = None,
+        **dag_kwargs,
+    ):
         """Execute a list of pipes with signal emissions.
 
         Args:
             pipes: List of pipe IDs to execute
+            use_dag: If True, delegate execution to DAG orchestrator mode
+            dag_strategy: Optional DAG execution strategy override
+            **dag_kwargs: Additional DAG execution options
         """
+        if use_dag:
+            return self.run_datapipes_dag(pipes, strategy=dag_strategy, **dag_kwargs)
+
         run_id = str(uuid.uuid4())
         start_time = time.time()
         success_count = 0
@@ -267,6 +284,34 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
                 run_id=run_id,
             )
             raise
+
+    def run_datapipes_dag(
+        self,
+        pipes: List[str],
+        strategy: Optional[Any] = None,
+        parallel: bool = False,
+        max_workers: int = 4,
+        error_strategy: Optional[Any] = None,
+        pipe_timeout: Optional[float] = None,
+        streaming_options: Optional[Dict[str, Any]] = None,
+        auto_cache: bool = False,
+    ):
+        """Execute pipes via DAG planning/generation execution facade."""
+        from kindling.execution_orchestrator import ExecutionOrchestrator
+        from kindling.generation_executor import ErrorStrategy
+
+        resolved_error_strategy = error_strategy or ErrorStrategy.FAIL_FAST
+        orchestrator = GlobalInjector.get(ExecutionOrchestrator)
+        return orchestrator.execute(
+            pipe_ids=pipes,
+            strategy=strategy,
+            parallel=parallel,
+            max_workers=max_workers,
+            error_strategy=resolved_error_strategy,
+            pipe_timeout=pipe_timeout,
+            streaming_options=streaming_options,
+            auto_cache=auto_cache,
+        )
 
     def _execute_datapipe(
         self,
