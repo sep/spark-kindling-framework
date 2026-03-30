@@ -175,8 +175,8 @@ CMD ["pytest", "tests/integration/", "-v"]
 docker pull apache/spark:3.4.3-java11
 
 # Run tests in container
-docker run -v $(pwd):/workspace apache/spark:3.4.3-java11 \
-    spark-submit --master local[*] /workspace/tests/integration/test_data_pipes_integration.py
+docker run -v $(pwd):/app apache/spark:3.4.3-java11 \
+    spark-submit --master local[*] /app/tests/integration/test_data_pipes_integration.py
 ```
 
 ## 🔬 Technical Deep Dive

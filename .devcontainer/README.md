@@ -43,7 +43,7 @@ spark = SparkSession.builder \
     .getOrCreate()
 
 # Use Spark normally
-df = spark.read.parquet("/workspace/data/my_data.parquet")
+df = spark.read.parquet("data/my_data.parquet")
 df.show()
 
 spark.stop()

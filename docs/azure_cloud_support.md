@@ -151,9 +151,9 @@ print("✓ Government Cloud connection successful!")
 
 ## Files Modified
 
-- `/workspace/tests/spark_test_helper.py` - Added cloud support
-- `/workspace/docs/azure_storage_configuration.md` - Updated with cloud examples
-- `/workspace/docs/azure_storage_quickref.md` - Updated quick reference
+- `tests/spark_test_helper.py` - Added cloud support
+- `docs/azure_storage_configuration.md` - Updated with cloud examples
+- `docs/azure_storage_quickref.md` - Updated quick reference
 
 ## References
 
