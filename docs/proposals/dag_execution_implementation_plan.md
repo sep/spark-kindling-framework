@@ -1,18 +1,18 @@
 # DAG/Execution Framework Implementation Plan
 
 > **Created:** 2026-02-02
-> **Status:** In Progress (Reconciled 2026-02-19)
+> **Status:** In Progress (Reconciled 2026-03-30)
 > **Reference:** [signal_dag_streaming_proposal.md](signal_dag_streaming_proposal.md)
 
-## Reconciliation Snapshot (2026-02-19)
+## Reconciliation Snapshot (2026-03-30)
 
 | Scope | Tracking | Implementation Status | Evidence |
 |-------|----------|-----------------------|----------|
 | Dependency Graph Builder | Issue #22 | ✅ Implemented | `packages/kindling/pipe_graph.py`, `tests/unit/test_pipe_graph.py`, `tests/integration/test_pipe_graph_integration.py` |
 | Execution Strategies | Issue #23 | ✅ Implemented | `packages/kindling/execution_strategy.py`, `tests/unit/test_execution_strategy.py`, `tests/integration/test_execution_strategy_integration.py` |
 | Generation Executor | Issue #24 | ✅ Implemented | `packages/kindling/generation_executor.py`, `tests/unit/test_generation_executor.py`, `tests/integration/test_generation_executor_integration.py` |
-| Cache Optimization | Issue #25 | ⏳ Pending | No `packages/kindling/cache_optimizer.py` yet |
-| Unified DAG Orchestrator capability closure | Issue #15 | ⏳ Pending | Blocked on cache optimization + tracking cleanup |
+| Cache Optimization | Issue #25 | ✅ Implemented | `packages/kindling/cache_optimizer.py`, cache signals/metrics in `generation_executor.py`, `tests/unit/test_cache_optimizer.py` |
+| Unified DAG Orchestrator capability closure | Issue #15 | ⏳ Pending | Remaining: orchestrator facade + `DataPipesExecuter` DAG entrypoint wiring + tracking cleanup |
 
 ## Current State Assessment
 
@@ -31,7 +31,6 @@
 
 ### What Needs to Be Built
 
-- Cache optimization (`#25`)
 - Capability closure and status alignment for Unified DAG Orchestrator (`#15`)
 - Optional orchestrator facade + `DataPipesExecuter` DAG entrypoint wiring
 - Optional typed signal payloads and lineage phases from this plan
@@ -103,14 +102,14 @@ Enable introspection and documentation generation.
 **Estimated Time:** 3-4 weeks
 **Dependencies:** Phase 1
 
-**Reconciled status (2026-02-19):**
+**Reconciled status (2026-03-30):**
 - ✅ 2.1 `pipe_graph.py` implemented and tested
 - ✅ 2.2 `execution_strategy.py` implemented and tested
 - ✅ 2.3 `ExecutionPlanGenerator` implemented and tested
 - ✅ 2.4 `GenerationExecutor` implemented and tested
 - ⏳ 2.5 `ExecutionOrchestrator` facade still pending
 - ⏳ 2.6 `DataPipesExecuter` DAG mode wiring still pending
-- ⏳ 2.7 Cache recommendation/auto-caching still pending
+- ✅ 2.7 Cache recommendation/auto-caching implemented
 - ✅ 2.8 Core DAG integration tests exist (except cache-specific checks)
 
 ### 2.1 Create pipe_graph.py Module
@@ -253,10 +252,10 @@ Backward-compatible integration.
 Optimize execution by identifying reusable DataFrames.
 
 ```
-- [ ] Detect entities read by multiple pipes in same execution
-- [ ] Emit cache_recommended signal with entity_id
-- [ ] Optional auto-caching behavior (configurable)
-- [ ] Track cache hits/misses for optimization
+- [x] Detect entities read by multiple pipes in same execution
+- [x] Emit cache_recommended signal with entity_id
+- [x] Optional auto-caching behavior (configurable)
+- [x] Track cache hits/misses for optimization
 ```
 
 ### 2.8 Integration Tests for DAG Execution
@@ -633,11 +632,11 @@ Hybrid batch/streaming support.
 
 ## Recommended Starting Point
 
-**Start with Phase 2.7 (Cache Optimization, Issue #25)** because:
+**Start with capability closure work for Issue #15 (Phases 2.5 and 2.6)** because:
 1. Core DAG building/planning/execution is already implemented and tested
-2. `#25` is the remaining P0 DAG feature gap
-3. Closing `#25` unblocks capability-level closure for `#15`
-4. It improves runtime efficiency without requiring architecture churn
+2. `#25` cache optimization is now implemented in code/tests
+3. The remaining closure gap is orchestration entrypoint integration
+4. This finishes user-facing DAG execution integration without redesign churn
 
 ## Key Design Principles
 
