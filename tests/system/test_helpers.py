@@ -56,7 +56,7 @@ def _get_databricks_bootstrap_overrides(test_id: Optional[str]) -> Dict[str, Any
         return {
             "kindling": {
                 "temp_path": databricks_classic_root,
-                "delta": {"tablerefmode": "forPath"},
+                "delta": {"access_mode": "storage"},
                 "storage": {
                     "table_root": f"{databricks_classic_root}/tables",
                     "checkpoint_root": f"{databricks_classic_root}/checkpoints",
@@ -68,7 +68,7 @@ def _get_databricks_bootstrap_overrides(test_id: Optional[str]) -> Dict[str, Any
     return {
         "kindling": {
             "temp_path": databricks_uc_root,
-            "delta": {"tablerefmode": "forName"},
+            "delta": {"access_mode": "catalog"},
             "storage": {
                 "table_root": f"{databricks_uc_root}/tables",
                 "checkpoint_root": f"{databricks_uc_root}/checkpoints",
@@ -116,7 +116,7 @@ def get_system_platform_config_overrides(
 
         overrides: Dict[str, Any] = {
             "kindling": {
-                "delta": {"tablerefmode": "forName"},
+                "delta": {"access_mode": "catalog"},
                 "storage": {
                     "table_root": f"{synapse_root}/tables" if synapse_root else "tables",
                     "checkpoint_root": (

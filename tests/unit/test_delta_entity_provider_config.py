@@ -8,6 +8,7 @@ while maintaining backward compatibility with service-based configuration.
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
 from kindling.data_entities import EntityMetadata, EntityNameMapper, EntityPathLocator
 from kindling.entity_provider_delta import DeltaEntityProvider, DeltaTableReference
 from kindling.signaling import SignalProvider
@@ -30,7 +31,15 @@ class TestDeltaEntityProviderConfig:
     def mock_dependencies(self):
         """Create mock dependencies for DeltaEntityProvider."""
         config = MagicMock(spec=ConfigService)
-        config.get.return_value = "auto"  # Default access mode
+
+        def _config_get(key, default=None):
+            if key == "kindling.delta.access_mode":
+                return "catalog"
+            if key.startswith("kindling.features.") or key.startswith("kindling.runtime.features."):
+                return default
+            return default
+
+        config.get.side_effect = _config_get
 
         entity_name_mapper = MagicMock(spec=EntityNameMapper)
         entity_name_mapper.get_table_name.return_value = "default_catalog.default_db.default_table"
@@ -76,7 +85,7 @@ class TestDeltaEntityProviderConfig:
         # Should use service defaults
         assert table_ref.table_name == "default_catalog.default_db.default_table"
         assert table_ref.table_path == "Tables/default/path"
-        assert table_ref.access_mode == "auto"
+        assert table_ref.access_mode == "catalog"
 
     def test_uses_tag_override_for_path(self, mock_dependencies):
         """Test that provider.path tag overrides EntityPathLocator."""
@@ -150,7 +159,7 @@ class TestDeltaEntityProviderConfig:
             partition_columns=["date"],
             merge_columns=["id"],
             tags={
-                "provider.access_mode": "forPath",
+                "provider.access_mode": "storage",
             },
             schema=None,
         )
@@ -158,7 +167,7 @@ class TestDeltaEntityProviderConfig:
         table_ref = provider._get_table_reference(entity)
 
         # Should use tag override for access mode
-        assert table_ref.access_mode == "forPath"
+        assert table_ref.access_mode == "storage"
 
     def test_uses_all_tag_overrides_together(self, mock_dependencies):
         """Test that all tag overrides work together."""
@@ -178,7 +187,7 @@ class TestDeltaEntityProviderConfig:
             tags={
                 "provider.path": "Tables/custom/sales",
                 "provider.table_name": "custom.db.sales",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
             },
             schema=None,
         )
@@ -188,7 +197,7 @@ class TestDeltaEntityProviderConfig:
         # Should use all tag overrides
         assert table_ref.table_path == "Tables/custom/sales"
         assert table_ref.table_name == "custom.db.sales"
-        assert table_ref.access_mode == "forName"
+        assert table_ref.access_mode == "catalog"
 
     def test_validates_access_mode_value(self, mock_dependencies):
         """Test that invalid access_mode values are rejected with warning."""
@@ -214,7 +223,7 @@ class TestDeltaEntityProviderConfig:
         table_ref = provider._get_table_reference(entity)
 
         # Should fall back to config default when invalid
-        assert table_ref.access_mode == "auto"
+        assert table_ref.access_mode == "catalog"
         # Should have logged a warning
         provider.logger.warning.assert_called_once()
 
@@ -254,8 +263,7 @@ class TestDeltaEntityProviderConfig:
         assert config["retention_days"] == 90  # Type converted
 
     def test_for_name_mode_allows_missing_path_during_reference_resolution(self, mock_dependencies):
-        """forName mode should not fail if path locator cannot resolve before table exists."""
-        mock_dependencies["config"].get.return_value = "forName"
+        """catalog mode should not fail if path locator cannot resolve before table exists."""
         mock_dependencies["path_locator"].get_table_path.side_effect = ValueError(
             "table does not exist yet"
         )
@@ -284,7 +292,7 @@ class TestDeltaEntityProviderConfig:
     def test_ensure_table_exists_creates_managed_table_when_path_missing_for_name_mode(
         self, mock_dependencies
     ):
-        """forName mode can bootstrap table by name when path is unavailable."""
+        """catalog mode can bootstrap table by name when path is unavailable."""
         provider = DeltaEntityProvider(
             config=mock_dependencies["config"],
             entity_name_mapper=mock_dependencies["entity_name_mapper"],
@@ -304,7 +312,7 @@ class TestDeltaEntityProviderConfig:
         table_ref = DeltaTableReference(
             table_name="default_catalog.default_db.default_table",
             table_path=None,
-            access_mode="forName",
+            access_mode="catalog",
         )
 
         provider._check_catalog_table_exists = MagicMock(return_value=False)
@@ -324,7 +332,9 @@ class TestDeltaEntityProviderConfig:
         self, mock_dependencies
     ):
         """ensure_entity_table should emit failure even when table ref lookup fails."""
-        mock_dependencies["config"].get.return_value = "forPath"
+        mock_dependencies["config"].get.side_effect = lambda key, default=None: (
+            "storage" if key == "kindling.delta.access_mode" else default
+        )
         mock_dependencies["path_locator"].get_table_path.side_effect = RuntimeError(
             "path lookup failed"
         )
@@ -357,7 +367,7 @@ class TestDeltaEntityProviderConfig:
     def test_write_for_name_managed_table_does_not_re_register_with_location(
         self, mock_dependencies
     ):
-        """Managed forName writes should not issue a redundant CREATE TABLE ... LOCATION statement."""
+        """Managed catalog writes should not issue a redundant CREATE TABLE ... LOCATION statement."""
         provider = DeltaEntityProvider(
             config=mock_dependencies["config"],
             entity_name_mapper=mock_dependencies["entity_name_mapper"],
@@ -377,7 +387,7 @@ class TestDeltaEntityProviderConfig:
         table_ref = DeltaTableReference(
             table_name="default_catalog.default_db.default_table",
             table_path=None,
-            access_mode="forName",
+            access_mode="catalog",
         )
 
         df = MagicMock()
@@ -399,7 +409,7 @@ class TestDeltaEntityProviderConfig:
         assert table_ref.table_path == "abfss://managed/location"
 
     def test_write_for_name_prefers_save_as_table_when_location_is_known(self, mock_dependencies):
-        """forName writes should remain name-based even if a managed location is already known."""
+        """catalog writes should remain name-based even if a managed location is already known."""
         provider = DeltaEntityProvider(
             config=mock_dependencies["config"],
             entity_name_mapper=mock_dependencies["entity_name_mapper"],
@@ -419,7 +429,7 @@ class TestDeltaEntityProviderConfig:
         table_ref = DeltaTableReference(
             table_name="default_catalog.default_db.default_table",
             table_path="abfss://managed/location",
-            access_mode="forName",
+            access_mode="catalog",
         )
 
         df = MagicMock()
@@ -439,7 +449,7 @@ class TestDeltaEntityProviderConfig:
         writer.save.assert_not_called()
 
     def test_append_for_name_prefers_save_as_table_when_location_is_known(self, mock_dependencies):
-        """forName append should keep table-name writes, even when table location is known."""
+        """catalog append should keep table-name writes, even when table location is known."""
         provider = DeltaEntityProvider(
             config=mock_dependencies["config"],
             entity_name_mapper=mock_dependencies["entity_name_mapper"],
@@ -459,7 +469,7 @@ class TestDeltaEntityProviderConfig:
         table_ref = DeltaTableReference(
             table_name="default_catalog.default_db.default_table",
             table_path="abfss://managed/location",
-            access_mode="forName",
+            access_mode="catalog",
         )
 
         df = MagicMock()
@@ -473,10 +483,151 @@ class TestDeltaEntityProviderConfig:
         writer.saveAsTable.assert_called_once_with("default_catalog.default_db.default_table")
         writer.save.assert_not_called()
 
+    def test_write_for_path_appends_to_existing_path(self, mock_dependencies):
+        """storage writes should append into ensured paths instead of trying to recreate them."""
+        provider = DeltaEntityProvider(
+            config=mock_dependencies["config"],
+            entity_name_mapper=mock_dependencies["entity_name_mapper"],
+            path_locator=mock_dependencies["path_locator"],
+            tp=mock_dependencies["logger_provider"],
+            signal_provider=mock_dependencies["signal_provider"],
+        )
+
+        entity = EntityMetadata(
+            entityid="sales.transactions",
+            name="transactions",
+            partition_columns=[],
+            merge_columns=["id"],
+            tags={},
+            schema=None,
+        )
+        table_ref = DeltaTableReference(
+            table_name=None,
+            table_path="Tables/default/path",
+            access_mode="storage",
+        )
+
+        df = MagicMock()
+        writer = MagicMock()
+        df.write.format.return_value = writer
+        writer.option.return_value = writer
+        writer.mode.return_value = writer
+
+        provider._write_to_delta_table(df, entity, table_ref)
+
+        writer.option.assert_called_with("path", "Tables/default/path")
+        writer.mode.assert_called_once_with("append")
+        writer.save.assert_called_once_with()
+
+    def test_write_to_entity_ensures_destination_before_write(self, mock_dependencies):
+        """Batch writes should ensure the destination so entity metadata can prepare the table."""
+        provider = DeltaEntityProvider(
+            config=mock_dependencies["config"],
+            entity_name_mapper=mock_dependencies["entity_name_mapper"],
+            path_locator=mock_dependencies["path_locator"],
+            tp=mock_dependencies["logger_provider"],
+            signal_provider=mock_dependencies["signal_provider"],
+        )
+
+        entity = EntityMetadata(
+            entityid="sales.transactions",
+            name="transactions",
+            partition_columns=[],
+            merge_columns=["id"],
+            tags={},
+            schema=[Mock(name="id_field")],
+        )
+
+        df = MagicMock()
+        provider._ensure_destination_for_write = MagicMock()
+        provider._write_to_delta_table = MagicMock()
+
+        provider.write_to_entity(df, entity)
+
+        provider._ensure_destination_for_write.assert_called_once()
+        provider._write_to_delta_table.assert_called_once()
+
+    def test_ensure_destination_for_write_falls_back_for_schema_less_for_path(
+        self, mock_dependencies
+    ):
+        """Schema-less storage entities should preserve legacy implicit-create behavior."""
+        provider = DeltaEntityProvider(
+            config=mock_dependencies["config"],
+            entity_name_mapper=mock_dependencies["entity_name_mapper"],
+            path_locator=mock_dependencies["path_locator"],
+            tp=mock_dependencies["logger_provider"],
+            signal_provider=mock_dependencies["signal_provider"],
+        )
+
+        entity = EntityMetadata(
+            entityid="sales.transactions",
+            name="transactions",
+            partition_columns=[],
+            merge_columns=["id"],
+            tags={},
+            schema=None,
+        )
+        table_ref = DeltaTableReference(
+            table_name="default_catalog.default_db.default_table",
+            table_path="Tables/default/path",
+            access_mode="storage",
+        )
+
+        provider._ensure_table_exists = MagicMock(
+            side_effect=ValueError(
+                "Cannot create physical Delta table at 'Tables/default/path' without schema"
+            )
+        )
+
+        provider._ensure_destination_for_write(entity, table_ref)
+
+        provider._ensure_table_exists.assert_called_once_with(entity, table_ref)
+        provider.logger.warning.assert_called()
+
+    def test_ensure_destination_for_write_respects_config_opt_out(self, mock_dependencies):
+        """Teams can disable ensure-before-write with normal Delta config."""
+
+        def _config_get(key, default=None):
+            if key == "kindling.delta.ensure_on_write":
+                return False
+            if key == "kindling.delta.access_mode":
+                return "catalog"
+            return default
+
+        mock_dependencies["config"].get.side_effect = _config_get
+
+        provider = DeltaEntityProvider(
+            config=mock_dependencies["config"],
+            entity_name_mapper=mock_dependencies["entity_name_mapper"],
+            path_locator=mock_dependencies["path_locator"],
+            tp=mock_dependencies["logger_provider"],
+            signal_provider=mock_dependencies["signal_provider"],
+        )
+
+        entity = EntityMetadata(
+            entityid="sales.transactions",
+            name="transactions",
+            partition_columns=[],
+            merge_columns=["id"],
+            tags={},
+            schema=[Mock(name="id_field")],
+        )
+        table_ref = DeltaTableReference(
+            table_name="default_catalog.default_db.default_table",
+            table_path="Tables/default/path",
+            access_mode="storage",
+        )
+
+        provider._ensure_table_exists = MagicMock()
+
+        provider._ensure_destination_for_write(entity, table_ref)
+
+        provider._ensure_table_exists.assert_not_called()
+
     def test_ensure_for_name_with_existing_location_skips_physical_table_creation(
         self, mock_dependencies
     ):
-        """forName ensure should rely on catalog semantics and never create physical path tables."""
+        """catalog ensure should rely on catalog semantics and never create physical path tables."""
         provider = DeltaEntityProvider(
             config=mock_dependencies["config"],
             entity_name_mapper=mock_dependencies["entity_name_mapper"],
@@ -496,7 +647,7 @@ class TestDeltaEntityProviderConfig:
         table_ref = DeltaTableReference(
             table_name="default_catalog.default_db.default_table",
             table_path="abfss://managed/location",
-            access_mode="forName",
+            access_mode="catalog",
         )
 
         provider._check_catalog_table_exists = MagicMock(return_value=True)
@@ -510,7 +661,7 @@ class TestDeltaEntityProviderConfig:
     def test_ensure_schema_for_name_uses_table_read_even_when_location_is_known(
         self, mock_dependencies
     ):
-        """forName schema checks should read by table name, not by managed location path."""
+        """catalog schema checks should read by table name, not by managed location path."""
         provider = DeltaEntityProvider(
             config=mock_dependencies["config"],
             entity_name_mapper=mock_dependencies["entity_name_mapper"],
@@ -530,7 +681,7 @@ class TestDeltaEntityProviderConfig:
         table_ref = DeltaTableReference(
             table_name="default_catalog.default_db.default_table",
             table_path="abfss://managed/location",
-            access_mode="forName",
+            access_mode="catalog",
         )
 
         existing_df = MagicMock()

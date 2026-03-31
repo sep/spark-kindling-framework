@@ -16,13 +16,13 @@ def test_bind_default_entity_services_sets_delta_access_default_when_missing():
     with patch("kindling.platform_fabric.GlobalInjector.get", return_value=cs):
         _bind_default_entity_services(logger)
 
-    cs.set.assert_called_once_with("kindling.delta.tablerefmode", "forName")
+    cs.set.assert_called_once_with("kindling.delta.access_mode", "catalog")
 
 
 def test_bind_default_entity_services_does_not_override_explicit_setting():
     logger = MagicMock()
     cs = MagicMock(spec=ConfigService)
-    cs.get.return_value = "forPath"
+    cs.get.return_value = "storage"
 
     with patch("kindling.platform_fabric.GlobalInjector.get", return_value=cs):
         _bind_default_entity_services(logger)

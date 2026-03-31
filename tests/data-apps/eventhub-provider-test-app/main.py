@@ -240,7 +240,7 @@ def _run_pipe_to_table(
         merge_columns=[],
         tags={
             "provider_type": "delta",
-            "provider.access_mode": "forPath",
+            "provider.access_mode": "storage",
             "provider.path": sink_path,
         },
         schema=sink_schema,

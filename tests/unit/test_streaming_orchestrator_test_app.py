@@ -63,5 +63,5 @@ def test_entity_tags_use_name_mode_for_databricks_with_namespace():
         "kindling",
     )
 
-    assert tags["provider.access_mode"] == "forName"
+    assert tags["provider.access_mode"] == "catalog"
     assert tags["provider.table_name"] == "kindling.kindling.streaming_orchestrator_test_source"

@@ -168,7 +168,7 @@ class DynaconfConfig(ConfigService):
             "kindling.TELEMETRY.logging.level": "log_level",
             "kindling.TELEMETRY.logging.print": "print_logging",
             "kindling.TELEMETRY.tracing.print": "print_trace",
-            "kindling.DELTA.tablerefmode": "DELTA_TABLE_ACCESS_MODE",
+            "kindling.DELTA.access_mode": "DELTA_ACCESS_MODE",
             "kindling.BOOTSTRAP.load_local": "load_local_packages",
             "kindling.BOOTSTRAP.load_lake": "use_lake_packages",
             "kindling.REQUIRED_PACKAGES": "required_packages",
@@ -183,13 +183,11 @@ class DynaconfConfig(ConfigService):
                 self.dynaconf.set(old_key, value)
                 print(f"  - Reverse translation: {new_key} → {old_key} = {value}")
 
-        # Canonicalize legacy YAML keys into the lower-case kindling.* namespace used by providers.
-        # (Keep the legacy keys and flat keys too; this is additive.)
         try:
-            if self.dynaconf.get("kindling.delta.tablerefmode") is None:
-                legacy_mode = self.dynaconf.get("kindling.DELTA.tablerefmode")
-                if legacy_mode is not None:
-                    self.dynaconf.set("kindling.delta.tablerefmode", legacy_mode)
+            if self.dynaconf.get("kindling.delta.access_mode") is None:
+                configured_mode = self.dynaconf.get("kindling.DELTA.access_mode")
+                if configured_mode is not None:
+                    self.dynaconf.set("kindling.delta.access_mode", configured_mode)
         except Exception:
             pass
 
@@ -229,7 +227,7 @@ class DynaconfConfig(ConfigService):
             "logging_level": "TELEMETRY.logging.level",
             "print_logging": "TELEMETRY.logging.print",
             "print_trace": "TELEMETRY.tracing.print",
-            "DELTA_TABLE_ACCESS_MODE": "DELTA.tablerefmode",
+            "DELTA_ACCESS_MODE": "DELTA.access_mode",
             "load_local_packages": "BOOTSTRAP.load_local",
             "use_lake_packages": "BOOTSTRAP.load_lake",
             "required_packages": "REQUIRED_PACKAGES",
@@ -260,9 +258,9 @@ class DynaconfConfig(ConfigService):
 
         # Provider/global configs should be available under kindling.* as canonical keys,
         # even if bootstrap passes legacy flat keys.
-        if "DELTA_TABLE_ACCESS_MODE" in bootstrap_config:
+        if "DELTA_ACCESS_MODE" in bootstrap_config:
             _set_transformed_dot_key(
-                "kindling.delta.tablerefmode", bootstrap_config["DELTA_TABLE_ACCESS_MODE"]
+                "kindling.delta.access_mode", bootstrap_config["DELTA_ACCESS_MODE"]
             )
         if "base_checkpoint_path" in bootstrap_config:
             _set_transformed_dot_key(

@@ -25,7 +25,7 @@ def test_apply_env_config_overrides_adds_databricks_uc_bootstrap_paths(monkeypat
         kindling["storage"]["checkpoint_root"] == "/Volumes/kindling/kindling/artifacts/checkpoints"
     )
     assert kindling["databricks"]["volume_staging_root"] == "/Volumes/kindling/kindling/artifacts"
-    assert kindling["delta"]["tablerefmode"] == "forName"
+    assert kindling["delta"]["access_mode"] == "catalog"
 
 
 def test_apply_env_config_overrides_adds_databricks_classic_bootstrap_paths(monkeypatch):
@@ -41,7 +41,7 @@ def test_apply_env_config_overrides_adds_databricks_classic_bootstrap_paths(monk
         kindling["storage"]["checkpoint_root"]
         == "dbfs:/tmp/kindling_system_tests/abc123/checkpoints"
     )
-    assert kindling["delta"]["tablerefmode"] == "forPath"
+    assert kindling["delta"]["access_mode"] == "storage"
     assert "databricks" not in kindling or "volume_staging_root" not in kindling["databricks"]
 
 
