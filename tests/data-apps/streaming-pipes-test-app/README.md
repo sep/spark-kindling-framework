@@ -29,17 +29,17 @@ Gold Layer (aggregated metrics by time window)
 
 1. **bronze_events**: Raw streaming events from rate source
    - Columns: event_id, timestamp, value, date
-   - Provider: Delta (forPath mode)
+   - Provider: Delta (storage mode)
    - Partitioned by: date
 
 2. **silver_events**: Processed events with processing metadata
    - Columns: event_id, timestamp, event_value, processed_at, date
-   - Provider: Delta (forPath mode)
+   - Provider: Delta (storage mode)
    - Partitioned by: date
 
 3. **gold_metrics**: Aggregated metrics by 1-minute time window
    - Columns: window_start, window_end, event_count, total_value, date
-   - Provider: Delta (forPath mode)
+   - Provider: Delta (storage mode)
    - Partitioned by: date
 
 ### Pipes
@@ -130,7 +130,7 @@ The app uses `settings.yaml` for framework configuration:
 kindling:
   version: "0.4.2"
   delta:
-    tablerefmode: "forPath"
+    access_mode: "storage"
   telemetry:
     logging:
       level: INFO
