@@ -12,6 +12,7 @@ from . import (
     entity_provider_memory,
     entity_provider_registry,
     entity_resolution,
+    execution_orchestrator,
     execution_strategy,
     file_ingestion,
     generation_executor,
