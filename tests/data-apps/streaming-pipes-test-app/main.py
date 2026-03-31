@@ -116,13 +116,13 @@ try:
         if is_databricks:
             return {
                 "provider_type": "delta",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
                 "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_{layer_name}",
             }
         if is_synapse:
             return {
                 "provider_type": "delta",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
                 "provider.table_name": _qualified_table_name(
                     table_schema, f"{table_name_prefix}_{layer_name}"
                 ),
@@ -130,10 +130,10 @@ try:
         return {"provider_type": "delta", "provider.path": path}
 
     def _partition_test_tags(path: str):
-        # Always test file partitioning via forPath to avoid platform catalog differences.
+        # Always test file partitioning via storage to avoid platform catalog differences.
         return {
             "provider_type": "delta",
-            "provider.access_mode": "forPath",
+            "provider.access_mode": "storage",
             "provider.path": path,
         }
 
@@ -142,21 +142,21 @@ try:
         if is_databricks:
             return {
                 "provider_type": "delta",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
                 "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_clustering_test",
             }
         if is_synapse:
             # Use the system test schema (pre-created with LOCATION) so managed tables can be created by name.
             return {
                 "provider_type": "delta",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
                 "provider.table_name": _qualified_table_name(
                     table_schema, f"{table_name_prefix}_clustering_test"
                 ),
             }
         return {
             "provider_type": "delta",
-            "provider.access_mode": "forPath",
+            "provider.access_mode": "storage",
             "provider.path": path,
         }
 
@@ -345,7 +345,7 @@ try:
     # Intentionally specify both partition_columns and cluster_columns to validate
     # provider behavior: prefer clustering and skip partitionBy().
     # In system tests, allow overriding cluster columns via config so we can validate
-    # "auto" liquid clustering behavior without cloning the app.
+    # "catalog" liquid clustering behavior without cloning the app.
     cluster_cols_v1 = _coerce_cluster_columns(
         config_service.get("kindling.system_tests.streaming_pipes.cluster_columns"), ["id"]
     )

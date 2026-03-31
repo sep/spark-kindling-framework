@@ -11,6 +11,7 @@ from concurrent.futures import Future
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+
 from kindling.data_pipes import PipeMetadata
 from kindling.entity_provider import (
     StreamableEntityProvider,
@@ -872,7 +873,7 @@ class TestStreamingExecution:
         entity_path_locator,
         config_service,
     ):
-        """forName mode should write stream via table target (toTable), not path."""
+        """catalog mode should write stream via table target (toTable), not path."""
         transformed_df = Mock(name="transformed_df")
         pipe = PipeMetadata(
             pipeid="pipe1",
@@ -890,7 +891,7 @@ class TestStreamingExecution:
             entityid="entity.dst",
             tags={
                 "provider_type": "delta",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
                 "provider.table_name": "main.analytics.entity_dst",
             },
         )

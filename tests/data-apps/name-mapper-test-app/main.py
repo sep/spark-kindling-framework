@@ -3,13 +3,14 @@
 
 import sys
 
+from pyspark.sql.types import StringType, StructField, StructType
+
 from kindling.data_entities import EntityMetadata, EntityNameMapper
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import get_kindling_service
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
-from pyspark.sql.types import StringType, StructField, StructType
 
 
 def _emit(logger, test_id: str, test_name: str, passed: bool, details: str = "") -> str:
@@ -252,7 +253,7 @@ def _make_entity(entityid: str, schema: StructType) -> EntityMetadata:
         merge_columns=[],
         tags={
             "provider_type": "delta",
-            "provider.access_mode": "forName",
+            "provider.access_mode": "catalog",
         },
         schema=schema,
     )

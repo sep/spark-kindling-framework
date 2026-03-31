@@ -3,9 +3,9 @@
 kindling:
   version: "0.4.2"
 
-  # Delta table access mode (forPath for Fabric, forName for Synapse, auto for both)
+  # Delta table access mode (storage path writes or catalog table writes)
   delta:
-    tablerefmode: "forPath"
+    access_mode: "storage"
 
   # Logging configuration
   telemetry:

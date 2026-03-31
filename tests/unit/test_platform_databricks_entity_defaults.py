@@ -8,21 +8,21 @@ from kindling.platform_databricks import _bind_default_entity_services
 from kindling.spark_config import ConfigService
 
 
-def test_bind_default_entity_services_defaults_to_forName_when_uc_enabled():
+def test_bind_default_entity_services_defaults_to_catalog_when_uc_enabled():
     logger = MagicMock()
     cs = MagicMock(spec=ConfigService)
-    cs.get.return_value = None  # no tablerefmode set, no feature flags
+    cs.get.return_value = None
 
     with patch("kindling.platform_databricks.GlobalInjector.get", return_value=cs):
         _bind_default_entity_services(logger)
 
-    cs.set.assert_called_once_with("kindling.delta.tablerefmode", "forName")
+    cs.set.assert_called_once_with("kindling.delta.access_mode", "catalog")
 
 
-def test_bind_default_entity_services_defaults_to_forPath_when_uc_disabled():
+def test_bind_default_entity_services_defaults_to_storage_when_uc_disabled():
     logger = MagicMock()
     values = {
-        "kindling.delta.tablerefmode": None,
+        "kindling.delta.access_mode": None,
         "kindling.features.databricks.uc_enabled": False,
     }
     cs = MagicMock(spec=ConfigService)
@@ -31,13 +31,13 @@ def test_bind_default_entity_services_defaults_to_forPath_when_uc_disabled():
     with patch("kindling.platform_databricks.GlobalInjector.get", return_value=cs):
         _bind_default_entity_services(logger)
 
-    cs.set.assert_called_once_with("kindling.delta.tablerefmode", "forPath")
+    cs.set.assert_called_once_with("kindling.delta.access_mode", "storage")
 
 
 def test_bind_default_entity_services_does_not_override_explicit_setting():
     logger = MagicMock()
     cs = MagicMock(spec=ConfigService)
-    cs.get.return_value = "forPath"
+    cs.get.return_value = "storage"
 
     with patch("kindling.platform_databricks.GlobalInjector.get", return_value=cs):
         _bind_default_entity_services(logger)
