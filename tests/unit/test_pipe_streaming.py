@@ -1,7 +1,10 @@
 from unittest.mock import Mock, patch
 
 from kindling.data_pipes import PipeMetadata
-from kindling.entity_provider import StreamableEntityProvider, StreamWritableEntityProvider
+from kindling.entity_provider import (
+    StreamableEntityProvider,
+    StreamWritableEntityProvider,
+)
 from kindling.pipe_streaming import SimplePipeStreamStarter
 
 
@@ -37,7 +40,7 @@ def test_start_pipe_streaming_for_name_uses_to_table():
         entityid="entity.dst",
         tags={
             "provider_type": "delta",
-            "provider.access_mode": "forName",
+            "provider.access_mode": "catalog",
             "provider.table_name": "main.analytics.entity_dst",
         },
     )
@@ -87,7 +90,10 @@ def test_start_pipe_streaming_for_path_uses_start_with_path():
     dpr.get_pipe_definition.return_value = pipe
 
     src_entity = Mock(entityid="entity.src", tags={"provider_type": "delta"})
-    dst_entity = Mock(entityid="entity.dst", tags={"provider_type": "delta"})
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={"provider_type": "delta", "provider.access_mode": "storage"},
+    )
     der.get_entity_definition.side_effect = lambda eid: {
         "entity.src": src_entity,
         "entity.dst": dst_entity,
@@ -133,7 +139,7 @@ def test_start_pipe_streaming_for_name_resolves_table_from_mapper_when_missing_t
     src_entity = Mock(entityid="entity.src", tags={"provider_type": "delta"})
     dst_entity = Mock(
         entityid="entity.dst",
-        tags={"provider_type": "delta", "provider.access_mode": "forName"},
+        tags={"provider_type": "delta", "provider.access_mode": "catalog"},
     )
     der.get_entity_definition.side_effect = lambda eid: {
         "entity.src": src_entity,

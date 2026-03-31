@@ -525,7 +525,7 @@ default:
       ignored_folders: []
 
     delta:
-      tablerefmode: "forName"
+      access_mode: "catalog"
       optimize_write: true
 
     telemetry:

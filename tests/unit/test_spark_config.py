@@ -12,6 +12,7 @@ from typing import Any, Dict
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
+
 from kindling.injection import GlobalInjector
 from kindling.spark_config import (
     ConfigService,
@@ -397,7 +398,7 @@ class TestConfigTranslation:
         mock_dynaconf.get.side_effect = lambda k: {
             "kindling.TELEMETRY.logging.level": "INFO",
             "kindling.TELEMETRY.logging.print": True,
-            "kindling.DELTA.tablerefmode": "name",
+            "kindling.DELTA.access_mode": "catalog",
         }.get(k)
 
         config = DynaconfConfig()

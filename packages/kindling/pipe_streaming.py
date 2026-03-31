@@ -107,8 +107,8 @@ class SimplePipeStreamStarter(PipeStreamStarter):
             )
         mode = str(
             output_entity.tags.get("provider.access_mode")
-            or self.cs.get("kindling.delta.tablerefmode")
-            or "auto"
+            or self.cs.get("kindling.delta.access_mode")
+            or "catalog"
         ).lower()
 
         # Ensure destination up front when the provider supports it.
@@ -128,7 +128,7 @@ class SimplePipeStreamStarter(PipeStreamStarter):
         output_table = output_entity.tags.get("provider.table_name")
         output_path = output_entity.tags.get("provider.path")
 
-        if mode == "forname":
+        if mode == "catalog":
             if not output_table:
                 enm = GlobalInjector.get(EntityNameMapper)
                 output_table = enm.get_table_name(output_entity)
