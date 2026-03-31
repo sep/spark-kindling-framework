@@ -6,16 +6,17 @@ from typing import Callable, Literal, Optional
 
 import pyspark.sql.utils
 from delta.tables import DeltaTable
+from pyspark.errors import AnalysisException
+from pyspark.sql import DataFrame
+
 from kindling.common_transforms import *
+from kindling.features import get_feature_bool, set_runtime_feature
 
 # Import your existing modules
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
-from kindling.features import get_feature_bool, set_runtime_feature
-from pyspark.errors import AnalysisException
-from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .entity_provider import (
@@ -30,9 +31,8 @@ from .entity_provider import (
 class DeltaAccessMode:
     """Defines how Delta tables are accessed"""
 
-    FOR_NAME = "forName"  # Synapse style - tables registered in catalog
-    FOR_PATH = "forPath"  # Fabric style - direct path access
-    AUTO = "auto"  # Auto-detect based on environment
+    CATALOG = "catalog"  # Catalog-managed tables
+    STORAGE = "storage"  # Direct path access
 
 
 class DeltaTableReference:
@@ -46,15 +46,11 @@ class DeltaTableReference:
 
     def get_delta_table(self) -> DeltaTable:
         """Get DeltaTable instance using appropriate method"""
-        if self.access_mode == DeltaAccessMode.FOR_NAME:
+        if self.access_mode == DeltaAccessMode.CATALOG:
             return DeltaTable.forName(self.spark, self.get_read_path())
-        elif self.access_mode == DeltaAccessMode.FOR_PATH:
+        elif self.access_mode == DeltaAccessMode.STORAGE:
             return DeltaTable.forPath(self.spark, self.get_read_path())
-        else:
-            try:
-                return DeltaTable.forName(self.spark, self.get_read_path())
-            except Exception:
-                return DeltaTable.forPath(self.spark, self.get_read_path())
+        raise ValueError(f"Unsupported Delta access mode: {self.access_mode}")
 
     def get_spark_read_stream(self, spark, options=None):
         base = spark.readStream.format("delta")
@@ -65,21 +61,22 @@ class DeltaTableReference:
                 del options["path"]
             base = base.options(**options)
 
-        if self.access_mode == DeltaAccessMode.FOR_NAME:
+        if self.access_mode == DeltaAccessMode.CATALOG:
             base = base.table(self.table_name)
-        elif self.access_mode == DeltaAccessMode.FOR_PATH:
+        elif self.access_mode == DeltaAccessMode.STORAGE:
             base = base.load(self.table_path)
         else:
-            base = base.table(self.table_name)
+            raise ValueError(f"Unsupported Delta access mode: {self.access_mode}")
 
         return base
 
     def get_read_path(self) -> str:
         """Get path for spark.read operations"""
-        if self.access_mode == DeltaAccessMode.FOR_NAME:
+        if self.access_mode == DeltaAccessMode.CATALOG:
             return self.table_name
-        else:
+        if self.access_mode == DeltaAccessMode.STORAGE:
             return self.table_path
+        raise ValueError(f"Unsupported Delta access mode: {self.access_mode}")
 
 
 @GlobalInjector.singleton_autobind()
@@ -106,7 +103,7 @@ class DeltaEntityProvider(
     Provider configuration options (via entity tags with 'provider.' prefix):
     - provider.path: Override table path (optional, defaults to EntityPathLocator)
     - provider.table_name: Override table name (optional, defaults to EntityNameMapper)
-    - provider.access_mode: Override access mode (optional, values: forName, forPath, auto)
+    - provider.access_mode: Override access mode (optional, values: catalog, storage)
 
     Example entity definition with tag-based configuration:
     ```python
@@ -118,7 +115,7 @@ class DeltaEntityProvider(
         tags={
             "provider_type": "delta",
             "provider.path": "Tables/custom/sales_transactions",
-            "provider.access_mode": "forPath"
+            "provider.access_mode": "storage"
         }
     )
     ```
@@ -140,15 +137,15 @@ class DeltaEntityProvider(
         self.config = config
         self.epl = path_locator
         self.enm = entity_name_mapper
-        self.access_mode = self.config.get("kindling.delta.tablerefmode") or "auto"
+        self.access_mode = self.config.get("kindling.delta.access_mode") or "catalog"
         self.spark = get_or_create_spark_session()
         self.logger = tp.get_logger("DeltaEntityProvider")
 
     def _is_for_name_mode(self, access_mode: str) -> bool:
-        return str(access_mode or "").lower() == "forname"
+        return str(access_mode or "").lower() == "catalog"
 
     def _is_for_path_mode(self, access_mode: str) -> bool:
-        return str(access_mode or "").lower() == "forpath"
+        return str(access_mode or "").lower() == "storage"
 
     def _get_cluster_columns(self, entity) -> list[str]:
         cols = getattr(entity, "cluster_columns", None)
@@ -209,10 +206,9 @@ class DeltaEntityProvider(
 
         # Choose the correct ALTER TABLE target.
         #
-        # For FOR_PATH mode, we must reference the path-based Delta identifier
+        # For storage mode, we must reference the path-based Delta identifier
         # (delta.`abfss://...`) because the table may not be registered in the catalog.
-        # For FOR_NAME mode, use the catalog name.
-        # For AUTO, prefer the catalog name only when it actually exists.
+        # For catalog mode, use the catalog name.
         target = None
         if self._is_for_path_mode(table_ref.access_mode):
             if table_ref.table_path:
@@ -224,16 +220,6 @@ class DeltaEntityProvider(
                     target = self._quote_table_identifier(table_ref.table_name)
                 except Exception:
                     target = table_ref.table_name
-        else:
-            # AUTO / unknown: prefer the catalog target only when resolvable.
-            if table_ref.table_name and self._check_catalog_table_exists(table_ref):
-                try:
-                    target = self._quote_table_identifier(table_ref.table_name)
-                except Exception:
-                    target = table_ref.table_name
-            elif table_ref.table_path:
-                escaped = table_ref.table_path.replace("`", "``")
-                target = f"delta.`{escaped}`"
 
         if not target:
             self.logger.warning(
@@ -254,8 +240,8 @@ class DeltaEntityProvider(
 
         if auto_requested and self._is_for_path_mode(table_ref.access_mode):
             raise ValueError(
-                "Auto clustering requires a catalog table target (forName). "
-                f"Entity '{getattr(entity, 'entityid', entity)}' is configured for forPath."
+                "Auto clustering requires a catalog table target (catalog). "
+                f"Entity '{getattr(entity, 'entityid', entity)}' is configured for storage."
             )
 
         try:
@@ -310,18 +296,7 @@ class DeltaEntityProvider(
                 quoted = self._quote_table_identifier(table_ref.table_name)
                 row = self.spark.sql(f"DESCRIBE DETAIL {quoted}").first()
             else:
-                # AUTO: attempt name first, fall back to path when name isn't resolvable.
-                if table_ref.table_name:
-                    try:
-                        quoted = self._quote_table_identifier(table_ref.table_name)
-                        row = self.spark.sql(f"DESCRIBE DETAIL {quoted}").first()
-                    except Exception:
-                        row = None
-                if row is None and table_ref.table_path:
-                    escaped = table_ref.table_path.replace("`", "``")
-                    row = self.spark.sql(f"DESCRIBE DETAIL delta.`{escaped}`").first()
-                if row is None:
-                    return None
+                return None
 
             # Record whether DESCRIBE DETAIL exposes the clusteringColumns field.
             try:
@@ -373,14 +348,14 @@ class DeltaEntityProvider(
 
     def _get_table_reference(self, entity) -> DeltaTableReference:
         """
-        Create table reference for entity.
+            Create table reference for entity.
 
-        Supports both tag-based and service-based configuration:
-        - provider.path: Override table path (optional)
-        - provider.table_name: Override table name (optional)
-        - provider.access_mode: Override access mode (optional, values: forName, forPath, auto)
+            Supports both tag-based and service-based configuration:
+            - provider.path: Override table path (optional)
+            - provider.table_name: Override table name (optional)
+        - provider.access_mode: Override access mode (optional, values: catalog, storage)
 
-        Falls back to injected services (EntityPathLocator, EntityNameMapper) if tags not provided.
+            Falls back to injected services (EntityPathLocator, EntityNameMapper) if tags not provided.
         """
         # Get tag-based configuration
         config = self._get_provider_config(entity)
@@ -391,7 +366,7 @@ class DeltaEntityProvider(
         access_mode = config.get("access_mode")
         if access_mode:
             # Validate the access mode value
-            valid_modes = ["forName", "forPath", "auto"]
+            valid_modes = ["catalog", "storage"]
             if access_mode not in valid_modes:
                 self.logger.warning(
                     f"Invalid provider.access_mode '{access_mode}' in tags for entity '{entity.entityid}'. "
@@ -408,7 +383,7 @@ class DeltaEntityProvider(
             try:
                 table_path = self.epl.get_table_path(entity)
             except Exception as path_error:
-                if self._is_for_name_mode(access_mode) or str(access_mode).lower() == "auto":
+                if self._is_for_name_mode(access_mode):
                     self.logger.debug(
                         f"Path lookup unavailable for {table_name}; proceeding with name-based bootstrap: {path_error}"
                     )
@@ -622,16 +597,6 @@ class DeltaEntityProvider(
             self._ensure_clustering(entity, table_ref)
             return
 
-        if not table_ref.table_path and str(table_ref.access_mode).lower() == "auto":
-            catalog_exists = self._check_catalog_table_exists(table_ref)
-            if catalog_exists:
-                if entity.schema:
-                    self._ensure_schema_applied(entity, table_ref)
-                table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
-                if table_ref.table_path:
-                    self._ensure_clustering(entity, table_ref)
-                    return
-
         if not table_ref.table_path:
             raise ValueError(f"Table path is None for entity {entity.name}")
 
@@ -658,7 +623,7 @@ class DeltaEntityProvider(
             self.logger.info(f"Creating physical table at {table_ref.table_path}")
             self._create_physical_table(entity, table_ref)
 
-        if not catalog_exists and table_ref.table_name and "." in table_ref.table_name:
+        if not catalog_exists and table_ref.table_name:
             self._attempt_catalog_registration(table_ref)
 
         self._ensure_clustering(entity, table_ref)
@@ -676,7 +641,7 @@ class DeltaEntityProvider(
 
     def _check_catalog_table_exists(self, table_ref: DeltaTableReference) -> bool:
         """Check if table is registered in catalog"""
-        if not table_ref.table_name or "." not in table_ref.table_name:
+        if not table_ref.table_name:
             return False
 
         try:
@@ -699,7 +664,7 @@ class DeltaEntityProvider(
 
             if not entity.schema:
                 # A Delta table can't be bootstrapped without a schema. If the caller
-                # wants to "ensure" forPath destinations, they must provide schema;
+                # wants to ensure storage destinations, they must provide schema;
                 # otherwise rely on the first write (which has a schema) to create it.
                 raise ValueError(
                     f"Cannot create physical Delta table at '{table_ref.table_path}' without schema "
@@ -814,7 +779,7 @@ class DeltaEntityProvider(
                 self.logger.error(
                     f"Cannot register table {table_ref.table_name} in catalog - database '{database}' has no location in Hive metastore. "
                     f"The table is still accessible via path: {table_ref.table_path}. "
-                    f"To fix: Switch to FOR_PATH access mode (kindling.delta.tablerefmode='forPath') "
+                    f"To fix: Switch to storage access mode (kindling.delta.access_mode='storage') "
                     f"or recreate database with: CREATE DATABASE {database} LOCATION 'abfss://...';"
                 )
             else:
@@ -860,7 +825,7 @@ class DeltaEntityProvider(
         if self._should_partition_files(entity):
             df_writer = df_writer.partitionBy(*entity.partition_columns)
 
-        # Keep forName semantics table-oriented even when catalog location is known.
+        # Keep catalog semantics table-oriented even when catalog location is known.
         if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
             self._ensure_configured_table_schema_exists()
             df_writer.mode("append").saveAsTable(table_ref.table_name)
@@ -868,7 +833,7 @@ class DeltaEntityProvider(
             table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
         elif table_ref.table_path:
             df_writer = df_writer.option("path", table_ref.table_path)
-            df_writer.save()
+            df_writer.mode("append").save()
         else:
             raise ValueError(
                 f"Cannot write entity '{entity.entityid}' without table path in access mode '{table_ref.access_mode}'"
@@ -888,6 +853,38 @@ class DeltaEntityProvider(
                 LOCATION '{table_ref.table_path}'
             """
             )
+
+    def _ensure_destination_for_write(self, entity, table_ref: DeltaTableReference) -> None:
+        """Best-effort ensure before batch writes so entity metadata can prepare the table."""
+        ensure_on_write = self.config.get("kindling.delta.ensure_on_write")
+        if ensure_on_write is not None and str(ensure_on_write).strip().lower() in {
+            "false",
+            "0",
+            "no",
+            "off",
+        }:
+            self.logger.debug(
+                "Skipping explicit ensure before write: kindling.delta.ensure_on_write is false"
+            )
+            return
+
+        try:
+            self._ensure_table_exists(entity, table_ref)
+        except ValueError as e:
+            # Storage bootstrap requires schema to create an empty Delta table. If the entity
+            # has no schema, keep the legacy implicit-create behavior and let the first write
+            # create the table from the DataFrame schema instead.
+            if (
+                not entity.schema
+                and self._is_for_path_mode(table_ref.access_mode)
+                and "without schema" in str(e).lower()
+            ):
+                self.logger.warning(
+                    f"Skipping explicit ensure for entity '{entity.entityid}' in storage mode "
+                    f"because no entity.schema is defined; falling back to write-driven creation."
+                )
+                return
+            raise
 
     def _merge_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Merge DataFrame to existing Delta table"""
@@ -1136,6 +1133,7 @@ class DeltaEntityProvider(
         self.emit("entity.before_write", entity_id=entity.entityid, entity_name=entity.name)
 
         try:
+            self._ensure_destination_for_write(entity, table_ref)
             self._write_to_delta_table(df, entity, table_ref)
 
             duration = time.time() - start_time

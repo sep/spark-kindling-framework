@@ -5,7 +5,7 @@ Streaming Pipes Test App
 Tests the Unified DAG Orchestrator in streaming mode:
 - Define entities and pipes via framework decorators
 - Use platform-provided default EntityPathLocator and EntityNameMapper bindings
-- Execute streaming plan via GenerationExecutor
+- Execute streaming plan via ExecutionOrchestrator
 - Verify data flows through bronze → silver → gold
 
 Pipeline: bronze stream → silver stream → gold stream (joined with static lookup)
@@ -14,16 +14,6 @@ Pipeline: bronze stream → silver stream → gold stream (joined with static lo
 import sys
 import time
 
-from kindling.data_entities import DataEntities, DataEntityRegistry
-from kindling.data_pipes import DataPipes
-from kindling.execution_strategy import ExecutionPlanGenerator
-from kindling.generation_executor import GenerationExecutor
-from kindling.injection import GlobalInjector, get_kindling_service
-from kindling.platform_provider import PlatformServiceProvider
-from kindling.spark_config import ConfigService
-from kindling.spark_log_provider import SparkLoggerProvider
-from kindling.spark_session import get_or_create_spark_session
-from kindling.watermarking import WatermarkEntityFinder
 from pyspark.sql.functions import col, current_timestamp
 from pyspark.sql.types import (
     IntegerType,
@@ -32,6 +22,16 @@ from pyspark.sql.types import (
     StructType,
     TimestampType,
 )
+
+from kindling.data_entities import DataEntities, DataEntityRegistry
+from kindling.data_pipes import DataPipes
+from kindling.execution_orchestrator import ExecutionOrchestrator
+from kindling.injection import GlobalInjector, get_kindling_service
+from kindling.platform_provider import PlatformServiceProvider
+from kindling.spark_config import ConfigService
+from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_session import get_or_create_spark_session
+from kindling.watermarking import WatermarkEntityFinder
 
 # ---- Init ----
 
@@ -116,13 +116,13 @@ try:
         if is_databricks:
             return {
                 "provider_type": "delta",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
                 "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_{layer_name}",
             }
         if is_synapse:
             return {
                 "provider_type": "delta",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
                 "provider.table_name": _qualified_table_name(
                     table_schema, f"{table_name_prefix}_{layer_name}"
                 ),
@@ -130,10 +130,10 @@ try:
         return {"provider_type": "delta", "provider.path": path}
 
     def _partition_test_tags(path: str):
-        # Always test file partitioning via forPath to avoid platform catalog differences.
+        # Always test file partitioning via storage to avoid platform catalog differences.
         return {
             "provider_type": "delta",
-            "provider.access_mode": "forPath",
+            "provider.access_mode": "storage",
             "provider.path": path,
         }
 
@@ -142,21 +142,21 @@ try:
         if is_databricks:
             return {
                 "provider_type": "delta",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
                 "provider.table_name": f"{table_catalog}.{table_schema}.{table_name_prefix}_clustering_test",
             }
         if is_synapse:
             # Use the system test schema (pre-created with LOCATION) so managed tables can be created by name.
             return {
                 "provider_type": "delta",
-                "provider.access_mode": "forName",
+                "provider.access_mode": "catalog",
                 "provider.table_name": _qualified_table_name(
                     table_schema, f"{table_name_prefix}_clustering_test"
                 ),
             }
         return {
             "provider_type": "delta",
-            "provider.access_mode": "forPath",
+            "provider.access_mode": "storage",
             "provider.path": path,
         }
 
@@ -345,7 +345,7 @@ try:
     # Intentionally specify both partition_columns and cluster_columns to validate
     # provider behavior: prefer clustering and skip partitionBy().
     # In system tests, allow overriding cluster columns via config so we can validate
-    # "auto" liquid clustering behavior without cloning the app.
+    # "catalog" liquid clustering behavior without cloning the app.
     cluster_cols_v1 = _coerce_cluster_columns(
         config_service.get("kindling.system_tests.streaming_pipes.cluster_columns"), ["id"]
     )
@@ -608,15 +608,13 @@ try:
     # ---- Execute streaming pipeline via Orchestrator FIRST ----
     # Start downstream queries (silver_to_gold, bronze_to_silver) - they wait for data
 
-    plan_generator = get_kindling_service(ExecutionPlanGenerator)
-    executor = get_kindling_service(GenerationExecutor)
+    orchestrator = get_kindling_service(ExecutionOrchestrator)
 
     pipe_ids = ["bronze_to_silver", "silver_to_gold"]
-    plan = plan_generator.generate_streaming_plan(pipe_ids)
 
     # Pass checkpoint base path for streaming queries
     streaming_options = {"base_checkpoint_path": chk_base}
-    result = executor.execute_streaming(plan, streaming_options=streaming_options)
+    result = orchestrator.execute_streaming(pipe_ids, streaming_options=streaming_options)
 
     ok = result.all_succeeded
     num_queries = len(result.streaming_queries) if hasattr(result, "streaming_queries") else 0

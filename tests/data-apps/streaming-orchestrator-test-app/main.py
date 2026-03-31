@@ -15,6 +15,9 @@ import time
 from datetime import datetime
 from types import SimpleNamespace
 
+from pyspark.sql.functions import current_timestamp
+from pyspark.sql.types import StringType, StructField, StructType, TimestampType
+
 from kindling.data_entities import DataEntities, DataEntityRegistry, EntityProvider
 from kindling.data_pipes import DataPipes
 from kindling.execution_strategy import ExecutionPlanGenerator
@@ -28,8 +31,6 @@ from kindling.streaming_listener import KindlingStreamingListener
 from kindling.streaming_orchestrator import StreamingOrchestrator
 from kindling.streaming_query_manager import StreamingQueryManager
 from kindling.watermarking import WatermarkEntityFinder
-from pyspark.sql.functions import current_timestamp
-from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 
 class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
@@ -204,7 +205,7 @@ def _entity_tags(
     if platform_name == "databricks" and table_catalog and table_schema:
         return {
             "provider_type": "delta",
-            "provider.access_mode": "forName",
+            "provider.access_mode": "catalog",
             "provider.table_name": f"{table_catalog}.{table_schema}.{table_leaf}",
         }
     if platform_name == "synapse" and table_schema:
@@ -213,12 +214,12 @@ def _entity_tags(
             table_name = f"{table_catalog}.{table_name}"
         return {
             "provider_type": "delta",
-            "provider.access_mode": "forName",
+            "provider.access_mode": "catalog",
             "provider.table_name": table_name,
         }
     return {
         "provider_type": "delta",
-        "provider.access_mode": "forPath",
+        "provider.access_mode": "storage",
         "provider.path": path,
     }
 

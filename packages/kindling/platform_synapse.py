@@ -11,6 +11,7 @@ from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import *
 from azure.synapse.artifacts import ArtifactsClient
 from azure.synapse.artifacts.models import *
+
 from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
 from kindling.spark_config import ConfigService
@@ -42,13 +43,13 @@ def _get_mssparkutils():
 
 def _bind_default_entity_services(logger) -> None:
     """Bind Synapse defaults for config when no explicit setting exists."""
-    # Default to name-based Delta access on Synapse (Spark catalog tables).
+    # Default to catalog-based Delta access on Synapse (Spark catalog tables).
     # Users can override per-entity via `provider.access_mode` or globally via config.
     try:
         cs = GlobalInjector.get(ConfigService)
-        if cs.get("kindling.delta.tablerefmode") is None:
-            cs.set("kindling.delta.tablerefmode", "forName")
-            logger.info("Defaulted kindling.delta.tablerefmode=forName (Synapse convention)")
+        if cs.get("kindling.delta.access_mode") is None:
+            cs.set("kindling.delta.access_mode", "catalog")
+            logger.info("Defaulted kindling.delta.access_mode=catalog (Synapse convention)")
     except Exception:
         pass
 

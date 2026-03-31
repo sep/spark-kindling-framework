@@ -12,6 +12,7 @@ from urllib.parse import quote
 import __main__
 import requests
 from azure.core.exceptions import *
+
 from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
 from kindling.spark_config import ConfigService
@@ -39,13 +40,13 @@ def _get_mssparkutils():
 
 def _bind_default_entity_services(logger) -> None:
     """Bind Fabric defaults for config when no explicit setting exists."""
-    # Default to name-based Delta access on Fabric (Lakehouse tables).
+    # Default to catalog-based Delta access on Fabric (Lakehouse tables).
     # Users can override per-entity via `provider.access_mode` or globally via config.
     try:
         cs = GlobalInjector.get(ConfigService)
-        if cs.get("kindling.delta.tablerefmode") is None:
-            cs.set("kindling.delta.tablerefmode", "forName")
-            logger.info("Defaulted kindling.delta.tablerefmode=forName (Fabric convention)")
+        if cs.get("kindling.delta.access_mode") is None:
+            cs.set("kindling.delta.access_mode", "catalog")
+            logger.info("Defaulted kindling.delta.access_mode=catalog (Fabric convention)")
     except Exception:
         pass
 

@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+
 from kindling.data_entities import EntityMetadata, EntityNameMapper, EntityPathLocator
 from kindling.entity_provider_delta import DeltaEntityProvider, DeltaTableReference
 from kindling.signaling import SignalProvider
@@ -16,8 +17,8 @@ def provider_and_mocks(monkeypatch):
     config = MagicMock(spec=ConfigService)
 
     def _get(key, default=None):
-        if key == "kindling.delta.tablerefmode":
-            return "forName"
+        if key == "kindling.delta.access_mode":
+            return "catalog"
         if key == "kindling.features.delta.auto_clustering":
             return True
         # No explicit feature overrides in unit tests
@@ -80,7 +81,7 @@ def test_write_skips_partition_by_when_cluster_columns_present(provider_and_mock
     writer = _mock_df_writer_chain(df)
 
     table_ref = DeltaTableReference(
-        table_name="main.default.my_table", table_path="Tables/my_table", access_mode="forName"
+        table_name="main.default.my_table", table_path="Tables/my_table", access_mode="catalog"
     )
 
     provider._write_to_delta_table(df, entity, table_ref)
@@ -106,7 +107,7 @@ def test_write_partitions_when_no_cluster_columns(provider_and_mocks):
     writer = _mock_df_writer_chain(df)
 
     table_ref = DeltaTableReference(
-        table_name="main.default.my_table", table_path="Tables/my_table", access_mode="forName"
+        table_name="main.default.my_table", table_path="Tables/my_table", access_mode="catalog"
     )
 
     provider._write_to_delta_table(df, entity, table_ref)
@@ -128,7 +129,7 @@ def test_ensure_clustering_runs_alter_table(provider_and_mocks):
     )
 
     table_ref = DeltaTableReference(
-        table_name="main.default.my_table", table_path=None, access_mode="forName"
+        table_name="main.default.my_table", table_path=None, access_mode="catalog"
     )
 
     provider._ensure_clustering(entity, table_ref)
@@ -153,7 +154,7 @@ def test_ensure_clustering_auto_uses_cluster_by_auto(provider_and_mocks):
         cluster_columns=["auto"],
     )
     table_ref = DeltaTableReference(
-        table_name="main.default.my_table", table_path=None, access_mode="forName"
+        table_name="main.default.my_table", table_path=None, access_mode="catalog"
     )
 
     provider._ensure_clustering(entity, table_ref)
@@ -175,7 +176,7 @@ def test_ensure_clustering_auto_rejects_for_path(provider_and_mocks):
         cluster_columns="auto",
     )
     table_ref = DeltaTableReference(
-        table_name="main.default.my_table", table_path="Tables/my_table", access_mode="forPath"
+        table_name="main.default.my_table", table_path="Tables/my_table", access_mode="storage"
     )
 
     with pytest.raises(ValueError):

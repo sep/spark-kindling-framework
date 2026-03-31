@@ -8,6 +8,7 @@ from typing import Callable, Dict, List
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+
 from kindling.data_pipes import (
     DataPipes,
     DataPipesExecuter,
@@ -747,6 +748,69 @@ class TestDataPipesExecuter:
             self.mock_trace_provider,
         )
         assert callable(executer.run_datapipes)
+        assert callable(executer.run_datapipes_dag)
+
+    def test_run_datapipes_delegates_to_dag_when_enabled(self):
+        """Test use_dag=True delegates to run_datapipes_dag."""
+        executer = DataPipesExecuter(
+            self.mock_logger_provider,
+            self.mock_entity_registry,
+            self.mock_pipes_registry,
+            self.mock_erps,
+            self.mock_trace_provider,
+        )
+        executer.run_datapipes_dag = Mock(return_value="dag-result")
+
+        result = executer.run_datapipes(
+            ["pipe_a"],
+            use_dag=True,
+            dag_strategy="batch",
+            parallel=True,
+            max_workers=2,
+        )
+
+        assert result == "dag-result"
+        executer.run_datapipes_dag.assert_called_once_with(
+            ["pipe_a"],
+            strategy="batch",
+            parallel=True,
+            max_workers=2,
+        )
+
+    def test_run_datapipes_dag_resolves_orchestrator_and_executes(self):
+        """Test run_datapipes_dag delegates to ExecutionOrchestrator."""
+        executer = DataPipesExecuter(
+            self.mock_logger_provider,
+            self.mock_entity_registry,
+            self.mock_pipes_registry,
+            self.mock_erps,
+            self.mock_trace_provider,
+        )
+        mock_orchestrator = Mock()
+        mock_orchestrator.execute.return_value = "ok"
+
+        with patch.object(GlobalInjector, "get", return_value=mock_orchestrator) as mock_get:
+            result = executer.run_datapipes_dag(
+                ["pipe1", "pipe2"],
+                strategy="streaming",
+                parallel=False,
+                max_workers=3,
+                pipe_timeout=12.5,
+                streaming_options={"pipe1": {"checkpoint": "/tmp/checkpoints"}},
+                auto_cache=True,
+            )
+
+        assert result == "ok"
+        mock_get.assert_called_once()
+        kwargs = mock_orchestrator.execute.call_args.kwargs
+        assert kwargs["pipe_ids"] == ["pipe1", "pipe2"]
+        assert kwargs["strategy"] == "streaming"
+        assert kwargs["parallel"] is False
+        assert kwargs["max_workers"] == 3
+        assert kwargs["pipe_timeout"] == 12.5
+        assert kwargs["streaming_options"] == {"pipe1": {"checkpoint": "/tmp/checkpoints"}}
+        assert kwargs["auto_cache"] is True
+        assert kwargs["error_strategy"] is not None
 
 
 class TestAbstractBaseClasses:
@@ -803,6 +867,7 @@ class TestAbstractBaseClasses:
             DataPipesExecution()
 
         assert hasattr(DataPipesExecution, "run_datapipes")
+        assert hasattr(DataPipesExecution, "run_datapipes_dag")
 
     def test_stage_processing_service_interface(self):
         """Test StageProcessingService has required abstract methods"""
