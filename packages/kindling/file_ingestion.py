@@ -11,6 +11,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import current_timestamp, lit
+
 from kindling.data_entities import *
 from kindling.file_ingestion import *
 from kindling.injection import *
@@ -20,8 +23,6 @@ from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_session import *
 from kindling.spark_trace import *
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import current_timestamp, lit
 
 
 @dataclass
@@ -237,9 +238,6 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
         if not de:
             self.logger.error(f"Entity definition not found: {dest_entity_id}")
             return
-
-        # Ensure table exists
-        self.ep.ensure_entity_table(de)
 
         # Union all DataFrames for this table
         dfs = [df for df, _ in df_list]
