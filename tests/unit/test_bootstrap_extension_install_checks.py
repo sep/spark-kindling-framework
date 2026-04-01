@@ -2,11 +2,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from kindling.bootstrap import (
+    _build_run_scoped_staging_path,
     _dbfs_uri_to_local_path,
     _is_dbfs_path,
-    _resolve_initial_download_temp_path,
     _resolve_bootstrap_temp_path,
     _resolve_databricks_staging_path,
+    _resolve_initial_download_temp_path,
     install_bootstrap_dependencies,
 )
 
@@ -142,6 +143,15 @@ def test_dbfs_uri_to_local_path_converts_dbfs_uri():
     assert _dbfs_uri_to_local_path("dbfs:/tmp/kindling/test.whl") == "/dbfs/tmp/kindling/test.whl"
 
 
+def test_build_run_scoped_staging_path_nests_under_root():
+    path = _build_run_scoped_staging_path(
+        "/Volumes/kindling/kindling/artifacts", "extensions", "x.whl"
+    )
+
+    assert path.startswith("/Volumes/kindling/kindling/artifacts/.kindling-bootstrap/")
+    assert path.endswith("/extensions/x.whl")
+
+
 def test_extension_install_uses_explicit_dbfs_temp_path_for_databricks():
     logger = MagicMock()
 
@@ -176,16 +186,9 @@ def test_extension_install_uses_explicit_dbfs_temp_path_for_databricks():
             artifacts_storage_path="abfss://artifacts@acct/path",
         )
 
-    storage_utils.fs.cp.assert_called_once_with(
-        "abfss://artifacts@acct/path/packages/kindling_otel_azure-0.4.0-py3-none-any.whl",
-        "dbfs:/tmp/kindling_extensions/kindling_otel_azure-0.4.0-py3-none-any.whl",
-        recurse=False,
-    )
+    copied_path = storage_utils.fs.cp.call_args.args[1]
+    assert copied_path.startswith("dbfs:/tmp/kindling_extensions/.kindling-bootstrap/")
+    assert copied_path.endswith("/extensions/kindling_otel_azure-0.4.0-py3-none-any.whl")
     subprocess_run.assert_called_once()
-    assert (
-        subprocess_run.call_args.args[0][7]
-        == "/dbfs/tmp/kindling_extensions/kindling_otel_azure-0.4.0-py3-none-any.whl"
-    )
-    storage_utils.fs.rm.assert_called_once_with(
-        "dbfs:/tmp/kindling_extensions/kindling_otel_azure-0.4.0-py3-none-any.whl"
-    )
+    assert subprocess_run.call_args.args[0][7] == _dbfs_uri_to_local_path(copied_path)
+    storage_utils.fs.rm.assert_called_once_with(copied_path)
