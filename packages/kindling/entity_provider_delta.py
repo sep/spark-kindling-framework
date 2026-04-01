@@ -475,37 +475,63 @@ class DeltaEntityProvider(
         # Ensure schema exists when a schema LOCATION is configured (Synapse convention).
         self._ensure_configured_table_schema_exists()
 
-        dt = (
-            DeltaTable.createIfNotExists(self.spark)
-            .tableName(table_ref.table_name)
-            .property("delta.enableChangeDataFeed", "true")
-        )
-
+        # Prefer bootstrapping managed tables through the standard Delta writer when
+        # a schema is available. Fabric in particular can materialize a non-Delta
+        # catalog entry from the builder path, which later causes append/saveAsTable
+        # to fail with DELTA_MISSING_DELTA_TABLE.
         if entity.schema:
-            dt = dt.addColumns(entity.schema)
+            from pyspark.sql.types import StructType
 
-        # Liquid clustering: enable at creation time when possible.
-        # Some engines do not allow ALTER TABLE ... CLUSTER BY unless the table was created
-        # with clustering enabled.
-        cluster_cols = self._get_cluster_columns(entity)
-        if (
-            cluster_cols
-            and not self._is_auto_clustering_requested(cluster_cols)
-            and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False
-        ):
+            empty_df = self.spark.createDataFrame([], schema=StructType(entity.schema))
+            writer = (
+                empty_df.write.format("delta")
+                .mode("append")
+                .option("mergeSchema", "true")
+                .option("delta.enableChangeDataFeed", "true")
+            )
+            if self._should_partition_files(entity):
+                writer = writer.partitionBy(*entity.partition_columns)
+            writer.saveAsTable(table_ref.table_name)
+
+            # Best-effort: persist desired table properties after creation.
             try:
-                dt = dt.clusterBy(*cluster_cols)
-            except Exception as e:
-                # Best-effort: don't fail table creation if clustering isn't supported.
-                self.logger.warning(
-                    f"Unable to enable clustering at table creation for '{table_ref.table_name}' "
-                    f"(columns={cluster_cols}): {e}"
+                quoted = self._quote_table_identifier(table_ref.table_name)
+                self.spark.sql(
+                    f"ALTER TABLE {quoted} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)"
                 )
+            except Exception as e:
+                self.logger.warning(
+                    f"Unable to set delta.enableChangeDataFeed for '{table_ref.table_name}': {e}"
+                )
+        else:
+            dt = (
+                DeltaTable.createIfNotExists(self.spark)
+                .tableName(table_ref.table_name)
+                .property("delta.enableChangeDataFeed", "true")
+            )
 
-        if self._should_partition_files(entity):
-            dt = dt.partitionedBy(*entity.partition_columns)
+            # Liquid clustering: enable at creation time when possible.
+            # Some engines do not allow ALTER TABLE ... CLUSTER BY unless the table was created
+            # with clustering enabled.
+            cluster_cols = self._get_cluster_columns(entity)
+            if (
+                cluster_cols
+                and not self._is_auto_clustering_requested(cluster_cols)
+                and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False
+            ):
+                try:
+                    dt = dt.clusterBy(*cluster_cols)
+                except Exception as e:
+                    # Best-effort: don't fail table creation if clustering isn't supported.
+                    self.logger.warning(
+                        f"Unable to enable clustering at table creation for '{table_ref.table_name}' "
+                        f"(columns={cluster_cols}): {e}"
+                    )
 
-        dt.execute()
+            if self._should_partition_files(entity):
+                dt = dt.partitionedBy(*entity.partition_columns)
+
+            dt.execute()
         table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
 
     def _ensure_schema_applied(self, entity, table_ref: DeltaTableReference):

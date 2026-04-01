@@ -220,6 +220,35 @@ class TestPlatformWorkspaceConfig:
                 content = default_config.read_text()
                 assert "kindling:" in content
 
+    def test_download_config_files_uses_run_scoped_volume_paths_for_databricks(self):
+        """Databricks volume-backed config staging should use a run-scoped directory."""
+        from kindling.bootstrap import download_config_files
+
+        class DBUtils:
+            def __init__(self):
+                self.fs = MagicMock()
+
+        mock_storage = DBUtils()
+        mock_storage.fs.head.return_value = "kindling:\n  version: '0.2.0'\n"
+
+        with patch("kindling.bootstrap._get_storage_utils", return_value=mock_storage):
+            config_files = download_config_files(
+                artifacts_storage_path="abfss://artifacts@acct/path",
+                environment="dev",
+                platform="databricks",
+                workspace_id=None,
+                temp_path="/Volumes/kindling/kindling/artifacts",
+            )
+
+        assert config_files
+        assert all(
+            path.startswith("/Volumes/kindling/kindling/artifacts/.kindling-bootstrap/")
+            for path in config_files
+        )
+        put_paths = [call.args[0] for call in mock_storage.fs.put.call_args_list]
+        assert put_paths
+        assert all("/config/" in path for path in put_paths)
+
     def test_get_workspace_id_for_platform_fabric(self):
         """Test workspace ID detection for Fabric"""
         from kindling.bootstrap import _get_workspace_id_for_platform
