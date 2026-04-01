@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,9 @@ level_hierarchy = {
     "FATAL": 5,
     "OFF": 6,
 }
+
+
+_BOOTSTRAP_STAGE_ID = uuid.uuid4().hex[:12]
 
 
 def _parse_spark_conf_value(value: Any) -> Any:
@@ -126,6 +130,19 @@ def _dbfs_uri_to_local_path(path: str) -> str:
     if normalized.startswith("dbfs:/"):
         return f"/dbfs{normalized[len('dbfs:'):]}"
     return normalized
+
+
+def _build_run_scoped_staging_path(root: Optional[str], *parts: str) -> Optional[str]:
+    normalized_root = _normalize_path_value(root)
+    if not normalized_root:
+        return None
+
+    stripped_parts = [
+        part.strip("/") for part in parts if isinstance(part, str) and part.strip("/")
+    ]
+    return "/".join(
+        [normalized_root.rstrip("/"), ".kindling-bootstrap", _BOOTSTRAP_STAGE_ID, *stripped_parts]
+    )
 
 
 def _parent_volume_path(path: Optional[str]) -> Optional[str]:
@@ -305,7 +322,8 @@ def download_config_files(
 
     if is_databricks:
         if volume_path:
-            print(f"Using Volume path for configs: {volume_path}")
+            scoped_volume_path = _build_run_scoped_staging_path(volume_path, "config")
+            print(f"Using Volume path for configs: {scoped_volume_path}")
         else:
             print(f"Using DBFS temp path: {temp_dir}")
             dbfs_temp_path = temp_dir
@@ -353,7 +371,9 @@ def download_config_files(
 
                 if volume_path:
                     # Write to Volume (preferred - accessible as regular file)
-                    volume_file = f"{volume_path.rstrip('/')}/{len(config_files)}_{filename}"
+                    volume_file = _build_run_scoped_staging_path(
+                        volume_path, "config", f"{len(config_files)}_{filename}"
+                    )
                     storage_utils.fs.put(volume_file, text_content, overwrite=True)
                     config_files.append(volume_file)
                     print(f"✓ Downloaded: {filename} to {volume_file}")
@@ -929,13 +949,17 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
                     if volume_path and _is_volume_path(volume_path):
                         # Use Unity Catalog Volume
-                        local_path = f"{volume_path.rstrip('/')}/{wheel_filename}"
+                        local_path = _build_run_scoped_staging_path(
+                            volume_path, "extensions", wheel_filename
+                        )
                         print(f"   Downloading to volume: {local_path}")
                         storage_utils.fs.cp(remote_wheel_path, local_path, recurse=False)
                     else:
                         # Fallback to DBFS, preserving an explicit DBFS temp path when provided.
                         dbfs_target = (
-                            f"{volume_path.rstrip('/')}/{wheel_filename}"
+                            _build_run_scoped_staging_path(
+                                volume_path, "extensions", wheel_filename
+                            )
                             if _is_dbfs_path(volume_path)
                             else f"dbfs:/tmp/{wheel_filename}"
                         )
@@ -993,12 +1017,16 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                     try:
                         volume_path = temp_path
                         if volume_path and _is_volume_path(volume_path):
-                            cleanup_path = f"{volume_path.rstrip('/')}/{wheel_filename}"
+                            cleanup_path = _build_run_scoped_staging_path(
+                                volume_path, "extensions", wheel_filename
+                            )
                             storage_utils.fs.rm(cleanup_path)
                             print(f"   🧹 Cleaned up volume file")
                         else:
                             cleanup_path = (
-                                f"{volume_path.rstrip('/')}/{wheel_filename}"
+                                _build_run_scoped_staging_path(
+                                    volume_path, "extensions", wheel_filename
+                                )
                                 if _is_dbfs_path(volume_path)
                                 else f"dbfs:/tmp/{wheel_filename}"
                             )
