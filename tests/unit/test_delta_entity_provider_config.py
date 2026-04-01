@@ -8,6 +8,7 @@ while maintaining backward compatibility with service-based configuration.
 from unittest.mock import MagicMock, Mock
 
 import pytest
+from pyspark.sql.types import StringType, StructField
 
 from kindling.data_entities import EntityMetadata, EntityNameMapper, EntityPathLocator
 from kindling.entity_provider_delta import DeltaEntityProvider, DeltaTableReference
@@ -326,6 +327,54 @@ class TestDeltaEntityProviderConfig:
         provider._ensure_table_exists(entity, table_ref)
 
         provider._create_managed_table.assert_called_once_with(entity, table_ref)
+        assert table_ref.table_path == "abfss://managed/location"
+
+    def test_create_managed_table_with_schema_bootstraps_via_delta_writer(self, mock_dependencies):
+        """Schema-backed managed tables should be bootstrapped through saveAsTable."""
+        provider = DeltaEntityProvider(
+            config=mock_dependencies["config"],
+            entity_name_mapper=mock_dependencies["entity_name_mapper"],
+            path_locator=mock_dependencies["path_locator"],
+            tp=mock_dependencies["logger_provider"],
+            signal_provider=mock_dependencies["signal_provider"],
+        )
+
+        schema = [
+            StructField("id", StringType(), False),
+            StructField("value", StringType(), True),
+        ]
+        entity = EntityMetadata(
+            entityid="sales.transactions",
+            name="transactions",
+            partition_columns=[],
+            merge_columns=["id"],
+            tags={},
+            schema=schema,
+        )
+        table_ref = DeltaTableReference(
+            table_name="default_catalog.default_db.default_table",
+            table_path=None,
+            access_mode="catalog",
+        )
+
+        empty_df = MagicMock()
+        writer = MagicMock()
+        provider.spark.createDataFrame.return_value = empty_df
+        empty_df.write.format.return_value = writer
+        writer.mode.return_value = writer
+        writer.option.return_value = writer
+        provider.spark.sql = MagicMock()
+        provider._resolve_catalog_table_location = MagicMock(
+            return_value="abfss://managed/location"
+        )
+
+        provider._create_managed_table(entity, table_ref)
+
+        provider.spark.createDataFrame.assert_called_once()
+        empty_df.write.format.assert_called_once_with("delta")
+        writer.mode.assert_called_once_with("append")
+        writer.saveAsTable.assert_called_once_with("default_catalog.default_db.default_table")
+        provider.spark.sql.assert_called_once()
         assert table_ref.table_path == "abfss://managed/location"
 
     def test_ensure_entity_table_emits_failed_when_reference_resolution_fails(
