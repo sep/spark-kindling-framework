@@ -30,7 +30,7 @@ entity_tags:
 
   # Streaming entities
   stream.orders_raw:
-    provider.connection_string: "${EVENTHUB_CONNECTION_STRING}"
-    provider.consumer_group: "$Default"
-    provider.starting_position: "earliest"
+    provider.eventhub.connectionString: "${EVENTHUB_CONNECTION_STRING}"
+    provider.eventhub.consumerGroup: "$Default"
+    provider.startingPosition: "earliest"
     environment: "production"

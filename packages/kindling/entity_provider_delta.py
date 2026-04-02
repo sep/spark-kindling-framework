@@ -482,7 +482,39 @@ class DeltaEntityProvider(
         if entity.schema:
             from pyspark.sql.types import StructType
 
-            empty_df = self.spark.createDataFrame([], schema=StructType(entity.schema))
+            schema_struct = StructType(entity.schema)
+
+            # Prefer Delta table builder for managed tables when clustering is requested.
+            # Some engines require clustering to be enabled at create time and reject
+            # ALTER TABLE ... CLUSTER BY on an already-created non-clustered table.
+            cluster_cols = self._get_cluster_columns(entity)
+            if (
+                cluster_cols
+                and not self._is_auto_clustering_requested(cluster_cols)
+                and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False
+            ):
+                try:
+                    dt = (
+                        DeltaTable.createIfNotExists(self.spark)
+                        .tableName(table_ref.table_name)
+                        .property("delta.enableChangeDataFeed", "true")
+                    )
+                    dt = dt.addColumns(schema_struct)
+                    dt = dt.clusterBy(*cluster_cols)
+                    if self._should_partition_files(entity):
+                        dt = dt.partitionedBy(*entity.partition_columns)
+                    dt.execute()
+                    table_ref.table_path = self._resolve_catalog_table_location(
+                        table_ref.table_name
+                    )
+                    return
+                except Exception as e:
+                    self.logger.warning(
+                        "Unable to create managed Delta table via DeltaTable builder with clustering "
+                        f"for '{table_ref.table_name}' (columns={cluster_cols}); falling back to dataframe bootstrap: {e}"
+                    )
+
+            empty_df = self.spark.createDataFrame([], schema=schema_struct)
             writer = (
                 empty_df.write.format("delta")
                 .mode("append")
