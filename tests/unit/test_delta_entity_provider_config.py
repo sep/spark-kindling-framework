@@ -377,6 +377,62 @@ class TestDeltaEntityProviderConfig:
         provider.spark.sql.assert_called_once()
         assert table_ref.table_path == "abfss://managed/location"
 
+    def test_create_managed_table_with_schema_and_clustering_uses_builder(
+        self, mock_dependencies, monkeypatch
+    ):
+        """Schema-backed managed tables with cluster_columns should use DeltaTable builder."""
+        provider = DeltaEntityProvider(
+            config=mock_dependencies["config"],
+            entity_name_mapper=mock_dependencies["entity_name_mapper"],
+            path_locator=mock_dependencies["path_locator"],
+            tp=mock_dependencies["logger_provider"],
+            signal_provider=mock_dependencies["signal_provider"],
+        )
+
+        schema = [
+            StructField("id", StringType(), False),
+            StructField("value", StringType(), True),
+        ]
+        entity = EntityMetadata(
+            entityid="sales.transactions",
+            name="transactions",
+            partition_columns=[],
+            cluster_columns=["id"],
+            merge_columns=["id"],
+            tags={},
+            schema=schema,
+        )
+        table_ref = DeltaTableReference(
+            table_name="default_catalog.default_db.default_table",
+            table_path=None,
+            access_mode="catalog",
+        )
+
+        builder = MagicMock()
+        builder.tableName.return_value = builder
+        builder.property.return_value = builder
+        builder.addColumns.return_value = builder
+        builder.clusterBy.return_value = builder
+        builder.partitionedBy.return_value = builder
+        mock_delta_table = MagicMock()
+        mock_delta_table.createIfNotExists.return_value = builder
+        monkeypatch.setattr("kindling.entity_provider_delta.DeltaTable", mock_delta_table)
+
+        provider.spark.createDataFrame = MagicMock()
+        provider._resolve_catalog_table_location = MagicMock(
+            return_value="abfss://managed/location"
+        )
+
+        provider._create_managed_table(entity, table_ref)
+
+        mock_delta_table.createIfNotExists.assert_called_once_with(provider.spark)
+        builder.tableName.assert_called_once_with("default_catalog.default_db.default_table")
+        builder.addColumns.assert_called_once()
+        builder.clusterBy.assert_called_once_with("id")
+        builder.execute.assert_called_once()
+        provider.spark.createDataFrame.assert_not_called()
+        assert table_ref.table_path == "abfss://managed/location"
+
     def test_ensure_entity_table_emits_failed_when_reference_resolution_fails(
         self, mock_dependencies
     ):
