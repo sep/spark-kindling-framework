@@ -23,6 +23,37 @@ on:
   release:
     types: [published]
   workflow_dispatch: # Allow manual triggering
+    inputs:
+      system_test_platform:
+        description: "System test platform to run"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - fabric
+          - synapse
+          - databricks
+      system_test_workers:
+        description: "Override xdist workers for system tests (blank uses platform defaults)"
+        required: false
+        default: ""
+        type: string
+      system_test_poll_interval:
+        description: "Override system test poll interval in seconds"
+        required: false
+        default: ""
+        type: string
+      system_test_stream_max_wait:
+        description: "Override stdout stream max wait in seconds"
+        required: false
+        default: ""
+        type: string
+      system_test_completion_timeout:
+        description: "Override direct status polling timeout in seconds"
+        required: false
+        default: ""
+        type: string
 
 env:
   PYTHON_VERSION: "3.11"
@@ -250,7 +281,15 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: |
+      github.event_name == 'release' ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        (
+          github.event.inputs.system_test_platform == 'all' ||
+          github.event.inputs.system_test_platform == matrix.platform
+        )
+      )
     environment: testing
     outputs:
       azure_base_path: ${{ steps.base-path.outputs.azure_base_path }}
@@ -394,6 +433,10 @@ jobs:
           AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
           AZURE_BASE_PATH: ${{ needs.deploy-system-test-artifacts.outputs.azure_base_path }}
+          KINDLING_SYSTEM_TEST_CI_WORKERS: ${{ github.event.inputs.system_test_workers }}
+          KINDLING_SYSTEM_TEST_POLL_INTERVAL: ${{ github.event.inputs.system_test_poll_interval }}
+          KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT: ${{ github.event.inputs.system_test_stream_max_wait }}
+          KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT: ${{ github.event.inputs.system_test_completion_timeout }}
         run: |
           poe test-system-ci --platform ${{ matrix.platform }}
 

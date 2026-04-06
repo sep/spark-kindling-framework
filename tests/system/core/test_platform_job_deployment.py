@@ -26,7 +26,11 @@ import uuid
 
 import pytest
 
-from tests.system.test_helpers import assert_no_fatal_system_test_log_lines
+from tests.system.test_helpers import (
+    assert_no_fatal_system_test_log_lines,
+    get_system_test_poll_interval,
+    get_system_test_stream_max_wait,
+)
 
 
 @pytest.fixture
@@ -120,8 +124,8 @@ class TestPlatformJobDeployment:
                     job_id=job_id,
                     run_id=run_id,
                     print_lines=True,
-                    poll_interval=10.0,
-                    max_wait=600.0,
+                    poll_interval=get_system_test_poll_interval(10.0),
+                    max_wait=get_system_test_stream_max_wait(600.0),
                 )
                 print("=" * 80)
             except Exception as e:
@@ -346,11 +350,17 @@ class TestPlatformJobResults:
     """Tests for job execution results - runs on all platforms"""
 
     def test_job_output_files(
-        self, platform_client, app_packager, test_app_path, job_config_provider
+        self,
+        platform_client,
+        app_packager,
+        test_app_path,
+        job_config_provider,
+        stdout_validator,
     ):
         """Test that job creates output files - runs on all platforms"""
         api_client, platform_name = platform_client
         job_config = job_config_provider()
+        test_id = job_config["test_id"]
         app_name = job_config["app_name"]
 
         print(f"\n📁 [{platform_name.upper()}] Testing job output file creation")
@@ -367,27 +377,43 @@ class TestPlatformJobResults:
         try:
             run_id = api_client.run_job(job_id=job_id)
             print("⏳ Waiting for job to complete...")
+            print("\n📡 Streaming stdout in real-time...")
+            print("=" * 80)
 
-            # Wait for completion
-            timeout = 300
-            start_time = time.time()
-            while (time.time() - start_time) < timeout:
-                status = api_client.get_job_status(run_id=run_id)
-                status_upper = status["status"].upper()
-                if status_upper in [
-                    "SUCCEEDED",
-                    "COMPLETED",
-                    "SUCCESS",
-                    "TERMINATED",
-                    "FAILED",
-                    "CANCELLED",
-                    "CANCELED",
-                ]:
-                    break
-                time.sleep(10)
+            try:
+                stdout_validator.stream_with_callback(
+                    job_id=job_id,
+                    run_id=run_id,
+                    print_lines=True,
+                    poll_interval=get_system_test_poll_interval(10.0),
+                    max_wait=get_system_test_stream_max_wait(600.0),
+                )
+                print("=" * 80)
+            except Exception as e:
+                print(f"⚠️  Stdout streaming error: {e}")
+                import traceback
 
-            assert status["status"].upper() in ["SUCCEEDED", "COMPLETED", "SUCCESS", "TERMINATED"]
-            print("✅ Job completed - output files should be created")
+                traceback.print_exc()
+
+            status = api_client.get_job_status(run_id=run_id)
+            final_status = status["status"].upper()
+
+            from tests.system.test_helpers import get_captured_stdout
+
+            stdout_lines = get_captured_stdout(stdout_validator)
+            stdout_content = "\n".join(stdout_lines)
+            assert_no_fatal_system_test_log_lines(stdout_content)
+
+            completion_result = stdout_validator.validate_completion(test_id)
+
+            assert completion_result["passed"], f"Completion failed: {completion_result}"
+            assert final_status in [
+                "SUCCEEDED",
+                "COMPLETED",
+                "SUCCESS",
+                "TERMINATED",
+            ], f"Unexpected final status: {status['status']}"
+            print(f"✅ Job completed with status: {status['status']}")
 
             # TODO: Add actual file verification when storage access configured
 
