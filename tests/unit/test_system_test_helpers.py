@@ -179,6 +179,39 @@ def test_find_fatal_system_test_log_lines_detects_extension_install_failures():
     assert any("Failed to import extension kindling_otel_azure" in line for line in matches)
 
 
+def test_find_fatal_system_test_log_lines_parses_structured_log_payloads():
+    content = str(
+        {
+            "id": "abc123",
+            "log": [
+                "INFO normal line",
+                "ERROR: (KindlingBootstrap) Extension wheel not found: kindling-otel-azure==0.3.2",
+                "❌ Failed to import extension kindling_otel_azure: No module named 'kindling_otel_azure'",
+            ],
+        }
+    )
+
+    matches = find_fatal_system_test_log_lines(content)
+
+    assert len(matches) == 2
+    assert matches[0].startswith("ERROR: (KindlingBootstrap) Extension wheel not found:")
+    assert matches[1].startswith("❌ Failed to import extension kindling_otel_azure:")
+
+
+def test_find_fatal_system_test_log_lines_ignores_non_bootstrap_error_messages():
+    content = str(
+        {
+            "id": "abc123",
+            "log": [
+                "WARN: (complex-tracing-test) Batch 1 is slow, applying optimization...",
+                "ERROR: (complex-tracing-test) Operation failed: Simulated network timeout",
+            ],
+        }
+    )
+
+    assert find_fatal_system_test_log_lines(content) == []
+
+
 def test_assert_no_fatal_system_test_log_lines_raises_for_extension_failures():
     with pytest.raises(AssertionError, match="Fatal errors found in system test logs"):
         assert_no_fatal_system_test_log_lines(

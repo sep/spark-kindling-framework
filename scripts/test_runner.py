@@ -235,9 +235,13 @@ def run_system_tests_ci(platform: str = "", test: str = "") -> int:
         f"--junit-xml=test-results/system-test-results-{platform_filter or 'all'}.xml",
         "--json-report",
         f"--json-report-file=test-results/system-test-report-{platform_filter or 'all'}.json",
-        "-n",
-        "4",
+        "--maxfail=1",
     ]
+
+    # Synapse control-plane APIs throttle aggressively when multiple jobs are
+    # created at once. Keep that lane serial in CI; other platforms can use xdist.
+    if platform_filter != "synapse":
+        extra_args.extend(["-n", "4"])
 
     args = build_pytest_args(
         test_path="tests/system/core/",
