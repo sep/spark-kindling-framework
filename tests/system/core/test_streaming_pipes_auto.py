@@ -15,6 +15,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.system.test_helpers import (
+    get_system_test_poll_interval,
+    get_system_test_stream_max_wait,
+)
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     result = dict(base or {})
@@ -110,8 +115,8 @@ class TestStreamingPipesOrchestratorAuto:
                     job_id=job_id,
                     run_id=run_id,
                     print_lines=True,
-                    poll_interval=10.0,
-                    max_wait=600.0,
+                    poll_interval=get_system_test_poll_interval(10.0),
+                    max_wait=get_system_test_stream_max_wait(600.0),
                 )
             except Exception as e:
                 print(f"⚠️  Stdout streaming error: {e}")

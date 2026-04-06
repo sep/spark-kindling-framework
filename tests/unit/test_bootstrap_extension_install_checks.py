@@ -1,3 +1,5 @@
+import site
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -190,7 +192,9 @@ def test_extension_install_uses_explicit_dbfs_temp_path_for_databricks():
     assert copied_path.startswith("dbfs:/tmp/kindling_extensions/.kindling-bootstrap/")
     assert copied_path.endswith("/extensions/kindling_otel_azure-0.4.0-py3-none-any.whl")
     subprocess_run.assert_called_once()
-    assert subprocess_run.call_args.args[0][7] == _dbfs_uri_to_local_path(copied_path)
+    install_args = subprocess_run.call_args.args[0]
+    assert "--ignore-installed" in install_args
+    assert _dbfs_uri_to_local_path(copied_path) in install_args
     storage_utils.fs.rm.assert_called_once_with(copied_path)
 
 
@@ -234,3 +238,66 @@ def test_extension_install_accepts_platform_suffixed_extension_wheel_names():
     copied_path = storage_utils.fs.cp.call_args.args[1]
     assert copied_path.endswith("/extensions/kindling_otel_azure_databricks-0.3.2-py3-none-any.whl")
     subprocess_run.assert_called_once()
+
+
+def test_extension_install_prioritizes_new_site_packages_and_clears_stale_dependency_imports():
+    logger = MagicMock()
+
+    class DBUtils:
+        def __init__(self):
+            self.fs = MagicMock()
+
+    storage_utils = DBUtils()
+    storage_utils.fs.ls.return_value = [
+        SimpleNamespace(
+            path=(
+                "abfss://artifacts@acct/path/packages/"
+                "kindling_otel_azure_databricks-0.3.2-py3-none-any.whl"
+            )
+        )
+    ]
+
+    fake_typing_extensions = object()
+    fake_opentelemetry = object()
+    original_typing_extensions = sys.modules.get("typing_extensions")
+    original_opentelemetry = sys.modules.get("opentelemetry")
+    sys.modules["typing_extensions"] = fake_typing_extensions
+    sys.modules["opentelemetry"] = fake_opentelemetry
+
+    try:
+        with (
+            patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
+            patch("kindling.bootstrap.importlib.util.find_spec", return_value=None),
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=1234),
+            patch("kindling.bootstrap.subprocess.run") as subprocess_run,
+            patch.object(site, "getusersitepackages", return_value="/user/site"),
+            patch.object(site, "getsitepackages", return_value=["/venv/site"]),
+            patch("kindling.bootstrap.importlib.import_module", return_value=object()),
+        ):
+            subprocess_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            install_bootstrap_dependencies(
+                logger,
+                {
+                    "required_packages": [],
+                    "extensions": ["kindling-otel-azure==0.3.2"],
+                    "temp_path": "dbfs:/tmp/kindling_extensions",
+                },
+                artifacts_storage_path="abfss://artifacts@acct/path",
+            )
+
+        install_args = subprocess_run.call_args.args[0]
+        assert "--ignore-installed" in install_args
+        assert "typing_extensions" not in sys.modules
+        assert "opentelemetry" not in sys.modules
+        assert sys.path[0] == "/user/site"
+        assert sys.path[1] == "/venv/site"
+    finally:
+        sys.modules.pop("typing_extensions", None)
+        sys.modules.pop("opentelemetry", None)
+        if original_typing_extensions is not None:
+            sys.modules["typing_extensions"] = original_typing_extensions
+        if original_opentelemetry is not None:
+            sys.modules["opentelemetry"] = original_opentelemetry
+        sys.path[:] = [path for path in sys.path if path not in {"/user/site", "/venv/site"}]

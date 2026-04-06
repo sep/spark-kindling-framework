@@ -1000,6 +1000,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                         "-m",
                         "pip",
                         "install",
+                        "--ignore-installed",
                         "--upgrade",
                         "--upgrade-strategy",
                         "eager",  # Upgrade dependencies too (e.g., typing-extensions)
@@ -1011,6 +1012,36 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                 )
 
                 if result.returncode == 0:
+                    # Mirror load_if_needed(): make the freshly installed user/venv packages
+                    # win over platform system packages and drop cached modules that may
+                    # still point at the old Databricks runtime copy.
+                    import site
+
+                    user_site = site.getusersitepackages()
+                    site_packages = site.getsitepackages()
+
+                    for path in reversed([user_site] + site_packages):
+                        if path and path not in sys.path:
+                            sys.path.insert(0, path)
+                            print(f"   📌 Prioritized in sys.path: {path}")
+                        elif path and path in sys.path:
+                            sys.path.remove(path)
+                            sys.path.insert(0, path)
+                            print(f"   📌 Moved to front of sys.path: {path}")
+
+                    stale_modules = [
+                        get_import_name(package_spec),
+                        "typing_extensions",
+                        "azure",
+                        "azure.monitor",
+                        "azure.monitor.opentelemetry",
+                        "opentelemetry",
+                    ]
+                    for module_name in stale_modules:
+                        if module_name in sys.modules:
+                            print(f"   🔄 Clearing cached import: {module_name}")
+                            del sys.modules[module_name]
+
                     print(f"✅ Successfully installed extension: {package_spec}")
                     logger.info(f"Successfully installed extension: {package_spec}")
                 else:
