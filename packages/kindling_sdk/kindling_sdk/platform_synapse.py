@@ -282,22 +282,35 @@ class SynapseAPI(PlatformAPI):
         """Make authenticated HTTP request to Synapse API with rate limiting"""
         import requests
 
-        # Rate limiting: Ensure minimum interval between requests
-        # Synapse has 2 req/sec limit, we stay safely under with 600ms interval
-        current_time = time.time()
-        time_since_last = current_time - self._last_request_time
-        if time_since_last < self._min_request_interval:
-            sleep_time = self._min_request_interval - time_since_last
-            time.sleep(sleep_time)
-
-        # Update last request time
-        self._last_request_time = time.time()
-
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {self._get_access_token()}"
         headers["Content-Type"] = "application/json"
 
-        response = requests.request(method, url, headers=headers, **kwargs)
+        for attempt in range(4):
+            # Rate limiting: Ensure minimum interval between requests
+            # Synapse has 2 req/sec limit, we stay safely under with 600ms interval
+            current_time = time.time()
+            time_since_last = current_time - self._last_request_time
+            if time_since_last < self._min_request_interval:
+                sleep_time = self._min_request_interval - time_since_last
+                time.sleep(sleep_time)
+
+            # Update last request time
+            self._last_request_time = time.time()
+
+            response = requests.request(method, url, headers=headers, **kwargs)
+
+            if response.status_code != 429:
+                break
+
+            retry_after_header = response.headers.get("Retry-After", "").strip()
+            retry_delay = 1.0
+            if retry_after_header:
+                try:
+                    retry_delay = max(float(retry_after_header), retry_delay)
+                except ValueError:
+                    pass
+            time.sleep(retry_delay * (attempt + 1))
 
         # Handle errors
         if response.status_code >= 400:
