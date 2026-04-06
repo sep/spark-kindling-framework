@@ -281,15 +281,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    if: |
-      github.event_name == 'release' ||
-      (
-        github.event_name == 'workflow_dispatch' &&
-        (
-          github.event.inputs.system_test_platform == 'all' ||
-          github.event.inputs.system_test_platform == matrix.platform
-        )
-      )
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     environment: testing
     outputs:
       azure_base_path: ${{ steps.base-path.outputs.azure_base_path }}
@@ -299,6 +291,10 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Activate virtualenv and install project
+        if: |
+          github.event_name != 'workflow_dispatch' ||
+          github.event.inputs.system_test_platform == 'all' ||
+          github.event.inputs.system_test_platform == matrix.platform
         run: |
           cd /workspace
           . .venv/bin/activate
@@ -384,7 +380,13 @@ jobs:
           pip install -e .
 
       - name: Resolve Databricks lane config
-        if: matrix.platform == 'databricks'
+        if: |
+          matrix.platform == 'databricks' &&
+          (
+            github.event_name != 'workflow_dispatch' ||
+            github.event.inputs.system_test_platform == 'all' ||
+            github.event.inputs.system_test_platform == matrix.platform
+          )
         env:
           DEFAULT_DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DEFAULT_DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
@@ -400,7 +402,13 @@ jobs:
           echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=${UC_TEMP_VOLUME:-artifacts}" >> "$GITHUB_ENV"
 
       - name: Run Databricks UC preflight
-        if: matrix.platform == 'databricks'
+        if: |
+          matrix.platform == 'databricks' &&
+          (
+            github.event_name != 'workflow_dispatch' ||
+            github.event.inputs.system_test_platform == 'all' ||
+            github.event.inputs.system_test_platform == matrix.platform
+          )
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -411,6 +419,10 @@ jobs:
           python scripts/databricks_uc_preflight.py
 
       - name: Run system tests
+        if: |
+          github.event_name != 'workflow_dispatch' ||
+          github.event.inputs.system_test_platform == 'all' ||
+          github.event.inputs.system_test_platform == matrix.platform
         env:
           PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
           # Platform-specific credentials
@@ -442,7 +454,13 @@ jobs:
 
       - name: Upload system test results
         uses: actions/upload-artifact@v4
-        if: always()
+        if: |
+          always() &&
+          (
+            github.event_name != 'workflow_dispatch' ||
+            github.event.inputs.system_test_platform == 'all' ||
+            github.event.inputs.system_test_platform == matrix.platform
+          )
         with:
           name: system-test-results-${{ matrix.artifact_suffix }}
           path: test-results/
