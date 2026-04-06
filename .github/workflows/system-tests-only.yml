@@ -1,0 +1,246 @@
+name: Kindling System Tests Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      system_test_platform:
+        description: "System test platform to run"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - fabric
+          - synapse
+          - databricks
+      system_test_workers:
+        description: "Override xdist workers for system tests (blank uses platform defaults)"
+        required: false
+        default: ""
+        type: string
+      system_test_poll_interval:
+        description: "Override system test poll interval in seconds"
+        required: false
+        default: ""
+        type: string
+      system_test_stream_max_wait:
+        description: "Override stdout stream max wait in seconds"
+        required: false
+        default: ""
+        type: string
+      system_test_completion_timeout:
+        description: "Override direct status polling timeout in seconds"
+        required: false
+        default: ""
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/ci
+
+jobs:
+  build-wheels:
+    name: Build Platform Wheels
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Activate virtualenv
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+
+      - name: Build platform-specific wheels
+        run: |
+          chmod +x scripts/build_platform_wheels.sh
+          bash scripts/build_platform_wheels.sh
+
+      - name: Build extension wheels
+        run: |
+          python scripts/build_extensions.py kindling-otel-azure fabric synapse databricks
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-wheels
+          path: dist/*.whl
+
+  deploy-system-test-artifacts:
+    name: Deploy System Test Artifacts
+    runs-on: ubuntu-latest
+    needs: build-wheels
+    container:
+      image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    environment: testing
+    outputs:
+      azure_base_path: ${{ steps.base-path.outputs.azure_base_path }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Activate virtualenv and install project
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          cd $GITHUB_WORKSPACE
+          pip install -e .
+
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: platform-wheels
+          path: dist/
+
+      - name: Resolve candidate storage path
+        id: base-path
+        run: |
+          base_path="workflow-dispatch/${{ github.run_id }}"
+          echo "azure_base_path=$base_path" >> "$GITHUB_OUTPUT"
+          echo "Using AZURE_BASE_PATH=$base_path"
+
+      - name: Deploy candidate wheels and bootstrap script
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+          AZURE_BASE_PATH: ${{ steps.base-path.outputs.azure_base_path }}
+        run: |
+          python scripts/deploy.py
+
+  system-tests:
+    name: System Tests (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    needs: deploy-system-test-artifacts
+    container:
+      image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    environment: testing
+
+    strategy:
+      matrix:
+        include:
+          - platform: synapse
+            label: synapse
+            artifact_suffix: synapse
+          - platform: fabric
+            label: fabric
+            artifact_suffix: fabric
+          - platform: databricks
+            label: databricks-uc
+            artifact_suffix: databricks-uc
+
+    steps:
+      - name: Checkout code
+        if: |
+          github.event.inputs.system_test_platform == 'all' ||
+          github.event.inputs.system_test_platform == matrix.platform
+        uses: actions/checkout@v5
+
+      - name: Activate virtualenv and install project
+        if: |
+          github.event.inputs.system_test_platform == 'all' ||
+          github.event.inputs.system_test_platform == matrix.platform
+        run: |
+          cd /workspace
+          . .venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          cd $GITHUB_WORKSPACE
+          pip install -e .
+
+      - name: Resolve Databricks lane config
+        if: |
+          matrix.platform == 'databricks' &&
+          (
+            github.event.inputs.system_test_platform == 'all' ||
+            github.event.inputs.system_test_platform == matrix.platform
+          )
+        env:
+          DEFAULT_DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DEFAULT_DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
+          UC_VOLUME_CATALOG: ${{ vars.KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG }}
+          UC_VOLUME_SCHEMA: ${{ vars.KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA }}
+          UC_TEMP_VOLUME: ${{ vars.KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME }}
+        run: |
+          echo "DATABRICKS_HOST=$DEFAULT_DATABRICKS_HOST" >> "$GITHUB_ENV"
+          echo "DATABRICKS_CLUSTER_ID=$DEFAULT_DATABRICKS_CLUSTER_ID" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_SYSTEM_TEST_MODE=uc" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG=${UC_VOLUME_CATALOG:-kindling}" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA=${UC_VOLUME_SCHEMA:-kindling}" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=${UC_TEMP_VOLUME:-artifacts}" >> "$GITHUB_ENV"
+
+      - name: Run Databricks UC preflight
+        if: |
+          matrix.platform == 'databricks' &&
+          (
+            github.event.inputs.system_test_platform == 'all' ||
+            github.event.inputs.system_test_platform == matrix.platform
+          )
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+        run: |
+          python scripts/databricks_uc_preflight.py
+
+      - name: Run system tests
+        if: |
+          github.event.inputs.system_test_platform == 'all' ||
+          github.event.inputs.system_test_platform == matrix.platform
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
+          FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
+          FABRIC_LAKEHOUSE_ID: ${{ secrets.FABRIC_LAKEHOUSE_ID }}
+          CONFIG__platform_fabric__kindling__secrets__key_vault_url: ${{ secrets.CONFIG__platform_fabric__kindling__secrets__key_vault_url }}
+          SYNAPSE_WORKSPACE_NAME: ${{ secrets.SYNAPSE_WORKSPACE_NAME }}
+          SYNAPSE_SPARK_POOL: ${{ secrets.SYNAPSE_SPARK_POOL }}
+          CONFIG__platform_synapse__kindling__secrets__key_vault_url: ${{ secrets.CONFIG__platform_synapse__kindling__secrets__key_vault_url }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          APPLICATIONINSIGHTS_CONNECTION_STRING: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+          AZURE_BASE_PATH: ${{ needs.deploy-system-test-artifacts.outputs.azure_base_path }}
+          KINDLING_SYSTEM_TEST_CI_WORKERS: ${{ github.event.inputs.system_test_workers }}
+          KINDLING_SYSTEM_TEST_POLL_INTERVAL: ${{ github.event.inputs.system_test_poll_interval }}
+          KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT: ${{ github.event.inputs.system_test_stream_max_wait }}
+          KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT: ${{ github.event.inputs.system_test_completion_timeout }}
+        run: |
+          poe test-system-ci --platform ${{ matrix.platform }}
+
+      - name: Upload system test results
+        if: |
+          always() &&
+          (
+            github.event.inputs.system_test_platform == 'all' ||
+            github.event.inputs.system_test_platform == matrix.platform
+          )
+        uses: actions/upload-artifact@v4
+        with:
+          name: system-test-results-${{ matrix.artifact_suffix }}
+          path: test-results/
