@@ -117,7 +117,7 @@ def download_release_wheels(version: str, repo: str, temp_dir: Path) -> None:
 
 
 def get_wheels(wheels_dir: Path, platform: Optional[str] = None) -> List[Path]:
-    """Get runtime wheel files from directory, optionally filtered by platform."""
+    """Get wheel files from directory, optionally filtered to one runtime platform."""
     if platform:
         pattern = f"kindling_{platform}-*.whl"
         wheels = list(wheels_dir.glob(pattern))
@@ -126,16 +126,12 @@ def get_wheels(wheels_dir: Path, platform: Optional[str] = None) -> List[Path]:
                 f"No {platform} wheel found in {wheels_dir}. "
                 f"Available platforms: synapse, databricks, fabric"
             )
-    else:
-        wheels = []
-        for runtime_platform in RUNTIME_PLATFORMS:
-            wheels.extend(wheels_dir.glob(f"kindling_{runtime_platform}-*.whl"))
-        if not wheels:
-            raise FileNotFoundError(
-                f"No runtime wheels found in {wheels_dir}. "
-                "Expected kindling_{synapse|databricks|fabric}-*.whl."
-            )
-    return sorted(wheels)
+        return sorted(wheels)
+
+    wheels = sorted(wheels_dir.glob("*.whl"))
+    if not wheels:
+        raise FileNotFoundError(f"No wheel files found in {wheels_dir}. Expected *.whl artifacts.")
+    return wheels
 
 
 def get_bootstrap_script() -> Optional[Path]:
@@ -214,9 +210,7 @@ def deploy_wheels(wheels: List[Path], version: str) -> None:
     print("Storage structure:")
     print(f"  {STORAGE_ACCOUNT}/{CONTAINER}/")
     print(f"  ├── {PACKAGES_PATH}/")
-    print(f"  │   ├── kindling_databricks-{version}-py3-none-any.whl")
-    print(f"  │   ├── kindling_fabric-{version}-py3-none-any.whl")
-    print(f"  │   └── kindling_synapse-{version}-py3-none-any.whl")
+    print(f"  │   └── *.whl release artifacts")
     print(f"  └── {SCRIPTS_PATH}/")
     print(f"      └── kindling_bootstrap.py")
     print()

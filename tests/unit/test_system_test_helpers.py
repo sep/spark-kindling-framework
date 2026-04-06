@@ -1,6 +1,13 @@
 import os
 
-from tests.system.test_helpers import apply_env_config_overrides
+import pytest
+
+from tests.system.test_helpers import (
+    StdoutStreamValidator,
+    apply_env_config_overrides,
+    assert_no_fatal_system_test_log_lines,
+    find_fatal_system_test_log_lines,
+)
 
 
 def _clear_config_env(monkeypatch):
@@ -19,12 +26,16 @@ def test_apply_env_config_overrides_adds_databricks_uc_bootstrap_paths(monkeypat
     merged = apply_env_config_overrides({"job_name": "job", "test_id": "abc123"}, "databricks")
 
     kindling = merged["config_overrides"]["kindling"]
-    assert kindling["temp_path"] == "/Volumes/kindling/kindling/artifacts"
-    assert kindling["storage"]["table_root"] == "/Volumes/kindling/kindling/artifacts/tables"
+    assert kindling["temp_path"] == "/Volumes/kindling/kindling/artifacts/abc123"
+    assert kindling["storage"]["table_root"] == "/Volumes/kindling/kindling/artifacts/abc123/tables"
     assert (
-        kindling["storage"]["checkpoint_root"] == "/Volumes/kindling/kindling/artifacts/checkpoints"
+        kindling["storage"]["checkpoint_root"]
+        == "/Volumes/kindling/kindling/artifacts/abc123/checkpoints"
     )
-    assert kindling["databricks"]["volume_staging_root"] == "/Volumes/kindling/kindling/artifacts"
+    assert (
+        kindling["databricks"]["volume_staging_root"]
+        == "/Volumes/kindling/kindling/artifacts/abc123"
+    )
     assert kindling["delta"]["access_mode"] == "catalog"
 
 
@@ -150,3 +161,40 @@ def test_apply_env_config_overrides_explicitly_enables_azure_monitor_for_non_dat
     assert any(spec.startswith("kindling-otel-azure==") for spec in kindling["extensions"])
     assert kindling["telemetry"]["azure_monitor"]["enable_logging"] is True
     assert kindling["telemetry"]["azure_monitor"]["enable_tracing"] is True
+
+
+def test_find_fatal_system_test_log_lines_detects_extension_install_failures():
+    content = "\n".join(
+        [
+            "INFO normal line",
+            "❌ No wheel found matching 'kindling_otel_azure' or 'kindling-otel-azure'",
+            "WARN: (KindlingBootstrap) Failed to import extension kindling_otel_azure: No module named 'kindling_otel_azure'",
+        ]
+    )
+
+    matches = find_fatal_system_test_log_lines(content)
+
+    assert len(matches) == 2
+    assert any("No wheel found matching" in line for line in matches)
+    assert any("Failed to import extension kindling_otel_azure" in line for line in matches)
+
+
+def test_assert_no_fatal_system_test_log_lines_raises_for_extension_failures():
+    with pytest.raises(AssertionError, match="Fatal errors found in system test logs"):
+        assert_no_fatal_system_test_log_lines(
+            "ERROR: (KindlingBootstrap) Failed to install extension kindling-otel-azure==0.3.2"
+        )
+
+
+def test_stdout_validator_validate_completion_fails_when_fatal_log_lines_present():
+    validator = StdoutStreamValidator(api_client=None)
+    validator.captured_lines = [
+        "TEST_ID=abc123 status=COMPLETED result=PASSED",
+        "❌ Failed to install extension kindling-otel-azure==0.3.2",
+    ]
+
+    result = validator.validate_completion("abc123")
+
+    assert result["passed"] is False
+    assert result["status"] == "FAILED"
+    assert "Fatal errors found in stdout" in result["message"]
