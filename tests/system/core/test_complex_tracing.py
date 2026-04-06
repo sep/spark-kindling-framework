@@ -21,7 +21,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.system.test_helpers import assert_no_fatal_system_test_log_lines
+from tests.system.test_helpers import (
+    assert_no_fatal_system_test_log_lines,
+    get_system_test_completion_timeout,
+    get_system_test_poll_interval,
+)
 
 DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
     "InstrumentationKey=00000000-0000-0000-0000-000000000000;"
@@ -113,7 +117,8 @@ class TestComplexTracing:
 
         # Wait for completion
         print("⏳ Waiting for job to complete...")
-        timeout = 600  # 10 minutes (complex test takes longer)
+        timeout = get_system_test_completion_timeout(600.0)
+        poll_interval = get_system_test_poll_interval(15.0)
         start_time = time.time()
         final_status = None
         final_result_state = None
@@ -189,7 +194,7 @@ class TestComplexTracing:
                 final_result_state = result_state
                 break
 
-            time.sleep(15)
+            time.sleep(poll_interval)
         else:
             pytest.fail(f"Job timed out after {timeout} seconds")
 

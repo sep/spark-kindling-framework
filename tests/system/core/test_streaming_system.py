@@ -27,7 +27,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.system.test_helpers import assert_no_fatal_system_test_log_lines
+from tests.system.test_helpers import (
+    assert_no_fatal_system_test_log_lines,
+    get_system_test_poll_interval,
+    get_system_test_stream_max_wait,
+)
 
 
 @pytest.fixture
@@ -113,8 +117,8 @@ class TestStreamingSystemIntegration:
                     job_id=job_id,
                     run_id=run_id,
                     print_lines=True,
-                    poll_interval=10.0,
-                    max_wait=600.0,
+                    poll_interval=get_system_test_poll_interval(10.0),
+                    max_wait=get_system_test_stream_max_wait(600.0),
                 )
                 print("=" * 80)
             except Exception as e:
@@ -263,8 +267,8 @@ class TestStreamingSystemIntegration:
                 job_id=job_id,
                 run_id=run_id,
                 print_lines=True,
-                poll_interval=10.0,
-                max_wait=600.0,
+                poll_interval=get_system_test_poll_interval(10.0),
+                max_wait=get_system_test_stream_max_wait(600.0),
             )
 
             # Validate health monitoring from stdout
@@ -325,8 +329,8 @@ class TestStreamingSystemIntegration:
                 job_id=job_id,
                 run_id=run_id,
                 print_lines=True,
-                poll_interval=10.0,
-                max_wait=600.0,
+                poll_interval=get_system_test_poll_interval(10.0),
+                max_wait=get_system_test_stream_max_wait(600.0),
             )
 
             # Validate signal flow from stdout
