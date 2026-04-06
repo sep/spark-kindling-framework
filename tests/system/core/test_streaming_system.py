@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.system.test_helpers import assert_no_fatal_system_test_log_lines
+
 
 @pytest.fixture
 def streaming_test_app_path():
@@ -134,6 +136,7 @@ class TestStreamingSystemIntegration:
 
             stdout_lines = get_captured_stdout(stdout_validator)
             stdout_content = "\n".join(stdout_lines)
+            assert_no_fatal_system_test_log_lines(stdout_content)
 
             # Define expected markers for streaming tests
             expected_markers = [
@@ -268,6 +271,7 @@ class TestStreamingSystemIntegration:
             from tests.system.test_helpers import get_captured_stdout
 
             stdout_content = "\n".join(get_captured_stdout(stdout_validator))
+            assert_no_fatal_system_test_log_lines(stdout_content)
 
             assert (
                 f"TEST_ID={test_id} test=health_monitor status=STARTED" in stdout_content
@@ -329,6 +333,7 @@ class TestStreamingSystemIntegration:
             from tests.system.test_helpers import get_captured_stdout
 
             stdout_content = "\n".join(get_captured_stdout(stdout_validator))
+            assert_no_fatal_system_test_log_lines(stdout_content)
 
             # Check for signal emissions
             expected_signals = [

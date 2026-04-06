@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.system.test_helpers import assert_no_fatal_system_test_log_lines
+
 
 @pytest.fixture
 def streaming_orchestrator_test_app_path():
@@ -72,6 +74,7 @@ class TestStreamingOrchestratorIntegration:
             from tests.system.test_helpers import get_captured_stdout
 
             stdout_content = "\n".join(get_captured_stdout(stdout_validator))
+            assert_no_fatal_system_test_log_lines(stdout_content)
             expected_markers = [
                 f"TEST_ID={test_id} status=STARTED component=streaming_orchestrator",
                 f"TEST_ID={test_id} test=spark_session status=PASSED",

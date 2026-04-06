@@ -521,6 +521,11 @@ jobs:
           chmod +x scripts/build_platform_wheels.sh
           bash scripts/build_platform_wheels.sh
 
+      - name: Build extension wheels
+        if: steps.check-changes.outputs.needs_rebuild == 'true'
+        run: |
+          python scripts/build_extensions.py kindling-otel-azure fabric synapse databricks
+
       - name: List built wheels
         if: steps.check-changes.outputs.needs_rebuild == 'true'
         run: |

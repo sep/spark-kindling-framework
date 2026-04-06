@@ -13,6 +13,21 @@ WORKSPACE = Path(__file__).parent.parent
 EXTENSION_DIR = WORKSPACE / "packages"
 DIST_DIR = WORKSPACE / "dist"
 
+# Match the main wheel build script so Poetry uses writable locations in CI/containers.
+os.environ.setdefault("PATH", f"/home/vscode/.local/bin:{os.environ.get('PATH', '')}")
+os.environ.setdefault("POETRY_CACHE_DIR", "/tmp/poetry-cache")
+os.environ.setdefault("POETRY_VIRTUALENVS_PATH", "/tmp/poetry-virtualenvs")
+os.environ.setdefault("VIRTUALENV_OVERRIDE_APP_DATA", "/tmp/virtualenv-app-data")
+os.environ.setdefault("XDG_DATA_HOME", "/tmp/xdg-data")
+
+for env_var in (
+    "POETRY_CACHE_DIR",
+    "POETRY_VIRTUALENVS_PATH",
+    "VIRTUALENV_OVERRIDE_APP_DATA",
+    "XDG_DATA_HOME",
+):
+    Path(os.environ[env_var]).mkdir(parents=True, exist_ok=True)
+
 
 def get_version(extension_name: str) -> str:
     """Extract version from extension's pyproject.toml"""
