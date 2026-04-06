@@ -8,6 +8,7 @@ Provides reusable patterns for:
 - Log content analysis
 """
 
+import ast
 import os
 import re
 import sys
@@ -19,11 +20,13 @@ DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
     "IngestionEndpoint=https://westus-0.in.applicationinsights.azure.com/"
 )
 
-_FATAL_SYSTEM_TEST_LOG_MARKERS = (
-    "No wheel found matching",
-    "Failed to install extension",
-    "Failed to import extension kindling_otel_azure",
-    "Extension wheel not found: kindling-otel-azure",
+_FATAL_SYSTEM_TEST_LOG_PREFIXES = (
+    "ERROR: (KindlingBootstrap) Extension wheel not found:",
+    "ERROR: (KindlingBootstrap) Failed to install extension",
+    "WARN: (KindlingBootstrap) Failed to import extension kindling_otel_azure",
+    "❌ No wheel found matching",
+    "❌ Failed to install extension",
+    "❌ Failed to import extension kindling_otel_azure",
     "kindling-otel-azure not found - extension not loaded",
 )
 
@@ -414,15 +417,41 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
     return merged_config
 
 
+def _collect_log_text_entries(payload: Any) -> List[str]:
+    """Recursively collect string log entries from structured payloads."""
+    entries: List[str] = []
+
+    if isinstance(payload, str):
+        entries.append(payload)
+    elif isinstance(payload, dict):
+        log_value = payload.get("log")
+        if isinstance(log_value, list):
+            entries.extend(_collect_log_text_entries(log_value))
+    elif isinstance(payload, list):
+        for item in payload:
+            entries.extend(_collect_log_text_entries(item))
+
+    return entries
+
+
 def find_fatal_system_test_log_lines(log_content: str) -> List[str]:
     """Return distinct fatal log lines that should fail a system test."""
+    candidate_lines: List[str] = list(log_content.splitlines())
+    stripped = log_content.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            parsed = ast.literal_eval(stripped)
+            candidate_lines.extend(_collect_log_text_entries(parsed))
+        except (ValueError, SyntaxError):
+            pass
+
     matches: List[str] = []
     seen = set()
-    for line in log_content.splitlines():
+    for line in candidate_lines:
         normalized = line.strip()
         if not normalized:
             continue
-        if any(marker in normalized for marker in _FATAL_SYSTEM_TEST_LOG_MARKERS):
+        if any(normalized.startswith(prefix) for prefix in _FATAL_SYSTEM_TEST_LOG_PREFIXES):
             if normalized not in seen:
                 matches.append(normalized)
                 seen.add(normalized)
