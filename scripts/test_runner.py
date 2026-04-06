@@ -238,10 +238,17 @@ def run_system_tests_ci(platform: str = "", test: str = "") -> int:
         "--maxfail=1",
     ]
 
-    # Synapse control-plane APIs throttle aggressively when multiple jobs are
-    # created at once. Keep that lane serial in CI; other platforms can use xdist.
-    if platform_filter != "synapse":
-        extra_args.extend(["-n", "4"])
+    default_workers_by_platform = {
+        "synapse": "2",
+        "fabric": "4",
+        "databricks": "4",
+    }
+    workers_override = (
+        os.getenv("KINDLING_SYSTEM_TEST_CI_WORKERS")
+        or default_workers_by_platform.get(platform_filter or "", "")
+    ).strip()
+    if workers_override and workers_override not in {"0", "1"}:
+        extra_args.extend(["-n", workers_override])
 
     args = build_pytest_args(
         test_path="tests/system/core/",
