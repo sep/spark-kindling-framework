@@ -44,12 +44,13 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 from injector import inject
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.streaming import StreamingQuery
+
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.streaming import StreamingQuery
 
 # =============================================================================
 # Data Structures
@@ -369,6 +370,28 @@ class StreamingQueryManager(SignalEmitter):
             return query_info
 
         except Exception as e:
+            if self._is_expected_stop_termination_error(spark_query, e):
+                with self._lock:
+                    query_info.state = StreamingQueryState.STOPPED
+                    query_info.stop_time = datetime.now()
+                    query_info.last_error = None
+
+                self.logger.warning(
+                    f"Query '{query_id}' reported an interrupted termination after stop; "
+                    "treating as stopped",
+                    include_traceback=True,
+                )
+
+                self.emit(
+                    "streaming.query_stopped",
+                    query_id=query_id,
+                    query_name=query_info.query_name,
+                    stop_time=query_info.stop_time,
+                    restart_count=query_info.restart_count,
+                )
+
+                return query_info
+
             with self._lock:
                 query_info.state = StreamingQueryState.FAILED
                 query_info.last_error = str(e)
@@ -383,6 +406,43 @@ class StreamingQueryManager(SignalEmitter):
             )
 
             raise RuntimeError(f"Failed to stop query '{query_id}': {e}") from e
+
+    def _is_expected_stop_termination_error(
+        self, spark_query: Optional[StreamingQuery], error: Exception
+    ) -> bool:
+        """
+        Identify termination exceptions that can occur after an intentional stop().
+
+        Fabric/ABFS can surface InterruptedException while Spark aborts checkpoint
+        writes during shutdown. If the query is no longer active, treat that as a
+        successful stop rather than a restart-blocking failure.
+        """
+        if spark_query is None:
+            return False
+
+        try:
+            query_is_active = bool(spark_query.isActive)
+        except Exception:
+            query_is_active = True
+
+        if query_is_active:
+            return False
+
+        error_text = str(error).lower()
+        interrupted_markers = (
+            "interruptedexception",
+            "interrupted exception",
+        )
+        checkpoint_markers = (
+            "while processing file/directory",
+            "abfsoutputstream",
+            "checkpoint",
+            "offsets/.",
+        )
+
+        return any(marker in error_text for marker in interrupted_markers) and any(
+            marker in error_text for marker in checkpoint_markers
+        )
 
     def restart_query(self, query_id: str) -> StreamingQueryInfo:
         """
