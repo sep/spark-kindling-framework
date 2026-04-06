@@ -192,3 +192,45 @@ def test_extension_install_uses_explicit_dbfs_temp_path_for_databricks():
     subprocess_run.assert_called_once()
     assert subprocess_run.call_args.args[0][7] == _dbfs_uri_to_local_path(copied_path)
     storage_utils.fs.rm.assert_called_once_with(copied_path)
+
+
+def test_extension_install_accepts_platform_suffixed_extension_wheel_names():
+    logger = MagicMock()
+
+    class DBUtils:
+        def __init__(self):
+            self.fs = MagicMock()
+
+    storage_utils = DBUtils()
+    storage_utils.fs.ls.return_value = [
+        SimpleNamespace(
+            path=(
+                "abfss://artifacts@acct/path/packages/"
+                "kindling_otel_azure_databricks-0.3.2-py3-none-any.whl"
+            )
+        )
+    ]
+
+    with (
+        patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
+        patch("kindling.bootstrap.importlib.util.find_spec", return_value=None),
+        patch("os.path.exists", return_value=True),
+        patch("os.path.getsize", return_value=1234),
+        patch("kindling.bootstrap.subprocess.run") as subprocess_run,
+        patch("kindling.bootstrap.importlib.import_module", return_value=object()),
+    ):
+        subprocess_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        install_bootstrap_dependencies(
+            logger,
+            {
+                "required_packages": [],
+                "extensions": ["kindling-otel-azure==0.3.2"],
+                "temp_path": "dbfs:/tmp/kindling_extensions",
+            },
+            artifacts_storage_path="abfss://artifacts@acct/path",
+        )
+
+    copied_path = storage_utils.fs.cp.call_args.args[1]
+    assert copied_path.endswith("/extensions/kindling_otel_azure_databricks-0.3.2-py3-none-any.whl")
+    subprocess_run.assert_called_once()
