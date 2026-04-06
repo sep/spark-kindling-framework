@@ -10,9 +10,7 @@ Usage:
     poe test-system --platform synapse --test default_telemetry
     poe test-system --platform databricks --test default_telemetry
 
-    # Test with Azure Monitor extension on a specific platform
-    poe test-system --platform fabric --test azure_monitor_telemetry
-    poe test-system --platform synapse --test azure_monitor_telemetry
+    # Test with Azure Monitor extension on Databricks
     poe test-system --platform databricks --test azure_monitor_telemetry
 """
 
@@ -364,4 +362,7 @@ class TestComplexTracing:
 
     def test_azure_monitor_telemetry(self, platform_client, app_packager):
         """Test complex tracing with Azure Monitor OpenTelemetry extension"""
+        _, platform = platform_client
+        if platform != "databricks":
+            pytest.skip("Azure Monitor telemetry system test only runs on Databricks")
         self._run_tracing_test(platform_client, app_packager, use_azure_monitor=True)

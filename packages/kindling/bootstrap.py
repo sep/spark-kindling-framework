@@ -881,44 +881,53 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                 for file_info in files:
                     file_path = file_info.path if hasattr(file_info, "path") else str(file_info)
                     filename = file_path.split("/")[-1]
+                    if not filename.endswith(".whl"):
+                        continue
 
-                    # Match: kindling_otel_azure-*.whl or kindling-otel-azure-*.whl
-                    if (
-                        filename.startswith(wheel_prefix) or filename.startswith(package_name)
-                    ) and filename.endswith(".whl"):
+                    wheel_version = None
+                    for candidate_prefix in (wheel_prefix, package_name):
+                        prefix_with_dash = f"{candidate_prefix}-"
+                        prefix_with_platform = f"{candidate_prefix}_"
 
-                        # Extract version from wheel filename
-                        # Format: package_name-version-py3-none-any.whl
-                        if filename.startswith(wheel_prefix):
-                            # kindling_otel_azure-0.1.0-py3-none-any.whl -> 0.1.0
-                            parts = filename[len(wheel_prefix) + 1 :].split("-")
+                        if filename.startswith(prefix_with_dash):
+                            remainder = filename[len(prefix_with_dash) :]
+                        elif filename.startswith(prefix_with_platform):
+                            remainder = filename[len(prefix_with_platform) :]
+                            if "-" not in remainder:
+                                continue
+                            remainder = remainder.split("-", 1)[1]
                         else:
-                            # kindling-otel-azure-0.1.0-py3-none-any.whl -> 0.1.0
-                            parts = filename[len(package_name) + 1 :].split("-")
+                            continue
 
-                        if parts:
-                            wheel_version = parts[0]
+                        if "-" not in remainder:
+                            continue
 
-                            # Check version requirement if specified
-                            if version_req:
-                                try:
-                                    from packaging import version
+                        wheel_version = remainder.split("-", 1)[0]
+                        break
 
-                                    wheel_ver = version.parse(wheel_version)
-                                    req_ver = version.parse(version_req)
+                    if not wheel_version:
+                        continue
 
-                                    if version_operator == ">=":
-                                        if wheel_ver >= req_ver:
-                                            matching_wheels.append((filename, wheel_version))
-                                    elif version_operator == "==":
-                                        if wheel_ver == req_ver:
-                                            matching_wheels.append((filename, wheel_version))
-                                except Exception:
-                                    # If version parsing fails, just add it
+                    # Check version requirement if specified
+                    if version_req:
+                        try:
+                            from packaging import version
+
+                            wheel_ver = version.parse(wheel_version)
+                            req_ver = version.parse(version_req)
+
+                            if version_operator == ">=":
+                                if wheel_ver >= req_ver:
                                     matching_wheels.append((filename, wheel_version))
-                            else:
-                                # No version requirement, add all matching wheels
-                                matching_wheels.append((filename, wheel_version))
+                            elif version_operator == "==":
+                                if wheel_ver == req_ver:
+                                    matching_wheels.append((filename, wheel_version))
+                        except Exception:
+                            # If version parsing fails, just add it
+                            matching_wheels.append((filename, wheel_version))
+                    else:
+                        # No version requirement, add all matching wheels
+                        matching_wheels.append((filename, wheel_version))
 
                 if not matching_wheels:
                     print(
