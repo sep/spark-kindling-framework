@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.system.test_helpers import assert_no_fatal_system_test_log_lines
+
 DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
     "InstrumentationKey=00000000-0000-0000-0000-000000000000;"
     "IngestionEndpoint=https://westus-0.in.applicationinsights.azure.com/"
@@ -203,6 +205,7 @@ class TestComplexTracing:
             log_content = str(logs)
 
         assert log_content, "No logs returned from job execution"
+        assert_no_fatal_system_test_log_lines(log_content)
 
         # Print summary
         print("\n📋 Job Logs Summary (last 50 lines):")

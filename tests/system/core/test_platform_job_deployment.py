@@ -26,6 +26,8 @@ import uuid
 
 import pytest
 
+from tests.system.test_helpers import assert_no_fatal_system_test_log_lines
+
 
 @pytest.fixture
 def job_config_provider():
@@ -285,6 +287,7 @@ class TestPlatformJobDeployment:
     def _validate_test_app_logs(self, log_content: str):
         """Validate test app execution via log entries - platform-agnostic"""
         print(f"\n🔍 Validating test app execution...")
+        assert_no_fatal_system_test_log_lines(log_content)
 
         expected_entries = [
             "TEST_ID=",

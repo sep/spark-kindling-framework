@@ -858,6 +858,10 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         print(f"📥 Installing extension from artifacts: {package_spec}")
         logger.info(f"Installing extension from artifacts: {package_spec}")
 
+        is_databricks = False
+        wheel_filename = None
+        temp_dir = None
+
         try:
             # Create temp directory using platform-specific path
             temp_dir = get_temp_path()
@@ -1012,7 +1016,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                 return
             finally:
                 # Cleanup
-                if is_databricks:
+                if is_databricks and wheel_filename:
                     # Clean up from volume or DBFS
                     try:
                         volume_path = temp_path
@@ -1034,7 +1038,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                             print(f"   🧹 Cleaned up DBFS file")
                     except Exception as e:
                         print(f"   ⚠️  Could not clean up temp file: {e}")
-                else:
+                elif temp_dir:
                     # Clean up temp directory for Fabric/Synapse
                     import shutil
 

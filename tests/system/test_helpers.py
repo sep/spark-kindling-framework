@@ -19,6 +19,14 @@ DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
     "IngestionEndpoint=https://westus-0.in.applicationinsights.azure.com/"
 )
 
+_FATAL_SYSTEM_TEST_LOG_MARKERS = (
+    "No wheel found matching",
+    "Failed to install extension",
+    "Failed to import extension kindling_otel_azure",
+    "Extension wheel not found: kindling-otel-azure",
+    "kindling-otel-azure not found - extension not loaded",
+)
+
 
 def _coerce_env_config_value(raw_value: str) -> Any:
     """Coerce CONFIG__ env values to primitive Python types when obvious."""
@@ -65,16 +73,17 @@ def _get_databricks_bootstrap_overrides(test_id: Optional[str]) -> Dict[str, Any
             }
         }
 
+    databricks_uc_root_with_suffix = f"{databricks_uc_root}{databricks_suffix}".rstrip("/")
     return {
         "kindling": {
-            "temp_path": databricks_uc_root,
+            "temp_path": databricks_uc_root_with_suffix,
             "delta": {"access_mode": "catalog"},
             "storage": {
-                "table_root": f"{databricks_uc_root}/tables",
-                "checkpoint_root": f"{databricks_uc_root}/checkpoints",
+                "table_root": f"{databricks_uc_root_with_suffix}/tables",
+                "checkpoint_root": f"{databricks_uc_root_with_suffix}/checkpoints",
             },
             "databricks": {
-                "volume_staging_root": databricks_uc_root,
+                "volume_staging_root": databricks_uc_root_with_suffix,
             },
             "system_tests": {"databricks": {"mode": databricks_mode}},
         }
@@ -94,11 +103,12 @@ def get_system_platform_config_overrides(
         return _get_databricks_bootstrap_overrides(test_id)
 
     if platform_name == "fabric":
+        fabric_suffix = f"/{test_id}" if test_id else ""
         return {
             "kindling": {
                 "storage": {
-                    "table_root": "Tables",
-                    "checkpoint_root": "Files/checkpoints",
+                    "table_root": f"Tables{fabric_suffix}",
+                    "checkpoint_root": f"Files/checkpoints{fabric_suffix}",
                 }
             }
         }
@@ -112,15 +122,23 @@ def get_system_platform_config_overrides(
             else None
         )
         synapse_schema = (os.getenv("KINDLING_SYSTEM_TEST_SYNAPSE_SCHEMA") or "").strip() or None
-        effective_schema = synapse_schema or "kindling_system_tests"
+        base_schema = synapse_schema or "kindling_system_tests"
+        effective_schema = f"{base_schema}_{test_id}" if test_id else base_schema
+        synapse_suffix = f"/{test_id}" if test_id else ""
 
         overrides: Dict[str, Any] = {
             "kindling": {
                 "delta": {"access_mode": "catalog"},
                 "storage": {
-                    "table_root": f"{synapse_root}/tables" if synapse_root else "tables",
+                    "table_root": (
+                        f"{synapse_root}/tables{synapse_suffix}"
+                        if synapse_root
+                        else f"tables{synapse_suffix}"
+                    ),
                     "checkpoint_root": (
-                        f"{synapse_root}/checkpoints" if synapse_root else "checkpoints"
+                        f"{synapse_root}/checkpoints{synapse_suffix}"
+                        if synapse_root
+                        else f"checkpoints{synapse_suffix}"
                     ),
                     "table_schema": effective_schema,
                 },
@@ -396,6 +414,31 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
     return merged_config
 
 
+def find_fatal_system_test_log_lines(log_content: str) -> List[str]:
+    """Return distinct fatal log lines that should fail a system test."""
+    matches: List[str] = []
+    seen = set()
+    for line in log_content.splitlines():
+        normalized = line.strip()
+        if not normalized:
+            continue
+        if any(marker in normalized for marker in _FATAL_SYSTEM_TEST_LOG_MARKERS):
+            if normalized not in seen:
+                matches.append(normalized)
+                seen.add(normalized)
+    return matches
+
+
+def assert_no_fatal_system_test_log_lines(log_content: str) -> None:
+    """Fail when captured logs include fatal bootstrap/extension errors."""
+    matches = find_fatal_system_test_log_lines(log_content)
+    if matches:
+        raise AssertionError(
+            "Fatal errors found in system test logs:\n"
+            + "\n".join(f"  - {line}" for line in matches)
+        )
+
+
 class StdoutStreamValidator:
     """Helper for streaming and validating stdout logs from Spark jobs"""
 
@@ -531,12 +574,14 @@ class StdoutStreamValidator:
 
         # Check for critical errors
         content = self.get_content()
+        fatal_log_lines = find_fatal_system_test_log_lines(content)
         has_errors = any(
             [
                 "ERROR: Bootstrap failed" in content,
                 "ERROR: (KindlingBootstrap) Framework initialization failed" in content,
                 "ImportError: Platform module" in content,
                 "cannot import name" in content and "azure" in content.lower(),
+                bool(fatal_log_lines),
             ]
         )
         results["no_bootstrap_errors"] = not has_errors
@@ -658,6 +703,14 @@ class StdoutStreamValidator:
             Dict with {passed: bool, status: str, message: str}
         """
         content = self.get_content()
+        fatal_log_lines = find_fatal_system_test_log_lines(content)
+
+        if fatal_log_lines:
+            return {
+                "passed": False,
+                "status": "FAILED",
+                "message": "Fatal errors found in stdout: " + "; ".join(fatal_log_lines),
+            }
 
         passed_marker = f"TEST_ID={test_id} status=COMPLETED result=PASSED"
         failed_marker = f"TEST_ID={test_id} status=COMPLETED result=FAILED"
