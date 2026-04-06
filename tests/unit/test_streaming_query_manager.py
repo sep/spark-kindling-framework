@@ -11,6 +11,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+
 from kindling.streaming_query_manager import (
     StreamingQueryInfo,
     StreamingQueryManager,
@@ -370,6 +371,36 @@ class TestQueryStop:
 
         mock_streaming_query.awaitTermination.assert_called_once()
 
+    def test_stop_query_tolerates_interrupted_checkpoint_shutdown(
+        self, manager, mock_streaming_query
+    ):
+        """Intentional stop should tolerate Fabric-style checkpoint interruption."""
+
+        def stop_side_effect():
+            mock_streaming_query.isActive = False
+
+        mock_streaming_query.stop.side_effect = stop_side_effect
+        mock_streaming_query.awaitTermination.side_effect = RuntimeError(
+            "StreamingQueryException: Failed with java.io.IOException while processing "
+            "file/directory :[/lakehouse/Files/checkpoints/demo/offsets/.0.tmp] "
+            "in method:[java.lang.InterruptedException]"
+        )
+
+        def builder(spark, config):
+            return mock_streaming_query
+
+        manager.register_query("test_query", builder, {})
+        manager.start_query("test_query")
+
+        query_info = manager.stop_query("test_query", await_termination=True)
+
+        assert query_info.state == StreamingQueryState.STOPPED
+        assert query_info.stop_time is not None
+        assert query_info.last_error is None
+
+        calls = [str(call) for call in manager.emit.call_args_list]
+        assert any("streaming.query_stopped" in str(c) for c in calls)
+
 
 # =============================================================================
 # Query Restart Tests
@@ -465,6 +496,44 @@ class TestQueryRestart:
 
         assert query_info.state == StreamingQueryState.ACTIVE
         assert query_info.restart_count == 1
+
+    def test_restart_query_tolerates_interrupted_shutdown_of_prior_query(self, manager):
+        """Restart should continue when stop() triggers a benign interrupted shutdown."""
+
+        first_query = Mock()
+        first_query.id = "spark-query-123"
+        first_query.runId = "spark-run-456"
+        first_query.isActive = True
+
+        def stop_first_query():
+            first_query.isActive = False
+
+        first_query.stop.side_effect = stop_first_query
+        first_query.awaitTermination.side_effect = RuntimeError(
+            "Failed with java.io.IOException while processing file/directory "
+            ":[/lakehouse/Files/checkpoints/demo/offsets/.0.tmp] "
+            "in method:[java.lang.InterruptedException]"
+        )
+
+        second_query = Mock()
+        second_query.id = "spark-query-789"
+        second_query.runId = "spark-run-999"
+        second_query.isActive = True
+        second_query.lastProgress = {}
+
+        queries = [first_query, second_query]
+
+        def builder(spark, config):
+            return queries.pop(0)
+
+        manager.register_query("test_query", builder, {})
+        manager.start_query("test_query")
+
+        query_info = manager.restart_query("spark-query-123")
+
+        assert query_info.state == StreamingQueryState.ACTIVE
+        assert query_info.restart_count == 1
+        assert query_info.spark_query is second_query
 
 
 # =============================================================================
