@@ -445,6 +445,13 @@ jobs:
           AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
           AZURE_BASE_PATH: ${{ needs.deploy-system-test-artifacts.outputs.azure_base_path }}
+          # Event Hub system test resource
+          EVENTHUB_TEST_RESOURCE_GROUP: ${{ secrets.EVENTHUB_TEST_RESOURCE_GROUP }}
+          EVENTHUB_TEST_NAMESPACE: ${{ secrets.EVENTHUB_TEST_NAMESPACE }}
+          EVENTHUB_TEST_NAME: ${{ secrets.EVENTHUB_TEST_NAME }}
+          EVENTHUB_TEST_AUTH_RULE: ${{ secrets.EVENTHUB_TEST_AUTH_RULE }}
+          EVENTHUB_TEST_CONSUMER_GROUP: ${{ secrets.EVENTHUB_TEST_CONSUMER_GROUP }}
+          EVENTHUB_TEST_CONNECTION_STRING: ${{ secrets.EVENTHUB_TEST_CONNECTION_STRING }}
           KINDLING_SYSTEM_TEST_CI_WORKERS: ${{ github.event.inputs.system_test_workers }}
           KINDLING_SYSTEM_TEST_POLL_INTERVAL: ${{ github.event.inputs.system_test_poll_interval }}
           KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT: ${{ github.event.inputs.system_test_stream_max_wait }}
