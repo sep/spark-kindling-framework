@@ -105,6 +105,9 @@ class TestStreamingOrchestratorIntegration:
             orchestrator_signals_marker = (
                 f"TEST_ID={test_id} test=orchestrator_signals status=PASSED"
             )
+            query_started_signal_marker = (
+                f"TEST_ID={test_id} signal=streaming.query_started received=true"
+            )
             controller_stop_marker = f"TEST_ID={test_id} test=controller_stop status=PASSED"
             source_batches_marker = f"TEST_ID={test_id} test=source_batches status=PASSED"
             listener_metrics_marker = f"TEST_ID={test_id} test=listener_metrics status=PASSED"
@@ -132,6 +135,11 @@ class TestStreamingOrchestratorIntegration:
             orchestrator_run_inferred = (
                 orchestrator_run_marker not in stdout_content
                 and downstream_orchestrator_markers_present
+                and final_success_marker in stdout_content
+            )
+            query_started_signal_inferred = (
+                query_started_signal_marker not in stdout_content
+                and orchestrator_signals_marker in stdout_content
                 and final_success_marker in stdout_content
             )
             entity_bootstrap_inferred = (
@@ -182,6 +190,8 @@ class TestStreamingOrchestratorIntegration:
                     continue
                 if marker == orchestrator_run_marker and orchestrator_run_inferred:
                     continue
+                if marker == query_started_signal_marker and query_started_signal_inferred:
+                    continue
                 if marker == controller_stop_marker and controller_stop_inferred:
                     continue
                 if marker == source_batches_marker and source_batches_inferred:
@@ -201,6 +211,8 @@ class TestStreamingOrchestratorIntegration:
                     print(f"   ✅ {marker} (inferred from orchestrator success markers)")
                 elif marker == orchestrator_run_marker and orchestrator_run_inferred:
                     print(f"   ✅ {marker} (inferred from downstream orchestrator markers)")
+                elif marker == query_started_signal_marker and query_started_signal_inferred:
+                    print(f"   ✅ {marker} (inferred from orchestrator signal summary)")
                 elif marker == controller_stop_marker and controller_stop_inferred:
                     print(f"   ✅ {marker} (inferred from orchestrator success markers)")
                 elif marker == source_batches_marker and source_batches_inferred:
