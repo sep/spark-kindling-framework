@@ -33,9 +33,14 @@ class StandaloneService(PlatformService):
     """
 
     def __init__(self, config, logger):
-        self.config = (
-            config if isinstance(config, types.SimpleNamespace) else types.SimpleNamespace(**config)
-        )
+        if isinstance(config, types.SimpleNamespace):
+            self.config = config
+        elif isinstance(config, dict):
+            self.config = types.SimpleNamespace(**config)
+        else:
+            # ConfigService or similar object passed from initialize_platform_services.
+            # Keep it directly; get_config() delegates to .get() when available.
+            self.config = config
         self.logger = logger
 
         # Standalone platform attributes
@@ -641,6 +646,8 @@ class StandaloneService(PlatformService):
 
     def get_config(self, key: str, default: Any = None) -> Any:
         """Get configuration value"""
+        if hasattr(self.config, "get") and callable(self.config.get):
+            return self.config.get(key, default)
         return getattr(self.config, key, default)
 
     def set_config(self, key: str, value: Any) -> None:
