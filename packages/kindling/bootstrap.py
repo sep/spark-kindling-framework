@@ -627,9 +627,9 @@ def detect_platform_from_utils():
 
 def detect_platform(config=None) -> str:
     # Check for explicit platform configuration first
-    if config and "platform_service" in config:
-        explicit_platform = config.get("platform_service")
-        if explicit_platform in ["databricks", "fabric", "synapse"]:
+    if config:
+        explicit_platform = config.get("platform_service") or config.get("platform")
+        if explicit_platform in ["databricks", "fabric", "synapse", "standalone"]:
             print(f"Platform explicitly set to: {explicit_platform}")
             return explicit_platform
 
@@ -669,7 +669,11 @@ def detect_platform(config=None) -> str:
     except:
         pass
 
-    raise RuntimeError("Unable to detect platform (not Synapse, Fabric, or Databricks)")
+    if config and config.get("allow_standalone_fallback"):
+        print("Falling back to standalone platform")
+        return "standalone"
+
+    raise RuntimeError("Unable to detect platform (not Synapse, Fabric, Databricks, or Standalone)")
 
 
 def safe_get_global(var_name: str, default: Any = None) -> Any:
@@ -1198,16 +1202,29 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
     # Extract bootstrap settings
     artifacts_storage_path = config.get("artifacts_storage_path")
-    use_lake_packages = config.get("use_lake_packages", True)
+    explicit_platform = config.get("platform_environment") or config.get("platform")
+    is_standalone = str(explicit_platform or "").strip().lower() == "standalone"
+    use_lake_packages = config.get("use_lake_packages", False if is_standalone else True)
     environment = config.get("environment", "development")
+    explicit_config_files = config.get("config_files")
+    if explicit_config_files is None:
+        config_files = None
+    elif isinstance(explicit_config_files, (str, Path)):
+        config_files = [str(explicit_config_files)]
+    else:
+        config_files = [str(path) for path in explicit_config_files]
 
     # Early platform detection for config loading
     platform = None
     workspace_id = None
+    if explicit_platform:
+        try:
+            platform = detect_platform({"platform_service": explicit_platform})
+        except Exception as e:
+            print(f"⚠️  Could not resolve explicit platform '{explicit_platform}': {e}")
     if use_lake_packages and artifacts_storage_path:
         try:
             # Detect platform early to load platform-specific config
-            explicit_platform = config.get("platform_environment") or config.get("platform")
             platform = detect_platform(config={"platform_service": explicit_platform})
 
             # Get workspace ID based on platform
@@ -1216,10 +1233,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             print(f"⚠️  Could not detect platform/workspace for config loading: {e}")
             # Continue without platform/workspace-specific configs
 
-    config_files = None
     if use_lake_packages and artifacts_storage_path:
         initial_temp_path = _resolve_initial_download_temp_path(config, platform)
-        config_files = download_config_files(
+        downloaded_config_files = download_config_files(
             artifacts_storage_path=artifacts_storage_path,
             environment=environment,
             platform=platform,
@@ -1227,6 +1243,10 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             app_name=app_name,
             temp_path=initial_temp_path,
         )
+        if config_files:
+            config_files = downloaded_config_files + config_files
+        else:
+            config_files = downloaded_config_files
 
     from kindling.spark_config import configure_injector_with_config
 
@@ -1359,20 +1379,32 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         else:
             logger.info("Bootstrap staging path: default platform fallback")
 
-        install_bootstrap_dependencies(
-            logger,
-            bootstrap_deps_config,
-            artifacts_storage_path=artifacts_storage_path,
-        )
-
         # Check for explicit platform in config (supports both nested and flat config keys)
         explicit_platform = (
             config_service.get("kindling.platform.environment")
             or config.get("platform_environment")
             or config.get("platform")
         )
-        platform = detect_platform(config={"platform_service": explicit_platform})
+        platform = detect_platform(
+            config={
+                "platform_service": explicit_platform,
+                "allow_standalone_fallback": is_standalone,
+            }
+        )
         logger.info(f"Platform: {platform}")
+
+        install_bootstrap_dependencies_flag = config.get("install_bootstrap_dependencies")
+        if install_bootstrap_dependencies_flag is None:
+            install_bootstrap_dependencies_flag = platform != "standalone"
+
+        if install_bootstrap_dependencies_flag:
+            install_bootstrap_dependencies(
+                logger,
+                bootstrap_deps_config,
+                artifacts_storage_path=artifacts_storage_path,
+            )
+        else:
+            logger.info("Skipping bootstrap dependency installation")
 
         platformservice = initialize_platform_services(platform, config_service, logger)
         logger.info("Platform services initialized")
@@ -1388,7 +1420,8 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             logger.warning(f"Secret resolution pass failed: {secret_resolution_error}")
 
         # DEBUG: Check what the config value actually is
-        load_local_value = config_service.get("kindling.bootstrap.load_local", True)
+        load_local_default = False if platform == "standalone" else True
+        load_local_value = config_service.get("kindling.bootstrap.load_local", load_local_default)
         print(
             f"🔍 DEBUG: kindling.bootstrap.load_local = {load_local_value} (type: {type(load_local_value).__name__})"
         )
