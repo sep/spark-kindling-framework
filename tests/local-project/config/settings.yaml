@@ -1,0 +1,15 @@
+default:
+  kindling:
+    delta:
+      # storage mode: use explicit provider.path tags rather than Spark catalog
+      access_mode: storage
+      optimize_write: false
+
+    telemetry:
+      logging:
+        level: INFO
+        print: true
+
+    # Disable workspace package scanning — consumer code is imported explicitly
+    bootstrap:
+      load_local: false
