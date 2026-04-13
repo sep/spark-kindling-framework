@@ -31,33 +31,38 @@ _FATAL_SYSTEM_TEST_LOG_PREFIXES = (
 )
 
 
+def _get_nonempty_env(*names: str) -> Optional[str]:
+    """Return the first environment value that is present and not blank."""
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            continue
+
+        stripped = value.strip()
+        if stripped:
+            return stripped
+
+    return None
+
+
 def get_system_test_poll_interval(default: float = 10.0) -> float:
     """Return poll interval for system-test job/status polling."""
     return float(
-        os.getenv(
-            "KINDLING_SYSTEM_TEST_POLL_INTERVAL",
-            os.getenv("POLL_INTERVAL", str(default)),
-        )
+        _get_nonempty_env("KINDLING_SYSTEM_TEST_POLL_INTERVAL", "POLL_INTERVAL") or str(default)
     )
 
 
 def get_system_test_stream_max_wait(default: float = 600.0) -> float:
     """Return max stdout stream wait for system tests."""
     return float(
-        os.getenv(
-            "KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT",
-            os.getenv("TEST_TIMEOUT", str(default)),
-        )
+        _get_nonempty_env("KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT", "TEST_TIMEOUT") or str(default)
     )
 
 
 def get_system_test_completion_timeout(default: float = 600.0) -> float:
     """Return completion timeout for tests that poll status directly."""
     return float(
-        os.getenv(
-            "KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT",
-            os.getenv("TEST_TIMEOUT", str(default)),
-        )
+        _get_nonempty_env("KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT", "TEST_TIMEOUT") or str(default)
     )
 
 
