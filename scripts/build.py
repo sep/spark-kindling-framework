@@ -36,6 +36,8 @@ PLATFORM_FILES_TO_REMOVE = {
         "kindling/platform_databricks.py",
         "kindling/platform_standalone.py",
     ],
+    # local: keep all platform files — no stripping
+    "local": [],
 }
 
 
@@ -165,6 +167,32 @@ def build_platform_wheel(platform: str, version: str) -> tuple[str, int]:
         return wheel_name, size_kb
 
 
+def build_local_wheel(version: str) -> tuple[str, int]:
+    """Build the kindling-local wheel: all platforms included, full deps.
+
+    Unlike the platform wheels this wheel is NOT stripped — every platform
+    module ships so that local/standalone environments can import any of them.
+    It also declares pyspark, delta-spark, pandas, and pyarrow as explicit
+    dependencies since there is no workspace runtime to supply them.
+    """
+    print("\n📦 Building kindling-local wheel (all platforms, full deps)...")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        build_dir = Path(temp_dir)
+
+        # Build wheel in isolation (reuses existing build_wheel helper)
+        original_wheel = build_wheel("local", version, build_dir)
+
+        # Copy straight to dist — no stripping needed
+        wheel_name = f"kindling_local-{version}-py3-none-any.whl"
+        output_path = DIST_DIR / wheel_name
+        shutil.copy2(original_wheel, output_path)
+
+        size_kb = output_path.stat().st_size // 1024
+        print(f"   ✅ Built: {wheel_name} ({size_kb}K)")
+        return wheel_name, size_kb
+
+
 def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
     """Build a design-time wheel in-place and copy it to dist/."""
     package_name = package_dir.name
@@ -230,6 +258,15 @@ def main():
             print(f"   ❌ Failed: {e}")
             runtime_results.append((platform, None, 0, False))
 
+    # Build local wheel (all platforms, full deps — for local dev consumers)
+    local_result = None
+    try:
+        wheel_name, size_kb = build_local_wheel(version)
+        local_result = ("local", wheel_name, size_kb, True)
+    except Exception as e:
+        print(f"   ❌ Failed to build kindling-local: {e}")
+        local_result = ("local", None, 0, False)
+
     # Build design-time wheels
     design_results = []
     for package_dir in DESIGN_TIME_PACKAGE_DIRS:
@@ -256,6 +293,12 @@ def main():
             print(f"   ✅ {platform}: {size_kb}K")
         else:
             print(f"   ❌ {platform}: FAILED")
+    if local_result:
+        _, _, size_kb, success = local_result
+        if success:
+            print(f"   ✅ local: {size_kb}K")
+        else:
+            print(f"   ❌ local: FAILED")
     for package_name, wheel_name, size_kb, success in design_results:
         if success:
             print(f"   ✅ {package_name}: {size_kb}K")
@@ -263,7 +306,8 @@ def main():
             print(f"   ❌ {package_name}: FAILED")
 
     # Check if any failed
-    if not all(result[3] for result in runtime_results + design_results):
+    all_results = runtime_results + ([local_result] if local_result else []) + design_results
+    if not all(result[3] for result in all_results):
         print("\n❌ Some builds failed")
         sys.exit(1)
 
@@ -274,6 +318,7 @@ def main():
     print("   🏷️  Pythonic package names (kindling-{platform})")
 
     print("\n💡 Usage:")
+    print(f"   pip install {DIST_DIR}/kindling_local-{version}-py3-none-any.whl    # local dev")
     print(f"   pip install {DIST_DIR}/kindling_synapse-{version}-py3-none-any.whl")
     print(f"   pip install {DIST_DIR}/kindling_databricks-{version}-py3-none-any.whl")
     print(f"   pip install {DIST_DIR}/kindling_fabric-{version}-py3-none-any.whl")
