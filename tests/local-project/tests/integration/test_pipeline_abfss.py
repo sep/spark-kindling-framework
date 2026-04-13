@@ -1,12 +1,14 @@
 """Integration tests — reads and writes against real ABFSS storage.
 
-Requires env vars (see config/env.local.yaml for full list):
-  ABFSS_STORAGE_ACCOUNT    storage account name
-  ABFSS_STORAGE_KEY         storage account key
-  ABFSS_BRONZE_ORDERS_PATH  abfss:// path for bronze.orders
-  ABFSS_SILVER_ORDERS_PATH  abfss:// path for silver.orders
+Requires env vars:
+  AZURE_STORAGE_ACCOUNT    storage account name
+  AZURE_TENANT_ID           AAD tenant ID
+  AZURE_CLIENT_ID           service principal app ID
+  AZURE_CLIENT_SECRET       service principal secret
+  ABFSS_BRONZE_ORDERS_PATH  abfss:// path for bronze.orders table
+  ABFSS_SILVER_ORDERS_PATH  abfss:// path for silver.orders table
 
-Skipped automatically when ABFSS_STORAGE_ACCOUNT is not set.
+Skipped automatically when Azure SP creds are not set.
 """
 
 import os
@@ -116,11 +118,16 @@ class TestABFSSWriteRead:
 @pytest.mark.integration
 @pytest.mark.requires_azure
 class TestPipelineViaKindling:
-    """End-to-end: initialise framework, register entities/pipes, execute via Kindling."""
+    """End-to-end: initialise framework, register entities/pipes, execute via Kindling.
 
-    def test_initialize_standalone_framework_with_local_config(
-        self, reset_kindling_for_integration
-    ):
+    These tests rely on the DI graph established by the first initialize() call in
+    this process (which may come from the component test suite or the first test in
+    this class). initialize_framework() returns early if already initialised, so
+    calling initialize() here is idempotent — it either bootstraps fresh or returns
+    the existing platform service.
+    """
+
+    def test_initialize_standalone_framework_with_local_config(self):
         """Framework initialises against standalone platform using local YAML config."""
         from sales_ops.app import initialize
 
@@ -129,8 +136,8 @@ class TestPipelineViaKindling:
         assert svc is not None
         assert svc.get_platform_name() == "standalone"
 
-    def test_entity_paths_resolved_from_env(self, reset_kindling_for_integration):
-        """After framework init, entity tags should contain the ABFSS paths from env vars."""
+    def test_entity_paths_resolved_from_env(self):
+        """After framework init, entity tags contain the ABFSS paths from env vars."""
         from kindling.data_entities import DataEntityRegistry
         from kindling.injection import GlobalInjector
         from sales_ops.app import initialize
