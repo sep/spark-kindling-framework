@@ -1193,6 +1193,122 @@ def workspace_deploy(
     click.echo("Deploy complete.")
 
 
+@cli.command("new")
+@click.argument("project_name")
+@click.option(
+    "--auth",
+    type=click.Choice(["oauth", "key", "cli"]),
+    default="oauth",
+    show_default=True,
+    help=(
+        "ABFSS authentication method. "
+        "oauth: service principal (tenant/client/secret env vars). "
+        "key: storage account key env var. "
+        "cli: DefaultAzureCredential (az login)."
+    ),
+)
+@click.option(
+    "--layers",
+    type=click.Choice(["medallion", "minimal"]),
+    default="medallion",
+    show_default=True,
+    help=(
+        "Project template style. "
+        "medallion: bronze/silver entities with a promotion pipe. "
+        "minimal: single entity and a passthrough pipe. "
+        "Both produce the same directory structure and identical wheel invariants."
+    ),
+)
+@click.option(
+    "--no-integration",
+    "integration",
+    is_flag=True,
+    default=False,
+    help="Omit the tests/integration/ directory.",
+)
+@click.option(
+    "--output-dir",
+    "output_dir",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Parent directory in which to create the project folder.",
+)
+def new_project(
+    project_name: str,
+    auth: str,
+    layers: str,
+    integration: bool,
+    output_dir: Path,
+) -> None:
+    """Scaffold a new Kindling local-python-first project.
+
+    \b
+    Creates PROJECT_NAME/ with the following layout:
+
+      src/<pkg>/
+        app.py            — initialize() and register_all()
+        entities/         — DataEntities.entity() registrations
+        pipes/            — @DataPipes.pipe decorators
+        transforms/       — pure-PySpark functions (unit-testable)
+      config/
+        settings.yaml     — base Kindling config
+        env.local.yaml    — ABFSS paths resolved from env vars
+      tests/
+        conftest.py       — Spark fixtures tuned to --auth choice
+        unit/             — transform functions, no Azure
+        component/        — DI wiring, no Azure
+        integration/      — live ABFSS read/write (unless --no-integration)
+      pyproject.toml
+
+    \b
+    The structure is invariant: --layers and --auth change the *content* of
+    the generated files, not which files are created. A wheel built from any
+    combination of options works identically at runtime.
+
+    \b
+    Examples:
+      kindling new my-pipeline
+      kindling new my-pipeline --auth key --layers minimal
+      kindling new my-pipeline --auth cli --no-integration --output-dir ~/projects
+    """
+    from kindling_cli.scaffold import ScaffoldConfig, generate_project, validate_name
+
+    try:
+        snake = validate_name(project_name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    cfg = ScaffoldConfig(
+        name=snake,
+        layers=layers,
+        auth=auth,
+        integration=not integration,
+        output_dir=output_dir.expanduser().resolve(),
+    )
+
+    target = cfg.output_dir / cfg.snake_name
+    if target.exists():
+        raise click.ClickException(
+            f"Directory already exists: {target}\nChoose a different project name or --output-dir."
+        )
+
+    try:
+        created = generate_project(cfg)
+    except Exception as exc:
+        raise click.ClickException(f"Scaffold failed: {exc}") from exc
+
+    click.echo(f"Created {cfg.kebab_name}/ ({len(created)} files)")
+    click.echo()
+    click.echo("Next steps:")
+    click.echo(f"  cd {cfg.snake_name}")
+    click.echo("  poetry install")
+    click.echo("  cp .env.example .env  # fill in your credentials")
+    click.echo("  poetry run pytest tests/unit tests/component")
+    if cfg.integration:
+        click.echo("  poetry run pytest tests/integration  # requires Azure creds in .env")
+
+
 def main() -> None:
     """Console script entrypoint."""
     cli()
