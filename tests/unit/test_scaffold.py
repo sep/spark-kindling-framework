@@ -53,6 +53,8 @@ INVARIANT_DIRS = [
 
 INVARIANT_FILES = [
     "pyproject.toml",
+    ".env.example",
+    ".gitignore",
     "config/settings.yaml",
     "config/env.local.yaml",
     "tests/conftest.py",
@@ -208,6 +210,64 @@ def test_minimal_entity_tags_have_raw(tmp_path):
     env_local = (tmp_path / "proj" / "config" / "env.local.yaml").read_text()
     assert "raw.records" in env_local
     assert "bronze.records" not in env_local
+
+
+def test_env_example_oauth_has_all_sp_vars(tmp_path):
+    cfg = ScaffoldConfig(name="proj", auth="oauth", output_dir=tmp_path)
+    generate_project(cfg)
+
+    env_ex = (tmp_path / "proj" / ".env.example").read_text()
+    for var in (
+        "AZURE_STORAGE_ACCOUNT",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+    ):
+        assert var in env_ex
+
+
+def test_env_example_key_has_storage_key(tmp_path):
+    cfg = ScaffoldConfig(name="proj", auth="key", output_dir=tmp_path)
+    generate_project(cfg)
+
+    env_ex = (tmp_path / "proj" / ".env.example").read_text()
+    assert "AZURE_STORAGE_KEY" in env_ex
+    assert "AZURE_TENANT_ID" not in env_ex
+
+
+def test_env_example_cli_has_no_secret(tmp_path):
+    cfg = ScaffoldConfig(name="proj", auth="cli", output_dir=tmp_path)
+    generate_project(cfg)
+
+    env_ex = (tmp_path / "proj" / ".env.example").read_text()
+    assert "az login" in env_ex
+    assert "AZURE_CLIENT_SECRET" not in env_ex
+
+
+def test_env_example_medallion_has_bronze_and_silver_paths(tmp_path):
+    cfg = ScaffoldConfig(name="proj", layers="medallion", output_dir=tmp_path)
+    generate_project(cfg)
+
+    env_ex = (tmp_path / "proj" / ".env.example").read_text()
+    assert "ABFSS_BRONZE_PATH" in env_ex
+    assert "ABFSS_SILVER_PATH" in env_ex
+
+
+def test_env_example_minimal_has_raw_path(tmp_path):
+    cfg = ScaffoldConfig(name="proj", layers="minimal", output_dir=tmp_path)
+    generate_project(cfg)
+
+    env_ex = (tmp_path / "proj" / ".env.example").read_text()
+    assert "ABFSS_RAW_PATH" in env_ex
+    assert "ABFSS_BRONZE_PATH" not in env_ex
+
+
+def test_gitignore_excludes_dotenv(tmp_path):
+    cfg = ScaffoldConfig(name="proj", output_dir=tmp_path)
+    generate_project(cfg)
+
+    gitignore = (tmp_path / "proj" / ".gitignore").read_text()
+    assert ".env" in gitignore
 
 
 # ---------------------------------------------------------------------------
