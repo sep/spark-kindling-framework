@@ -104,6 +104,8 @@ def generate_project(cfg: ScaffoldConfig) -> List[Path]:
 
     # -- Project metadata -----------------------------------------------------
     _write("pyproject.toml", _pyproject(cfg))
+    _write(".env.example", _env_example(cfg))
+    _write(".gitignore", _gitignore())
 
     return files
 
@@ -143,10 +145,29 @@ These are imported by {pkg}.app.register_all().
 """
 
 from kindling.data_entities import DataEntities
+from pyspark.sql.types import StringType, StructField, StructType
+
+_bronze_schema = StructType(
+    [
+        StructField("id", StringType(), False),
+        StructField("date", StringType(), True),
+        StructField("value", StringType(), True),
+    ]
+)
+
+_silver_schema = StructType(
+    [
+        StructField("id", StringType(), False),
+        StructField("date", StringType(), False),
+        StructField("value", StringType(), True),
+        StructField("ingested_at", StringType(), True),
+    ]
+)
 
 DataEntities.entity(
     entityid="bronze.records",
     name="bronze_records",
+    schema=_bronze_schema,
     merge_columns=["id"],
     partition_columns=["date"],
     tags={{"layer": "bronze"}},
@@ -155,6 +176,7 @@ DataEntities.entity(
 DataEntities.entity(
     entityid="silver.records",
     name="silver_records",
+    schema=_silver_schema,
     merge_columns=["id"],
     partition_columns=["date"],
     tags={{"layer": "silver"}},
@@ -178,6 +200,7 @@ from kindling.data_pipes import DataPipes
 @DataPipes.pipe(
     pipeid="bronze_to_silver",
     name="Bronze to Silver",
+    tags={{"layer": "silver"}},
     input_entity_ids=["bronze.records"],
     output_entity_id="silver.records",
     output_type="table",
@@ -230,10 +253,19 @@ def _minimal_entities(cfg: ScaffoldConfig) -> List[tuple[str, str]]:
     content = f'''"""Entity registrations for {cfg.kebab_name}."""
 
 from kindling.data_entities import DataEntities
+from pyspark.sql.types import StringType, StructField, StructType
+
+_raw_schema = StructType(
+    [
+        StructField("id", StringType(), False),
+        StructField("value", StringType(), True),
+    ]
+)
 
 DataEntities.entity(
     entityid="raw.records",
     name="raw_records",
+    schema=_raw_schema,
     merge_columns=["id"],
     tags={{}},
 )
@@ -251,6 +283,7 @@ from kindling.data_pipes import DataPipes
 @DataPipes.pipe(
     pipeid="process_records",
     name="Process Records",
+    tags={{}},
     input_entity_ids=["raw.records"],
     output_entity_id="raw.records",
     output_type="table",
@@ -1068,3 +1101,64 @@ class TestPipelineViaKindling:
         result = self.spark.read.format("delta").load(sink_path)
         assert result.count() >= 1
 '''
+
+
+# ---------------------------------------------------------------------------
+# Supporting file templates
+# ---------------------------------------------------------------------------
+
+
+def _env_example(cfg: ScaffoldConfig) -> str:
+    """Generate .env.example listing all required environment variables."""
+    if cfg.auth == "oauth":
+        cred_lines = """\
+AZURE_STORAGE_ACCOUNT=<storage-account-name>
+AZURE_TENANT_ID=<aad-tenant-id>
+AZURE_CLIENT_ID=<service-principal-app-id>
+AZURE_CLIENT_SECRET=<service-principal-secret>"""
+    elif cfg.auth == "key":
+        cred_lines = """\
+AZURE_STORAGE_ACCOUNT=<storage-account-name>
+AZURE_STORAGE_KEY=<storage-account-key>"""
+    else:  # cli
+        cred_lines = """\
+AZURE_STORAGE_ACCOUNT=<storage-account-name>
+# Run `az login` before executing integration tests — no secret needed here."""
+
+    if cfg.layers == "medallion":
+        path_lines = """\
+ABFSS_BRONZE_PATH=abfss://<container>@<account>.dfs.core.windows.net/bronze/records
+ABFSS_SILVER_PATH=abfss://<container>@<account>.dfs.core.windows.net/silver/records"""
+    else:
+        path_lines = """\
+ABFSS_RAW_PATH=abfss://<container>@<account>.dfs.core.windows.net/raw/records"""
+
+    return f"""\
+# Copy this file to .env and fill in your values.
+# .env is git-ignored — never commit real credentials.
+#
+# Load with: export $(grep -v '^#' .env | xargs)
+# Or use a tool like direnv or python-dotenv.
+
+# --- Credentials ({cfg.auth} auth) ---
+{cred_lines}
+
+# --- ABFSS entity paths ---
+{path_lines}
+
+# --- Optional ---
+# KINDLING_ENV=local
+"""
+
+
+def _gitignore() -> str:
+    return """\
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+"""

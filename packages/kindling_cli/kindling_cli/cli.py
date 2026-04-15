@@ -1303,7 +1303,7 @@ def new_project(
     click.echo("Next steps:")
     click.echo(f"  cd {cfg.snake_name}")
     click.echo("  poetry install")
-    click.echo("  cp .env.example .env  # fill in your credentials")
+    click.echo("  cp .env.example .env  # fill in your credentials, then: source .env")
     click.echo("  poetry run pytest tests/unit tests/component")
     if cfg.integration:
         click.echo("  poetry run pytest tests/integration  # requires Azure creds in .env")
