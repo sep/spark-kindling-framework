@@ -35,6 +35,7 @@ RUN pip install --no-cache-dir \
     pyspark==3.5.5 \
     delta-spark==3.3.2 \
     pytest \
+    pytest-xdist \
     pytest-cov \
     black \
     isort \
