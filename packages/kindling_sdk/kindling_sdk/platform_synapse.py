@@ -15,6 +15,19 @@ from .platform_provider import PlatformAPI, PlatformAPIRegistry, create_azure_cr
 # ============================================================================
 
 
+def _emit_stream_progress(message: str) -> None:
+    """Emit streaming progress to stdout and the optional xdist heartbeat channel."""
+    print(message)
+    sys.stdout.flush()
+
+    heartbeat_path = os.getenv("KINDLING_SYSTEM_HEARTBEAT_FILE")
+    if not heartbeat_path:
+        return
+
+    with open(heartbeat_path, "a", encoding="utf-8") as heartbeat_file:
+        heartbeat_file.write(message + "\n")
+
+
 @PlatformAPIRegistry.register("synapse")
 class SynapseAPI(PlatformAPI):
     """
@@ -1311,20 +1324,19 @@ class SynapseAPI(PlatformAPI):
         stdout_warmup_seconds = 45  # Similar to Fabric
         last_poll_message_time = 0
         app_id = None  # Spark application ID
+        last_status = None
 
         total_timeout = max_wait + 300.0
 
-        print(f"📡 Starting stdout log stream for batch_id={run_id}")
-        print(f"   Poll interval: {poll_interval}s")
-        print(f"   Max wait: {max_wait}s")
-        print(f"   Total timeout: {total_timeout}s")
-        sys.stdout.flush()
+        _emit_stream_progress(f"📡 Starting stdout log stream for batch_id={run_id}")
+        _emit_stream_progress(f"   Poll interval: {poll_interval}s")
+        _emit_stream_progress(f"   Max wait: {max_wait}s")
+        _emit_stream_progress(f"   Total timeout: {total_timeout}s")
 
         while True:
             elapsed = time.time() - start_time
             if elapsed > total_timeout:
-                print(f"⏱️  Total timeout ({total_timeout}s) exceeded")
-                sys.stdout.flush()
+                _emit_stream_progress(f"⏱️  Total timeout ({total_timeout}s) exceeded")
                 break
 
             try:
@@ -1332,16 +1344,22 @@ class SynapseAPI(PlatformAPI):
                 status_info = self.get_job_status(run_id)
                 status = status_info.get("status", "UNKNOWN").upper()
 
+                if status != last_status:
+                    elapsed = int(time.time() - start_time)
+                    _emit_stream_progress(
+                        f"📊 Synapse job status changed: {last_status or 'UNKNOWN'} -> {status} "
+                        f"({elapsed}s elapsed)"
+                    )
+                    last_status = status
+
                 # Extract application ID when available
                 if not app_id and status_info.get("app_id"):
                     app_id = status_info.get("app_id")
-                    print(f"📋 Got application ID: {app_id}")
-                    sys.stdout.flush()
+                    _emit_stream_progress(f"📋 Got application ID: {app_id}")
 
                 # If job completed, do final read and exit
                 if status in ["COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED"]:
-                    print(f"✅ Job {status.lower()} - doing final log read")
-                    sys.stdout.flush()
+                    _emit_stream_progress(f"✅ Job {status.lower()} - doing final log read")
                     # Synapse log materialization can be delayed (even after the batch enters a
                     # terminal state). Retry for a short grace period so tests can see failures.
                     grace_seconds = 60.0 if str(run_id) in self._diag_root_missing else 600.0
@@ -1360,6 +1378,14 @@ class SynapseAPI(PlatformAPI):
                             stagnant_polls = 0
                         else:
                             stagnant_polls += 1
+                            current_time = time.time()
+                            if current_time - last_poll_message_time >= 30:
+                                remaining = int(max(0, grace_deadline - current_time))
+                                _emit_stream_progress(
+                                    "🔄 Synapse terminal-state log materialization still in progress "
+                                    f"(status={status}, stagnant_polls={stagnant_polls}, remaining_grace={remaining}s)"
+                                )
+                                last_poll_message_time = current_time
 
                         if not seen_useful and all_logs:
                             # Wait for actual app output (TEST_ID markers) instead of exiting just
@@ -1380,8 +1406,14 @@ class SynapseAPI(PlatformAPI):
 
                 # If job not started yet, wait
                 if status in ["NOTSTARTED", "PENDING", "STARTING"]:
-                    print(f"⏳ Job status: {status} - waiting...")
-                    sys.stdout.flush()
+                    current_time = time.time()
+                    if current_time - last_poll_message_time >= 30:
+                        elapsed = int(current_time - start_time)
+                        _emit_stream_progress(
+                            f"⏳ Synapse job still waiting to start "
+                            f"(status={status}, elapsed={elapsed}s)"
+                        )
+                        last_poll_message_time = current_time
                     time.sleep(poll_interval)
                     continue
 
@@ -1398,9 +1430,13 @@ class SynapseAPI(PlatformAPI):
                     time_since_start = time.time() - job_started_time
                     if time_since_start < stdout_warmup_seconds:
                         remaining = stdout_warmup_seconds - time_since_start
-                        if remaining > 1:
-                            print(f"⏳ Warmup period: {int(remaining)}s remaining...")
-                            sys.stdout.flush()
+                        current_time = time.time()
+                        if remaining > 1 and current_time - last_poll_message_time >= 30:
+                            _emit_stream_progress(
+                                "⏳ Synapse stdout warmup in progress "
+                                f"(status={status}, remaining={int(remaining)}s)"
+                            )
+                            last_poll_message_time = current_time
                         time.sleep(poll_interval)
                         continue
 
@@ -1421,19 +1457,20 @@ class SynapseAPI(PlatformAPI):
                     current_time = time.time()
                     if current_time - last_poll_message_time >= 30:
                         elapsed = int(current_time - start_time)
-                        print(f"🔄 Still polling for stdout... ({elapsed}s elapsed)")
-                        sys.stdout.flush()
+                        app_id_hint = app_id or "pending"
+                        _emit_stream_progress(
+                            "🔄 Synapse stdout still pending "
+                            f"(status={status}, elapsed={elapsed}s, lines={len(all_logs)}, app_id={app_id_hint})"
+                        )
                         last_poll_message_time = current_time
 
             except Exception as e:
-                print(f"⚠️  Error during log streaming: {e}")
-                sys.stdout.flush()
+                _emit_stream_progress(f"⚠️  Error during log streaming: {e}")
 
             # Wait before next poll
             time.sleep(poll_interval)
 
-        print(f"📊 Streaming complete - total lines: {len(all_logs)}")
-        sys.stdout.flush()
+        _emit_stream_progress(f"📊 Streaming complete - total lines: {len(all_logs)}")
         return all_logs
 
     def _read_stdout_chunk_synapse(
