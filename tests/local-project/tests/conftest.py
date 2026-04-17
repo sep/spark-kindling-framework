@@ -1,10 +1,11 @@
 """Shared fixtures for the sales-ops local project tests.
 
 Fixture scope:
-  spark_local    — Delta-enabled local SparkSession, no Azure config (unit/component)
-  spark_abfss    — Same session with fs.azure.account.key.* configured (integration)
+  spark_local    — plain local SparkSession, no Delta catalog, no Azure (unit/component)
+  spark_abfss    — Delta-enabled SparkSession with Azure SP OAuth config (integration)
 
-Integration tests are skipped automatically when ABFSS_STORAGE_ACCOUNT is not set.
+Integration tests are skipped automatically when AZURE_STORAGE_ACCOUNT,
+AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET are not all set.
 """
 
 import os
@@ -31,11 +32,13 @@ def _abfss_creds_available() -> bool:
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "unit: pure Python, no Spark")
+    config.addinivalue_line("markers", "unit: local Spark tests, no Azure or ABFSS")
     config.addinivalue_line("markers", "component: DI wiring tests, no ABFSS")
     config.addinivalue_line("markers", "integration: requires live Spark and ABFSS credentials")
     config.addinivalue_line(
-        "markers", "requires_azure: skipped when ABFSS_STORAGE_ACCOUNT is not set"
+        "markers",
+        "requires_azure: skipped when AZURE_STORAGE_ACCOUNT / AZURE_TENANT_ID / "
+        "AZURE_CLIENT_ID / AZURE_CLIENT_SECRET are not all set",
     )
 
 
