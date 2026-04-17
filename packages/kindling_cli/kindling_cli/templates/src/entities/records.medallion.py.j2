@@ -1,0 +1,43 @@
+"""Entity registrations for {{ kebab_name }}.
+
+Each DataEntities.entity() call fires at import time as a side effect.
+These are imported by {{ snake_name }}.app.register_all().
+"""
+
+from kindling.data_entities import DataEntities
+from pyspark.sql.types import StringType, StructField, StructType
+
+_bronze_schema = StructType(
+    [
+        StructField("id", StringType(), False),
+        StructField("date", StringType(), True),
+        StructField("value", StringType(), True),
+    ]
+)
+
+_silver_schema = StructType(
+    [
+        StructField("id", StringType(), False),
+        StructField("date", StringType(), False),
+        StructField("value", StringType(), True),
+        StructField("ingested_at", StringType(), True),
+    ]
+)
+
+DataEntities.entity(
+    entityid="bronze.records",
+    name="bronze_records",
+    schema=_bronze_schema,
+    merge_columns=["id"],
+    partition_columns=["date"],
+    tags={"layer": "bronze"},
+)
+
+DataEntities.entity(
+    entityid="silver.records",
+    name="silver_records",
+    schema=_silver_schema,
+    merge_columns=["id"],
+    partition_columns=["date"],
+    tags={"layer": "silver"},
+)
