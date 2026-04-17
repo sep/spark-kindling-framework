@@ -29,8 +29,8 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
-    "unit: pure Python, no Spark",
+    "unit: local Spark tests, no Azure or ABFSS",
     "component: DI wiring, no ABFSS",
     "integration: requires Spark and ABFSS credentials",
-    "requires_azure: skipped when ABFSS_STORAGE_ACCOUNT is not set",
+    "requires_azure: skipped when required AZURE_* environment variables are not set",
 ]
