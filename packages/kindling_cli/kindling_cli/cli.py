@@ -270,6 +270,65 @@ def env_group() -> None:
     """Validate local environment prerequisites."""
 
 
+_HADOOP_AZURE_JARS = [
+    "hadoop-azure-3.3.4.jar",
+    "hadoop-azure-datalake-3.3.4.jar",
+    "azure-storage-8.6.6.jar",
+    "wildfly-openssl-1.1.3.Final.jar",
+    "jetty-util-ajax-9.4.51.v20230217.jar",
+]
+
+_HADOOP_JAR_DIR = Path("/tmp/hadoop-jars")
+
+_HADOOP_JAR_URLS = (
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar",
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure-datalake/3.3.4/hadoop-azure-datalake-3.3.4.jar",
+    "https://repo1.maven.org/maven2/com/microsoft/azure/azure-storage/8.6.6/azure-storage-8.6.6.jar",
+    "https://repo1.maven.org/maven2/org/wildfly/openssl/wildfly-openssl/1.1.3.Final/wildfly-openssl-1.1.3.Final.jar",
+    "https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar",
+)
+
+
+def _check_java() -> Tuple[bool, str]:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["java", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        # java -version writes to stderr
+        output = (result.stderr or result.stdout).strip().split("\n")[0]
+        return result.returncode == 0, output or "found"
+    except FileNotFoundError:
+        return False, "not found — install a JDK (>=11)"
+    except Exception as exc:
+        return False, f"error: {exc}"
+
+
+def _check_module(module: str) -> Tuple[bool, str]:
+    import importlib.util
+
+    spec = importlib.util.find_spec(module)
+    if spec is None:
+        return False, f"not installed — pip install {module.replace('.', '-')}"
+    try:
+        mod = __import__(module)
+        version = getattr(mod, "__version__", None) or getattr(mod, "version", None)
+        return True, str(version) if version else "installed"
+    except Exception:
+        return True, "installed (import skipped)"
+
+
+def _check_hadoop_jars() -> Tuple[bool, str]:
+    missing = [j for j in _HADOOP_AZURE_JARS if not (_HADOOP_JAR_DIR / j).exists()]
+    if not missing:
+        return True, str(_HADOOP_JAR_DIR)
+    return False, f"{len(missing)} jar(s) missing from {_HADOOP_JAR_DIR}"
+
+
 @env_group.command("check")
 @click.option(
     "--config",
@@ -278,8 +337,35 @@ def env_group() -> None:
     show_default=True,
     type=click.Path(path_type=Path, dir_okay=False, exists=False),
 )
-def env_check(config_path: Path) -> None:
-    """Check if local environment is ready for Kindling."""
+@click.option(
+    "--local",
+    "local_checks",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also check local Spark dev prerequisites: "
+        "Java, PySpark, delta-spark, and hadoop-azure JARs."
+    ),
+)
+def env_check(config_path: Path, local_checks: bool) -> None:
+    """Check if local environment is ready for Kindling.
+
+    \b
+    With --local, also validates the Spark runtime stack needed for local
+    development and integration tests against ABFSS:
+
+      - Java >=11 on PATH (required by PySpark)
+      - pyspark installed
+      - delta-spark installed
+      - hadoop-azure JARs present in /tmp/hadoop-jars/
+
+    \b
+    To download the hadoop-azure JARs run:
+      mkdir -p /tmp/hadoop-jars
+      curl -L -o /tmp/hadoop-jars/hadoop-azure-3.3.4.jar \\
+        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar
+      # (and the four other JARs — see docs/local_python_first.md)
+    """
     resolved_config_path = config_path.expanduser()
 
     checks: List[Tuple[str, bool, str]] = []
@@ -301,6 +387,28 @@ def env_check(config_path: Path) -> None:
     kindling_section = config_data.get("kindling")
     has_kindling_section = isinstance(kindling_section, dict)
     checks.append(("kindling_section_present", has_kindling_section, "root.kindling is a mapping"))
+
+    if local_checks:
+        java_ok, java_detail = _check_java()
+        checks.append(("java", java_ok, java_detail))
+
+        pyspark_ok, pyspark_detail = _check_module("pyspark")
+        checks.append(("pyspark", pyspark_ok, pyspark_detail))
+
+        delta_ok, delta_detail = _check_module("delta")
+        checks.append(("delta_spark", delta_ok, delta_detail))
+
+        jars_ok, jars_detail = _check_hadoop_jars()
+        checks.append(("hadoop_azure_jars", jars_ok, jars_detail))
+        if not jars_ok:
+            missing = [j for j in _HADOOP_AZURE_JARS if not (_HADOOP_JAR_DIR / j).exists()]
+            checks.append(
+                (
+                    "  missing_jars",
+                    False,
+                    ", ".join(missing),
+                )
+            )
 
     if _print_check_results(checks):
         click.echo("Environment check passed.")
