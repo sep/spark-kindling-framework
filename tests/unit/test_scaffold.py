@@ -376,3 +376,40 @@ class TestKindlingNewCommand:
         assert result.exit_code == 0, result.output
         conftest = (tmp_path / "key_proj" / "tests" / "conftest.py").read_text()
         assert "AZURE_STORAGE_KEY" in conftest
+
+    def test_template_dir_overrides_builtin(self, tmp_path):
+        """A custom template in --template-dir takes precedence over the built-in."""
+        tmpl_dir = tmp_path / "custom_templates"
+        tmpl_dir.mkdir()
+        # Write a minimal app.py.j2 override with a sentinel comment
+        (tmpl_dir / "app.py.j2").write_text("# CUSTOM_MARKER\n")
+
+        proj_dir = tmp_path / "projects"
+        proj_dir.mkdir()
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["new", "my-proj", "--template-dir", str(tmpl_dir), "--output-dir", str(proj_dir)],
+        )
+
+        assert result.exit_code == 0, result.output
+        app_py = (proj_dir / "my_proj" / "src" / "my_proj" / "app.py").read_text()
+        assert "CUSTOM_MARKER" in app_py
+
+    def test_template_dir_falls_back_to_builtin(self, tmp_path):
+        """Templates NOT in --template-dir are served from the built-in directory."""
+        tmpl_dir = tmp_path / "custom_templates"
+        tmpl_dir.mkdir()
+        # Only override app.py.j2; .gitignore should still come from built-ins
+        (tmpl_dir / "app.py.j2").write_text("# override\n")
+
+        proj_dir = tmp_path / "projects"
+        proj_dir.mkdir()
+        runner = CliRunner()
+        runner.invoke(
+            cli,
+            ["new", "my-proj", "--template-dir", str(tmpl_dir), "--output-dir", str(proj_dir)],
+        )
+
+        gitignore = (proj_dir / "my_proj" / ".gitignore").read_text()
+        assert ".env" in gitignore

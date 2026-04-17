@@ -1,0 +1,31 @@
+{
+    "name": "{{ kebab_name }}",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "devcontainer",
+    "workspaceFolder": "/workspaces/{{ snake_name }}",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "redhat.vscode-yaml"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "editor.formatOnSave": true,
+                "files.trimTrailingWhitespace": true,
+                "files.insertFinalNewline": true
+            }
+        }
+    },
+    "postCreateCommand": "pip install 'kindling>=0.8.14' && poetry install && bash -lc 'grep -q \"# {{ kebab_name }} .env\" ~/.bashrc || { echo \"# {{ kebab_name }} .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/{{ snake_name }}/.env ] && set -a && source /workspaces/{{ snake_name }}/.env && set +a\" >> ~/.bashrc; }'",
+    "postStartCommand": "bash -c '[ -f \"/workspaces/{{ snake_name }}/.env\" ] && echo \"\u2705 .env loaded\" || echo \"\u26a0\ufe0f  No .env \u2014 copy .env.example to .env and fill in credentials\"'",
+    "forwardPorts": [4040],
+    "portsAttributes": {
+        "4040": {
+            "label": "Spark UI",
+            "onAutoForward": "notify"
+        }
+    },
+    "remoteUser": "vscode"
+}

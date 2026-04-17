@@ -1342,12 +1342,20 @@ def workspace_deploy(
     type=click.Path(path_type=Path, file_okay=False),
     help="Parent directory in which to create the project folder.",
 )
+@click.option(
+    "--template-dir",
+    "template_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory of custom Jinja2 templates that overlay the built-ins.",
+)
 def new_project(
     project_name: str,
     auth: str,
     layers: str,
     integration: bool,
     output_dir: Path,
+    template_dir: Optional[Path],
 ) -> None:
     """Scaffold a new Kindling local-python-first project.
 
@@ -1393,6 +1401,7 @@ def new_project(
         auth=auth,
         integration=not integration,
         output_dir=output_dir.expanduser().resolve(),
+        template_dir=template_dir.expanduser().resolve() if template_dir else None,
     )
 
     target = cfg.output_dir / cfg.snake_name

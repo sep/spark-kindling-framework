@@ -1,0 +1,17 @@
+"""Pipe definitions for {{ kebab_name }}."""
+
+from kindling.data_pipes import DataPipes
+
+
+@DataPipes.pipe(
+    pipeid="process_records",
+    name="Process Records",
+    tags={},
+    input_entity_ids=["raw.records"],
+    output_entity_id="raw.records",
+    output_type="table",
+)
+def process_records(raw_df, spark):
+    from {{ snake_name }}.transforms.quality import clean_records
+
+    return clean_records(raw_df)
