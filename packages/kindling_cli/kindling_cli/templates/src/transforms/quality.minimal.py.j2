@@ -1,0 +1,12 @@
+"""Pure-PySpark transformation functions."""
+
+from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
+
+
+def drop_null_keys(df: DataFrame) -> DataFrame:
+    return df.filter(F.col("id").isNotNull())
+
+
+def clean_records(df: DataFrame) -> DataFrame:
+    return drop_null_keys(df)

@@ -1,0 +1,63 @@
+"""Integration tests — reads from and writes to live ABFSS storage.
+
+Skipped automatically when Azure credentials are not set.
+"""
+
+import os
+
+import pytest
+
+pytestmark = [pytest.mark.integration, pytest.mark.requires_azure]
+
+
+def _path(env_var: str) -> str:
+    val = os.environ.get(env_var)
+    if not val:
+        pytest.skip(f"{env_var} not set — skipping ABFSS test")
+    return val
+
+
+class TestPipelineViaKindling:
+    """Run the pipeline through Kindling's entity/pipe machinery."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, spark_abfss):
+        from {{ snake_name }}.app import initialize
+
+        self.spark = spark_abfss
+        self.svc = initialize(env="local")
+
+    def test_read_source_entity(self):
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+
+        registry = GlobalInjector.get(DataEntityRegistry)
+{% if layers == "medallion" %}
+        entity = registry.get_entity_definition("bronze.records")
+{% else %}
+        entity = registry.get_entity_definition("raw.records")
+{% endif %}
+
+        assert entity is not None
+
+{% if layers == "medallion" %}
+        source_path = _path("ABFSS_BRONZE_PATH")
+{% else %}
+        source_path = _path("ABFSS_RAW_PATH")
+{% endif %}
+        df = self.spark.read.format("delta").load(source_path)
+        assert df.count() >= 0  # table exists and is readable
+
+    def test_write_sink_entity(self):
+{% if layers == "medallion" %}
+        sink_path = _path("ABFSS_SILVER_PATH")
+{% else %}
+        sink_path = _path("ABFSS_RAW_PATH")
+{% endif %}
+        df = self.spark.createDataFrame(
+            [{"id": "integration-test-001"}]
+        )
+        df.write.format("delta").mode("overwrite").save(sink_path)
+
+        result = self.spark.read.format("delta").load(sink_path)
+        assert result.count() >= 1

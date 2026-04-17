@@ -270,6 +270,65 @@ def env_group() -> None:
     """Validate local environment prerequisites."""
 
 
+_HADOOP_AZURE_JARS = [
+    "hadoop-azure-3.3.4.jar",
+    "hadoop-azure-datalake-3.3.4.jar",
+    "azure-storage-8.6.6.jar",
+    "wildfly-openssl-1.1.3.Final.jar",
+    "jetty-util-ajax-9.4.51.v20230217.jar",
+]
+
+_HADOOP_JAR_DIR = Path("/tmp/hadoop-jars")
+
+_HADOOP_JAR_URLS = (
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar",
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure-datalake/3.3.4/hadoop-azure-datalake-3.3.4.jar",
+    "https://repo1.maven.org/maven2/com/microsoft/azure/azure-storage/8.6.6/azure-storage-8.6.6.jar",
+    "https://repo1.maven.org/maven2/org/wildfly/openssl/wildfly-openssl/1.1.3.Final/wildfly-openssl-1.1.3.Final.jar",
+    "https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar",
+)
+
+
+def _check_java() -> Tuple[bool, str]:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["java", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        # java -version writes to stderr
+        output = (result.stderr or result.stdout).strip().split("\n")[0]
+        return result.returncode == 0, output or "found"
+    except FileNotFoundError:
+        return False, "not found — install a JDK (>=11)"
+    except Exception as exc:
+        return False, f"error: {exc}"
+
+
+def _check_module(module: str) -> Tuple[bool, str]:
+    import importlib.util
+
+    spec = importlib.util.find_spec(module)
+    if spec is None:
+        return False, f"not installed — pip install {module.replace('.', '-')}"
+    try:
+        mod = __import__(module)
+        version = getattr(mod, "__version__", None) or getattr(mod, "version", None)
+        return True, str(version) if version else "installed"
+    except Exception:
+        return True, "installed (import skipped)"
+
+
+def _check_hadoop_jars() -> Tuple[bool, str]:
+    missing = [j for j in _HADOOP_AZURE_JARS if not (_HADOOP_JAR_DIR / j).exists()]
+    if not missing:
+        return True, str(_HADOOP_JAR_DIR)
+    return False, f"{len(missing)} jar(s) missing from {_HADOOP_JAR_DIR}"
+
+
 @env_group.command("check")
 @click.option(
     "--config",
@@ -278,8 +337,35 @@ def env_group() -> None:
     show_default=True,
     type=click.Path(path_type=Path, dir_okay=False, exists=False),
 )
-def env_check(config_path: Path) -> None:
-    """Check if local environment is ready for Kindling."""
+@click.option(
+    "--local",
+    "local_checks",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also check local Spark dev prerequisites: "
+        "Java, PySpark, delta-spark, and hadoop-azure JARs."
+    ),
+)
+def env_check(config_path: Path, local_checks: bool) -> None:
+    """Check if local environment is ready for Kindling.
+
+    \b
+    With --local, also validates the Spark runtime stack needed for local
+    development and integration tests against ABFSS:
+
+      - Java >=11 on PATH (required by PySpark)
+      - pyspark installed
+      - delta-spark installed
+      - hadoop-azure JARs present in /tmp/hadoop-jars/
+
+    \b
+    To download the hadoop-azure JARs run:
+      mkdir -p /tmp/hadoop-jars
+      curl -L -o /tmp/hadoop-jars/hadoop-azure-3.3.4.jar \\
+        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar
+      # (and the four other JARs — see docs/local_python_first.md)
+    """
     resolved_config_path = config_path.expanduser()
 
     checks: List[Tuple[str, bool, str]] = []
@@ -301,6 +387,28 @@ def env_check(config_path: Path) -> None:
     kindling_section = config_data.get("kindling")
     has_kindling_section = isinstance(kindling_section, dict)
     checks.append(("kindling_section_present", has_kindling_section, "root.kindling is a mapping"))
+
+    if local_checks:
+        java_ok, java_detail = _check_java()
+        checks.append(("java", java_ok, java_detail))
+
+        pyspark_ok, pyspark_detail = _check_module("pyspark")
+        checks.append(("pyspark", pyspark_ok, pyspark_detail))
+
+        delta_ok, delta_detail = _check_module("delta")
+        checks.append(("delta_spark", delta_ok, delta_detail))
+
+        jars_ok, jars_detail = _check_hadoop_jars()
+        checks.append(("hadoop_azure_jars", jars_ok, jars_detail))
+        if not jars_ok:
+            missing = [j for j in _HADOOP_AZURE_JARS if not (_HADOOP_JAR_DIR / j).exists()]
+            checks.append(
+                (
+                    "  missing_jars",
+                    False,
+                    ", ".join(missing),
+                )
+            )
 
     if _print_check_results(checks):
         click.echo("Environment check passed.")
@@ -1191,6 +1299,131 @@ def workspace_deploy(
         click.echo()
 
     click.echo("Deploy complete.")
+
+
+@cli.command("new")
+@click.argument("project_name")
+@click.option(
+    "--auth",
+    type=click.Choice(["oauth", "key", "cli"]),
+    default="oauth",
+    show_default=True,
+    help=(
+        "ABFSS authentication method. "
+        "oauth: service principal (tenant/client/secret env vars). "
+        "key: storage account key env var. "
+        "cli: DefaultAzureCredential (az login)."
+    ),
+)
+@click.option(
+    "--layers",
+    type=click.Choice(["medallion", "minimal"]),
+    default="medallion",
+    show_default=True,
+    help=(
+        "Project template style. "
+        "medallion: bronze/silver entities with a promotion pipe. "
+        "minimal: single entity and a passthrough pipe. "
+        "Both produce the same directory structure and identical wheel invariants."
+    ),
+)
+@click.option(
+    "--no-integration",
+    "integration",
+    is_flag=True,
+    default=False,
+    help="Omit the tests/integration/ directory.",
+)
+@click.option(
+    "--output-dir",
+    "output_dir",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Parent directory in which to create the project folder.",
+)
+@click.option(
+    "--template-dir",
+    "template_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory of custom Jinja2 templates that overlay the built-ins.",
+)
+def new_project(
+    project_name: str,
+    auth: str,
+    layers: str,
+    integration: bool,
+    output_dir: Path,
+    template_dir: Optional[Path],
+) -> None:
+    """Scaffold a new Kindling local-python-first project.
+
+    \b
+    Creates PROJECT_NAME/ with the following layout:
+
+      src/<pkg>/
+        app.py            — initialize() and register_all()
+        entities/         — DataEntities.entity() registrations
+        pipes/            — @DataPipes.pipe decorators
+        transforms/       — pure-PySpark functions (unit-testable)
+      config/
+        settings.yaml     — base Kindling config
+        env.local.yaml    — ABFSS paths resolved from env vars
+      tests/
+        conftest.py       — Spark fixtures tuned to --auth choice
+        unit/             — transform functions, no Azure
+        component/        — DI wiring, no Azure
+        integration/      — live ABFSS read/write (unless --no-integration)
+      pyproject.toml
+
+    \b
+    The structure is invariant: --layers and --auth change the *content* of
+    the generated files, not which files are created. A wheel built from any
+    combination of options works identically at runtime.
+
+    \b
+    Examples:
+      kindling new my-pipeline
+      kindling new my-pipeline --auth key --layers minimal
+      kindling new my-pipeline --auth cli --no-integration --output-dir ~/projects
+    """
+    from kindling_cli.scaffold import ScaffoldConfig, generate_project, validate_name
+
+    try:
+        snake = validate_name(project_name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    cfg = ScaffoldConfig(
+        name=snake,
+        layers=layers,
+        auth=auth,
+        integration=not integration,
+        output_dir=output_dir.expanduser().resolve(),
+        template_dir=template_dir.expanduser().resolve() if template_dir else None,
+    )
+
+    target = cfg.output_dir / cfg.snake_name
+    if target.exists():
+        raise click.ClickException(
+            f"Directory already exists: {target}\nChoose a different project name or --output-dir."
+        )
+
+    try:
+        created = generate_project(cfg)
+    except Exception as exc:
+        raise click.ClickException(f"Scaffold failed: {exc}") from exc
+
+    click.echo(f"Created {cfg.kebab_name}/ ({len(created)} files)")
+    click.echo()
+    click.echo("Next steps:")
+    click.echo(f"  cd {cfg.snake_name}")
+    click.echo("  poetry install")
+    click.echo("  cp .env.example .env  # fill in your credentials, then: source .env")
+    click.echo("  poetry run pytest tests/unit tests/component")
+    if cfg.integration:
+        click.echo("  poetry run pytest tests/integration  # requires Azure creds in .env")
 
 
 def main() -> None:

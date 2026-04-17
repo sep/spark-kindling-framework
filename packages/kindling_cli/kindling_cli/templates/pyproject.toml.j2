@@ -1,0 +1,36 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "{{ kebab_name }}"
+version = "0.1.0"
+description = "Kindling data pipeline project — {{ kebab_name }}"
+packages = [{include = "{{ snake_name }}", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+# kindling is installed separately — either from the kindling-local wheel
+# or via `pip install -e /path/to/kindling` for source iteration.
+# The manifest does not pin the install path so both workflows are identical.
+kindling = ">=0.8.14"
+pyspark = ">=3.4.0"
+delta-spark = ">=2.4.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-cov = ">=4.0.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: pure Python, no Spark",
+    "component: DI wiring, no ABFSS",
+{% if integration %}
+    "integration: requires Spark and ABFSS credentials",
+    "requires_azure: skipped when Azure credentials are not set",
+{% endif %}
+]
