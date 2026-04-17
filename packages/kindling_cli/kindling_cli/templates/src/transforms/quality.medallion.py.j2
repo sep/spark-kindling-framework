@@ -1,0 +1,26 @@
+"""Pure-PySpark transformation functions.
+
+No Kindling imports — these can be unit-tested with a plain local SparkSession.
+"""
+
+from datetime import date
+
+from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
+
+
+def drop_null_keys(df: DataFrame) -> DataFrame:
+    """Drop rows where the primary key column is null."""
+    return df.filter(F.col("id").isNotNull())
+
+
+def add_ingested_at(df: DataFrame) -> DataFrame:
+    """Stamp the current date into an ingested_at column."""
+    return df.withColumn("ingested_at", F.lit(str(date.today())))
+
+
+def clean_records(df: DataFrame) -> DataFrame:
+    """Apply all quality transforms in order."""
+    df = drop_null_keys(df)
+    df = add_ingested_at(df)
+    return df

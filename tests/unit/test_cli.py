@@ -388,3 +388,65 @@ def test_render_starter_notebook_source_points_to_environment_bootstrap():
     assert 'logger.info("Kindling starter notebook ready")' in source
     assert 'BOOTSTRAP_CONFIG["app_name"]' in source
     assert '"extensions": ["kindling-otel-azure>=0.3.0"]' in source
+
+
+# ---------------------------------------------------------------------------
+# env check --local
+# ---------------------------------------------------------------------------
+
+
+class TestEnvCheckLocal:
+    def test_local_flag_adds_java_check(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            result = runner.invoke(cli, ["env", "check", "--local"])
+
+        assert "java" in result.output
+
+    def test_local_flag_adds_pyspark_check(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            result = runner.invoke(cli, ["env", "check", "--local"])
+
+        assert "pyspark" in result.output
+
+    def test_local_flag_adds_delta_spark_check(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            result = runner.invoke(cli, ["env", "check", "--local"])
+
+        assert "delta_spark" in result.output
+
+    def test_local_flag_adds_hadoop_jar_check(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            result = runner.invoke(cli, ["env", "check", "--local"])
+
+        assert "hadoop_azure_jars" in result.output
+
+    def test_without_local_flag_no_java_check(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            result = runner.invoke(cli, ["env", "check"])
+
+        # java check should only appear with --local
+        assert "[PASS] java" not in result.output
+        assert "[FAIL] java" not in result.output
+
+    def test_local_check_reports_missing_jars_when_dir_absent(self, tmp_path, monkeypatch):
+        """When /tmp/hadoop-jars doesn't exist the jar check fails gracefully."""
+        import kindling_cli.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "_HADOOP_JAR_DIR", tmp_path / "no-such-dir")
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            result = runner.invoke(cli, ["env", "check", "--local"])
+
+        assert "[FAIL] hadoop_azure_jars" in result.output

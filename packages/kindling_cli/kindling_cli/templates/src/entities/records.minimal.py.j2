@@ -1,0 +1,19 @@
+"""Entity registrations for {{ kebab_name }}."""
+
+from kindling.data_entities import DataEntities
+from pyspark.sql.types import StringType, StructField, StructType
+
+_raw_schema = StructType(
+    [
+        StructField("id", StringType(), False),
+        StructField("value", StringType(), True),
+    ]
+)
+
+DataEntities.entity(
+    entityid="raw.records",
+    name="raw_records",
+    schema=_raw_schema,
+    merge_columns=["id"],
+    tags={},
+)

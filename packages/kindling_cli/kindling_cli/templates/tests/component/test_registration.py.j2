@@ -1,0 +1,81 @@
+"""Component tests — Kindling DI wiring and registry correctness.
+
+Strategy: entity/pipe registration is a module-level side effect that runs once
+per process. Tests share a single injector session and verify registry state
+after importing {{ snake_name }} modules. No DataFrames are read or written.
+"""
+
+import pytest
+
+
+def _entity_registry():
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.injection import GlobalInjector
+
+    return GlobalInjector.get(DataEntityRegistry)
+
+
+def _pipe_registry():
+    from kindling.data_pipes import DataPipesRegistry
+    from kindling.injection import GlobalInjector
+
+    return GlobalInjector.get(DataPipesRegistry)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def initialize_{{ snake_name }}():
+    """Bootstrap the Kindling framework and register {{ snake_name }} modules."""
+    from {{ snake_name }}.app import initialize
+
+    initialize(env="local")
+
+
+@pytest.mark.component
+class TestEntityRegistration:
+    def test_entity_ids_populated(self):
+        ids = set(_entity_registry().get_entity_ids())
+
+{% if layers == "medallion" %}
+        for eid in ["bronze.records", "silver.records"]:
+{% else %}
+        for eid in ["raw.records"]:
+{% endif %}
+            assert eid in ids
+
+    def test_entity_has_merge_columns(self):
+{% if layers == "medallion" %}
+        entity = _entity_registry().get_entity_definition("bronze.records")
+{% else %}
+        entity = _entity_registry().get_entity_definition("raw.records")
+{% endif %}
+
+        assert entity is not None
+        assert entity.merge_columns
+
+
+@pytest.mark.component
+class TestPipeRegistration:
+    def test_pipe_is_registered(self):
+{% if layers == "medallion" %}
+        pipe = _pipe_registry().get_pipe_definition("bronze_to_silver")
+
+        assert pipe is not None
+        assert pipe.input_entity_ids == ["bronze.records"]
+        assert pipe.output_entity_id == "silver.records"
+{% else %}
+        pipe = _pipe_registry().get_pipe_definition("process_records")
+
+        assert pipe is not None
+        assert pipe.input_entity_ids == ["raw.records"]
+        assert pipe.output_entity_id == "raw.records"
+{% endif %}
+        assert pipe.output_type == "table"
+
+    def test_pipe_execute_is_callable(self):
+{% if layers == "medallion" %}
+        pipe = _pipe_registry().get_pipe_definition("bronze_to_silver")
+{% else %}
+        pipe = _pipe_registry().get_pipe_definition("process_records")
+{% endif %}
+
+        assert callable(pipe.execute)

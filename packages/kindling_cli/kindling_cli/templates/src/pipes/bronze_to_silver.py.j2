@@ -1,0 +1,23 @@
+"""Pipe definitions for {{ kebab_name }}.
+
+Each @DataPipes.pipe decorator fires at import time.
+Import order matters: initialize_framework() must run before this module
+is imported (see {{ snake_name }}.app.register_all).
+"""
+
+from kindling.data_pipes import DataPipes
+
+
+@DataPipes.pipe(
+    pipeid="bronze_to_silver",
+    name="Bronze to Silver",
+    tags={"layer": "silver"},
+    input_entity_ids=["bronze.records"],
+    output_entity_id="silver.records",
+    output_type="table",
+)
+def bronze_to_silver(bronze_df, spark):
+    """Promote bronze records to the silver layer."""
+    from {{ snake_name }}.transforms.quality import clean_records
+
+    return clean_records(bronze_df)
