@@ -106,6 +106,9 @@ def generate_project(cfg: ScaffoldConfig) -> List[Path]:
     _write("pyproject.toml", _pyproject(cfg))
     _write(".env.example", _env_example(cfg))
     _write(".gitignore", _gitignore())
+    _write(".devcontainer/Dockerfile", _devcontainer_dockerfile(cfg))
+    _write(".devcontainer/devcontainer.json", _devcontainer_json(cfg))
+    _write(".devcontainer/docker-compose.yml", _devcontainer_compose(cfg))
 
     return files
 
@@ -1161,4 +1164,134 @@ dist/
 .pytest_cache/
 .coverage
 htmlcov/
+"""
+
+
+# ---------------------------------------------------------------------------
+# Dev container templates
+# ---------------------------------------------------------------------------
+
+_HADOOP_JAR_BLOCK = """\
+# Pre-download hadoop-azure JARs for local ABFSS integration testing.
+# Stored at /opt/hadoop-jars (stable image layer); /tmp/hadoop-jars is a
+# symlink so conftest.py and `kindling env check --local` find them at the
+# expected path without any manual setup.
+RUN mkdir -p /opt/hadoop-jars \\
+    && curl -fsSL -o /opt/hadoop-jars/hadoop-azure-3.3.4.jar \\
+        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar \\
+    && curl -fsSL -o /opt/hadoop-jars/hadoop-azure-datalake-3.3.4.jar \\
+        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure-datalake/3.3.4/hadoop-azure-datalake-3.3.4.jar \\
+    && curl -fsSL -o /opt/hadoop-jars/azure-storage-8.6.6.jar \\
+        https://repo1.maven.org/maven2/com/microsoft/azure/azure-storage/8.6.6/azure-storage-8.6.6.jar \\
+    && curl -fsSL -o /opt/hadoop-jars/wildfly-openssl-1.1.3.Final.jar \\
+        https://repo1.maven.org/maven2/org/wildfly/openssl/wildfly-openssl/1.1.3.Final/wildfly-openssl-1.1.3.Final.jar \\
+    && curl -fsSL -o /opt/hadoop-jars/jetty-util-ajax-9.4.51.v20230217.jar \\
+        https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar \\
+    && ln -s /opt/hadoop-jars /tmp/hadoop-jars"""
+
+
+def _devcontainer_dockerfile(cfg: ScaffoldConfig) -> str:
+    return f"""\
+FROM mcr.microsoft.com/devcontainers/python:3.11
+
+# System deps: Java 21 for PySpark 3.5, curl for JAR downloads
+RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \\
+    && apt-get -y install --no-install-recommends \\
+        openjdk-21-jdk-headless \\
+        curl \\
+    && apt-get clean \\
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV PATH="${{JAVA_HOME}}/bin:${{PATH}}"
+
+# Python packages: Spark stack + Azure auth for ABFSS integration tests
+RUN pip install --no-cache-dir \\
+    pyspark==3.5.5 \\
+    delta-spark==3.3.2 \\
+    pandas \\
+    pyarrow \\
+    azure-identity \\
+    azure-storage-blob \\
+    azure-storage-file-datalake \\
+    poetry
+
+{_HADOOP_JAR_BLOCK}
+
+RUN mkdir -p /spark-warehouse && chown -R vscode:vscode /spark-warehouse
+
+WORKDIR /workspaces/{cfg.snake_name}
+"""
+
+
+def _devcontainer_json(cfg: ScaffoldConfig) -> str:
+    pkg = cfg.snake_name
+    kebab = cfg.kebab_name
+    post_create = (
+        f"pip install 'kindling>=0.8.14' && poetry install && "
+        f"bash -lc '"
+        f'grep -q "# {kebab} .env" ~/.bashrc || '
+        f'{{ echo "# {kebab} .env auto-load" >> ~/.bashrc; '
+        f'echo "[ -f /workspaces/{pkg}/.env ] && set -a && source /workspaces/{pkg}/.env && set +a" >> ~/.bashrc; }}'
+        f"'"
+    )
+    post_start = (
+        f'bash -c \'[ -f "/workspaces/{pkg}/.env" ] && '
+        f'echo "\\u2705 .env loaded" || '
+        f'echo "\\u26a0\\ufe0f  No .env \\u2014 copy .env.example to .env and fill in credentials"'
+        f"'"
+    )
+    return f"""\
+{{
+    "name": "{kebab}",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "devcontainer",
+    "workspaceFolder": "/workspaces/{pkg}",
+    "customizations": {{
+        "vscode": {{
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "redhat.vscode-yaml"
+            ],
+            "settings": {{
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "editor.formatOnSave": true,
+                "files.trimTrailingWhitespace": true,
+                "files.insertFinalNewline": true
+            }}
+        }}
+    }},
+    "postCreateCommand": "{post_create}",
+    "postStartCommand": "{post_start}",
+    "forwardPorts": [4040],
+    "portsAttributes": {{
+        "4040": {{
+            "label": "Spark UI",
+            "onAutoForward": "notify"
+        }}
+    }},
+    "remoteUser": "vscode"
+}}
+"""
+
+
+def _devcontainer_compose(cfg: ScaffoldConfig) -> str:
+    pkg = cfg.snake_name
+    return f"""\
+services:
+  devcontainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspaces/{pkg}:cached
+      - spark-warehouse:/spark-warehouse
+    command: sleep infinity
+    environment:
+      - PYTHONPATH=/workspaces/{pkg}/src
+      - SPARK_LOCAL_IP=127.0.0.1
+
+volumes:
+  spark-warehouse:
 """

@@ -55,6 +55,9 @@ INVARIANT_FILES = [
     "pyproject.toml",
     ".env.example",
     ".gitignore",
+    ".devcontainer/Dockerfile",
+    ".devcontainer/devcontainer.json",
+    ".devcontainer/docker-compose.yml",
     "config/settings.yaml",
     "config/env.local.yaml",
     "tests/conftest.py",
@@ -268,6 +271,47 @@ def test_gitignore_excludes_dotenv(tmp_path):
 
     gitignore = (tmp_path / "proj" / ".gitignore").read_text()
     assert ".env" in gitignore
+
+
+# ---------------------------------------------------------------------------
+# Dev container
+# ---------------------------------------------------------------------------
+
+
+def test_devcontainer_dockerfile_downloads_hadoop_jars(tmp_path):
+    cfg = ScaffoldConfig(name="proj", output_dir=tmp_path)
+    generate_project(cfg)
+
+    dockerfile = (tmp_path / "proj" / ".devcontainer" / "Dockerfile").read_text()
+    assert "hadoop-azure-3.3.4.jar" in dockerfile
+    assert "/opt/hadoop-jars" in dockerfile
+    assert "/tmp/hadoop-jars" in dockerfile  # symlink target
+
+
+def test_devcontainer_json_uses_project_name(tmp_path):
+    cfg = ScaffoldConfig(name="my-proj", output_dir=tmp_path)
+    generate_project(cfg)
+
+    dcj = (tmp_path / "my_proj" / ".devcontainer" / "devcontainer.json").read_text()
+    assert '"my-proj"' in dcj
+    assert "/workspaces/my_proj" in dcj
+
+
+def test_devcontainer_json_forwards_spark_ui_port(tmp_path):
+    cfg = ScaffoldConfig(name="proj", output_dir=tmp_path)
+    generate_project(cfg)
+
+    dcj = (tmp_path / "proj" / ".devcontainer" / "devcontainer.json").read_text()
+    assert "4040" in dcj
+    assert "Spark UI" in dcj
+
+
+def test_devcontainer_compose_sets_pythonpath(tmp_path):
+    cfg = ScaffoldConfig(name="proj", output_dir=tmp_path)
+    generate_project(cfg)
+
+    compose = (tmp_path / "proj" / ".devcontainer" / "docker-compose.yml").read_text()
+    assert "PYTHONPATH=/workspaces/proj/src" in compose
 
 
 # ---------------------------------------------------------------------------
