@@ -794,7 +794,7 @@ No changes needed. The registry routes to the appropriate provider, and SCD2 log
 
 ### Open
 
-1. **Reverting SCD2 → non-SCD2:** If a user removes the `scd.type` tag from an entity that was previously SCD2, historical rows remain in the target table with their temporal columns. Should the framework warn at registration time, error, or silently revert to overwrite semantics (leaving history orphaned)?
+1. **Reverting SCD2 → non-SCD2** (current leaning: not supported): If a user removes the `scd.type` tag from an entity whose target table carries temporal columns from a prior SCD2 lifetime, historical rows remain physically in the table but become semantically orphaned — no code knows they exist or how to interpret them. Current thinking is that reversion should not be a supported operation at all; the right path is to register a new entity under a different id and migrate data explicitly if needed. Enforce by erroring at registration time when the target table's schema has the temporal columns but the entity no longer declares `scd.type=2`. Revisit if real migration workflows expose friction with the "new entity" requirement, particularly around downstream pipes' input ids.
 
 2. **Bi-temporal support:** Some use cases need both "system time" (when the change was recorded) and "business time" (when the change occurred in reality). Should we add a `scd.business_time_col` tag for user-supplied effective dates, or is this out of scope?
 
