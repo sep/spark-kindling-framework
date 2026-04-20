@@ -1,8 +1,8 @@
 #!/bin/bash
-# Upload wheels to Azure Storage
+# Upload runtime wheels to Azure Storage
 # Usage:
-#   ./scripts/upload_to_storage.sh              # Upload from local dist/ (testing)
-#   ./scripts/upload_to_storage.sh --release    # Upload from GitHub release (production)
+#   ./scripts/upload_to_storage.sh               # Upload from local dist/ (testing)
+#   ./scripts/upload_to_storage.sh --release     # Upload from GitHub release (production)
 #   ./scripts/upload_to_storage.sh --release 0.2.0  # Upload specific release version
 
 set -e
@@ -12,7 +12,7 @@ set -e
 # ============================================================================
 STORAGE_ACCOUNT="${AZURE_STORAGE_ACCOUNT}"
 CONTAINER="${AZURE_CONTAINER:-artifacts}"
-BASE_PATH="${AZURE_BASE_PATH:-packages}"  # Base path in storage: packages/...
+BASE_PATH="${AZURE_BASE_PATH:-packages}"
 
 # ============================================================================
 # Script Logic
@@ -20,7 +20,8 @@ BASE_PATH="${AZURE_BASE_PATH:-packages}"  # Base path in storage: packages/...
 
 USE_RELEASE=false
 VERSION=""
-RUNTIME_PATTERNS=("kindling_synapse-*.whl" "kindling_databricks-*.whl" "kindling_fabric-*.whl")
+COMBINED_PATTERN="spark_kindling-*.whl"
+LEGACY_PATTERNS=("kindling_synapse-*.whl" "kindling_databricks-*.whl" "kindling_fabric-*.whl")
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -41,11 +42,6 @@ echo "======================================"
 echo ""
 
 if [ "$USE_RELEASE" = true ]; then
-    # ========================================================================
-    # RELEASE MODE: Download from GitHub release
-    # ========================================================================
-
-    # Get version from argument or detect latest tag
     if [ -z "$VERSION" ]; then
         VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
         if [ -z "$VERSION" ]; then
@@ -55,42 +51,36 @@ if [ "$USE_RELEASE" = true ]; then
         fi
         echo "📌 Detected latest version: ${VERSION}"
     else
-        # Remove 'v' prefix if provided
         VERSION="${VERSION#v}"
         echo "📌 Using version: ${VERSION}"
     fi
 
     TAG="v${VERSION}"
 
-    # Check if release exists
     if ! git rev-parse "$TAG" >/dev/null 2>&1; then
         echo "❌ Error: Tag ${TAG} not found"
         exit 1
     fi
 
-    # Check GitHub CLI is available
     if ! command -v gh &> /dev/null; then
         echo "❌ Error: GitHub CLI (gh) not found"
         echo "Please install it: https://cli.github.com/"
         exit 1
     fi
 
-    # Detect GitHub repository
-    REPO=$(git remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git/\1/' | sed 's/.*github.com[:/]\(.*\)/\1/')
+    REPO=$(git remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git//' | sed 's/.*github.com[:/]\(.*\)//')
     if [ -z "$REPO" ]; then
         echo "❌ Error: Could not detect GitHub repository"
         echo "Make sure you're in a git repository with a GitHub remote"
         exit 1
     fi
 
-    # Download wheels from GitHub release
     echo "📥 Downloading wheels from GitHub release ${TAG}..."
     echo "📦 Repository: ${REPO}"
 
     TEMP_DIR=$(mktemp -d)
     trap "rm -rf $TEMP_DIR" EXIT
 
-    # Download release assets to temp directory
     gh release download "$TAG" --pattern "*.whl" --repo "$REPO" --dir "$TEMP_DIR" 2>/dev/null || {
         echo "❌ Error: Failed to download wheels from release ${TAG}"
         echo "Make sure the release exists and has wheel attachments"
@@ -100,60 +90,48 @@ if [ "$USE_RELEASE" = true ]; then
 
     WHEELS_DIR="$TEMP_DIR"
 else
-    # ========================================================================
-    # LOCAL MODE: Upload from dist/ (for testing)
-    # ========================================================================
-
-    # Detect version from pyproject.toml
-    VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"//')
     if [ -z "$VERSION" ]; then
         echo "❌ Error: Could not detect version from pyproject.toml"
         exit 1
     fi
     echo "📌 Using local build version: ${VERSION}"
 
-    # Check if dist/ has runtime wheels
-    runtime_count=0
-    if [ -d "dist" ]; then
-        for pattern in "${RUNTIME_PATTERNS[@]}"; do
-            if ls dist/$pattern >/dev/null 2>&1; then
-                runtime_count=$((runtime_count + 1))
-            fi
-        done
-    fi
-    if [ "$runtime_count" -eq 0 ]; then
-        echo "❌ Error: No runtime wheels found in dist/"
-        echo "Run: bash scripts/build_platform_wheels.sh"
+    if [ ! -d "dist" ]; then
+        echo "❌ Error: dist/ directory not found"
+        echo "Run: poetry run poe build"
         exit 1
     fi
 
     WHEELS_DIR="dist"
-    echo "📦 Using local runtime wheels from: ${WHEELS_DIR}"
+    echo "📦 Using local wheels from: ${WHEELS_DIR}"
 fi
 
 echo ""
 
-# Build runtime wheel list
 WHEELS_TO_UPLOAD=()
-for pattern in "${RUNTIME_PATTERNS[@]}"; do
-    for wheel in "$WHEELS_DIR"/$pattern; do
-        if [ -f "$wheel" ]; then
-            WHEELS_TO_UPLOAD+=("$wheel")
-        fi
+if ls "$WHEELS_DIR"/$COMBINED_PATTERN >/dev/null 2>&1; then
+    for wheel in "$WHEELS_DIR"/$COMBINED_PATTERN; do
+        [ -f "$wheel" ] && WHEELS_TO_UPLOAD+=("$wheel")
     done
-done
+else
+    for pattern in "${LEGACY_PATTERNS[@]}"; do
+        for wheel in "$WHEELS_DIR"/$pattern; do
+            [ -f "$wheel" ] && WHEELS_TO_UPLOAD+=("$wheel")
+        done
+    done
+fi
 
 if [ ${#WHEELS_TO_UPLOAD[@]} -eq 0 ]; then
     echo "❌ Error: No runtime wheels found to upload in ${WHEELS_DIR}"
+    echo "Expected ${COMBINED_PATTERN} or legacy kindling_<platform>-*.whl files"
     exit 1
 fi
 
-# List wheels to upload
 echo "📦 Runtime wheels to upload:"
 ls -lh "${WHEELS_TO_UPLOAD[@]}"
 echo ""
 
-# Check Azure CLI authentication
 echo "🔑 Using Azure CLI authentication..."
 if ! az account show &>/dev/null; then
     echo "❌ Error: Not logged in to Azure CLI"
@@ -163,7 +141,6 @@ fi
 echo "✓ Logged in as: $(az account show --query user.name -o tsv)"
 echo ""
 
-# Upload wheels to storage
 echo "☁️  Uploading to: ${STORAGE_ACCOUNT}/${CONTAINER}/${BASE_PATH}/"
 echo ""
 
@@ -173,28 +150,21 @@ for wheel in "${WHEELS_TO_UPLOAD[@]}"; do
     DEST_PATH="${BASE_PATH}/${wheel_name}"
 
     echo "  Uploading: ${wheel_name}..."
-    az storage blob upload \
-        --account-name "$STORAGE_ACCOUNT" \
-        --container-name "$CONTAINER" \
-        --name "$DEST_PATH" \
-        --file "$wheel" \
-        --overwrite \
-        --auth-mode login \
-        --only-show-errors
+    az storage blob upload         --account-name "$STORAGE_ACCOUNT"         --container-name "$CONTAINER"         --name "$DEST_PATH"         --file "$wheel"         --overwrite         --auth-mode login         --only-show-errors
 
     UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
 done
 
 echo ""
-echo "✅ Successfully uploaded ${UPLOAD_COUNT} wheels"
+echo "✅ Successfully uploaded ${UPLOAD_COUNT} wheel(s)"
 echo ""
 echo "🎉 Upload complete!"
 echo ""
 echo "Storage structure:"
 echo "  ${STORAGE_ACCOUNT}/${CONTAINER}/${BASE_PATH}/"
-echo "      ├── kindling_databricks-${VERSION}-py3-none-any.whl"
-echo "      ├── kindling_fabric-${VERSION}-py3-none-any.whl"
-echo "      └── kindling_synapse-${VERSION}-py3-none-any.whl"
+for wheel in "${WHEELS_TO_UPLOAD[@]}"; do
+    echo "      ├── $(basename "$wheel")"
+done
 echo ""
 echo "🔗 Bootstrap script can now install from:"
 echo "   artifacts_storage_path: abfss://${CONTAINER}@${STORAGE_ACCOUNT}.dfs.core.windows.net/${BASE_PATH}"
