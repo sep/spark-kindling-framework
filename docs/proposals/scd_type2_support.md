@@ -124,6 +124,7 @@ No changes to `EntityMetadata`. SCD configuration lives entirely in the existing
 | `scd.end_col` | no | `__end_date` | Name of the timestamp column storing when a version was superseded. Null means current. |
 | `scd.current_col` | no | `__is_current` | Name of the boolean flag column for fast current-state queries. |
 | `scd.current_entity_id` | no | `{entityid}.current` | Override the auto-registered companion entity's id. |
+| `scd.routing_key` | no | `hash` | How the staging-only `__merge_key` routing column is computed. `hash` uses `sha2(to_json(struct(*merge_columns)), 256)` — safe for any value type (strings with delimiters, nulls, mixed types) and composite keys. `concat` uses `concat_ws("\|\|", ...)` — cheaper and debuggable, but silently collides when a key value contains `\|\|`. Default `hash` is the right call for a framework that doesn't know the shape of consumers' business keys; `concat` is an opt-in for teams whose keys are controlled types (int ids, UUIDs, short codes) where debuggability matters more than the ~0.5–2% merge-time overhead of a hash. |
 
 Because tags are `Dict[str, str]`, list values use a simple comma-separator convention (already used elsewhere in the framework for tag-scoped lists). A helper `scd_config_from_tags(entity) -> SCDConfig` extracts and validates at registration time; callers never read tags directly.
 
@@ -132,6 +133,9 @@ Because tags are `Dict[str, str]`, list values use a simple comma-separator conv
 
 from dataclasses import dataclass
 from typing import List, Optional
+
+
+ROUTING_KEY_METHODS = ("hash", "concat")
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,7 @@ class SCDConfig:
     end_date_column: str
     is_current_column: str
     current_entity_id: str
+    routing_key_method: str  # one of ROUTING_KEY_METHODS
 
 
 def scd_config_from_tags(entity) -> SCDConfig:
@@ -165,6 +170,7 @@ def scd_config_from_tags(entity) -> SCDConfig:
             end_date_column="__end_date",
             is_current_column="__is_current",
             current_entity_id=f"{entity.entityid}.current",
+            routing_key_method="hash",
         )
 
     if scd_type != "2":
@@ -176,6 +182,13 @@ def scd_config_from_tags(entity) -> SCDConfig:
     tracked_raw = tags.get("scd.tracked", "").strip()
     tracked = [c.strip() for c in tracked_raw.split(",") if c.strip()] if tracked_raw else None
 
+    routing = tags.get("scd.routing_key", "hash").strip().lower()
+    if routing not in ROUTING_KEY_METHODS:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.routing_key must be one of "
+            f"{ROUTING_KEY_METHODS}, got '{routing}'"
+        )
+
     return SCDConfig(
         enabled=True,
         tracked_columns=tracked,
@@ -183,6 +196,7 @@ def scd_config_from_tags(entity) -> SCDConfig:
         end_date_column=tags.get("scd.end_col", "__end_date"),
         is_current_column=tags.get("scd.current_col", "__is_current"),
         current_entity_id=tags.get("scd.current_entity_id", f"{entity.entityid}.current"),
+        routing_key_method=routing,
     )
 ```
 
@@ -404,6 +418,16 @@ def _merge_scd2(self, df: DataFrame, entity, cfg: SCDConfig, table_ref: DeltaTab
     # Current records in target that we might need to close
     current_target = target_df.filter(col(cfg.is_current_column) == True)
 
+    # Build the routing-key expression per cfg.routing_key_method
+    # (see Synthetic keys subsection above for rationale; default is "hash")
+    def _routing_key_expr_for(alias: Optional[str] = None):
+        from pyspark.sql.functions import sha2, to_json, struct
+        ref = lambda k: col(f"{alias}.`{k}`") if alias else col(f"`{k}`")
+        if cfg.routing_key_method == "hash":
+            return sha2(to_json(struct(*[ref(k) for k in biz_keys])), 256)
+        # "concat"
+        return concat_ws("||", *[ref(k).cast("string") for k in biz_keys])
+
     # Identify source rows that represent actual changes
     # These get a NULL mergeKey so they hit the NOT MATCHED branch (insert as new version)
     changed_rows = (
@@ -414,28 +438,24 @@ def _merge_scd2(self, df: DataFrame, entity, cfg: SCDConfig, table_ref: DeltaTab
         .withColumn("__merge_key", lit(None).cast("string"))
     )
 
-    # All source rows get their real key — these hit the MATCHED branch (to close old rows)
-    # and also the NOT MATCHED branch for truly new keys
-    keyed_rows = df.withColumn(
-        "__merge_key",
-        concat_ws("||", *[col(f"`{k}`").cast("string") for k in biz_keys]),
-    )
+    # All source rows get their real routing key — these hit the MATCHED branch
+    # (to close old rows) and also the NOT MATCHED branch for truly new keys
+    keyed_rows = df.withColumn("__merge_key", _routing_key_expr_for())
 
     staged = changed_rows.unionByName(keyed_rows, allowMissingColumns=True)
 
     # --- Stage 2: Execute the merge ---
-    # Build merge condition on the synthetic __merge_key and composite business key
-    target_key_expr = concat_ws(
-        "||", *[col(f"target.`{k}`").cast("string") for k in biz_keys]
+    # Target side uses the same routing-key expression; NULL staged.__merge_key
+    # values for the "changed_rows" duplicates fail this equality and fall
+    # through to the NOT MATCHED insert branch.
+    target_routing_expr_sql = (
+        f"sha2(to_json(named_struct({', '.join(f\"'{k}', target.`{k}`\" for k in biz_keys)})), 256)"
+        if cfg.routing_key_method == "hash"
+        else f"concat_ws('||', {', '.join(f'CAST(target.`{k}` AS STRING)' for k in biz_keys)})"
     )
-    merge_condition = f"target.`{cfg.is_current_column}` = true AND " + " AND ".join(
-        [f"target.`{k}` = staged.`{k}`" for k in biz_keys]
-    )
-    # Use __merge_key for the top-level condition so NULL keys bypass matching
     top_merge_condition = (
-        f"concat_ws('||', {', '.join(f'CAST(target.`{k}` AS STRING)' for k in biz_keys)})"
-        f" = staged.__merge_key"
-        f" AND target.`{cfg.is_current_column}` = true"
+        f"{target_routing_expr_sql} = staged.__merge_key "
+        f"AND target.`{cfg.is_current_column}` = true"
     )
 
     # Build insert values map — all source columns plus SCD2 metadata
@@ -766,15 +786,19 @@ No changes needed. The registry routes to the appropriate provider, and SCD2 log
 
 ## Open Questions
 
-1. **Unchanged row handling:** The basic staged-updates pattern closes and re-inserts rows even when tracked columns haven't changed. Should Phase 1 include a pre-filter optimization, or is the simpler approach acceptable for typical dimension sizes (< 10M rows)?
+### Resolved
 
-2. **Composite business keys:** The `__merge_key` concatenation approach works for most types but may have edge cases with delimiters in values. Should we use `struct()` hashing instead of `concat_ws`?
+- **Unchanged row handling** (resolved 2026-04-20): deferred to Phase 4 as an opt-in optimization users enable via `scd.optimize_unchanged: "true"` on the entity. Default behavior is the simpler close-and-reinsert approach; the pre-filter hash-based optimization is opt-in for teams managing very large dimensions where row churn matters.
 
-3. **SCD2 → SCD1 migration:** If a user changes an entity from `scd_type=2` back to `scd_type=1`, should the framework warn, error, or silently revert to overwrite semantics (leaving historical rows orphaned)?
+- **Composite business keys / synthetic key construction** (resolved 2026-04-20): made configurable via `scd.routing_key` tag. Default is `hash` — `sha2(to_json(struct(*merge_columns)), 256)` — which is safe for any value type, null handling, and composite keys with negligible (~0.5–2% of merge time) cost. Opt-in `concat` — `concat_ws("||", ...)` — for teams with controlled key types who want debuggability and don't care about the ~5× per-row cost difference. See the "Synthetic keys" subsection in Section 3.
 
-4. **Bi-temporal support:** Some use cases need both "system time" (when the change was recorded) and "business time" (when the change occurred in reality). Should `SCD2Config` support an optional `business_time_column` for user-supplied effective dates, or is this out of scope?
+### Open
 
-5. **Delete handling:** When a business key is present in the target but absent from the source, should SCD2 close the row (soft delete) or leave it as-is? Current proposal leaves it as-is (no deletes). Should a `close_on_missing` option be added?
+1. **Reverting SCD2 → non-SCD2:** If a user removes the `scd.type` tag from an entity that was previously SCD2, historical rows remain in the target table with their temporal columns. Should the framework warn at registration time, error, or silently revert to overwrite semantics (leaving history orphaned)?
+
+2. **Bi-temporal support:** Some use cases need both "system time" (when the change was recorded) and "business time" (when the change occurred in reality). Should we add a `scd.business_time_col` tag for user-supplied effective dates, or is this out of scope?
+
+3. **Delete handling:** When a business key is present in the target but absent from the source, should SCD2 close the row (soft delete) or leave it as-is? Current proposal leaves it as-is (no deletes). Should a `scd.close_on_missing: "true"` tag be added?
 
 ## Success Criteria
 
