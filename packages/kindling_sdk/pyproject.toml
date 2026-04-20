@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "spark-kindling-sdk"
-version = "0.9.0"
+version = "0.9.1"
 description = "Design-time platform SDK for Kindling"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
