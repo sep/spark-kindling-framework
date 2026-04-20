@@ -125,6 +125,8 @@ No changes to `EntityMetadata`. SCD configuration lives entirely in the existing
 | `scd.current_col` | no | `__is_current` | Name of the boolean flag column for fast current-state queries. |
 | `scd.current_entity_id` | no | `{entityid}.current` | Override the auto-registered companion entity's id. |
 | `scd.routing_key` | no | `hash` | How the staging-only `__merge_key` routing column is computed. `hash` uses `sha2(to_json(struct(*merge_columns)), 256)` — safe for any value type (strings with delimiters, nulls, mixed types) and composite keys. `concat` uses `concat_ws("\|\|", ...)` — cheaper and debuggable, but silently collides when a key value contains `\|\|`. Default `hash` is the right call for a framework that doesn't know the shape of consumers' business keys; `concat` is an opt-in for teams whose keys are controlled types (int ids, UUIDs, short codes) where debuggability matters more than the ~0.5–2% merge-time overhead of a hash. |
+| `scd.close_on_missing` | no | `false` | When `"true"`, the SCD2 merge also closes any current row in the target whose business key is absent from the source batch — treating the source as a full snapshot where absence means "deleted upstream." Default `false` is safer for incremental feeds, where absence means "nothing new to report." |
+| `scd.optimize_unchanged` | no | `false` | (Phase 4) When `"true"`, the merge pre-filters unchanged rows via hash-based change detection instead of closing and re-inserting them. Opt-in because the extra scan isn't worth it for dimensions under ~1M rows; set to `"true"` for very large dimensions where no-op row churn matters. |
 
 Because tags are `Dict[str, str]`, list values use a simple comma-separator convention (already used elsewhere in the framework for tag-scoped lists). A helper `scd_config_from_tags(entity) -> SCDConfig` extracts and validates at registration time; callers never read tags directly.
 
@@ -794,11 +796,11 @@ No changes needed. The registry routes to the appropriate provider, and SCD2 log
 
 - **Bi-temporal support** (out of scope, 2026-04-20): The framework tracks only **system time** — when the framework observed and wrote each version. `__effective_date` is always `current_timestamp()` at merge time. A bi-temporal design that adds business time (when the change actually occurred in reality, separate from when we learned about it) is explicitly not in scope for this proposal. Teams that need bi-temporal semantics — late-arriving truth, retroactive corrections, "what did the system think was true on date X" audit queries — should handle it in their own pipe logic or open a separate proposal if it becomes a recurring need.
 
+- **Delete handling** (resolved 2026-04-20): Opt-in via `scd.close_on_missing: "true"` tag. Default behavior is unchanged — absence in a source batch does not close a current row, matching the expectation of incremental feeds. When the tag is set, the SCD2 merge also closes any current row in the target whose business key isn't present in the source batch (implemented via Delta's `whenNotMatchedBySourceUpdate` clause setting `is_current=false` and `end_date=current_timestamp()`). This targets teams running full-snapshot feeds where absence genuinely means "deleted upstream." Explicitly opt-in because the default interpretation (silence = no change) is safer for the more common incremental-feed case.
+
 ### Open
 
 1. **Reverting SCD2 → non-SCD2** (current leaning: not supported): If a user removes the `scd.type` tag from an entity whose target table carries temporal columns from a prior SCD2 lifetime, historical rows remain physically in the table but become semantically orphaned — no code knows they exist or how to interpret them. Current thinking is that reversion should not be a supported operation at all; the right path is to register a new entity under a different id and migrate data explicitly if needed. Enforce by erroring at registration time when the target table's schema has the temporal columns but the entity no longer declares `scd.type=2`. Revisit if real migration workflows expose friction with the "new entity" requirement, particularly around downstream pipes' input ids.
-
-2. **Delete handling:** When a business key is present in the target but absent from the source, should SCD2 close the row (soft delete) or leave it as-is? Current proposal leaves it as-is (no deletes). Should a `scd.close_on_missing: "true"` tag be added?
 
 ## Success Criteria
 
