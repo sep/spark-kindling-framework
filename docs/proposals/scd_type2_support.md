@@ -328,6 +328,16 @@ Provider resolution (`EntityProviderRegistry`) routes lookups for `scd.companion
 
 The core implementation in `entity_provider_delta.py` uses Delta Lake's **staged updates** pattern — the standard approach for SCD2 with Delta merge.
 
+#### Synthetic keys: staging-only merge routing
+
+The `_merge_scd2` implementation below adds a column named `__merge_key` to the staged source DataFrame. This is a **staging-only routing handle**, not a persisted column — it exists for the duration of the merge and is dropped before any row is written to the target.
+
+Why it's needed: Delta Lake's `MERGE` expresses, for each source row, either "MATCH → update the target row" *or* "NOT MATCH → insert the source row." It cannot express "for this one source row, both close the existing target row *and* insert a new version." SCD2 needs both behaviors for a changed business key. The staged-updates pattern gets around this by duplicating the source: one copy is keyed so that it matches (and closes the old row via `whenMatchedUpdate`), one copy is keyed so that it cannot match (and inserts the new version via `whenNotMatchedInsert`). The synthetic key is what makes the second copy deterministically fail the merge predicate.
+
+**Not a surrogate key.** Dimensional modeling calls a stable, meaningless integer/UUID assigned to each dimension row a "surrogate" (sometimes "synthetic") key — e.g., `customer_sk`. That is a *persistent* column, lives in the target table forever, and gives fact tables a stable pointer to a specific version of a dimension row. This proposal does not introduce surrogate keys — business keys plus the `is_current` / `effective_date` columns uniquely identify a version. If future work wants fact→dimension version linkage (e.g., storing `customer_sk` on a fact row so it always points at the dimension version that was current when the fact occurred), adding a `{entityid}_sk` column is a separate design decision.
+
+**Pattern prevalence.** The staging-only routing column is the canonical way to get atomic SCD2 with a single `MERGE` statement on any lakehouse engine that enforces the "one action per source row" constraint. Delta Lake's [official SCD2 documentation](https://docs.delta.io/latest/delta-update.html#slowly-changing-data-scd-type-2-operation), Iceberg and Hudi tutorials, Databricks training materials, and community tooling (`dbt_utils.snapshot`, open-source SCD2 frameworks) all use close variants of the same row-duplication-with-routing-column approach. The only real design variable is how the routing column is computed — see open question 2 below.
+
 #### Routing
 
 Branch on the entity's SCD config (read from tags) in the existing merge entry point:
