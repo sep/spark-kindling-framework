@@ -89,6 +89,14 @@ azure-mgmt-storage = "22.1.0"
 # and kindling_sdk.platform_* use them at design time.
 databricks-sdk = ">=0.12.0"
 azure-synapse-artifacts = ">=0.17.0"
+# Spark runtime also needed at dev time: unit tests import from kindling
+# modules that do `from pyspark import ...` at module scope. Managed cloud
+# runtimes provide these via non-pip mechanisms (hence [standalone] extra
+# for local/CI consumers), but dev env has to pip-install them directly.
+pyspark = ">=3.4.0"
+delta-spark = ">=2.4.0"
+pandas = ">=2.0.0"
+pyarrow = ">=12.0.0"
 
 [tool.poe.tasks]
 # Version management
