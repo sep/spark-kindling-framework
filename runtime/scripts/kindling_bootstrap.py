@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 try:
     from packaging.version import InvalidVersion, Version
@@ -364,9 +364,17 @@ def is_kindling_available() -> bool:
 
 
 def install_framework_package(
-    storage_path: str, package_name: str = "kindling_fabric", version: str = "latest"
+    storage_path: str,
+    package_name: str = "spark_kindling",
+    version: str = "latest",
+    extras: Optional[List[str]] = None,
 ) -> bool:
-    """Install framework package from datalake storage"""
+    """Install framework package from datalake storage.
+
+    If ``extras`` is provided (e.g. ``["synapse"]``), pip is invoked with the
+    extras appended to the local wheel path so the platform's exclusive
+    runtime deps resolve alongside the wheel install.
+    """
     try:
         storage_utils = get_storage_utils()
         if not storage_utils:
@@ -438,8 +446,8 @@ def install_framework_package(
         print(f"Found package file: {package_file}")
         print(f"Installing from: {remote_path}")
 
-        # Install the wheel
-        return _install_wheel(remote_path, package_file, storage_utils)
+        # Install the wheel (with extras if requested, e.g. ["synapse"])
+        return _install_wheel(remote_path, package_file, storage_utils, extras=extras)
 
     except Exception as e:
         print(f"ERROR: Failed to install framework package: {str(e)}")
@@ -450,7 +458,14 @@ def install_framework_package(
 
 
 def install_kindling_from_datalake(config: Dict[str, Any], storage_utils) -> bool:
-    """Install kindling from datalake storage"""
+    """Install kindling from datalake storage.
+
+    Targets the combined ``spark_kindling-*.whl`` and installs the matching
+    platform extra (e.g. ``[synapse]``) to pull in that platform's exclusive
+    runtime deps. Falls back to the legacy per-platform wheel names
+    (``kindling_synapse-*.whl`` etc.) for rollout environments that still
+    have pre-rename artifacts staged.
+    """
     try:
         storage_path = config.get("artifacts_storage_path")
         if not storage_path:
@@ -460,16 +475,25 @@ def install_kindling_from_datalake(config: Dict[str, Any], storage_utils) -> boo
         version = config.get("kindling_version", "latest")
 
         platform = detect_platform()
+        extras = [platform] if platform else None
 
-        # Try specific version first, then fall back to latest
+        # Preferred path: single combined wheel with platform extras.
         if version != "latest":
             print(f"Trying specific version: {version}")
+            if install_framework_package(storage_path, "spark_kindling", version, extras=extras):
+                return True
+            print(f"Version {version} not found for spark_kindling, trying latest")
+
+        if install_framework_package(storage_path, "spark_kindling", "latest", extras=extras):
+            return True
+
+        # Legacy fallback: per-platform wheel names from pre-rename deployments.
+        print(
+            "INFO: No spark_kindling wheel found; falling back to legacy kindling_{platform}-*.whl"
+        )
+        if version != "latest":
             if install_framework_package(storage_path, f"kindling_{platform}", version):
                 return True
-
-            print(f"Version {version} not found, falling back to latest")
-
-        # Use latest version
         result = install_framework_package(storage_path, f"kindling_{platform}", "latest")
         if not result:
             print(f"DEBUG: Failed to install from {storage_path}")
@@ -509,8 +533,17 @@ def _install_with_debug():
     full_output = "\n".join(output_lines)
 
 
-def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
-    """Install wheel file using platform-appropriate method"""
+def _install_wheel(
+    remote_path: str,
+    filename: str,
+    storage_utils,
+    extras: Optional[List[str]] = None,
+) -> bool:
+    """Install wheel file using platform-appropriate method.
+
+    If ``extras`` is provided, appended to the local install target so pip
+    resolves the platform's optional runtime deps (e.g. ``path/foo.whl[synapse]``).
+    """
     import tempfile
     import uuid
 
@@ -538,6 +571,7 @@ def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
                 "pip",
                 "uninstall",
                 "-y",  # Yes to all prompts
+                "spark-kindling",  # New distribution name (post-rename)
                 "kindling-fabric",
                 "kindling-databricks",
                 "kindling-synapse",
@@ -692,15 +726,21 @@ def _install_wheel(remote_path: str, filename: str, storage_utils) -> bool:
 
             print(f"✅ Downloaded {filename} ({os.path.getsize(local_path)} bytes)")
 
-        # Install with pip - simple install, no unnecessary flags
-        print(f"📦 Installing {filename}...")
+        # Install with pip - simple install, no unnecessary flags.
+        # If extras were requested, use PEP 508 direct-reference form so pip
+        # resolves the platform's optional runtime deps against the
+        # distribution name (e.g. "spark-kindling[synapse] @ file:///path.whl").
+        install_target = local_path
+        if extras:
+            install_target = f"spark-kindling[{','.join(extras)}] @ file://{local_path}"
+        print(f"📦 Installing {filename} (target: {install_target})...")
         result = subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "pip",
                 "install",
-                local_path,
+                install_target,
                 "--disable-pip-version-check",
             ],
             capture_output=True,
