@@ -5,6 +5,35 @@ All notable changes to the kindling-otel-azure extension will be documented in t
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-20
+
+### Changed
+- **BREAKING**: Collapsed three per-platform wheels (`kindling_otel_azure_fabric`, `_synapse`, `_databricks`) into a single `kindling-otel-azure` wheel with platform extras. Pre-v0.4 deps differed per platform because Fabric's older `azure-core` required older OpenTelemetry libs; extras now express that constraint cleanly via PEP 508 markers.
+- OpenTelemetry deps moved to optional extras keyed by platform:
+  - `[fabric]`: `azure-monitor-opentelemetry>=1.6.0,<1.7.0`, `opentelemetry-api/sdk ~1.20.0` (compatible with Fabric runtime's azure-core 1.30.x).
+  - `[synapse]` and `[databricks]`: `azure-monitor-opentelemetry~=1.8.0`, `opentelemetry-api/sdk ~1.21.0` (modern line).
+
+### Removed
+- `scripts/generate_extension_config.py` and `scripts/build_extensions.py` — single-wheel build runs through `scripts/build.py` alongside the other design-time wheels.
+
+### Migration Guide
+
+**Before (pre-v0.4):**
+```yaml
+kindling:
+  extensions:
+    - kindling-otel-azure-fabric>=0.3.2   # or -synapse / -databricks
+```
+
+**After (v0.4.0):**
+```yaml
+kindling:
+  extensions:
+    - kindling-otel-azure[fabric]>=0.4.0   # or [synapse] / [databricks]
+```
+
+The Python import path (`from kindling_otel_azure import ...`) is unchanged.
+
 ## [0.3.0-alpha.1] - 2026-01-27
 
 ### Changed

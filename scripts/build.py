@@ -20,7 +20,11 @@ from os import environ
 from pathlib import Path
 
 DIST_DIR = Path("dist")
-DESIGN_TIME_PACKAGE_DIRS = [Path("packages/kindling_sdk"), Path("packages/kindling_cli")]
+DESIGN_TIME_PACKAGE_DIRS = [
+    Path("packages/kindling_sdk"),
+    Path("packages/kindling_cli"),
+    Path("packages/kindling_otel_azure"),
+]
 
 
 def ensure_poetry_installed() -> None:
