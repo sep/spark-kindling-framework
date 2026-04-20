@@ -118,13 +118,20 @@ def download_release_wheels(version: str, repo: str, temp_dir: Path) -> None:
 
 def get_wheels(wheels_dir: Path, platform: Optional[str] = None) -> List[Path]:
     """Get wheel files from directory, optionally filtered to one runtime platform."""
+    combined_runtime_wheels = sorted(wheels_dir.glob("spark_kindling-*.whl"))
+    if combined_runtime_wheels:
+        if platform:
+            return combined_runtime_wheels
+        return sorted(wheels_dir.glob("*.whl"))
+
     if platform:
         pattern = f"kindling_{platform}-*.whl"
         wheels = list(wheels_dir.glob(pattern))
         if not wheels:
             raise FileNotFoundError(
-                f"No {platform} wheel found in {wheels_dir}. "
-                f"Available platforms: synapse, databricks, fabric"
+                f"No runtime wheel found in {wheels_dir}. "
+                "Expected spark_kindling-*.whl or legacy "
+                f"kindling_{platform}-*.whl."
             )
         return sorted(wheels)
 

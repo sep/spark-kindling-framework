@@ -1,7 +1,9 @@
 """CLI entrypoint for Kindling design-time tooling."""
 
+import json
 import os
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -58,6 +60,112 @@ def _load_yaml_config(config_path: Path) -> Dict[str, Any]:
             f"Config file `{config_path}` must contain a YAML object at root."
         )
     return data
+
+
+def _load_mapping_file(file_path: Path, label: str) -> Dict[str, Any]:
+    """Load a JSON or YAML file whose root object must be a mapping."""
+    resolved_path = file_path.expanduser().resolve()
+    if not resolved_path.exists():
+        raise click.ClickException(f"{label} file `{resolved_path}` was not found.")
+
+    try:
+        raw_text = resolved_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise click.ClickException(f"Failed to read {label} file `{resolved_path}`: {exc}") from exc
+
+    try:
+        if resolved_path.suffix.lower() == ".json":
+            data = json.loads(raw_text)
+        else:
+            data = yaml.safe_load(raw_text) or {}
+    except Exception as exc:
+        raise click.ClickException(
+            f"Failed to parse {label} file `{resolved_path}`: {exc}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise click.ClickException(
+            f"{label.capitalize()} file `{resolved_path}` must contain a JSON/YAML object at root."
+        )
+    return data
+
+
+def _emit_json(data: Any) -> None:
+    """Pretty-print structured output for CLI responses."""
+    click.echo(json.dumps(data, indent=2, sort_keys=True, default=str))
+
+
+def _create_platform_api(platform: str):
+    """Construct a remote platform API client from the current environment."""
+    try:
+        from kindling_sdk.platform_provider import create_platform_api_from_env
+    except ImportError as exc:
+        raise click.ClickException(
+            "Remote platform operations require spark-kindling-sdk.\n"
+            "Install with: pip install spark-kindling-sdk"
+        ) from exc
+
+    try:
+        api_client, resolved_platform = create_platform_api_from_env(platform)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    return api_client, resolved_platform
+
+
+def _read_text_file(file_path: Path) -> str:
+    try:
+        return file_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise click.ClickException(f"Failed to read `{file_path}`: {exc}") from exc
+
+
+def _prepare_app_files(app_path: Path) -> Dict[str, str]:
+    """Collect app source files from a directory or a .kda archive."""
+    resolved_path = app_path.expanduser().resolve()
+
+    if resolved_path.is_file() and resolved_path.suffix.lower() == ".kda":
+        app_files: Dict[str, str] = {}
+        try:
+            with zipfile.ZipFile(resolved_path, "r") as archive:
+                for file_info in archive.infolist():
+                    if file_info.is_dir():
+                        continue
+                    if not file_info.filename.endswith((".py", ".yaml", ".yml")):
+                        continue
+                    app_files[file_info.filename] = archive.read(file_info.filename).decode("utf-8")
+        except Exception as exc:
+            raise click.ClickException(
+                f"Failed to read app package `{resolved_path}`: {exc}"
+            ) from exc
+
+        if not app_files:
+            raise click.ClickException(
+                f"No application files were found in `{resolved_path}`. "
+                "Expected .py, .yaml, or .yml entries."
+            )
+        return app_files
+
+    if resolved_path.is_dir():
+        app_files = {}
+        for pattern in ("*.py", "*.yaml", "*.yml"):
+            for file_path in sorted(resolved_path.rglob(pattern)):
+                rel_path = file_path.relative_to(resolved_path).as_posix()
+                app_files[rel_path] = _read_text_file(file_path)
+
+        if not app_files:
+            raise click.ClickException(
+                f"No application files were found in `{resolved_path}`. "
+                "Expected at least one .py, .yaml, or .yml file."
+            )
+        return app_files
+
+    raise click.ClickException(
+        f"Invalid app path `{resolved_path}`. Expected a directory or a `.kda` archive."
+    )
+
+
+def _default_app_name(app_path: Path) -> str:
+    return app_path.stem if app_path.is_file() else app_path.name
 
 
 def _coerce_value(raw: str) -> Any:
@@ -586,15 +694,18 @@ def _upload_blob(
 
 
 def _find_wheels(dist_dir: Path, platform: Optional[str] = None) -> List[Path]:
-    """Find kindling platform wheels in a directory."""
+    """Find runtime wheels, preferring the combined spark-kindling artifact."""
+    combined_wheels = sorted(dist_dir.glob("spark_kindling-*.whl"))
+    if combined_wheels:
+        return combined_wheels
+
     if platform:
-        wheels = sorted(dist_dir.glob(f"kindling_{platform}-*.whl"))
-    else:
-        wheels = []
-        for p in ("synapse", "databricks", "fabric"):
-            wheels.extend(dist_dir.glob(f"kindling_{p}-*.whl"))
-        wheels = sorted(wheels)
-    return wheels
+        return sorted(dist_dir.glob(f"kindling_{platform}-*.whl"))
+
+    legacy_wheels: List[Path] = []
+    for legacy_platform in ("synapse", "databricks", "fabric"):
+        legacy_wheels.extend(dist_dir.glob(f"kindling_{legacy_platform}-*.whl"))
+    return sorted(legacy_wheels)
 
 
 def _deploy_wheels(
@@ -1171,9 +1282,9 @@ def workspace_deploy(
     \b
     Deploys the following artifacts to the target storage account:
 
-      - Kindling platform wheel(s) → {base}/packages/
-      - kindling_bootstrap.py      → {base}/scripts/
-      - settings.yaml + overlays   → {base}/config/
+      - spark_kindling-*.whl (or legacy runtime wheel[s]) → {base}/packages/
+      - kindling_bootstrap.py                            → {base}/scripts/
+      - settings.yaml + overlays                         → {base}/config/
 
     \b
     With --create-notebooks and --workspace, also imports starter notebooks
@@ -1232,7 +1343,8 @@ def workspace_deploy(
         wheels = _find_wheels(resolved_dist, resolved_platform)
         if not wheels:
             raise click.ClickException(
-                f"No kindling_{resolved_platform} wheels found in {resolved_dist}."
+                f"No runtime wheel artifacts were found in {resolved_dist}.\n"
+                "Expected dist/spark_kindling-*.whl or legacy dist/kindling_<platform>-*.whl."
             )
         click.echo(f"Packages → {packages_path}/")
         count = _deploy_wheels(blob_service_client, resolved_container, packages_path, wheels)
@@ -1299,6 +1411,288 @@ def workspace_deploy(
         click.echo()
 
     click.echo("Deploy complete.")
+
+
+@cli.group("app")
+def app_group() -> None:
+    """Package and deploy Kindling applications."""
+
+
+@app_group.command("package")
+@click.argument(
+    "app_path",
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+)
+@click.option(
+    "--output",
+    "output_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Destination .kda file. Defaults to dist/<app-dir>.kda.",
+)
+def app_package(app_path: Path, output_path: Optional[Path]) -> None:
+    """Package an application directory into a .kda archive."""
+    resolved_app_path = app_path.expanduser().resolve()
+    app_files = _prepare_app_files(resolved_app_path)
+
+    resolved_output = (
+        output_path.expanduser().resolve()
+        if output_path
+        else (Path.cwd() / "dist" / f"{resolved_app_path.name}.kda").resolve()
+    )
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(resolved_output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for rel_path, content in sorted(app_files.items()):
+            archive.writestr(rel_path, content)
+
+    click.echo(f"Packaged `{resolved_app_path}` -> `{resolved_output}` ({len(app_files)} file(s)).")
+
+
+@app_group.command("deploy")
+@click.argument(
+    "app_path",
+    type=click.Path(path_type=Path, exists=True),
+)
+@click.option("--app-name", default=None, help="Remote app name. Defaults to the path stem/name.")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def app_deploy(app_path: Path, app_name: Optional[str], platform: Optional[str]) -> None:
+    """Deploy an app directory or .kda package using the remote platform SDK."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    resolved_app_path = app_path.expanduser().resolve()
+    app_files = _prepare_app_files(resolved_app_path)
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    resolved_name = (app_name or _default_app_name(resolved_app_path)).strip()
+    if not resolved_name:
+        raise click.ClickException("App name resolved to an empty string.")
+
+    storage_path = api_client.deploy_app(resolved_name, app_files)
+    click.echo(
+        f"Deployed app `{resolved_name}` to `{storage_path}` "
+        f"on {resolved_platform} ({len(app_files)} file(s))."
+    )
+
+
+@app_group.command("cleanup")
+@click.argument("app_name")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def app_cleanup(app_name: str, platform: Optional[str]) -> None:
+    """Delete a previously deployed remote application."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    deleted = api_client.cleanup_app(app_name)
+    if not deleted:
+        raise click.ClickException(
+            f"Remote cleanup for app `{app_name}` did not succeed on {resolved_platform}."
+        )
+    click.echo(f"Deleted app `{app_name}` on {resolved_platform}.")
+
+
+@cli.group("job")
+def job_group() -> None:
+    """Create and manage remote Spark jobs."""
+
+
+@job_group.command("create")
+@click.argument(
+    "config_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def job_create(config_path: Path, platform: Optional[str]) -> None:
+    """Create a remote job definition from a YAML or JSON config file."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    job_config = _load_mapping_file(config_path, "job config")
+    job_name = str(job_config.get("job_name") or "").strip()
+    if not job_name:
+        raise click.ClickException("Job config must define `job_name`.")
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    _emit_json(api_client.create_job(job_name, job_config))
+
+
+@job_group.command("run")
+@click.argument("job_id")
+@click.option(
+    "--parameters",
+    "parameters_path",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Optional YAML/JSON file of run parameters.",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def job_run(job_id: str, parameters_path: Optional[Path], platform: Optional[str]) -> None:
+    """Start a remote job run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else None
+    api_client, _ = _create_platform_api(resolved_platform)
+    click.echo(api_client.run_job(job_id, parameters=parameters))
+
+
+@job_group.command("status")
+@click.argument("run_id")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def job_status(run_id: str, platform: Optional[str]) -> None:
+    """Fetch the current status for a job run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    _emit_json(api_client.get_job_status(run_id))
+
+
+@job_group.command("logs")
+@click.argument("run_id")
+@click.option(
+    "--job-id",
+    default=None,
+    help="Job identifier. Required when --stream is used.",
+)
+@click.option("--from-line", default=0, show_default=True, type=int)
+@click.option("--size", default=1000, show_default=True, type=int)
+@click.option("--stream", is_flag=True, help="Tail stdout logs until completion or timeout.")
+@click.option("--poll-interval", default=5.0, show_default=True, type=float)
+@click.option("--max-wait", default=300.0, show_default=True, type=float)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def job_logs(
+    run_id: str,
+    job_id: Optional[str],
+    from_line: int,
+    size: int,
+    stream: bool,
+    poll_interval: float,
+    max_wait: float,
+    platform: Optional[str],
+) -> None:
+    """Fetch or stream logs for a remote job run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    if stream and not job_id:
+        raise click.ClickException("--job-id is required when --stream is used.")
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    if stream:
+        api_client.stream_stdout_logs(
+            job_id=job_id,
+            run_id=run_id,
+            callback=click.echo,
+            poll_interval=poll_interval,
+            max_wait=max_wait,
+        )
+        return
+
+    _emit_json(api_client.get_job_logs(run_id, from_line=from_line, size=size))
+
+
+@job_group.command("cancel")
+@click.argument("run_id")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def job_cancel(run_id: str, platform: Optional[str]) -> None:
+    """Cancel a remote job run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    cancelled = api_client.cancel_job(run_id)
+    if not cancelled:
+        raise click.ClickException(f"Failed to cancel run `{run_id}`.")
+    click.echo(f"Cancelled run `{run_id}`.")
+
+
+@job_group.command("delete")
+@click.argument("job_id")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def job_delete(job_id: str, platform: Optional[str]) -> None:
+    """Delete a remote job definition."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    deleted = api_client.delete_job(job_id)
+    if not deleted:
+        raise click.ClickException(f"Failed to delete job `{job_id}`.")
+    click.echo(f"Deleted job `{job_id}`.")
 
 
 @cli.command("new")
@@ -1375,6 +1769,8 @@ def new_project(
         unit/             — transform functions, no Azure
         component/        — DI wiring, no Azure
         integration/      — live ABFSS read/write (unless --no-integration)
+      .github/workflows/
+        ci.yml           — starter CI for tests + build
       pyproject.toml
 
     \b
@@ -1421,9 +1817,9 @@ def new_project(
     click.echo(f"  cd {cfg.snake_name}")
     click.echo("  poetry install")
     click.echo("  cp .env.example .env  # fill in your credentials, then: source .env")
-    click.echo("  poetry run pytest tests/unit tests/component")
+    click.echo("  poetry run poe test")
     if cfg.integration:
-        click.echo("  poetry run pytest tests/integration  # requires Azure creds in .env")
+        click.echo("  poetry run poe test-integration  # requires Azure creds in .env")
 
 
 def main() -> None:
