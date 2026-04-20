@@ -7,9 +7,9 @@ This guide explains how to create releases for the Kindling framework and how wh
 When you publish a GitHub Release:
 
 1. ✅ **All tests run** (unit, integration, KDA, system, security)
-2. ✅ **Platform wheels are built** (synapse, databricks, fabric)
+2. ✅ **The combined `spark-kindling` runtime wheel is built**, plus the design-time `spark-kindling-cli` and `spark-kindling-sdk` wheels
 3. ✅ **Release-candidate wheels and bootstrap scripts are staged** to storage for system-test validation
-4. ✅ **System tests run against those exact staged artifacts**
+4. ✅ **System tests run against those exact staged artifacts** on every supported platform (synapse, databricks, fabric)
 5. ✅ **Wheels are automatically attached** to the release as downloadable assets after system tests pass
 
 ## 🚀 Creating a Release
@@ -82,9 +82,9 @@ After the workflow completes:
    ```
 
 2. **Verify Assets Section shows:**
-   - ✅ `kindling_synapse-<version>-py3-none-any.whl`
-   - ✅ `kindling_databricks-<version>-py3-none-any.whl`
-   - ✅ `kindling_fabric-<version>-py3-none-any.whl`
+   - ✅ `spark_kindling-<version>-py3-none-any.whl` (combined runtime)
+   - ✅ `spark_kindling_cli-<version>-py3-none-any.whl`
+   - ✅ `spark_kindling_sdk-<version>-py3-none-any.whl`
    - ✅ Source code (zip)
    - ✅ Source code (tar.gz)
 
@@ -96,18 +96,18 @@ After the workflow completes:
 # 1. Download wheel from release page
 # https://github.com/sep/spark-kindling-framework/releases/latest
 
-# 2. Install locally
-pip install kindling_synapse-<version>-py3-none-any.whl
+# 2. Install locally with the platform extras your environment needs
+pip install 'spark_kindling-<version>-py3-none-any.whl[synapse]'
 ```
 
 ### Direct Install from URL
 
 ```bash
-# Install directly from GitHub Release
-pip install https://github.com/sep/spark-kindling-framework/releases/download/v<version>/kindling_synapse-<version>-py3-none-any.whl
+# Install directly from GitHub Release (one wheel, pick your extra)
+pip install 'spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl'
 
 # Or use the "latest" release
-pip install https://github.com/sep/spark-kindling-framework/releases/latest/download/kindling_synapse-<version>-py3-none-any.whl
+pip install 'spark-kindling[databricks] @ https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-<version>-py3-none-any.whl'
 ```
 
 ### In requirements.txt
@@ -115,22 +115,23 @@ pip install https://github.com/sep/spark-kindling-framework/releases/latest/down
 ```txt
 # requirements.txt
 
-# Install specific version from release
-kindling-synapse @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>/kindling_synapse-<version>-py3-none-any.whl
+# Install specific version from release with synapse extras
+spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl
 
-# Or always use latest
-kindling-synapse @ https://github.com/sep/spark-kindling-framework/releases/latest/download/kindling_synapse-<version>-py3-none-any.whl
+# Or always use latest with databricks extras
+spark-kindling[databricks] @ https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-<version>-py3-none-any.whl
 ```
 
 ### In Databricks/Synapse/Fabric
 
 ```python
 # Databricks notebook
-%pip install https://github.com/sep/spark-kindling-framework/releases/download/v<version>/kindling_databricks-<version>-py3-none-any.whl
+%pip install 'spark-kindling[databricks] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl'
 
 # Or in cluster libraries
 # UI: Libraries → Install New → PyPI
-# Package: https://github.com/sep/spark-kindling-framework/releases/download/v<version>/kindling_databricks-<version>-py3-none-any.whl
+# Package: spark-kindling[databricks]
+# Source: https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl
 ```
 
 ## 🏷️ Release Types
@@ -161,7 +162,7 @@ gh release create v<version>-beta.1 \
   --notes "Beta release for testing"
 
 # Users can install with:
-pip install https://github.com/sep/spark-kindling-framework/releases/download/v<version>-beta.1/kindling_synapse-<version>b1-py3-none-any.whl
+pip install 'spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>-beta.1/spark_kindling-<version>b1-py3-none-any.whl'
 ```
 
 ## 📊 What Shows Up in a Release
@@ -176,9 +177,9 @@ Published by @username on Oct 17, 2025
 
 Assets
 
- kindling_synapse-<version>-py3-none-any.whl      76 KB
- kindling_databricks-<version>-py3-none-any.whl   76 KB
- kindling_fabric-<version>-py3-none-any.whl       72 KB
+ spark_kindling-<version>-py3-none-any.whl         ~180 KB
+ spark_kindling_cli-<version>-py3-none-any.whl     ~40 KB
+ spark_kindling_sdk-<version>-py3-none-any.whl     ~60 KB
  Source code (zip)
  Source code (tar.gz)
 ```
@@ -224,7 +225,7 @@ gh release create v<version> \
 gh release view v<version>
 
 # 8. Test installation
-pip install https://github.com/sep/spark-kindling-framework/releases/download/v<version>/kindling_synapse-<version>-py3-none-any.whl
+pip install 'spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl'
 ```
 
 ## 🔐 Access Control for Releases

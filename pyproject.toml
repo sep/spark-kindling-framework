@@ -3,8 +3,8 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "kindling"
-version = "0.8.15"
+name = "spark-kindling"
+version = "0.9.0"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -15,6 +15,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = "^3.10"
+# Core framework (required on every platform)
 pyspark = ">=3.4.0"
 delta-spark = ">=2.4.0"
 pandas = ">=2.0.0"
@@ -24,12 +25,31 @@ dynaconf = ">=3.1.0"
 pyyaml = ">=6.0"
 packaging = ">=23.0"
 blinker = ">=1.6.0"
+# Azure storage (shared across Synapse, Fabric, and Azure-backed Databricks)
 azure-storage-blob = ">=12.14.0"
 azure-storage-file-datalake = ">=12.14.0"
 azure-identity = ">=1.15.0"
 azure-core = ">=1.30.0,<1.31.0"  # Pin to 1.30.x - compatible with Fabric runtime 1.30.2
-azure-synapse-artifacts = "0.17.0"
-databricks-sdk = ">=0.12.0"
+# Platform-exclusive runtime deps live in extras (see [tool.poetry.extras])
+azure-synapse-artifacts = {version = ">=0.17.0", optional = true}
+databricks-sdk = {version = ">=0.12.0", optional = true}
+
+[tool.poetry.extras]
+# Install with: pip install 'spark-kindling[synapse]' etc.
+synapse = ["azure-synapse-artifacts"]
+databricks = ["databricks-sdk"]
+fabric = []
+standalone = []
+all = ["azure-synapse-artifacts", "databricks-sdk"]
+
+[tool.poetry.plugins."spark_kindling.platforms"]
+# Platform service discovery via importlib.metadata entry points.
+# Value is the module to import; the module self-registers its factory
+# via @PlatformServices.register(name="<platform>") on import.
+synapse = "kindling.platform_synapse"
+databricks = "kindling.platform_databricks"
+fabric = "kindling.platform_fabric"
+standalone = "kindling.platform_standalone"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"

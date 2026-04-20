@@ -605,7 +605,11 @@ jobs:
         run: |
           python -m venv /tmp/kindling-wheel-smoke
           /tmp/kindling-wheel-smoke/bin/python -m pip install --upgrade pip
-          /tmp/kindling-wheel-smoke/bin/python -m pip install dist/kindling_sdk-*.whl dist/kindling_cli-*.whl
+          # Post-rename wheel names are spark_kindling_*-*.whl; fall back to
+          # the legacy kindling_*-*.whl globs so a cross-branch rebase works.
+          SDK_WHEEL=$(ls dist/spark_kindling_sdk-*.whl dist/kindling_sdk-*.whl 2>/dev/null | head -1)
+          CLI_WHEEL=$(ls dist/spark_kindling_cli-*.whl dist/kindling_cli-*.whl 2>/dev/null | head -1)
+          /tmp/kindling-wheel-smoke/bin/python -m pip install "$SDK_WHEEL" "$CLI_WHEEL"
           /tmp/kindling-wheel-smoke/bin/kindling --help > /tmp/kindling-help.txt
           /tmp/kindling-wheel-smoke/bin/python - <<'PY'
           from kindling_sdk.platform_api import list_supported_platforms

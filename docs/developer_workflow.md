@@ -18,7 +18,7 @@ poetry run poe deploy --platform fabric         # Deploy only fabric wheel
 
 # Deploy from GitHub release assets (production)
 poetry run poe deploy --release latest          # Deploy all platforms from latest release
-poetry run poe deploy --release 0.6.0           # Deploy all platforms from specific release
+poetry run poe deploy --release 0.8.16a2           # Deploy all platforms from specific release
 
 # Run tests with coverage
 poetry run poe test
@@ -53,12 +53,21 @@ poetry run poe deploy --platform databricks   # Deploy only databricks
 poetry run poe deploy --platform fabric       # Deploy only fabric
 ```
 
-This builds all 3 platform wheels and uploads them to:
+This builds one combined runtime wheel (plus CLI and SDK) and uploads them to:
 ```
 sepstdatalakedev/artifacts/packages/
-  ├── kindling_databricks-0.6.0-py3-none-any.whl
-  ├── kindling_fabric-0.6.0-py3-none-any.whl
-  └── kindling_synapse-0.6.0-py3-none-any.whl
+  ├── spark_kindling-0.8.16a2-py3-none-any.whl
+  ├── spark_kindling_cli-0.8.16a2-py3-none-any.whl
+  └── spark_kindling_sdk-0.8.16a2-py3-none-any.whl
+```
+
+The combined wheel ships every `platform_*.py` module; consumers select their
+platform's runtime deps via extras at install time:
+
+```bash
+pip install 'spark-kindling[synapse]'
+pip install 'spark-kindling[databricks]'
+pip install 'spark-kindling[fabric]'
 ```
 
 **Platform-specific deployment** is useful when:
@@ -73,7 +82,7 @@ sepstdatalakedev/artifacts/packages/
 poetry run poe deploy --release latest
 
 # Or deploy a specific release version:
-poetry run poe deploy --release 0.6.0
+poetry run poe deploy --release 0.8.16a2
 ```
 
 ### 3. Advanced Usage (Direct Python)
@@ -91,7 +100,7 @@ python scripts/deploy.py --platform fabric
 
 # Deploy from GitHub release
 python scripts/deploy.py --release
-python scripts/deploy.py --release 0.6.0
+python scripts/deploy.py --release 0.8.16a2
 python scripts/deploy.py --release --platform synapse
 ```
 
@@ -101,32 +110,32 @@ python scripts/deploy.py --release --platform synapse
 
 The build and deployment tools are Python modules in the `scripts/` package:
 
-- **`scripts/build.py`**: Builds platform-specific wheels using isolated Poetry environments
+- **`scripts/build.py`**: Builds the combined `spark-kindling` runtime wheel plus the design-time `spark-kindling-cli` and `spark-kindling-sdk` wheels.
 - **`scripts/deploy.py`**: Deploys wheels to Azure Storage using azure-identity SDK
-- **`scripts/generate_platform_config.py`**: Generates platform-specific pyproject.toml files
 
 ### Key Features
 
-1. **Isolated Builds**: Each platform wheel is built in a temporary directory with its own pyproject.toml
-2. **Single Source Version**: Version is read from root `pyproject.toml` only
-3. **Platform File Filtering**: Each wheel contains only its platform-specific implementation
-4. **Azure Identity Integration**: Uses DefaultAzureCredential (supports Azure CLI, environment variables, managed identity)
+1. **Single Source Version**: Version is read from root `pyproject.toml` only.
+2. **Combined Runtime Wheel**: One wheel ships every `platform_*.py` module. Install-time extras (`[synapse]`, `[databricks]`, `[fabric]`) pull in platform-exclusive runtime deps.
+3. **Platform Discovery via Entry Points**: `[tool.poetry.plugins."spark_kindling.platforms"]` advertises which platform modules are available; `initialize_platform_services` uses `importlib.metadata.entry_points` to locate them and raises an actionable error if the matching extra isn't installed.
+4. **Azure Identity Integration**: Uses DefaultAzureCredential (Azure CLI, environment variables, managed identity).
 
 ### Directory Structure
 
 ```
 scripts/                    # Build/deployment tools (not distributed)
   __init__.py
-  build.py                 # Platform wheel builder
+  build.py                 # Combined-wheel builder
   deploy.py                # Azure Storage deployment
-  generate_platform_config.py
 
-packages/kindling/          # The actual library (distributed in wheels)
+packages/kindling/          # The actual library (distributed in the runtime wheel)
   __init__.py
   bootstrap.py
-  platform_synapse.py
-  platform_databricks.py
-  platform_fabric.py
+  platform_provider.py
+  platform_synapse.py      # Shipped in every wheel; synapse extras needed to use
+  platform_databricks.py   # Shipped in every wheel; databricks extras needed to use
+  platform_fabric.py       # Shipped in every wheel
+  platform_standalone.py   # Shipped in every wheel; local-dev fallback
   ...
 ```
 
@@ -265,7 +274,7 @@ The version is managed in a single location:
 ```toml
 # pyproject.toml
 [tool.poetry]
-version = "0.6.0"  # Single source of truth
+version = "0.8.16a2"  # Single source of truth
 ```
 
 Platform-specific builds automatically use this version.
