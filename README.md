@@ -1,6 +1,7 @@
 # Spark Kindling Framework
 
-**Version:** 0.6.0
+**PyPI distribution:** `spark-kindling`
+**Import name:** `kindling`
 **Platforms:** Microsoft Fabric, Azure Synapse Analytics, Databricks
 
 ## Overview
@@ -61,6 +62,32 @@ The framework consists of several modular components:
 
 - **[kindling-otel-azure](./packages/kindling_otel_azure/)** - Azure Monitor OpenTelemetry integration
 - **[kindling-databricks-dlt](./packages/kindling_databricks_dlt/)** - Databricks Delta Live Tables integration
+
+## Install
+
+One distribution, platform-specific extras:
+
+```bash
+pip install 'spark-kindling[synapse]'      # Azure Synapse Analytics
+pip install 'spark-kindling[databricks]'   # Databricks
+pip install 'spark-kindling[fabric]'       # Microsoft Fabric
+pip install 'spark-kindling[standalone]'   # Local development / generic Spark
+```
+
+The Python import name is `kindling` (unchanged):
+
+```python
+from kindling.data_entities import DataEntities
+```
+
+Design-time tooling ships separately:
+
+```bash
+pip install spark-kindling-cli    # `kindling` CLI for scaffolding and deploy
+pip install spark-kindling-sdk    # Programmatic access to platform APIs
+```
+
+See [docs/release_process.md](./docs/release_process.md) for install-from-release examples and [docs/developer_workflow.md](./docs/developer_workflow.md) for local development.
 
 ## Quickstart
 
