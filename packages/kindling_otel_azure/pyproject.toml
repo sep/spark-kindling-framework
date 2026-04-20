@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling-otel-azure"
-version = "0.3.2"
+version = "0.4.0"
 description = "Azure Monitor OpenTelemetry integration for Kindling framework"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -18,14 +18,25 @@ include = [
 
 [tool.poetry.dependencies]
 python = "^3.10"
-# kindling is provided by the runtime environment, not installed as a dependency
-# Pin azure-core to match Fabric runtime (1.30.2) - CRITICAL for compatibility
-azure-core = ">=1.30.0,<1.31.0"
-# Use older versions compatible with Fabric's pre-installed azure-core
+# kindling is provided by the runtime environment, not installed as a dependency.
+#
+# These are import-time runtime deps — config.py / trace_provider.py /
+# logger_provider.py all do `from azure.monitor.opentelemetry ...` /
+# `from opentelemetry ...` at module top. The extension install path in
+# packages/kindling/bootstrap.py runs `pip install <local_wheel>` without
+# requesting extras, so any dep gated behind `extra == ...` would silently
+# skip on that code path and import would fail at runtime.
+#
+# The Fabric-compatible OTel line (1.6.x / 1.20.x) is API-compatible with
+# the modern line (1.8.x / 1.21.x) for every symbol this extension uses, and
+# it's the only line that works on Fabric's pinned azure-core 1.30.x. So we
+# ship one profile: the lowest-common-denominator that works everywhere.
+#
+# typing-extensions pinned high because Databricks runtime ships an older
+# version and the `deprecated` decorator (used by opentelemetry) needs >=4.6.
 azure-monitor-opentelemetry = ">=1.6.0,<1.7.0"
 opentelemetry-api = "^1.20.0"
 opentelemetry-sdk = "^1.20.0"
-# Databricks runtime has old typing-extensions, force upgrade for deprecated decorator
 typing-extensions = ">=4.6.0"
 
 [tool.poetry.group.dev.dependencies]

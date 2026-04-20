@@ -5,7 +5,9 @@ Build Kindling wheels.
 Produces one runtime wheel (spark-kindling) that contains every
 ``platform_*.py`` module and declares platform-specific deps under extras
 (see ``[tool.poetry.extras]`` in the root pyproject.toml). Also builds the
-design-time wheels: spark-kindling-cli and spark-kindling-sdk.
+design-time wheels: spark-kindling-cli, spark-kindling-sdk, and
+kindling-otel-azure — all produced with a single ``poetry build`` per
+package dir.
 
 Replaces the pre-rename three-wheel-per-platform build; users now install
 ``spark-kindling[synapse]`` / ``[databricks]`` / ``[fabric]`` rather than
@@ -20,7 +22,11 @@ from os import environ
 from pathlib import Path
 
 DIST_DIR = Path("dist")
-DESIGN_TIME_PACKAGE_DIRS = [Path("packages/kindling_sdk"), Path("packages/kindling_cli")]
+DESIGN_TIME_PACKAGE_DIRS = [
+    Path("packages/kindling_sdk"),
+    Path("packages/kindling_cli"),
+    Path("packages/kindling_otel_azure"),
+]
 
 
 def ensure_poetry_installed() -> None:
