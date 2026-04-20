@@ -792,13 +792,13 @@ No changes needed. The registry routes to the appropriate provider, and SCD2 log
 
 - **Composite business keys / synthetic key construction** (resolved 2026-04-20): made configurable via `scd.routing_key` tag. Default is `hash` — `sha2(to_json(struct(*merge_columns)), 256)` — which is safe for any value type, null handling, and composite keys with negligible (~0.5–2% of merge time) cost. Opt-in `concat` — `concat_ws("||", ...)` — for teams with controlled key types who want debuggability and don't care about the ~5× per-row cost difference. See the "Synthetic keys" subsection in Section 3.
 
+- **Bi-temporal support** (out of scope, 2026-04-20): The framework tracks only **system time** — when the framework observed and wrote each version. `__effective_date` is always `current_timestamp()` at merge time. A bi-temporal design that adds business time (when the change actually occurred in reality, separate from when we learned about it) is explicitly not in scope for this proposal. Teams that need bi-temporal semantics — late-arriving truth, retroactive corrections, "what did the system think was true on date X" audit queries — should handle it in their own pipe logic or open a separate proposal if it becomes a recurring need.
+
 ### Open
 
 1. **Reverting SCD2 → non-SCD2** (current leaning: not supported): If a user removes the `scd.type` tag from an entity whose target table carries temporal columns from a prior SCD2 lifetime, historical rows remain physically in the table but become semantically orphaned — no code knows they exist or how to interpret them. Current thinking is that reversion should not be a supported operation at all; the right path is to register a new entity under a different id and migrate data explicitly if needed. Enforce by erroring at registration time when the target table's schema has the temporal columns but the entity no longer declares `scd.type=2`. Revisit if real migration workflows expose friction with the "new entity" requirement, particularly around downstream pipes' input ids.
 
-2. **Bi-temporal support:** Some use cases need both "system time" (when the change was recorded) and "business time" (when the change occurred in reality). Should we add a `scd.business_time_col` tag for user-supplied effective dates, or is this out of scope?
-
-3. **Delete handling:** When a business key is present in the target but absent from the source, should SCD2 close the row (soft delete) or leave it as-is? Current proposal leaves it as-is (no deletes). Should a `scd.close_on_missing: "true"` tag be added?
+2. **Delete handling:** When a business key is present in the target but absent from the source, should SCD2 close the row (soft delete) or leave it as-is? Current proposal leaves it as-is (no deletes). Should a `scd.close_on_missing: "true"` tag be added?
 
 ## Success Criteria
 
