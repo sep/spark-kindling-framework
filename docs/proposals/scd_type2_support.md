@@ -49,7 +49,7 @@ Kindling currently supports:
 
 However, Kindling lacks:
 - Built-in SCD2 merge logic (close-old-row + insert-new-version)
-- Temporal metadata columns (`effective_date`, `end_date`, `is_current`)
+- Temporal metadata columns (`effective_from`, `effective_to`, `is_current`)
 - Entity-level declaration of SCD type
 - Convenience methods for reading current-state or point-in-time snapshots
 - Signals specific to SCD2 operations (rows closed, rows versioned, rows unchanged)
@@ -83,8 +83,8 @@ Entity Declaration                      DeltaEntityProvider
 │ tags = {                     │        │ _merge_to_delta_table()      │
 │   "scd.type": "2",           │───────▶│   ├─ no scd.type: overwrite  │
 │   "scd.tracked": "a,b,c",    │        │   └─ scd.type=="2": staged   │
-│   "scd.effective_col": "…",  │        │       _merge_scd2()          │
-│   "scd.end_col": "…",        │        ├──────────────────────────────┤
+│   "scd.effective_from_col": "…",  │        │       _merge_scd2()          │
+│   "scd.effective_to_col": "…",        │        ├──────────────────────────────┤
 │   "scd.current_col": "…",    │        │ ensure_entity_table()        │
 │ }                            │        │   auto-augments schema with  │
 └──────────────────────────────┘        │   temporal columns when      │
@@ -120,8 +120,8 @@ No changes to `EntityMetadata`. SCD configuration lives entirely in the existing
 |---|---|---|---|
 | `scd.type` | yes (to enable) | — | `"2"` enables SCD Type 2. Any other value (or absence) → current overwrite-in-place behavior. |
 | `scd.tracked` | no | all non-key, non-temporal columns | Comma-separated list of columns to monitor for changes. |
-| `scd.effective_col` | no | `__effective_date` | Name of the timestamp column storing when a version became active. |
-| `scd.end_col` | no | `__end_date` | Name of the timestamp column storing when a version was superseded. Null means current. |
+| `scd.effective_from_col` | no | `__effective_from` | Name of the timestamp column storing when a version became active. |
+| `scd.effective_to_col` | no | `__effective_to` | Name of the timestamp column storing when a version was superseded. Null means current. |
 | `scd.current_col` | no | `__is_current` | Name of the boolean flag column for fast current-state queries. |
 | `scd.current_entity_id` | no | `{entityid}.current` | Override the auto-registered companion entity's id. |
 | `scd.routing_key` | no | `hash` | How the staging-only `__merge_key` routing column is computed. `hash` uses `sha2(to_json(struct(*merge_columns)), 256)` — safe for any value type (strings with delimiters, nulls, mixed types) and composite keys. `concat` uses `concat_ws("\|\|", ...)` — cheaper and debuggable, but silently collides when a key value contains `\|\|`. Default `hash` is the right call for a framework that doesn't know the shape of consumers' business keys; `concat` is an opt-in for teams whose keys are controlled types (int ids, UUIDs, short codes) where debuggability matters more than the ~0.5–2% merge-time overhead of a hash. |
@@ -148,8 +148,8 @@ class SCDConfig:
     """
     enabled: bool
     tracked_columns: Optional[List[str]]
-    effective_date_column: str
-    end_date_column: str
+    effective_from_column: str
+    effective_to_column: str
     is_current_column: str
     current_entity_id: str
     routing_key_method: str  # one of ROUTING_KEY_METHODS
@@ -168,8 +168,8 @@ def scd_config_from_tags(entity) -> SCDConfig:
         return SCDConfig(
             enabled=False,
             tracked_columns=None,
-            effective_date_column="__effective_date",
-            end_date_column="__end_date",
+            effective_from_column="__effective_from",
+            effective_to_column="__effective_to",
             is_current_column="__is_current",
             current_entity_id=f"{entity.entityid}.current",
             routing_key_method="hash",
@@ -194,8 +194,8 @@ def scd_config_from_tags(entity) -> SCDConfig:
     return SCDConfig(
         enabled=True,
         tracked_columns=tracked,
-        effective_date_column=tags.get("scd.effective_col", "__effective_date"),
-        end_date_column=tags.get("scd.end_col", "__end_date"),
+        effective_from_column=tags.get("scd.effective_from_col", "__effective_from"),
+        effective_to_column=tags.get("scd.effective_to_col", "__effective_to"),
         is_current_column=tags.get("scd.current_col", "__is_current"),
         current_entity_id=tags.get("scd.current_entity_id", f"{entity.entityid}.current"),
         routing_key_method=routing,
@@ -233,7 +233,7 @@ The original proposal added `scd_type` and `scd2_config` fields to `EntityMetada
 
 ### 2. Schema Auto-Augmentation
 
-When an entity has `scd.type == "2"`, `ensure_entity_table` automatically appends the three temporal columns to the user-provided schema if they are not already present. Column names come from the tag config (defaults: `__effective_date`, `__end_date`, `__is_current`).
+When an entity has `scd.type == "2"`, `ensure_entity_table` automatically appends the three temporal columns to the user-provided schema if they are not already present. Column names come from the tag config (defaults: `__effective_from`, `__effective_to`, `__is_current`).
 
 ```python
 def _augment_schema_for_scd2(self, schema, cfg: SCDConfig):
@@ -243,13 +243,13 @@ def _augment_schema_for_scd2(self, schema, cfg: SCDConfig):
     existing_names = {f.name for f in schema.fields}
     extra_fields = []
 
-    if cfg.effective_date_column not in existing_names:
+    if cfg.effective_from_column not in existing_names:
         extra_fields.append(
-            StructField(cfg.effective_date_column, TimestampType(), False)
+            StructField(cfg.effective_from_column, TimestampType(), False)
         )
-    if cfg.end_date_column not in existing_names:
+    if cfg.effective_to_column not in existing_names:
         extra_fields.append(
-            StructField(cfg.end_date_column, TimestampType(), True)
+            StructField(cfg.effective_to_column, TimestampType(), True)
         )
     if cfg.is_current_column not in existing_names:
         extra_fields.append(
@@ -350,7 +350,7 @@ The `_merge_scd2` implementation below adds a column named `__merge_key` to the 
 
 Why it's needed: Delta Lake's `MERGE` expresses, for each source row, either "MATCH → update the target row" *or* "NOT MATCH → insert the source row." It cannot express "for this one source row, both close the existing target row *and* insert a new version." SCD2 needs both behaviors for a changed business key. The staged-updates pattern gets around this by duplicating the source: one copy is keyed so that it matches (and closes the old row via `whenMatchedUpdate`), one copy is keyed so that it cannot match (and inserts the new version via `whenNotMatchedInsert`). The synthetic key is what makes the second copy deterministically fail the merge predicate.
 
-**Not a surrogate key.** Dimensional modeling calls a stable, meaningless integer/UUID assigned to each dimension row a "surrogate" (sometimes "synthetic") key — e.g., `customer_sk`. That is a *persistent* column, lives in the target table forever, and gives fact tables a stable pointer to a specific version of a dimension row. This proposal does not introduce surrogate keys — business keys plus the `is_current` / `effective_date` columns uniquely identify a version. If future work wants fact→dimension version linkage (e.g., storing `customer_sk` on a fact row so it always points at the dimension version that was current when the fact occurred), adding a `{entityid}_sk` column is a separate design decision.
+**Not a surrogate key.** Dimensional modeling calls a stable, meaningless integer/UUID assigned to each dimension row a "surrogate" (sometimes "synthetic") key — e.g., `customer_sk`. That is a *persistent* column, lives in the target table forever, and gives fact tables a stable pointer to a specific version of a dimension row. This proposal does not introduce surrogate keys — business keys plus the `is_current` / `effective_from` columns uniquely identify a version. If future work wants fact→dimension version linkage (e.g., storing `customer_sk` on a fact row so it always points at the dimension version that was current when the fact occurred), adding a `{entityid}_sk` column is a separate design decision.
 
 **Pattern prevalence.** The staging-only routing column is the canonical way to get atomic SCD2 with a single `MERGE` statement on any lakehouse engine that enforces the "one action per source row" constraint. Delta Lake's [official SCD2 documentation](https://docs.delta.io/latest/delta-update.html#slowly-changing-data-scd-type-2-operation), Iceberg and Hudi tutorials, Databricks training materials, and community tooling (`dbt_utils.snapshot`, open-source SCD2 frameworks) all use close variants of the same row-duplication-with-routing-column approach. The only real design variable is how the routing column is computed — see open question 2 below.
 
@@ -380,7 +380,7 @@ def _merge_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableRefe
 
 The staged-updates pattern works in a single Delta `MERGE` by splitting the source into two sets of rows:
 
-1. **Rows with real merge keys** — these match existing current rows and close them (set `end_date`, clear `is_current`)
+1. **Rows with real merge keys** — these match existing current rows and close them (set `effective_to`, clear `is_current`)
 2. **Rows with null merge keys** — these force the NOT MATCHED path, inserting new version rows
 
 ```python
@@ -401,7 +401,7 @@ def _merge_scd2(self, df: DataFrame, entity, cfg: SCDConfig, table_ref: DeltaTab
     target_df = target.toDF()
 
     # Determine which columns to track for changes
-    scd2_meta_cols = {cfg.effective_date_column, cfg.end_date_column, cfg.is_current_column}
+    scd2_meta_cols = {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
     tracked = cfg.tracked_columns or [
         c for c in df.columns if c not in biz_keys and c not in scd2_meta_cols
     ]
@@ -463,8 +463,8 @@ def _merge_scd2(self, df: DataFrame, entity, cfg: SCDConfig, table_ref: DeltaTab
     # Build insert values map — all source columns plus SCD2 metadata
     source_cols = [c for c in df.columns if c not in scd2_meta_cols]
     insert_values = {f"`{c}`": f"staged.`{c}`" for c in source_cols}
-    insert_values[f"`{cfg.effective_date_column}`"] = "current_timestamp()"
-    insert_values[f"`{cfg.end_date_column}`"] = "NULL"
+    insert_values[f"`{cfg.effective_from_column}`"] = "current_timestamp()"
+    insert_values[f"`{cfg.effective_to_column}`"] = "NULL"
     insert_values[f"`{cfg.is_current_column}`"] = "true"
 
     (
@@ -472,7 +472,7 @@ def _merge_scd2(self, df: DataFrame, entity, cfg: SCDConfig, table_ref: DeltaTab
         .merge(source=staged.alias("staged"), condition=top_merge_condition)
         .whenMatchedUpdate(
             set={
-                f"`{cfg.end_date_column}`": "current_timestamp()",
+                f"`{cfg.effective_to_column}`": "current_timestamp()",
                 f"`{cfg.is_current_column}`": "false",
             }
         )
@@ -486,7 +486,7 @@ def _merge_scd2(self, df: DataFrame, entity, cfg: SCDConfig, table_ref: DeltaTab
 ```
 Source DataFrame (incoming):     Target Table (existing):
 ┌──────┬───────┬─────────┐       ┌──────┬───────┬─────────┬────────┬────────┬─────────┐
-│ id   │ name  │ region  │       │ id   │ name  │ region  │ eff_dt │ end_dt │ current │
+│ id   │ name  │ region  │       │ id   │ name  │ region  │ eff_frm│ eff_to │ current │
 ├──────┼───────┼─────────┤       ├──────┼───────┼─────────┼────────┼────────┼─────────┤
 │ 1    │ Alice │ West    │ ←changed│ 1  │ Alice │ East    │ Jan 1  │ null   │ true    │
 │ 2    │ Bob   │ North   │ ←same │ 2    │ Bob   │ North   │ Jan 1  │ null   │ true    │
@@ -505,7 +505,7 @@ Staged DataFrame:
 
 After merge:
 ┌──────┬───────┬─────────┬────────┬────────┬─────────┐
-│ id   │ name  │ region  │ eff_dt │ end_dt │ current │
+│ id   │ name  │ region  │ eff_frm│ eff_to │ current │
 ├──────┼───────┼─────────┼────────┼────────┼─────────┤
 │ 1    │ Alice │ East    │ Jan 1  │ Feb 26 │ false   │  ← closed
 │ 1    │ Alice │ West    │ Feb 26 │ null   │ true    │  ← new version
@@ -601,8 +601,8 @@ For ad-hoc or procedural use, a helper on `DeltaEntityProvider` supports point-i
 def read_entity_as_of(self, entity, point_in_time) -> DataFrame:
     """Read entity state as it was at a specific point in time.
 
-    For SCD2 entities: returns rows where effective_date ≤ point_in_time and
-    (end_date > point_in_time OR end_date IS NULL).
+    For SCD2 entities: returns rows where effective_from ≤ point_in_time and
+    (effective_to > point_in_time OR effective_to IS NULL).
 
     For non-SCD2 entities: falls back to Delta time travel by timestamp.
     """
@@ -620,10 +620,10 @@ def read_entity_as_of(self, entity, point_in_time) -> DataFrame:
 
     df = self.read_entity(entity)
     return df.filter(
-        (col(cfg.effective_date_column) <= point_in_time)
+        (col(cfg.effective_from_column) <= point_in_time)
         & (
-            col(cfg.end_date_column).isNull()
-            | (col(cfg.end_date_column) > point_in_time)
+            col(cfg.effective_to_column).isNull()
+            | (col(cfg.effective_to_column) > point_in_time)
         )
     )
 ```
@@ -656,14 +656,14 @@ def _validate_scd_config(self, entity: EntityMetadata):
             )
 
     # Temporal column names must not collide with business columns.
-    temporal = {cfg.effective_date_column, cfg.end_date_column, cfg.is_current_column}
+    temporal = {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
     schema_names = {f.name for f in entity.schema.fields} if entity.schema else set()
     biz_collision = temporal & (schema_names - temporal)
     if biz_collision:
         raise ValueError(
             f"Entity '{entity.entityid}': temporal column names {biz_collision} "
-            f"collide with business columns. Override via scd.effective_col / "
-            f"scd.end_col / scd.current_col tags."
+            f"collide with business columns. Override via scd.effective_from_col / "
+            f"scd.effective_to_col / scd.current_col tags."
         )
 ```
 
@@ -780,7 +780,7 @@ No changes needed. The registry routes to the appropriate provider, and SCD2 log
 
 | Option | Pros | Cons |
 |--------|------|------|
-| **Dunder prefix (`__effective_date`)** | Won't collide with business columns | Unconventional |
+| **Dunder prefix (`__effective_from`)** | Won't collide with business columns | Unconventional |
 | **Configurable (proposed)** | Users choose names | Slightly more config |
 | **Fixed names** | Zero config | Risk of collision |
 
@@ -794,9 +794,9 @@ No changes needed. The registry routes to the appropriate provider, and SCD2 log
 
 - **Composite business keys / synthetic key construction** (resolved 2026-04-20): made configurable via `scd.routing_key` tag. Default is `hash` — `sha2(to_json(struct(*merge_columns)), 256)` — which is safe for any value type, null handling, and composite keys with negligible (~0.5–2% of merge time) cost. Opt-in `concat` — `concat_ws("||", ...)` — for teams with controlled key types who want debuggability and don't care about the ~5× per-row cost difference. See the "Synthetic keys" subsection in Section 3.
 
-- **Bi-temporal support** (out of scope, 2026-04-20): The framework tracks only **system time** — when the framework observed and wrote each version. `__effective_date` is always `current_timestamp()` at merge time. A bi-temporal design that adds business time (when the change actually occurred in reality, separate from when we learned about it) is explicitly not in scope for this proposal. Teams that need bi-temporal semantics — late-arriving truth, retroactive corrections, "what did the system think was true on date X" audit queries — should handle it in their own pipe logic or open a separate proposal if it becomes a recurring need.
+- **Bi-temporal support** (out of scope, 2026-04-20): The framework tracks only **system time** — when the framework observed and wrote each version. `__effective_from` is always `current_timestamp()` at merge time. A bi-temporal design that adds business time (when the change actually occurred in reality, separate from when we learned about it) is explicitly not in scope for this proposal. Teams that need bi-temporal semantics — late-arriving truth, retroactive corrections, "what did the system think was true on date X" audit queries — should handle it in their own pipe logic or open a separate proposal if it becomes a recurring need.
 
-- **Delete handling** (resolved 2026-04-20): Opt-in via `scd.close_on_missing: "true"` tag. Default behavior is unchanged — absence in a source batch does not close a current row, matching the expectation of incremental feeds. When the tag is set, the SCD2 merge also closes any current row in the target whose business key isn't present in the source batch (implemented via Delta's `whenNotMatchedBySourceUpdate` clause setting `is_current=false` and `end_date=current_timestamp()`). This targets teams running full-snapshot feeds where absence genuinely means "deleted upstream." Explicitly opt-in because the default interpretation (silence = no change) is safer for the more common incremental-feed case.
+- **Delete handling** (resolved 2026-04-20): Opt-in via `scd.close_on_missing: "true"` tag. Default behavior is unchanged — absence in a source batch does not close a current row, matching the expectation of incremental feeds. When the tag is set, the SCD2 merge also closes any current row in the target whose business key isn't present in the source batch (implemented via Delta's `whenNotMatchedBySourceUpdate` clause setting `is_current=false` and `effective_to=current_timestamp()`). This targets teams running full-snapshot feeds where absence genuinely means "deleted upstream." Explicitly opt-in because the default interpretation (silence = no change) is safer for the more common incremental-feed case.
 
 ### Open
 
@@ -889,7 +889,7 @@ For teams converting an existing SCD1 entity to SCD2, a backfill utility initial
 def backfill_scd2_columns(spark, entity, table_ref):
     """One-time backfill: add SCD2 columns to existing SCD1 table.
 
-    Sets all existing rows as current with effective_date = table creation time.
+    Sets all existing rows as current with effective_from = table creation time.
     """
     cfg = entity.scd2_config
     delta_table = table_ref.get_delta_table()
@@ -906,16 +906,16 @@ def backfill_scd2_columns(spark, entity, table_ref):
     spark.sql(f"""
         ALTER TABLE delta.`{table_ref.table_path}`
         ADD COLUMNS (
-            `{cfg.effective_date_column}` TIMESTAMP,
-            `{cfg.end_date_column}` TIMESTAMP,
+            `{cfg.effective_from_column}` TIMESTAMP,
+            `{cfg.effective_to_column}` TIMESTAMP,
             `{cfg.is_current_column}` BOOLEAN
         )
     """)
 
     delta_table.update(
         set={
-            f"`{cfg.effective_date_column}`": f"CAST('{creation_time}' AS TIMESTAMP)",
-            f"`{cfg.end_date_column}`": "NULL",
+            f"`{cfg.effective_from_column}`": f"CAST('{creation_time}' AS TIMESTAMP)",
+            f"`{cfg.effective_to_column}`": "NULL",
             f"`{cfg.is_current_column}`": "true",
         }
     )
@@ -947,7 +947,7 @@ from pyspark.sql.types import StringType, StructField, StructType
 
 # --- Silver: customer dimension (SCD Type 2) ---
 # `scd.type=2` is all it takes to enable history tracking.
-# The framework auto-augments the schema with __effective_date / __end_date /
+# The framework auto-augments the schema with __effective_from / __effective_to /
 # __is_current and auto-registers a read-only companion at "silver.dim_customer.current".
 @DataEntities.entity(
     entityid="silver.dim_customer",
