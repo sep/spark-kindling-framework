@@ -55,6 +55,7 @@ INVARIANT_FILES = [
     "pyproject.toml",
     ".env.example",
     ".gitignore",
+    ".github/workflows/ci.yml",
     ".devcontainer/Dockerfile",
     ".devcontainer/devcontainer.json",
     ".devcontainer/docker-compose.yml",
@@ -170,6 +171,18 @@ def test_pyproject_uses_kebab_name(tmp_path):
     assert 'name = "my-project"' in pyproject
 
 
+def test_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path):
+    cfg = ScaffoldConfig(name="proj", integration=True, output_dir=tmp_path)
+    generate_project(cfg)
+
+    pyproject = (tmp_path / "proj" / "pyproject.toml").read_text()
+    assert 'spark-kindling = {version = ">=0.9.1", extras = ["standalone"]}' in pyproject
+    assert 'poethepoet = ">=0.24.0"' in pyproject
+    assert 'test = { sequence = ["test-unit", "test-component"] }' in pyproject
+    assert 'test-integration = "pytest tests/integration -v"' in pyproject
+    assert 'build = "poetry build"' in pyproject
+
+
 def test_conftest_has_oauth_vars(tmp_path):
     cfg = ScaffoldConfig(name="proj", auth="oauth", output_dir=tmp_path)
     generate_project(cfg)
@@ -271,6 +284,16 @@ def test_gitignore_excludes_dotenv(tmp_path):
 
     gitignore = (tmp_path / "proj" / ".gitignore").read_text()
     assert ".env" in gitignore
+
+
+def test_generated_ci_workflow_runs_poe_test_and_build(tmp_path):
+    cfg = ScaffoldConfig(name="proj", output_dir=tmp_path)
+    generate_project(cfg)
+
+    workflow = (tmp_path / "proj" / ".github" / "workflows" / "ci.yml").read_text()
+    assert "name: CI" in workflow
+    assert "poetry run poe test" in workflow
+    assert "poetry run poe build" in workflow
 
 
 # ---------------------------------------------------------------------------
