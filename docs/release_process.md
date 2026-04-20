@@ -96,8 +96,9 @@ After the workflow completes:
 # 1. Download wheel from release page
 # https://github.com/sep/spark-kindling-framework/releases/latest
 
-# 2. Install locally with the platform extras your environment needs
-pip install 'spark_kindling-<version>-py3-none-any.whl[synapse]'
+# 2. Install the downloaded wheel with the platform extras your environment needs
+#    Use PEP 508 direct-reference form so extras resolve against the distribution name.
+pip install 'spark-kindling[synapse] @ file:///path/to/spark_kindling-<version>-py3-none-any.whl'
 ```
 
 ### Direct Install from URL

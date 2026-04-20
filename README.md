@@ -1,6 +1,5 @@
 # Spark Kindling Framework
 
-**Version:** 0.8.16a2
 **PyPI distribution:** `spark-kindling`
 **Import name:** `kindling`
 **Platforms:** Microsoft Fabric, Azure Synapse Analytics, Databricks

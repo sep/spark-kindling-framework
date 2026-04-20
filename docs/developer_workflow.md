@@ -18,7 +18,7 @@ poetry run poe deploy --platform fabric         # Deploy only fabric wheel
 
 # Deploy from GitHub release assets (production)
 poetry run poe deploy --release latest          # Deploy all platforms from latest release
-poetry run poe deploy --release 0.8.16a2           # Deploy all platforms from specific release
+poetry run poe deploy --release <version>           # Deploy all platforms from specific release
 
 # Run tests with coverage
 poetry run poe test
@@ -56,9 +56,9 @@ poetry run poe deploy --platform fabric       # Deploy only fabric
 This builds one combined runtime wheel (plus CLI and SDK) and uploads them to:
 ```
 sepstdatalakedev/artifacts/packages/
-  ├── spark_kindling-0.8.16a2-py3-none-any.whl
-  ├── spark_kindling_cli-0.8.16a2-py3-none-any.whl
-  └── spark_kindling_sdk-0.8.16a2-py3-none-any.whl
+  ├── spark_kindling-<version>-py3-none-any.whl
+  ├── spark_kindling_cli-<version>-py3-none-any.whl
+  └── spark_kindling_sdk-<version>-py3-none-any.whl
 ```
 
 The combined wheel ships every `platform_*.py` module; consumers select their
@@ -82,25 +82,17 @@ pip install 'spark-kindling[fabric]'
 poetry run poe deploy --release latest
 
 # Or deploy a specific release version:
-poetry run poe deploy --release 0.8.16a2
+poetry run poe deploy --release <version>
 ```
 
-### 3. Advanced Usage (Direct Python)
+### 3. Advanced Usage (Debug Only)
 
-You can also call the scripts directly for more control:
+Calling the scripts directly is supported for debugging but not the recommended workflow. Prefer the `poetry run poe ...` tasks above for normal development.
 
 ```bash
-# Deploy all platforms from local
-python scripts/deploy.py
-
-# Deploy specific platform from local
-python scripts/deploy.py --platform synapse
-python scripts/deploy.py --platform databricks
-python scripts/deploy.py --platform fabric
-
-# Deploy from GitHub release
+# Same as `poe deploy` with finer-grained flags
 python scripts/deploy.py --release
-python scripts/deploy.py --release 0.8.16a2
+python scripts/deploy.py --release <version>
 python scripts/deploy.py --release --platform synapse
 ```
 
@@ -274,7 +266,7 @@ The version is managed in a single location:
 ```toml
 # pyproject.toml
 [tool.poetry]
-version = "0.8.16a2"  # Single source of truth
+version = "<version>"  # Single source of truth
 ```
 
 Platform-specific builds automatically use this version.

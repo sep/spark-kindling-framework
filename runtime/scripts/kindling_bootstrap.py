@@ -727,11 +727,12 @@ def _install_wheel(
             print(f"✅ Downloaded {filename} ({os.path.getsize(local_path)} bytes)")
 
         # Install with pip - simple install, no unnecessary flags.
-        # If extras were requested, append to the local path so pip resolves
-        # the platform's optional runtime deps (e.g. path/foo.whl[synapse]).
+        # If extras were requested, use PEP 508 direct-reference form so pip
+        # resolves the platform's optional runtime deps against the
+        # distribution name (e.g. "spark-kindling[synapse] @ file:///path.whl").
         install_target = local_path
         if extras:
-            install_target = f"{local_path}[{','.join(extras)}]"
+            install_target = f"spark-kindling[{','.join(extras)}] @ file://{local_path}"
         print(f"📦 Installing {filename} (target: {install_target})...")
         result = subprocess.run(
             [

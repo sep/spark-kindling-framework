@@ -1160,9 +1160,12 @@ def initialize_platform_services(platform, config, logger):
     Discovery uses ``importlib.metadata`` entry points in the
     ``spark_kindling.platforms`` group. If the platform isn't advertised via
     entry points, falls back to the legacy ``kindling.platform_{name}``
-    module-name convention so in-tree platforms still work during development
-    (before the distribution is installed) and third-party platforms without
-    entry points keep working.
+    module-name convention so in-tree/core platforms still work during
+    development or when running from an uninstalled distribution.
+    Third-party platforms should register entry points rather than relying
+    on this fallback — ``kindling`` is a regular package (not a namespace
+    package), so external platform modules cannot plug into
+    ``kindling.platform_*`` from outside this distribution.
 
     On a missing-extras ImportError, surfaces an actionable message telling
     the user which extra to install.
