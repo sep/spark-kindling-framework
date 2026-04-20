@@ -15,19 +15,21 @@ packages = [
 
 [tool.poetry.dependencies]
 python = "^3.10"
-# Core framework (required on every platform). Kept as a narrow,
-# pure-Python set so the wheel installs cleanly on cloud Spark runtimes
-# (Synapse, Fabric, Databricks) without pip trying to upgrade packages
-# the runtime already provides via non-pip mechanisms.
+# Core framework (required on every platform). Kept as a minimal base
+# dependency set with no Spark runtime deps so the wheel installs cleanly
+# on cloud Spark runtimes (Synapse, Fabric, Databricks) without pip trying
+# to upgrade packages the runtime already provides via non-pip mechanisms.
 injector = ">=0.20.1"
 dynaconf = ">=3.1.0"
 pyyaml = ">=6.0"
 packaging = ">=23.0"
 blinker = ">=1.6.0"
 # Azure SDKs used by every Azure-backed platform.
-# Pins intentionally loose — match the v0.8.x per-platform wheels so pip
-# accepts the cluster's pre-installed versions without re-resolving.
-azure-core = ">=1.30.0,<1.31.0"  # Pin to 1.30.x - compatible with Fabric runtime 1.30.2
+# `azure-core` is intentionally constrained to 1.30.x for managed-runtime
+# compatibility (for example, Fabric runtime 1.30.2). `azure-identity` and
+# `azure-storage-file-datalake` are intentionally kept loose so pip accepts
+# the cluster's pre-installed versions without unnecessary re-resolution.
+azure-core = ">=1.30.0,<1.31.0"
 azure-identity = ">=1.12.0"
 azure-storage-file-datalake = ">=12.0.0"
 # Platform-exclusive runtime deps live in extras (see [tool.poetry.extras]).
