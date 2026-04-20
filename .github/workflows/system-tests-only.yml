@@ -60,10 +60,6 @@ jobs:
           chmod +x scripts/build_platform_wheels.sh
           bash scripts/build_platform_wheels.sh
 
-      - name: Build extension wheels
-        run: |
-          python scripts/build_extensions.py kindling-otel-azure fabric synapse databricks
-
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
         with:
