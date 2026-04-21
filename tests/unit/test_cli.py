@@ -3,7 +3,6 @@ import json
 import zipfile
 from pathlib import Path
 
-import pytest
 import yaml
 from click.testing import CliRunner
 from kindling_cli.cli import (
@@ -429,6 +428,19 @@ def test_app_package_creates_kda_archive():
         assert package_path.exists()
         with zipfile.ZipFile(package_path, "r") as archive:
             assert sorted(archive.namelist()) == ["app.py", "nested/settings.yaml"]
+
+
+def test_app_deploy_rejects_unsafe_kda_paths():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        package_path = Path("demo_app.kda")
+        with zipfile.ZipFile(package_path, "w") as archive:
+            archive.writestr("../escape.py", "print('nope')\n")
+
+        result = runner.invoke(cli, ["app", "deploy", str(package_path), "--platform", "fabric"])
+
+        assert result.exit_code != 0
+        assert "unsafe relative path traversal" in result.output
 
 
 def test_app_deploy_uses_platform_sdk(monkeypatch):
