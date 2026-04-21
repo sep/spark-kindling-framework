@@ -21,6 +21,7 @@ kindling new my-pipeline
 cd my_pipeline
 poetry install
 cp .env.example .env
+# Update .env with your environment settings
 source .env
 
 poetry run poe test
