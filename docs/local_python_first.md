@@ -53,7 +53,12 @@ Assuming you are installing Kindling from this project's GitHub releases:
 
 ```bash
 CURRENT_RUNTIME_URL=$(curl -fsSL https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-current-url.txt)
+CURRENT_CLI_URL="${CURRENT_RUNTIME_URL//spark_kindling-/spark_kindling_cli-}"
+CURRENT_SDK_URL="${CURRENT_RUNTIME_URL//spark_kindling-/spark_kindling_sdk-}"
+
 pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"
+pip install "spark-kindling-cli @ ${CURRENT_CLI_URL}"
+pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
 ```
 
 Other supported paths are:
