@@ -7,6 +7,11 @@ only move to remote workspaces when you want deployment or end-to-end tests.
 ## Quick Start
 
 ```bash
+# Install Kindling from this repo's latest GitHub release.
+CURRENT_RUNTIME_URL=$(curl -fsSL https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-current-url.txt)
+pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"
+
+# Then scaffold and work on your local project.
 kindling new my-pipeline
 cd my_pipeline
 poetry install
@@ -44,10 +49,17 @@ The package import still stays `import kindling`.
 
 ## Installing the Framework Locally
 
-There are three supported paths:
+Assuming you are installing Kindling from this project's GitHub releases:
 
 ```bash
-# 1. Released package for local/CI use
+CURRENT_RUNTIME_URL=$(curl -fsSL https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-current-url.txt)
+pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"
+```
+
+Other supported paths are:
+
+```bash
+# 1. Released package for local/CI use from PyPI
 pip install 'spark-kindling[standalone]'
 
 # 2. Editable source install for framework iteration
