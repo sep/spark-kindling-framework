@@ -107,8 +107,9 @@ pip install 'spark-kindling[synapse] @ file:///path/to/spark_kindling-<version>-
 # Install directly from GitHub Release (one wheel, pick your extra)
 pip install 'spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl'
 
-# Or use the "latest" release
-pip install 'spark-kindling[databricks] @ https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-<version>-py3-none-any.whl'
+# Or resolve the latest release through the stable alias asset
+CURRENT_RUNTIME_URL=$(curl -fsSL https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-current-url.txt)
+pip install "spark-kindling[databricks] @ ${CURRENT_RUNTIME_URL}"
 ```
 
 ### In requirements.txt
@@ -119,8 +120,8 @@ pip install 'spark-kindling[databricks] @ https://github.com/sep/spark-kindling-
 # Install specific version from release with synapse extras
 spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl
 
-# Or always use latest with databricks extras
-spark-kindling[databricks] @ https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-<version>-py3-none-any.whl
+# Or resolve latest from the stable alias asset before generating requirements
+# (the wheel filename itself remains versioned)
 ```
 
 ### In Databricks/Synapse/Fabric
