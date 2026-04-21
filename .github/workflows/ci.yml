@@ -654,10 +654,34 @@ jobs:
           name: platform-wheels
           path: dist/
 
+      - name: Create stable release alias assets
+        run: |
+          set -euo pipefail
+          RUNTIME_WHEEL=$(ls dist/spark_kindling-*.whl 2>/dev/null | head -1)
+          if [ -z "$RUNTIME_WHEEL" ]; then
+            echo "❌ Could not find runtime wheel in dist/"
+            ls -lh dist/ || true
+            exit 1
+          fi
+
+          RUNTIME_WHEEL_NAME=$(basename "$RUNTIME_WHEEL")
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          printf '%s\n' \
+            "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${RUNTIME_WHEEL_NAME}" \
+            > dist/spark_kindling-current-url.txt
+
+          printf '%s\n%s\n' \
+            "CURRENT_RUNTIME_URL=\$(curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/spark_kindling-current-url.txt)" \
+            'pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"' \
+            > dist/spark_kindling-current-install.txt
+
       - name: Attach wheels to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.whl
+          files: |
+            dist/*.whl
+            dist/spark_kindling-current-url.txt
+            dist/spark_kindling-current-install.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -669,10 +693,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Package | File |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|------|" >> $GITHUB_STEP_SUMMARY
-          for wheel in dist/*.whl; do
-            filename=$(basename "$wheel")
-            size=$(du -h "$wheel" | cut -f1)
-            echo "| ${filename%.whl} | $filename ($size) |" >> $GITHUB_STEP_SUMMARY
+          for asset in dist/*; do
+            filename=$(basename "$asset")
+            size=$(du -h "$asset" | cut -f1)
+            echo "| ${filename%.*} | $filename ($size) |" >> $GITHUB_STEP_SUMMARY
           done
 
   test-summary:
