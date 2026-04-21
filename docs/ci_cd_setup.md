@@ -74,7 +74,7 @@ For release/manual system-test runs, CI:
 
 1. builds wheel artifacts
 2. downloads them into `dist/`
-3. deploys them to Azure storage with `python scripts/deploy.py`
+3. deploys them to Azure storage with `poetry run poe deploy`
 4. passes the resolved `AZURE_BASE_PATH` into system tests
 5. attaches wheels to the GitHub release only after all platform lanes succeed
 

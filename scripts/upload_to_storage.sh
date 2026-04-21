@@ -1,9 +1,12 @@
 #!/bin/bash
 # Upload runtime wheels to Azure Storage
-# Usage:
-#   ./scripts/upload_to_storage.sh               # Upload from local dist/ (testing)
-#   ./scripts/upload_to_storage.sh --release     # Upload from GitHub release (production)
-#   ./scripts/upload_to_storage.sh --release 0.2.0  # Upload specific release version
+# Preferred entrypoints:
+#   poetry run poe upload
+#   poetry run poe upload-release
+# Direct script usage:
+#   ./scripts/upload_to_storage.sh
+#   ./scripts/upload_to_storage.sh --release
+#   ./scripts/upload_to_storage.sh --release 0.2.0
 
 set -e
 
@@ -12,7 +15,9 @@ set -e
 # ============================================================================
 STORAGE_ACCOUNT="${AZURE_STORAGE_ACCOUNT}"
 CONTAINER="${AZURE_CONTAINER:-artifacts}"
-BASE_PATH="${AZURE_BASE_PATH:-packages}"
+ROOT_BASE_PATH="${AZURE_BASE_PATH:-}"
+ROOT_BASE_PATH="${ROOT_BASE_PATH%/}"
+PACKAGES_PATH="${ROOT_BASE_PATH:+${ROOT_BASE_PATH}/}packages"
 
 # ============================================================================
 # Script Logic
@@ -68,7 +73,7 @@ if [ "$USE_RELEASE" = true ]; then
         exit 1
     fi
 
-    REPO=$(git remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git//' | sed 's/.*github.com[:/]\(.*\)//')
+    REPO=$(git remote get-url origin 2>/dev/null | sed -E 's#.*github\.com[:/]([^[:space:]]+?)(\.git)?$#\1#')
     if [ -z "$REPO" ]; then
         echo "❌ Error: Could not detect GitHub repository"
         echo "Make sure you're in a git repository with a GitHub remote"
@@ -90,7 +95,7 @@ if [ "$USE_RELEASE" = true ]; then
 
     WHEELS_DIR="$TEMP_DIR"
 else
-    VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"//')
+    VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
     if [ -z "$VERSION" ]; then
         echo "❌ Error: Could not detect version from pyproject.toml"
         exit 1
@@ -141,13 +146,13 @@ fi
 echo "✓ Logged in as: $(az account show --query user.name -o tsv)"
 echo ""
 
-echo "☁️  Uploading to: ${STORAGE_ACCOUNT}/${CONTAINER}/${BASE_PATH}/"
+echo "☁️  Uploading to: ${STORAGE_ACCOUNT}/${CONTAINER}/${PACKAGES_PATH}/"
 echo ""
 
 UPLOAD_COUNT=0
 for wheel in "${WHEELS_TO_UPLOAD[@]}"; do
     wheel_name=$(basename "$wheel")
-    DEST_PATH="${BASE_PATH}/${wheel_name}"
+    DEST_PATH="${PACKAGES_PATH}/${wheel_name}"
 
     echo "  Uploading: ${wheel_name}..."
     az storage blob upload         --account-name "$STORAGE_ACCOUNT"         --container-name "$CONTAINER"         --name "$DEST_PATH"         --file "$wheel"         --overwrite         --auth-mode login         --only-show-errors
@@ -161,10 +166,14 @@ echo ""
 echo "🎉 Upload complete!"
 echo ""
 echo "Storage structure:"
-echo "  ${STORAGE_ACCOUNT}/${CONTAINER}/${BASE_PATH}/"
+echo "  ${STORAGE_ACCOUNT}/${CONTAINER}/${PACKAGES_PATH}/"
 for wheel in "${WHEELS_TO_UPLOAD[@]}"; do
     echo "      ├── $(basename "$wheel")"
 done
 echo ""
 echo "🔗 Bootstrap script can now install from:"
-echo "   artifacts_storage_path: abfss://${CONTAINER}@${STORAGE_ACCOUNT}.dfs.core.windows.net/${BASE_PATH}"
+if [ -n "$ROOT_BASE_PATH" ]; then
+    echo "   artifacts_storage_path: abfss://${CONTAINER}@${STORAGE_ACCOUNT}.dfs.core.windows.net/${ROOT_BASE_PATH}"
+else
+    echo "   artifacts_storage_path: abfss://${CONTAINER}@${STORAGE_ACCOUNT}.dfs.core.windows.net"
+fi
