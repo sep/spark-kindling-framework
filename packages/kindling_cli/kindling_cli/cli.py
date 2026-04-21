@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
@@ -119,6 +119,23 @@ def _read_text_file(file_path: Path) -> str:
         raise click.ClickException(f"Failed to read `{file_path}`: {exc}") from exc
 
 
+def _normalize_archive_entry_path(entry_name: str) -> str:
+    """Validate and normalize archive entry paths to safe POSIX-relative paths."""
+    normalized = str(entry_name or "").replace("\\", "/").strip()
+    if not normalized:
+        raise click.ClickException("Archive contains an empty file path.")
+    if normalized.startswith("/") or (len(normalized) >= 2 and normalized[1] == ":"):
+        raise click.ClickException(f"Archive contains an unsafe absolute path: `{entry_name}`")
+
+    posix_path = PurePosixPath(normalized)
+    if any(part in ("", ".", "..") for part in posix_path.parts):
+        raise click.ClickException(
+            f"Archive contains an unsafe relative path traversal: `{entry_name}`"
+        )
+
+    return posix_path.as_posix()
+
+
 def _prepare_app_files(app_path: Path) -> Dict[str, str]:
     """Collect app source files from a directory or a .kda archive."""
     resolved_path = app_path.expanduser().resolve()
@@ -132,7 +149,8 @@ def _prepare_app_files(app_path: Path) -> Dict[str, str]:
                         continue
                     if not file_info.filename.endswith((".py", ".yaml", ".yml")):
                         continue
-                    app_files[file_info.filename] = archive.read(file_info.filename).decode("utf-8")
+                    rel_path = _normalize_archive_entry_path(file_info.filename)
+                    app_files[rel_path] = archive.read(file_info.filename).decode("utf-8")
         except Exception as exc:
             raise click.ClickException(
                 f"Failed to read app package `{resolved_path}`: {exc}"
