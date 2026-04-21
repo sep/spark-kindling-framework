@@ -161,6 +161,7 @@ def generate_project(cfg: ScaffoldConfig) -> List[Path]:
     _write("pyproject.toml", _render(env, "pyproject.toml.j2", cfg))
     _write(".env.example", _render(env, ".env.example.j2", cfg))
     _write(".gitignore", _render(env, ".gitignore.j2", cfg))
+    _write(".github/workflows/ci.yml", _render(env, ".github/workflows/ci.yml.j2", cfg))
     _write(".devcontainer/Dockerfile", _render(env, ".devcontainer/Dockerfile.j2", cfg))
     _write(
         ".devcontainer/devcontainer.json", _render(env, ".devcontainer/devcontainer.json.j2", cfg)
