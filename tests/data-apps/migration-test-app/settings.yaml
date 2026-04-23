@@ -1,0 +1,17 @@
+# Migration Test App
+# Tests MigrationService: Delta entity creation, SQL entity (view) creation,
+# schema evolution (add columns), and view SQL updates.
+
+kindling:
+  version: "0.2.0"
+
+  telemetry:
+    logging:
+      level: INFO
+      print: true
+    tracing:
+      print: false
+
+  bootstrap:
+    load_lake: true
+    load_local: false
