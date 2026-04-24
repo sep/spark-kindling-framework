@@ -13,7 +13,7 @@ packages = [{include = "sales_ops", from = "src"}]
 python = "^3.10"
 # The runtime distribution is published as `spark-kindling`, while imports
 # remain `import kindling`. The standalone extra pulls in local Spark deps.
-spark-kindling = {version = ">=0.9.1", extras = ["standalone"]}
+spark-kindling = {version = ">=0.9.2", extras = ["standalone"]}
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"

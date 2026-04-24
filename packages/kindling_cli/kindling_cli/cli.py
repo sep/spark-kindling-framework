@@ -1713,6 +1713,147 @@ def job_delete(job_id: str, platform: Optional[str]) -> None:
     click.echo(f"Deleted job `{job_id}`.")
 
 
+@cli.group("repo")
+def repo_group() -> None:
+    """Scaffold and manage multi-package Kindling repos."""
+
+
+@repo_group.command("init")
+@click.argument("repo_name")
+@click.option(
+    "--output-dir",
+    "output_dir",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Parent directory in which to create the repo folder.",
+)
+@click.option(
+    "--template-dir",
+    "template_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory of custom Jinja2 templates that overlay the built-ins.",
+)
+def repo_init(repo_name: str, output_dir: Path, template_dir: Optional[Path]) -> None:
+    """Create a Kindling repo root with shared dev tooling."""
+    from kindling_cli.scaffold import RepoScaffoldConfig, generate_repo, validate_name
+
+    try:
+        snake = validate_name(repo_name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    cfg = RepoScaffoldConfig(
+        name=snake,
+        output_dir=output_dir.expanduser().resolve(),
+        template_dir=template_dir.expanduser().resolve() if template_dir else None,
+    )
+
+    target = cfg.output_dir / cfg.snake_name
+    if target.exists():
+        raise click.ClickException(
+            f"Directory already exists: {target}\nChoose a different repo name or --output-dir."
+        )
+
+    try:
+        created = generate_repo(cfg)
+    except Exception as exc:
+        raise click.ClickException(f"Repo scaffold failed: {exc}") from exc
+
+    click.echo(f"Created repo {cfg.kebab_name}/ ({len(created)} files)")
+
+
+@cli.group("package")
+def package_group() -> None:
+    """Scaffold Kindling packages inside an existing repo."""
+
+
+@package_group.command("init")
+@click.argument("package_name")
+@click.option(
+    "--auth",
+    type=click.Choice(["oauth", "key", "cli"]),
+    default="oauth",
+    show_default=True,
+    help="Auth style used in generated test/config examples.",
+)
+@click.option(
+    "--layers",
+    type=click.Choice(["medallion", "minimal"]),
+    default="medallion",
+    show_default=True,
+    help="Package template style.",
+)
+@click.option(
+    "--no-integration",
+    "integration",
+    is_flag=True,
+    default=False,
+    help="Omit the tests/integration/ directory.",
+)
+@click.option(
+    "--repo-root",
+    "repo_root",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Existing repo root that will receive the new package under packages/.",
+)
+@click.option(
+    "--template-dir",
+    "template_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory of custom Jinja2 templates that overlay the built-ins.",
+)
+def package_init(
+    package_name: str,
+    auth: str,
+    layers: str,
+    integration: bool,
+    repo_root: Path,
+    template_dir: Optional[Path],
+) -> None:
+    """Create a Kindling package under an existing multi-package repo."""
+    from kindling_cli.scaffold import (
+        PackageScaffoldConfig,
+        generate_package,
+        validate_name,
+    )
+
+    try:
+        snake = validate_name(package_name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    resolved_repo_root = repo_root.expanduser().resolve()
+    if not resolved_repo_root.exists():
+        raise click.ClickException(f"Repo root does not exist: {resolved_repo_root}")
+
+    cfg = PackageScaffoldConfig(
+        name=snake,
+        repo_root=resolved_repo_root,
+        layers=layers,
+        auth=auth,
+        integration=not integration,
+        template_dir=template_dir.expanduser().resolve() if template_dir else None,
+    )
+
+    target = cfg.repo_root / "packages" / cfg.snake_name
+    if target.exists():
+        raise click.ClickException(
+            f"Package already exists: {target}\nChoose a different package name or --repo-root."
+        )
+
+    try:
+        created = generate_package(cfg)
+    except Exception as exc:
+        raise click.ClickException(f"Package scaffold failed: {exc}") from exc
+
+    click.echo(f"Created package packages/{cfg.snake_name}/ ({len(created)} files)")
+
+
 @cli.command("new")
 @click.argument("project_name")
 @click.option(
@@ -1769,32 +1910,27 @@ def new_project(
     output_dir: Path,
     template_dir: Optional[Path],
 ) -> None:
-    """Scaffold a new Kindling local-python-first project.
+    """Scaffold a new Kindling multi-package repo with an initial package.
 
     \b
-    Creates PROJECT_NAME/ with the following layout:
+    Creates PROJECT_NAME/ as a repo root with shared tooling plus:
 
-      src/<pkg>/
-        app.py            — initialize() and register_all()
+      packages/<pkg>/
+        src/<pkg>/app.py  — initialize() and register_all()
         entities/         — DataEntities.entity() registrations
         pipes/            — @DataPipes.pipe decorators
         transforms/       — pure-PySpark functions (unit-testable)
-      config/
-        settings.yaml     — base Kindling config
-        env.local.yaml    — ABFSS paths resolved from env vars
-      tests/
-        conftest.py       — Spark fixtures tuned to --auth choice
-        unit/             — transform functions, no Azure
-        component/        — DI wiring, no Azure
-        integration/      — live ABFSS read/write (unless --no-integration)
+        config/           — package-local config and env examples
+        tests/            — unit/component/integration tests
       .github/workflows/
-        ci.yml           — starter CI for tests + build
-      pyproject.toml
+        ci.yml            — starter CI for all packages
+      .devcontainer/
+        ...               — shared local dev environment for the repo
 
     \b
-    The structure is invariant: --layers and --auth change the *content* of
-    the generated files, not which files are created. A wheel built from any
-    combination of options works identically at runtime.
+    `kindling new` is convenience sugar for:
+      1. `kindling repo init`
+      2. `kindling package init`
 
     \b
     Examples:
@@ -1802,23 +1938,27 @@ def new_project(
       kindling new my-pipeline --auth key --layers minimal
       kindling new my-pipeline --auth cli --no-integration --output-dir ~/projects
     """
-    from kindling_cli.scaffold import ScaffoldConfig, generate_project, validate_name
+    from kindling_cli.scaffold import (
+        PackageScaffoldConfig,
+        generate_project,
+        validate_name,
+    )
 
     try:
         snake = validate_name(project_name)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    cfg = ScaffoldConfig(
+    cfg = PackageScaffoldConfig(
         name=snake,
+        repo_root=output_dir.expanduser().resolve() / snake,
         layers=layers,
         auth=auth,
         integration=not integration,
-        output_dir=output_dir.expanduser().resolve(),
         template_dir=template_dir.expanduser().resolve() if template_dir else None,
     )
 
-    target = cfg.output_dir / cfg.snake_name
+    target = output_dir.expanduser().resolve() / cfg.snake_name
     if target.exists():
         raise click.ClickException(
             f"Directory already exists: {target}\nChoose a different project name or --output-dir."
@@ -1833,6 +1973,7 @@ def new_project(
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd {cfg.snake_name}")
+    click.echo(f"  cd packages/{cfg.snake_name}")
     click.echo("  poetry install")
     click.echo("  cp .env.example .env  # fill in your credentials, then: source .env")
     click.echo("  poetry run poe test")
