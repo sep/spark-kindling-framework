@@ -4,11 +4,13 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - ..:/workspaces/{{ snake_name }}:cached
+      - ..:/workspaces/{{ repo_snake_name }}:cached
       - spark-warehouse:/spark-warehouse
     command: sleep infinity
     environment:
-      - PYTHONPATH=/workspaces/{{ snake_name }}/src
+{% if primary_package_snake_name %}
+      - PYTHONPATH=/workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }}/src
+{% endif %}
       - SPARK_LOCAL_IP=127.0.0.1
 
 volumes:

@@ -16,9 +16,9 @@ pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"
 pip install "spark-kindling-cli @ ${CURRENT_CLI_URL}"
 pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
 
-# Then scaffold and work on your local project.
+# Then scaffold and work on your local repo + package.
 kindling new my-pipeline
-cd my_pipeline
+cd my_pipeline/packages/my_pipeline
 poetry install
 cp .env.example .env
 # Update .env with your environment settings
@@ -34,21 +34,29 @@ If you generated integration tests and have Azure credentials available:
 poetry run poe test-integration
 ```
 
-## What `kindling new` Creates
+## What The Scaffold Creates
 
-`kindling new` now generates:
+`kindling new` now creates a multi-package repo with:
 
-- `src/<pkg>/...` application source
-- `config/settings.yaml` plus `config/env.local.yaml`
-- `tests/unit`, `tests/component`, and optionally `tests/integration`
-- `pyproject.toml` with `poethepoet` tasks
-- `.github/workflows/ci.yml` with a starter CI job that runs `poe test` and `poe build`
-- `.devcontainer/` for local containerized development
+- repo root shared files: `.devcontainer/`, `.github/workflows/ci.yml`, `.gitignore`
+- package-local source at `packages/<pkg>/src/<pkg>/...`
+- package-local config at `packages/<pkg>/config/`
+- package-local tests at `packages/<pkg>/tests/`
+- package-local `pyproject.toml` with `poethepoet` tasks
+
+The explicit two-step flow is also available:
+
+```bash
+kindling repo init data-platform
+cd data_platform
+kindling package init my-pipeline --repo-root .
+cd packages/my_pipeline
+```
 
 The generated `pyproject.toml` depends on the published runtime distribution:
 
 ```toml
-spark-kindling = { version = ">=0.9.1", extras = ["standalone"] }
+spark-kindling = { version = ">=0.9.2", extras = ["standalone"] }
 ```
 
 The package import still stays `import kindling`.
@@ -86,7 +94,7 @@ packages that managed platforms already provide.
 
 ## Local Test Tasks
 
-Generated projects expose these tasks:
+Generated packages expose these tasks:
 
 ```bash
 poetry run poe test-unit
