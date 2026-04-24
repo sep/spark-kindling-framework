@@ -11,16 +11,9 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
-# Python packages: Spark stack + Azure auth for ABFSS integration tests
-RUN pip install --no-cache-dir \
-    pyspark==3.5.5 \
-    delta-spark==3.3.2 \
-    pandas \
-    pyarrow \
-    azure-identity \
-    azure-storage-blob \
-    azure-storage-file-datalake \
-    poetry
+# Only install Poetry globally. Runtime/test dependencies belong in the
+# project's Poetry virtualenv so `poetry run ...` matches the test environment.
+RUN pip install --no-cache-dir poetry
 
 # Pre-download hadoop-azure JARs for local ABFSS integration testing.
 # Stored at /opt/hadoop-jars (stable image layer); /tmp/hadoop-jars is a
