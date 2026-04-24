@@ -18,6 +18,9 @@ pip install spark-kindling-sdk
 
 ## Commands
 
+- `kindling repo init` — scaffold a multi-package repo root with shared dev tooling
+- `kindling package init` — scaffold a package under `packages/<name>` in an existing repo
+- `kindling new` — convenience command that creates a repo plus its first package
 - `kindling config init` — generate a starter `settings.yaml`
 - `kindling config set <key> <value>` — set a config value using dot-notation
 - `kindling env check` — validate the local Python/config environment
@@ -35,6 +38,24 @@ pip install spark-kindling-sdk
 - `kindling job delete` — delete a remote job definition
 
 Run any command with `--help` for full options.
+
+## Scaffolding
+
+The scaffolding commands now target true multi-package repos:
+
+```bash
+kindling repo init data-platform
+cd data_platform
+
+kindling package init sales-ops --repo-root .
+kindling package init customer-360 --repo-root .
+```
+
+This produces a repo root with shared `.devcontainer/`, CI, and `.gitignore`
+plus independently buildable packages under `packages/`.
+
+For the single-package quick start, `kindling new my-pipeline` still works and
+creates a repo with an initial package at `packages/my_pipeline/`.
 
 ## Related
 

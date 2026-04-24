@@ -22,11 +22,19 @@ jobs:
       - name: Install Poetry
         uses: abatilo/actions-poetry@v3
 
-      - name: Install dependencies
-        run: poetry install --no-interaction
-
-      - name: Run unit and component tests
-        run: poetry run poe test
-
-      - name: Build wheel
-        run: poetry run poe build
+      - name: Test all packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=0
+          for pkg in packages/*; do
+            if [ -f "$pkg/pyproject.toml" ]; then
+              found=1
+              echo "==> Testing $pkg"
+              (cd "$pkg" && poetry install --no-interaction && poetry run poe test && poetry run poe build)
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "No scaffolded packages found under packages/."
+            exit 1
+          fi
