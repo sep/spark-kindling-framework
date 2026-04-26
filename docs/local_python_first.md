@@ -9,13 +9,19 @@ only move to remote workspaces when you want deployment or end-to-end tests.
 ```bash
 # Install Kindling from this repo's latest GitHub release.
 CURRENT_RUNTIME_URL=$(curl -fsSL https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-current-url.txt)
+CURRENT_CLI_URL="${CURRENT_RUNTIME_URL//spark_kindling-/spark_kindling_cli-}"
+CURRENT_SDK_URL="${CURRENT_RUNTIME_URL//spark_kindling-/spark_kindling_sdk-}"
+
 pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"
+pip install "spark-kindling-cli @ ${CURRENT_CLI_URL}"
+pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
 
 # Then scaffold and work on your local project.
 kindling new my-pipeline
 cd my_pipeline
 poetry install
 cp .env.example .env
+# Update .env with your environment settings
 source .env
 
 poetry run poe test
@@ -53,7 +59,12 @@ Assuming you are installing Kindling from this project's GitHub releases:
 
 ```bash
 CURRENT_RUNTIME_URL=$(curl -fsSL https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-current-url.txt)
+CURRENT_CLI_URL="${CURRENT_RUNTIME_URL//spark_kindling-/spark_kindling_cli-}"
+CURRENT_SDK_URL="${CURRENT_RUNTIME_URL//spark_kindling-/spark_kindling_sdk-}"
+
 pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"
+pip install "spark-kindling-cli @ ${CURRENT_CLI_URL}"
+pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
 ```
 
 Other supported paths are:
