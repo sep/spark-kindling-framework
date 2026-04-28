@@ -360,6 +360,162 @@ def cli() -> None:
     """Kindling CLI."""
 
 
+# =============================================================================
+# migrate
+# =============================================================================
+
+
+@cli.group("migrate")
+def migrate_group() -> None:
+    """Inspect and apply entity schema migrations."""
+
+
+@migrate_group.command("plan")
+def migrate_plan() -> None:
+    """Show pending schema changes for all registered entities.
+
+    Requires a running Spark session (must be called from within a Kindling
+    notebook or pipeline context).
+    """
+    try:
+        from kindling.injection import GlobalInjector
+        from kindling.migration import MigrationService
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required for migrate commands. "
+            "Run this command from within a Kindling execution context."
+        ) from exc
+
+    svc = GlobalInjector.get(MigrationService)
+    plan = svc.plan()
+
+    if not plan.has_changes:
+        click.echo("All entities are up to date.")
+        return
+
+    click.echo("Pending migrations:")
+    plan.print_summary()
+
+    if plan.has_destructive_changes:
+        click.echo()
+        click.echo("WARNING: destructive changes present. Pass --destructive to apply them.")
+
+    if plan.errors:
+        raise click.ClickException(
+            f"{len(plan.errors)} entity/entities could not be inspected (see above)."
+        )
+
+
+@migrate_group.command("apply")
+@click.option(
+    "--destructive",
+    is_flag=True,
+    help="Allow destructive changes (type changes, column removal, partition changes).",
+)
+@click.option(
+    "--backup",
+    type=click.Choice(["none", "snapshot"]),
+    default="none",
+    show_default=True,
+    help="Backup strategy before applying destructive changes.",
+)
+def migrate_apply(destructive: bool, backup: str) -> None:
+    """Apply pending schema migrations.
+
+    Non-destructive changes (column additions) are always applied.
+    Destructive changes require --destructive.
+
+    For CATALOG mode entities, destructive changes use a blue-green strategy:
+    the old table is archived as <name>_migration_blue until you run cleanup.
+
+    For STORAGE mode entities, destructive changes rewrite in place using
+    Delta's ACID guarantees. Use --backup snapshot to clone first.
+    """
+    try:
+        from kindling.injection import GlobalInjector
+        from kindling.migration import BackupStrategy, MigrationService
+    except ImportError as exc:
+        raise click.ClickException("kindling package is required for migrate commands.") from exc
+
+    svc = GlobalInjector.get(MigrationService)
+    plan = svc.plan()
+
+    if not plan.has_changes:
+        click.echo("All entities are up to date.")
+        return
+
+    click.echo("Applying migrations:")
+    plan.print_summary()
+    click.echo()
+
+    backup_strategy = BackupStrategy.SNAPSHOT if backup == "snapshot" else BackupStrategy.NONE
+
+    try:
+        svc.apply(plan, allow_destructive=destructive, backup=backup_strategy)
+        click.echo("Migration complete.")
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@migrate_group.command("rollback")
+@click.argument("entity_id")
+def migrate_rollback(entity_id: str) -> None:
+    """Restore a CATALOG entity to its pre-migration state.
+
+    Promotes the blue archive (<name>_migration_blue) back to live.
+    Only valid after a blue-green apply that has not yet been cleaned up.
+    """
+    try:
+        from kindling.injection import GlobalInjector
+        from kindling.migration import MigrationService
+    except ImportError as exc:
+        raise click.ClickException("kindling package is required for migrate commands.") from exc
+
+    svc = GlobalInjector.get(MigrationService)
+    registry = GlobalInjector.get(
+        __import__("kindling.data_entities", fromlist=["DataEntityRegistry"]).DataEntityRegistry
+    )
+    entity = registry.get_entity_definition(entity_id)
+    if entity is None:
+        raise click.ClickException(f"Entity '{entity_id}' not found in registry.")
+
+    try:
+        svc.rollback(entity)
+        click.echo(
+            f"Rolled back '{entity_id}'. Run `kindling migrate cleanup {entity_id}` to drop the failed green table."
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@migrate_group.command("cleanup")
+@click.argument("entity_id")
+def migrate_cleanup(entity_id: str) -> None:
+    """Drop blue-green artifacts after a confirmed successful migration.
+
+    Drops <name>_migration_blue and <name>_migration_green if present.
+    """
+    try:
+        from kindling.injection import GlobalInjector
+        from kindling.migration import MigrationService
+    except ImportError as exc:
+        raise click.ClickException("kindling package is required for migrate commands.") from exc
+
+    svc = GlobalInjector.get(MigrationService)
+    registry = GlobalInjector.get(
+        __import__("kindling.data_entities", fromlist=["DataEntityRegistry"]).DataEntityRegistry
+    )
+    entity = registry.get_entity_definition(entity_id)
+    if entity is None:
+        raise click.ClickException(f"Entity '{entity_id}' not found in registry.")
+
+    try:
+        svc.cleanup(entity)
+        click.echo(f"Cleanup complete for '{entity_id}'.")
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @cli.group("config")
 def config_group() -> None:
     """Manage Kindling configuration files."""
