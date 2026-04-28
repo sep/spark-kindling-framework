@@ -53,6 +53,16 @@ kindling package init my-pipeline --repo-root .
 cd packages/my_pipeline
 ```
 
+To add a second package later:
+
+```bash
+cd ../..
+kindling package init customer-360 --repo-root .
+cd packages/customer_360
+poetry install
+poetry run poe test
+```
+
 The generated `pyproject.toml` depends on the published runtime distribution:
 
 ```toml
@@ -109,6 +119,20 @@ When integration tests are included, the scaffold also adds:
 poetry run poe test-integration
 poetry run poe test-all
 ```
+
+At the repo level, the generated CI workflow loops over `packages/*` and runs
+each package independently:
+
+```bash
+for pkg in packages/*; do
+  if [ -f "$pkg/pyproject.toml" ]; then
+    (cd "$pkg" && poetry install --no-interaction && poetry run poe test && poetry run poe build)
+  fi
+done
+```
+
+That means local day-to-day work stays package-scoped, while CI validates all
+scaffolded packages in the repo.
 
 ## Local Spark Prerequisites
 
