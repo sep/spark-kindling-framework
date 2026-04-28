@@ -585,11 +585,10 @@ def test_job_run_wait_fails_on_failed_terminal_state(monkeypatch):
     )
 
     assert result.exit_code != 0
-    payload = json.loads(result.output.split("\nError:", 1)[0])
+    payload = json.loads(result.output)
     assert payload["run_id"] == "run-456"
     assert payload["state"] == "FAILED"
     assert payload["succeeded"] is False
-    assert "finished with state FAILED" in result.output
 
 
 def test_job_run_wait_succeeds_on_completed_terminal_state(monkeypatch):
@@ -615,6 +614,148 @@ def test_job_run_wait_succeeds_on_completed_terminal_state(monkeypatch):
     payload = json.loads(result.output)
     assert payload["state"] == "COMPLETED"
     assert payload["succeeded"] is True
+
+
+def test_job_run_wait_handles_databricks_terminated_success(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "TERMINATED", "result_state": "SUCCESS"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "databricks", "--wait", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "SUCCESS"
+    assert payload["succeeded"] is True
+
+
+def test_job_run_wait_handles_nested_lifecycle_result_state(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"state": {"life_cycle_state": "TERMINATED", "result_state": "FAILED"}}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "job",
+            "run",
+            "job-123",
+            "--platform",
+            "databricks",
+            "--wait",
+            "--json",
+            "--no-fail-on-error",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "FAILED"
+    assert payload["succeeded"] is False
+
+
+def test_job_run_wait_handles_fabric_succeeded_status(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "Succeeded"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "fabric", "--wait", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "SUCCEEDED"
+    assert payload["succeeded"] is True
+
+
+def test_job_run_wait_rejects_non_positive_poll_interval(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "job",
+            "run",
+            "job-123",
+            "--platform",
+            "synapse",
+            "--wait",
+            "--poll-interval",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--poll-interval must be greater than 0" in result.output
+
+
+def test_job_run_wait_rejects_non_positive_timeout(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "job",
+            "run",
+            "job-123",
+            "--platform",
+            "synapse",
+            "--wait",
+            "--timeout",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--timeout must be greater than 0" in result.output
 
 
 def test_job_logs_stream_requires_job_id():

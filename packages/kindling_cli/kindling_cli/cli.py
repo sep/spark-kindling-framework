@@ -106,33 +106,56 @@ def _emit_result(data: Dict[str, Any], json_output: bool, human_message: str) ->
 
 def _status_value(status: Dict[str, Any]) -> str:
     """Best-effort normalized job status from cross-platform SDK responses."""
-    candidates = (
-        status.get("status"),
-        status.get("life_cycle_state"),
-        status.get("result_state"),
-    )
-    for value in candidates:
-        if value is not None:
-            return str(value).strip().upper()
+    result_state = status.get("result_state")
+    if result_state is not None:
+        result_value = str(result_state).strip().upper()
+    else:
+        result_value = ""
+
+    lifecycle = status.get("status") or status.get("life_cycle_state")
+    if lifecycle is not None:
+        lifecycle_value = str(lifecycle).strip().upper()
+        if lifecycle_value in _DATABRICKS_TERMINAL_LIFECYCLE_STATES:
+            return result_value or lifecycle_value
+        if lifecycle_value:
+            return lifecycle_value
 
     state = status.get("state")
     if isinstance(state, dict):
-        for key in ("result_state", "life_cycle_state", "state", "status"):
-            value = state.get(key)
-            if value is not None:
-                return str(value).strip().upper()
+        nested_result = state.get("result_state")
+        nested_lifecycle = state.get("life_cycle_state") or state.get("status")
+        if nested_lifecycle is not None:
+            nested_lifecycle_value = str(nested_lifecycle).strip().upper()
+            if nested_lifecycle_value in _DATABRICKS_TERMINAL_LIFECYCLE_STATES:
+                return (
+                    str(nested_result).strip().upper()
+                    if nested_result is not None
+                    else nested_lifecycle_value
+                )
+            if nested_lifecycle_value:
+                return nested_lifecycle_value
+        if nested_result is not None:
+            return str(nested_result).strip().upper()
+        nested_state = state.get("state")
+        if nested_state is not None:
+            return str(nested_state).strip().upper()
     if state is not None:
         return str(state).strip().upper()
+    if result_value:
+        return result_value
 
     return "UNKNOWN"
 
 
+_DATABRICKS_TERMINAL_LIFECYCLE_STATES = {"TERMINATED", "INTERNAL_ERROR", "SKIPPED"}
 _SUCCESS_JOB_STATES = {"COMPLETED", "SUCCESS", "SUCCEEDED", "FINISHED"}
 _FAILED_JOB_STATES = {
     "FAILED",
     "ERROR",
     "CANCELLED",
     "CANCELED",
+    "INTERNAL_ERROR",
+    "TERMINATED",
     "TIMEDOUT",
     "TIMEOUT",
     "SKIPPED",
@@ -1722,6 +1745,11 @@ def job_run(
             "Unable to determine platform. Set --platform or one of "
             "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
         )
+    if wait_for_completion:
+        if poll_interval <= 0:
+            raise click.ClickException("--poll-interval must be greater than 0.")
+        if timeout <= 0:
+            raise click.ClickException("--timeout must be greater than 0.")
 
     parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else None
     api_client, resolved_platform = _create_platform_api(resolved_platform)
@@ -1742,6 +1770,7 @@ def job_run(
         if fail_on_error and state not in _SUCCESS_JOB_STATES:
             if json_output:
                 _emit_json(payload)
+                raise click.exceptions.Exit(1)
             raise click.ClickException(f"Run `{run_id}` finished with state {state}.")
 
     _emit_result(payload, json_output, run_id)
