@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
@@ -93,6 +94,70 @@ def _load_mapping_file(file_path: Path, label: str) -> Dict[str, Any]:
 def _emit_json(data: Any) -> None:
     """Pretty-print structured output for CLI responses."""
     click.echo(json.dumps(data, indent=2, sort_keys=True, default=str))
+
+
+def _emit_result(data: Dict[str, Any], json_output: bool, human_message: str) -> None:
+    """Emit either stable JSON for automation or concise human output."""
+    if json_output:
+        _emit_json(data)
+    else:
+        click.echo(human_message)
+
+
+def _status_value(status: Dict[str, Any]) -> str:
+    """Best-effort normalized job status from cross-platform SDK responses."""
+    candidates = (
+        status.get("status"),
+        status.get("life_cycle_state"),
+        status.get("result_state"),
+    )
+    for value in candidates:
+        if value is not None:
+            return str(value).strip().upper()
+
+    state = status.get("state")
+    if isinstance(state, dict):
+        for key in ("result_state", "life_cycle_state", "state", "status"):
+            value = state.get(key)
+            if value is not None:
+                return str(value).strip().upper()
+    if state is not None:
+        return str(state).strip().upper()
+
+    return "UNKNOWN"
+
+
+_SUCCESS_JOB_STATES = {"COMPLETED", "SUCCESS", "SUCCEEDED", "FINISHED"}
+_FAILED_JOB_STATES = {
+    "FAILED",
+    "ERROR",
+    "CANCELLED",
+    "CANCELED",
+    "TIMEDOUT",
+    "TIMEOUT",
+    "SKIPPED",
+}
+_TERMINAL_JOB_STATES = _SUCCESS_JOB_STATES | _FAILED_JOB_STATES
+
+
+def _wait_for_job_run(
+    api_client, run_id: str, poll_interval: float, timeout: float
+) -> Dict[str, Any]:
+    """Poll a job run until it reaches a known terminal state or times out."""
+    deadline = time.monotonic() + timeout
+    last_status: Dict[str, Any] = {}
+
+    while True:
+        last_status = api_client.get_job_status(run_id)
+        state = _status_value(last_status)
+        if state in _TERMINAL_JOB_STATES:
+            return last_status
+        if time.monotonic() >= deadline:
+            raise click.ClickException(
+                f"Timed out waiting for run `{run_id}` after {timeout:g} seconds. "
+                f"Last observed state: {state}."
+            )
+        time.sleep(poll_interval)
 
 
 def _create_platform_api(platform: str):
@@ -674,7 +739,7 @@ def _get_blob_service_client(storage_account: str):
     except ImportError as exc:
         raise click.ClickException(
             "azure-identity and azure-storage-blob are required for deploy.\n"
-            "Install with: pip install 'kindling-cli[deploy]'"
+            "Install with: pip install 'spark-kindling-cli[deploy]'"
         ) from exc
 
     account_url = _resolve_account_url(storage_account)
@@ -1091,7 +1156,7 @@ def _import_notebook_to_workspace(
         except ImportError as exc:
             raise click.ClickException(
                 "Notebook import requires the deploy extra.\n"
-                "Install with: pip install 'kindling-cli[deploy]'"
+                "Install with: pip install 'spark-kindling-cli[deploy]'"
             ) from exc
 
         credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
@@ -1120,7 +1185,7 @@ def _import_notebook_to_workspace(
         except ImportError as exc:
             raise click.ClickException(
                 "Notebook import requires the deploy extra.\n"
-                "Install with: pip install 'kindling-cli[deploy]'"
+                "Install with: pip install 'spark-kindling-cli[deploy]'"
             ) from exc
 
         credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
@@ -1173,7 +1238,7 @@ def _import_notebook_to_workspace(
         except ImportError as exc:
             raise click.ClickException(
                 "Notebook import requires the deploy extra.\n"
-                "Install with: pip install 'kindling-cli[deploy]'"
+                "Install with: pip install 'spark-kindling-cli[deploy]'"
             ) from exc
 
         credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
@@ -1281,6 +1346,16 @@ def _import_notebook_to_workspace(
     is_flag=True,
     help="Overwrite existing scripts, config, and notebooks in storage. Without this flag, existing blobs are skipped.",
 )
+@click.option(
+    "--allow-missing-bootstrap-script",
+    is_flag=True,
+    help="Do not fail if runtime/scripts/kindling_bootstrap.py cannot be found.",
+)
+@click.option(
+    "--allow-missing-config",
+    is_flag=True,
+    help="Do not fail if the selected settings file cannot be found.",
+)
 def workspace_deploy(
     platform: Optional[str],
     config_path: Path,
@@ -1294,6 +1369,8 @@ def workspace_deploy(
     create_notebooks: bool,
     workspace: Optional[str],
     overwrite: bool,
+    allow_missing_bootstrap_script: bool,
+    allow_missing_config: bool,
 ) -> None:
     """Deploy kindling packages, scripts, and config to Azure Storage.
 
@@ -1377,14 +1454,26 @@ def workspace_deploy(
         ):
             click.echo()
         else:
-            click.echo("  kindling_bootstrap.py not found, skipping.")
-            click.echo()
+            message = "kindling_bootstrap.py not found."
+            if allow_missing_bootstrap_script:
+                click.echo(f"  {message} Skipping because --allow-missing-bootstrap-script is set.")
+                click.echo()
+            else:
+                raise click.ClickException(
+                    f"{message} Use --skip-bootstrap-script or --allow-missing-bootstrap-script."
+                )
 
     # -- Config ----------------------------------------------------------------
     if not skip_config:
         resolved_config = config_path.expanduser()
         if not resolved_config.exists():
-            click.echo(f"Config file {resolved_config} not found, skipping config deploy.")
+            message = f"Config file {resolved_config} not found."
+            if allow_missing_config:
+                click.echo(f"{message} Skipping because --allow-missing-config is set.")
+            else:
+                raise click.ClickException(
+                    f"{message} Use --skip-config or --allow-missing-config."
+                )
         else:
             config_dest = f"{resolved_base}/config" if resolved_base else "config"
             click.echo(f"Config → {config_dest}/")
@@ -1448,7 +1537,8 @@ def app_group() -> None:
     type=click.Path(path_type=Path, dir_okay=False),
     help="Destination .kda file. Defaults to dist/<app-dir>.kda.",
 )
-def app_package(app_path: Path, output_path: Optional[Path]) -> None:
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) -> None:
     """Package an application directory into a .kda archive."""
     resolved_app_path = app_path.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
@@ -1464,7 +1554,17 @@ def app_package(app_path: Path, output_path: Optional[Path]) -> None:
         for rel_path, content in sorted(app_files.items()):
             archive.writestr(rel_path, content)
 
-    click.echo(f"Packaged `{resolved_app_path}` -> `{resolved_output}` ({len(app_files)} file(s)).")
+    payload = {
+        "app_path": str(resolved_app_path),
+        "package_path": str(resolved_output),
+        "file_count": len(app_files),
+        "files": sorted(app_files),
+    }
+    _emit_result(
+        payload,
+        json_output,
+        f"Packaged `{resolved_app_path}` -> `{resolved_output}` ({len(app_files)} file(s)).",
+    )
 
 
 @app_group.command("deploy")
@@ -1479,7 +1579,10 @@ def app_package(app_path: Path, output_path: Optional[Path]) -> None:
     default=None,
     help="Target platform. Auto-detected from environment if omitted.",
 )
-def app_deploy(app_path: Path, app_name: Optional[str], platform: Optional[str]) -> None:
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_deploy(
+    app_path: Path, app_name: Optional[str], platform: Optional[str], json_output: bool
+) -> None:
     """Deploy an app directory or .kda package using the remote platform SDK."""
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
@@ -1496,9 +1599,19 @@ def app_deploy(app_path: Path, app_name: Optional[str], platform: Optional[str])
         raise click.ClickException("App name resolved to an empty string.")
 
     storage_path = api_client.deploy_app(resolved_name, app_files)
-    click.echo(
+    payload = {
+        "app_name": resolved_name,
+        "app_path": str(resolved_app_path),
+        "platform": resolved_platform,
+        "storage_path": storage_path,
+        "file_count": len(app_files),
+        "files": sorted(app_files),
+    }
+    _emit_result(
+        payload,
+        json_output,
         f"Deployed app `{resolved_name}` to `{storage_path}` "
-        f"on {resolved_platform} ({len(app_files)} file(s))."
+        f"on {resolved_platform} ({len(app_files)} file(s)).",
     )
 
 
@@ -1510,7 +1623,8 @@ def app_deploy(app_path: Path, app_name: Optional[str], platform: Optional[str])
     default=None,
     help="Target platform. Auto-detected from environment if omitted.",
 )
-def app_cleanup(app_name: str, platform: Optional[str]) -> None:
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_cleanup(app_name: str, platform: Optional[str], json_output: bool) -> None:
     """Delete a previously deployed remote application."""
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
@@ -1525,7 +1639,11 @@ def app_cleanup(app_name: str, platform: Optional[str]) -> None:
         raise click.ClickException(
             f"Remote cleanup for app `{app_name}` did not succeed on {resolved_platform}."
         )
-    click.echo(f"Deleted app `{app_name}` on {resolved_platform}.")
+    _emit_result(
+        {"app_name": app_name, "platform": resolved_platform, "deleted": True},
+        json_output,
+        f"Deleted app `{app_name}` on {resolved_platform}.",
+    )
 
 
 @cli.group("job")
@@ -1558,7 +1676,7 @@ def job_create(config_path: Path, platform: Optional[str]) -> None:
     if not job_name:
         raise click.ClickException("Job config must define `job_name`.")
 
-    api_client, _ = _create_platform_api(resolved_platform)
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
     _emit_json(api_client.create_job(job_name, job_config))
 
 
@@ -1577,7 +1695,26 @@ def job_create(config_path: Path, platform: Optional[str]) -> None:
     default=None,
     help="Target platform. Auto-detected from environment if omitted.",
 )
-def job_run(job_id: str, parameters_path: Optional[Path], platform: Optional[str]) -> None:
+@click.option("--wait", "wait_for_completion", is_flag=True, help="Poll until the run completes.")
+@click.option("--poll-interval", default=10.0, show_default=True, type=float)
+@click.option("--timeout", default=3600.0, show_default=True, type=float)
+@click.option(
+    "--fail-on-error/--no-fail-on-error",
+    default=True,
+    show_default=True,
+    help="With --wait, fail the CLI if the terminal run status is unsuccessful.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def job_run(
+    job_id: str,
+    parameters_path: Optional[Path],
+    platform: Optional[str],
+    wait_for_completion: bool,
+    poll_interval: float,
+    timeout: float,
+    fail_on_error: bool,
+    json_output: bool,
+) -> None:
     """Start a remote job run."""
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
@@ -1587,8 +1724,27 @@ def job_run(job_id: str, parameters_path: Optional[Path], platform: Optional[str
         )
 
     parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else None
-    api_client, _ = _create_platform_api(resolved_platform)
-    click.echo(api_client.run_job(job_id, parameters=parameters))
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    run_id = api_client.run_job(job_id, parameters=parameters)
+    payload: Dict[str, Any] = {
+        "job_id": job_id,
+        "run_id": run_id,
+        "platform": resolved_platform,
+        "waited": wait_for_completion,
+    }
+
+    if wait_for_completion:
+        status = _wait_for_job_run(api_client, run_id, poll_interval, timeout)
+        state = _status_value(status)
+        payload["status"] = status
+        payload["state"] = state
+        payload["succeeded"] = state in _SUCCESS_JOB_STATES
+        if fail_on_error and state not in _SUCCESS_JOB_STATES:
+            if json_output:
+                _emit_json(payload)
+            raise click.ClickException(f"Run `{run_id}` finished with state {state}.")
+
+    _emit_result(payload, json_output, run_id)
 
 
 @job_group.command("status")
@@ -1608,7 +1764,7 @@ def job_status(run_id: str, platform: Optional[str]) -> None:
             "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
         )
 
-    api_client, _ = _create_platform_api(resolved_platform)
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
     _emit_json(api_client.get_job_status(run_id))
 
 
@@ -1673,7 +1829,8 @@ def job_logs(
     default=None,
     help="Target platform. Auto-detected from environment if omitted.",
 )
-def job_cancel(run_id: str, platform: Optional[str]) -> None:
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def job_cancel(run_id: str, platform: Optional[str], json_output: bool) -> None:
     """Cancel a remote job run."""
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
@@ -1686,7 +1843,11 @@ def job_cancel(run_id: str, platform: Optional[str]) -> None:
     cancelled = api_client.cancel_job(run_id)
     if not cancelled:
         raise click.ClickException(f"Failed to cancel run `{run_id}`.")
-    click.echo(f"Cancelled run `{run_id}`.")
+    _emit_result(
+        {"run_id": run_id, "platform": resolved_platform, "cancelled": True},
+        json_output,
+        f"Cancelled run `{run_id}`.",
+    )
 
 
 @job_group.command("delete")
@@ -1697,7 +1858,8 @@ def job_cancel(run_id: str, platform: Optional[str]) -> None:
     default=None,
     help="Target platform. Auto-detected from environment if omitted.",
 )
-def job_delete(job_id: str, platform: Optional[str]) -> None:
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def job_delete(job_id: str, platform: Optional[str], json_output: bool) -> None:
     """Delete a remote job definition."""
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
@@ -1710,7 +1872,11 @@ def job_delete(job_id: str, platform: Optional[str]) -> None:
     deleted = api_client.delete_job(job_id)
     if not deleted:
         raise click.ClickException(f"Failed to delete job `{job_id}`.")
-    click.echo(f"Deleted job `{job_id}`.")
+    _emit_result(
+        {"job_id": job_id, "platform": resolved_platform, "deleted": True},
+        json_output,
+        f"Deleted job `{job_id}`.",
+    )
 
 
 @cli.group("repo")
