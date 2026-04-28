@@ -35,6 +35,7 @@ class TestEntityMetadata:
             "tags",
             "schema",
             "cluster_columns",
+            "sql",
         }
 
         assert (
