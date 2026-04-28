@@ -34,18 +34,13 @@ from __future__ import annotations
 
 import datetime
 import hashlib
-import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
 
 from injector import inject
 from kindling.data_entities import DataEntityRegistry, EntityMetadata
-from kindling.entity_provider_delta import (
-    DeltaAccessMode,
-    DeltaEntityProvider,
-    DeltaTableReference,
-)
+from kindling.entity_provider_delta import DeltaEntityProvider, DeltaTableReference
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
 
@@ -339,7 +334,10 @@ class MigrationPlanner:
             spark = get_or_create_spark_session()
             live_schema = spark.read.format("delta").load(table_ref.table_path).schema
 
-        desired = {f.name: f for f in entity.schema.fields}
+        desired_schema = (
+            entity.schema if isinstance(entity.schema, StructType) else StructType(entity.schema)
+        )
+        desired = {f.name: f for f in desired_schema.fields}
         actual = {f.name: f for f in live_schema.fields}
 
         # Columns to add (safe)
@@ -638,7 +636,14 @@ class MigrationApplier:
 
         elif change.kind == ChangeKind.ADD_COLUMNS:
             self._logger.info(f"Adding columns to {entity.entityid}: {change.columns_to_add}")
-            desired = {f.name: f for f in entity.schema.fields}
+            from pyspark.sql.types import StructType
+
+            desired_schema = (
+                entity.schema
+                if isinstance(entity.schema, StructType)
+                else StructType(entity.schema)
+            )
+            desired = {f.name: f for f in desired_schema.fields}
             col_defs = ", ".join(
                 f"`{name}` {desired[name].dataType.simpleString()}"
                 for name in change.columns_to_add
@@ -799,11 +804,14 @@ class MigrationApplier:
         from pyspark.sql import functions as F
         from pyspark.sql.types import StructType
 
+        desired_schema = (
+            entity.schema if isinstance(entity.schema, StructType) else StructType(entity.schema)
+        )
         result = df
 
         for change in changes:
             if change.kind == ChangeKind.TYPE_CHANGE:
-                desired = {f.name: f for f in entity.schema.fields}
+                desired = {f.name: f for f in desired_schema.fields}
                 for tc in change.type_changes:
                     if tc.column_name in user_transforms:
                         result = result.withColumn(tc.column_name, user_transforms[tc.column_name])

@@ -49,7 +49,12 @@ class SqlEntityProvider(BaseEntityProvider, DestinationEnsuringProvider):
 
     def check_entity_exists(self, entity_metadata: EntityMetadata) -> bool:
         spark = get_or_create_spark_session()
-        return spark.catalog.tableExists(self._view_name(entity_metadata))
+        view_name = self._view_name(entity_metadata)
+        try:
+            spark.sql(f"DESCRIBE {view_name}")
+            return True
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # DestinationEnsuringProvider
@@ -65,6 +70,14 @@ class SqlEntityProvider(BaseEntityProvider, DestinationEnsuringProvider):
         spark = get_or_create_spark_session()
         view_name = self._view_name(entity_metadata)
         self._logger.info(f"Ensuring view '{view_name}' for entity '{entity_metadata.entityid}'")
+        namespace = self._view_namespace(view_name)
+        if namespace:
+            try:
+                spark.sql(f"CREATE SCHEMA IF NOT EXISTS {namespace}")
+            except Exception as e:
+                self._logger.warning(
+                    f"Unable to ensure schema '{namespace}' exists for view '{view_name}': {e}"
+                )
         spark.sql(f"CREATE OR REPLACE VIEW {view_name} AS {entity_metadata.sql}")
 
     # ------------------------------------------------------------------
@@ -74,3 +87,21 @@ class SqlEntityProvider(BaseEntityProvider, DestinationEnsuringProvider):
     def _view_name(self, entity_metadata: EntityMetadata) -> str:
         """Resolve the catalog view name from entity tags or entity name."""
         return entity_metadata.tags.get("provider.table_name") or entity_metadata.name
+
+    def _view_namespace(self, view_name: str) -> str:
+        """Return the namespace portion of a qualified view name, or empty string if unqualified."""
+        parts = []
+        current = []
+        in_backticks = False
+        for char in view_name:
+            if char == "`":
+                in_backticks = not in_backticks
+                current.append(char)
+            elif char == "." and not in_backticks:
+                parts.append("".join(current).strip())
+                current = []
+            else:
+                current.append(char)
+        if current:
+            parts.append("".join(current).strip())
+        return ".".join(parts[:-1]) if len(parts) >= 2 else ""
