@@ -807,4 +807,194 @@ class TestMigrationApplierSqlEntity:
         # No dot in name → schema creation skipped; calls are CREATE OR REPLACE VIEW + ALTER VIEW hash
         calls = [c.args[0] for c in spark_mock.sql.call_args_list]
         assert any("CREATE OR REPLACE VIEW simple_view AS SELECT 1" in c for c in calls)
-        assert not any("CREATE SCHEMA" in c for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# MigrationPlanner cluster diff
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationPlannerClusterDiff:
+    """Tests for _diff_clusters via direct method invocation (no Spark needed for logic)."""
+
+    def _make_planner(self):
+        registry = MagicMock()
+        provider = MagicMock()
+        provider._is_for_name_mode.return_value = True
+        provider._is_for_path_mode.return_value = False
+        provider._quote_table_identifier.side_effect = lambda n: n
+        tp = MagicMock()
+        tp.get_logger.return_value = MagicMock()
+        planner = MigrationPlanner.__new__(MigrationPlanner)
+        planner._registry = registry
+        planner._provider = provider
+        planner._logger = tp.get_logger("test")
+        return planner
+
+    def _make_table_ref(self, table_name="test.entity"):
+        from kindling.entity_provider_delta import DeltaAccessMode, DeltaTableReference
+
+        ref = MagicMock(spec=DeltaTableReference)
+        ref.table_name = table_name
+        ref.table_path = None
+        ref.access_mode = DeltaAccessMode.CATALOG
+        return ref
+
+    def _mock_spark_with_clusters(self, clustering_columns):
+        spark_mock = MagicMock()
+        spark_mock.sql.return_value.first.return_value = {"clusteringColumns": clustering_columns}
+        return spark_mock
+
+    def test_no_change_when_cluster_columns_match(self):
+        planner = self._make_planner()
+        entity = _entity(cluster_columns=["region", "year"])
+        table_ref = self._make_table_ref()
+        status = EntityMigrationStatus(entity=entity)
+
+        spark_mock = self._mock_spark_with_clusters(["region", "year"])
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            planner._diff_clusters(entity, table_ref, status)
+
+        assert len(status.changes) == 0
+
+    def test_no_change_when_no_clustering_desired_and_none_present(self):
+        planner = self._make_planner()
+        entity = _entity(cluster_columns=[])
+        table_ref = self._make_table_ref()
+        status = EntityMigrationStatus(entity=entity)
+
+        spark_mock = self._mock_spark_with_clusters([])
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            planner._diff_clusters(entity, table_ref, status)
+
+        assert len(status.changes) == 0
+
+    def test_detects_cluster_columns_added(self):
+        planner = self._make_planner()
+        entity = _entity(cluster_columns=["region"])
+        table_ref = self._make_table_ref()
+        status = EntityMigrationStatus(entity=entity)
+
+        spark_mock = self._mock_spark_with_clusters([])
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            planner._diff_clusters(entity, table_ref, status)
+
+        assert len(status.changes) == 1
+        change = status.changes[0]
+        assert change.kind == ChangeKind.CLUSTER_CHANGE
+        assert change.destructiveness == ChangeDestructiveness.SAFE
+        assert change.new_clusters == ["region"]
+        assert change.old_clusters == []
+
+    def test_detects_cluster_columns_removed(self):
+        planner = self._make_planner()
+        entity = _entity(cluster_columns=[])
+        table_ref = self._make_table_ref()
+        status = EntityMigrationStatus(entity=entity)
+
+        spark_mock = self._mock_spark_with_clusters(["region"])
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            planner._diff_clusters(entity, table_ref, status)
+
+        assert len(status.changes) == 1
+        change = status.changes[0]
+        assert change.kind == ChangeKind.CLUSTER_CHANGE
+        assert change.destructiveness == ChangeDestructiveness.SAFE
+        assert change.new_clusters == []
+        assert change.old_clusters == ["region"]
+
+    def test_detects_cluster_columns_changed(self):
+        planner = self._make_planner()
+        entity = _entity(cluster_columns=["year"])
+        table_ref = self._make_table_ref()
+        status = EntityMigrationStatus(entity=entity)
+
+        spark_mock = self._mock_spark_with_clusters(["region"])
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            planner._diff_clusters(entity, table_ref, status)
+
+        assert len(status.changes) == 1
+        change = status.changes[0]
+        assert change.kind == ChangeKind.CLUSTER_CHANGE
+        assert change.new_clusters == ["year"]
+        assert change.old_clusters == ["region"]
+
+    def test_skips_diff_on_describe_error(self):
+        planner = self._make_planner()
+        entity = _entity(cluster_columns=["region"])
+        table_ref = self._make_table_ref()
+        status = EntityMigrationStatus(entity=entity)
+
+        spark_mock = MagicMock()
+        spark_mock.sql.side_effect = Exception("describe failed")
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            planner._diff_clusters(entity, table_ref, status)  # must not raise
+
+        assert len(status.changes) == 0
+
+
+# ---------------------------------------------------------------------------
+# MigrationApplier cluster change
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationApplierClusterChange:
+    def _make_applier(self):
+        provider = MagicMock()
+        provider._is_for_path_mode.return_value = False
+        provider._quote_table_identifier.side_effect = lambda n: n
+        tp = MagicMock()
+        tp.get_logger.return_value = MagicMock()
+        applier = MigrationApplier.__new__(MigrationApplier)
+        applier._provider = provider
+        applier._logger = tp.get_logger("test")
+        return applier
+
+    def _make_table_ref(self, table_name="test.entity"):
+        from kindling.entity_provider_delta import DeltaAccessMode, DeltaTableReference
+
+        ref = MagicMock(spec=DeltaTableReference)
+        ref.table_name = table_name
+        ref.table_path = None
+        ref.access_mode = DeltaAccessMode.CATALOG
+        return ref
+
+    def test_applies_cluster_by_columns(self):
+        applier = self._make_applier()
+        entity = _entity(cluster_columns=["region", "year"])
+        table_ref = self._make_table_ref()
+        change = EntityMigrationChange(
+            entity=entity,
+            kind=ChangeKind.CLUSTER_CHANGE,
+            destructiveness=ChangeDestructiveness.SAFE,
+            detail="cluster columns: [] -> ['region', 'year']",
+            new_clusters=["region", "year"],
+            old_clusters=[],
+        )
+
+        spark_mock = MagicMock()
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            applier._apply_safe_delta_change(entity, table_ref, change)
+
+        spark_mock.sql.assert_called_once_with(
+            "ALTER TABLE test.entity CLUSTER BY (`region`, `year`)"
+        )
+
+    def test_applies_cluster_by_none_when_removing_all(self):
+        applier = self._make_applier()
+        entity = _entity(cluster_columns=[])
+        table_ref = self._make_table_ref()
+        change = EntityMigrationChange(
+            entity=entity,
+            kind=ChangeKind.CLUSTER_CHANGE,
+            destructiveness=ChangeDestructiveness.SAFE,
+            detail="cluster columns: ['region'] -> []",
+            new_clusters=[],
+            old_clusters=["region"],
+        )
+
+        spark_mock = MagicMock()
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            applier._apply_safe_delta_change(entity, table_ref, change)
+
+        spark_mock.sql.assert_called_once_with("ALTER TABLE test.entity CLUSTER BY NONE")

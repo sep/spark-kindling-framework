@@ -656,10 +656,13 @@ class MigrationApplier:
             )
             if change.new_clusters:
                 cols = ", ".join(f"`{c}`" for c in change.new_clusters)
-                try:
-                    spark.sql(f"ALTER TABLE {target} CLUSTER BY ({cols})")
-                except Exception as e:
-                    self._logger.warning(f"Could not apply CLUSTER BY for {entity.entityid}: {e}")
+                cluster_expr = f"({cols})"
+            else:
+                cluster_expr = "NONE"
+            try:
+                spark.sql(f"ALTER TABLE {target} CLUSTER BY {cluster_expr}")
+            except Exception as e:
+                self._logger.warning(f"Could not apply CLUSTER BY for {entity.entityid}: {e}")
 
         elif change.kind == ChangeKind.TAG_UPDATE:
             self._logger.info(f"Updating tags for {entity.entityid}: {change.tags_to_set}")
