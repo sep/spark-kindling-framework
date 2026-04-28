@@ -371,15 +371,7 @@ def migrate_group() -> None:
 
 
 @migrate_group.command("plan")
-@click.option(
-    "--config",
-    "config_path",
-    default="settings.yaml",
-    show_default=True,
-    type=click.Path(path_type=Path, dir_okay=False),
-    help="Kindling settings file.",
-)
-def migrate_plan(config_path: Path) -> None:
+def migrate_plan() -> None:
     """Show pending schema changes for all registered entities.
 
     Requires a running Spark session (must be called from within a Kindling

@@ -83,20 +83,19 @@ class TestSqlEntityProviderReadEntity:
 class TestSqlEntityProviderCheckEntityExists:
     def test_returns_true_when_view_exists(self, provider):
         entity = _sql_entity(name="my_view")
-        mock_spark = MagicMock()
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark = MagicMock()  # spark.sql() succeeds → view exists
 
         with patch(
             "kindling.entity_provider_sql.get_or_create_spark_session", return_value=mock_spark
         ):
             assert provider.check_entity_exists(entity) is True
 
-        mock_spark.catalog.tableExists.assert_called_once_with("my_view")
+        mock_spark.sql.assert_called_once_with("DESCRIBE my_view")
 
     def test_returns_false_when_view_missing(self, provider):
         entity = _sql_entity(name="my_view")
         mock_spark = MagicMock()
-        mock_spark.catalog.tableExists.return_value = False
+        mock_spark.sql.side_effect = Exception("TABLE_OR_VIEW_NOT_FOUND")
 
         with patch(
             "kindling.entity_provider_sql.get_or_create_spark_session", return_value=mock_spark
@@ -130,9 +129,9 @@ class TestSqlEntityProviderEnsureDestination:
         ):
             provider.ensure_destination(entity)
 
-        mock_spark.sql.assert_called_once_with(
-            "CREATE OR REPLACE VIEW catalog.schema.v AS SELECT 1"
-        )
+        calls = [c.args[0] for c in mock_spark.sql.call_args_list]
+        assert "CREATE SCHEMA IF NOT EXISTS catalog.schema" in calls
+        assert "CREATE OR REPLACE VIEW catalog.schema.v AS SELECT 1" in calls
 
     def test_raises_for_non_sql_entity(self, provider):
         entity = _delta_entity()
