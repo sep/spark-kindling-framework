@@ -54,6 +54,30 @@ kindling package init customer-360 --repo-root .
 This produces a repo root with shared `.devcontainer/`, CI, and `.gitignore`
 plus independently buildable packages under `packages/`.
 
+To add a second package later, return to the repo root and scaffold another
+package:
+
+```bash
+cd ../..
+kindling package init customer-360 --repo-root .
+
+cd packages/customer_360
+poetry install
+poetry run poe test
+```
+
+The generated CI workflow runs each scaffolded package independently by
+iterating `packages/*` and executing:
+
+```bash
+poetry install --no-interaction
+poetry run poe test
+poetry run poe build
+```
+
+The CI job fails if no package `pyproject.toml` files are found under
+`packages/`.
+
 For the single-package quick start, `kindling new my-pipeline` still works and
 creates a repo with an initial package at `packages/my_pipeline/`.
 
