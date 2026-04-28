@@ -430,6 +430,22 @@ def test_app_package_creates_kda_archive():
             assert sorted(archive.namelist()) == ["app.py", "nested/settings.yaml"]
 
 
+def test_app_package_json_output_is_machine_readable():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["app", "package", str(app_dir), "--json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["file_count"] == 1
+        assert payload["files"] == ["app.py"]
+        assert payload["package_path"].endswith("dist/demo_app.kda")
+
+
 def test_app_deploy_rejects_unsafe_kda_paths():
     runner = CliRunner()
     with runner.isolated_filesystem():
@@ -473,6 +489,33 @@ def test_app_deploy_uses_platform_sdk(monkeypatch):
         assert "Deployed app `demo_app`" in result.output
 
 
+def test_app_deploy_json_output_includes_storage_path(monkeypatch):
+    class FakeAPI:
+        def deploy_app(self, app_name, app_files):
+            return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/demo"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+        result = runner.invoke(
+            cli, ["app", "deploy", str(app_dir), "--platform", "fabric", "--json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["app_name"] == "demo_app"
+        assert payload["platform"] == "fabric"
+        assert payload["storage_path"].startswith("abfss://")
+
+
 def test_job_create_loads_yaml_and_prints_structured_result(monkeypatch):
     class FakeAPI:
         def create_job(self, job_name, job_config):
@@ -500,12 +543,274 @@ def test_job_create_loads_yaml_and_prints_structured_result(monkeypatch):
         assert payload["job_name"] == "nightly-demo"
 
 
+def test_job_run_json_output_includes_run_id(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            assert job_id == "job-123"
+            assert parameters is None
+            return "run-456"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["job", "run", "job-123", "--platform", "synapse", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["job_id"] == "job-123"
+    assert payload["run_id"] == "run-456"
+    assert payload["waited"] is False
+
+
+def test_job_run_wait_fails_on_failed_terminal_state(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "FAILED"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "synapse", "--wait", "--json"],
+    )
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["run_id"] == "run-456"
+    assert payload["state"] == "FAILED"
+    assert payload["succeeded"] is False
+
+
+def test_job_run_wait_succeeds_on_completed_terminal_state(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "COMPLETED"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "synapse", "--wait", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "COMPLETED"
+    assert payload["succeeded"] is True
+
+
+def test_job_run_wait_handles_databricks_terminated_success(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "TERMINATED", "result_state": "SUCCESS"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "databricks", "--wait", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "SUCCESS"
+    assert payload["succeeded"] is True
+
+
+def test_job_run_wait_handles_nested_lifecycle_result_state(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"state": {"life_cycle_state": "TERMINATED", "result_state": "FAILED"}}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "job",
+            "run",
+            "job-123",
+            "--platform",
+            "databricks",
+            "--wait",
+            "--json",
+            "--no-fail-on-error",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "FAILED"
+    assert payload["succeeded"] is False
+
+
+def test_job_run_wait_handles_fabric_succeeded_status(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "Succeeded"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "fabric", "--wait", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "SUCCEEDED"
+    assert payload["succeeded"] is True
+
+
+def test_job_run_wait_rejects_non_positive_poll_interval(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "job",
+            "run",
+            "job-123",
+            "--platform",
+            "synapse",
+            "--wait",
+            "--poll-interval",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--poll-interval must be greater than 0" in result.output
+
+
+def test_job_run_wait_rejects_non_positive_timeout(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "job",
+            "run",
+            "job-123",
+            "--platform",
+            "synapse",
+            "--wait",
+            "--timeout",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--timeout must be greater than 0" in result.output
+
+
 def test_job_logs_stream_requires_job_id():
     runner = CliRunner()
     result = runner.invoke(cli, ["job", "logs", "run-123", "--stream", "--platform", "fabric"])
 
     assert result.exit_code != 0
     assert "--job-id is required when --stream is used." in result.output
+
+
+def test_workspace_deploy_fails_when_config_missing_unless_allowed(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "deploy",
+                "--platform",
+                "synapse",
+                "--storage-account",
+                "acct",
+                "--skip-wheels",
+                "--skip-bootstrap-script",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "Use --skip-config or --allow-missing-config" in result.output
+
+
+def test_workspace_deploy_fails_when_bootstrap_missing_unless_allowed(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("settings.yaml").write_text("kindling: {}\n", encoding="utf-8")
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "deploy",
+                "--platform",
+                "synapse",
+                "--storage-account",
+                "acct",
+                "--skip-wheels",
+                "--skip-config",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "Use --skip-bootstrap-script or --allow-missing-bootstrap-script" in result.output
 
 
 # ---------------------------------------------------------------------------
