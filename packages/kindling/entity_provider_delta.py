@@ -9,7 +9,7 @@ import pyspark.sql.utils
 from delta.tables import DeltaTable
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, concat_ws, lit, sha2, struct, to_json
+from pyspark.sql.functions import coalesce, col, concat_ws, lit, sha2, struct, to_json
 from pyspark.sql.types import BooleanType, StructField, StructType, TimestampType
 
 from kindling.common_transforms import *
@@ -18,6 +18,9 @@ from kindling.features import get_feature_bool, set_runtime_feature
 # Import your existing modules
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
+
+_SCD2_NULL_SENTINEL = "__null__"
+_SCD2_MERGE_KEY_COLUMN = "__merge_key"
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 
@@ -136,14 +139,19 @@ def _build_null_safe_change_condition(
 
 def _routing_key_column_expr(business_keys: list[str], method: str):
     if method == "concat":
-        return concat_ws("||", *[col(key).cast("string") for key in business_keys])
+        # Coalesce to sentinel so (None, "x") and ("x", None) produce distinct keys.
+        return concat_ws(
+            "||",
+            *[coalesce(col(key).cast("string"), lit(_SCD2_NULL_SENTINEL)) for key in business_keys],
+        )
     return sha2(to_json(struct(*[col(key) for key in business_keys])), 256)
 
 
 def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
     if method == "concat":
         key_exprs = [
-            f"CAST({_quote_sql_identifier(key, 'target')} AS STRING)" for key in business_keys
+            f"COALESCE(CAST({_quote_sql_identifier(key, 'target')} AS STRING), '{_SCD2_NULL_SENTINEL}')"
+            for key in business_keys
         ]
         return f"concat_ws('||', {', '.join(key_exprs)})"
 
@@ -157,6 +165,11 @@ def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
 
 def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     """Execute an SCD Type 2 staged-updates merge for a Delta table."""
+    if _SCD2_MERGE_KEY_COLUMN in df.columns:
+        raise ValueError(
+            f"Incoming DataFrame contains reserved column '{_SCD2_MERGE_KEY_COLUMN}'. "
+            "Rename this column before writing to an SCD2 entity."
+        )
     cfg = scd_config_from_tags(entity)
     business_keys = entity.merge_columns
     temporal_columns = {
@@ -184,9 +197,9 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     # [integrator] unchanged rows omitted from Group B — closing a row that hasn't changed creates a false history entry — TASK-20260429-001
     rows_to_close_or_insert = changed_rows.unionByName(new_rows, allowMissingColumns=True)
 
-    insert_rows = changed_rows.withColumn("__merge_key", lit(None).cast("string"))
+    insert_rows = changed_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, lit(None).cast("string"))
     keyed_rows = rows_to_close_or_insert.withColumn(
-        "__merge_key", _routing_key_column_expr(business_keys, cfg.routing_key_method)
+        _SCD2_MERGE_KEY_COLUMN, _routing_key_column_expr(business_keys, cfg.routing_key_method)
     )
     staged = insert_rows.unionByName(keyed_rows, allowMissingColumns=True)
 
@@ -1367,11 +1380,12 @@ class DeltaEntityProvider(
                 .load(table_ref.get_read_path())
             )
 
+        pit = lit(point_in_time).cast("timestamp")
         return self.read_entity(entity).filter(
-            (col(scd_config.effective_from_column) <= point_in_time)
+            (col(scd_config.effective_from_column) <= pit)
             & (
                 col(scd_config.effective_to_column).isNull()
-                | (col(scd_config.effective_to_column) > point_in_time)
+                | (col(scd_config.effective_to_column) > pit)
             )
         )
 
