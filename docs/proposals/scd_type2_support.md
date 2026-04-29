@@ -3,17 +3,17 @@
 **Status:** Draft (revised)
 **Author:** System Analysis
 **Created:** 2026-02-26
-**Updated:** 2026-04-20
+**Updated:** 2026-04-29
 **Related:** obsolete/signal_dag_streaming_proposal.md, obsolete/dag_execution_implementation_plan.md, obsolete/config_based_entity_providers.md
 
-## Revision Summary (2026-04-20)
+## Revision Summary
 
-This proposal was revised based on design feedback after confirming no SCD2 support exists in the current codebase:
-
+### 2026-04-20
 1. **Tag-driven configuration, no new `EntityMetadata` fields.** The original proposal added `scd_type` and `scd2_config` fields to `EntityMetadata`. Revised design expresses all SCD configuration through the existing `tags` map under a `scd.*` namespace — no schema change to `EntityMetadata`, no new dataclasses, consistent with how other cross-cutting concerns (`layer`, `domain`, `provider.*`) are already carried in Kindling.
 2. **Automatic current-view companion entity.** The original proposal exposed `read_entity_current()` as a helper method users must remember to call. Revised design auto-registers a companion entity at `{entityid}.current` whenever an entity is tagged SCD2, so pipes can declare `input_entity_ids=["silver.dim_customer.current"]` and get the filtered-to-current view transparently via the normal registry lookup.
 
-Both changes keep SCD2 declarative and observable while minimizing the framework surface area and aligning with existing Kindling conventions.
+### 2026-04-29
+3. **`DeltaMergeStrategy` replaces branching inside the provider.** The original architecture had `_merge_to_delta_table()` branch on `scd.type` tags. Revised design introduces a `DeltaMergeStrategy` protocol — the provider resolves and applies a strategy object rather than branching internally. `SCD1MergeStrategy` is the default; `SCD2MergeStrategy` is applied when `scd.type == "2"`. This keeps the provider thin and makes each merge mode independently testable. The strategy is Delta-scoped by design — ~90% of SCD use cases in this framework are Delta-backed, and a cross-provider abstraction would be premature.
 
 ## Executive Summary
 
@@ -69,11 +69,12 @@ Without framework support, teams must:
 
 1. **Declarative** — SCD behavior is declared on the entity, not embedded in pipe logic.
 2. **Tags, not fields** — SCD config rides the existing `tags: Dict[str, str]` map under the `scd.*` namespace, consistent with how `layer`, `domain`, and `provider.*` already travel. No new `EntityMetadata` fields, no new dataclasses, no schema change to the registry.
-3. **Current view is automatic** — any entity tagged SCD2 gets a companion `{entityid}.current` entity auto-registered. Downstream pipes depend on the companion by ID; there is no separate API to remember.
-4. **Backward-compatible** — entities without `scd.type` tag behave exactly as today.
-5. **Convention over configuration** — sensible defaults for column names and tracking scope.
-6. **Observable** — dedicated signals for SCD2 merge outcomes.
-7. **Composable** — works with existing watermarking, streaming restart, and multi-provider architecture.
+3. **Strategy, not branching** — `DeltaEntityProvider` resolves and applies a `DeltaMergeStrategy` rather than branching internally on `scd.type`. `SCD1MergeStrategy` is the default; `SCD2MergeStrategy` activates when `scd.type == "2"`. Each strategy is independently testable.
+4. **Current view is automatic** — any entity tagged SCD2 gets a companion `{entityid}.current` entity auto-registered. Downstream pipes depend on the companion by ID; there is no separate API to remember.
+5. **Backward-compatible** — entities without `scd.type` tag behave exactly as today (SCD1 strategy is the default).
+6. **Convention over configuration** — sensible defaults for column names and tracking scope.
+7. **Observable** — dedicated signals for SCD2 merge outcomes.
+8. **Composable** — works with existing watermarking, streaming restart, and multi-provider architecture.
 
 ### Architecture Overview
 
@@ -81,17 +82,17 @@ Without framework support, teams must:
 Entity Declaration                      DeltaEntityProvider
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
 │ tags = {                     │        │ _merge_to_delta_table()      │
-│   "scd.type": "2",           │───────▶│   ├─ no scd.type: overwrite  │
-│   "scd.tracked": "a,b,c",    │        │   └─ scd.type=="2": staged   │
-│   "scd.effective_from_col": "…",  │        │       _merge_scd2()          │
-│   "scd.effective_to_col": "…",        │        ├──────────────────────────────┤
-│   "scd.current_col": "…",    │        │ ensure_entity_table()        │
-│ }                            │        │   auto-augments schema with  │
-└──────────────────────────────┘        │   temporal columns when      │
-         │                              │   scd.type == "2"            │
-         │  DataEntities.entity()       └──────────────────────────────┘
-         ▼
-  DataEntityManager.register_entity()
+│   "scd.type": "2",           │───────▶│   strategy = _resolve_       │
+│   "scd.tracked": "a,b,c",    │        │     merge_strategy(entity)   │
+│   "scd.effective_from_col":  │        │   strategy.apply(            │
+│   "scd.effective_to_col":    │        │     delta_table, df, entity, │
+│   "scd.current_col": "…",    │        │     merge_condition)         │
+│ }                            │        ├──────────────────────────────┤
+└──────────────────────────────┘        │ ensure_entity_table()        │
+         │                              │   auto-augments schema with  │
+         │  DataEntities.entity()       │   temporal columns when      │
+         ▼                              │   scd.type == "2"            │
+  DataEntityManager.register_entity()   └──────────────────────────────┘
          │
          │  if scd.type == "2":
          │    also register companion entity at
@@ -102,11 +103,86 @@ Entity Declaration                      DeltaEntityProvider
     silver.dim_customer           (SCD2 table, all history)
     silver.dim_customer.current   (read-only view, current rows only)
 
-SimpleReadPersistStrategy: unchanged.
-  Provider's merge_to_entity branches on tags — strategy layer never needs to know.
+DeltaMergeStrategy protocol:
+  SCD1MergeStrategy   — default; whenMatchedUpdateAll / whenNotMatchedInsertAll
+  SCD2MergeStrategy   — staged-updates; close current row, insert new version
+
+SimpleReadPersistStrategy: unchanged. Strategy is resolved and applied entirely
+  within the provider — the execution layer never needs to know.
 ```
 
-The strategy layer does not change — SCD2 logic is encapsulated entirely in the provider and the registry-time auto-registration, both driven by tags on the entity.
+The execution layer does not change — SCD logic is encapsulated in the strategy and the registry-time auto-registration, both driven by tags on the entity.
+
+### Strategy Registration
+
+Merge strategies use the same **class-level decorator registry** pattern as `PlatformServices` and `DataPipes`. Built-in strategies self-register at module import time by decorating their class; third-party strategies follow the same pattern.
+
+```python
+class DeltaMergeStrategies:
+    """Registry for Delta merge strategies. Resolved by name from entity tags."""
+
+    _registry: Dict[str, Type[DeltaMergeStrategy]] = {}
+
+    @classmethod
+    def register(cls, name: str):
+        """Decorator to register a merge strategy under a given name."""
+        def decorator(strategy_cls: Type[DeltaMergeStrategy]):
+            if name in cls._registry:
+                raise ValueError(
+                    f"Merge strategy '{name}' is already registered. "
+                    "Use a different name or deregister the existing strategy first."
+                )
+            cls._registry[name] = strategy_cls
+            return strategy_cls
+        return decorator
+
+    @classmethod
+    def get(cls, name: str) -> DeltaMergeStrategy:
+        if name not in cls._registry:
+            raise ValueError(
+                f"Unknown merge strategy '{name}'. "
+                f"Registered strategies: {sorted(cls._registry)}"
+            )
+        return cls._registry[name]()
+
+
+# Built-ins self-register at module load — no setup call required.
+
+@DeltaMergeStrategies.register(name="scd1")
+class SCD1MergeStrategy(DeltaMergeStrategy):
+    def apply(self, delta_table, df, entity, merge_condition):
+        (
+            delta_table.alias("old")
+            .merge(source=df.alias("new"), condition=merge_condition)
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
+
+
+@DeltaMergeStrategies.register(name="scd2")
+class SCD2MergeStrategy(DeltaMergeStrategy):
+    def apply(self, delta_table, df, entity, merge_condition):
+        # staged-updates pattern — see SCD2 merge section below
+        ...
+```
+
+**Resolution in `_merge_to_delta_table`:**
+
+```python
+def _merge_to_delta_table(self, df, entity, table_ref):
+    scd_config = scd_config_from_tags(entity)
+    strategy_name = "scd2" if scd_config.enabled else "scd1"
+    strategy = DeltaMergeStrategies.get(strategy_name)
+    merge_condition = self._build_merge_condition("old", "new", entity.merge_columns)
+    strategy.apply(table_ref.get_delta_table(), df, entity, merge_condition)
+```
+
+**Key differences from `PlatformServices`:**
+- Duplicate registration raises `ValueError` rather than silently skipping. There is no Fabric-style cached-interpreter concern for merge strategies; a collision always indicates a bug.
+- `DeltaMergeStrategies.get()` returns a fresh instance per call (stateless strategies). If a strategy needs injected services, construction should go through `GlobalInjector` instead.
+
+**Third-party extension:** a custom strategy registers itself the same way — decorate and import before execution. No subclassing of `DeltaEntityProvider` required.
 
 ## Detailed Design
 

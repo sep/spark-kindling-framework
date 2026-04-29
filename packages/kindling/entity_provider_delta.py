@@ -1,13 +1,16 @@
 import logging
 import time
+from abc import ABC, abstractmethod
 from enum import Enum
 from functools import reduce
-from typing import Callable, Literal, Optional
+from typing import Callable, Dict, Literal, Optional, Type
 
 import pyspark.sql.utils
 from delta.tables import DeltaTable
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
+from pyspark.sql.functions import col, concat_ws, lit, sha2, struct, to_json
+from pyspark.sql.types import BooleanType, StructField, StructType, TimestampType
 
 from kindling.common_transforms import *
 from kindling.features import get_feature_bool, set_runtime_feature
@@ -26,6 +29,193 @@ from .entity_provider import (
     StreamWritableEntityProvider,
     WritableEntityProvider,
 )
+
+
+class DeltaMergeStrategy(ABC):
+    """Strategy protocol for Delta merge semantics."""
+
+    @abstractmethod
+    def apply(
+        self,
+        delta_table,
+        df: DataFrame,
+        entity,
+        merge_condition: str,
+    ) -> None:
+        """Apply a merge strategy to a Delta table."""
+
+
+class DeltaMergeStrategies:
+    """Class-level registry for Delta merge strategies."""
+
+    _registry: Dict[str, Type[DeltaMergeStrategy]] = {}
+
+    @classmethod
+    def register(cls, name: str):
+        """Register a Delta merge strategy by name."""
+
+        def decorator(strategy_cls: Type[DeltaMergeStrategy]) -> Type[DeltaMergeStrategy]:
+            if name in cls._registry:
+                raise ValueError(f"Merge strategy '{name}' is already registered.")
+            cls._registry[name] = strategy_cls
+            return strategy_cls
+
+        return decorator
+
+    @classmethod
+    def get(cls, name: str) -> DeltaMergeStrategy:
+        """Return a fresh strategy instance for a registered strategy name."""
+        if name not in cls._registry:
+            raise ValueError(
+                f"Unknown merge strategy '{name}'. "
+                f"Registered strategies: {sorted(cls._registry)}"
+            )
+        return cls._registry[name]()
+
+
+# [implementer] add Delta merge strategy implementations — TASK-20260429-001
+@DeltaMergeStrategies.register(name="scd1")
+class SCD1MergeStrategy(DeltaMergeStrategy):
+    """Default SCD1-style merge strategy."""
+
+    def apply(
+        self,
+        delta_table,
+        df: DataFrame,
+        entity,
+        merge_condition: str,
+    ) -> None:
+        """Run the legacy update-all / insert-all Delta merge."""
+        (
+            delta_table.alias("old")
+            .merge(source=df.alias("new"), condition=merge_condition)
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
+
+
+@DeltaMergeStrategies.register(name="scd2")
+class SCD2MergeStrategy(DeltaMergeStrategy):
+    """SCD Type 2 staged-updates merge strategy."""
+
+    def apply(
+        self,
+        delta_table,
+        df: DataFrame,
+        entity,
+        merge_condition: str,
+    ) -> None:
+        """Run an SCD2 merge for changed/new business keys."""
+        _execute_scd2_merge(delta_table, df, entity)
+
+
+def _quote_sql_identifier(name: str, alias: Optional[str] = None) -> str:
+    escaped = name.replace("`", "``")
+    if alias:
+        return f"{alias}.`{escaped}`"
+    return f"`{escaped}`"
+
+
+def _build_null_safe_change_condition(
+    source_alias: str, target_alias: str, tracked_columns: list[str]
+) -> str:
+    if not tracked_columns:
+        return "false"
+
+    return " OR ".join(
+        [
+            f"({_quote_sql_identifier(column, source_alias)} != "
+            f"{_quote_sql_identifier(column, target_alias)} OR "
+            f"({_quote_sql_identifier(column, source_alias)} IS NULL) != "
+            f"({_quote_sql_identifier(column, target_alias)} IS NULL))"
+            for column in tracked_columns
+        ]
+    )
+
+
+def _routing_key_column_expr(business_keys: list[str], method: str):
+    if method == "concat":
+        return concat_ws("||", *[col(key).cast("string") for key in business_keys])
+    return sha2(to_json(struct(*[col(key) for key in business_keys])), 256)
+
+
+def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
+    if method == "concat":
+        key_exprs = [
+            f"CAST({_quote_sql_identifier(key, 'target')} AS STRING)" for key in business_keys
+        ]
+        return f"concat_ws('||', {', '.join(key_exprs)})"
+
+    named_struct_args = []
+    for key in business_keys:
+        safe_key = key.replace("'", "''")
+        named_struct_args.append(f"'{safe_key}'")
+        named_struct_args.append(_quote_sql_identifier(key, "target"))
+    return f"sha2(to_json(named_struct({', '.join(named_struct_args)})), 256)"
+
+
+def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
+    """Execute an SCD Type 2 staged-updates merge for a Delta table."""
+    cfg = scd_config_from_tags(entity)
+    business_keys = entity.merge_columns
+    temporal_columns = {
+        cfg.effective_from_column,
+        cfg.effective_to_column,
+        cfg.is_current_column,
+    }
+    tracked_columns = cfg.tracked_columns or [
+        column
+        for column in df.columns
+        if column not in business_keys and column not in temporal_columns
+    ]
+    change_condition = _build_null_safe_change_condition("source", "target", tracked_columns)
+    current_target = (
+        delta_table.toDF().filter(col(cfg.is_current_column) == lit(True)).alias("target")
+    )
+
+    changed_rows = (
+        df.alias("source")
+        .join(current_target, on=business_keys, how="inner")
+        .where(change_condition)
+        .select("source.*")
+    )
+    new_rows = df.join(current_target, on=business_keys, how="left_anti")
+    # [integrator] unchanged rows omitted from Group B — closing a row that hasn't changed creates a false history entry — TASK-20260429-001
+    rows_to_close_or_insert = changed_rows.unionByName(new_rows, allowMissingColumns=True)
+
+    insert_rows = changed_rows.withColumn("__merge_key", lit(None).cast("string"))
+    keyed_rows = rows_to_close_or_insert.withColumn(
+        "__merge_key", _routing_key_column_expr(business_keys, cfg.routing_key_method)
+    )
+    staged = insert_rows.unionByName(keyed_rows, allowMissingColumns=True)
+
+    source_columns = [column for column in df.columns if column not in temporal_columns]
+    insert_values = {
+        _quote_sql_identifier(column): _quote_sql_identifier(column, "staged")
+        for column in source_columns
+    }
+    insert_values[_quote_sql_identifier(cfg.effective_from_column)] = "current_timestamp()"
+    insert_values[_quote_sql_identifier(cfg.effective_to_column)] = "NULL"
+    insert_values[_quote_sql_identifier(cfg.is_current_column)] = "true"
+    target_routing_key_sql = _routing_key_target_sql(business_keys, cfg.routing_key_method)
+    merge_condition = (
+        f"{target_routing_key_sql} = staged.__merge_key "
+        f"AND {_quote_sql_identifier(cfg.is_current_column, 'target')} = true"
+    )
+
+    (
+        delta_table.alias("target")
+        .merge(source=staged.alias("staged"), condition=merge_condition)
+        .whenMatchedUpdate(
+            set={
+                _quote_sql_identifier(cfg.effective_to_column): "current_timestamp()",
+                _quote_sql_identifier(cfg.is_current_column): "false",
+            }
+        )
+        .whenNotMatchedInsert(values=insert_values)
+        .execute()
+    )
 
 
 class DeltaAccessMode:
@@ -480,9 +670,8 @@ class DeltaEntityProvider(
         # catalog entry from the builder path, which later causes append/saveAsTable
         # to fail with DELTA_MISSING_DELTA_TABLE.
         if entity.schema:
-            from pyspark.sql.types import StructType
-
-            schema_struct = StructType(entity.schema)
+            scd_config = scd_config_from_tags(entity)
+            schema_struct = self._augment_schema_for_scd2(entity.schema, scd_config)
 
             # Prefer Delta table builder for managed tables when clustering is requested.
             # Some engines require clustering to be enabled at create time and reject
@@ -718,8 +907,6 @@ class DeltaEntityProvider(
             # Avoid metastore/catalog DDL entirely for FOR_PATH mode.
             # Creating the Delta log by writing an empty dataframe is the most
             # portable approach across Fabric/Synapse/Databricks.
-            from pyspark.sql.types import StructType
-
             if not entity.schema:
                 # A Delta table can't be bootstrapped without a schema. If the caller
                 # wants to ensure storage destinations, they must provide schema;
@@ -728,6 +915,9 @@ class DeltaEntityProvider(
                     f"Cannot create physical Delta table at '{table_ref.table_path}' without schema "
                     f"for entity '{entity.entityid}'. Provide entity.schema or skip ensure."
                 )
+
+            scd_config = scd_config_from_tags(entity)
+            schema = self._augment_schema_for_scd2(entity.schema, scd_config)
 
             # Prefer Delta's table builder API when clustering is requested. Some engines
             # (Synapse in particular) reject `ALTER TABLE ... CLUSTER BY` unless the table
@@ -744,7 +934,7 @@ class DeltaEntityProvider(
                         .location(table_ref.table_path)
                         .property("delta.enableChangeDataFeed", "true")
                     )
-                    dt = dt.addColumns(entity.schema)
+                    dt = dt.addColumns(schema)
                     dt = dt.clusterBy(*cluster_cols)
                     # If the user provided partition_columns too, _should_partition_files() will return False.
                     if self._should_partition_files(entity):
@@ -760,7 +950,6 @@ class DeltaEntityProvider(
                         f"at '{table_ref.table_path}' (columns={cluster_cols}); falling back to dataframe bootstrap: {e}"
                     )
 
-            schema = entity.schema or StructType([])
             empty_df = self.spark.createDataFrame([], schema=schema)
             writer = (
                 empty_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true")
@@ -946,16 +1135,30 @@ class DeltaEntityProvider(
 
     def _merge_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Merge DataFrame to existing Delta table"""
+        scd_config = scd_config_from_tags(entity)
+        strategy_name = "scd2" if scd_config.enabled else "scd1"
+        strategy = DeltaMergeStrategies.get(strategy_name)
         merge_condition = self._build_merge_condition("old", "new", entity.merge_columns)
+        strategy.apply(table_ref.get_delta_table(), df, entity, merge_condition)
 
-        (
-            table_ref.get_delta_table()
-            .alias("old")
-            .merge(source=df.alias("new"), condition=merge_condition)
-            .whenMatchedUpdateAll()
-            .whenNotMatchedInsertAll()
-            .execute()
-        )
+    def _augment_schema_for_scd2(self, schema: StructType, cfg: SCDConfig) -> StructType:
+        """Add SCD2 temporal columns to a schema when SCD2 is enabled."""
+        schema_struct = schema if isinstance(schema, StructType) else StructType(schema)
+        if not cfg.enabled:
+            return schema_struct
+
+        existing_names = {field.name for field in schema_struct.fields}
+        extra_fields = []
+        if cfg.effective_from_column not in existing_names:
+            extra_fields.append(StructField(cfg.effective_from_column, TimestampType(), False))
+        if cfg.effective_to_column not in existing_names:
+            extra_fields.append(StructField(cfg.effective_to_column, TimestampType(), True))
+        if cfg.is_current_column not in existing_names:
+            extra_fields.append(StructField(cfg.is_current_column, BooleanType(), False))
+
+        if not extra_fields:
+            return schema_struct
+        return StructType(schema_struct.fields + extra_fields)
 
     def _append_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Append DataFrame to existing Delta table"""
@@ -1152,6 +1355,25 @@ class DeltaEntityProvider(
         table_ref = self._get_table_reference(entity)
         df = self._read_delta_table(table_ref, since_version)
         return self._transform_delta_feed_to_changes(df, entity.merge_columns)
+
+    def read_entity_as_of(self, entity, point_in_time) -> DataFrame:
+        """Read entity state at a specific point in time."""
+        scd_config = scd_config_from_tags(entity)
+        table_ref = self._get_table_reference(entity)
+        if not scd_config.enabled:
+            return (
+                self.spark.read.format("delta")
+                .option("timestampAsOf", str(point_in_time))
+                .load(table_ref.get_read_path())
+            )
+
+        return self.read_entity(entity).filter(
+            (col(scd_config.effective_from_column) <= point_in_time)
+            & (
+                col(scd_config.effective_to_column).isNull()
+                | (col(scd_config.effective_to_column) > point_in_time)
+            )
+        )
 
     def read_entity(self, entity) -> DataFrame:
         """Read full entity table with signal emissions."""
