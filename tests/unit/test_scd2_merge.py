@@ -39,6 +39,10 @@ def patch_spark_sql_functions(monkeypatch):
         "kindling.entity_provider_delta.sha2",
         lambda expr, bits: Expr(f"sha2({expr}, {bits})"),
     )
+    monkeypatch.setattr(
+        "kindling.entity_provider_delta.coalesce",
+        lambda *cols: Expr(f"COALESCE({', '.join(str(c) for c in cols)})"),
+    )
 
 
 def _entity(tags=None):
@@ -176,7 +180,9 @@ def test_execute_scd2_merge_routing_key_concat_method_used_when_configured():
     delta_table, _, _, frames = _execute({"scd.routing_key": "concat"})
 
     merge_condition = delta_table.merge.call_args.kwargs["condition"]
-    assert merge_condition.startswith("concat_ws('||', CAST(target.`customer_id` AS STRING))")
+    assert merge_condition.startswith(
+        "concat_ws('||', COALESCE(CAST(target.`customer_id` AS STRING), '__null__'))"
+    )
     routing_expr = frames["rows_to_close_or_insert"].withColumn.call_args.args[1]
     assert "concat_ws" in str(routing_expr)
 

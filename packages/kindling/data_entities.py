@@ -269,6 +269,19 @@ def _validate_scd_config(entity: EntityMetadata) -> None:
             "collide with business schema columns. Override via SCD column tags."
         )
 
+    if "__merge_key" in schema_names:
+        raise ValueError(
+            f"Entity '{entity.entityid}': column '__merge_key' is reserved for SCD2 "
+            "merge staging and must not appear in the entity schema."
+        )
+
+    current_id = cfg.current_entity_id.strip()
+    if not current_id or current_id == entity.entityid:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.current_entity_id must be non-empty and "
+            "differ from the base entity id."
+        )
+
 
 class DataEntities:
 

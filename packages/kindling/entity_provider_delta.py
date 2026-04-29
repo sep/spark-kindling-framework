@@ -9,7 +9,7 @@ import pyspark.sql.utils
 from delta.tables import DeltaTable
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, concat_ws, lit, sha2, struct, to_json
+from pyspark.sql.functions import coalesce, col, concat_ws, lit, sha2, struct, to_json
 from pyspark.sql.types import BooleanType, StructField, StructType, TimestampType
 
 from kindling.common_transforms import *
@@ -136,14 +136,19 @@ def _build_null_safe_change_condition(
 
 def _routing_key_column_expr(business_keys: list[str], method: str):
     if method == "concat":
-        return concat_ws("||", *[col(key).cast("string") for key in business_keys])
+        # Coalesce to sentinel so (None, "x") and ("x", None) produce distinct keys.
+        return concat_ws(
+            "||",
+            *[coalesce(col(key).cast("string"), lit("__null__")) for key in business_keys],
+        )
     return sha2(to_json(struct(*[col(key) for key in business_keys])), 256)
 
 
 def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
     if method == "concat":
         key_exprs = [
-            f"CAST({_quote_sql_identifier(key, 'target')} AS STRING)" for key in business_keys
+            f"COALESCE(CAST({_quote_sql_identifier(key, 'target')} AS STRING), '__null__')"
+            for key in business_keys
         ]
         return f"concat_ws('||', {', '.join(key_exprs)})"
 
@@ -1367,11 +1372,12 @@ class DeltaEntityProvider(
                 .load(table_ref.get_read_path())
             )
 
+        pit = lit(point_in_time).cast("timestamp")
         return self.read_entity(entity).filter(
-            (col(scd_config.effective_from_column) <= point_in_time)
+            (col(scd_config.effective_from_column) <= pit)
             & (
                 col(scd_config.effective_to_column).isNull()
-                | (col(scd_config.effective_to_column) > point_in_time)
+                | (col(scd_config.effective_to_column) > pit)
             )
         )
 
