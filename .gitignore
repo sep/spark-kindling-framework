@@ -100,3 +100,8 @@ iac/databricks/account/tfplan
 .env*
 !.env.template
 .codex
+
+# Agent worktrees (separate checkouts, not repo content)
+.worktrees/
+setup_agents.sh
+../kindling-worktrees/
