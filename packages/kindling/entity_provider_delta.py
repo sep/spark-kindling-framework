@@ -18,6 +18,9 @@ from kindling.features import get_feature_bool, set_runtime_feature
 # Import your existing modules
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
+
+_SCD2_NULL_SENTINEL = "__null__"
+_SCD2_MERGE_KEY_COLUMN = "__merge_key"
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 
@@ -139,7 +142,7 @@ def _routing_key_column_expr(business_keys: list[str], method: str):
         # Coalesce to sentinel so (None, "x") and ("x", None) produce distinct keys.
         return concat_ws(
             "||",
-            *[coalesce(col(key).cast("string"), lit("__null__")) for key in business_keys],
+            *[coalesce(col(key).cast("string"), lit(_SCD2_NULL_SENTINEL)) for key in business_keys],
         )
     return sha2(to_json(struct(*[col(key) for key in business_keys])), 256)
 
@@ -147,7 +150,7 @@ def _routing_key_column_expr(business_keys: list[str], method: str):
 def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
     if method == "concat":
         key_exprs = [
-            f"COALESCE(CAST({_quote_sql_identifier(key, 'target')} AS STRING), '__null__')"
+            f"COALESCE(CAST({_quote_sql_identifier(key, 'target')} AS STRING), '{_SCD2_NULL_SENTINEL}')"
             for key in business_keys
         ]
         return f"concat_ws('||', {', '.join(key_exprs)})"
@@ -162,6 +165,11 @@ def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
 
 def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     """Execute an SCD Type 2 staged-updates merge for a Delta table."""
+    if _SCD2_MERGE_KEY_COLUMN in df.columns:
+        raise ValueError(
+            f"Incoming DataFrame contains reserved column '{_SCD2_MERGE_KEY_COLUMN}'. "
+            "Rename this column before writing to an SCD2 entity."
+        )
     cfg = scd_config_from_tags(entity)
     business_keys = entity.merge_columns
     temporal_columns = {
@@ -189,9 +197,9 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     # [integrator] unchanged rows omitted from Group B — closing a row that hasn't changed creates a false history entry — TASK-20260429-001
     rows_to_close_or_insert = changed_rows.unionByName(new_rows, allowMissingColumns=True)
 
-    insert_rows = changed_rows.withColumn("__merge_key", lit(None).cast("string"))
+    insert_rows = changed_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, lit(None).cast("string"))
     keyed_rows = rows_to_close_or_insert.withColumn(
-        "__merge_key", _routing_key_column_expr(business_keys, cfg.routing_key_method)
+        _SCD2_MERGE_KEY_COLUMN, _routing_key_column_expr(business_keys, cfg.routing_key_method)
     )
     staged = insert_rows.unionByName(keyed_rows, allowMissingColumns=True)
 
