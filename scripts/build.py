@@ -14,9 +14,11 @@ Replaces the pre-rename three-wheel-per-platform build; users now install
 picking between three separate distributions.
 """
 
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from os import environ
 from pathlib import Path
@@ -29,9 +31,38 @@ DESIGN_TIME_PACKAGE_DIRS = [
     Path("packages/kindling_visualization"),
 ]
 
+PLATFORM_FILES_TO_REMOVE = {
+    "synapse": [
+        "kindling/platform_databricks.py",
+        "kindling/platform_fabric.py",
+        "kindling/platform_standalone.py",
+    ],
+    "databricks": [
+        "kindling/platform_synapse.py",
+        "kindling/platform_fabric.py",
+        "kindling/platform_standalone.py",
+    ],
+    "fabric": [
+        "kindling/platform_synapse.py",
+        "kindling/platform_databricks.py",
+        "kindling/platform_standalone.py",
+    ],
+    "local": [],
+}
+
+
+def get_version_from_pyproject() -> str:
+    pyproject_path = Path("pyproject.toml")
+    if not pyproject_path.exists():
+        raise FileNotFoundError("pyproject.toml not found")
+    content = pyproject_path.read_text()
+    match = re.search(r'^version = "([^"]+)"', content, re.MULTILINE)
+    if not match:
+        raise ValueError("Could not find version in pyproject.toml")
+    return match.group(1)
+
 
 def ensure_poetry_installed() -> None:
-    """Check if Poetry is available"""
     environ.setdefault("POETRY_CACHE_DIR", "/tmp/poetry-cache")
     environ.setdefault("POETRY_VIRTUALENVS_PATH", "/tmp/poetry-virtualenvs")
     environ.setdefault("VIRTUALENV_OVERRIDE_APP_DATA", "/tmp/virtualenv-app-data")
@@ -40,7 +71,6 @@ def ensure_poetry_installed() -> None:
     Path(environ["POETRY_VIRTUALENVS_PATH"]).mkdir(parents=True, exist_ok=True)
     Path(environ["VIRTUALENV_OVERRIDE_APP_DATA"]).mkdir(parents=True, exist_ok=True)
     Path(environ["XDG_DATA_HOME"]).mkdir(parents=True, exist_ok=True)
-
     try:
         subprocess.run(["poetry", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -50,15 +80,12 @@ def ensure_poetry_installed() -> None:
 
 
 def build_runtime_wheel() -> tuple[str, int]:
-    """Build the single combined runtime wheel from the root pyproject.toml."""
     print("\n📦 Building spark-kindling runtime wheel...")
-
     result = subprocess.run(
         ["poetry", "build", "--format", "wheel"], capture_output=True, text=True
     )
     if result.returncode != 0:
         raise RuntimeError(f"Error building runtime wheel:\n{result.stderr}")
-
     source_wheels = sorted(Path("dist").glob("spark_kindling-*.whl"))
     if not source_wheels:
         raise FileNotFoundError("No spark_kindling wheel produced in dist/")
@@ -68,18 +95,28 @@ def build_runtime_wheel() -> tuple[str, int]:
     return wheel_path.name, size_kb
 
 
+def build_local_wheel(version: str) -> tuple[str, int]:
+    """Build the kindling-local wheel: all platforms included, full deps."""
+    print("\n📦 Building kindling-local wheel (all platforms, full deps)...")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        build_dir = Path(temp_dir)
+        original_wheel = build_wheel("local", version, build_dir)
+        wheel_name = f"kindling_local-{version}-py3-none-any.whl"
+        output_path = DIST_DIR / wheel_name
+        shutil.copy2(original_wheel, output_path)
+        size_kb = output_path.stat().st_size // 1024
+        print(f"   ✅ Built: {wheel_name} ({size_kb}K)")
+        return wheel_name, size_kb
+
+
 def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
-    """Build a design-time wheel in-place and copy it to dist/."""
     package_name = package_dir.name
     print(f"\n📦 Building {package_name} wheel...")
-
     if not (package_dir / "pyproject.toml").exists():
         raise FileNotFoundError(f"Missing pyproject.toml in {package_dir}")
-
     package_dist = package_dir / "dist"
     if package_dist.exists():
         shutil.rmtree(package_dist)
-
     result = subprocess.run(
         ["poetry", "build", "--format", "wheel"],
         cwd=package_dir,
@@ -88,11 +125,9 @@ def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
     )
     if result.returncode != 0:
         raise RuntimeError(f"Error building {package_name} wheel:\n{result.stderr}")
-
     wheels = sorted(package_dist.glob("*.whl"))
     if not wheels:
         raise FileNotFoundError(f"No wheel generated for {package_name}")
-
     source_wheel = wheels[0]
     output_path = DIST_DIR / source_wheel.name
     shutil.copy2(source_wheel, output_path)
@@ -102,12 +137,9 @@ def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
 
 
 def main():
-    """Build the runtime wheel and design-time wheels."""
     print("🔥 Building Kindling wheels...")
     print(f"📅 Build time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
     ensure_poetry_installed()
-
     print("\n🧹 Cleaning previous builds...")
     if DIST_DIR.exists():
         shutil.rmtree(DIST_DIR)
@@ -121,6 +153,14 @@ def main():
     except Exception as e:
         print(f"   ❌ Failed: {e}")
         results.append(("spark-kindling", "", 0, False))
+
+    try:
+        version = get_version_from_pyproject()
+        wheel_name, size_kb = build_local_wheel(version)
+        results.append(("kindling-local", wheel_name, size_kb, True))
+    except Exception as e:
+        print(f"   ❌ Failed to build kindling-local: {e}")
+        results.append(("kindling-local", "", 0, False))
 
     for package_dir in DESIGN_TIME_PACKAGE_DIRS:
         try:
@@ -153,10 +193,10 @@ def main():
     print("   pip install 'spark-kindling[synapse]'")
     print("   pip install 'spark-kindling[databricks]'")
     print("   pip install 'spark-kindling[fabric]'")
+    print("   pip install kindling-local              # local dev")
     print("   pip install spark-kindling-cli")
     print("   pip install spark-kindling-sdk")
     print("   pip install kindling-visualization")
-
     print("\n📤 Next step:")
     print("   poetry run poe deploy       # Deploy to Azure Storage (testing)")
     print("   poetry run poe deploy --release latest  # Deploy from GitHub release (production)")

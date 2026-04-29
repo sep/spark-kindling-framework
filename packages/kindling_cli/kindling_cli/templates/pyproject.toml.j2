@@ -36,7 +36,7 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
-    "unit: pure Python, no Spark",
+    "unit: local Spark unit tests, no ABFSS",
     "component: DI wiring, no ABFSS",
 {% if integration %}
     "integration: requires Spark and ABFSS credentials",
