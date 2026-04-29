@@ -1,0 +1,26 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "kindling-visualization"
+version = "0.1.0"
+description = "Matplotlib visualization extension for the Kindling framework"
+authors = ["SEP Engineering <engineering@sep.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [
+    {include = "kindling_visualization"},
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+# kindling is provided by the runtime environment, not installed as a dependency.
+# matplotlib is the render backend for this extension. Spark runtimes usually
+# provide pandas already; DataFrame.toPandas() will surface a clear runtime
+# error if a selected environment does not.
+matplotlib = ">=3.7.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+black = ">=23.0.0"

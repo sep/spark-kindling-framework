@@ -6,7 +6,7 @@ Produces one runtime wheel (spark-kindling) that contains every
 ``platform_*.py`` module and declares platform-specific deps under extras
 (see ``[tool.poetry.extras]`` in the root pyproject.toml). Also builds the
 design-time wheels: spark-kindling-cli, spark-kindling-sdk, and
-kindling-otel-azure — all produced with a single ``poetry build`` per
+kindling extension wheels — all produced with a single ``poetry build`` per
 package dir.
 
 Replaces the pre-rename three-wheel-per-platform build; users now install
@@ -26,6 +26,7 @@ DESIGN_TIME_PACKAGE_DIRS = [
     Path("packages/kindling_sdk"),
     Path("packages/kindling_cli"),
     Path("packages/kindling_otel_azure"),
+    Path("packages/kindling_visualization"),
 ]
 
 
@@ -154,6 +155,7 @@ def main():
     print("   pip install 'spark-kindling[fabric]'")
     print("   pip install spark-kindling-cli")
     print("   pip install spark-kindling-sdk")
+    print("   pip install kindling-visualization")
 
     print("\n📤 Next step:")
     print("   poetry run poe deploy       # Deploy to Azure Storage (testing)")
