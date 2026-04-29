@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import keyword
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -70,6 +71,10 @@ def _to_snake(name: str) -> str:
     s = s.strip("_")
     if not s or s[0].isdigit():
         raise ValueError(f"Project name {name!r} cannot be converted to a valid Python identifier.")
+    if keyword.iskeyword(s):
+        raise ValueError(
+            f"Project name {name!r} maps to the Python keyword '{s}', which cannot be used as a package name."
+        )
     return s
 
 
