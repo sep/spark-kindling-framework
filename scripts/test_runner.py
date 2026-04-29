@@ -556,6 +556,15 @@ def run_deploy(platform: str = "", release: str = "") -> int:
     _exit(result.returncode)
 
 
+def run_deploy_extension(extension: str) -> int:
+    """Deploy a named extension wheel to Azure Storage."""
+    cmd = ["python", "scripts/deploy_extensions.py", extension]
+    print(f"Running: {' '.join(cmd)}")
+    print()
+    result = subprocess.run(cmd)
+    _exit(result.returncode)
+
+
 if __name__ == "__main__":
     # Allow direct execution for testing
     import argparse
