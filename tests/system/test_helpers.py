@@ -12,6 +12,7 @@ import ast
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -31,33 +32,70 @@ _FATAL_SYSTEM_TEST_LOG_PREFIXES = (
 )
 
 
+def _emit_system_test_message(message: str) -> None:
+    """Emit a message to stdout and, when configured, to the xdist heartbeat channel."""
+    print(message)
+    sys.stdout.flush()
+
+    heartbeat_path = os.getenv("KINDLING_SYSTEM_HEARTBEAT_FILE")
+    if not heartbeat_path:
+        return
+
+    with open(heartbeat_path, "a", encoding="utf-8") as heartbeat_file:
+        heartbeat_file.write(message + "\n")
+
+
+def emit_system_test_heartbeat(
+    phase: str,
+    *,
+    start_time: float,
+    last_message_time: float,
+    interval_seconds: float = 30.0,
+    details: str = "",
+) -> float:
+    """Emit a rate-limited heartbeat line and return the latest message timestamp."""
+    current_time = time.time()
+    if current_time - last_message_time < interval_seconds:
+        return last_message_time
+
+    elapsed = int(current_time - start_time)
+    suffix = f" {details}" if details else ""
+    _emit_system_test_message(f"🔄 [{elapsed}s] {phase}{suffix}")
+    return current_time
+
+
+def _get_nonempty_env(*names: str) -> Optional[str]:
+    """Return the first environment value that is present and not blank."""
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            continue
+
+        stripped = value.strip()
+        if stripped:
+            return stripped
+
+    return None
+
+
 def get_system_test_poll_interval(default: float = 10.0) -> float:
     """Return poll interval for system-test job/status polling."""
     return float(
-        os.getenv(
-            "KINDLING_SYSTEM_TEST_POLL_INTERVAL",
-            os.getenv("POLL_INTERVAL", str(default)),
-        )
+        _get_nonempty_env("KINDLING_SYSTEM_TEST_POLL_INTERVAL", "POLL_INTERVAL") or str(default)
     )
 
 
 def get_system_test_stream_max_wait(default: float = 600.0) -> float:
     """Return max stdout stream wait for system tests."""
     return float(
-        os.getenv(
-            "KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT",
-            os.getenv("TEST_TIMEOUT", str(default)),
-        )
+        _get_nonempty_env("KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT", "TEST_TIMEOUT") or str(default)
     )
 
 
 def get_system_test_completion_timeout(default: float = 600.0) -> float:
     """Return completion timeout for tests that poll status directly."""
     return float(
-        os.getenv(
-            "KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT",
-            os.getenv("TEST_TIMEOUT", str(default)),
-        )
+        _get_nonempty_env("KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT", "TEST_TIMEOUT") or str(default)
     )
 
 
@@ -533,13 +571,17 @@ class StdoutStreamValidator:
             List of captured stdout lines
         """
         self.captured_lines = []
+        start_time = time.time()
+
+        _emit_system_test_message(f"📡 Starting platform stdout stream for run_id={run_id}")
+        _emit_system_test_message(f"   Poll interval: {poll_interval}s")
+        _emit_system_test_message(f"   Max wait: {max_wait}s")
 
         def callback(line: str):
             """Callback that stores and optionally prints lines"""
             self.captured_lines.append(line)
             if print_lines:
-                print(f"  {line}")
-                sys.stdout.flush()
+                _emit_system_test_message(f"  {line}")
 
         # Use platform API's stdout streaming
         all_lines = self.api_client.stream_stdout_logs(
@@ -548,6 +590,12 @@ class StdoutStreamValidator:
             callback=callback,
             poll_interval=poll_interval,
             max_wait=max_wait,
+        )
+
+        elapsed = int(time.time() - start_time)
+        _emit_system_test_message(
+            f"📊 Platform stdout stream finished for run_id={run_id} "
+            f"(elapsed={elapsed}s, lines={len(self.captured_lines)})"
         )
 
         return all_lines

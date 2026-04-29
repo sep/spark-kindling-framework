@@ -1,11 +1,13 @@
 import base64
 import json
+import zipfile
 from pathlib import Path
 
 import yaml
 from click.testing import CliRunner
 from kindling_cli.cli import (
     _build_fabric_notebook_payload,
+    _find_wheels,
     _generate_bootstrap_notebook,
     _generate_sample_notebook,
     _render_environment_bootstrap_source,
@@ -64,6 +66,50 @@ def test_env_check_passes_for_generated_settings_file():
 
         assert result.exit_code == 0
         assert "Environment check passed." in result.output
+
+
+def test_test_run_passes_explicit_layout_to_runner(monkeypatch):
+    captured = {}
+
+    def fake_run_tests(options):
+        captured["options"] = options
+        return 0
+
+    monkeypatch.setattr("kindling_cli.test_runner.run_tests", fake_run_tests)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "test",
+            "run",
+            "--suite",
+            "system",
+            "--path",
+            "custom/system",
+            "--platform",
+            "fabric",
+            "--test",
+            "name_mapper",
+            "--ci",
+            "--preflight",
+            "system",
+            "--workers",
+            "4",
+            "--pytest-arg",
+            "--tb=short",
+        ],
+    )
+
+    assert result.exit_code == 0
+    options = captured["options"]
+    assert options.suite == "system"
+    assert [str(path) for path in options.paths] == ["custom/system"]
+    assert options.platform == "fabric"
+    assert options.test_filter == "name_mapper"
+    assert options.ci is True
+    assert options.preflight == "system"
+    assert options.workers == "4"
+    assert options.pytest_args == ["--tb=short"]
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +434,427 @@ def test_render_starter_notebook_source_points_to_environment_bootstrap():
     assert 'logger.info("Kindling starter notebook ready")' in source
     assert 'BOOTSTRAP_CONFIG["app_name"]' in source
     assert '"extensions": ["kindling-otel-azure>=0.3.0"]' in source
+
+
+# ---------------------------------------------------------------------------
+# runtime artifact + remote lifecycle commands
+# ---------------------------------------------------------------------------
+
+
+def test_find_wheels_prefers_combined_runtime_wheel(tmp_path):
+    combined = tmp_path / "spark_kindling-0.9.1-py3-none-any.whl"
+    legacy = tmp_path / "kindling_synapse-0.9.1-py3-none-any.whl"
+    combined.write_text("", encoding="utf-8")
+    legacy.write_text("", encoding="utf-8")
+
+    assert _find_wheels(tmp_path, "synapse") == [combined]
+
+
+def test_find_wheels_falls_back_to_legacy_platform_wheel(tmp_path):
+    legacy = tmp_path / "kindling_fabric-0.9.1-py3-none-any.whl"
+    legacy.write_text("", encoding="utf-8")
+
+    assert _find_wheels(tmp_path, "fabric") == [legacy]
+
+
+def test_app_package_creates_kda_archive():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        (app_dir / "nested").mkdir(parents=True)
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        (app_dir / "nested" / "settings.yaml").write_text("name: demo\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["app", "package", str(app_dir)])
+
+        assert result.exit_code == 0, result.output
+        package_path = Path("dist/demo_app.kda")
+        assert package_path.exists()
+        with zipfile.ZipFile(package_path, "r") as archive:
+            assert sorted(archive.namelist()) == ["app.py", "nested/settings.yaml"]
+
+
+def test_app_package_json_output_is_machine_readable():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["app", "package", str(app_dir), "--json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["file_count"] == 1
+        assert payload["files"] == ["app.py"]
+        assert payload["package_path"].endswith("dist/demo_app.kda")
+
+
+def test_app_deploy_rejects_unsafe_kda_paths():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        package_path = Path("demo_app.kda")
+        with zipfile.ZipFile(package_path, "w") as archive:
+            archive.writestr("../escape.py", "print('nope')\n")
+
+        result = runner.invoke(cli, ["app", "deploy", str(package_path), "--platform", "fabric"])
+
+        assert result.exit_code != 0
+        assert "unsafe relative path traversal" in result.output
+
+
+def test_app_deploy_uses_platform_sdk(monkeypatch):
+    class FakeAPI:
+        def __init__(self):
+            self.calls = []
+
+        def deploy_app(self, app_name, app_files):
+            self.calls.append((app_name, app_files))
+            return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/demo"
+
+    fake_api = FakeAPI()
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (fake_api, platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        (app_dir / "pipelines").mkdir(parents=True)
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        (app_dir / "pipelines" / "job.yml").write_text("job_name: demo\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["app", "deploy", str(app_dir), "--platform", "fabric"])
+
+        assert result.exit_code == 0, result.output
+        assert fake_api.calls[0][0] == "demo_app"
+        assert sorted(fake_api.calls[0][1]) == ["app.py", "pipelines/job.yml"]
+        assert "Deployed app `demo_app`" in result.output
+
+
+def test_app_deploy_json_output_includes_storage_path(monkeypatch):
+    class FakeAPI:
+        def deploy_app(self, app_name, app_files):
+            return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/demo"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+        result = runner.invoke(
+            cli, ["app", "deploy", str(app_dir), "--platform", "fabric", "--json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["app_name"] == "demo_app"
+        assert payload["platform"] == "fabric"
+        assert payload["storage_path"].startswith("abfss://")
+
+
+def test_job_create_loads_yaml_and_prints_structured_result(monkeypatch):
+    class FakeAPI:
+        def create_job(self, job_name, job_config):
+            assert job_name == "nightly-demo"
+            assert job_config["schedule"] == "0 0 * * *"
+            return {"job_id": "job-123", "job_name": job_name}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("job.yaml").write_text(
+            "job_name: nightly-demo\nschedule: '0 0 * * *'\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["job", "create", "job.yaml", "--platform", "synapse"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["job_id"] == "job-123"
+        assert payload["job_name"] == "nightly-demo"
+
+
+def test_job_run_json_output_includes_run_id(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            assert job_id == "job-123"
+            assert parameters is None
+            return "run-456"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["job", "run", "job-123", "--platform", "synapse", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["job_id"] == "job-123"
+    assert payload["run_id"] == "run-456"
+    assert payload["waited"] is False
+
+
+def test_job_run_wait_fails_on_failed_terminal_state(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "FAILED"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "synapse", "--wait", "--json"],
+    )
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["run_id"] == "run-456"
+    assert payload["state"] == "FAILED"
+    assert payload["succeeded"] is False
+
+
+def test_job_run_wait_succeeds_on_completed_terminal_state(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "COMPLETED"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "synapse", "--wait", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "COMPLETED"
+    assert payload["succeeded"] is True
+
+
+def test_job_run_wait_handles_databricks_terminated_success(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "TERMINATED", "result_state": "SUCCESS"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "databricks", "--wait", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "SUCCESS"
+    assert payload["succeeded"] is True
+
+
+def test_job_run_wait_handles_nested_lifecycle_result_state(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"state": {"life_cycle_state": "TERMINATED", "result_state": "FAILED"}}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "job",
+            "run",
+            "job-123",
+            "--platform",
+            "databricks",
+            "--wait",
+            "--json",
+            "--no-fail-on-error",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "FAILED"
+    assert payload["succeeded"] is False
+
+
+def test_job_run_wait_handles_fabric_succeeded_status(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+        def get_job_status(self, run_id):
+            return {"status": "Succeeded"}
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["job", "run", "job-123", "--platform", "fabric", "--wait", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["state"] == "SUCCEEDED"
+    assert payload["succeeded"] is True
+
+
+def test_job_run_wait_rejects_non_positive_poll_interval(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "job",
+            "run",
+            "job-123",
+            "--platform",
+            "synapse",
+            "--wait",
+            "--poll-interval",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--poll-interval must be greater than 0" in result.output
+
+
+def test_job_run_wait_rejects_non_positive_timeout(monkeypatch):
+    class FakeAPI:
+        def run_job(self, job_id, parameters=None):
+            return "run-456"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "job",
+            "run",
+            "job-123",
+            "--platform",
+            "synapse",
+            "--wait",
+            "--timeout",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--timeout must be greater than 0" in result.output
+
+
+def test_job_logs_stream_requires_job_id():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["job", "logs", "run-123", "--stream", "--platform", "fabric"])
+
+    assert result.exit_code != 0
+    assert "--job-id is required when --stream is used." in result.output
+
+
+def test_workspace_deploy_fails_when_config_missing_unless_allowed(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "deploy",
+                "--platform",
+                "synapse",
+                "--storage-account",
+                "acct",
+                "--skip-wheels",
+                "--skip-bootstrap-script",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "Use --skip-config or --allow-missing-config" in result.output
+
+
+def test_workspace_deploy_fails_when_bootstrap_missing_unless_allowed(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("settings.yaml").write_text("kindling: {}\n", encoding="utf-8")
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "deploy",
+                "--platform",
+                "synapse",
+                "--storage-account",
+                "acct",
+                "--skip-wheels",
+                "--skip-config",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "Use --skip-bootstrap-script or --allow-missing-bootstrap-script" in result.output
 
 
 # ---------------------------------------------------------------------------

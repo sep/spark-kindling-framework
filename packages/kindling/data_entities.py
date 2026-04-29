@@ -2,7 +2,8 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import MISSING, dataclass, field, fields, replace
-from typing import Any, Callable, Dict, List
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
@@ -11,6 +12,51 @@ from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from pyspark.sql import DataFrame
+
+
+@dataclass
+class SqlSource:
+    """Locates SQL text for a sql_entity — resolved once at registration time.
+
+    Exactly one of ``inline``, ``resource``, or ``file`` must be provided.
+
+    Args:
+        inline:   A literal SQL string.
+        resource: A ``"package:path/to/file.sql"`` reference resolved via
+                  ``importlib.resources``.  The SQL file must be included as
+                  package data in the installed wheel.
+        file:     A filesystem path (absolute, or relative to the caller's
+                  working directory).  Convenient during local development;
+                  for deployment bundle the file as a package resource instead.
+    """
+
+    inline: Optional[str] = None
+    resource: Optional[str] = None
+    file: Optional[str] = None
+
+    def __post_init__(self):
+        provided = sum(x is not None for x in [self.inline, self.resource, self.file])
+        if provided != 1:
+            raise ValueError(
+                "SqlSource requires exactly one of: inline, resource, file. "
+                f"Got {provided} argument(s)."
+            )
+
+    def load(self) -> str:
+        """Return the SQL text, reading from the source if necessary."""
+        if self.inline is not None:
+            return self.inline
+        if self.resource is not None:
+            package, _, path = self.resource.partition(":")
+            if not package or not path:
+                raise ValueError(
+                    f"SqlSource resource must be 'package:path/to/file.sql', got: {self.resource!r}"
+                )
+            import importlib.resources
+
+            return importlib.resources.files(package).joinpath(path).read_text(encoding="utf-8")
+        # file path
+        return Path(self.file).read_text(encoding="utf-8")
 
 
 class EntityPathLocator(ABC):
@@ -116,11 +162,73 @@ class EntityMetadata:
     # Optional: Databricks liquid clustering (or best-effort on other platforms).
     # If set, Delta writes should generally avoid file partitioning (partition_columns).
     cluster_columns: List[str] = field(default_factory=list)
+    # Optional: resolved SQL body for SQL-defined (view) entities.
+    # Set by DataEntities.sql_entity(); None for Delta entities.
+    sql: Optional[str] = None
+
+    @property
+    def is_sql_entity(self) -> bool:
+        return self.sql is not None
 
 
 class DataEntities:
 
     deregistry = None
+
+    @classmethod
+    def sql_entity(
+        cls,
+        entityid: str,
+        name: str,
+        tags: Optional[Dict[str, str]] = None,
+        sql: Optional[str] = None,
+        sql_source: Optional[SqlSource] = None,
+    ):
+        """Register a SQL-defined (permanent catalog view) entity.
+
+        The entity is read-only and backed by a Spark catalog view.
+        Migration manages it via ``CREATE OR REPLACE VIEW``.
+
+        Exactly one of ``sql`` or ``sql_source`` must be provided.
+
+        Example — inline SQL::
+
+            @DataEntities.sql_entity(
+                entityid="reporting.recent_sales",
+                name="recent_sales",
+                sql="SELECT * FROM sales.transactions WHERE event_date >= current_date() - 30",
+            )
+
+        Example — package resource::
+
+            @DataEntities.sql_entity(
+                entityid="reporting.recent_sales",
+                name="recent_sales",
+                sql_source=SqlSource(resource="my_app:sql/recent_sales.sql"),
+            )
+        """
+        if cls.deregistry is None:
+            cls.deregistry = GlobalInjector.get(DataEntityRegistry)
+
+        provided = sum(x is not None for x in [sql, sql_source])
+        if provided != 1:
+            raise ValueError(
+                "sql_entity requires exactly one of: sql, sql_source. "
+                f"Got {provided} argument(s)."
+            )
+
+        resolved_sql = sql if sql is not None else sql_source.load()
+        merged_tags = {"provider_type": "view", **(tags or {})}
+
+        cls.deregistry.register_entity(
+            entityid,
+            name=name,
+            merge_columns=[],
+            tags=merged_tags,
+            schema=None,
+            sql=resolved_sql,
+        )
+        return None
 
     @classmethod
     def entity(cls, **decorator_params):

@@ -3,8 +3,8 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "kindling"
-version = "0.8.14"
+name = "spark-kindling"
+version = "0.9.3"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -15,21 +15,62 @@ packages = [
 
 [tool.poetry.dependencies]
 python = "^3.10"
-pyspark = ">=3.4.0"
-delta-spark = ">=2.4.0"
-pandas = ">=2.0.0"
-pyarrow = ">=12.0.0"
+# Core framework (required on every platform). Kept as a minimal base
+# dependency set with no Spark runtime deps so the wheel installs cleanly
+# on cloud Spark runtimes (Synapse, Fabric, Databricks) without pip trying
+# to upgrade packages the runtime already provides via non-pip mechanisms.
 injector = ">=0.20.1"
 dynaconf = ">=3.1.0"
 pyyaml = ">=6.0"
 packaging = ">=23.0"
 blinker = ">=1.6.0"
-azure-storage-blob = ">=12.14.0"
-azure-storage-file-datalake = ">=12.14.0"
-azure-identity = ">=1.15.0"
-azure-core = ">=1.30.0,<1.31.0"  # Pin to 1.30.x - compatible with Fabric runtime 1.30.2
-azure-synapse-artifacts = "0.17.0"
-databricks-sdk = ">=0.12.0"
+# Azure SDKs used by every Azure-backed platform.
+# `azure-core` is intentionally constrained to 1.30.x for managed-runtime
+# compatibility (for example, Fabric runtime 1.30.2). `azure-identity` and
+# `azure-storage-file-datalake` are intentionally kept loose so pip accepts
+# the cluster's pre-installed versions without unnecessary re-resolution.
+azure-core = ">=1.30.0,<1.31.0"
+azure-identity = ">=1.12.0"
+azure-storage-file-datalake = ">=12.0.0"
+# Platform-exclusive runtime deps live in extras (see [tool.poetry.extras]).
+# Spark runtime deps (pyspark, delta-spark, pandas, pyarrow) are optional
+# because managed runtimes provide them via non-pip mechanisms; declaring
+# them as required Requires-Dist causes pip to hang trying to resolve them
+# during on-cluster install. Local/CI consumers get them via the
+# [standalone] extra instead.
+azure-synapse-artifacts = {version = ">=0.17.0", optional = true}
+databricks-sdk = {version = ">=0.12.0", optional = true}
+pyspark = {version = ">=3.4.0", optional = true}
+delta-spark = {version = ">=2.4.0", optional = true}
+pandas = {version = ">=2.0.0", optional = true}
+pyarrow = {version = ">=12.0.0", optional = true}
+
+[tool.poetry.extras]
+# Install with: pip install 'spark-kindling[synapse]' etc.
+# synapse/databricks/fabric: for cloud consumers — add platform-specific SDKs.
+# standalone: for local dev / CI / generic-Spark consumers — pull in pyspark
+#   and friends that managed runtimes already provide.
+synapse = ["azure-synapse-artifacts"]
+databricks = ["databricks-sdk"]
+fabric = []
+standalone = ["pyspark", "delta-spark", "pandas", "pyarrow"]
+all = [
+    "azure-synapse-artifacts",
+    "databricks-sdk",
+    "pyspark",
+    "delta-spark",
+    "pandas",
+    "pyarrow",
+]
+
+[tool.poetry.plugins."spark_kindling.platforms"]
+# Platform service discovery via importlib.metadata entry points.
+# Value is the module to import; the module self-registers its factory
+# via @PlatformServices.register(name="<platform>") on import.
+synapse = "kindling.platform_synapse"
+databricks = "kindling.platform_databricks"
+fabric = "kindling.platform_fabric"
+standalone = "kindling.platform_standalone"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"
@@ -44,6 +85,22 @@ jupyter = ">=1.0.0"
 poethepoet = ">=0.24.0"
 requests = ">=2.31.0"
 azure-mgmt-storage = "22.1.0"
+spark-kindling-cli = {path = "packages/kindling_cli", develop = true}
+# Platform SDKs needed by dev/CI tooling — they're also runtime deps under
+# the corresponding extras, but we install them unconditionally in the dev
+# env because scripts/databricks_uc_preflight.py, scripts/manage_uc_volumes.py,
+# and kindling_sdk.platform_* use them at design time.
+databricks-sdk = ">=0.12.0"
+azure-synapse-artifacts = ">=0.17.0"
+# Spark runtime also needed at dev time: unit tests import from kindling
+# modules that do `from pyspark import ...` at module scope. Managed cloud
+# runtimes provide these via non-pip mechanisms (hence [standalone] extra
+# for local/CI consumers), but dev env has to pip-install them directly.
+pyspark = ">=3.4.0"
+delta-spark = ">=2.4.0"
+pandas = ">=2.0.0"
+pyarrow = ">=12.0.0"
+matplotlib = ">=3.7.0"
 
 [tool.poe.tasks]
 # Version management
@@ -54,7 +111,7 @@ build = { script = "scripts.build:main" }
 build-wheels = { shell = "bash scripts/build_platform_wheels.sh" }
 deploy = { script = "scripts.test_runner:run_deploy", help = "Deploy wheels to Azure Storage. Use --platform and/or --release to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to deploy (fabric, synapse, databricks). If not specified, deploys all platforms"}, {name = "release", default = "", positional = false, help = "Deploy from GitHub release. Use 'latest' or specific version (e.g., '0.4.0'). If not specified, deploys from local dist/"}] }
 deploy-app = { script = "scripts.test_runner:run_deploy_app", help = "Deploy a data app to Azure Storage", args = [{name = "app_path", positional = false, help = "Path to app directory or .kda file"}, {name = "app_name", default = "", positional = false, help = "Name for the deployed app (defaults to directory name)"}] }
-deploy-extensions = { cmd = "python scripts/deploy_extensions.py kindling-otel-azure" }
+deploy-extension = { script = "scripts.test_runner:run_deploy_extension", help = "Deploy an extension wheel to Azure Storage", args = [{name = "extension", positional = true, help = "Extension to deploy (e.g., kindling-otel-azure, kindling-visualization)"}] }
 upload = { shell = "bash scripts/upload_to_storage.sh" }
 upload-release = { shell = "bash scripts/upload_to_storage.sh --release" }
 
@@ -68,17 +125,18 @@ publish-github-secrets = { script = "scripts.test_runner:run_setup_github_secret
 auth-secret-fingerprints = { cmd = "python scripts/auth_secret_fingerprints.py" }
 
 # Testing tasks
-test = "pytest tests/ -v"
-test-unit = "pytest tests/unit/ -v"
-test-unit-ci = { script = "scripts.test_runner:run_unit_tests_ci" }
-test-integration = "pytest tests/integration/ -v"
-test-integration-ci = { script = "scripts.test_runner:run_integration_tests_ci" }
-test-system = { script = "scripts.test_runner:run_system_tests", help = "Run system tests. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}] }
-test-system-ci = { script = "scripts.test_runner:run_system_tests_ci", help = "Run system tests with CI reporting. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}] }
-test-extension = { script = "scripts.test_runner:run_extension_tests", help = "Run extension tests", args = [{name = "extension", default = "azure-monitor", positional = false, help = "Extension name to test (e.g., azure-monitor)"}, {name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}] }
-test-quick = "pytest tests/unit/ tests/integration/ -v"
-test-coverage = "pytest tests/ -v --cov=kindling --cov-report=html --cov-report=term"
-cleanup = { script = "scripts.test_runner:run_cleanup", help = "Clean up test resources. Use --platform to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to clean (fabric, synapse, databricks). If not specified, cleans all platforms"}, {name = "skip-packages", default = false, positional = false, help = "Skip cleanup of old packages"}] }
+test = "kindling test run --suite all --path tests"
+test-unit = "kindling test run --suite unit --path tests/unit"
+test-unit-ci = "kindling test run --suite unit --path tests/unit --ci --coverage packages/kindling --pytest-arg=--cov-report=xml"
+test-integration = "kindling test run --suite integration --path tests/integration"
+test-integration-ci = "kindling test run --suite integration --path tests/integration --ci --no-cov"
+test-local = "kindling test run --suite all --path tests/local-project"
+test-system = { shell = "kindling test run --suite system --path tests/system/core ${platform:+--platform \"$platform\"} ${test:+--test \"$test\"} ${workers:+--workers \"$workers\"}", help = "Run system tests. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}, {name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count for local runs. If omitted, local runs stay serial unless KINDLING_SYSTEM_TEST_WORKERS is set"}] }
+test-system-ci = { shell = "kindling test run --suite system --path tests/system/core --ci --preflight system ${platform:+--platform \"$platform\"} ${test:+--test \"$test\"} ${workers:+--workers \"$workers\"}", help = "Run system tests with CI reporting. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}, {name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count override for CI runs"}] }
+test-extension = { shell = "kindling test run --suite extension --path tests/system/extensions/$extension ${platform:+--platform \"$platform\"}", help = "Run extension tests", args = [{name = "extension", default = "azure-monitor", positional = false, help = "Extension name to test (e.g., azure-monitor)"}, {name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}] }
+test-quick = "kindling test run --suite all --path tests/unit --path tests/integration"
+test-coverage = "kindling test run --suite all --path tests --coverage kindling --pytest-arg=--cov-report=html --pytest-arg=--cov-report=term"
+cleanup = { shell = "if [ -n \"$platform\" ]; then kindling test cleanup --platform \"$platform\" $(if [ \"$skip_packages\" = \"true\" ] || [ \"$skip_packages\" = \"True\" ]; then printf '%s' --skip-packages; fi); else kindling test cleanup --all $(if [ \"$skip_packages\" = \"true\" ] || [ \"$skip_packages\" = \"True\" ]; then printf '%s' --skip-packages; fi); fi", help = "Clean up test resources. Use --platform to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to clean (fabric, synapse, databricks). If not specified, cleans all platforms"}, {name = "skip-packages", type = "boolean", default = false, positional = false, help = "Skip cleanup of old packages"}] }
 
 # Code quality tasks
 format = "black packages/ tests/ scripts/"

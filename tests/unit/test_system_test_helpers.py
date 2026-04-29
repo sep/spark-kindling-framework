@@ -7,6 +7,9 @@ from tests.system.test_helpers import (
     apply_env_config_overrides,
     assert_no_fatal_system_test_log_lines,
     find_fatal_system_test_log_lines,
+    get_system_test_completion_timeout,
+    get_system_test_poll_interval,
+    get_system_test_stream_max_wait,
 )
 
 
@@ -217,6 +220,28 @@ def test_assert_no_fatal_system_test_log_lines_raises_for_extension_failures():
         assert_no_fatal_system_test_log_lines(
             "ERROR: (KindlingBootstrap) Failed to install extension kindling-otel-azure==0.3.2"
         )
+
+
+def test_system_test_timing_helpers_ignore_blank_env_vars(monkeypatch):
+    monkeypatch.setenv("KINDLING_SYSTEM_TEST_POLL_INTERVAL", "")
+    monkeypatch.setenv("KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT", "")
+    monkeypatch.setenv("KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT", "")
+
+    assert get_system_test_poll_interval(10.0) == 10.0
+    assert get_system_test_stream_max_wait(600.0) == 600.0
+    assert get_system_test_completion_timeout(600.0) == 600.0
+
+
+def test_system_test_timing_helpers_fall_back_to_legacy_env_vars(monkeypatch):
+    monkeypatch.setenv("KINDLING_SYSTEM_TEST_POLL_INTERVAL", "")
+    monkeypatch.setenv("KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT", "")
+    monkeypatch.setenv("KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT", "")
+    monkeypatch.setenv("POLL_INTERVAL", "15")
+    monkeypatch.setenv("TEST_TIMEOUT", "900")
+
+    assert get_system_test_poll_interval(10.0) == 15.0
+    assert get_system_test_stream_max_wait(600.0) == 900.0
+    assert get_system_test_completion_timeout(600.0) == 900.0
 
 
 def test_stdout_validator_validate_completion_fails_when_fatal_log_lines_present():
