@@ -236,8 +236,10 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
         de = self.der.get_entity_definition(dest_entity_id)
 
         if not de:
-            self.logger.error(f"Entity definition not found: {dest_entity_id}")
-            return
+            raise ValueError(
+                f"File ingestor references unknown destination entity '{dest_entity_id}'. "
+                "Register the entity with @DataEntities.entity() before running ingestion."
+            )
 
         # Union all DataFrames for this table
         dfs = [df for df, _ in df_list]
