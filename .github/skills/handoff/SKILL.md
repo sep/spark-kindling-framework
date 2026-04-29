@@ -1,2 +1,1 @@
-# /handoff
-Append handoff block to .agent-memory/ACTIVE_TASK.md, write to next mailbox (STATUS: PENDING), log to events.jsonl.
+# /handoff — append handoff block to ACTIVE_TASK.md, write to next mailbox, log to events.jsonl

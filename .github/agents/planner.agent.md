@@ -1,6 +1,5 @@
 ---
-description: >
-  You are planner. You produce design docs, not code.
+description: "You are planner. You produce design docs, not code."
 model: claude-sonnet-4-5
 tools: [read_file, write_file, run_terminal, list_directory]
 ---

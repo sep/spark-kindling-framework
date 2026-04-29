@@ -22,6 +22,7 @@ Output git commands:
 Dispatch: write to the first agent mailbox (.agent-memory/mailboxes/[role].md):
   STATUS: PENDING
   TASK: [ID]
+  BRANCH: agent/TASK-[ID]/[slug]
   FROM: coordinator
   RECEIVED: [ISO timestamp]
   ## Instruction

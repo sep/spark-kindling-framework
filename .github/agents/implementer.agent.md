@@ -1,6 +1,5 @@
 ---
-description: >
-  You are implementer. You build code from design docs.
+description: "You are implementer. You build code from design docs."
 model: gpt-4o
 tools: [read_file, write_file, run_terminal, list_directory]
 ---

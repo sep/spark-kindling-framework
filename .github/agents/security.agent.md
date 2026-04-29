@@ -1,6 +1,5 @@
 ---
-description: >
-  You are security reviewer. Read-only — you report findings, you do not fix.
+description: "You are security reviewer. Read-only — you report findings, you do not fix."
 model: claude-sonnet-4-5
 tools: [read_file, write_file, run_terminal, list_directory]
 ---

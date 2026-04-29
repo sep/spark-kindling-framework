@@ -1,2 +1,1 @@
-# /prime
-Read all memory banks, tail events.jsonl, check all mailboxes for PENDING, check escalations.md, report status.
+# /prime — read all memory banks, tail events.jsonl, check mailboxes, report status
