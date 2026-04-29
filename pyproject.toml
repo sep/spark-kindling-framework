@@ -110,8 +110,7 @@ build = { script = "scripts.build:main" }
 build-wheels = { shell = "bash scripts/build_platform_wheels.sh" }
 deploy = { script = "scripts.test_runner:run_deploy", help = "Deploy wheels to Azure Storage. Use --platform and/or --release to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to deploy (fabric, synapse, databricks). If not specified, deploys all platforms"}, {name = "release", default = "", positional = false, help = "Deploy from GitHub release. Use 'latest' or specific version (e.g., '0.4.0'). If not specified, deploys from local dist/"}] }
 deploy-app = { script = "scripts.test_runner:run_deploy_app", help = "Deploy a data app to Azure Storage", args = [{name = "app_path", positional = false, help = "Path to app directory or .kda file"}, {name = "app_name", default = "", positional = false, help = "Name for the deployed app (defaults to directory name)"}] }
-deploy-extensions = { cmd = "python scripts/deploy_extensions.py kindling-otel-azure" }
-deploy-visualization-extension = { cmd = "python scripts/deploy_extensions.py kindling-visualization" }
+deploy-extension = { script = "scripts.test_runner:run_deploy_extension", help = "Deploy an extension wheel to Azure Storage", args = [{name = "extension", positional = true, help = "Extension to deploy (e.g., kindling-otel-azure, kindling-visualization)"}] }
 upload = { shell = "bash scripts/upload_to_storage.sh" }
 upload-release = { shell = "bash scripts/upload_to_storage.sh --release" }
 
