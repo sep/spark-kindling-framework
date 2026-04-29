@@ -208,6 +208,50 @@ pipes_to_run = ["clean_customer_data", "customer_orders_summary"]
 executer.run_datapipes(pipes_to_run)
 ```
 
+### DAG-Based Execution
+
+`run_datapipes` accepts a `use_dag=True` flag to delegate to the
+`ExecutionOrchestrator`, which builds a dependency graph and runs pipes
+in topological generation order. This is the recommended path for any
+pipeline with non-trivial dependencies.
+
+```python
+# Dependency-aware execution — runs pipes in correct order automatically
+executer.run_datapipes(pipes_to_run, use_dag=True)
+
+# With options: parallel within each generation, fail-fast on error
+from kindling.generation_executor import ErrorStrategy
+executer.run_datapipes(
+    pipes_to_run,
+    use_dag=True,
+    parallel=True,
+    max_workers=4,
+    error_strategy=ErrorStrategy.FAIL_FAST,
+    auto_cache=True,
+)
+```
+
+You can also use `ExecutionOrchestrator` directly for batch or streaming:
+
+```python
+from kindling.execution_orchestrator import ExecutionOrchestrator
+
+orchestrator = GlobalInjector.get(ExecutionOrchestrator)
+
+# Batch mode
+result = orchestrator.execute_batch(pipes_to_run, parallel=True)
+
+# Streaming mode
+result = orchestrator.execute_streaming(pipes_to_run)
+
+# Inspect result
+print(f"Succeeded: {result.succeeded}, Failed: {result.failed}")
+```
+
+`ExecutionOrchestrator` emits an `orchestrator.plan_generated` signal before
+execution begins, carrying the resolved strategy, pipe count, and generation
+count for observability hooks.
+
 ### Getting Registered Pipes
 
 ```python

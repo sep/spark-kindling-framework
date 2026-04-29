@@ -2,6 +2,11 @@
 
 This document captures planned enhancements and architectural considerations for future development.
 
+> **Note:** Items with a GitHub issue are tracked there; this doc provides the original design context.
+> - Workspace-Level Configuration → tracked in [#17](https://github.com/sep/spark-kindling-framework/issues/17) / [#31](https://github.com/sep/spark-kindling-framework/issues/31) / [#32](https://github.com/sep/spark-kindling-framework/issues/32)
+> - Extension Test Validation via App Insights → tracked in [#13](https://github.com/sep/spark-kindling-framework/issues/13)
+> - In-Memory Entity Provider as Reusable Views → tracked in [#7](https://github.com/sep/spark-kindling-framework/issues/7)
+
 ## Workspace-Level Configuration (Future)
 
 ### Current State
