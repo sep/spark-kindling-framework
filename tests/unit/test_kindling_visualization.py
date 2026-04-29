@@ -1,11 +1,6 @@
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages/kindling_visualization"))
-
 from kindling_visualization.registry import (
     VisualizationMetadata,
     VisualizationRegistryManager,

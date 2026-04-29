@@ -68,7 +68,8 @@ class Visualizations:
             missing_fields = required_fields - params.keys()
             if missing_fields:
                 raise ValueError(
-                    f"Missing required fields in visualization decorator: {missing_fields}"
+                    "Missing required fields in visualization decorator: "
+                    + ", ".join(sorted(missing_fields))
                 )
 
             viewid = params.pop("viewid")
