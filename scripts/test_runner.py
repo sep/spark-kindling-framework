@@ -8,6 +8,7 @@ Provides flexible test execution with optional platform and test filtering.
 import os
 import subprocess
 import sys
+from importlib.util import find_spec
 from typing import List, Optional
 
 
@@ -113,6 +114,107 @@ def _set_system_coverage_file(platform: Optional[str]) -> None:
     os.environ["COVERAGE_FILE"] = f".coverage.system.{suffix}.{os.getpid()}"
 
 
+def _normalize_optional_filter(value: str = "") -> Optional[str]:
+    """Normalize poe-style empty-string args into Optional[str] values."""
+    return value if value else None
+
+
+def _resolve_system_test_workers(
+    platform: Optional[str],
+    *,
+    explicit_workers: str = "",
+    ci: bool = False,
+) -> str:
+    """Resolve worker count for system tests.
+
+    Local runs default to serial execution unless explicitly configured.
+    CI runs default to per-platform xdist worker counts.
+    """
+    if explicit_workers:
+        return explicit_workers.strip()
+
+    if ci:
+        default_workers_by_platform = {
+            "synapse": "2",
+            "fabric": "4",
+            "databricks": "4",
+        }
+        return (
+            os.getenv("KINDLING_SYSTEM_TEST_CI_WORKERS")
+            or default_workers_by_platform.get(platform or "", "")
+        ).strip()
+
+    return (os.getenv("KINDLING_SYSTEM_TEST_WORKERS") or "").strip()
+
+
+def _ensure_xdist_available(workers: str) -> None:
+    """Fail fast with a clear message when xdist workers are requested but unavailable."""
+    if not workers or workers in {"0", "1"}:
+        return
+
+    if find_spec("xdist") is not None:
+        return
+
+    _exit(
+        "pytest-xdist is required for distributed system test execution "
+        f"(requested workers={workers}). Install dev dependencies with "
+        "`poetry install --with dev --sync` or rebuild/reopen the devcontainer."
+    )
+
+
+def _run_system_tests_impl(
+    *,
+    platform: str = "",
+    test: str = "",
+    ci: bool = False,
+    workers: str = "",
+) -> int:
+    """Shared system-test execution path for local and CI runs."""
+    _load_dotenv()
+
+    platform_filter = _normalize_optional_filter(platform)
+    test_filter = _normalize_optional_filter(test)
+
+    if ci:
+        preflight_rc = _run_system_test_preflight(platform_filter)
+        if preflight_rc != 0:
+            _exit(preflight_rc)
+
+    _set_system_coverage_file(platform_filter)
+
+    extra_args: List[str] = []
+    if ci:
+        os.makedirs("test-results", exist_ok=True)
+        extra_args.extend(
+            [
+                f"--junit-xml=test-results/system-test-results-{platform_filter or 'all'}.xml",
+                "--json-report",
+                f"--json-report-file=test-results/system-test-report-{platform_filter or 'all'}.json",
+                "--maxfail=1",
+            ]
+        )
+
+    workers_override = _resolve_system_test_workers(
+        platform_filter, explicit_workers=workers, ci=ci
+    )
+    if workers_override and workers_override not in {"0", "1"}:
+        _ensure_xdist_available(workers_override)
+        extra_args.extend(["-n", workers_override])
+
+    args = build_pytest_args(
+        test_path="tests/system/core/",
+        platform=platform_filter,
+        test=test_filter,
+        extra_args=extra_args or None,
+    )
+
+    print(f"Running: {' '.join(args)}")
+    print()
+
+    result = subprocess.run(args)
+    _exit(result.returncode)
+
+
 def run_unit_tests_ci() -> int:
     """
     Run unit tests with CI-specific reporting outputs.
@@ -165,7 +267,7 @@ def run_integration_tests_ci() -> int:
     _exit(result.returncode)
 
 
-def run_system_tests(platform: str = "", test: str = "") -> int:
+def run_system_tests(platform: str = "", test: str = "", workers: str = "") -> int:
     """
     Run system tests with optional platform and test filtering.
 
@@ -183,31 +285,15 @@ def run_system_tests(platform: str = "", test: str = "") -> int:
         poe test-system --platform fabric --test deploy_app_as_job  # Specific test on Fabric
         poe test-system --test name_mapper       # Run default name mapper test on all platforms
     """
-    _load_dotenv()
-
-    # Convert empty strings to None for clarity
-    platform_filter = platform if platform else None
-    test_filter = test if test else None
-
-    _set_system_coverage_file(platform_filter)
-
-    # Build pytest command
-    args = build_pytest_args(
-        test_path="tests/system/core/",
-        platform=platform_filter,
-        test=test_filter,
+    _run_system_tests_impl(
+        platform=platform,
+        test=test,
+        ci=False,
+        workers=workers,
     )
 
-    # Print command for transparency
-    print(f"Running: {' '.join(args)}")
-    print()
 
-    # Execute pytest
-    result = subprocess.run(args)
-    _exit(result.returncode)
-
-
-def run_system_tests_ci(platform: str = "", test: str = "") -> int:
+def run_system_tests_ci(platform: str = "", test: str = "", workers: str = "") -> int:
     """
     Run system tests with CI-specific reporting outputs.
 
@@ -218,50 +304,12 @@ def run_system_tests_ci(platform: str = "", test: str = "") -> int:
     Returns:
         Exit code from pytest
     """
-    _load_dotenv()
-
-    platform_filter = platform if platform else None
-    test_filter = test if test else None
-
-    preflight_rc = _run_system_test_preflight(platform_filter)
-    if preflight_rc != 0:
-        _exit(preflight_rc)
-
-    _set_system_coverage_file(platform_filter)
-
-    os.makedirs("test-results", exist_ok=True)
-
-    extra_args = [
-        f"--junit-xml=test-results/system-test-results-{platform_filter or 'all'}.xml",
-        "--json-report",
-        f"--json-report-file=test-results/system-test-report-{platform_filter or 'all'}.json",
-        "--maxfail=1",
-    ]
-
-    default_workers_by_platform = {
-        "synapse": "2",
-        "fabric": "4",
-        "databricks": "4",
-    }
-    workers_override = (
-        os.getenv("KINDLING_SYSTEM_TEST_CI_WORKERS")
-        or default_workers_by_platform.get(platform_filter or "", "")
-    ).strip()
-    if workers_override and workers_override not in {"0", "1"}:
-        extra_args.extend(["-n", workers_override])
-
-    args = build_pytest_args(
-        test_path="tests/system/core/",
-        platform=platform_filter,
-        test=test_filter,
-        extra_args=extra_args,
+    _run_system_tests_impl(
+        platform=platform,
+        test=test,
+        ci=True,
+        workers=workers,
     )
-
-    print(f"Running: {' '.join(args)}")
-    print()
-
-    result = subprocess.run(args)
-    _exit(result.returncode)
 
 
 def run_extension_tests(extension: str = "azure-monitor", platform: str = "") -> int:
@@ -504,6 +552,15 @@ def run_deploy(platform: str = "", release: str = "") -> int:
     print()
 
     # Execute deploy
+    result = subprocess.run(cmd)
+    _exit(result.returncode)
+
+
+def run_deploy_extension(extension: str) -> int:
+    """Deploy a named extension wheel to Azure Storage."""
+    cmd = ["python", "scripts/deploy_extensions.py", extension]
+    print(f"Running: {' '.join(cmd)}")
+    print()
     result = subprocess.run(cmd)
     _exit(result.returncode)
 

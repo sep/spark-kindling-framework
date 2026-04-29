@@ -1,8 +1,11 @@
 """CLI entrypoint for Kindling design-time tooling."""
 
+import json
 import os
 import sys
-from pathlib import Path
+import time
+import zipfile
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
@@ -58,6 +61,217 @@ def _load_yaml_config(config_path: Path) -> Dict[str, Any]:
             f"Config file `{config_path}` must contain a YAML object at root."
         )
     return data
+
+
+def _load_mapping_file(file_path: Path, label: str) -> Dict[str, Any]:
+    """Load a JSON or YAML file whose root object must be a mapping."""
+    resolved_path = file_path.expanduser().resolve()
+    if not resolved_path.exists():
+        raise click.ClickException(f"{label} file `{resolved_path}` was not found.")
+
+    try:
+        raw_text = resolved_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise click.ClickException(f"Failed to read {label} file `{resolved_path}`: {exc}") from exc
+
+    try:
+        if resolved_path.suffix.lower() == ".json":
+            data = json.loads(raw_text)
+        else:
+            data = yaml.safe_load(raw_text) or {}
+    except Exception as exc:
+        raise click.ClickException(
+            f"Failed to parse {label} file `{resolved_path}`: {exc}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise click.ClickException(
+            f"{label.capitalize()} file `{resolved_path}` must contain a JSON/YAML object at root."
+        )
+    return data
+
+
+def _emit_json(data: Any) -> None:
+    """Pretty-print structured output for CLI responses."""
+    click.echo(json.dumps(data, indent=2, sort_keys=True, default=str))
+
+
+def _emit_result(data: Dict[str, Any], json_output: bool, human_message: str) -> None:
+    """Emit either stable JSON for automation or concise human output."""
+    if json_output:
+        _emit_json(data)
+    else:
+        click.echo(human_message)
+
+
+def _status_value(status: Dict[str, Any]) -> str:
+    """Best-effort normalized job status from cross-platform SDK responses."""
+    result_state = status.get("result_state")
+    if result_state is not None:
+        result_value = str(result_state).strip().upper()
+    else:
+        result_value = ""
+
+    lifecycle = status.get("status") or status.get("life_cycle_state")
+    if lifecycle is not None:
+        lifecycle_value = str(lifecycle).strip().upper()
+        if lifecycle_value in _DATABRICKS_TERMINAL_LIFECYCLE_STATES:
+            return result_value or lifecycle_value
+        if lifecycle_value:
+            return lifecycle_value
+
+    state = status.get("state")
+    if isinstance(state, dict):
+        nested_result = state.get("result_state")
+        nested_lifecycle = state.get("life_cycle_state") or state.get("status")
+        if nested_lifecycle is not None:
+            nested_lifecycle_value = str(nested_lifecycle).strip().upper()
+            if nested_lifecycle_value in _DATABRICKS_TERMINAL_LIFECYCLE_STATES:
+                return (
+                    str(nested_result).strip().upper()
+                    if nested_result is not None
+                    else nested_lifecycle_value
+                )
+            if nested_lifecycle_value:
+                return nested_lifecycle_value
+        if nested_result is not None:
+            return str(nested_result).strip().upper()
+        nested_state = state.get("state")
+        if nested_state is not None:
+            return str(nested_state).strip().upper()
+    if state is not None:
+        return str(state).strip().upper()
+    if result_value:
+        return result_value
+
+    return "UNKNOWN"
+
+
+_DATABRICKS_TERMINAL_LIFECYCLE_STATES = {"TERMINATED", "INTERNAL_ERROR", "SKIPPED"}
+_SUCCESS_JOB_STATES = {"COMPLETED", "SUCCESS", "SUCCEEDED", "FINISHED"}
+_FAILED_JOB_STATES = {
+    "FAILED",
+    "ERROR",
+    "CANCELLED",
+    "CANCELED",
+    "INTERNAL_ERROR",
+    "TERMINATED",
+    "TIMEDOUT",
+    "TIMEOUT",
+    "SKIPPED",
+}
+_TERMINAL_JOB_STATES = _SUCCESS_JOB_STATES | _FAILED_JOB_STATES
+
+
+def _wait_for_job_run(
+    api_client, run_id: str, poll_interval: float, timeout: float
+) -> Dict[str, Any]:
+    """Poll a job run until it reaches a known terminal state or times out."""
+    deadline = time.monotonic() + timeout
+    last_status: Dict[str, Any] = {}
+
+    while True:
+        last_status = api_client.get_job_status(run_id)
+        state = _status_value(last_status)
+        if state in _TERMINAL_JOB_STATES:
+            return last_status
+        if time.monotonic() >= deadline:
+            raise click.ClickException(
+                f"Timed out waiting for run `{run_id}` after {timeout:g} seconds. "
+                f"Last observed state: {state}."
+            )
+        time.sleep(poll_interval)
+
+
+def _create_platform_api(platform: str):
+    """Construct a remote platform API client from the current environment."""
+    try:
+        from kindling_sdk.platform_provider import create_platform_api_from_env
+    except ImportError as exc:
+        raise click.ClickException(
+            "Remote platform operations require spark-kindling-sdk.\n"
+            "Install with: pip install spark-kindling-sdk"
+        ) from exc
+
+    try:
+        api_client, resolved_platform = create_platform_api_from_env(platform)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    return api_client, resolved_platform
+
+
+def _read_text_file(file_path: Path) -> str:
+    try:
+        return file_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise click.ClickException(f"Failed to read `{file_path}`: {exc}") from exc
+
+
+def _normalize_archive_entry_path(entry_name: str) -> str:
+    """Validate and normalize archive entry paths to safe POSIX-relative paths."""
+    normalized = str(entry_name or "").replace("\\", "/").strip()
+    if not normalized:
+        raise click.ClickException("Archive contains an empty file path.")
+    if normalized.startswith("/") or (len(normalized) >= 2 and normalized[1] == ":"):
+        raise click.ClickException(f"Archive contains an unsafe absolute path: `{entry_name}`")
+
+    posix_path = PurePosixPath(normalized)
+    if any(part in ("", ".", "..") for part in posix_path.parts):
+        raise click.ClickException(
+            f"Archive contains an unsafe relative path traversal: `{entry_name}`"
+        )
+
+    return posix_path.as_posix()
+
+
+def _prepare_app_files(app_path: Path) -> Dict[str, str]:
+    """Collect app source files from a directory or a .kda archive."""
+    resolved_path = app_path.expanduser().resolve()
+
+    if resolved_path.is_file() and resolved_path.suffix.lower() == ".kda":
+        app_files: Dict[str, str] = {}
+        try:
+            with zipfile.ZipFile(resolved_path, "r") as archive:
+                for file_info in archive.infolist():
+                    if file_info.is_dir():
+                        continue
+                    if not file_info.filename.endswith((".py", ".yaml", ".yml")):
+                        continue
+                    rel_path = _normalize_archive_entry_path(file_info.filename)
+                    app_files[rel_path] = archive.read(file_info.filename).decode("utf-8")
+        except Exception as exc:
+            raise click.ClickException(
+                f"Failed to read app package `{resolved_path}`: {exc}"
+            ) from exc
+
+        if not app_files:
+            raise click.ClickException(
+                f"No application files were found in `{resolved_path}`. "
+                "Expected .py, .yaml, or .yml entries."
+            )
+        return app_files
+
+    if resolved_path.is_dir():
+        app_files = {}
+        for pattern in ("*.py", "*.yaml", "*.yml"):
+            for file_path in sorted(resolved_path.rglob(pattern)):
+                rel_path = file_path.relative_to(resolved_path).as_posix()
+                app_files[rel_path] = _read_text_file(file_path)
+
+        if not app_files:
+            raise click.ClickException(
+                f"No application files were found in `{resolved_path}`. "
+                "Expected at least one .py, .yaml, or .yml file."
+            )
+        return app_files
+
+    raise click.ClickException(
+        f"Invalid app path `{resolved_path}`. Expected a directory or a `.kda` archive."
+    )
+
+
+def _default_app_name(app_path: Path) -> str:
+    return app_path.stem if app_path.is_file() else app_path.name
 
 
 def _coerce_value(raw: str) -> Any:
@@ -144,6 +358,162 @@ def _detect_platform_from_environment() -> Optional[str]:
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def cli() -> None:
     """Kindling CLI."""
+
+
+# =============================================================================
+# migrate
+# =============================================================================
+
+
+@cli.group("migrate")
+def migrate_group() -> None:
+    """Inspect and apply entity schema migrations."""
+
+
+@migrate_group.command("plan")
+def migrate_plan() -> None:
+    """Show pending schema changes for all registered entities.
+
+    Requires a running Spark session (must be called from within a Kindling
+    notebook or pipeline context).
+    """
+    try:
+        from kindling.injection import GlobalInjector
+        from kindling.migration import MigrationService
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required for migrate commands. "
+            "Run this command from within a Kindling execution context."
+        ) from exc
+
+    svc = GlobalInjector.get(MigrationService)
+    plan = svc.plan()
+
+    if not plan.has_changes:
+        click.echo("All entities are up to date.")
+        return
+
+    click.echo("Pending migrations:")
+    plan.print_summary()
+
+    if plan.has_destructive_changes:
+        click.echo()
+        click.echo("WARNING: destructive changes present. Pass --destructive to apply them.")
+
+    if plan.errors:
+        raise click.ClickException(
+            f"{len(plan.errors)} entity/entities could not be inspected (see above)."
+        )
+
+
+@migrate_group.command("apply")
+@click.option(
+    "--destructive",
+    is_flag=True,
+    help="Allow destructive changes (type changes, column removal, partition changes).",
+)
+@click.option(
+    "--backup",
+    type=click.Choice(["none", "snapshot"]),
+    default="none",
+    show_default=True,
+    help="Backup strategy before applying destructive changes.",
+)
+def migrate_apply(destructive: bool, backup: str) -> None:
+    """Apply pending schema migrations.
+
+    Non-destructive changes (column additions) are always applied.
+    Destructive changes require --destructive.
+
+    For CATALOG mode entities, destructive changes use a blue-green strategy:
+    the old table is archived as <name>_migration_blue until you run cleanup.
+
+    For STORAGE mode entities, destructive changes rewrite in place using
+    Delta's ACID guarantees. Use --backup snapshot to clone first.
+    """
+    try:
+        from kindling.injection import GlobalInjector
+        from kindling.migration import BackupStrategy, MigrationService
+    except ImportError as exc:
+        raise click.ClickException("kindling package is required for migrate commands.") from exc
+
+    svc = GlobalInjector.get(MigrationService)
+    plan = svc.plan()
+
+    if not plan.has_changes:
+        click.echo("All entities are up to date.")
+        return
+
+    click.echo("Applying migrations:")
+    plan.print_summary()
+    click.echo()
+
+    backup_strategy = BackupStrategy.SNAPSHOT if backup == "snapshot" else BackupStrategy.NONE
+
+    try:
+        svc.apply(plan, allow_destructive=destructive, backup=backup_strategy)
+        click.echo("Migration complete.")
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@migrate_group.command("rollback")
+@click.argument("entity_id")
+def migrate_rollback(entity_id: str) -> None:
+    """Restore a CATALOG entity to its pre-migration state.
+
+    Promotes the blue archive (<name>_migration_blue) back to live.
+    Only valid after a blue-green apply that has not yet been cleaned up.
+    """
+    try:
+        from kindling.injection import GlobalInjector
+        from kindling.migration import MigrationService
+    except ImportError as exc:
+        raise click.ClickException("kindling package is required for migrate commands.") from exc
+
+    svc = GlobalInjector.get(MigrationService)
+    registry = GlobalInjector.get(
+        __import__("kindling.data_entities", fromlist=["DataEntityRegistry"]).DataEntityRegistry
+    )
+    entity = registry.get_entity_definition(entity_id)
+    if entity is None:
+        raise click.ClickException(f"Entity '{entity_id}' not found in registry.")
+
+    try:
+        svc.rollback(entity)
+        click.echo(
+            f"Rolled back '{entity_id}'. Run `kindling migrate cleanup {entity_id}` to drop the failed green table."
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@migrate_group.command("cleanup")
+@click.argument("entity_id")
+def migrate_cleanup(entity_id: str) -> None:
+    """Drop blue-green artifacts after a confirmed successful migration.
+
+    Drops <name>_migration_blue and <name>_migration_green if present.
+    """
+    try:
+        from kindling.injection import GlobalInjector
+        from kindling.migration import MigrationService
+    except ImportError as exc:
+        raise click.ClickException("kindling package is required for migrate commands.") from exc
+
+    svc = GlobalInjector.get(MigrationService)
+    registry = GlobalInjector.get(
+        __import__("kindling.data_entities", fromlist=["DataEntityRegistry"]).DataEntityRegistry
+    )
+    entity = registry.get_entity_definition(entity_id)
+    if entity is None:
+        raise click.ClickException(f"Entity '{entity_id}' not found in registry.")
+
+    try:
+        svc.cleanup(entity)
+        click.echo(f"Cleanup complete for '{entity_id}'.")
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.group("config")
@@ -559,7 +929,7 @@ def _get_blob_service_client(storage_account: str):
     except ImportError as exc:
         raise click.ClickException(
             "azure-identity and azure-storage-blob are required for deploy.\n"
-            "Install with: pip install 'kindling-cli[deploy]'"
+            "Install with: pip install 'spark-kindling-cli[deploy]'"
         ) from exc
 
     account_url = _resolve_account_url(storage_account)
@@ -597,15 +967,18 @@ def _upload_blob(
 
 
 def _find_wheels(dist_dir: Path, platform: Optional[str] = None) -> List[Path]:
-    """Find kindling platform wheels in a directory."""
+    """Find runtime wheels, preferring the combined spark-kindling artifact."""
+    combined_wheels = sorted(dist_dir.glob("spark_kindling-*.whl"))
+    if combined_wheels:
+        return combined_wheels
+
     if platform:
-        wheels = sorted(dist_dir.glob(f"kindling_{platform}-*.whl"))
-    else:
-        wheels = []
-        for p in ("synapse", "databricks", "fabric"):
-            wheels.extend(dist_dir.glob(f"kindling_{p}-*.whl"))
-        wheels = sorted(wheels)
-    return wheels
+        return sorted(dist_dir.glob(f"kindling_{platform}-*.whl"))
+
+    legacy_wheels: List[Path] = []
+    for legacy_platform in ("synapse", "databricks", "fabric"):
+        legacy_wheels.extend(dist_dir.glob(f"kindling_{legacy_platform}-*.whl"))
+    return sorted(legacy_wheels)
 
 
 def _deploy_wheels(
@@ -973,7 +1346,7 @@ def _import_notebook_to_workspace(
         except ImportError as exc:
             raise click.ClickException(
                 "Notebook import requires the deploy extra.\n"
-                "Install with: pip install 'kindling-cli[deploy]'"
+                "Install with: pip install 'spark-kindling-cli[deploy]'"
             ) from exc
 
         credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
@@ -1002,7 +1375,7 @@ def _import_notebook_to_workspace(
         except ImportError as exc:
             raise click.ClickException(
                 "Notebook import requires the deploy extra.\n"
-                "Install with: pip install 'kindling-cli[deploy]'"
+                "Install with: pip install 'spark-kindling-cli[deploy]'"
             ) from exc
 
         credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
@@ -1055,7 +1428,7 @@ def _import_notebook_to_workspace(
         except ImportError as exc:
             raise click.ClickException(
                 "Notebook import requires the deploy extra.\n"
-                "Install with: pip install 'kindling-cli[deploy]'"
+                "Install with: pip install 'spark-kindling-cli[deploy]'"
             ) from exc
 
         credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
@@ -1163,6 +1536,16 @@ def _import_notebook_to_workspace(
     is_flag=True,
     help="Overwrite existing scripts, config, and notebooks in storage. Without this flag, existing blobs are skipped.",
 )
+@click.option(
+    "--allow-missing-bootstrap-script",
+    is_flag=True,
+    help="Do not fail if runtime/scripts/kindling_bootstrap.py cannot be found.",
+)
+@click.option(
+    "--allow-missing-config",
+    is_flag=True,
+    help="Do not fail if the selected settings file cannot be found.",
+)
 def workspace_deploy(
     platform: Optional[str],
     config_path: Path,
@@ -1176,15 +1559,17 @@ def workspace_deploy(
     create_notebooks: bool,
     workspace: Optional[str],
     overwrite: bool,
+    allow_missing_bootstrap_script: bool,
+    allow_missing_config: bool,
 ) -> None:
     """Deploy kindling packages, scripts, and config to Azure Storage.
 
     \b
     Deploys the following artifacts to the target storage account:
 
-      - Kindling platform wheel(s) → {base}/packages/
-      - kindling_bootstrap.py      → {base}/scripts/
-      - settings.yaml + overlays   → {base}/config/
+      - spark_kindling-*.whl (or legacy runtime wheel[s]) → {base}/packages/
+      - kindling_bootstrap.py                            → {base}/scripts/
+      - settings.yaml + overlays                         → {base}/config/
 
     \b
     With --create-notebooks and --workspace, also imports starter notebooks
@@ -1243,7 +1628,8 @@ def workspace_deploy(
         wheels = _find_wheels(resolved_dist, resolved_platform)
         if not wheels:
             raise click.ClickException(
-                f"No kindling_{resolved_platform} wheels found in {resolved_dist}."
+                f"No runtime wheel artifacts were found in {resolved_dist}.\n"
+                "Expected dist/spark_kindling-*.whl or legacy dist/kindling_<platform>-*.whl."
             )
         click.echo(f"Packages → {packages_path}/")
         count = _deploy_wheels(blob_service_client, resolved_container, packages_path, wheels)
@@ -1258,14 +1644,26 @@ def workspace_deploy(
         ):
             click.echo()
         else:
-            click.echo("  kindling_bootstrap.py not found, skipping.")
-            click.echo()
+            message = "kindling_bootstrap.py not found."
+            if allow_missing_bootstrap_script:
+                click.echo(f"  {message} Skipping because --allow-missing-bootstrap-script is set.")
+                click.echo()
+            else:
+                raise click.ClickException(
+                    f"{message} Use --skip-bootstrap-script or --allow-missing-bootstrap-script."
+                )
 
     # -- Config ----------------------------------------------------------------
     if not skip_config:
         resolved_config = config_path.expanduser()
         if not resolved_config.exists():
-            click.echo(f"Config file {resolved_config} not found, skipping config deploy.")
+            message = f"Config file {resolved_config} not found."
+            if allow_missing_config:
+                click.echo(f"{message} Skipping because --allow-missing-config is set.")
+            else:
+                raise click.ClickException(
+                    f"{message} Use --skip-config or --allow-missing-config."
+                )
         else:
             config_dest = f"{resolved_base}/config" if resolved_base else "config"
             click.echo(f"Config → {config_dest}/")
@@ -1310,6 +1708,673 @@ def workspace_deploy(
         click.echo()
 
     click.echo("Deploy complete.")
+
+
+@cli.group("app")
+def app_group() -> None:
+    """Package and deploy Kindling applications."""
+
+
+@app_group.command("package")
+@click.argument(
+    "app_path",
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+)
+@click.option(
+    "--output",
+    "output_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Destination .kda file. Defaults to dist/<app-dir>.kda.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) -> None:
+    """Package an application directory into a .kda archive."""
+    resolved_app_path = app_path.expanduser().resolve()
+    app_files = _prepare_app_files(resolved_app_path)
+
+    resolved_output = (
+        output_path.expanduser().resolve()
+        if output_path
+        else (Path.cwd() / "dist" / f"{resolved_app_path.name}.kda").resolve()
+    )
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(resolved_output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for rel_path, content in sorted(app_files.items()):
+            archive.writestr(rel_path, content)
+
+    payload = {
+        "app_path": str(resolved_app_path),
+        "package_path": str(resolved_output),
+        "file_count": len(app_files),
+        "files": sorted(app_files),
+    }
+    _emit_result(
+        payload,
+        json_output,
+        f"Packaged `{resolved_app_path}` -> `{resolved_output}` ({len(app_files)} file(s)).",
+    )
+
+
+@app_group.command("deploy")
+@click.argument(
+    "app_path",
+    type=click.Path(path_type=Path, exists=True),
+)
+@click.option("--app-name", default=None, help="Remote app name. Defaults to the path stem/name.")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_deploy(
+    app_path: Path, app_name: Optional[str], platform: Optional[str], json_output: bool
+) -> None:
+    """Deploy an app directory or .kda package using the remote platform SDK."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    resolved_app_path = app_path.expanduser().resolve()
+    app_files = _prepare_app_files(resolved_app_path)
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    resolved_name = (app_name or _default_app_name(resolved_app_path)).strip()
+    if not resolved_name:
+        raise click.ClickException("App name resolved to an empty string.")
+
+    storage_path = api_client.deploy_app(resolved_name, app_files)
+    payload = {
+        "app_name": resolved_name,
+        "app_path": str(resolved_app_path),
+        "platform": resolved_platform,
+        "storage_path": storage_path,
+        "file_count": len(app_files),
+        "files": sorted(app_files),
+    }
+    _emit_result(
+        payload,
+        json_output,
+        f"Deployed app `{resolved_name}` to `{storage_path}` "
+        f"on {resolved_platform} ({len(app_files)} file(s)).",
+    )
+
+
+@app_group.command("cleanup")
+@click.argument("app_name")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_cleanup(app_name: str, platform: Optional[str], json_output: bool) -> None:
+    """Delete a previously deployed remote application."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    deleted = api_client.cleanup_app(app_name)
+    if not deleted:
+        raise click.ClickException(
+            f"Remote cleanup for app `{app_name}` did not succeed on {resolved_platform}."
+        )
+    _emit_result(
+        {"app_name": app_name, "platform": resolved_platform, "deleted": True},
+        json_output,
+        f"Deleted app `{app_name}` on {resolved_platform}.",
+    )
+
+
+@cli.group("job")
+def job_group() -> None:
+    """Create and manage remote Spark jobs."""
+
+
+@job_group.command("create")
+@click.argument(
+    "config_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def job_create(config_path: Path, platform: Optional[str]) -> None:
+    """Create a remote job definition from a YAML or JSON config file."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    job_config = _load_mapping_file(config_path, "job config")
+    job_name = str(job_config.get("job_name") or "").strip()
+    if not job_name:
+        raise click.ClickException("Job config must define `job_name`.")
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    _emit_json(api_client.create_job(job_name, job_config))
+
+
+@job_group.command("run")
+@click.argument("job_id")
+@click.option(
+    "--parameters",
+    "parameters_path",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Optional YAML/JSON file of run parameters.",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option("--wait", "wait_for_completion", is_flag=True, help="Poll until the run completes.")
+@click.option("--poll-interval", default=10.0, show_default=True, type=float)
+@click.option("--timeout", default=3600.0, show_default=True, type=float)
+@click.option(
+    "--fail-on-error/--no-fail-on-error",
+    default=True,
+    show_default=True,
+    help="With --wait, fail the CLI if the terminal run status is unsuccessful.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def job_run(
+    job_id: str,
+    parameters_path: Optional[Path],
+    platform: Optional[str],
+    wait_for_completion: bool,
+    poll_interval: float,
+    timeout: float,
+    fail_on_error: bool,
+    json_output: bool,
+) -> None:
+    """Start a remote job run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+    if wait_for_completion:
+        if poll_interval <= 0:
+            raise click.ClickException("--poll-interval must be greater than 0.")
+        if timeout <= 0:
+            raise click.ClickException("--timeout must be greater than 0.")
+
+    parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else None
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    run_id = api_client.run_job(job_id, parameters=parameters)
+    payload: Dict[str, Any] = {
+        "job_id": job_id,
+        "run_id": run_id,
+        "platform": resolved_platform,
+        "waited": wait_for_completion,
+    }
+
+    if wait_for_completion:
+        status = _wait_for_job_run(api_client, run_id, poll_interval, timeout)
+        state = _status_value(status)
+        payload["status"] = status
+        payload["state"] = state
+        payload["succeeded"] = state in _SUCCESS_JOB_STATES
+        if fail_on_error and state not in _SUCCESS_JOB_STATES:
+            if json_output:
+                _emit_json(payload)
+                raise click.exceptions.Exit(1)
+            raise click.ClickException(f"Run `{run_id}` finished with state {state}.")
+
+    _emit_result(payload, json_output, run_id)
+
+
+@job_group.command("status")
+@click.argument("run_id")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def job_status(run_id: str, platform: Optional[str]) -> None:
+    """Fetch the current status for a job run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    _emit_json(api_client.get_job_status(run_id))
+
+
+@job_group.command("logs")
+@click.argument("run_id")
+@click.option(
+    "--job-id",
+    default=None,
+    help="Job identifier. Required when --stream is used.",
+)
+@click.option("--from-line", default=0, show_default=True, type=int)
+@click.option("--size", default=1000, show_default=True, type=int)
+@click.option("--stream", is_flag=True, help="Tail stdout logs until completion or timeout.")
+@click.option("--poll-interval", default=5.0, show_default=True, type=float)
+@click.option("--max-wait", default=300.0, show_default=True, type=float)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def job_logs(
+    run_id: str,
+    job_id: Optional[str],
+    from_line: int,
+    size: int,
+    stream: bool,
+    poll_interval: float,
+    max_wait: float,
+    platform: Optional[str],
+) -> None:
+    """Fetch or stream logs for a remote job run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    if stream and not job_id:
+        raise click.ClickException("--job-id is required when --stream is used.")
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    if stream:
+        api_client.stream_stdout_logs(
+            job_id=job_id,
+            run_id=run_id,
+            callback=click.echo,
+            poll_interval=poll_interval,
+            max_wait=max_wait,
+        )
+        return
+
+    _emit_json(api_client.get_job_logs(run_id, from_line=from_line, size=size))
+
+
+@job_group.command("cancel")
+@click.argument("run_id")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def job_cancel(run_id: str, platform: Optional[str], json_output: bool) -> None:
+    """Cancel a remote job run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    cancelled = api_client.cancel_job(run_id)
+    if not cancelled:
+        raise click.ClickException(f"Failed to cancel run `{run_id}`.")
+    _emit_result(
+        {"run_id": run_id, "platform": resolved_platform, "cancelled": True},
+        json_output,
+        f"Cancelled run `{run_id}`.",
+    )
+
+
+@job_group.command("delete")
+@click.argument("job_id")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def job_delete(job_id: str, platform: Optional[str], json_output: bool) -> None:
+    """Delete a remote job definition."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    deleted = api_client.delete_job(job_id)
+    if not deleted:
+        raise click.ClickException(f"Failed to delete job `{job_id}`.")
+    _emit_result(
+        {"job_id": job_id, "platform": resolved_platform, "deleted": True},
+        json_output,
+        f"Deleted job `{job_id}`.",
+    )
+
+
+@cli.group("test")
+def test_group() -> None:
+    """Run Kindling project test suites."""
+
+
+@test_group.command("run")
+@click.option(
+    "--suite",
+    type=click.Choice(["unit", "component", "integration", "system", "extension", "all"]),
+    default="unit",
+    show_default=True,
+    help="Logical test suite. Used for defaults and CI report names.",
+)
+@click.option(
+    "--path",
+    "paths",
+    multiple=True,
+    type=click.Path(path_type=Path, exists=False),
+    help="Pytest path to run. Repeatable. Defaults to tests/<suite> when omitted.",
+)
+@click.option("--platform", type=click.Choice(SUPPORTED_PLATFORMS), default=None)
+@click.option(
+    "--test",
+    "test_filter",
+    default=None,
+    help="Pytest -k expression for selecting tests.",
+)
+@click.option(
+    "--marker",
+    default=None,
+    help="Pytest -m expression for selecting markers.",
+)
+@click.option("--ci", is_flag=True, help="Emit junit/json reports and fail fast.")
+@click.option(
+    "--results-dir",
+    default="test-results",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+)
+@click.option(
+    "--workers",
+    default=None,
+    help="Optional pytest-xdist worker count. CI has platform-aware defaults.",
+)
+@click.option(
+    "--coverage",
+    multiple=True,
+    help="Coverage target to pass as --cov=<target>. Repeatable.",
+)
+@click.option("--no-cov", is_flag=True, help="Pass --no-cov to pytest.")
+@click.option(
+    "--preflight",
+    type=click.Choice(["none", "local", "system"]),
+    default="none",
+    show_default=True,
+    help="Optional preflight check before pytest.",
+)
+@click.option(
+    "--dotenv",
+    "dotenv_paths",
+    multiple=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Dotenv file to load before running tests. Repeatable. Defaults to .env.",
+)
+@click.option(
+    "--no-dotenv",
+    is_flag=True,
+    help="Do not load .env before running tests.",
+)
+@click.option(
+    "--pytest-arg",
+    "pytest_args",
+    multiple=True,
+    help="Extra argument passed through to pytest. Repeatable.",
+)
+def test_run(
+    suite: str,
+    paths: Tuple[Path, ...],
+    platform: Optional[str],
+    test_filter: Optional[str],
+    marker: Optional[str],
+    ci: bool,
+    results_dir: Path,
+    workers: Optional[str],
+    coverage: Tuple[str, ...],
+    no_cov: bool,
+    preflight: str,
+    dotenv_paths: Tuple[Path, ...],
+    no_dotenv: bool,
+    pytest_args: Tuple[str, ...],
+) -> None:
+    """Run pytest through Kindling's portable test wrapper.
+
+    Project-specific layouts should pass --path from Poe, Make, or CI tasks.
+    The CLI intentionally does not require a Kindling test config file.
+    """
+    from kindling_cli.test_runner import TestRunOptions, flatten_pytest_args, run_tests
+
+    resolved_dotenvs: Tuple[Path, ...]
+    if no_dotenv:
+        resolved_dotenvs = ()
+    elif dotenv_paths:
+        resolved_dotenvs = dotenv_paths
+    else:
+        resolved_dotenvs = (Path(".env"),)
+
+    options = TestRunOptions(
+        suite=suite,
+        paths=paths,
+        platform=platform,
+        test_filter=test_filter,
+        marker=marker,
+        ci=ci,
+        results_dir=results_dir,
+        workers=workers,
+        coverage=coverage,
+        no_cov=no_cov,
+        preflight=preflight,
+        dotenv_paths=resolved_dotenvs,
+        pytest_args=flatten_pytest_args(pytest_args),
+    )
+
+    try:
+        exit_code = run_tests(options)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    raise click.exceptions.Exit(exit_code)
+
+
+@test_group.command("check")
+@click.option(
+    "--preflight",
+    type=click.Choice(["local", "system"]),
+    default="local",
+    show_default=True,
+    help="Preflight type to run.",
+)
+@click.option("--platform", type=click.Choice(SUPPORTED_PLATFORMS), default=None)
+def test_check(preflight: str, platform: Optional[str]) -> None:
+    """Run a Kindling test preflight check without pytest."""
+    from kindling_cli.test_runner import run_preflight
+
+    exit_code = run_preflight(preflight, platform)
+    raise click.exceptions.Exit(exit_code)
+
+
+@test_group.command("cleanup")
+@click.option("--platform", type=click.Choice(SUPPORTED_PLATFORMS), default=None)
+@click.option("--all", "all_platforms", is_flag=True, help="Clean all configured platforms.")
+@click.option("--skip-packages", is_flag=True, help="Skip cleanup of old package artifacts.")
+def test_cleanup(platform: Optional[str], all_platforms: bool, skip_packages: bool) -> None:
+    """Run project cleanup hooks for system-test resources."""
+    from kindling_cli.test_runner import run_cleanup
+
+    exit_code = run_cleanup(platform, all_platforms=all_platforms, skip_packages=skip_packages)
+    raise click.exceptions.Exit(exit_code)
+
+
+@cli.group("repo")
+def repo_group() -> None:
+    """Scaffold and manage multi-package Kindling repos."""
+
+
+@repo_group.command("init")
+@click.argument("repo_name")
+@click.option(
+    "--output-dir",
+    "output_dir",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Parent directory in which to create the repo folder.",
+)
+@click.option(
+    "--template-dir",
+    "template_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory of custom Jinja2 templates that overlay the built-ins.",
+)
+def repo_init(repo_name: str, output_dir: Path, template_dir: Optional[Path]) -> None:
+    """Create a Kindling repo root with shared dev tooling."""
+    from kindling_cli.scaffold import RepoScaffoldConfig, generate_repo, validate_name
+
+    try:
+        snake = validate_name(repo_name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    cfg = RepoScaffoldConfig(
+        name=snake,
+        output_dir=output_dir.expanduser().resolve(),
+        template_dir=template_dir.expanduser().resolve() if template_dir else None,
+    )
+
+    target = cfg.output_dir / cfg.snake_name
+    if target.exists():
+        raise click.ClickException(
+            f"Directory already exists: {target}\nChoose a different repo name or --output-dir."
+        )
+
+    try:
+        created = generate_repo(cfg)
+    except Exception as exc:
+        raise click.ClickException(f"Repo scaffold failed: {exc}") from exc
+
+    click.echo(f"Created repo {cfg.kebab_name}/ ({len(created)} files)")
+
+
+@cli.group("package")
+def package_group() -> None:
+    """Scaffold Kindling packages inside an existing repo."""
+
+
+@package_group.command("init")
+@click.argument("package_name")
+@click.option(
+    "--auth",
+    type=click.Choice(["oauth", "key", "cli"]),
+    default="oauth",
+    show_default=True,
+    help="Auth style used in generated test/config examples.",
+)
+@click.option(
+    "--layers",
+    type=click.Choice(["medallion", "minimal"]),
+    default="medallion",
+    show_default=True,
+    help="Package template style.",
+)
+@click.option(
+    "--no-integration",
+    "integration",
+    is_flag=True,
+    default=False,
+    help="Omit the tests/integration/ directory.",
+)
+@click.option(
+    "--repo-root",
+    "repo_root",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Existing repo root that will receive the new package under packages/.",
+)
+@click.option(
+    "--template-dir",
+    "template_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory of custom Jinja2 templates that overlay the built-ins.",
+)
+def package_init(
+    package_name: str,
+    auth: str,
+    layers: str,
+    integration: bool,
+    repo_root: Path,
+    template_dir: Optional[Path],
+) -> None:
+    """Create a Kindling package under an existing multi-package repo."""
+    from kindling_cli.scaffold import (
+        PackageScaffoldConfig,
+        generate_package,
+        validate_name,
+    )
+
+    try:
+        snake = validate_name(package_name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    resolved_repo_root = repo_root.expanduser().resolve()
+    if not resolved_repo_root.exists():
+        raise click.ClickException(f"Repo root does not exist: {resolved_repo_root}")
+
+    cfg = PackageScaffoldConfig(
+        name=snake,
+        repo_root=resolved_repo_root,
+        layers=layers,
+        auth=auth,
+        integration=not integration,
+        template_dir=template_dir.expanduser().resolve() if template_dir else None,
+    )
+
+    target = cfg.repo_root / "packages" / cfg.snake_name
+    if target.exists():
+        raise click.ClickException(
+            f"Package already exists: {target}\nChoose a different package name or --repo-root."
+        )
+
+    try:
+        created = generate_package(cfg)
+    except Exception as exc:
+        raise click.ClickException(f"Package scaffold failed: {exc}") from exc
+
+    click.echo(f"Created package packages/{cfg.snake_name}/ ({len(created)} files)")
 
 
 @cli.command("new")
@@ -1368,30 +2433,27 @@ def new_project(
     output_dir: Path,
     template_dir: Optional[Path],
 ) -> None:
-    """Scaffold a new Kindling local-python-first project.
+    """Scaffold a new Kindling multi-package repo with an initial package.
 
     \b
-    Creates PROJECT_NAME/ with the following layout:
+    Creates PROJECT_NAME/ as a repo root with shared tooling plus:
 
-      src/<pkg>/
-        app.py            — initialize() and register_all()
+      packages/<pkg>/
+        src/<pkg>/app.py  — initialize() and register_all()
         entities/         — DataEntities.entity() registrations
         pipes/            — @DataPipes.pipe decorators
         transforms/       — pure-PySpark functions (unit-testable)
-      config/
-        settings.yaml     — base Kindling config
-        env.local.yaml    — ABFSS paths resolved from env vars
-      tests/
-        conftest.py       — Spark fixtures tuned to --auth choice
-        unit/             — transform functions, no Azure
-        component/        — DI wiring, no Azure
-        integration/      — live ABFSS read/write (unless --no-integration)
-      pyproject.toml
+        config/           — package-local config and env examples
+        tests/            — unit/component/integration tests
+      .github/workflows/
+        ci.yml            — starter CI for all packages
+      .devcontainer/
+        ...               — shared local dev environment for the repo
 
     \b
-    The structure is invariant: --layers and --auth change the *content* of
-    the generated files, not which files are created. A wheel built from any
-    combination of options works identically at runtime.
+    `kindling new` is convenience sugar for:
+      1. `kindling repo init`
+      2. `kindling package init`
 
     \b
     Examples:
@@ -1399,23 +2461,27 @@ def new_project(
       kindling new my-pipeline --auth key --layers minimal
       kindling new my-pipeline --auth cli --no-integration --output-dir ~/projects
     """
-    from kindling_cli.scaffold import ScaffoldConfig, generate_project, validate_name
+    from kindling_cli.scaffold import (
+        PackageScaffoldConfig,
+        generate_project,
+        validate_name,
+    )
 
     try:
         snake = validate_name(project_name)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    cfg = ScaffoldConfig(
+    cfg = PackageScaffoldConfig(
         name=snake,
+        repo_root=output_dir.expanduser().resolve() / snake,
         layers=layers,
         auth=auth,
         integration=not integration,
-        output_dir=output_dir.expanduser().resolve(),
         template_dir=template_dir.expanduser().resolve() if template_dir else None,
     )
 
-    target = cfg.output_dir / cfg.snake_name
+    target = output_dir.expanduser().resolve() / cfg.snake_name
     if target.exists():
         raise click.ClickException(
             f"Directory already exists: {target}\nChoose a different project name or --output-dir."
@@ -1430,11 +2496,12 @@ def new_project(
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd {cfg.snake_name}")
+    click.echo(f"  cd packages/{cfg.snake_name}")
     click.echo("  poetry install")
     click.echo("  cp .env.example .env  # fill in your credentials, then: source .env")
-    click.echo("  poetry run pytest tests/unit tests/component")
+    click.echo("  poetry run poe test")
     if cfg.integration:
-        click.echo("  poetry run pytest tests/integration  # requires Azure creds in .env")
+        click.echo("  poetry run poe test-integration  # requires Azure creds in .env")
 
 
 def main() -> None:

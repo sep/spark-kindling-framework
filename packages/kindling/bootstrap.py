@@ -1138,24 +1138,78 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         logger.warning("Extensions specified but no artifacts_storage_path for loading wheels")
 
 
+PLATFORM_EP_GROUP = "spark_kindling.platforms"
+
+
+def _registered_platform_entry_points():
+    """Return {name: EntryPoint} for platforms advertised by installed distributions.
+
+    Platforms register themselves by adding an entry point in the
+    ``spark_kindling.platforms`` group pointing at the module that defines the
+    ``@PlatformServices.register(name=...)`` factory. Third-party distributions
+    can contribute additional platforms the same way without modifying core.
+    """
+    from importlib.metadata import entry_points
+
+    return {ep.name: ep for ep in entry_points(group=PLATFORM_EP_GROUP)}
+
+
 def initialize_platform_services(platform, config, logger):
-    """Initialize platform services by importing the correct platform module dynamically"""
+    """Load the platform module, then instantiate and register its service.
 
-    # Import the platform module dynamically - only the one that exists in this wheel
-    platform_module_name = f"kindling.platform_{platform}"
+    Discovery uses ``importlib.metadata`` entry points in the
+    ``spark_kindling.platforms`` group. If the platform isn't advertised via
+    entry points, falls back to the legacy ``kindling.platform_{name}``
+    module-name convention so in-tree/core platforms still work during
+    development or when running from an uninstalled distribution.
+    Third-party platforms should register entry points rather than relying
+    on this fallback — ``kindling`` is a regular package (not a namespace
+    package), so external platform modules cannot plug into
+    ``kindling.platform_*`` from outside this distribution.
+
+    On a missing-extras ImportError, surfaces an actionable message telling
+    the user which extra to install.
+    """
+    import importlib
+
+    eps = _registered_platform_entry_points()
+    ep = eps.get(platform)
+
     try:
-        import importlib
+        if ep is not None:
+            ep.load()  # imports the module, triggering @PlatformServices.register
+            logger.info(f"Loaded platform module via entry point: {ep.value}")
+        else:
+            module_name = f"kindling.platform_{platform}"
+            importlib.import_module(module_name)
+            logger.info(
+                f"Loaded platform module by convention: {module_name} "
+                f"(no entry point registered; known: {sorted(eps)})"
+            )
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Platform '{platform}' is selected but its runtime dependencies "
+            f"are not installed. Install with: "
+            f"pip install 'spark-kindling[{platform}]'"
+        ) from exc
 
-        importlib.import_module(platform_module_name)
-        logger.info(f"Loaded platform module: {platform_module_name}")
-    except ImportError as e:
-        raise ImportError(
-            f"Platform module '{platform_module_name}' not found. "
-            f"Make sure you installed the correct kindling wheel for {platform}."
-        ) from e
+    definition = PlatformServices.get_service_definition(platform)
+    if definition is None:
+        raise RuntimeError(
+            f"Platform module for '{platform}' was loaded but did not register "
+            f"a service. Expected @PlatformServices.register(name='{platform}') "
+            f"on a factory function in the module."
+        )
 
-    # Now the platform service should be registered
-    svc = PlatformServices.get_service_definition(platform).factory(config, logger)
+    try:
+        svc = definition.factory(config, logger)
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Platform '{platform}' service construction failed: a required "
+            f"dependency is missing. Install with: "
+            f"pip install 'spark-kindling[{platform}]'"
+        ) from exc
+
     get_kindling_service(PlatformServiceProvider).set_service(svc)
     return svc
 
