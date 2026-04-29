@@ -25,6 +25,12 @@ def test_create_jdbc_url_normalizes_tcp_prefix_and_comma_port():
     assert url.startswith("jdbc:sqlserver://server.database.windows.net:1433;")
 
 
+def test_create_jdbc_url_strips_port_whitespace():
+    url = spark_jdbc.createJdbcUrl("server.database.windows.net, 1443", "warehouse")
+
+    assert url.startswith("jdbc:sqlserver://server.database.windows.net:1433;")
+
+
 def test_create_jdbc_url_corrects_azure_1443_port_to_1433():
     url = spark_jdbc.createJdbcUrl("server.database.windows.net:1443", "warehouse")
 
@@ -83,6 +89,23 @@ def test_spark_jdbc_read_gets_or_creates_spark_session(monkeypatch):
     )
 
 
+def test_spark_jdbc_read_parses_trust_server_certificate_case_and_space(monkeypatch):
+    mssparkutils = Mock()
+    mssparkutils.credentials.getToken.return_value = "token"
+    spark = Mock()
+    monkeypatch.setattr(spark_jdbc, "mssparkutils", mssparkutils, raising=False)
+    monkeypatch.setattr(spark_jdbc, "get_or_create_spark_session", lambda: spark)
+
+    spark_jdbc.spark_jdbc_read(
+        "jdbc:sqlserver://server.database.windows.net; TRUSTSERVERCERTIFICATE=true",
+        "dbo.orders",
+    )
+
+    properties = spark.read.jdbc.call_args.kwargs["properties"]
+    assert properties["trustServerCertificate"] == "true"
+    assert "hostNameInCertificate" not in properties
+
+
 def test_create_jdbc_connection_gets_or_creates_spark_session(monkeypatch):
     mssparkutils = Mock()
     mssparkutils.credentials.getToken.return_value = "token"
@@ -126,6 +149,21 @@ def test_create_external_table_uses_supplied_arguments():
     assert "DATA_SOURCE = [DatalakeCurated]" in statement
     assert "FILE_FORMAT = [ParquetFormat]" in statement
     connection.prepareCall.return_value.execute.assert_called_once_with()
+
+
+def test_create_external_table_escapes_identifiers_and_location():
+    connection = Mock()
+
+    spark_jdbc.create_external_table(
+        connection,
+        "curated/customer's orders",
+        "sales]ops",
+        "orders]current",
+    )
+
+    statement = connection.prepareCall.call_args.args[0]
+    assert "CREATE EXTERNAL TABLE [sales]]ops].[orders]]current]" in statement
+    assert "LOCATION = 'curated/customer''s orders'" in statement
 
 
 def test_create_view_uses_execute_ddl():

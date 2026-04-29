@@ -24,10 +24,14 @@ def _normalize_server_for_jdbc(server: str) -> str:
 
     if "," in normalized_server:
         server_host, server_port = normalized_server.split(",", 1)
+        server_host = server_host.strip()
+        server_port = server_port.strip()
         normalized_server = f"{server_host}:{server_port}"
 
     if ":" in normalized_server:
         server_host, server_port = normalized_server.rsplit(":", 1)
+        server_host = server_host.strip()
+        server_port = server_port.strip()
         normalized_host = _normalize_server_host(server_host)
 
         if server_port == "1443" and (
@@ -97,11 +101,13 @@ def _extract_server_from_jdbc_uri(jdbcUri: str) -> str:
 
 
 def _extract_trust_server_certificate_from_jdbc_uri(jdbcUri: str):
-    trust_setting = "trustServerCertificate="
+    trust_setting = "trustservercertificate="
 
     for jdbc_property in jdbcUri.split(";"):
-        if jdbc_property.startswith(trust_setting):
-            return jdbc_property[len(trust_setting) :].strip().lower() == "true"
+        normalized_property = jdbc_property.strip()
+
+        if normalized_property.lower().startswith(trust_setting):
+            return normalized_property[len(trust_setting) :].strip().lower() == "true"
 
     return None
 
@@ -145,12 +151,23 @@ def execute_ddl(connection, ddl_statement: str):
     exec_statement.execute()
 
 
+def _escape_sql_identifier(identifier: str) -> str:
+    return identifier.replace("]", "]]")
+
+
+def _escape_sql_string_literal(value: str) -> str:
+    return value.replace("'", "''")
+
+
 def create_external_table(connection, location, schema, table):
+    escaped_schema = _escape_sql_identifier(schema)
+    escaped_table = _escape_sql_identifier(table)
+    escaped_location = _escape_sql_string_literal(location)
     create_table_statement = f"""
-    CREATE EXTERNAL TABLE [{schema}].[{table}]
+    CREATE EXTERNAL TABLE [{escaped_schema}].[{escaped_table}]
     WITH
     (
-        LOCATION = '{location}',
+        LOCATION = '{escaped_location}',
         DATA_SOURCE = [DatalakeCurated],
         FILE_FORMAT = [ParquetFormat]
     )
