@@ -159,4 +159,12 @@ class EntityProviderRegistry:
         except ImportError:
             self.logger.debug("Memory provider not available")
 
+        # [implementer] register SCD2 current-view provider — TASK-20260429-001
+        try:
+            from .entity_provider_current_view import CurrentViewEntityProvider
+
+            self.register_provider("current_view", CurrentViewEntityProvider)
+        except ImportError:
+            self.logger.debug("Current view provider not available")
+
         self.logger.info(f"Registered {len(self._provider_classes)} built-in provider(s)")
