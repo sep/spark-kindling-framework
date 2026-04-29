@@ -68,6 +68,50 @@ def test_env_check_passes_for_generated_settings_file():
         assert "Environment check passed." in result.output
 
 
+def test_test_run_passes_explicit_layout_to_runner(monkeypatch):
+    captured = {}
+
+    def fake_run_tests(options):
+        captured["options"] = options
+        return 0
+
+    monkeypatch.setattr("kindling_cli.test_runner.run_tests", fake_run_tests)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "test",
+            "run",
+            "--suite",
+            "system",
+            "--path",
+            "custom/system",
+            "--platform",
+            "fabric",
+            "--test",
+            "name_mapper",
+            "--ci",
+            "--preflight",
+            "system",
+            "--workers",
+            "4",
+            "--pytest-arg",
+            "--tb=short",
+        ],
+    )
+
+    assert result.exit_code == 0
+    options = captured["options"]
+    assert options.suite == "system"
+    assert [str(path) for path in options.paths] == ["custom/system"]
+    assert options.platform == "fabric"
+    assert options.test_filter == "name_mapper"
+    assert options.ci is True
+    assert options.preflight == "system"
+    assert options.workers == "4"
+    assert options.pytest_args == ["--tb=short"]
+
+
 # ---------------------------------------------------------------------------
 # config set
 # ---------------------------------------------------------------------------
