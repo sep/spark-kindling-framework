@@ -187,6 +187,14 @@ def test_execute_scd2_merge_routing_key_concat_method_used_when_configured():
     assert "concat_ws" in str(routing_expr)
 
 
+def test_execute_scd2_merge_routing_key_concat_column_expr_uses_null_sentinel():
+    _, _, _, frames = _execute({"scd.routing_key": "concat"})
+
+    routing_expr = frames["rows_to_close_or_insert"].withColumn.call_args.args[1]
+    assert "COALESCE" in str(routing_expr)
+    assert "__null__" in str(routing_expr)
+
+
 def test_execute_scd2_merge_does_not_implement_close_on_missing_in_phase_1():
     _, merge_builder, _, _ = _execute({"scd.close_on_missing": "true"})
 

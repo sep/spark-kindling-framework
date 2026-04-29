@@ -140,3 +140,36 @@ def test_validate_scd_config_temporal_col_collides_with_schema_raises_value_erro
 
 def test_validate_scd_config_non_scd_entity_passes():
     _validate_scd_config(make_entity(merge_columns=[], schema={"no": "fields attr"}))
+
+
+def test_validate_scd_config_merge_key_column_in_schema_raises_value_error():
+    entity = make_entity(
+        merge_columns=["customer_id"],
+        tags={"scd.type": "2"},
+        schema=make_schema("customer_id", "__merge_key"),
+    )
+
+    with pytest.raises(ValueError, match="__merge_key.*reserved"):
+        _validate_scd_config(entity)
+
+
+def test_validate_scd_config_current_entity_id_equals_base_raises_value_error():
+    entity = make_entity(
+        entityid="silver.customer",
+        merge_columns=["customer_id"],
+        tags={"scd.type": "2", "scd.current_entity_id": "silver.customer"},
+    )
+
+    with pytest.raises(ValueError, match="scd.current_entity_id must"):
+        _validate_scd_config(entity)
+
+
+def test_validate_scd_config_current_entity_id_empty_raises_value_error():
+    entity = make_entity(
+        entityid="silver.customer",
+        merge_columns=["customer_id"],
+        tags={"scd.type": "2", "scd.current_entity_id": "   "},
+    )
+
+    with pytest.raises(ValueError, match="scd.current_entity_id must"):
+        _validate_scd_config(entity)
