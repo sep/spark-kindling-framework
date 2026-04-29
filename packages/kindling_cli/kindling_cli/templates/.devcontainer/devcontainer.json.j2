@@ -1,8 +1,12 @@
 {
-    "name": "{{ kebab_name }}",
+    "name": "{{ repo_kebab_name }}",
     "dockerComposeFile": "docker-compose.yml",
     "service": "devcontainer",
-    "workspaceFolder": "/workspaces/{{ snake_name }}",
+    "workspaceFolder": "/workspaces/{{ repo_snake_name }}",
+    "containerEnv": {
+        "POETRY_VIRTUALENVS_CREATE": "true",
+        "POETRY_VIRTUALENVS_IN_PROJECT": "true"
+    },
     "customizations": {
         "vscode": {
             "extensions": [
@@ -11,15 +15,24 @@
                 "redhat.vscode-yaml"
             ],
             "settings": {
+{% if primary_package_snake_name %}
+                "python.defaultInterpreterPath": "/workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }}/.venv/bin/python",
+{% else %}
                 "python.defaultInterpreterPath": "/usr/local/bin/python",
+{% endif %}
                 "editor.formatOnSave": true,
                 "files.trimTrailingWhitespace": true,
                 "files.insertFinalNewline": true
             }
         }
     },
-    "postCreateCommand": "pip install 'kindling>=0.8.14' && poetry install && bash -lc 'grep -q \"# {{ kebab_name }} .env\" ~/.bashrc || { echo \"# {{ kebab_name }} .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/{{ snake_name }}/.env ] && set -a && source /workspaces/{{ snake_name }}/.env && set +a\" >> ~/.bashrc; }'",
-    "postStartCommand": "bash -c '[ -f \"/workspaces/{{ snake_name }}/.env\" ] && echo \"\u2705 .env loaded\" || echo \"\u26a0\ufe0f  No .env \u2014 copy .env.example to .env and fill in credentials\"'",
+{% if primary_package_snake_name %}
+    "postCreateCommand": "bash -lc 'cd /workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }} && poetry env remove --all 2>/dev/null || true; poetry install --with dev --sync && poetry run python -c \"import kindling, pyspark\"'; bash -lc 'grep -q \"# {{ repo_kebab_name }} .env\" ~/.bashrc || { echo \"# {{ repo_kebab_name }} .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }}/.env ] && set -a && source /workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }}/.env && set +a\" >> ~/.bashrc; }'",
+    "postStartCommand": "bash -c '[ -f \"/workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }}/.env\" ] && echo \"\u2705 .env loaded\" || echo \"\u26a0\ufe0f  No .env \u2014 copy packages/{{ primary_package_snake_name }}/.env.example to packages/{{ primary_package_snake_name }}/.env and fill in credentials\"'",
+{% else %}
+    "postCreateCommand": "bash -lc 'grep -q \"# {{ repo_kebab_name }} workspace\" ~/.bashrc || echo \"# {{ repo_kebab_name }} workspace\" >> ~/.bashrc'",
+    "postStartCommand": "bash -c 'echo \"\u2705 Repo initialized\"'",
+{% endif %}
     "forwardPorts": [4040],
     "portsAttributes": {
         "4040": {

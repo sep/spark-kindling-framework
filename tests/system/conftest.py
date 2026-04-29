@@ -6,6 +6,9 @@ Configures test markers, fixtures, and settings for system-level integration tes
 
 import os
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +17,90 @@ import pytest
 # All supported platforms - single source of truth
 ALL_PLATFORMS = ["fabric", "databricks", "synapse"]
 ALL_CLOUDS = ["azure", "aws", "gcp"]
+_KINDLING_SYSTEM_CONFIG = None
+_KINDLING_SYSTEM_HEARTBEAT_STOP = None
+_KINDLING_SYSTEM_HEARTBEAT_THREAD = None
+_KINDLING_SYSTEM_HEARTBEAT_PATH = None
+
+
+def _start_xdist_heartbeat_forwarder(config) -> None:
+    """Forward worker heartbeat lines from a shared file to the controller terminal."""
+    global _KINDLING_SYSTEM_HEARTBEAT_STOP, _KINDLING_SYSTEM_HEARTBEAT_THREAD
+
+    terminal_reporter = config.pluginmanager.get_plugin("terminalreporter")
+    heartbeat_path = _KINDLING_SYSTEM_HEARTBEAT_PATH
+    if terminal_reporter is None or not heartbeat_path:
+        return
+
+    stop_event = threading.Event()
+
+    def _forward() -> None:
+        offset = 0
+        while not stop_event.is_set():
+            try:
+                if os.path.exists(heartbeat_path):
+                    with open(heartbeat_path, encoding="utf-8") as heartbeat_file:
+                        heartbeat_file.seek(offset)
+                        for line in heartbeat_file:
+                            line = line.rstrip()
+                            if line:
+                                terminal_reporter.write_line(line)
+                        offset = heartbeat_file.tell()
+            except FileNotFoundError:
+                pass
+
+            stop_event.wait(1.0)
+
+    _KINDLING_SYSTEM_HEARTBEAT_STOP = stop_event
+    _KINDLING_SYSTEM_HEARTBEAT_THREAD = threading.Thread(
+        target=_forward,
+        name="kindling-system-heartbeat-forwarder",
+        daemon=True,
+    )
+    _KINDLING_SYSTEM_HEARTBEAT_THREAD.start()
+
+
+def _stop_xdist_heartbeat_forwarder() -> None:
+    """Stop the shared heartbeat forwarder thread."""
+    global _KINDLING_SYSTEM_HEARTBEAT_STOP, _KINDLING_SYSTEM_HEARTBEAT_THREAD
+
+    if _KINDLING_SYSTEM_HEARTBEAT_STOP is not None:
+        _KINDLING_SYSTEM_HEARTBEAT_STOP.set()
+    if _KINDLING_SYSTEM_HEARTBEAT_THREAD is not None:
+        _KINDLING_SYSTEM_HEARTBEAT_THREAD.join(timeout=2.0)
+
+    _KINDLING_SYSTEM_HEARTBEAT_STOP = None
+    _KINDLING_SYSTEM_HEARTBEAT_THREAD = None
+
+
+def _should_count_report_as_completed(report) -> bool:
+    """Return True when a pytest report represents a completed test outcome."""
+    if report.when == "call":
+        return True
+
+    # Tests skipped or failed during setup never reach call, but they still
+    # represent completed outcomes from the runner's perspective.
+    if report.when == "setup" and (report.failed or report.skipped):
+        return True
+
+    return False
+
+
+def _classify_completed_report(report) -> str:
+    """Classify a completed pytest report for progress display."""
+    if report.skipped:
+        return "skipped"
+    if report.failed:
+        return "failed"
+    return "passed"
+
+
+def _resolve_progress_total(config, completed: int) -> int:
+    """Resolve the progress total, guarding against missing xdist controller totals."""
+    total = getattr(config, "_kindling_system_total_items", 0) or 0
+    if total <= 0:
+        return completed
+    return max(total, completed)
 
 
 def _detect_databricks_cloud() -> Optional[str]:
@@ -87,6 +174,7 @@ def pytest_generate_tests(metafunc):
 
 def pytest_configure(config):
     """Configure custom pytest markers"""
+    global _KINDLING_SYSTEM_CONFIG, _KINDLING_SYSTEM_HEARTBEAT_PATH
     config.addinivalue_line("markers", "fabric: tests that require Microsoft Fabric platform")
     config.addinivalue_line("markers", "databricks: tests that require Databricks platform")
     config.addinivalue_line("markers", "synapse: tests that require Azure Synapse platform")
@@ -95,6 +183,23 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "gcp: tests that require Google Cloud")
     config.addinivalue_line("markers", "system: system-level integration tests")
     config.addinivalue_line("markers", "slow: tests that take significant time to run")
+    config._kindling_system_total_items = 0
+    config._kindling_system_completed_items = set()
+    config._kindling_system_progress_counts = {"passed": 0, "skipped": 0, "failed": 0}
+    _KINDLING_SYSTEM_CONFIG = config
+
+    is_worker = hasattr(config, "workerinput")
+    xdist_workers = getattr(getattr(config, "option", None), "numprocesses", 0) or 0
+    if not is_worker and xdist_workers:
+        heartbeat_file = tempfile.NamedTemporaryFile(
+            prefix="kindling-system-heartbeats-",
+            suffix=".log",
+            delete=False,
+        )
+        heartbeat_file.close()
+        _KINDLING_SYSTEM_HEARTBEAT_PATH = heartbeat_file.name
+        os.environ["KINDLING_SYSTEM_HEARTBEAT_FILE"] = heartbeat_file.name
+        _start_xdist_heartbeat_forwarder(config)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -184,6 +289,57 @@ def pytest_collection_modifyitems(config, items):
                         "Set SYNAPSE_WORKSPACE_NAME env var."
                     )
                 )
+
+    config._kindling_system_total_items = len(items)
+
+
+@pytest.hookimpl
+def pytest_runtest_logreport(report):
+    """Print a simple completed/total progress line for system tests."""
+    config = getattr(report, "config", None) or _KINDLING_SYSTEM_CONFIG
+    if config is None:
+        return
+
+    terminal_reporter = config.pluginmanager.get_plugin("terminalreporter")
+    if terminal_reporter is None:
+        return
+
+    if not _should_count_report_as_completed(report):
+        return
+
+    completed_items = getattr(config, "_kindling_system_completed_items", None)
+    if completed_items is None or report.nodeid in completed_items:
+        return
+
+    completed_items.add(report.nodeid)
+    counts = config._kindling_system_progress_counts
+    counts[_classify_completed_report(report)] += 1
+
+    completed = len(completed_items)
+    total = _resolve_progress_total(config, completed)
+    terminal_reporter.write_line(
+        "Progress: "
+        f"{completed}/{total} completed "
+        f"(passed={counts['passed']} skipped={counts['skipped']} failed={counts['failed']})"
+    )
+
+
+def pytest_unconfigure(config):
+    """Clean up xdist heartbeat forwarding state."""
+    global _KINDLING_SYSTEM_HEARTBEAT_PATH
+
+    if not hasattr(config, "workerinput"):
+        _stop_xdist_heartbeat_forwarder()
+        heartbeat_path = _KINDLING_SYSTEM_HEARTBEAT_PATH or os.getenv(
+            "KINDLING_SYSTEM_HEARTBEAT_FILE"
+        )
+        if heartbeat_path and os.path.exists(heartbeat_path):
+            try:
+                os.unlink(heartbeat_path)
+            except OSError:
+                pass
+        os.environ.pop("KINDLING_SYSTEM_HEARTBEAT_FILE", None)
+        _KINDLING_SYSTEM_HEARTBEAT_PATH = None
 
 
 @pytest.fixture(scope="session")

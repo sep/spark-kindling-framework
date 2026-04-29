@@ -6,11 +6,11 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
-# Azure Synapse imports - always available in Synapse wheel
+# Platform-safe module-level imports only. Synapse-exclusive imports
+# (azure.synapse.artifacts.*) are deferred into the methods that use them so
+# this module can be imported on clusters that don't have the [synapse] extra.
 from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import *
-from azure.synapse.artifacts import ArtifactsClient
-from azure.synapse.artifacts.models import *
 
 from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *

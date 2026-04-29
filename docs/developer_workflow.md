@@ -1,311 +1,81 @@
 # Developer Workflow
 
-## Quick Start with poethepoet
+This repo uses Poetry plus Poe the Poet for day-to-day development.
 
-This project uses [poethepoet](https://poethepoet.natn.io/) as a task runner, similar to npm scripts. All development tasks are defined in `pyproject.toml` under `[tool.poe.tasks]`.
-
-### Available Tasks
+## Core Commands
 
 ```bash
-# Build platform-specific wheels
+poetry install
+poetry run poe test-unit
+poetry run poe test-integration
+poetry run poe test-system --platform synapse
 poetry run poe build
-
-# Deploy wheels to Azure Storage
-poetry run poe deploy                           # Deploy all platforms
-poetry run poe deploy --platform synapse        # Deploy only synapse wheel
-poetry run poe deploy --platform databricks     # Deploy only databricks wheel
-poetry run poe deploy --platform fabric         # Deploy only fabric wheel
-
-# Deploy from GitHub release assets (production)
-poetry run poe deploy --release latest          # Deploy all platforms from latest release
-poetry run poe deploy --release 0.6.0           # Deploy all platforms from specific release
-
-# Run tests with coverage
-poetry run poe test
-
-# Format code with black
-poetry run poe format
-
-# Lint code with pylint
-poetry run poe lint
-
-# Run all checks (format, lint, test)
-poetry run poe check
+poetry run poe deploy --platform fabric
+poetry run poe upload
 ```
 
-## Build & Deploy Workflow
+## Build Model
 
-### 1. Local Development Testing
+`poetry run poe build` produces the current artifact set:
+
+- `spark_kindling-<version>-py3-none-any.whl` — combined runtime wheel
+- `spark_kindling_cli-<version>-py3-none-any.whl` — CLI wheel
+- `spark_kindling_sdk-<version>-py3-none-any.whl` — SDK wheel
+
+The runtime wheel contains every platform module. Consumers select platform
+runtime dependencies with extras such as:
 
 ```bash
-# Make your changes to packages/kindling/
-
-# Build wheels
-poetry run poe build
-
-# Deploy to Azure Storage for testing
-az login  # One-time authentication
-poetry run poe deploy                         # Deploy all platforms
-
-# OR deploy individual platforms:
-poetry run poe deploy --platform synapse      # Deploy only synapse
-poetry run poe deploy --platform databricks   # Deploy only databricks
-poetry run poe deploy --platform fabric       # Deploy only fabric
+pip install 'spark-kindling[synapse]'
+pip install 'spark-kindling[databricks]'
+pip install 'spark-kindling[fabric]'
+pip install 'spark-kindling[standalone]'
 ```
 
-This builds all 3 platform wheels and uploads them to:
-```
-sepstdatalakedev/artifacts/packages/
-  ├── kindling_databricks-0.6.0-py3-none-any.whl
-  ├── kindling_fabric-0.6.0-py3-none-any.whl
-  └── kindling_synapse-0.6.0-py3-none-any.whl
-```
+## Deploy Paths
 
-**Platform-specific deployment** is useful when:
-- Testing changes that only affect one platform
-- Faster iteration during development
-- Deploying hotfixes to specific platforms
-
-### 2. Release Deployment
+There are two common deployment flows:
 
 ```bash
-# After creating a GitHub release with wheels attached:
-poetry run poe deploy --release latest
-
-# Or deploy a specific release version:
-poetry run poe deploy --release 0.6.0
-```
-
-### 3. Advanced Usage (Direct Python)
-
-You can also call the scripts directly for more control:
-
-```bash
-# Deploy all platforms from local
-python scripts/deploy.py
-
-# Deploy specific platform from local
-python scripts/deploy.py --platform synapse
-python scripts/deploy.py --platform databricks
-python scripts/deploy.py --platform fabric
-
-# Deploy from GitHub release
-python scripts/deploy.py --release
-python scripts/deploy.py --release 0.6.0
-python scripts/deploy.py --release --platform synapse
-```
-
-## Build System Architecture
-
-### Python Scripts (scripts/ directory)
-
-The build and deployment tools are Python modules in the `scripts/` package:
-
-- **`scripts/build.py`**: Builds platform-specific wheels using isolated Poetry environments
-- **`scripts/deploy.py`**: Deploys wheels to Azure Storage using azure-identity SDK
-- **`scripts/generate_platform_config.py`**: Generates platform-specific pyproject.toml files
-
-### Key Features
-
-1. **Isolated Builds**: Each platform wheel is built in a temporary directory with its own pyproject.toml
-2. **Single Source Version**: Version is read from root `pyproject.toml` only
-3. **Platform File Filtering**: Each wheel contains only its platform-specific implementation
-4. **Azure Identity Integration**: Uses DefaultAzureCredential (supports Azure CLI, environment variables, managed identity)
-
-### Directory Structure
-
-```
-scripts/                    # Build/deployment tools (not distributed)
-  __init__.py
-  build.py                 # Platform wheel builder
-  deploy.py                # Azure Storage deployment
-  generate_platform_config.py
-
-packages/kindling/          # The actual library (distributed in wheels)
-  __init__.py
-  bootstrap.py
-  platform_synapse.py
-  platform_databricks.py
-  platform_fabric.py
-  ...
-```
-
-## Authentication Methods
-
-### DefaultAzureCredential
-
-The deploy script uses Azure Identity's `DefaultAzureCredential`, which automatically tries authentication methods in this order:
-
-1. **Environment Variables** (service principal)
-2. **Managed Identity** (when running in Azure)
-3. **Azure CLI** (`az login`)
-4. **Visual Studio Code**
-5. **Azure PowerShell**
-
-### Local Development with Service Principal
-
-```bash
-# Set environment variables
-export AZURE_CLIENT_ID="<service-principal-client-id>"
-export AZURE_CLIENT_SECRET="<service-principal-secret>"
-export AZURE_TENANT_ID="<tenant-id>"
-
-# Deploy
+# Upload the current runtime artifacts to storage
 poetry run poe deploy
+poetry run poe upload
+
+# Push workspace bootstrap assets and config
+kindling workspace deploy --platform synapse --storage-account <account>
 ```
 
-Or use a `.env` file (add to `.gitignore`!):
+The Python deploy helpers now prefer the combined runtime wheel and only fall
+back to legacy `kindling_<platform>-*.whl` artifacts when needed.
+
+## CLI Lifecycle Commands
+
+The CLI now exposes design-time lifecycle commands beyond config/workspace:
 
 ```bash
-# Create .env
-cat > .env << 'ENV'
-AZURE_CLIENT_ID=<client-id>
-AZURE_CLIENT_SECRET=<secret>
-AZURE_TENANT_ID=<tenant-id>
-ENV
-
-# Load and deploy
-source .env
-poetry run poe deploy
+kindling app package <app-dir>
+kindling app deploy <app-dir-or-kda> --platform fabric
+kindling app cleanup <app-name> --platform fabric
+kindling job create job.yaml --platform synapse
+kindling job run <job-id> --platform synapse
+kindling job status <run-id> --platform synapse
+kindling job logs <run-id> --platform synapse
+kindling job cancel <run-id> --platform synapse
+kindling job delete <job-id> --platform synapse
 ```
 
-### Local Development with Azure CLI
+Remote app/job commands require `spark-kindling-sdk`.
 
-```bash
-# One-time login
-az login
+## Authentication
 
-# Deploy (uses cached credentials)
-poetry run poe deploy
-```
+Repo deploy and CI flows use Azure identity, not storage keys:
 
-### Required Azure Permissions
+- `AZURE_TENANT_ID`
+- `AZURE_CLIENT_ID`
+- `AZURE_CLIENT_SECRET`
+- `AZURE_STORAGE_ACCOUNT`
+- `AZURE_CONTAINER`
+- optional `AZURE_BASE_PATH`
 
-The service principal needs the **Storage Blob Data Contributor** role:
-
-```bash
-az role assignment create \
-  --assignee <client-id> \
-  --role "Storage Blob Data Contributor" \
-  --scope "/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.Storage/storageAccounts/sepstdatalakedev"
-```
-
-## CI/CD Integration
-
-### GitHub Actions
-
-The Python scripts work seamlessly in GitHub Actions:
-
-```yaml
-name: Build and Deploy
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install Poetry
-        run: pip install poetry
-
-      - name: Install dependencies
-        run: poetry install
-
-      - name: Build wheels
-        run: poetry run poe build
-
-      - name: Deploy to Azure
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        run: poetry run poe deploy
-```
-
-**Setup GitHub Secrets:**
-1. Go to repository Settings → Secrets and variables → Actions
-2. Add secrets:
-   - `AZURE_CLIENT_ID`
-   - `AZURE_CLIENT_SECRET`
-   - `AZURE_TENANT_ID`
-
-### Testing Authentication
-
-Test service principal authentication without deploying:
-
-```bash
-python -c "
-from azure.identity import DefaultAzureCredential
-from azure.storage.blob import BlobServiceClient
-
-credential = DefaultAzureCredential()
-client = BlobServiceClient(
-    'https://sepstdatalakedev.blob.core.windows.net',
-    credential=credential
-)
-container = client.get_container_client('artifacts')
-print('✅ Authentication successful!')
-print(f'Container: {container.container_name}')
-"
-```
-
-## Version Management
-
-The version is managed in a single location:
-
-```toml
-# pyproject.toml
-[tool.poetry]
-version = "0.6.0"  # Single source of truth
-```
-
-Platform-specific builds automatically use this version.
-
-## Platform-Specific Dependencies
-
-Dependencies are configured in `scripts/generate_platform_config.py`:
-
-```python
-PLATFORM_DEPS = {
-    "synapse": ['azure-synapse-artifacts = ">=0.17.0"'],
-    "databricks": [],  # All in runtime
-    "fabric": [],      # All in runtime
-}
-```
-
-Only Synapse requires additional packages not provided by the runtime.
-
-## Testing
-
-```bash
-# Run all tests with coverage
-poetry run poe test
-
-# Run specific test file
-poetry run pytest tests/test_bootstrap.py -v
-
-# Run with coverage report
-poetry run pytest --cov=kindling --cov-report=html
-```
-
-## Code Quality
-
-```bash
-# Format code (auto-fix)
-poetry run poe format
-
-# Lint code (check only)
-poetry run poe lint
-
-# Run all checks
-poetry run poe check
-```
+For local work you can either export those values directly or use `az login`
+when the command supports `DefaultAzureCredential`.

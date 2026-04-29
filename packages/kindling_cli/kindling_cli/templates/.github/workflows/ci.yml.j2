@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: abatilo/actions-poetry@v3
+
+      - name: Test all packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=0
+          for pkg in packages/*; do
+            if [ -f "$pkg/pyproject.toml" ]; then
+              found=1
+              echo "==> Testing $pkg"
+              (cd "$pkg" && poetry install --no-interaction && poetry run poe test && poetry run poe build)
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "No scaffolded packages found under packages/."
+            exit 1
+          fi

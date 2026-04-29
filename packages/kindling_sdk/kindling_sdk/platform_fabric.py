@@ -27,6 +27,19 @@ except ImportError:
     HAS_STORAGE_SDK = False
 
 
+def _emit_stream_progress(message: str) -> None:
+    """Emit streaming progress to stdout and the optional xdist heartbeat channel."""
+    print(message)
+    sys.stdout.flush()
+
+    heartbeat_path = os.getenv("KINDLING_SYSTEM_HEARTBEAT_FILE")
+    if not heartbeat_path:
+        return
+
+    with open(heartbeat_path, "a", encoding="utf-8") as heartbeat_file:
+        heartbeat_file.write(message + "\n")
+
+
 @PlatformAPIRegistry.register("fabric")
 class FabricAPI(PlatformAPI):
     """
@@ -1354,23 +1367,22 @@ class FabricAPI(PlatformAPI):
         job_started_time = None  # Track when job actually started running
         stdout_warmup_seconds = 45  # Wait this long after job starts before expecting stdout
         last_poll_message_time = 0  # Track last time we printed a polling message
+        last_status = None
 
         # Total timeout for entire streaming operation (not just job start)
         total_timeout = max_wait + 300.0  # max_wait for start + 5 minutes for execution
 
-        print(f"📡 Starting stdout log stream for run_id={run_id}")
-        print(f"   Poll interval: {poll_interval}s")
-        print(f"   Max wait for job start: {max_wait}s")
-        print(f"   Stdout warmup time: {stdout_warmup_seconds}s")
-        print(f"   Total timeout: {total_timeout}s")
-        sys.stdout.flush()
+        _emit_stream_progress(f"📡 Starting stdout log stream for run_id={run_id}")
+        _emit_stream_progress(f"   Poll interval: {poll_interval}s")
+        _emit_stream_progress(f"   Max wait for job start: {max_wait}s")
+        _emit_stream_progress(f"   Stdout warmup time: {stdout_warmup_seconds}s")
+        _emit_stream_progress(f"   Total timeout: {total_timeout}s")
 
         while True:
             # Check if we've exceeded total timeout
             elapsed = time.time() - start_time
             if elapsed > total_timeout:
-                print(f"⏱️  Total timeout ({total_timeout}s) exceeded")
-                sys.stdout.flush()
+                _emit_stream_progress(f"⏱️  Total timeout ({total_timeout}s) exceeded")
                 break
 
             # Get current job status
@@ -1378,10 +1390,16 @@ class FabricAPI(PlatformAPI):
                 status_info = self.get_job_status(run_id)
                 status = status_info.get("status", "UNKNOWN").upper()
 
+                if status != last_status:
+                    elapsed = int(time.time() - start_time)
+                    _emit_stream_progress(
+                        f"📊 Fabric job status changed: {last_status or 'UNKNOWN'} -> {status} ({elapsed}s elapsed)"
+                    )
+                    last_status = status
+
                 # If job completed, do final read and exit
                 if status in ["COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED"]:
-                    print(f"✅ Job {status.lower()} - doing final log read")
-                    sys.stdout.flush()
+                    _emit_stream_progress(f"✅ Job {status.lower()} - doing final log read")
                     # Read any remaining logs
                     new_logs, last_byte_offset = self._read_stdout_chunk(
                         job_id, run_id, session_info, last_byte_offset
@@ -1395,7 +1413,14 @@ class FabricAPI(PlatformAPI):
 
                 # If job not started yet, wait
                 if status in ["NOTSTARTED", "PENDING", "STARTING"]:
-                    print(f"⏳ Job status: {status} - waiting...")
+                    current_time = time.time()
+                    if current_time - last_poll_message_time >= 30:
+                        elapsed = int(current_time - start_time)
+                        _emit_stream_progress(
+                            f"⏳ Fabric job still waiting to start "
+                            f"(status={status}, elapsed={elapsed}s)"
+                        )
+                        last_poll_message_time = current_time
                     time.sleep(poll_interval)
                     continue
 
@@ -1412,15 +1437,23 @@ class FabricAPI(PlatformAPI):
                     time_since_start = time.time() - job_started_time
                     if time_since_start < stdout_warmup_seconds:
                         remaining = stdout_warmup_seconds - time_since_start
-                        if remaining > 1:  # Only print if meaningful time remains
-                            print(f"⏳ Warmup period: {int(remaining)}s remaining...")
-                            sys.stdout.flush()
+                        current_time = time.time()
+                        if remaining > 1 and current_time - last_poll_message_time >= 30:
+                            _emit_stream_progress(
+                                "⏳ Fabric stdout warmup in progress "
+                                f"(status={status}, remaining={int(remaining)}s)"
+                            )
+                            last_poll_message_time = current_time
                         time.sleep(poll_interval)
                         continue
 
                     # Warmup complete - try to get session info if we don't have it
                     if not session_info:
                         session_info = self.get_livy_session_info(job_id, run_id)
+                        if session_info:
+                            _emit_stream_progress(
+                                "📋 Fabric Livy session detected for stdout retrieval"
+                            )
 
                 # Read new log content (works with or without session info now)
                 new_logs, last_byte_offset = self._read_stdout_chunk(
@@ -1439,18 +1472,19 @@ class FabricAPI(PlatformAPI):
                     current_time = time.time()
                     if current_time - last_poll_message_time >= 30:  # Every 30 seconds
                         elapsed = int(current_time - start_time)
-                        print(f"🔄 Still polling for stdout... ({elapsed}s elapsed)")
-                        sys.stdout.flush()
+                        _emit_stream_progress(
+                            "🔄 Fabric stdout still pending "
+                            f"(status={status}, elapsed={elapsed}s, lines={len(all_logs)}, offset={last_byte_offset})"
+                        )
                         last_poll_message_time = current_time
 
             except Exception as e:
-                print(f"⚠️  Error during log streaming: {e}")
-                sys.stdout.flush()
+                _emit_stream_progress(f"⚠️  Error during log streaming: {e}")
 
             # Wait before next poll
             time.sleep(poll_interval)
 
-        print(f"📊 Streaming complete - total lines: {len(all_logs)}")
+        _emit_stream_progress(f"📊 Streaming complete - total lines: {len(all_logs)}")
         return all_logs
 
     def _read_stdout_chunk(
