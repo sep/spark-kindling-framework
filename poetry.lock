@@ -4202,6 +4202,28 @@ files = [
 ]
 
 [[package]]
+name = "spark-kindling-cli"
+version = "0.9.3"
+description = "Command-line tooling for Kindling"
+optional = false
+python-versions = "^3.10"
+groups = ["dev"]
+files = []
+develop = true
+
+[package.dependencies]
+click = ">=8.1.0"
+jinja2 = ">=3.1.0"
+pyyaml = ">=6.0"
+
+[package.extras]
+deploy = ["azure-identity (>=1.15.0)", "azure-storage-blob (>=12.14.0)", "requests (>=2.31.0)"]
+
+[package.source]
+type = "directory"
+url = "packages/kindling_cli"
+
+[[package]]
 name = "stack-data"
 version = "0.6.3"
 description = "Extract data from python stack frames and tracebacks for informative displays"
@@ -4531,4 +4553,4 @@ synapse = ["azure-synapse-artifacts"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "3ce0d98f468d6a07d69ad0fa47e049ebc30d04f34346f53333d1f77dd1e8024c"
+content-hash = "cd43f853f9cadef6b8bb29ccfa1c1841c239649fec024d171944c20312e33ee2"

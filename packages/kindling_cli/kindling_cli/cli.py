@@ -2064,6 +2064,167 @@ def job_delete(job_id: str, platform: Optional[str], json_output: bool) -> None:
     )
 
 
+@cli.group("test")
+def test_group() -> None:
+    """Run Kindling project test suites."""
+
+
+@test_group.command("run")
+@click.option(
+    "--suite",
+    type=click.Choice(["unit", "component", "integration", "system", "extension", "all"]),
+    default="unit",
+    show_default=True,
+    help="Logical test suite. Used for defaults and CI report names.",
+)
+@click.option(
+    "--path",
+    "paths",
+    multiple=True,
+    type=click.Path(path_type=Path, exists=False),
+    help="Pytest path to run. Repeatable. Defaults to tests/<suite> when omitted.",
+)
+@click.option("--platform", type=click.Choice(SUPPORTED_PLATFORMS), default=None)
+@click.option(
+    "--test",
+    "test_filter",
+    default=None,
+    help="Pytest -k expression for selecting tests.",
+)
+@click.option(
+    "--marker",
+    default=None,
+    help="Pytest -m expression for selecting markers.",
+)
+@click.option("--ci", is_flag=True, help="Emit junit/json reports and fail fast.")
+@click.option(
+    "--results-dir",
+    default="test-results",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+)
+@click.option(
+    "--workers",
+    default=None,
+    help="Optional pytest-xdist worker count. CI has platform-aware defaults.",
+)
+@click.option(
+    "--coverage",
+    multiple=True,
+    help="Coverage target to pass as --cov=<target>. Repeatable.",
+)
+@click.option("--no-cov", is_flag=True, help="Pass --no-cov to pytest.")
+@click.option(
+    "--preflight",
+    type=click.Choice(["none", "local", "system"]),
+    default="none",
+    show_default=True,
+    help="Optional preflight check before pytest.",
+)
+@click.option(
+    "--dotenv",
+    "dotenv_paths",
+    multiple=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Dotenv file to load before running tests. Repeatable. Defaults to .env.",
+)
+@click.option(
+    "--no-dotenv",
+    is_flag=True,
+    help="Do not load .env before running tests.",
+)
+@click.option(
+    "--pytest-arg",
+    "pytest_args",
+    multiple=True,
+    help="Extra argument passed through to pytest. Repeatable.",
+)
+def test_run(
+    suite: str,
+    paths: Tuple[Path, ...],
+    platform: Optional[str],
+    test_filter: Optional[str],
+    marker: Optional[str],
+    ci: bool,
+    results_dir: Path,
+    workers: Optional[str],
+    coverage: Tuple[str, ...],
+    no_cov: bool,
+    preflight: str,
+    dotenv_paths: Tuple[Path, ...],
+    no_dotenv: bool,
+    pytest_args: Tuple[str, ...],
+) -> None:
+    """Run pytest through Kindling's portable test wrapper.
+
+    Project-specific layouts should pass --path from Poe, Make, or CI tasks.
+    The CLI intentionally does not require a Kindling test config file.
+    """
+    from kindling_cli.test_runner import TestRunOptions, flatten_pytest_args, run_tests
+
+    resolved_dotenvs: Tuple[Path, ...]
+    if no_dotenv:
+        resolved_dotenvs = ()
+    elif dotenv_paths:
+        resolved_dotenvs = dotenv_paths
+    else:
+        resolved_dotenvs = (Path(".env"),)
+
+    options = TestRunOptions(
+        suite=suite,
+        paths=paths,
+        platform=platform,
+        test_filter=test_filter,
+        marker=marker,
+        ci=ci,
+        results_dir=results_dir,
+        workers=workers,
+        coverage=coverage,
+        no_cov=no_cov,
+        preflight=preflight,
+        dotenv_paths=resolved_dotenvs,
+        pytest_args=flatten_pytest_args(pytest_args),
+    )
+
+    try:
+        exit_code = run_tests(options)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    raise click.exceptions.Exit(exit_code)
+
+
+@test_group.command("check")
+@click.option(
+    "--preflight",
+    type=click.Choice(["local", "system"]),
+    default="local",
+    show_default=True,
+    help="Preflight type to run.",
+)
+@click.option("--platform", type=click.Choice(SUPPORTED_PLATFORMS), default=None)
+def test_check(preflight: str, platform: Optional[str]) -> None:
+    """Run a Kindling test preflight check without pytest."""
+    from kindling_cli.test_runner import run_preflight
+
+    exit_code = run_preflight(preflight, platform)
+    raise click.exceptions.Exit(exit_code)
+
+
+@test_group.command("cleanup")
+@click.option("--platform", type=click.Choice(SUPPORTED_PLATFORMS), default=None)
+@click.option("--all", "all_platforms", is_flag=True, help="Clean all configured platforms.")
+@click.option("--skip-packages", is_flag=True, help="Skip cleanup of old package artifacts.")
+def test_cleanup(platform: Optional[str], all_platforms: bool, skip_packages: bool) -> None:
+    """Run project cleanup hooks for system-test resources."""
+    from kindling_cli.test_runner import run_cleanup
+
+    exit_code = run_cleanup(platform, all_platforms=all_platforms, skip_packages=skip_packages)
+    raise click.exceptions.Exit(exit_code)
+
+
 @cli.group("repo")
 def repo_group() -> None:
     """Scaffold and manage multi-package Kindling repos."""

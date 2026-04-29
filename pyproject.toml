@@ -85,6 +85,7 @@ jupyter = ">=1.0.0"
 poethepoet = ">=0.24.0"
 requests = ">=2.31.0"
 azure-mgmt-storage = "22.1.0"
+spark-kindling-cli = {path = "packages/kindling_cli", develop = true}
 # Platform SDKs needed by dev/CI tooling — they're also runtime deps under
 # the corresponding extras, but we install them unconditionally in the dev
 # env because scripts/databricks_uc_preflight.py, scripts/manage_uc_volumes.py,
@@ -124,18 +125,18 @@ publish-github-secrets = { script = "scripts.test_runner:run_setup_github_secret
 auth-secret-fingerprints = { cmd = "python scripts/auth_secret_fingerprints.py" }
 
 # Testing tasks
-test = "pytest tests/ -v"
-test-unit = "pytest tests/unit/ -v"
-test-unit-ci = { script = "scripts.test_runner:run_unit_tests_ci" }
-test-integration = "pytest tests/integration/ -v"
-test-integration-ci = { script = "scripts.test_runner:run_integration_tests_ci" }
-test-local = "pytest tests/local-project/ -v"
-test-system = { script = "scripts.test_runner:run_system_tests", help = "Run system tests. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}, {name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count for local runs. If omitted, local runs stay serial unless KINDLING_SYSTEM_TEST_WORKERS is set"}] }
-test-system-ci = { script = "scripts.test_runner:run_system_tests_ci", help = "Run system tests with CI reporting. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}, {name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count override for CI runs"}] }
-test-extension = { script = "scripts.test_runner:run_extension_tests", help = "Run extension tests", args = [{name = "extension", default = "azure-monitor", positional = false, help = "Extension name to test (e.g., azure-monitor)"}, {name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}] }
-test-quick = "pytest tests/unit/ tests/integration/ -v"
-test-coverage = "pytest tests/ -v --cov=kindling --cov-report=html --cov-report=term"
-cleanup = { script = "scripts.test_runner:run_cleanup", help = "Clean up test resources. Use --platform to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to clean (fabric, synapse, databricks). If not specified, cleans all platforms"}, {name = "skip-packages", default = false, positional = false, help = "Skip cleanup of old packages"}] }
+test = "kindling test run --suite all --path tests"
+test-unit = "kindling test run --suite unit --path tests/unit"
+test-unit-ci = "kindling test run --suite unit --path tests/unit --ci --coverage packages/kindling --pytest-arg=--cov-report=xml"
+test-integration = "kindling test run --suite integration --path tests/integration"
+test-integration-ci = "kindling test run --suite integration --path tests/integration --ci --no-cov"
+test-local = "kindling test run --suite all --path tests/local-project"
+test-system = { shell = "kindling test run --suite system --path tests/system/core ${platform:+--platform \"$platform\"} ${test:+--test \"$test\"} ${workers:+--workers \"$workers\"}", help = "Run system tests. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}, {name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count for local runs. If omitted, local runs stay serial unless KINDLING_SYSTEM_TEST_WORKERS is set"}] }
+test-system-ci = { shell = "kindling test run --suite system --path tests/system/core --ci --preflight system ${platform:+--platform \"$platform\"} ${test:+--test \"$test\"} ${workers:+--workers \"$workers\"}", help = "Run system tests with CI reporting. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}, {name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count override for CI runs"}] }
+test-extension = { shell = "kindling test run --suite extension --path tests/system/extensions/$extension ${platform:+--platform \"$platform\"}", help = "Run extension tests", args = [{name = "extension", default = "azure-monitor", positional = false, help = "Extension name to test (e.g., azure-monitor)"}, {name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}] }
+test-quick = "kindling test run --suite all --path tests/unit --path tests/integration"
+test-coverage = "kindling test run --suite all --path tests --coverage kindling --pytest-arg=--cov-report=html --pytest-arg=--cov-report=term"
+cleanup = { shell = "if [ -n \"$platform\" ]; then kindling test cleanup --platform \"$platform\" $(if [ \"$skip_packages\" = \"true\" ] || [ \"$skip_packages\" = \"True\" ]; then printf '%s' --skip-packages; fi); else kindling test cleanup --all $(if [ \"$skip_packages\" = \"true\" ] || [ \"$skip_packages\" = \"True\" ]; then printf '%s' --skip-packages; fi); fi", help = "Clean up test resources. Use --platform to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to clean (fabric, synapse, databricks). If not specified, cleans all platforms"}, {name = "skip-packages", type = "boolean", default = false, positional = false, help = "Skip cleanup of old packages"}] }
 
 # Code quality tasks
 format = "black packages/ tests/ scripts/"

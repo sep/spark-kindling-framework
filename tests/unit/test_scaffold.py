@@ -211,8 +211,12 @@ def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path
     pyproject = (_package_root(repo_root, "proj") / "pyproject.toml").read_text()
     assert 'spark-kindling = {version = ">=0.9.2", extras = ["standalone"]}' in pyproject
     assert 'poethepoet = ">=0.24.0"' in pyproject
+    assert 'spark-kindling-cli = ">=0.9.3"' in pyproject
     assert 'test = { sequence = ["test-unit", "test-component"] }' in pyproject
-    assert 'test-integration = "pytest tests/integration -v"' in pyproject
+    assert (
+        'test-integration = "kindling test run --suite integration --path tests/integration --preflight local"'
+        in pyproject
+    )
     assert 'build = "poetry build"' in pyproject
 
 
