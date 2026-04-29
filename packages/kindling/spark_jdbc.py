@@ -1,3 +1,6 @@
+from kindling.spark_session import get_or_create_spark_session
+
+
 def _normalize_server_host(server: str) -> str:
     server_host = server.strip().lower()
 
@@ -55,7 +58,7 @@ def _get_host_name_in_certificate(server: str) -> str:
     return normalized_host
 
 
-def createJdbcUrl_ex(server: str, database: str, trust_server_certificate: bool = False) -> str:
+def createJdbcUrl(server: str, database: str, trust_server_certificate: bool = False) -> str:
     normalized_server = _normalize_server_for_jdbc(server)
     trust_server_certificate_value = str(trust_server_certificate).lower()
     jdbc_url = (
@@ -71,10 +74,11 @@ def createJdbcUrl_ex(server: str, database: str, trust_server_certificate: bool 
     return jdbc_url
 
 
-def createJdbcConnection_ex(server: str, database: str, trust_server_certificate: bool = False):
-    url = createJdbcUrl_ex(server, database, trust_server_certificate=trust_server_certificate)
-    driver_manager = spark._sc._gateway.jvm.java.sql.DriverManager
-    properties = spark._sc._gateway.jvm.java.util.Properties()
+def createJdbcConnection(server: str, database: str, trust_server_certificate: bool = False):
+    spark_session = get_or_create_spark_session()
+    url = createJdbcUrl(server, database, trust_server_certificate=trust_server_certificate)
+    driver_manager = spark_session._sc._gateway.jvm.java.sql.DriverManager
+    properties = spark_session._sc._gateway.jvm.java.util.Properties()
     token = mssparkutils.credentials.getToken("DW")
     properties.setProperty("accessToken", token)
     properties.setProperty("trustServerCertificate", str(trust_server_certificate).lower())
@@ -102,7 +106,7 @@ def _extract_trust_server_certificate_from_jdbc_uri(jdbcUri: str):
     return None
 
 
-def createConnectionProperties_ex(server: str = None, trust_server_certificate: bool = False):
+def createConnectionProperties(server: str = None, trust_server_certificate: bool = False):
     token = mssparkutils.credentials.getToken("DW")
     properties = {
         "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
@@ -117,7 +121,8 @@ def createConnectionProperties_ex(server: str = None, trust_server_certificate: 
     return properties
 
 
-def spark_jdbc_read_ex(jdbcUri, table, trust_server_certificate=None):
+def spark_jdbc_read(jdbcUri, table, trust_server_certificate=None):
+    spark_session = get_or_create_spark_session()
     server = _extract_server_from_jdbc_uri(jdbcUri)
     if trust_server_certificate is None:
         trust_server_certificate = _extract_trust_server_certificate_from_jdbc_uri(jdbcUri)
@@ -125,39 +130,36 @@ def spark_jdbc_read_ex(jdbcUri, table, trust_server_certificate=None):
     if trust_server_certificate is None:
         trust_server_certificate = False
 
-    return spark.read.jdbc(
+    return spark_session.read.jdbc(
         jdbcUri,
         table=table,
-        properties=createConnectionProperties_ex(
+        properties=createConnectionProperties(
             server,
             trust_server_certificate=trust_server_certificate,
         ),
     )
 
 
-def execute_ddl_ex(connection, ddl_statement: str):
+def execute_ddl(connection, ddl_statement: str):
     exec_statement = connection.prepareCall(ddl_statement)
     exec_statement.execute()
 
 
-def create_external_table_ex(connection, location, schema, table):
+def create_external_table(connection, location, schema, table):
     create_table_statement = f"""
-    CREATE EXTERNAL TABLE [{dest_schema}].[{view_name}{slot_suffix}]
+    CREATE EXTERNAL TABLE [{schema}].[{table}]
     WITH
     (
-        LOCATION = '/{dest_schema}/{view_name}{slot_suffix}',
+        LOCATION = '{location}',
         DATA_SOURCE = [DatalakeCurated],
         FILE_FORMAT = [ParquetFormat]
     )
-    AS
-    select * from [{src_db}].[{src_schema}].{view_name}
     """
 
-    exec_statement = connection.prepareCall(create_table_statement)
-    exec_statement.execute()
+    execute_ddl(connection, create_table_statement)
 
 
-def create_sql_database_ex(connection, dbname):
+def create_sql_database(connection, dbname):
 
     create_schema_statement = f"""
     IF (NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '{dbname}'))
@@ -166,13 +168,13 @@ def create_sql_database_ex(connection, dbname):
     END
     """
 
-    execute_ddl_ex(connection, create_schema_statement)
+    execute_ddl(connection, create_schema_statement)
 
 
-def create_view_ex(connection, schema, view_name, view_statement: str):
+def create_view(connection, schema, view_name, view_statement: str):
     create_view_statement = f"""
     CREATE OR ALTER VIEW [{schema}].{view_name}
     AS
     {view_statement}
     """
-    execute_ddl_ex(connection, create_view_statement)
+    execute_ddl(connection, create_view_statement)
