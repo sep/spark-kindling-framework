@@ -10,16 +10,25 @@ packages = [{include = "{{ snake_name }}", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-# kindling is installed separately — either from the kindling-local wheel
-# or via `pip install -e /path/to/kindling` for source iteration.
-# The manifest does not pin the install path so both workflows are identical.
-kindling = ">=0.8.14"
-pyspark = ">=3.4.0"
-delta-spark = ">=2.4.0"
+# The runtime distribution is published as `spark-kindling`, while imports
+# remain `import kindling`. The standalone extra pulls in local Spark deps.
+spark-kindling = {version = ">=0.9.2", extras = ["standalone"]}
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"
 pytest-cov = ">=4.0.0"
+poethepoet = ">=0.24.0"
+spark-kindling-cli = ">=0.9.3"
+
+[tool.poe.tasks]
+test-unit = "kindling test run --suite unit --path tests/unit"
+test-component = "kindling test run --suite component --path tests/component"
+{% if integration %}
+test-integration = "kindling test run --suite integration --path tests/integration --preflight local"
+test-all = { sequence = ["test-unit", "test-component", "test-integration"] }
+{% endif %}
+test = { sequence = ["test-unit", "test-component"] }
+build = "poetry build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -170,16 +170,20 @@ def test_with_kindling_wheel():
     print("Testing with actual Kindling wheel")
     print("=" * 70)
 
-    # Find the latest fabric wheel
+    # Find the latest spark-kindling wheel (single combined wheel post-refactor).
+    # Falls back to legacy per-platform wheel names if present in dist/.
     wheels_dir = Path(__file__).parent.parent.parent / "dist"
-    fabric_wheels = list(wheels_dir.glob("kindling_fabric-*.whl"))
+    wheels = list(wheels_dir.glob("spark_kindling-*.whl"))
+    if not wheels:
+        # Legacy fallback for builds from pre-rename branches.
+        wheels = list(wheels_dir.glob("kindling_fabric-*.whl"))
 
-    if not fabric_wheels:
-        print("⚠️  No Fabric wheels found in dist/")
+    if not wheels:
+        print("⚠️  No spark-kindling wheels found in dist/")
         print("   Run 'poe build' first")
         return 1
 
-    latest_wheel = sorted(fabric_wheels)[-1]
+    latest_wheel = sorted(wheels)[-1]
     print(f"\nUsing wheel: {latest_wheel.name}")
 
     # Test with Fabric runtime versions
