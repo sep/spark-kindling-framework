@@ -30,10 +30,22 @@ class MatplotlibVisualizationRenderer(VisualizationRenderer):
         return self.render_pandas(pdf, visualization)
 
     def render_pandas(self, pdf: Any, visualization: VisualizationMetadata) -> str:
+        import sys
+
         import matplotlib
 
-        matplotlib.use("Agg")
+        # Only set backend if pyplot hasn't been imported yet; switching after
+        # pyplot is loaded raises in some environments.
+        if "matplotlib.pyplot" not in sys.modules:
+            matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+
+        kind = visualization.kind.lower()
+        if kind not in ("line", "bar", "scatter", "hist"):
+            raise ValueError(
+                f"Unsupported visualization kind '{visualization.kind}'. "
+                "Supported kinds: line, bar, scatter, hist."
+            )
 
         output_path = Path(visualization.output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,7 +55,6 @@ class MatplotlibVisualizationRenderer(VisualizationRenderer):
             dpi=visualization.options.get("dpi", 120),
         )
 
-        kind = visualization.kind.lower()
         if kind == "line":
             self._plot_line(ax, pdf, visualization)
         elif kind == "bar":
@@ -52,11 +63,6 @@ class MatplotlibVisualizationRenderer(VisualizationRenderer):
             self._plot_scatter(ax, pdf, visualization)
         elif kind == "hist":
             self._plot_hist(ax, pdf, visualization)
-        else:
-            raise ValueError(
-                f"Unsupported visualization kind '{visualization.kind}'. "
-                "Supported kinds: line, bar, scatter, hist."
-            )
 
         if visualization.title:
             ax.set_title(visualization.title)

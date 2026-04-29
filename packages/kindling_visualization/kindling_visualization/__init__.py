@@ -29,36 +29,9 @@ def _register_services():
     from kindling.injection import GlobalInjector
 
     injector = GlobalInjector.get_injector()
-    injector.binder.bind(
-        VisualizationRegistry,
-        to=singleton(VisualizationRegistryManager),
-        scope=singleton,
-    )
-    injector.binder.bind(
-        VisualizationRegistryManager,
-        to=singleton(VisualizationRegistryManager),
-        scope=singleton,
-    )
-    injector.binder.bind(
-        VisualizationRenderer,
-        to=singleton(MatplotlibVisualizationRenderer),
-        scope=singleton,
-    )
-    injector.binder.bind(
-        MatplotlibVisualizationRenderer,
-        to=singleton(MatplotlibVisualizationRenderer),
-        scope=singleton,
-    )
-    injector.binder.bind(
-        VisualizationRunner,
-        to=singleton(VisualizationRunnerService),
-        scope=singleton,
-    )
-    injector.binder.bind(
-        VisualizationRunnerService,
-        to=singleton(VisualizationRunnerService),
-        scope=singleton,
-    )
+    injector.binder.bind(VisualizationRegistry, to=VisualizationRegistryManager, scope=singleton)
+    injector.binder.bind(VisualizationRenderer, to=MatplotlibVisualizationRenderer, scope=singleton)
+    injector.binder.bind(VisualizationRunner, to=VisualizationRunnerService, scope=singleton)
 
 
 _register_services()
