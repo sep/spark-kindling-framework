@@ -1,5 +1,5 @@
 # Active Task: TASK-20260429-001 SCD Type 2 Entity Support
-**Status:** IN PROGRESS
+**Status:** COMPLETE — branch `agent/TASK-20260429-001/scd2-support` ready for PR
 **Requested:** Implement SCD Type 2 merge semantics for Delta-backed entities
 **Goal:** Delta entities tagged `scd.type: "2"` automatically get SCD2 merge behavior (close current row, insert new version) via a named strategy applied by `DeltaEntityProvider`, without any changes to the execution layer or `EntityMetadata` schema.
 **Started:** 2026-04-29
@@ -35,7 +35,7 @@
 | 2 | implementer | implementation plan | code in `entity_provider_delta.py`, `data_entities.py` | ✅ DONE |
 | 3 | tester | implementation | unit test suite (57 tests, 1080 total passing) | ✅ DONE |
 | 4 | reviewer | code + tests | APPROVED WITH NOTES (3 minor findings) | ✅ DONE |
-| 5 | integrator | approved code + reviewer notes | merged to branch | 🔄 IN PROGRESS |
+| 5 | integrator | approved code + reviewer notes | merged to branch | ✅ DONE |
 
 ## Handoff Log
 - 2026-04-29: Task created by coordinator. Proposal finalized with strategy registration design.
