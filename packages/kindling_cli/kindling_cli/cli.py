@@ -308,12 +308,19 @@ def _check_java() -> Tuple[bool, str]:
         return False, f"error: {exc}"
 
 
+_MODULE_TO_PACKAGE = {
+    "delta": "delta-spark",
+    "pyspark": "pyspark",
+}
+
+
 def _check_module(module: str) -> Tuple[bool, str]:
     import importlib.util
 
     spec = importlib.util.find_spec(module)
     if spec is None:
-        return False, f"not installed — pip install {module.replace('.', '-')}"
+        pip_name = _MODULE_TO_PACKAGE.get(module, module.replace(".", "-"))
+        return False, f"not installed — pip install {pip_name}"
     try:
         mod = __import__(module)
         version = getattr(mod, "__version__", None) or getattr(mod, "version", None)
@@ -326,7 +333,11 @@ def _check_hadoop_jars() -> Tuple[bool, str]:
     missing = [j for j in _HADOOP_AZURE_JARS if not (_HADOOP_JAR_DIR / j).exists()]
     if not missing:
         return True, str(_HADOOP_JAR_DIR)
-    return False, f"{len(missing)} jar(s) missing from {_HADOOP_JAR_DIR}"
+    urls = "\n    ".join(_HADOOP_JAR_URLS)
+    return (
+        False,
+        f"{len(missing)} jar(s) missing from {_HADOOP_JAR_DIR}\n  Download from:\n    {urls}",
+    )
 
 
 @env_group.command("check")
@@ -1415,7 +1426,7 @@ def new_project(
     except Exception as exc:
         raise click.ClickException(f"Scaffold failed: {exc}") from exc
 
-    click.echo(f"Created {cfg.kebab_name}/ ({len(created)} files)")
+    click.echo(f"Created {cfg.snake_name}/ ({len(created)} files)")
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd {cfg.snake_name}")
