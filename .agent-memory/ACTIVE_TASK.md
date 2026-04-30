@@ -5,12 +5,12 @@
 | TASK-20260429-001 | SCD Type 2 Entity Support | ✅ MERGED (PR #77) | agent/TASK-20260429-001/scd2-support |
 | TASK-20260429-002 | SCD2 Follow-up Fixes (#78–#81) | ✅ MERGED (PR #82) | agent/TASK-20260429-002/scd2-followup |
 | TASK-20260430-001 | Local Dev DX: Critical & High gaps (issue #85) | ✅ MERGED (PR #86) | agent/TASK-20260430-001/local-dev-dx |
-| TASK-20260430-002 | DX Round 2: WatermarkEntityFinder, debug noise, validate --env, CLI dep, DI test (#87, #88) | 🔄 IN PROGRESS | agent/TASK-20260430-002/dx-fixes-round2 |
+| TASK-20260430-002 | DX Round 2: WatermarkEntityFinder, debug noise, validate --env, CLI dep, DI test (#87, #88) | ✅ MERGED (PR #89) | agent/TASK-20260430-002/dx-fixes-round2 |
 
 ---
 
 # Active Task: TASK-20260430-002 — DX Round 2: post-#85 eval gaps + DI wiring test
-**Status:** IN PROGRESS
+**Status:** COMPLETE — merged as PR #89
 **Branch:** `agent/TASK-20260430-002/dx-fixes-round2`
 **Issues:** #87, #88
 **Started:** 2026-04-30
