@@ -165,17 +165,12 @@ def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
 
 
 def _hash_tracked_columns(tracked_columns: list[str]):
-    """SHA2-256 hash over sorted tracked columns for change detection."""
-    return sha2(
-        concat_ws(
-            "|",
-            *[
-                coalesce(col(c).cast("string"), lit(_SCD2_NULL_SENTINEL))
-                for c in sorted(tracked_columns)
-            ],
-        ),
-        256,
-    )
+    """SHA2-256 hash over sorted tracked columns for change detection.
+
+    Uses to_json(struct(...)) to avoid delimiter-collision issues that arise
+    with concat_ws when column values contain the separator character.
+    """
+    return sha2(to_json(struct(*[col(c) for c in sorted(tracked_columns)])), 256)
 
 
 def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
@@ -296,7 +291,7 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
             )
             .whenNotMatchedInsert(values=insert_values)
             .whenNotMatchedBySourceUpdate(
-                condition=f"target.`{cfg.is_current_column}` = true",
+                condition=f"{_quote_sql_identifier(cfg.is_current_column, 'target')} = true",
                 set=close_set,
             )
             .execute()
