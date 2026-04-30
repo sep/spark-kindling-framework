@@ -1,22 +1,19 @@
 STATUS: IDLE
-TASK: TASK-20260430-002
+TASK: TASK-20260430-003
+BRANCH: agent/TASK-20260430-003/dx-eval-remediation
 FROM: implementer
-RECEIVED: 2026-04-30T18:08:58Z
 
 ## Instruction
-Run `poe test-unit`. Add/confirm tests for: DI wiring (item 6 component test), validate --env
-acceptance, and assert that `kindling run` in a scaffolded project now reaches pipe
-execution (can be a dry-run or mock-executor test). Confirm total >= 1106.
+
+Verify G9 sentinel tests now pass and run `poe test-unit`; confirm all 1106+ tests pass. If green, write to mailboxes/reviewer.md.
 
 ## Context Files
-- `.agent-memory/design-TASK-20260430-002.md`
-- `packages/kindling/watermarking.py`
-- `packages/kindling/bootstrap.py`
+
+- `.agent-memory/test-results-TASK-20260430-003.md`
 - `packages/kindling/spark_config.py`
-- `packages/kindling_cli/kindling_cli/cli.py`
-- `packages/kindling_cli/kindling_cli/templates/pyproject.toml.j2`
-- `tests/unit/test_di_wiring_standalone.py`
-- `tests/unit/test_scaffold.py`
+- `tests/unit/test_spark_config.py`
+- changed files from TASK-20260430-003
 
 ## On Complete
-Write to mailboxes/reviewer.md with STATUS: PENDING
+
+write to mailboxes/reviewer.md

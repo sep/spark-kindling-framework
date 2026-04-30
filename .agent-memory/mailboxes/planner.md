@@ -1,102 +1,71 @@
-STATUS: IDLE
-TASK: TASK-20260430-002
+STATUS: IN_PROGRESS
+TASK: TASK-20260430-003
 FROM: coordinator
-RECEIVED: 2026-04-30T17:45:00Z
+RECEIVED: 2026-04-30T00:00:00Z
 
 ## Instruction
 
-Produce a design doc for TASK-20260430-002. Six items to address — four of them are well-understood
-fixes, two require design decisions. See scope below.
+Produce a design doc for TASK-20260430-003 — 9 confirmed DX gaps from the post-#85/#87/#88
+evaluation (issue #90). This is primarily doc additions, template changes, and print-to-logger
+cleanup, with one small framework change (G9). No architectural decisions needed — focus on
+implementation order, the G9 sentinel approach, and the G12 template placement.
 
-### Item 1 — `WatermarkEntityFinder` unbound in standalone (🔴 Critical)
+### Gaps to address
 
-`DataPipesExecution` DI graph: `SimpleReadPersistStrategy` → `WatermarkManager` → `WatermarkEntityFinder`
-(abstract, no concrete binding in standalone platform). The test framework mocks it; the real CLI hits
-`injector.CallError` immediately.
+| Gap | Location | Change |
+|-----|----------|--------|
+| G3 | `packages/kindling_cli/kindling_cli/templates/src/entities/records.medallion.py.j2` and `records.minimal.py.j2` | Add comment block explaining how to add a second entity |
+| G4 | `docs/intro.md` | Remove or update pinned `**Version:** 0.6.6` (current is 0.9.x) |
+| G5 | `README.md` | Add "Quick start" CLI section: `kindling new my-app` → `cd packages/my_app` → `poetry install` → `kindling run bronze_to_silver --env local` |
+| G6 | `packages/kindling/spark_session.py:16` | `print("Creating new spark session ...")` → `logger.info(...)` |
+| G7 | `packages/kindling/notebook_framework.py:1945,1966` | Two emoji `print()` → `logger.info(...)` |
+| G8 | `packages/kindling/data_apps.py` | 29 bare `print()` (emoji-debug style) → route to logger or delete |
+| G9 | `packages/kindling/spark_config.py` — `DynaconfConfig.get()` | Sentinel default so `get(key)` vs `get(key, None)` can be distinguished; log warning when called without explicit default and value is None |
+| G12 | `packages/kindling_cli/kindling_cli/templates/tests/integration/test_pipeline.py.j2` | Add test that calls `DataPipesExecution.run_datapipes(["bronze_to_silver"])` via Kindling (not raw Delta) |
+| G13 | `docs/setup_guide.md` | Add "Local development" section at top, before cloud platform sections |
 
-Three options were identified in issue #87:
-- A) `kindling run` CLI auto-binds a `NullWatermarkEntityFinder` before calling `run_datapipes`
-- B) Scaffold `app.py.j2` template includes a stub implementation + binding
-- C) Standalone platform (`platform_standalone.py`) auto-registers a no-op during `initialize_framework`
+### Key design questions for the planner to answer
 
-Pick one. Consider: option A is narrowest (only helps `kindling run`, not programmatic use); option C
-is broadest (helps all standalone callers but risks masking the need for a real implementation in
-production); option B puts user code in charge, consistent with how existing apps do it.
+1. **G9 sentinel approach**: Confirm the sentinel pattern is appropriate. The `get()` method is
+   called very frequently — decide whether to use `logger.warning` or `logger.debug` to avoid log
+   spam. Also decide: should the warning fire every call, or only in a debug/dev context?
 
-Look at `tests/data-apps/eventhub-provider-test-app/main.py` and
-`tests/data-apps/streaming-pipes-test-app/main.py` for the pattern existing apps use.
+2. **G8 data_apps.py categorisation**: Like the bootstrap.py cleanup in TASK-20260430-002, read
+   `data_apps.py` and categorise the 29 prints:
+   - Emoji step-tracking prints (🚀, 📋, ✅, 🔧, 📄) → route to `logger.info` or `logger.debug`
+   - Error/exception prints → route to `logger.error` or `logger.warning`
+   - Any that are clearly leftover → delete
 
-Provide specific pseudocode for whichever option you recommend.
+3. **G12 template isolation**: The new integration test calls `initialize()` which modifies global
+   state. Should it use the existing `_setup` fixture (which uses `spark_abfss`) or a new
+   fixture using standalone? The Kindling execution test should work without ABFSS — it uses
+   memory provider entities.
 
-### Item 2 — 100+ debug `print()` calls in `bootstrap.py` + `spark_config.py` (🔴 Critical)
-
-Every invocation prints 30–50 lines of debug noise unconditionally. The calls are raw `print()`
-statements — not behind any flag. Key locations: `bootstrap.py:1408-1420`, `spark_config.py:124-184`.
-
-The fix must not silence legitimate startup errors. The existing `print_logging` config key
-(`kindling.telemetry.logging.print: true`) controls the logger, not these raw prints. The bootstrap
-itself runs before config is fully loaded in some paths, so a simple "read config flag" approach may
-not work for all sites.
-
-Design the suppression strategy: which calls to remove entirely (clearly leftover debug code), which
-to route through the existing logger, and whether a `KINDLING_QUIET=1` env var is needed as a
-workaround for the bootstrap-before-config ordering problem.
-
-### Item 3 — `kindling validate` missing `--env` option (🟠 High)
-
-`kindling run` accepts `--env TEXT` and passes it to `_load_app_module`. `validate_app` also calls
-`_load_app_module` but has no `--env` option. Add one — wire identically to `run_pipe`.
-
-File: `packages/kindling_cli/kindling_cli/cli.py` — `validate_app()` function.
-
-### Item 4 — Next-steps implies Azure creds required for local dev (🟠 High)
-
-`kindling new` prints:
-```
-cp .env.example .env  # fill in your credentials, then: source .env
-```
-
-Annotate to make clear this is optional for local-first (memory provider) dev. Look at
-`packages/kindling_cli/kindling_cli/cli.py` — `new_project()` — for the next-steps string.
-
-### Item 5 — `spark-kindling-cli` commented out in scaffold pyproject.toml (🟠 High)
-
-After `poetry install`, `kindling` is not on PATH because `spark-kindling-cli` is commented out as
-"optional" in the scaffold's `pyproject.toml.j2`. Decide: uncomment as a real dev dependency, or
-add a `poetry run kindling ...` hint in next-steps. Consider that the CLI is a dev-time tool (no
-production need), but it's the primary local run mechanism the docs promote.
-
-File: `packages/kindling_cli/kindling_cli/templates/pyproject.toml.j2`
-
-### Item 6 — Missing DI wiring component test (🟠 High, issue #88)
-
-Add a component-level test that exercises real DI graph construction for `DataPipesExecution` on
-standalone platform. The test must:
-1. Call `initialize_framework(platform="standalone")` with an in-memory config (no files, no Azure)
-2. Call `GlobalInjector.get(DataPipesExecution)` with no mocking
-3. Assert a concrete `DataPipesExecution` instance is returned (no `CallError`)
-4. This test should FAIL before item 1 is fixed and PASS after
-
-This test should live in `tests/unit/` alongside the other CLI/DX tests, or in a new
-`tests/component/` area. Check CONVENTIONS.md for guidance on test placement.
+4. **G5 README placement**: Where does the Quick start section go relative to the existing
+   notebook-oriented "Quickstart" Python snippet? Recommend replacing or supplementing.
 
 ## Context Files
-- `.agent-memory/ACTIVE_TASK.md` — task brief
-- `packages/kindling/bootstrap.py` — lines 1408–1500 and grep for `print(` (86 total)
-- `packages/kindling/spark_config.py` — lines 124–190 (17 print calls)
-- `packages/kindling/watermarking.py` — `WatermarkEntityFinder` abstract class
-- `packages/kindling/platform_standalone.py` — standalone platform (no WatermarkEntityFinder binding)
-- `packages/kindling_cli/kindling_cli/cli.py` — `run_pipe`, `validate_app`, `new_project`
-- `packages/kindling_cli/kindling_cli/templates/pyproject.toml.j2` — scaffold pyproject
-- `tests/data-apps/eventhub-provider-test-app/main.py` — example WatermarkEntityFinder implementation
-- `tests/unit/test_cli_local_dev_dx.py` — existing CLI tests (mocked DI)
-- GitHub issues #87 and #88
+- `packages/kindling_cli/kindling_cli/templates/src/entities/records.medallion.py.j2`
+- `packages/kindling_cli/kindling_cli/templates/src/entities/records.minimal.py.j2`
+- `packages/kindling_cli/kindling_cli/templates/tests/integration/test_pipeline.py.j2`
+- `packages/kindling/spark_session.py` (G6 — check for logger instance)
+- `packages/kindling/notebook_framework.py` lines 1940–1970 (G7)
+- `packages/kindling/data_apps.py` (G8 — all 29 prints)
+- `packages/kindling/spark_config.py` — `DynaconfConfig.get()` ~line 279 (G9)
+- `docs/intro.md` (G4)
+- `docs/setup_guide.md` (G13)
+- `README.md` (G5)
+- `docs/local_python_first.md` — review for any further accuracy issues
+- `.agent-memory/ACTIVE_TASK.md` (task brief)
+- Issue #90: `gh issue view 90`
 
 ## On Complete
-Write to `.agent-memory/mailboxes/implementer.md`:
+Write design doc to `.agent-memory/design-TASK-20260430-003.md`, then write to
+`mailboxes/implementer.md`:
   STATUS: PENDING
-  TASK: TASK-20260430-002
+  TASK: TASK-20260430-003
+  BRANCH: agent/TASK-20260430-003/dx-eval-remediation
   FROM: planner
-  ## Instruction / [implement the design]
-  ## Context Files / design-TASK-20260430-002.md + source files
+  ## Instruction / [implementation instructions from design doc]
+  ## Context Files / [design doc + changed files]
   ## On Complete / write to mailboxes/tester.md
