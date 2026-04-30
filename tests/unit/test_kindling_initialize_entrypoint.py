@@ -18,3 +18,10 @@ def test_initialize_app_name_argument_overrides_config():
         kindling.initialize({"app_name": "from-config"}, app_name="from-arg")
 
     mock_init.assert_called_once_with({"app_name": "from-arg"})
+
+
+def test_kindling_not_initialized_error_is_top_level_export():
+    import kindling
+    from kindling.data_entities import KindlingNotInitializedError
+
+    assert kindling.KindlingNotInitializedError is KindlingNotInitializedError

@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.data_entities import (
     DataEntities,
     DataEntityManager,
@@ -17,6 +18,7 @@ from kindling.data_entities import (
     EntityNameMapper,
     EntityPathLocator,
     EntityProvider,
+    KindlingNotInitializedError,
 )
 from kindling.injection import GlobalInjector
 
@@ -317,6 +319,55 @@ class TestDataEntitiesDecorator:
         """Reset DataEntities.deregistry before each test"""
         DataEntities.deregistry = None
 
+    def test_reset_clears_entity_registry_reference(self):
+        """Test that reset clears cached entity registry state."""
+        DataEntities.deregistry = MagicMock()
+
+        DataEntities.reset()
+
+        assert DataEntities.deregistry is None
+
+    def test_entity_before_initialize_raises_kindling_error(self):
+        """Test entity decorator raises clear error before framework initialization."""
+        injector = MagicMock()
+        injector.get.return_value.get_service.return_value = None
+
+        with (
+            patch.object(GlobalInjector, "get_injector", return_value=injector),
+            pytest.raises(KindlingNotInitializedError) as exc_info,
+        ):
+            DataEntities.entity(
+                entityid="test_entity",
+                name="Test Entity",
+                partition_columns=[],
+                merge_columns=[],
+                tags={},
+                schema={},
+            )
+
+        message = str(exc_info.value)
+        assert "initialize()" in message
+        assert "register_all()" in message
+
+    def test_sql_entity_before_initialize_raises_kindling_error(self):
+        """Test sql_entity decorator raises clear error before framework initialization."""
+        injector = MagicMock()
+        injector.get.return_value.get_service.return_value = None
+
+        with (
+            patch.object(GlobalInjector, "get_injector", return_value=injector),
+            pytest.raises(KindlingNotInitializedError) as exc_info,
+        ):
+            DataEntities.sql_entity(
+                entityid="reporting.recent_sales",
+                name="recent_sales",
+                sql="SELECT 1",
+            )
+
+        message = str(exc_info.value)
+        assert "initialize()" in message
+        assert "register_all()" in message
+
     def test_decorator_validates_required_fields(self):
         """Test that decorator validates all required fields are present"""
         mock_registry = MagicMock()
@@ -418,7 +469,10 @@ class TestDataEntitiesDecorator:
 
         # Mock GlobalInjector.get
         mock_registry = MagicMock()
-        with patch.object(GlobalInjector, "get", return_value=mock_registry) as mock_get:
+        with (
+            patch("kindling.data_entities._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry) as mock_get,
+        ):
             DataEntities.entity(
                 entityid="test_entity",
                 name="Test Entity",
