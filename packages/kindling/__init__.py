@@ -41,6 +41,7 @@ from .bootstrap import (
     initialize_framework,
     is_framework_initialized,
 )
+from .data_entities import KindlingNotInitializedError
 
 
 def initialize(config=None, app_name=None):

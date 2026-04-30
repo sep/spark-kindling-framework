@@ -72,6 +72,27 @@ def spark_local():
     spark.sparkContext.setLogLevel("ERROR")
     yield spark
     spark.stop()
+
+
+@pytest.fixture
+def reset_kindling():
+    """Reset Kindling registry state between tests.
+
+    Call initialize() inside each test that needs a fresh framework state,
+    or use as autouse=True on a class to isolate component tests.
+    """
+    from kindling.data_entities import DataEntities
+    from kindling.data_pipes import DataPipes
+    from kindling.injection import GlobalInjector
+
+    def _reset():
+        DataEntities.reset()
+        DataPipes.reset()
+        GlobalInjector.reset()
+
+    _reset()
+    yield
+    _reset()
 {% if integration %}
 
 
@@ -249,41 +270,4 @@ def spark_abfss():
 {% endif %}
 
 
-# ---------------------------------------------------------------------------
-# Kindling registry isolation
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def reset_kindling():
-    """Reset the Kindling DI graph between integration tests.
-
-    initialize_framework() is idempotent (it returns early if already
-    initialized). Use this fixture when a test needs a fresh bootstrap.
-    """
-    import sys
-
-    from kindling.data_entities import DataEntities
-    from kindling.data_pipes import DataPipes
-    from kindling.injection import GlobalInjector
-
-    _pkg_modules = [k for k in sys.modules if k.startswith("{{ snake_name }}")]
-
-    def _reset():
-        from injector import singleton
-        from kindling.spark_config import ConfigService, DynaconfConfig
-
-        GlobalInjector.reset()
-        DataEntities.deregistry = None
-        DataPipes.dpregistry = None
-        for mod in _pkg_modules:
-            sys.modules.pop(mod, None)
-
-        inj = GlobalInjector.get_injector()
-        inj.binder.bind(ConfigService, to=DynaconfConfig, scope=singleton)
-        inj.binder.bind(DynaconfConfig, to=DynaconfConfig, scope=singleton)
-
-    _reset()
-    yield
-    _reset()
 {% endif %}
