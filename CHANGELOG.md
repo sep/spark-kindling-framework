@@ -5,6 +5,11 @@ All notable changes to spark-kindling are documented here.
 ## [Unreleased]
 
 ### Added
+- CLI Quick Start section in `README.md` — covers `kindling new` → `poetry install` → `kindling run` end-to-end local workflow (TASK-20260430-003)
+- Local Development section in `docs/setup_guide.md` — placed before cloud-platform sections so developers can run locally without cloud credentials (TASK-20260430-003)
+- Sentinel-based missing-key debug logging to `DynaconfConfig.get()` in `spark_config.py` — surfaces misconfigured keys without raising at call-time (TASK-20260430-003)
+- Entity guidance comments to scaffold entity templates (`records.medallion.py.j2`, `records.minimal.py.j2`) — inline hints steer developers toward correct field/SCD patterns (TASK-20260430-003)
+- `TestKindlingPipeExecution` class to scaffold integration test template — gives generated projects a ready-to-run pipe execution test (TASK-20260430-003)
 - `kindling run <pipe_id>` CLI command — executes a registered pipe locally after auto-discovering `app.py`; no cloud credentials required (TASK-20260430-001, #85)
 - `kindling validate` CLI command — statically validates entity/pipe definitions without starting Spark (TASK-20260430-001, #85)
 - `KindlingNotInitializedError` — raised with actionable message when entity/pipe decorators fire before `initialize()` (TASK-20260430-001, #85)
@@ -18,6 +23,8 @@ All notable changes to spark-kindling are documented here.
 - `kindling new` next-steps output uses a single `cd` command (TASK-20260430-001, #85)
 
 ### Fixed
+- Stale pinned version `0.6.6` removed from `docs/intro.md` — version reference now tracks the package dynamically (TASK-20260430-003)
+- 29 bare `print()` calls in `data_apps.py` routed to `self.logger`; additional bare prints fixed in `spark_session.py` and `notebook_framework.py` — structured log output consistent throughout (TASK-20260430-003)
 - `NullWatermarkEntityFinder` auto-bound in standalone platform — `kindling run` now executes pipes in scaffolded projects without Azure credentials (TASK-20260430-002, #87)
 - Removed/routed 109 unconditional debug `print()` calls in `bootstrap.py` and `spark_config.py` — CLI output is clean by default (TASK-20260430-002, #87)
 - Added `--env` option to `kindling validate` for consistency with `kindling run` (TASK-20260430-002, #87)
