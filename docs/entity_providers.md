@@ -231,6 +231,34 @@ def merge_to_entity(self, df, entity):
 
 ## Advanced Features
 
+### SCD Type 2 Merge
+
+When an entity carries `tags={"scd.type": "2"}`, `merge_to_entity` automatically applies the **staged-updates** SCD2 pattern instead of a simple overwrite-in-place merge. For each incoming row:
+
+- If the row matches a current target row **and** tracked columns have changed → the existing row is closed (`__effective_to = now`, `__is_current = false`) and a new version is inserted.
+- If the row has no match in the target → it is inserted as a new current row.
+- If the row matches but tracked columns are unchanged → no action (no false history entries).
+
+This is handled entirely by `DeltaMergeStrategies` — no pipe-level changes are needed.
+
+### Point-in-Time Reads (`read_entity_as_of`)
+
+For SCD2 entities, `read_entity_as_of` returns the entity state as it appeared at a specific instant:
+
+```python
+from datetime import datetime
+
+provider = get_kindling_service(EntityProvider)
+
+# Returns rows where effective_from <= point_in_time < effective_to (or is_current=true)
+snapshot_df = provider.read_entity_as_of(entity, datetime(2024, 6, 1))
+
+# Also accepts a string timestamp
+snapshot_df = provider.read_entity_as_of(entity, "2024-06-01 00:00:00")
+```
+
+For non-SCD2 entities the method falls back to Delta's native `timestampAsOf` time travel.
+
 ### Schema Evolution
 
 The DeltaEntityProvider supports automatic schema evolution:
