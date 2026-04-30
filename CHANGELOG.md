@@ -23,7 +23,7 @@ All notable changes to spark-kindling are documented here.
 - `kindling new` next-steps output uses a single `cd` command (TASK-20260430-001, #85)
 
 ### Fixed
-- Stale pinned version `0.6.6` removed from `docs/intro.md` — version reference now tracks the package dynamically (TASK-20260430-003)
+- Stale pinned version `0.6.6` removed from `docs/intro.md` — version line deleted to avoid future staleness (TASK-20260430-003)
 - 29 bare `print()` calls in `data_apps.py` routed to `self.logger`; additional bare prints fixed in `spark_session.py` and `notebook_framework.py` — structured log output consistent throughout (TASK-20260430-003)
 - `NullWatermarkEntityFinder` auto-bound in standalone platform — `kindling run` now executes pipes in scaffolded projects without Azure credentials (TASK-20260430-002, #87)
 - Removed/routed 109 unconditional debug `print()` calls in `bootstrap.py` and `spark_config.py` — CLI output is clean by default (TASK-20260430-002, #87)

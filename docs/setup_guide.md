@@ -4,22 +4,21 @@ This guide explains how to install, configure, and start using the Spark Kindlin
 
 ## Local Development (No Cloud Required)
 
-For local development, install the standalone extra and initialize configuration
-with the `local` environment:
+For local development, scaffold a project with the CLI and run it without cloud credentials:
 
 ```bash
-pip install 'spark-kindling[standalone]'
+pip install 'spark-kindling[standalone]' spark-kindling-cli
+
+kindling new my-app
+cd my_app/packages/my_app
+poetry install
+kindling run bronze_to_silver --env local
 ```
 
-```python
-from kindling import initialize_framework
-
-initialize_framework(env="local")
-```
-
-Projects scaffolded with `spark-kindling-cli` include local Spark fixtures and
-tests so entities, pipes, and notebooks can be developed before connecting to
-Fabric, Synapse, or Databricks.
+The scaffold uses in-memory entity providers by default — no Azure storage account needed.
+Projects scaffolded with `spark-kindling-cli` include local Spark fixtures and tests so
+entities, pipes, and notebooks can be developed before connecting to Fabric, Synapse, or
+Databricks. See [Local Python-First Development](./local_python_first.md) for the full guide.
 
 ## Prerequisites
 

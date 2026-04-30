@@ -504,7 +504,7 @@ class DataAppManager(DataAppRunner):
                 return result
 
             except Exception as e:
-                self.logger.error(f"App '{app_name}' failed with error: {str(e)}")
+                self.logger.exception(f"App '{app_name}' failed: {str(e)}")
                 raise
             finally:
                 if temp_dir:
