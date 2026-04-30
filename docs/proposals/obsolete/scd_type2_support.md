@@ -1,10 +1,14 @@
 # SCD Type 2 Support for Kindling
 
-**Status:** Draft (revised)
+**Status:** Implemented — Phases 1–3 shipped (PRs #77, #82, 2026-04-30). Phase 4 deferred (see #83, #84).
 **Author:** System Analysis
 **Created:** 2026-02-26
-**Updated:** 2026-04-29
+**Updated:** 2026-04-30
 **Related:** obsolete/signal_dag_streaming_proposal.md, obsolete/dag_execution_implementation_plan.md, obsolete/config_based_entity_providers.md
+
+> **Archived.** This proposal has been implemented. See `packages/kindling/entity_provider_delta.py` (`DeltaMergeStrategies`, `SCD1MergeStrategy`, `SCD2MergeStrategy`, `_execute_scd2_merge`, `read_entity_as_of`), `packages/kindling/data_entities.py` (`SCDConfig`, `scd_config_from_tags`, `_validate_scd_config`), and `packages/kindling/entity_provider_current_view.py` (`CurrentViewEntityProvider`).
+>
+> Deferred items: `scd.close_on_missing` (#83), `scd.optimize_unchanged` (#84), Z-ORDER recommendation, migration path helper.
 
 ## Revision Summary
 
