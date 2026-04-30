@@ -5,6 +5,38 @@ Append-only. To supersede a decision, add a new entry with
 
 ---
 
+## 2026-04-30 SCD2 close_on_missing uses whenNotMatchedBySourceUpdate with __scd2_changed sentinel
+**Status:** Accepted
+**Agent:** planner
+**Context:** `close_on_missing` requires `whenNotMatchedBySource` to fire only on rows truly absent
+  from source, not on rows present-but-unchanged. The staged DataFrame (changed+new rows only)
+  leaves unchanged rows absent, which would cause `whenNotMatchedBySource` to incorrectly close them.
+  Two options considered: (A) second Delta merge for absent rows; (B) sentinel column `__scd2_changed`
+  added to staged so unchanged rows appear as "matched by source" and `whenMatchedUpdate` only fires
+  when `staged.__scd2_changed = true`.
+**Decision:** Option B (sentinel column). Single Delta merge. `whenMatchedUpdate(condition=..., set={})`
+  when `close_on_missing=True`; existing no-condition call preserved when `False` to keep tests green.
+  `whenNotMatchedBySourceUpdate(condition="target.__is_current = true", set={close_set})` added only
+  when `close_on_missing=True`.
+**Consequences:** `staged` DataFrame has an extra `__scd2_changed` boolean column when the feature is
+  active. The `else` branch (feature off) is identical to today's code, so existing tests require no
+  changes. New constant `_SCD2_CHANGED_COLUMN = "__scd2_changed"` added alongside `_SCD2_MERGE_KEY_COLUMN`.
+
+## 2026-04-30 SCD2 optimize_unchanged uses hash-based changed_rows computation, not pre-filtering
+**Status:** Accepted
+**Agent:** planner
+**Context:** Issue #84 framed `optimize_unchanged` as "pre-filter df before merge". However,
+  pre-filtering df before `_execute_scd2_merge` creates an interaction bug when `close_on_missing=True`
+  is also set — filtered df hides unchanged rows, which then look absent and get incorrectly closed.
+**Decision:** Implement `optimize_unchanged` inside `_execute_scd2_merge` by replacing the
+  column-by-column `_build_null_safe_change_condition` join with a hash-based inner join for
+  `changed_rows`. New helper function `_hash_tracked_columns(tracked_columns) -> Column` computes
+  `sha2(concat_ws("|", coalesce(col(c).cast("string"), lit("__null__")), ...), 256)` over sorted
+  tracked columns. The rest of the function (new_rows, staging, merge) is unchanged.
+**Consequences:** Both features are self-contained inside `_execute_scd2_merge` — no pre-filtering
+  in `SCD2MergeStrategy.apply()`. The interaction case (both enabled) is handled correctly: hash
+  computation for `changed_rows` is reused to identify unchanged sentinels for `close_on_missing`.
+
 ## 2026-04-30 DynaconfConfig.get() uses sentinel + debug log for missing keys
 **Status:** Accepted
 **Agent:** planner

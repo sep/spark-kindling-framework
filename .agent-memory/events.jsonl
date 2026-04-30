@@ -40,3 +40,8 @@
 {"ts":"2026-04-30T20:00:00Z","event":"review_complete","task":"TASK-20260430-003","agent":"reviewer","summary":"APPROVED WITH NOTES — 3 non-blocking findings; dispatched to ship"}
 {"ts":"2026-04-30T20:15:00Z","event":"pr_ready","task":"TASK-20260430-003","agent":"ship","summary":"PR #91 ready — Copilot COMMENTED, 5 findings addressed, awaiting human merge"}
 {"ts":"2026-04-30T20:20:00Z","event":"task_closed","task":"TASK-20260430-003","agent":"coordinator","summary":"merged and archived"}
+{"ts":"2026-04-30T20:30:00Z","event":"task_created","task":"TASK-20260430-004","agent":"coordinator","summary":"SCD2 Phase 4: close_on_missing (#83) + optimize_unchanged (#84) — dispatched to planner"}
+{"ts":"2026-04-30T20:45:00Z","event":"design_complete","task":"TASK-20260430-004","agent":"planner","summary":"Design doc written; two decisions logged; dispatched to implementer"}
+{"ts":"2026-04-30T21:00:00Z","event":"completed","task":"TASK-20260430-004","agent":"claude","role":"implementer","summary":"close_on_missing + optimize_unchanged implemented; 1131 unit tests passing; dispatched to tester"}
+{"ts":"2026-04-30T21:10:00Z","event":"review_complete","task":"TASK-20260430-004","agent":"reviewer","summary":"APPROVED WITH NOTES — 2 nits, both non-blocking; dispatched to ship"}
+{"ts":"2026-04-30T21:30:00Z","event":"task_closed","task":"TASK-20260430-004","agent":"coordinator","summary":"merged PR #92 and archived"}

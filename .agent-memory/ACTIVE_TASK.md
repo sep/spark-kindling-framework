@@ -7,6 +7,44 @@
 | TASK-20260430-001 | Local Dev DX: Critical & High gaps (issue #85) | ✅ MERGED (PR #86) | agent/TASK-20260430-001/local-dev-dx |
 | TASK-20260430-002 | DX Round 2: WatermarkEntityFinder, debug noise, validate --env, CLI dep, DI test (#87, #88) | ✅ MERGED (PR #89) | agent/TASK-20260430-002/dx-fixes-round2 |
 | TASK-20260430-003 | DX Eval Remediation: docs, print cleanup, scaffold test example (#90) | ✅ MERGED (PR #91) | agent/TASK-20260430-003/dx-eval-remediation |
+| TASK-20260430-004 | SCD2 Phase 4: close_on_missing + optimize_unchanged (#83, #84) | ✅ MERGED (PR #92) | agent/TASK-20260430-004/scd2-phase4 |
+
+---
+
+# Active Task: TASK-20260430-004 — SCD2 Phase 4: close_on_missing + optimize_unchanged
+**Status:** COMPLETE — merged as PR #92
+**Branch:** `agent/TASK-20260430-004/scd2-phase4`
+**Issues:** #83, #84
+**Started:** 2026-04-30
+
+## Goal
+Implement two deferred Phase 4 SCD2 features from PR #77:
+- **`close_on_missing`** (#83): when `scd.close_on_missing: "true"` is set, rows not present in the source batch are closed (soft-deleted) by setting `__effective_to` and `__is_current = false`.
+- **`optimize_unchanged`** (#84): when `scd.optimize_unchanged: "true"` is set, rows where no business columns changed are excluded from the merge to avoid writing no-op rows.
+Both extend `SCDConfig` (new boolean fields) and `_execute_scd2_merge` in `entity_provider_delta.py`.
+
+## Acceptance Criteria
+- [ ] `scd.close_on_missing: "true"` tag causes rows absent from source batch to be closed in the merge (`whenNotMatchedBySource` update sets `__effective_to = now`, `__is_current = false`)
+- [ ] Default behavior (`close_on_missing: false`) is unchanged — rows absent from source are left open
+- [ ] Existing test `test_execute_scd2_merge_does_not_implement_close_on_missing_in_phase_1` is updated or removed (it documents the previous deferral)
+- [ ] `scd.optimize_unchanged: "true"` tag pre-filters the incoming DataFrame to exclude rows where no business column changed (hash comparison against current rows) before the merge
+- [ ] Default behavior (`optimize_unchanged: false`) runs merge without pre-filtering
+- [ ] `SCDConfig` has two new fields: `close_on_missing: bool = False` and `optimize_unchanged: bool = False`
+- [ ] `scd_config_from_tags()` parses both new tags
+- [ ] Unit tests cover: close_on_missing closes absent rows; close_on_missing=false leaves absent rows; optimize_unchanged filters no-op rows; optimize_unchanged=false does not filter; both features together
+- [ ] All existing tests pass (`poe test-unit`)
+
+## Agent Plan
+| Step | Agent | Input | Output | Status |
+|------|-------|-------|--------|--------|
+| 1 | planner | this brief + issues #83 #84 + source | design doc | ⏳ PENDING |
+| 2 | implementer | design doc | code changes in `entity_provider_delta.py` | — |
+| 3 | tester | implementation | unit tests | — |
+| 4 | reviewer | code + tests | verdict | — |
+| 5 | ship | approved code | PR to main | — |
+
+## Handoff Log
+- 2026-04-30: Task created by coordinator. Dispatched to planner.
 
 ---
 
