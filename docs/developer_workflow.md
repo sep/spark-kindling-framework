@@ -48,9 +48,30 @@ kindling workspace deploy --platform synapse --storage-account <account>
 The Python deploy helpers now prefer the combined runtime wheel and only fall
 back to legacy `kindling_<platform>-*.whl` artifacts when needed.
 
+## Running a Pipe Locally
+
+Use `kindling run` to execute a pipe from your local package without deploying:
+
+```bash
+# Run from the package directory — app.py is auto-discovered
+kindling run bronze_to_silver
+
+# Explicit app path and environment overlay
+kindling run bronze_to_silver --app src/my_pipeline/app.py --env local
+```
+
+Use `kindling validate` to check entity/pipe wiring without starting Spark:
+
+```bash
+kindling validate
+```
+
+See [Local Python-First Development](local_python_first.md) for full details on
+both commands, the memory-first scaffold, and `KindlingNotInitializedError`.
+
 ## CLI Lifecycle Commands
 
-The CLI now exposes design-time lifecycle commands beyond config/workspace:
+The CLI exposes design-time lifecycle commands beyond config/workspace:
 
 ```bash
 kindling app package <app-dir>

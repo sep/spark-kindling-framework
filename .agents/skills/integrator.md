@@ -37,6 +37,7 @@ Write to mailboxes/ship.md on completion:
   STATUS: PENDING
   TASK: [ID]
   BRANCH: [branch from your mailbox]
+  WORKTREE: [worktree from your mailbox]
   FROM: integrator
   ## Instruction
   Create PR and handle Copilot review.

@@ -134,6 +134,77 @@ done
 That means local day-to-day work stays package-scoped, while CI validates all
 scaffolded packages in the repo.
 
+## Running a Pipe Locally
+
+Use `kindling run` to execute a registered pipe without deploying to a remote platform:
+
+```bash
+kindling run bronze_to_silver
+```
+
+The command auto-discovers `app.py` by walking up from the current directory. You
+can also be explicit:
+
+```bash
+kindling run bronze_to_silver --app src/my_pipeline/app.py --env local
+```
+
+`--env` selects the config overlay (defaults to the `KINDLING_ENV` env var, then
+`"local"`). On success you will see:
+
+```
+Running pipe: bronze_to_silver
+Pipe 'bronze_to_silver' completed successfully.
+```
+
+If the pipe ID is not registered, the error message lists all available pipe IDs.
+
+## Validating Definitions Without Spark
+
+`kindling validate` checks that your entity and pipe definitions are internally
+consistent — without starting a SparkSession:
+
+```bash
+kindling validate
+```
+
+Example output:
+
+```
+[PASS] entities_registered — 3 entity/entities
+[PASS] pipes_registered — 2 pipe/pipes
+[PASS] pipe.bronze_to_silver.input_entities — OK
+[PASS] pipe.bronze_to_silver.output_entity — OK
+[PASS] entity.silver.records.merge_columns — OK
+Validation passed.
+```
+
+Checks performed:
+
+- At least one entity and one pipe are registered
+- Every pipe's input entities and output entity exist in the registry
+- Every delta entity has `merge_columns` set
+
+`kindling validate` is safe to run in CI before tests because it never creates a
+Spark context.
+
+## Local Memory Providers (No Azure Needed)
+
+The generated `env.local.yaml` now scaffolds entity tags with
+`provider_type: memory` by default. This means `kindling run` and unit/component
+tests work out of the box — no Azure credentials or ABFSS paths required.
+
+To switch to real Azure storage, uncomment the ABFSS block in `env.local.yaml`
+and set the required env vars in your `.env` file.
+
+## KindlingNotInitializedError
+
+If you see `KindlingNotInitializedError` it means a `@DataPipes.pipe` or
+`@DataEntities.entity` decorator fired before `initialize()` was called. The
+fix is to ensure `app.py` calls `initialize()` before importing any module that
+registers pipes or entities — i.e. before `register_all()`. The error message
+includes a pointer to the correct order.
+
 ## Local Spark Prerequisites
 
 For local integration tests against ABFSS you still need:

@@ -10,7 +10,7 @@ cat .agent-memory/WORKSPACE.md .agent-memory/ACTIVE_TASK.md \
 ## Agent system
 
 See AGENTS.md. Slash commands: /coordinator /planner /implementer
-/reviewer /integrator /tester /security /ship /prime /escalate
+/reviewer /integrator /tester /security /prime /escalate
 
 ## Key rule
 
