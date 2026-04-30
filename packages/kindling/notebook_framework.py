@@ -1,5 +1,6 @@
 import enum
 import json
+import logging
 import os
 import re
 import shutil
@@ -18,6 +19,8 @@ from kindling.platform_provider import *
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_session import get_or_create_spark_session
+
+_FRAMEWORK_LOGGER = logging.getLogger(__name__)
 
 
 def is_interactive_session(force_interactive: Optional[bool] = None) -> bool:
@@ -1690,8 +1693,9 @@ class NotebookLoader(NotebookManager):
         import shutil
         import uuid
 
-        from kindling.bootstrap import get_temp_path
         from setuptools import find_packages, setup
+
+        from kindling.bootstrap import get_temp_path
 
         temp_folder_path = get_temp_path()
         os.makedirs(temp_folder_path, exist_ok=True)
@@ -1942,7 +1946,7 @@ class PlatformServices:
             name=name, factory=factory, description=description or f"Platform service: {name}"
         )
         cls.registry[name] = service_def
-        print(f"✓ Registered platform service: {name}")
+        _FRAMEWORK_LOGGER.debug("Registered platform service: %s", name)
 
     @classmethod
     def has_service(cls, name: str) -> bool:
@@ -1963,4 +1967,4 @@ class PlatformServices:
     def clear_registry(cls):
         """Clear all registered services (useful for testing)"""
         cls.registry.clear()
-        print("✓ Platform services registry cleared")
+        _FRAMEWORK_LOGGER.debug("Platform services registry cleared")

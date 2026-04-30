@@ -41,3 +41,15 @@ DataEntities.entity(
     partition_columns=["date"],
     tags={"layer": "silver"},
 )
+
+# ---------------------------------------------------------------------------
+# To add a second entity, copy one of the blocks above and update:
+#   entityid      — e.g. "gold.summary" (layer.name)
+#   name          — human-readable label
+#   schema        — StructType with your columns
+#   merge_columns — list of business key column names
+#   tags          — at minimum {"layer": "gold"}
+#
+# Then import your new file in app.py's register_all():
+#   from {{ snake_name }}.entities import records, my_new_entity  # noqa: F401
+# ---------------------------------------------------------------------------

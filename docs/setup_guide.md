@@ -2,6 +2,25 @@
 
 This guide explains how to install, configure, and start using the Spark Kindling Framework across Microsoft Fabric, Azure Synapse Analytics, and Databricks environments.
 
+## Local Development (No Cloud Required)
+
+For local development, install the standalone extra and initialize configuration
+with the `local` environment:
+
+```bash
+pip install 'spark-kindling[standalone]'
+```
+
+```python
+from kindling import initialize_framework
+
+initialize_framework(env="local")
+```
+
+Projects scaffolded with `spark-kindling-cli` include local Spark fixtures and
+tests so entities, pipes, and notebooks can be developed before connecting to
+Fabric, Synapse, or Databricks.
+
 ## Prerequisites
 
 ### Required

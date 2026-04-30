@@ -12,6 +12,7 @@ from .injection import *
 from .spark_session import *
 
 _CONFIG_LOGGER = logging.getLogger("kindling.config")
+_MISSING = object()
 
 
 class ConfigService(ABC):
@@ -27,7 +28,7 @@ class ConfigService(ABC):
     """
 
     @abstractmethod
-    def get(self, key: str, default: Any = None) -> Any:
+    def get(self, key: str, default: Any = _MISSING) -> Any:
         pass
 
     @abstractmethod
@@ -276,7 +277,7 @@ class DynaconfConfig(ConfigService):
 
         return transformed
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def get(self, key: str, default: Any = _MISSING) -> Any:
         with self._config_lock:
             if self.spark:
                 try:
@@ -285,6 +286,13 @@ class DynaconfConfig(ConfigService):
                         return spark_value
                 except Exception:
                     pass
+
+            if default is _MISSING:
+                value = self.dynaconf.get(key, default)
+                if value is _MISSING:
+                    _CONFIG_LOGGER.debug("Config key %s not found and no default supplied", key)
+                    return None
+                return value
 
             return self.dynaconf.get(key, default)
 
@@ -442,7 +450,7 @@ class DynaconfConfig(ConfigService):
 
         return changes
 
-    def get_fresh(self, key: str, default: Any = None) -> Any:
+    def get_fresh(self, key: str, default: Any = _MISSING) -> Any:
         with self._config_lock:
             if self.spark:
                 try:
@@ -451,6 +459,13 @@ class DynaconfConfig(ConfigService):
                         return spark_value
                 except Exception:
                     pass
+
+            if default is _MISSING:
+                value = self.dynaconf.get_fresh(key, default=default)
+                if value is _MISSING:
+                    _CONFIG_LOGGER.debug("Config key %s not found and no default supplied", key)
+                    return None
+                return value
 
             return self.dynaconf.get_fresh(key, default=default)
 

@@ -89,7 +89,23 @@ pip install spark-kindling-sdk    # Programmatic access to platform APIs
 
 See [docs/release_process.md](./docs/release_process.md) for install-from-release examples and [docs/developer_workflow.md](./docs/developer_workflow.md) for local development.
 
-## Quickstart
+## CLI Quick Start
+
+Install the CLI and scaffold a new project:
+
+```bash
+pip install 'spark-kindling[standalone]' spark-kindling-cli
+
+kindling new my-app
+cd my_app/packages/my_app
+poetry install
+kindling run bronze_to_silver --env local
+```
+
+No Azure credentials needed — the scaffold uses in-memory entity providers by default.
+See [Local Python-First Development](./docs/local_python_first.md) for the full local workflow.
+
+## Notebook Quick Start
 
 ```python
 # Import Kindling framework
