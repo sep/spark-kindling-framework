@@ -6,6 +6,7 @@ including YAML configuration loading, bootstrap config translation,
 and Spark configuration integration.
 """
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
@@ -214,6 +215,45 @@ class TestDynaconfConfigGetMethod:
 
         assert result == "default_value", "Should return default when key not found"
 
+    def test_get_missing_without_default_logs_debug(self, caplog):
+        """Test missing keys without defaults return None and emit debug context."""
+        config = DynaconfConfig()
+        config.spark = None
+        config.dynaconf = MagicMock()
+        config.dynaconf.get.side_effect = lambda _key, default=None: default
+
+        with caplog.at_level(logging.DEBUG, logger="kindling.config"):
+            result = config.get("missing.key")
+
+        assert result is None
+        assert "Config key missing.key not found and no default supplied" in caplog.text
+
+    def test_get_missing_with_default_does_not_log_debug(self, caplog):
+        """Test explicit defaults are returned without missing-key debug logs."""
+        config = DynaconfConfig()
+        config.spark = None
+        config.dynaconf = MagicMock()
+        config.dynaconf.get.side_effect = lambda _key, default=None: default
+
+        with caplog.at_level(logging.DEBUG, logger="kindling.config"):
+            result = config.get("missing.key", "fallback")
+
+        assert result == "fallback"
+        assert "not found and no default supplied" not in caplog.text
+
+    def test_get_existing_value_does_not_log_debug(self, caplog):
+        """Test existing Dynaconf values are returned without missing-key logs."""
+        config = DynaconfConfig()
+        config.spark = None
+        config.dynaconf = MagicMock()
+        config.dynaconf.get.return_value = "configured"
+
+        with caplog.at_level(logging.DEBUG, logger="kindling.config"):
+            result = config.get("existing.key")
+
+        assert result == "configured"
+        assert "not found and no default supplied" not in caplog.text
+
 
 class TestDynaconfConfigSetMethod:
     """Tests for DynaconfConfig set() method"""
@@ -338,6 +378,32 @@ class TestDynaconfConfigHelperMethods:
         result = config.get_fresh("test_key", "default")
 
         assert result == "dynaconf_fallback", "Should handle Spark exception gracefully"
+
+    def test_get_fresh_missing_without_default_logs_debug(self, caplog):
+        """Test get_fresh mirrors missing-key sentinel behavior."""
+        config = DynaconfConfig()
+        config.spark = None
+        config.dynaconf = MagicMock()
+        config.dynaconf.get_fresh.side_effect = lambda _key, default=None: default
+
+        with caplog.at_level(logging.DEBUG, logger="kindling.config"):
+            result = config.get_fresh("missing.fresh")
+
+        assert result is None
+        assert "Config key missing.fresh not found and no default supplied" in caplog.text
+
+    def test_get_fresh_missing_with_default_does_not_log_debug(self, caplog):
+        """Test get_fresh explicit defaults remain quiet."""
+        config = DynaconfConfig()
+        config.spark = None
+        config.dynaconf = MagicMock()
+        config.dynaconf.get_fresh.side_effect = lambda _key, default=None: default
+
+        with caplog.at_level(logging.DEBUG, logger="kindling.config"):
+            result = config.get_fresh("missing.fresh", "fallback")
+
+        assert result == "fallback"
+        assert "not found and no default supplied" not in caplog.text
 
 
 class TestDynaconfConfigAttributeAccess:

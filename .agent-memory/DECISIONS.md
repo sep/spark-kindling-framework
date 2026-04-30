@@ -5,6 +5,25 @@ Append-only. To supersede a decision, add a new entry with
 
 ---
 
+## 2026-04-30 DynaconfConfig.get() uses sentinel + debug log for missing keys
+**Status:** Accepted
+**Agent:** planner
+**Context:** G9 from DX eval — `DynaconfConfig.get(key)` returns None silently for missing
+  keys. Callers have no way to distinguish "key found, value is None" from "key not found".
+  Two log-level options considered: `logger.warning` (noisy — most calls are intentionally
+  optional gets) vs `logger.debug` (surfaced only when debugging).
+**Decision:** Use a module-level `_MISSING = object()` sentinel as the default for
+  `DynaconfConfig.get(key, default=_MISSING)`. When the resolved value is None and no
+  explicit default was supplied, log `logger.debug("Config key not found: %s", key)` and
+  return None. Use `logger.debug` not `logger.warning` to avoid log spam from the many
+  intentional optional-get call sites.
+**Consequences:** Developers can see missing key lookups at DEBUG log level without noise
+  at INFO. The public `ConfigService` ABC signature (`default=None`) is unchanged; the
+  concrete override with `_MISSING` is safe — Python does not enforce default values in
+  method overrides.
+
+---
+
 ## 2026-04-29 Worktree location uses `.worktrees/` inside repo
 **Status:** Accepted
 **Agent:** coordinator (Claude Code)
