@@ -1,8 +1,10 @@
 # TASK-20260429-001: SCD Type 2 — Implementation Plan
 
 **Task:** TASK-20260429-001
-**Status:** Ready for implementation
-**Design source:** `docs/proposals/scd_type2_support.md` (2026-04-29 revision)
+**Status:** Implemented — all steps complete (PRs #77, #82, 2026-04-30)
+**Design source:** `docs/proposals/obsolete/scd_type2_support.md` (2026-04-29 revision)
+
+> **Archived.** This implementation plan has been fully executed. Refer to the git history of PRs #77 and #82 for the final implementation.
 
 ---
 
