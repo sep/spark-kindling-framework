@@ -39,3 +39,4 @@
 {"ts":"2026-04-30T19:54:01Z","event":"completed","task":"TASK-20260430-003","agent":"codex","role":"tester","summary":"Added G9 sentinel regression coverage; poe test-unit passed (1115, 2 warnings); dispatched to reviewer with note that final fix/test diff is uncommitted due approval usage limit"}
 {"ts":"2026-04-30T20:00:00Z","event":"review_complete","task":"TASK-20260430-003","agent":"reviewer","summary":"APPROVED WITH NOTES — 3 non-blocking findings; dispatched to ship"}
 {"ts":"2026-04-30T20:15:00Z","event":"pr_ready","task":"TASK-20260430-003","agent":"ship","summary":"PR #91 ready — Copilot COMMENTED, 5 findings addressed, awaiting human merge"}
+{"ts":"2026-04-30T20:20:00Z","event":"task_closed","task":"TASK-20260430-003","agent":"coordinator","summary":"merged and archived"}
