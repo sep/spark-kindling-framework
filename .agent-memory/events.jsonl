@@ -22,3 +22,4 @@
 {"ts":"2026-04-30T15:42:00Z","event":"review_complete","task":"TASK-20260430-001","agent":"reviewer","summary":"CHANGES REQUESTED — 2 major (env.local.yaml duplicate entity_tags key, KindlingNotInitializedError double-wrapping), 1 minor (missing agent tags)"}
 {"ts":"2026-04-30T17:12:00Z","event":"review_complete","task":"TASK-20260430-001","agent":"reviewer","summary":"APPROVED after fixes — all 3 findings resolved, 1106 tests green, dispatched to integrator"}
 {"ts":"2026-04-30T17:15:00Z","event":"completed","task":"TASK-20260430-001","agent":"copilot","role":"integrator","summary":"verified all 9 checklist items on branch agent/TASK-20260430-001/local-dev-dx; 1106 unit tests pass; dispatched to ship"}
+{"ts":"2026-04-30T17:35:00Z","event":"task_closed","task":"TASK-20260430-001","agent":"coordinator","summary":"PR #86 merged, artifacts archived, worktree and branch cleaned up"}
