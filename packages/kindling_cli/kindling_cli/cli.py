@@ -493,7 +493,8 @@ def run_pipe(
     type=click.Path(path_type=Path, dir_okay=False, exists=False),
     help="Path to app.py",
 )
-def validate_app(app_path: Optional[Path]) -> None:
+@click.option("--env", "env", default=None, help="Configuration environment to load")
+def validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
     """Validate entity and pipe definitions without starting Spark."""
     try:
         from kindling.data_entities import DataEntityRegistry
@@ -505,7 +506,9 @@ def validate_app(app_path: Optional[Path]) -> None:
         ) from exc
 
     resolved_app = _discover_app_py(app_path)
-    _load_app_module(resolved_app, env="local")
+    resolved_env = env or "local"
+    # [implementer] keep validate environment handling symmetric with run — TASK-20260430-002
+    _load_app_module(resolved_app, env=resolved_env)
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
@@ -2704,7 +2707,8 @@ def new_project(
     click.echo("Next steps:")
     click.echo(f"  cd {cfg.snake_name}/packages/{cfg.snake_name}")
     click.echo("  poetry install")
-    click.echo("  cp .env.example .env  # fill in your credentials, then: source .env")
+    click.echo("  cp .env.example .env  # optional: only needed for Azure/cloud runs")
+    click.echo("  kindling run bronze_to_silver --env local  # no credentials needed")
     click.echo("  poetry run poe test")
     if cfg.integration:
         click.echo("  poetry run poe test-integration  # requires Azure creds in .env")

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import logging
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ level_hierarchy = {
 
 
 _BOOTSTRAP_STAGE_ID = uuid.uuid4().hex[:12]
+_BOOTSTRAP_LOGGER = logging.getLogger("kindling.bootstrap")
 
 
 def _parse_spark_conf_value(value: Any) -> Any:
@@ -106,7 +108,9 @@ def _merge_with_spark_kindling_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     merged = dict(spark_kindling_config)
     merged.update(config or {})
-    print(f"Merged {len(spark_kindling_config)} SparkConf settings from spark.kindling.*")
+    _BOOTSTRAP_LOGGER.debug(
+        "Merged %s SparkConf settings from spark.kindling.*", len(spark_kindling_config)
+    )
     return merged
 
 
@@ -299,12 +303,12 @@ def download_config_files(
 
     # Strip trailing slash to prevent double slashes in path construction
     base_path = artifacts_storage_path.rstrip("/")
-    print(f"Using artifacts path: {base_path}")
+    _BOOTSTRAP_LOGGER.info("Using artifacts path: %s", base_path)
     if platform:
-        print(f"Platform: {platform}")
+        _BOOTSTRAP_LOGGER.info("Platform: %s", platform)
     if workspace_id:
-        print(f"Workspace ID: {workspace_id}")
-    print(f"Environment: {environment}")
+        _BOOTSTRAP_LOGGER.info("Workspace ID: %s", workspace_id)
+    _BOOTSTRAP_LOGGER.info("Environment: %s", environment)
 
     # Get platform-specific temp path
     temp_dir = get_temp_path()
@@ -323,12 +327,12 @@ def download_config_files(
     if is_databricks:
         if volume_path:
             scoped_volume_path = _build_run_scoped_staging_path(volume_path, "config")
-            print(f"Using Volume path for configs: {scoped_volume_path}")
+            _BOOTSTRAP_LOGGER.info("Using Volume path for configs: %s", scoped_volume_path)
         else:
-            print(f"Using DBFS temp path: {temp_dir}")
+            _BOOTSTRAP_LOGGER.info("Using DBFS temp path: %s", temp_dir)
             dbfs_temp_path = temp_dir
     else:
-        print(f"Using local temp path: {temp_dir}")
+        _BOOTSTRAP_LOGGER.info("Using local temp path: %s", temp_dir)
 
     config_files = []
 
@@ -376,35 +380,39 @@ def download_config_files(
                     )
                     storage_utils.fs.put(volume_file, text_content, overwrite=True)
                     config_files.append(volume_file)
-                    print(f"✓ Downloaded: {filename} to {volume_file}")
+                    _BOOTSTRAP_LOGGER.info("Downloaded config %s to %s", filename, volume_file)
                 else:
                     # Fallback to DBFS (requires /dbfs mount)
                     dbfs_file_path = f"{dbfs_temp_path}/{len(config_files)}_{filename}"
                     storage_utils.fs.put(dbfs_file_path, text_content, overwrite=True)
                     local_file_path = f"/dbfs{dbfs_file_path}"
                     config_files.append(local_file_path)
-                    print(f"✓ Downloaded: {filename} to {local_file_path}")
+                    _BOOTSTRAP_LOGGER.info("Downloaded config %s to %s", filename, local_file_path)
             else:
                 # Fabric/Synapse: Use fs.cp() with file:// prefix (works with relative lakehouse paths)
                 local_path = temp_path / f"{len(config_files)}_{filename}"
                 storage_utils.fs.cp(remote_path, f"file://{str(local_path)}")
                 config_files.append(str(local_path))
-                print(f"✓ Downloaded: {filename}")
+                _BOOTSTRAP_LOGGER.info("Downloaded config %s", filename)
         except Exception as e:
             # All config files are optional - log error details for debugging
             error_msg = str(e)
             if "FileNotFoundException" in error_msg or "does not exist" in error_msg.lower():
-                print(f"  (Optional config not found: {filename})")
+                _BOOTSTRAP_LOGGER.debug("Optional config not found: %s", filename)
             else:
-                print(f"  (Optional config not found: {filename})")
-                print(f"  Debug: {type(e).__name__}: {error_msg[:100]}")
+                _BOOTSTRAP_LOGGER.debug(
+                    "Optional config not found: %s (%s: %s)",
+                    filename,
+                    type(e).__name__,
+                    error_msg[:100],
+                )
 
     if not config_files:
-        print("No YAML config files found")
+        _BOOTSTRAP_LOGGER.info("No YAML config files found")
         default_config = temp_path / "default_settings.yaml"
         default_config.write_text(_get_minimal_default_config())
         config_files.append(str(default_config))
-        print("✓ Using built-in default config (can be overridden by bootstrap)")
+        _BOOTSTRAP_LOGGER.info("Using built-in default config")
 
     return config_files
 
@@ -525,7 +533,7 @@ def _get_workspace_id_for_platform(platform: str) -> Optional[str]:
                 pass
 
     except Exception as e:
-        print(f"⚠️  Error getting workspace ID for {platform}: {e}")
+        _BOOTSTRAP_LOGGER.warning("Error getting workspace ID for %s: %s", platform, e)
 
     return None
 
@@ -580,31 +588,28 @@ def get_spark_log_level():
 
 def create_console_logger(config):
     """Create a console logger with configurable log level"""
-    from pyspark.sql import SparkSession
-
     currentLevel = config.get("log_level", None) or get_spark_log_level()
+    fallback_logger = logging.getLogger("kindling.bootstrap.console")
 
     def should_log(level):
         level_log_rank = level_hierarchy.get(level.upper(), 2)
         current_log_rank = level_hierarchy.get(currentLevel, 2)
         return level_log_rank >= current_log_rank
 
+    def log(level, *args):
+        if should_log(level):
+            fallback_logger.log(
+                getattr(logging, level.upper(), logging.INFO), " ".join(map(str, args))
+            )
+
     return type(
         "ConsoleLogger",
         (),
         {
-            "debug": lambda self, *args, **kwargs: (
-                print("DEBUG:", *args) if should_log("DEBUG") else None
-            ),
-            "info": lambda self, *args, **kwargs: (
-                print("INFO:", *args) if should_log("INFO") else None
-            ),
-            "error": lambda self, *args, **kwargs: (
-                print("ERROR:", *args) if should_log("ERROR") else None
-            ),
-            "warning": lambda self, *args, **kwargs: (
-                print("WARNING:", *args) if should_log("WARNING") else None
-            ),
+            "debug": lambda self, *args, **kwargs: log("DEBUG", *args),
+            "info": lambda self, *args, **kwargs: log("INFO", *args),
+            "error": lambda self, *args, **kwargs: log("ERROR", *args),
+            "warning": lambda self, *args, **kwargs: log("WARNING", *args),
         },
     )()
 
@@ -630,12 +635,12 @@ def detect_platform(config=None) -> str:
     if config:
         explicit_platform = config.get("platform_service") or config.get("platform")
         if explicit_platform in ["databricks", "fabric", "synapse", "standalone"]:
-            print(f"Platform explicitly set to: {explicit_platform}")
+            _BOOTSTRAP_LOGGER.debug("Platform explicitly set to: %s", explicit_platform)
             return explicit_platform
 
     dp = detect_platform_from_utils()
     if dp:
-        print(f"Platform detected from utils: {dp}")
+        _BOOTSTRAP_LOGGER.debug("Platform detected from utils: %s", dp)
         return dp
 
     # Only create spark session if we actually need it for detection
@@ -645,7 +650,7 @@ def detect_platform(config=None) -> str:
         # Databricks always has this config
         if spark.conf.get("spark.databricks.clusterUsageTags.sparkVersion", None):
             return "databricks"
-    except:
+    except Exception:
         pass
 
     # Check for Fabric BEFORE Synapse - both have mssparkutils and notebookutils
@@ -666,11 +671,11 @@ def detect_platform(config=None) -> str:
         # This is unique to Synapse
         if spark.conf.get("spark.synapse.workspace.name", None):
             return "synapse"
-    except:
+    except Exception:
         pass
 
     if config and config.get("allow_standalone_fallback"):
-        print("Falling back to standalone platform")
+        _BOOTSTRAP_LOGGER.debug("Falling back to standalone platform")
         return "standalone"
 
     raise RuntimeError("Unable to detect platform (not Synapse, Fabric, Databricks, or Standalone)")
@@ -785,7 +790,6 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
     def load_if_needed(package_spec):
         """Install package (from PyPI), forcing upgrade to override system packages"""
-        print(f"📥 Installing package: {package_spec}")
         logger.info(f"Installing package: {package_spec}")
         try:
             # Use --ignore-installed to force installation even if package exists in system site-packages
@@ -793,7 +797,6 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             subprocess.check_call(
                 [sys.executable, "-m", "pip", "install", "--ignore-installed", package_spec]
             )
-            print(f"✅ Successfully installed package: {package_spec}")
             logger.info(f"Successfully installed package: {package_spec}")
 
             # CRITICAL: Ensure venv site-packages takes precedence over system site-packages
@@ -808,12 +811,12 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             for path in reversed([user_site] + site_packages):
                 if path and path not in sys.path:
                     sys.path.insert(0, path)
-                    print(f"   📌 Prioritized in sys.path: {path}")
+                    logger.debug(f"Prioritized in sys.path: {path}")
                 elif path and path in sys.path:
                     # Move existing path to the front
                     sys.path.remove(path)
                     sys.path.insert(0, path)
-                    print(f"   📌 Moved to front of sys.path: {path}")
+                    logger.debug(f"Moved to front of sys.path: {path}")
 
             # Clear any cached imports of this package to force reload from new location
             package_name = (
@@ -821,23 +824,20 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             )
             module_name = package_name.replace("-", "_")
             if module_name in sys.modules:
-                print(f"   🔄 Clearing cached import: {module_name}")
+                logger.debug(f"Clearing cached import: {module_name}")
                 del sys.modules[module_name]
 
         except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to install {package_spec}: {e}")
             logger.error(f"Failed to install {package_spec}: {e}")
 
     def load_extension_wheel(package_spec, storage_utils, artifacts_path, temp_path=None):
         """Install extension wheel from artifacts storage (like kindling-otel-azure)"""
         if is_package_installed(package_spec, check_version=True):
             import_name = get_import_name(package_spec)
-            print(f"✓ Extension already installed: {import_name}")
             logger.info(f"Extension already installed: {import_name}")
             return
 
         if is_package_installed(package_spec, check_version=False):
-            print(f"↻ Extension installed but version does not satisfy '{package_spec}', upgrading")
             logger.info(f"Extension version mismatch, upgrading to satisfy: {package_spec}")
 
         import os
@@ -859,7 +859,6 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
         base_path = artifacts_path.rstrip("/")
 
-        print(f"📥 Installing extension from artifacts: {package_spec}")
         logger.info(f"Installing extension from artifacts: {package_spec}")
 
         is_databricks = False
@@ -873,7 +872,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             # List directory contents to find the exact wheel filename
             # storage_utils.fs.ls() returns list of file info
             packages_dir = f"{base_path}/packages"
-            print(f"   Listing directory: {packages_dir}")
+            logger.debug(f"Listing extension directory: {packages_dir}")
 
             try:
                 # List all files in packages directory
@@ -934,9 +933,6 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                         matching_wheels.append((filename, wheel_version))
 
                 if not matching_wheels:
-                    print(
-                        f"❌ No wheel found matching '{wheel_prefix}' or '{package_name}' in {packages_dir}"
-                    )
                     logger.error(f"Extension wheel not found: {package_spec}")
                     return
 
@@ -951,7 +947,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
                 # Extract filename from tuple
                 wheel_filename = matching_wheels[0][0]
-                print(f"   Found wheel: {wheel_filename}")
+                logger.debug(f"Found extension wheel: {wheel_filename}")
 
                 # Download the exact wheel file
                 remote_wheel_path = f"{packages_dir}/{wheel_filename}"
@@ -969,7 +965,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                         local_path = _build_run_scoped_staging_path(
                             volume_path, "extensions", wheel_filename
                         )
-                        print(f"   Downloading to volume: {local_path}")
+                        logger.debug(f"Downloading extension to volume: {local_path}")
                         storage_utils.fs.cp(remote_wheel_path, local_path, recurse=False)
                     else:
                         # Fallback to DBFS, preserving an explicit DBFS temp path when provided.
@@ -980,24 +976,23 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                             if _is_dbfs_path(volume_path)
                             else f"dbfs:/tmp/{wheel_filename}"
                         )
-                        print(f"   Downloading to DBFS: {dbfs_target}")
+                        logger.debug(f"Downloading extension to DBFS: {dbfs_target}")
                         storage_utils.fs.cp(remote_wheel_path, dbfs_target, recurse=False)
                         local_path = _dbfs_uri_to_local_path(dbfs_target)
                 else:
                     # Fabric/Synapse: Use file:// with temp directory
                     local_path = os.path.join(temp_dir, wheel_filename)
-                    print(f"   Downloading: {remote_wheel_path}")
+                    logger.debug(f"Downloading extension: {remote_wheel_path}")
                     storage_utils.fs.cp(remote_wheel_path, f"file://{local_path}")
 
                 if not os.path.exists(local_path):
-                    print(f"❌ Failed to download wheel to {local_path}")
                     logger.error(f"Failed to download extension wheel: {package_spec}")
                     return
 
-                print(f"   ✅ Downloaded wheel ({os.path.getsize(local_path)} bytes)")
+                logger.debug(f"Downloaded wheel ({os.path.getsize(local_path)} bytes)")
 
                 # Install the downloaded wheel
-                print(f"📦 Installing {wheel_filename}...")
+                logger.info(f"Installing {wheel_filename}")
                 result = subprocess.run(
                     [
                         sys.executable,
@@ -1027,11 +1022,11 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                     for path in reversed([user_site] + site_packages):
                         if path and path not in sys.path:
                             sys.path.insert(0, path)
-                            print(f"   📌 Prioritized in sys.path: {path}")
+                            logger.debug(f"Prioritized in sys.path: {path}")
                         elif path and path in sys.path:
                             sys.path.remove(path)
                             sys.path.insert(0, path)
-                            print(f"   📌 Moved to front of sys.path: {path}")
+                            logger.debug(f"Moved to front of sys.path: {path}")
 
                     stale_modules = [
                         get_import_name(package_spec),
@@ -1043,19 +1038,15 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                     ]
                     for module_name in stale_modules:
                         if module_name in sys.modules:
-                            print(f"   🔄 Clearing cached import: {module_name}")
+                            logger.debug(f"Clearing cached import: {module_name}")
                             del sys.modules[module_name]
 
-                    print(f"✅ Successfully installed extension: {package_spec}")
                     logger.info(f"Successfully installed extension: {package_spec}")
                 else:
-                    print(f"❌ Failed to install extension {package_spec}")
-                    print(f"   stdout: {result.stdout}")
-                    print(f"   stderr: {result.stderr}")
                     logger.error(f"Failed to install extension {package_spec}: {result.stderr}")
+                    logger.debug(f"Extension install stdout: {result.stdout}")
 
             except Exception as e:
-                print(f"❌ Failed to list or download extension wheel: {e}")
                 logger.error(f"Failed to find extension wheel {package_spec}: {e}")
                 return
             finally:
@@ -1069,7 +1060,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                                 volume_path, "extensions", wheel_filename
                             )
                             storage_utils.fs.rm(cleanup_path)
-                            print(f"   🧹 Cleaned up volume file")
+                            logger.debug("Cleaned up volume extension file")
                         else:
                             cleanup_path = (
                                 _build_run_scoped_staging_path(
@@ -1079,9 +1070,9 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                                 else f"dbfs:/tmp/{wheel_filename}"
                             )
                             storage_utils.fs.rm(cleanup_path)
-                            print(f"   🧹 Cleaned up DBFS file")
+                            logger.debug("Cleaned up DBFS extension file")
                     except Exception as e:
-                        print(f"   ⚠️  Could not clean up temp file: {e}")
+                        logger.warning(f"Could not clean up temp file: {e}")
                 elif temp_dir:
                     # Clean up temp directory for Fabric/Synapse
                     import shutil
@@ -1089,33 +1080,27 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                     shutil.rmtree(temp_dir, ignore_errors=True)
 
         except Exception as e:
-            print(f"❌ Failed to install extension {package_spec}: {e}")
             logger.error(f"Failed to install extension {package_spec}: {e}")
 
     # Install required packages (dependencies - no import, from PyPI)
     required = bootstrap_config.get("required_packages", [])
-    print(f"📦 Required packages: {required}")
     logger.info(f"Required packages: {required}")
     for package in required:
         load_if_needed(package)
 
     # Install and import extensions (Kindling extensions from artifacts storage)
     extensions = bootstrap_config.get("extensions", [])
-    print(f"🔌 Extensions to load: {extensions}")
     logger.info(f"Extensions to load: {extensions}")
 
     if extensions and artifacts_storage_path:
         # Get storage utils for downloading extension wheels
         storage_utils = _get_storage_utils()
         if not storage_utils:
-            print(
-                "⚠️  Warning: Storage utilities not available, cannot load extensions from artifacts"
-            )
             logger.warning("Storage utilities not available for extension loading")
         else:
             for extension in extensions:
                 # Install the extension from artifacts storage
-                print(f"🔌 Loading extension: {extension}")
+                logger.info(f"Loading extension: {extension}")
                 load_extension_wheel(
                     extension,
                     storage_utils,
@@ -1125,16 +1110,13 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
                 # Import to trigger @GlobalInjector.singleton_autobind() decorators
                 import_name = get_import_name(extension)
-                print(f"📦 Importing extension module: {import_name}")
+                logger.debug(f"Importing extension module: {import_name}")
                 try:
                     importlib.import_module(import_name)
-                    print(f"✅ Loaded extension: {import_name}")
                     logger.info(f"Loaded extension: {import_name}")
                 except ImportError as e:
-                    print(f"❌ Failed to import extension {import_name}: {e}")
                     logger.warning(f"Failed to import extension {import_name}: {e}")
     elif extensions:
-        print("⚠️  Warning: Extensions specified but no artifacts_storage_path provided")
         logger.warning("Extensions specified but no artifacts_storage_path for loading wheels")
 
 
@@ -1246,11 +1228,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     if app_name is None:
         app_name = config.get("app_name")
 
-    print(f"initialize_framework: initial_config = {config}")
-
     # Check if framework is already initialized
     if is_framework_initialized():
-        print("Framework already initialized, skipping re-initialization")
+        _BOOTSTRAP_LOGGER.debug("Framework already initialized, skipping re-initialization")
         existing_service = get_kindling_service(PlatformServiceProvider).get_service()
         return existing_service
 
@@ -1275,7 +1255,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         try:
             platform = detect_platform({"platform_service": explicit_platform})
         except Exception as e:
-            print(f"⚠️  Could not resolve explicit platform '{explicit_platform}': {e}")
+            _BOOTSTRAP_LOGGER.warning(
+                "Could not resolve explicit platform %r: %s", explicit_platform, e
+            )
     if use_lake_packages and artifacts_storage_path:
         try:
             # Detect platform early to load platform-specific config
@@ -1284,7 +1266,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             # Get workspace ID based on platform
             workspace_id = _get_workspace_id_for_platform(platform)
         except Exception as e:
-            print(f"⚠️  Could not detect platform/workspace for config loading: {e}")
+            _BOOTSTRAP_LOGGER.warning(
+                "Could not detect platform/workspace for config loading: %s", e
+            )
             # Continue without platform/workspace-specific configs
 
     if use_lake_packages and artifacts_storage_path:
@@ -1309,7 +1293,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         config_service = get_kindling_service(ConfigService)
         # Check if it's actually initialized (dynaconf will be None if not)
         if hasattr(config_service, "dynaconf") and config_service.dynaconf is not None:
-            print("Config service already initialized, skipping configuration")
+            _BOOTSTRAP_LOGGER.debug("Config service already initialized, skipping configuration")
         else:
             # ConfigService exists but not initialized yet, set it up
             injector = configure_injector_with_config(
@@ -1322,7 +1306,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 app_name=app_name,
             )
             config_service = get_kindling_service(ConfigService)
-    except:
+    except Exception:
         # ConfigService doesn't exist yet, set it up
         injector = configure_injector_with_config(
             config_files=config_files,
@@ -1404,21 +1388,6 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
             extensions = list(ext_dict.values())
 
-        # Debug: Print entire kindling config section
-        print(f"🔍 DEBUG: Full kindling config section:")
-        try:
-            kindling_config = config_service.get("kindling", {})
-            print(f"   Keys in kindling config: {list(kindling_config.keys())}")
-            if "extensions" in kindling_config:
-                print(f"   kindling.extensions value: {kindling_config['extensions']}")
-            else:
-                print(f"   ❌ 'extensions' key NOT FOUND in kindling config")
-        except Exception as e:
-            print(f"   Error reading kindling config: {e}")
-
-        print(f"📦 Required packages: {required_packages}")
-        print(f"🔌 Extensions: {extensions}")
-
         # Build bootstrap config including temp_path from original config
         resolved_temp_path = _resolve_bootstrap_temp_path(config_service, config)
         bootstrap_deps_config = {
@@ -1463,6 +1432,20 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         platformservice = initialize_platform_services(platform, config_service, logger)
         logger.info("Platform services initialized")
 
+        if platform == "standalone":
+            from kindling.watermarking import (
+                NullWatermarkEntityFinder,
+                WatermarkEntityFinder,
+            )
+
+            existing_binding = GlobalInjector.get_injector().binder._bindings.get(
+                WatermarkEntityFinder
+            )
+            if existing_binding is None:
+                # [implementer] make standalone DI graph constructible without app watermark boilerplate — TASK-20260430-002
+                GlobalInjector.bind(WatermarkEntityFinder, NullWatermarkEntityFinder)
+                logger.debug("Bound NullWatermarkEntityFinder for standalone platform")
+
         # Resolve any @secret references now that platform services are available.
         try:
             from kindling.config_loaders import load_secrets_from_provider
@@ -1473,56 +1456,43 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         except Exception as secret_resolution_error:
             logger.warning(f"Secret resolution pass failed: {secret_resolution_error}")
 
-        # DEBUG: Check what the config value actually is
         load_local_default = False if platform == "standalone" else True
         load_local_value = config_service.get("kindling.bootstrap.load_local", load_local_default)
-        print(
-            f"🔍 DEBUG: kindling.bootstrap.load_local = {load_local_value} (type: {type(load_local_value).__name__})"
-        )
-        logger.info(
-            f"DEBUG: kindling.bootstrap.load_local = {load_local_value} (type: {type(load_local_value).__name__})"
+        logger.debug(
+            f"kindling.bootstrap.load_local = {load_local_value} "
+            f"(type: {type(load_local_value).__name__})"
         )
 
-        # Also check the original flat key
         load_local_flat = config_service.get("load_local_packages", "NOT_SET")
-        print(
-            f"🔍 DEBUG: load_local_packages (flat) = {load_local_flat} (type: {type(load_local_flat).__name__})"
-        )
-        logger.info(
-            f"DEBUG: load_local_packages (flat) = {load_local_flat} (type: {type(load_local_flat).__name__})"
+        logger.debug(
+            f"load_local_packages (flat) = {load_local_flat} "
+            f"(type: {type(load_local_flat).__name__})"
         )
 
         if load_local_value:
-            print(f"📦 Loading workspace packages (load_local=True)...")
             ignored_folders = config_service.get("kindling.bootstrap.ignored_folders", [])
-            print(f"📦 Getting all packages from NotebookManager...")
             workspace_packages = get_kindling_service(NotebookManager).get_all_packages(
                 ignored_folders=ignored_folders
             )
-            print(f"📦 Found {len(workspace_packages)} workspace packages: {workspace_packages}")
+            logger.debug(
+                f"Found {len(workspace_packages)} workspace packages: {workspace_packages}"
+            )
             load_workspace_packages(platformservice, workspace_packages, logger)
             logger.info(f"Loaded {len(workspace_packages)} workspace packages")
         else:
-            print(f"⏭️  Skipping workspace package loading (load_local=False)")
             logger.info("Skipping workspace package loading (load_local=False)")
 
         logger.info("Framework initialization complete")
 
         if app_name:
             logger.info(f"Auto-running app: {app_name}")
-            print(f"🚀 ATTEMPTING TO RUN APP: {app_name}")
             try:
                 runner = get_kindling_service(DataAppRunner)
-                print(f"✅ Got DataAppRunner: {type(runner).__name__}")
-                print(f"🎯 Calling runner.run_app('{app_name}')")
+                logger.debug(f"Got DataAppRunner: {type(runner).__name__}")
                 runner.run_app(app_name)
-                print(f"✅ App '{app_name}' completed successfully")
+                logger.info(f"App '{app_name}' completed successfully")
             except Exception as app_error:
-                print(f"❌ App execution failed: {str(app_error)}")
-                import traceback
-
-                print(f"📋 App error traceback:")
-                traceback.print_exc()
+                logger.exception(f"App execution failed: {str(app_error)}")
                 raise
 
         return platformservice
