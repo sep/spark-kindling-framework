@@ -2,16 +2,10 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from kindling.common_transforms import *
-from kindling.injection import *
-from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_config import *
-from kindling.spark_log_provider import *
-from kindling.spark_session import *
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, date_format, lit
 from pyspark.sql.types import (
@@ -23,17 +17,42 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+from kindling.common_transforms import *
+from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import *
+from kindling.spark_log_provider import *
+from kindling.spark_session import *
+
 from .data_entities import *
 
 
 class WatermarkEntityFinder(ABC):
     @abstractmethod
-    def get_watermark_entity_for_entity(self, context: str):
+    def get_watermark_entity_for_entity(self, context: str) -> Any:
         pass
 
     @abstractmethod
-    def get_watermark_entity_for_layer(self, layer: str):
+    def get_watermark_entity_for_layer(self, layer: str) -> Any:
         pass
+
+
+class NullWatermarkEntityFinder(WatermarkEntityFinder):
+    """Standalone fallback that keeps DI constructible until watermarking is used."""
+
+    def get_watermark_entity_for_entity(self, context: str) -> Any:
+        # [implementer] fail loudly if standalone fallback is asked to watermark — TASK-20260430-002
+        raise NotImplementedError(
+            "No WatermarkEntityFinder is configured. Bind a concrete WatermarkEntityFinder "
+            "before using watermark-enabled reads or writes."
+        )
+
+    def get_watermark_entity_for_layer(self, layer: str) -> Any:
+        # [implementer] fail loudly if standalone fallback is asked to watermark — TASK-20260430-002
+        raise NotImplementedError(
+            "No WatermarkEntityFinder is configured. Bind a concrete WatermarkEntityFinder "
+            "before using watermark-enabled reads or writes."
+        )
 
 
 class WatermarkService(ABC):

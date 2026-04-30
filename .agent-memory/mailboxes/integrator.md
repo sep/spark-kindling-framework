@@ -1,37 +1,41 @@
 STATUS: IDLE
-VERDICT: APPROVED
-TASK: TASK-20260430-001
+VERDICT: APPROVED WITH NOTES
+TASK: TASK-20260430-002
 FROM: reviewer
-RECEIVED: 2026-04-30T17:12:00Z
+RECEIVED: 2026-04-30T18:20:00Z
 
 ## Instruction
 
-Wire the approved TASK-20260430-001 implementation. All changes are already on branch
-`agent/TASK-20260430-001/local-dev-dx`. Your job is to confirm the branch is clean,
-run a final `poe test-unit`, and hand to ship.
+Wire the approved TASK-20260430-002 implementation. All changes are on branch
+`agent/TASK-20260430-002/dx-fixes-round2`. Confirm branch is clean, run final `poe test-unit`
+(must stay at 1110), and hand to ship.
 
 Verify these are present on the branch:
-- `packages/kindling/data_entities.py` — `KindlingNotInitializedError`, `DataEntities.reset()`
-- `packages/kindling/data_pipes.py` — `DataPipes.reset()`, guard in `pipe()` decorator
-- `packages/kindling/__init__.py` — `KindlingNotInitializedError` exported
-- `packages/kindling_cli/kindling_cli/cli.py` — `run_pipe`, `validate_app`, `_discover_app_py`, `_load_app_module`, fixed `env_check`, fixed `new_project` next-steps
-- `packages/kindling_cli/kindling_cli/templates/config/env.local.yaml.j2` — memory-first, single `entity_tags:` key
-- `packages/kindling_cli/kindling_cli/templates/tests/conftest.py.j2` — public `reset_kindling` fixture
-- `packages/kindling_cli/kindling_cli/templates/pyproject.toml.j2` — plain `pytest` poe tasks
+- `packages/kindling/watermarking.py` — `NullWatermarkEntityFinder` class + auto-binding in standalone
+- `packages/kindling/bootstrap.py` — debug `print()` calls removed/routed to logger
+- `packages/kindling/spark_config.py` — debug `print()` calls removed/routed to logger
+- `packages/kindling_cli/kindling_cli/cli.py` — `validate_app` has `--env` option, next-steps `.env` annotation updated
+- `packages/kindling_cli/kindling_cli/templates/pyproject.toml.j2` — `spark-kindling-cli` uncommented as dev dependency
+- `tests/unit/test_di_wiring_standalone.py` — new DI wiring component test
 
-Run `poe test-unit`. Must stay green (1106 expected).
+## Reviewer notes (APPROVED WITH NOTES — not blocking, pass to ship as-is)
+1. MINOR: `NullWatermarkEntityFinder` error message could include `GlobalInjector.bind(WatermarkEntityFinder, ...)` example
+2. MINOR: `--env`/`--app` decorator order on `validate` reversed vs `run` (cosmetic, wiring correct)
+3. MINOR: DI test uses subprocess isolation rather than in-process approach
+4. NIT: `NullWatermarkEntityFinder` docstring could add "bind a real implementation" guidance
 
 ## Context Files
-- `.agent-memory/review-TASK-20260430-001.md`
+- `.agent-memory/review-TASK-20260430-002.md`
 - All files listed above
 
 ## On Complete
 Write to `.agent-memory/mailboxes/ship.md`:
   STATUS: PENDING
-  TASK: TASK-20260430-001
-  BRANCH: agent/TASK-20260430-001/local-dev-dx
+  TASK: TASK-20260430-002
+  BRANCH: agent/TASK-20260430-002/dx-fixes-round2
   FROM: integrator
   ## Instruction
-  Create PR for TASK-20260430-001 targeting main. Title: "feat(dx): local-first scaffold, kindling run/validate, KindlingNotInitializedError (#85)"
-  Body should summarise all 9 changes (Group A: runtime + CLI commands; Group B: template fixes).
-  Reference issue #85. Request Copilot review.
+  Create PR for TASK-20260430-002 targeting main.
+  Title: "fix(dx): kindling run now works in scaffolded projects; suppress debug noise; validate --env (#87 #88)"
+  Body: summarise all 6 fixes (watermark DI binding, print cleanup, validate --env, next-steps, CLI dep, DI test).
+  Reference issues #87 and #88. Request Copilot review.

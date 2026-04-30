@@ -7,8 +7,8 @@ from unittest.mock import Mock
 from click.testing import CliRunner
 from kindling_cli.cli import _discover_app_py, cli
 
-from kindling.data_entities import DataEntityRegistry
-from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
+from kindling.data_entities import DataEntities, DataEntityRegistry
+from kindling.data_pipes import DataPipes, DataPipesExecution, DataPipesRegistry
 
 
 def _write_app(path: Path, body: str | None = None) -> Path:
@@ -181,6 +181,48 @@ def test_validate_good_registry_checks_pass(monkeypatch):
     assert "Validation passed." in result.output
 
 
+# [tester] verify validate accepts env overlays symmetrically with run — TASK-20260430-002
+def test_validate_env_option_is_passed_to_app_initialize(monkeypatch):
+    runner = CliRunner()
+    entity_registry = Mock()
+    entity_registry.get_entity_ids.return_value = ["bronze.records"]
+    entity_registry.get_entity_definition.return_value = SimpleNamespace(
+        entityid="bronze.records",
+        tags={"provider_type": "memory"},
+        merge_columns=[],
+    )
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_ids.return_value = ["noop"]
+    pipe_registry.get_pipe_definition.return_value = SimpleNamespace(
+        pipeid="noop",
+        input_entity_ids=[],
+        output_entity_id="bronze.records",
+    )
+
+    def fake_get(service_type):
+        if service_type is DataEntityRegistry:
+            return entity_registry
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
+    with runner.isolated_filesystem():
+        app_path = _write_app(
+            Path("app.py"),
+            "from pathlib import Path\n"
+            "def initialize(env=None, config_dir=None):\n"
+            "    Path('seen-env.txt').write_text(env or '', encoding='utf-8')\n",
+        )
+        result = runner.invoke(cli, ["validate", "--env", "dev", "--app", str(app_path)])
+
+        assert Path("seen-env.txt").read_text(encoding="utf-8") == "dev"
+
+    assert result.exit_code == 0
+    assert "Validation passed." in result.output
+
+
 def test_validate_bad_registry_checks_fail_with_missing_references(monkeypatch):
     runner = CliRunner()
     entity_registry = Mock()
@@ -219,6 +261,61 @@ def test_validate_bad_registry_checks_fail_with_missing_references(monkeypatch):
         in result.output
     )
     assert "Validation failed" in result.output
+
+
+# [tester] scaffolded local run reaches executor boundary without Azure credentials — TASK-20260430-002
+def test_new_project_run_reaches_pipe_execution_with_mock_executor(monkeypatch):
+    runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_definition.return_value = SimpleNamespace(pipeid="bronze_to_silver")
+    executor = Mock()
+    entity_registry = Mock()
+    init_configs = []
+
+    def fake_initialize_framework(config):
+        init_configs.append(config)
+        return object()
+
+    def fake_get(service_type):
+        if service_type is DataEntityRegistry:
+            return entity_registry
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        if service_type is DataPipesExecution:
+            return executor
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.bootstrap.initialize_framework", fake_initialize_framework)
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+    monkeypatch.setattr("kindling.data_entities._raise_if_not_initialized", lambda *args: None)
+    monkeypatch.setattr("kindling.data_pipes._raise_if_not_initialized", lambda *args: None)
+
+    with runner.isolated_filesystem():
+        try:
+            result_new = runner.invoke(cli, ["new", "logistics-data"])
+            assert result_new.exit_code == 0, result_new.output
+
+            package_dir = Path("logistics_data/packages/logistics_data")
+            result_run = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "bronze_to_silver",
+                    "--env",
+                    "local",
+                    "--app",
+                    str(package_dir / "src/logistics_data/app.py"),
+                ],
+            )
+        finally:
+            DataEntities.reset()
+            DataPipes.reset()
+
+    assert result_run.exit_code == 0, result_run.output
+    assert init_configs[-1]["platform"] == "standalone"
+    assert init_configs[-1]["environment"] == "local"
+    pipe_registry.get_pipe_definition.assert_called_with("bronze_to_silver")
+    executor.run_datapipes.assert_called_once_with(["bronze_to_silver"])
 
 
 def test_env_check_auto_probes_config_settings_yaml():

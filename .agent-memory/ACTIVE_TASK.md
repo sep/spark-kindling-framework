@@ -4,12 +4,60 @@
 |----|-------|--------|--------|
 | TASK-20260429-001 | SCD Type 2 Entity Support | ✅ MERGED (PR #77) | agent/TASK-20260429-001/scd2-support |
 | TASK-20260429-002 | SCD2 Follow-up Fixes (#78–#81) | ✅ MERGED (PR #82) | agent/TASK-20260429-002/scd2-followup |
-| TASK-20260430-001 | Local Dev DX: Critical & High gaps (issue #85) | 🔄 IN PROGRESS | agent/TASK-20260430-001/local-dev-dx |
+| TASK-20260430-001 | Local Dev DX: Critical & High gaps (issue #85) | ✅ MERGED (PR #86) | agent/TASK-20260430-001/local-dev-dx |
+| TASK-20260430-002 | DX Round 2: WatermarkEntityFinder, debug noise, validate --env, CLI dep, DI test (#87, #88) | 🔄 IN PROGRESS | agent/TASK-20260430-002/dx-fixes-round2 |
 
 ---
 
-# Active Task: TASK-20260430-001 — Local Dev DX: Critical & High gaps
+# Active Task: TASK-20260430-002 — DX Round 2: post-#85 eval gaps + DI wiring test
 **Status:** IN PROGRESS
+**Branch:** `agent/TASK-20260430-002/dx-fixes-round2`
+**Issues:** #87, #88
+**Started:** 2026-04-30
+
+## Goal
+Fix 5 DX gaps discovered during post-#85 developer simulation (issue #87) and add the missing DI
+wiring component test that would have caught them (issue #88). After this task, `kindling run` executes
+a scaffolded bronze→silver pipe without Azure credentials, the CLI is quiet by default, `kindling
+validate` accepts `--env`, the scaffold pyproject.toml makes the CLI available after `poetry install`,
+and any future DI binding regression is caught by a component test before shipping.
+
+## Scope
+| # | Item | Severity | Type | Issue |
+|---|------|----------|------|-------|
+| 1 | `kindling run` fails — `WatermarkEntityFinder` unbound in standalone | 🔴 Critical | Framework + CLI | #87 |
+| 2 | 100+ debug `print()` in `bootstrap.py`/`spark_config.py` flood every invocation | 🔴 Critical | Framework cleanup | #87 |
+| 3 | `kindling validate` missing `--env` option | 🟠 High | CLI | #87 |
+| 4 | Next-steps implies Azure creds required for local dev | 🟠 High | Template | #87 |
+| 5 | `spark-kindling-cli` commented out in scaffold pyproject.toml | 🟠 High | Template | #87 |
+| 6 | Missing DI wiring component test — DI failures invisible to test suite | 🟠 High | Testing | #88 |
+
+## Acceptance Criteria
+- [ ] `kindling run bronze_to_silver --env local` completes successfully in a freshly scaffolded project without Azure credentials
+- [ ] `kindling validate`, `kindling run`, and `kindling env check` produce no debug print noise by default; actual results are the only stdout
+- [ ] `kindling validate --env local` is accepted (no "No such option" error)
+- [ ] `kindling new` next-steps annotates `.env` copy step as optional for local dev
+- [ ] After `poetry install` in a scaffolded project, `kindling run`/`validate` are available (either via PATH or via `poetry run kindling`)
+- [ ] A component test exercises real `initialize_framework(platform="standalone")` + real `GlobalInjector.get(DataPipesExecution)` with no mocking — passes green
+- [ ] All 1106 existing unit tests continue to pass
+
+## Agent Plan
+| Step | Agent | Input | Output | Status |
+|------|-------|-------|--------|--------|
+| 1 | planner | this brief + issues #87 #88 + source | design doc | ⏳ PENDING |
+| 2 | implementer | design doc | code fixes across framework + CLI + templates | — |
+| 3 | tester | implementation | component test + regression tests | — |
+| 4 | reviewer | code + tests | verdict | — |
+| 5 | integrator | approved code | verify + clean | — |
+| 6 | ship | branch | PR to main | — |
+
+## Handoff Log
+- 2026-04-30: Task created by coordinator. Dispatched to planner.
+
+---
+
+# Completed Task: TASK-20260430-001 — Local Dev DX: Critical & High gaps
+**Status:** COMPLETE — merged as PR #86
 **Branch:** `agent/TASK-20260430-001/local-dev-dx`
 **Issue:** #85
 **Started:** 2026-04-30
