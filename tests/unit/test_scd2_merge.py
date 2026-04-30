@@ -364,3 +364,86 @@ def test_optimize_unchanged_whenMatchedUpdate_has_no_condition():
     merge_builder.whenMatchedUpdate.assert_called_once_with(
         set={"`__effective_to`": "current_timestamp()", "`__is_current`": "false"}
     )
+
+
+# ── both flags together ───────────────────────────────────────────────────────
+
+
+def _mock_source_df_both_flags():
+    """Mock for optimize_unchanged=True + close_on_missing=True.
+
+    source_hashed.join is called twice:
+      call 1 → hash != tgt_hash → changed_rows (where clause differs)
+      call 2 → hash == tgt_hash → unchanged_rows
+    """
+    df = MagicMock(name="source_df")
+    df.columns = ["customer_id", "name", "status"]
+
+    source_hashed = MagicMock(name="source_hashed")
+    new_rows = MagicMock(name="new_rows")
+    changed_rows = MagicMock(name="changed_rows")
+    unchanged_rows = MagicMock(name="unchanged_rows")
+
+    df.withColumn.return_value = source_hashed
+    df.join.return_value = new_rows
+
+    join_changed = MagicMock(name="join_changed")
+    join_unchanged = MagicMock(name="join_unchanged")
+    source_hashed.alias.return_value = source_hashed
+    source_hashed.join.side_effect = [join_changed, join_unchanged]
+    join_changed.where.return_value.select.return_value = changed_rows
+    join_unchanged.where.return_value.select.return_value = unchanged_rows
+
+    rows_to_close_or_insert = MagicMock(name="rows_to_close_or_insert")
+    changed_rows.unionByName.return_value = rows_to_close_or_insert
+
+    insert_rows_wk = MagicMock(name="insert_rows_wk")
+    insert_rows = MagicMock(name="insert_rows")
+    keyed_rows_wk = MagicMock(name="keyed_rows_wk")
+    keyed_rows = MagicMock(name="keyed_rows")
+    sentinels_wk = MagicMock(name="sentinels_wk")
+    sentinels = MagicMock(name="sentinels")
+
+    changed_rows.withColumn.return_value = insert_rows_wk
+    insert_rows_wk.withColumn.return_value = insert_rows
+    rows_to_close_or_insert.withColumn.return_value = keyed_rows_wk
+    keyed_rows_wk.withColumn.return_value = keyed_rows
+    unchanged_rows.withColumn.return_value = sentinels_wk
+    sentinels_wk.withColumn.return_value = sentinels
+
+    keyed_plus_sentinels = MagicMock(name="keyed_plus_sentinels")
+    staged = MagicMock(name="staged")
+    keyed_rows.unionByName.return_value = keyed_plus_sentinels
+    insert_rows.unionByName.return_value = staged
+    staged.alias.return_value = staged
+
+    return df
+
+
+def _execute_both():
+    delta_table, merge_builder = _mock_delta_table()
+    df = _mock_source_df_both_flags()
+    tags = {"scd.close_on_missing": "true", "scd.optimize_unchanged": "true"}
+    _execute_scd2_merge(delta_table, df, _entity(tags))
+    return delta_table, merge_builder, df
+
+
+def test_both_flags_calls_whenNotMatchedBySourceUpdate():
+    _, merge_builder, _ = _execute_both()
+
+    merge_builder.whenNotMatchedBySourceUpdate.assert_called_once()
+
+
+def test_both_flags_uses_hash_for_changed_rows():
+    _, _, df = _execute_both()
+
+    col_names = [call.args[0] for call in df.withColumn.call_args_list]
+    assert "__scd2_src_hash" in col_names
+
+
+def test_both_flags_sentinel_uses_second_hash_join_not_change_condition():
+    """Unchanged rows come from hash comparison, not _build_null_safe_change_condition."""
+    _, _, df = _execute_both()
+
+    source_hashed = df.withColumn.return_value
+    assert source_hashed.join.call_count == 2
