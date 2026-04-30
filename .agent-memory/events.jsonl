@@ -30,3 +30,4 @@
 {"ts":"2026-04-30T18:20:00Z","event":"review_complete","task":"TASK-20260430-002","agent":"claude","role":"reviewer","summary":"APPROVED WITH NOTES — 3 minor findings, no blockers; 1110 tests green"}
 {"ts":"2026-04-30T18:22:00Z","event":"completed","task":"TASK-20260430-002","agent":"copilot","role":"integrator","summary":"verified branch artifacts, confirmed print cleanup and validate --env wiring, poe test-unit passed (1110), dispatched to ship"}
 {"ts":"2026-04-30T18:30:00Z","event":"pr_ready","task":"TASK-20260430-002","agent":"ship","summary":"PR #89 open, Copilot COMMENTED, both findings addressed and pushed; awaiting human merge"}
+{"ts":"2026-04-30T18:35:00Z","event":"task_closed","task":"TASK-20260430-002","agent":"coordinator","summary":"PR #89 merged, artifacts archived, worktree and branch cleaned up"}
