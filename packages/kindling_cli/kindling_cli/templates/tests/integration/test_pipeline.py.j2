@@ -63,8 +63,16 @@ class TestPipelineViaKindling:
         assert result.count() >= 1
 
 
+@pytest.mark.integration
 class TestKindlingPipeExecution:
-    """Exercise the generated Kindling pipe wiring with local Spark."""
+    """Exercise the generated Kindling pipe wiring with local Spark.
+
+    Uses memory providers — no Azure credentials required. The class-level
+    pytestmark overrides the module-level requires_azure so this test runs
+    locally without ABFSS credentials.
+    """
+
+    pytestmark = [pytest.mark.integration]
 
     @pytest.fixture(autouse=True)
     def _setup(self, spark_local, reset_kindling):
