@@ -173,3 +173,43 @@ def test_validate_scd_config_current_entity_id_empty_raises_value_error():
 
     with pytest.raises(ValueError, match="scd.current_entity_id must"):
         _validate_scd_config(entity)
+
+
+def test_scd_config_from_tags_close_on_missing_false_by_default():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.type": "2"}))
+
+    assert cfg.close_on_missing is False
+
+
+def test_scd_config_from_tags_close_on_missing_true_when_tag_set():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.type": "2", "scd.close_on_missing": "true"}))
+
+    assert cfg.close_on_missing is True
+
+
+def test_scd_config_from_tags_close_on_missing_case_insensitive():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.type": "2", "scd.close_on_missing": "True"}))
+
+    assert cfg.close_on_missing is True
+
+
+def test_scd_config_from_tags_optimize_unchanged_false_by_default():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.type": "2"}))
+
+    assert cfg.optimize_unchanged is False
+
+
+def test_scd_config_from_tags_optimize_unchanged_true_when_tag_set():
+    cfg = scd_config_from_tags(
+        make_entity(tags={"scd.type": "2", "scd.optimize_unchanged": "true"})
+    )
+
+    assert cfg.optimize_unchanged is True
+
+
+def test_scd_config_from_tags_optimize_unchanged_case_insensitive():
+    cfg = scd_config_from_tags(
+        make_entity(tags={"scd.type": "2", "scd.optimize_unchanged": "TRUE"})
+    )
+
+    assert cfg.optimize_unchanged is True

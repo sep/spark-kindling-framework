@@ -195,7 +195,172 @@ def test_execute_scd2_merge_routing_key_concat_column_expr_uses_null_sentinel():
     assert "__null__" in str(routing_expr)
 
 
-def test_execute_scd2_merge_does_not_implement_close_on_missing_in_phase_1():
-    _, merge_builder, _, _ = _execute({"scd.close_on_missing": "true"})
+# ── close_on_missing tests ────────────────────────────────────────────────────
+
+
+def _mock_source_df_close_on_missing():
+    """Mock source DataFrame for close_on_missing=True (3 joins: changed, new, unchanged)."""
+    df = MagicMock(name="source_df")
+    df.columns = ["customer_id", "name", "status"]
+
+    join_changed = MagicMock(name="join_changed")
+    new_rows = MagicMock(name="new_rows")
+    join_unchanged = MagicMock(name="join_unchanged")
+    changed_rows = MagicMock(name="changed_rows")
+    unchanged_rows = MagicMock(name="unchanged_rows")
+
+    df.alias.return_value = df
+    df.join.side_effect = [join_changed, new_rows, join_unchanged]
+    join_changed.where.return_value.select.return_value = changed_rows
+    join_unchanged.where.return_value.select.return_value = unchanged_rows
+
+    rows_to_close_or_insert = MagicMock(name="rows_to_close_or_insert")
+    changed_rows.unionByName.return_value = rows_to_close_or_insert
+
+    insert_rows_wk = MagicMock(name="insert_rows_wk")
+    insert_rows = MagicMock(name="insert_rows")
+    keyed_rows_wk = MagicMock(name="keyed_rows_wk")
+    keyed_rows = MagicMock(name="keyed_rows")
+    sentinels_wk = MagicMock(name="sentinels_wk")
+    sentinels = MagicMock(name="sentinels")
+
+    changed_rows.withColumn.return_value = insert_rows_wk
+    insert_rows_wk.withColumn.return_value = insert_rows
+    rows_to_close_or_insert.withColumn.return_value = keyed_rows_wk
+    keyed_rows_wk.withColumn.return_value = keyed_rows
+    unchanged_rows.withColumn.return_value = sentinels_wk
+    sentinels_wk.withColumn.return_value = sentinels
+
+    keyed_plus_sentinels = MagicMock(name="keyed_plus_sentinels")
+    staged = MagicMock(name="staged")
+    keyed_rows.unionByName.return_value = keyed_plus_sentinels
+    insert_rows.unionByName.return_value = staged
+    staged.alias.return_value = staged
+
+    return df
+
+
+def _execute_com(extra_tags=None):
+    """Run _execute_scd2_merge with close_on_missing=True."""
+    delta_table, merge_builder = _mock_delta_table()
+    df = _mock_source_df_close_on_missing()
+    tags = {"scd.close_on_missing": "true", **(extra_tags or {})}
+    _execute_scd2_merge(delta_table, df, _entity(tags))
+    return delta_table, merge_builder, df
+
+
+def test_close_on_missing_calls_whenNotMatchedBySourceUpdate():
+    _, merge_builder, _ = _execute_com()
+
+    merge_builder.whenNotMatchedBySourceUpdate.assert_called_once()
+
+
+def test_close_on_missing_whenNotMatchedBySourceUpdate_condition_targets_current_rows():
+    _, merge_builder, _ = _execute_com()
+
+    kwargs = merge_builder.whenNotMatchedBySourceUpdate.call_args.kwargs
+    assert "__is_current" in kwargs["condition"]
+
+
+def test_close_on_missing_whenNotMatchedBySourceUpdate_set_closes_row():
+    _, merge_builder, _ = _execute_com()
+
+    kwargs = merge_builder.whenNotMatchedBySourceUpdate.call_args.kwargs
+    assert kwargs["set"]["`__effective_to`"] == "current_timestamp()"
+    assert kwargs["set"]["`__is_current`"] == "false"
+
+
+def test_close_on_missing_whenMatchedUpdate_has_changed_column_condition():
+    _, merge_builder, _ = _execute_com()
+
+    kwargs = merge_builder.whenMatchedUpdate.call_args.kwargs
+    assert "__scd2_changed" in kwargs["condition"]
+
+
+def test_close_on_missing_false_does_not_call_whenNotMatchedBySourceUpdate():
+    _, merge_builder, _, _ = _execute()
 
     merge_builder.whenNotMatchedBySourceUpdate.assert_not_called()
+
+
+def test_close_on_missing_false_whenMatchedUpdate_has_no_condition():
+    _, merge_builder, _, _ = _execute()
+
+    merge_builder.whenMatchedUpdate.assert_called_once_with(
+        set={"`__effective_to`": "current_timestamp()", "`__is_current`": "false"}
+    )
+
+
+# ── optimize_unchanged tests ──────────────────────────────────────────────────
+
+
+def _mock_source_df_optimize_unchanged():
+    """Mock source DataFrame for optimize_unchanged=True (hash-based changed_rows)."""
+    df = MagicMock(name="source_df")
+    df.columns = ["customer_id", "name", "status"]
+
+    source_hashed = MagicMock(name="source_hashed")
+    new_rows = MagicMock(name="new_rows")
+    changed_rows = MagicMock(name="changed_rows")
+    rows_to_close_or_insert = MagicMock(name="rows_to_close_or_insert")
+    insert_rows = MagicMock(name="insert_rows")
+    keyed_rows = MagicMock(name="keyed_rows")
+    staged = MagicMock(name="staged")
+
+    df.withColumn.return_value = source_hashed
+    df.join.return_value = new_rows
+
+    source_hashed.alias.return_value = source_hashed
+    source_hashed.join.return_value.where.return_value.select.return_value = changed_rows
+
+    changed_rows.unionByName.return_value = rows_to_close_or_insert
+    changed_rows.withColumn.return_value = insert_rows
+    rows_to_close_or_insert.withColumn.return_value = keyed_rows
+    insert_rows.unionByName.return_value = staged
+    staged.alias.return_value = staged
+
+    return df
+
+
+def _execute_ou(extra_tags=None):
+    """Run _execute_scd2_merge with optimize_unchanged=True."""
+    delta_table, merge_builder = _mock_delta_table()
+    df = _mock_source_df_optimize_unchanged()
+    tags = {"scd.optimize_unchanged": "true", **(extra_tags or {})}
+    _execute_scd2_merge(delta_table, df, _entity(tags))
+    return delta_table, merge_builder, df
+
+
+def test_optimize_unchanged_adds_src_hash_column_to_df():
+    _, _, df = _execute_ou()
+
+    col_names = [call.args[0] for call in df.withColumn.call_args_list]
+    assert "__scd2_src_hash" in col_names
+
+
+def test_optimize_unchanged_false_does_not_add_src_hash_column():
+    _, _, df, _ = _execute()
+
+    col_names = [call.args[0] for call in df.withColumn.call_args_list]
+    assert "__scd2_src_hash" not in col_names
+
+
+def test_optimize_unchanged_hash_expr_uses_sha2():
+    _, _, df = _execute_ou()
+
+    hash_call = next(c for c in df.withColumn.call_args_list if c.args[0] == "__scd2_src_hash")
+    assert "sha2" in str(hash_call.args[1])
+
+
+def test_optimize_unchanged_does_not_call_whenNotMatchedBySourceUpdate():
+    _, merge_builder, _ = _execute_ou()
+
+    merge_builder.whenNotMatchedBySourceUpdate.assert_not_called()
+
+
+def test_optimize_unchanged_whenMatchedUpdate_has_no_condition():
+    _, merge_builder, _ = _execute_ou()
+
+    merge_builder.whenMatchedUpdate.assert_called_once_with(
+        set={"`__effective_to`": "current_timestamp()", "`__is_current`": "false"}
+    )
