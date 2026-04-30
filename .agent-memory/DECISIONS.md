@@ -93,6 +93,42 @@ Append-only. To supersede a decision, add a new entry with
 
 ---
 
+## 2026-04-30 WatermarkEntityFinder standalone binding strategy
+**Status:** Accepted
+**Agent:** planner (Claude)
+**Context:** TASK-20260430-002 Item 1. `kindling run` fails in standalone mode because
+  `WatermarkEntityFinder` is abstract with no concrete binding. Three options were evaluated:
+  (A) CLI auto-binds before `run_datapipes`; (B) scaffold `app.py.j2` includes a stub binding;
+  (C) `initialize_framework` auto-binds a `NullWatermarkEntityFinder` when `platform=standalone`.
+**Decision:** Option C — `initialize_framework` binds `NullWatermarkEntityFinder` immediately
+  after `initialize_platform_services()` returns, only when `platform == "standalone"` and only
+  if no concrete binding already exists. The null impl raises `NotImplementedError` with a clear
+  message if actually called, so it does not silently mask missing config.
+**Consequences:** Standalone/local-dev "just works" without boilerplate in `app.py`. Production
+  platforms are unaffected (they run Fabric/Synapse/Databricks, not standalone). Apps that need
+  real watermarking must still bind their own `WatermarkEntityFinder` — same as today. The new
+  component test (Item 6) catches any future regression.
+
+---
+
+## 2026-04-30 Debug print suppression: remove/route, no KINDLING_QUIET env var
+**Status:** Accepted
+**Agent:** planner (Claude)
+**Context:** TASK-20260430-002 Item 2. 86 `print()` calls in `bootstrap.py` and 23 in
+  `spark_config.py` violate the CONVENTIONS.md "no bare print() in library code" rule and
+  flood `kindling run` output. Options: (A) remove all prints, (B) route to logger, (C) add
+  `KINDLING_QUIET=1` env-var gate, (D) categorise and do A+B together.
+**Decision:** Option D — categorise into four groups: (A) pre-logger startup announcements →
+  delete; (B) operational diagnostics after logger is available → route to `logger.debug/info/
+  warning/error`; (C) clearly leftover DEBUG/emoji prints → delete entirely; (D) intentional
+  print-based fallback logger in `spark_config.py` → keep with explanatory comment. No
+  `KINDLING_QUIET` env var is introduced — the structured logger is already configurable via
+  `kindling.telemetry.logging.level`.
+**Consequences:** CLI stdout is clean by default. All diagnostic information is still accessible
+  via log level configuration. Conventions compliance restored.
+
+---
+
 ## 2026-04-29 Agent platform assignment strategy
 **Status:** Accepted
 **Agent:** coordinator (Claude Code)
