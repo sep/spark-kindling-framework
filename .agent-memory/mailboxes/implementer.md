@@ -1,85 +1,39 @@
-STATUS: IDLE
-VERDICT: CHANGES REQUESTED
-TASK: TASK-20260430-001
-FROM: reviewer
-RECEIVED: 2026-04-30T15:42:00Z
+STATUS: IN_PROGRESS
+TASK: TASK-20260430-002
+FROM: planner
+RECEIVED: 2026-04-30T18:10:00Z
 
 ## Instruction
 
-Three required fixes from review. Do not change anything else.
+Implement all 6 items from the design doc at `.agent-memory/design-TASK-20260430-002.md`.
+Work on branch `agent/TASK-20260430-002/dx-fixes-round2`.
 
-### Fix 1 — `env.local.yaml.j2` duplicate `entity_tags:` key (MAJOR)
+Follow CONVENTIONS.md: type hints on all public functions, agent tag comments on new code
+(`# [implementer] <reason> — TASK-20260430-002`), no bare `except:`.
 
-**File:** `packages/kindling_cli/kindling_cli/templates/config/env.local.yaml.j2`
-
-The template currently renders `entity_tags:` as a live key AND again as `# entity_tags:`
-in the commented ABFSS block. A developer who uncomments the ABFSS section gets a duplicate
-YAML key — the memory entries are silently overwritten.
-
-Restructure so `entity_tags:` appears exactly once and the ABFSS override is a commented
-alternative nested under the same key. Example structure for medallion:
-
-```yaml
-entity_tags:
-  bronze.records:
-    provider_type: "memory"
-    # To use ABFSS instead, comment out provider_type and uncomment provider.path:
-    # provider.path: "@secret:ABFSS_BRONZE_PATH"
-  silver.records:
-    provider_type: "memory"
-    # provider.path: "@secret:ABFSS_SILVER_PATH"
-```
-
-The Jinja `{% if layers == "medallion" %}` / `{% else %}` conditionals must still wrap
-the full content.
-
-### Fix 2 — `KindlingNotInitializedError` double-wrapping (MAJOR)
-
-**Files:** `packages/kindling/data_entities.py` (2 locations) and `packages/kindling/data_pipes.py` (1 location)
-
-In every decorator that catches `Exception` and re-raises `KindlingNotInitializedError`,
-add a guard so a `KindlingNotInitializedError` from an inner `_raise_if_not_initialized`
-call is not caught and re-wrapped:
-
-```python
-except Exception as exc:
-    if isinstance(exc, KindlingNotInitializedError):
-        raise
-    raise KindlingNotInitializedError("...") from exc
-```
-
-Apply to all three locations where this pattern appears.
-
-### Fix 3 — Missing agent tags on runtime file changes (MINOR, required by CONVENTIONS.md)
-
-**Files:** `packages/kindling/data_entities.py` and `packages/kindling/data_pipes.py`
-
-Add `# [implementer] <brief reason> — TASK-20260430-001` comment above:
-- `KindlingNotInitializedError` class definition in data_entities.py
-- `DataEntities.reset()` method in data_entities.py
-- `DataPipes.reset()` method in data_pipes.py
+After all changes, run `poe test-unit`. It must stay green (1106 tests). Note: the new DI wiring
+component test (item 6) will FAIL until item 1 is fixed — implement item 1 first, then item 6.
 
 ## Context Files
-- `.agent-memory/review-TASK-20260430-001.md` — full review with line numbers
-- `packages/kindling_cli/kindling_cli/templates/config/env.local.yaml.j2`
-- `packages/kindling/data_entities.py`
-- `packages/kindling/data_pipes.py`
+- `.agent-memory/design-TASK-20260430-002.md` — full design with pseudocode for all 6 items
+- `packages/kindling/watermarking.py` — add NullWatermarkEntityFinder here (item 1)
+- `packages/kindling/bootstrap.py` — remove/route debug prints (item 2)
+- `packages/kindling/spark_config.py` — remove/route debug prints (item 2)
+- `packages/kindling_cli/kindling_cli/cli.py` — validate --env, next-steps annotation (items 3, 4)
+- `packages/kindling_cli/kindling_cli/templates/pyproject.toml.j2` — CLI dep (item 5)
+- `tests/unit/test_cli_local_dev_dx.py` — existing tests for reference
 
 ## On Complete
 Run `poe test-unit`. If green, write to `.agent-memory/mailboxes/tester.md`:
   STATUS: PENDING
-  TASK: TASK-20260430-001
+  TASK: TASK-20260430-002
   FROM: implementer
   ## Instruction
-  Re-run `poe test-unit`. Confirm all 1105+ tests still pass after the 3 reviewer fixes.
-  Add a test for the double-wrapping fix: import a pipe before initialize(), assert
-  exactly one KindlingNotInitializedError is raised (no chained same-type cause).
+  Run `poe test-unit`. Add tests for: DI wiring (item 6 component test), validate --env
+  acceptance, and assert that `kindling run` in a scaffolded project now reaches pipe
+  execution (can be a dry-run or mock-executor test). Confirm total >= 1106.
   ## Context Files
-  - .agent-memory/review-TASK-20260430-001.md
-  - packages/kindling/data_entities.py
-  - packages/kindling/data_pipes.py
-  - packages/kindling_cli/kindling_cli/templates/config/env.local.yaml.j2
-  - tests/unit/test_data_entities.py
-  - tests/unit/test_data_pipes.py
+  - `.agent-memory/design-TASK-20260430-002.md`
+  - All changed source files
   ## On Complete
-  Dispatch to mailboxes/reviewer.md with STATUS: PENDING
+  Write to mailboxes/reviewer.md with STATUS: PENDING
