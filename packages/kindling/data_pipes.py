@@ -15,6 +15,7 @@ from kindling.spark_log_provider import *
 from kindling.spark_trace import *
 
 from .data_entities import *
+from .data_entities import _raise_if_not_initialized
 
 
 @dataclass
@@ -57,11 +58,27 @@ class EntityReadPersistStrategy(ABC):
 class DataPipes:
     dpregistry = None
 
+    # [implementer] expose public test reset API — TASK-20260430-001
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the pipe registry. Use between tests to prevent state pollution."""
+        cls.dpregistry = None
+
     @classmethod
     def pipe(cls, **decorator_params):
         def decorator(func):
             if cls.dpregistry is None:
-                cls.dpregistry = GlobalInjector.get(DataPipesRegistry)
+                try:
+                    _raise_if_not_initialized("DataPipes.pipe", "pipe")
+                    cls.dpregistry = GlobalInjector.get(DataPipesRegistry)
+                except Exception as exc:
+                    if isinstance(exc, KindlingNotInitializedError):
+                        raise
+                    raise KindlingNotInitializedError(
+                        "A @DataPipes.pipe decorator fired before initialize() was called. "
+                        "Call initialize() before importing pipe modules. "
+                        "See your app.py register_all() for the correct order."
+                    ) from exc
             decorator_params["execute"] = func
             required_fields = {field.name for field in fields(PipeMetadata)}
             missing_fields = required_fields - decorator_params.keys()
