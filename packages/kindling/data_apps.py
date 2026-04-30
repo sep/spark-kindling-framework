@@ -13,12 +13,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
+from packaging.version import InvalidVersion, Version
+
 from kindling.injection import *
 from kindling.platform_provider import *
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
-from packaging.version import InvalidVersion, Version
 
 from .notebook_framework import *
 
@@ -447,26 +448,24 @@ class DataAppManager(DataAppRunner):
 
     def run_app(self, app_name: str) -> Any:
         """Run an app with full lifecycle management"""
-        print(f"🚀 DataAppManager.run_app() starting for app: {app_name}")
+        self.logger.info(f"DataAppManager.run_app() starting for app: {app_name}")
         with self.tp.span(
             component=f"kindling-app-{app_name}", operation="running", details={}, reraise=True
         ):
             temp_dir = None
             try:
                 # Prepare app context
-                print(f"📋 Step 1: Preparing app context for: {app_name}")
+                self.logger.info(f"Step 1: Preparing app context for: {app_name}")
                 app_context = self._prepare_app_context(app_name)
-                print(f"✅ Step 1 COMPLETE: App context prepared successfully")
-                print(f"   - Entry point: {app_context.config.entry_point}")
-                print(
-                    f"   - PyPI deps: {len(app_context.pypi_dependencies) if app_context.pypi_dependencies else 0}"
-                )
-                print(
-                    f"   - Lake reqs: {len(app_context.lake_requirements) if app_context.lake_requirements else 0}"
+                self.logger.info(
+                    "Step 1 complete: "
+                    f"entry_point={app_context.config.entry_point}, "
+                    f"pypi_deps={len(app_context.pypi_dependencies) if app_context.pypi_dependencies else 0}, "
+                    f"lake_reqs={len(app_context.lake_requirements) if app_context.lake_requirements else 0}"
                 )
 
                 # Install dependencies
-                print(f"🔧 Step 2: Installing dependencies for: {app_name}")
+                self.logger.info(f"Step 2: Installing dependencies for: {app_name}")
                 with self.tp.span(
                     component=f"kindling-app-{app_name}",
                     operation="loading_dependencies",
@@ -476,10 +475,10 @@ class DataAppManager(DataAppRunner):
                     temp_dir = self._install_app_dependencies(
                         app_name, app_context.pypi_dependencies, app_context.lake_requirements
                     )
-                print(f"✅ Step 2 COMPLETE: Dependencies installed. Temp dir: {temp_dir}")
+                self.logger.info(f"Step 2 complete: dependencies installed in {temp_dir}")
 
                 # Load and execute app code
-                print(f"📄 Step 3: Loading app code for: {app_name}")
+                self.logger.info(f"Step 3: Loading app code for: {app_name}")
                 with self.tp.span(
                     component=f"kindling-app-{app_name}",
                     operation="loading_code",
@@ -487,11 +486,11 @@ class DataAppManager(DataAppRunner):
                     reraise=True,
                 ):
                     code = self._load_app_code(app_name, app_context.config.entry_point)
-                print(
-                    f"✅ Step 3 COMPLETE: App code loaded. Code length: {len(code) if code else 0} chars"
+                self.logger.info(
+                    f"Step 3 complete: app code loaded ({len(code) if code else 0} chars)"
                 )
 
-                print(f"▶️  Step 4: Executing app code for: {app_name}")
+                self.logger.info(f"Step 4: Executing app code for: {app_name}")
                 with self.tp.span(
                     component=f"kindling-app-{app_name}",
                     operation="executing_code",
@@ -499,21 +498,17 @@ class DataAppManager(DataAppRunner):
                     reraise=True,
                 ):
                     result = self._execute_app(app_name, code)
-                print(f"✅ Step 4 COMPLETE: App execution finished. Result type: {type(result)}")
+                self.logger.info(f"Step 4 complete: result_type={type(result)}")
 
-                print(f"🎉 SUCCESS: App '{app_name}' completed all steps successfully!")
+                self.logger.info(f"App '{app_name}' completed all steps successfully")
                 return result
 
             except Exception as e:
-                print(f"❌ FAILED: App '{app_name}' failed with error: {str(e)}")
-                import traceback
-
-                print(f"📋 Full traceback:")
-                traceback.print_exc()
+                self.logger.error(f"App '{app_name}' failed with error: {str(e)}")
                 raise
             finally:
                 if temp_dir:
-                    print(f"🧹 Cleaning up temp dir: {temp_dir}")
+                    self.logger.debug(f"Cleaning up temp dir: {temp_dir}")
                     self._cleanup_temp_files(temp_dir)
 
     def _prepare_app_context(self, app_name: str) -> DataAppContext:
@@ -693,7 +688,7 @@ class DataAppManager(DataAppRunner):
                 try:
                     platform_service.delete(target_dir)
                     self.logger.debug(f"Cleared existing deployment at: {target_dir}")
-                except:
+                except Exception:
                     pass  # Directory might not exist
 
                 # Extract all files except manifest to target directory
@@ -767,7 +762,7 @@ class DataAppManager(DataAppRunner):
 
             try:
                 config_data = yaml.safe_load(config_content)
-            except:
+            except Exception:
                 config_data = json.loads(config_content)
 
             return DataAppConfig(
@@ -803,7 +798,7 @@ class DataAppManager(DataAppRunner):
 
             try:
                 platform_data = yaml.safe_load(platform_content)
-            except:
+            except Exception:
                 platform_data = json.loads(platform_content)
 
             # Create merged config (platform overrides base)
@@ -1256,9 +1251,6 @@ class DataAppManager(DataAppRunner):
     def _execute_app(self, app_name: str, code: str) -> Any:
         try:
             self.logger.info(f"Executing app: {app_name}")
-            print(f"🔍 DEBUG: Starting _execute_app for: {app_name}")
-            print(f"   Code length: {len(code)} chars")
-            print(f"   First 200 chars of code: {code[:200]}")
 
             exec_globals = {
                 "__name__": f"app_{app_name}",
@@ -1266,30 +1258,23 @@ class DataAppManager(DataAppRunner):
                 "framework": self.framework,
                 "logger": self.logger,
             }
-            print(f"✅ Created exec_globals with framework and logger")
 
             import __main__
 
             exec_globals.update(__main__.__dict__)
-            print(f"✅ Updated exec_globals with __main__.__dict__")
 
-            print(f"🔨 Compiling code for: {app_name}/main.py")
             compiled_code = compile(code, f"{app_name}/main.py", "exec")
-            print(f"✅ Code compiled successfully")
 
-            print(f"▶️  Executing compiled code...")
             try:
                 exec(compiled_code, exec_globals)
-                print(f"✅ Code execution completed normally")
             except SystemExit as sys_exit:
                 # Handle sys.exit() gracefully - apps may call sys.exit() to indicate success/failure
                 exit_code = sys_exit.code if sys_exit.code is not None else 0
-                print(f"✅ App called sys.exit({exit_code})")
+                self.logger.debug(f"App {app_name} called sys.exit({exit_code})")
                 if exit_code != 0:
                     raise Exception(f"App exited with non-zero code: {exit_code}")
 
             result = exec_globals.get("result")
-            print(f"📊 Execution result: {type(result)}")
 
             self.logger.debug(f"App {app_name} executed successfully")
             return result
@@ -1298,11 +1283,6 @@ class DataAppManager(DataAppRunner):
             # Re-raise SystemExit if it bubbled up from the try block above
             raise
         except Exception as e:
-            print(f"❌ Exception in _execute_app: {str(e)}")
-            import traceback
-
-            print(f"📋 Traceback:")
-            traceback.print_exc()
             self.logger.error(f"Failed to execute app {app_name}: {str(e)}")
             raise
 
