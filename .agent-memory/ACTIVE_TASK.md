@@ -6,6 +6,63 @@
 | TASK-20260429-002 | SCD2 Follow-up Fixes (#78–#81) | ✅ MERGED (PR #82) | agent/TASK-20260429-002/scd2-followup |
 | TASK-20260430-001 | Local Dev DX: Critical & High gaps (issue #85) | ✅ MERGED (PR #86) | agent/TASK-20260430-001/local-dev-dx |
 | TASK-20260430-002 | DX Round 2: WatermarkEntityFinder, debug noise, validate --env, CLI dep, DI test (#87, #88) | ✅ MERGED (PR #89) | agent/TASK-20260430-002/dx-fixes-round2 |
+| TASK-20260430-003 | DX Eval Remediation: docs, print cleanup, scaffold test example (#90) | 🔄 IN PROGRESS | agent/TASK-20260430-003/dx-eval-remediation |
+
+---
+
+# Active Task: TASK-20260430-003 — DX Eval Remediation: docs, print cleanup, scaffold test example
+**Status:** IN PROGRESS
+**Branch:** `agent/TASK-20260430-003/dx-eval-remediation`
+**Issue:** #90
+**Started:** 2026-04-30
+
+## Goal
+Address 9 confirmed developer experience gaps from the post-#85/#87/#88 evaluation. After this task:
+- The README has a CLI-first quick-start path (`kindling new` → `poetry install` → `kindling run`)
+- `docs/intro.md` no longer shows the stale 0.6.6 version
+- `docs/setup_guide.md` has a local development section before the cloud platform sections
+- `docs/local_python_first.md` is accurate and current
+- Scaffold entity templates include guidance comments for adding a second entity
+- `spark_session.py`, `notebook_framework.py`, and `data_apps.py` have no bare `print()` calls
+- `DynaconfConfig.get()` warns when a key is not found and no default was supplied
+- The scaffold integration test template demonstrates pipe execution via `DataPipesExecution.run_datapipes()`
+
+## Scope
+| # | Gap | Priority | Type |
+|---|-----|----------|------|
+| G3 | No "add entity/pipe" guidance in scaffold | Medium | Template + doc |
+| G4 | `docs/intro.md` version 0.6.6 (actual: 0.9.x) | Medium | Doc fix |
+| G5 | README has no `kindling new` quickstart | Medium | Doc addition |
+| G6 | Bare `print()` in `spark_session.py:16` | Low | Framework cleanup |
+| G7 | Bare `print()` in `notebook_framework.py:1945,1966` | Low | Framework cleanup |
+| G8 | 29 bare `print()` in `data_apps.py` | Low | Framework cleanup |
+| G9 | `DynaconfConfig.get()` silent on missing key | Low | Framework fix |
+| G12 | No pipe-execution test example in scaffold | Low | Template |
+| G13 | `docs/setup_guide.md` cloud-only | Medium | Doc addition |
+
+## Acceptance Criteria
+- [ ] `README.md` has a "Quick start" section: `kindling new my-app` → `cd` → `poetry install` → `kindling run bronze_to_silver --env local`
+- [ ] `docs/intro.md` has no pinned version number (or shows current version)
+- [ ] `docs/setup_guide.md` has a "Local development" section before cloud platform sections
+- [ ] Scaffold entity template file (`records.medallion.py.j2` and `records.minimal.py.j2`) includes a comment block explaining how to add a second entity
+- [ ] `spark_session.py:16` uses `logger.info` instead of `print()`
+- [ ] `notebook_framework.py:1945,1966` use `logger` instead of `print()`
+- [ ] `data_apps.py` has zero bare `print()` calls — all routed to logger
+- [ ] `DynaconfConfig.get()` logs a `logger.warning` when the resolved value is `None` and no explicit default was passed (sentinel pattern)
+- [ ] Scaffold integration test template (`test_pipeline.py.j2`) includes a test that calls `DataPipesExecution.run_datapipes(["bronze_to_silver"])` via Kindling (not raw Delta)
+- [ ] All existing unit tests continue to pass (`poe test-unit`)
+
+## Agent Plan
+| Step | Agent | Input | Output | Status |
+|------|-------|-------|--------|--------|
+| 1 | planner | this brief + issue #90 + source | design doc | ⏳ PENDING |
+| 2 | implementer | design doc | code + doc changes | — |
+| 3 | tester | implementation | test coverage + regression | — |
+| 4 | reviewer | code + tests | verdict | — |
+| 5 | ship | approved code | PR to main | — |
+
+## Handoff Log
+- 2026-04-30: Task created by coordinator. Dispatched to planner.
 
 ---
 
@@ -201,4 +258,20 @@ Fix 4 correctness/validation gaps identified by Copilot review of PR #77. All fi
 **Touched:** packages/kindling/entity_provider_delta.py; packages/kindling/data_entities.py
 **Decided:** No CHANGELOG.md exists; release-note update deferred pending explicit target version file.
 **Need from you:** Close out task or request release-note target version for documentation update.
+**Blockers:** None.
+
+## Handoff: implementer → tester @ 2026-04-30T19:48:25Z
+**Task:** TASK-20260430-003 DX eval remediation.
+**Did:** Implemented G3-G9, G12, and G13 from `.agent-memory/design-TASK-20260430-003.md`; kept pre-DI logging on stdlib loggers and removed targeted `print()`/`traceback.print_exc()` paths that could disturb stdout monitors.
+**Touched:** README/docs, Spark session/config/framework/app logging paths, entity scaffold templates, and integration pipeline template.
+**Verified:** `poetry run poe test-unit` passed with 1110 tests and 2 warnings.
+**Next:** Tester should add/confirm G9 sentinel unit coverage and re-run `poe test-unit`.
+**Blockers:** None.
+
+## Handoff: tester → reviewer @ 2026-04-30T19:54:01Z
+**Task:** TASK-20260430-003 DX eval remediation.
+**Did:** Added G9 sentinel regression tests, found a reload-sensitive sentinel identity bug, routed it back, then verified the fix.
+**Verified:** `poetry run pytest tests/unit/test_spark_config.py -q` passed 34 tests; `poetry run poe test-unit` passed 1115 tests with 2 warnings.
+**Touched:** `tests/unit/test_spark_config.py` plus the implementer fix in `packages/kindling/spark_config.py`.
+**Note:** The final fix/test diff is uncommitted because git staging escalation was rejected by the approval usage limit; implementation commit `92fec31` exists for the first batch.
 **Blockers:** None.
