@@ -14,8 +14,9 @@ removing (or striking through) the escalation entry.
 ~~**Action:** Review and merge to main. Then tell coordinator "TASK-20260430-002 merged".~~
 ~~**Resolved:** merged 2026-04-30~~
 
-## 2026-04-30T20:15:00Z PR READY re TASK-20260430-003
-**Type:** REVIEW_CHECKPOINT
-**PR:** https://github.com/sep/spark-kindling-framework/pull/91
-**Action:** Review and merge to main. Then tell coordinator "TASK-20260430-003 merged".
-**Copilot verdict:** COMMENTED (5 findings — all addressed in commit a8b7bea)
+~~## 2026-04-30T20:15:00Z PR READY re TASK-20260430-003~~
+~~**Type:** REVIEW_CHECKPOINT~~
+~~**PR:** https://github.com/sep/spark-kindling-framework/pull/91~~
+~~**Action:** Review and merge to main. Then tell coordinator "TASK-20260430-003 merged".~~
+~~**Copilot verdict:** COMMENTED (5 findings — all addressed in commit a8b7bea)~~
+~~**Resolved:** merged 2026-04-30~~
