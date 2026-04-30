@@ -8,7 +8,8 @@ removing (or striking through) the escalation entry.
 **Type:** ESCALATION | REVIEW_CHECKPOINT | BLOCKER
 **Summary:** | **Detail:** | **Options:** | **Recommendation:** | **Waiting:** -->
 
-## 2026-04-30T18:30:00Z PR READY re TASK-20260430-002
-**Type:** REVIEW_CHECKPOINT
-**PR:** https://github.com/sep/spark-kindling-framework/pull/89
-**Action:** Review and merge to main. Then tell coordinator "TASK-20260430-002 merged".
+~~## 2026-04-30T18:30:00Z PR READY re TASK-20260430-002~~
+~~**Type:** REVIEW_CHECKPOINT~~
+~~**PR:** https://github.com/sep/spark-kindling-framework/pull/89~~
+~~**Action:** Review and merge to main. Then tell coordinator "TASK-20260430-002 merged".~~
+~~**Resolved:** merged 2026-04-30~~
