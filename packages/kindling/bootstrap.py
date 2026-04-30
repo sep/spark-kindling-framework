@@ -1438,9 +1438,17 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 WatermarkEntityFinder,
             )
 
-            existing_binding = GlobalInjector.get_injector().binder._bindings.get(
-                WatermarkEntityFinder
+            injector = GlobalInjector.get_injector()
+            binder = getattr(injector, "binder", None)
+            bindings = getattr(binder, "_bindings", None)
+            existing_binding = (
+                bindings.get(WatermarkEntityFinder) if hasattr(bindings, "get") else None
             )
+            if bindings is None:
+                logger.debug(
+                    "Injector binding introspection unavailable; applying standalone "
+                    "WatermarkEntityFinder fallback binding"
+                )
             if existing_binding is None:
                 # [implementer] make standalone DI graph constructible without app watermark boilerplate — TASK-20260430-002
                 GlobalInjector.bind(WatermarkEntityFinder, NullWatermarkEntityFinder)
