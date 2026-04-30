@@ -17,6 +17,34 @@ from kindling.spark_log_provider import *
 ROUTING_KEY_METHODS: tuple[str, ...] = ("hash", "concat")
 
 
+# [implementer] add clear initialization error — TASK-20260430-001
+class KindlingNotInitializedError(RuntimeError):
+    """Raised when an entity or pipe decorator fires before initialize() is called."""
+
+
+def _raise_if_not_initialized(decorator_name: str, module_kind: str) -> None:
+    try:
+        from kindling.platform_provider import PlatformServiceProvider
+    except Exception as exc:
+        raise KindlingNotInitializedError(
+            f"A @{decorator_name} decorator fired before initialize() was called. "
+            f"Call initialize() before importing {module_kind} modules. "
+            "See your app.py register_all() for the correct order."
+        ) from exc
+
+    try:
+        platform_service = GlobalInjector.get_injector().get(PlatformServiceProvider).get_service()
+    except Exception:
+        platform_service = None
+
+    if platform_service is None:
+        raise KindlingNotInitializedError(
+            f"A @{decorator_name} decorator fired before initialize() was called. "
+            f"Call initialize() before importing {module_kind} modules. "
+            "See your app.py register_all() for the correct order."
+        )
+
+
 # [implementer] add tag-derived SCD configuration surface — TASK-20260429-001
 @dataclass(frozen=True)
 class SCDConfig:
@@ -287,6 +315,12 @@ class DataEntities:
 
     deregistry = None
 
+    # [implementer] expose public test reset API — TASK-20260430-001
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the entity registry. Use between tests to prevent state pollution."""
+        cls.deregistry = None
+
     @classmethod
     def sql_entity(
         cls,
@@ -320,7 +354,17 @@ class DataEntities:
             )
         """
         if cls.deregistry is None:
-            cls.deregistry = GlobalInjector.get(DataEntityRegistry)
+            try:
+                _raise_if_not_initialized("DataEntities.sql_entity", "entity")
+                cls.deregistry = GlobalInjector.get(DataEntityRegistry)
+            except Exception as exc:
+                if isinstance(exc, KindlingNotInitializedError):
+                    raise
+                raise KindlingNotInitializedError(
+                    "A @DataEntities.sql_entity decorator fired before initialize() was called. "
+                    "Call initialize() before importing entity modules. "
+                    "See your app.py register_all() for the correct order."
+                ) from exc
 
         provided = sum(x is not None for x in [sql, sql_source])
         if provided != 1:
@@ -345,7 +389,17 @@ class DataEntities:
     @classmethod
     def entity(cls, **decorator_params):
         if cls.deregistry is None:
-            cls.deregistry = GlobalInjector.get(DataEntityRegistry)
+            try:
+                _raise_if_not_initialized("DataEntities.entity", "entity")
+                cls.deregistry = GlobalInjector.get(DataEntityRegistry)
+            except Exception as exc:
+                if isinstance(exc, KindlingNotInitializedError):
+                    raise
+                raise KindlingNotInitializedError(
+                    "A @DataEntities.entity decorator fired before initialize() was called. "
+                    "Call initialize() before importing entity modules. "
+                    "See your app.py register_all() for the correct order."
+                ) from exc
         # Check all required fields are provided (excluding optional fields with defaults)
         all_fields = {field.name for field in fields(EntityMetadata)}
         optional_fields = {

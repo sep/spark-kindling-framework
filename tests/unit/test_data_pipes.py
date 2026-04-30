@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
+from kindling.data_entities import KindlingNotInitializedError
 from kindling.data_pipes import (
     DataPipes,
     DataPipesExecuter,
@@ -324,6 +325,62 @@ class TestDataPipesDecorator:
         """Reset DataPipes.dpregistry before each test"""
         DataPipes.dpregistry = None
 
+    def test_reset_clears_pipe_registry_reference(self):
+        """Test that reset clears cached pipe registry state."""
+        DataPipes.dpregistry = MagicMock()
+
+        DataPipes.reset()
+
+        assert DataPipes.dpregistry is None
+
+    def test_pipe_before_initialize_raises_kindling_error(self):
+        """Test pipe decorator raises clear error before framework initialization."""
+        injector = MagicMock()
+        injector.get.return_value.get_service.return_value = None
+
+        with (
+            patch.object(GlobalInjector, "get_injector", return_value=injector),
+            pytest.raises(KindlingNotInitializedError) as exc_info,
+        ):
+
+            @DataPipes.pipe(
+                pipeid="test_pipe",
+                name="Test Pipe",
+                tags={},
+                input_entity_ids=[],
+                output_entity_id="output",
+                output_type="delta",
+            )
+            def test_func():
+                pass
+
+        message = str(exc_info.value)
+        assert "initialize()" in message
+        assert "register_all()" in message
+
+    def test_pipe_before_initialize_does_not_double_wrap_kindling_error(self):
+        """Test pipe decorator does not chain duplicate initialization errors."""
+        injector = MagicMock()
+        injector.get.return_value.get_service.return_value = None
+
+        with (
+            patch.object(GlobalInjector, "get_injector", return_value=injector),
+            pytest.raises(KindlingNotInitializedError) as exc_info,
+        ):
+
+            @DataPipes.pipe(
+                pipeid="test_pipe",
+                name="Test Pipe",
+                tags={},
+                input_entity_ids=[],
+                output_entity_id="output",
+                output_type="delta",
+            )
+            def test_func():
+                pass
+
+        assert not isinstance(exc_info.value.__cause__, KindlingNotInitializedError)
+
     def test_decorator_validates_required_fields(self):
         """Test that decorator validates all required fields are present"""
         mock_registry = MagicMock()
@@ -449,7 +506,10 @@ class TestDataPipesDecorator:
         DataPipes.dpregistry = None
 
         mock_registry = MagicMock()
-        with patch.object(GlobalInjector, "get", return_value=mock_registry):
+        with (
+            patch("kindling.data_pipes._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry),
+        ):
 
             @DataPipes.pipe(
                 pipeid="test_pipe",
@@ -1025,7 +1085,10 @@ class TestDataPipesIntegration:
 
         mock_registry = MagicMock()
 
-        with patch.object(GlobalInjector, "get", return_value=mock_registry):
+        with (
+            patch("kindling.data_pipes._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry),
+        ):
 
             @DataPipes.pipe(
                 pipeid="real_pipe",

@@ -10,7 +10,11 @@ Append to .agent-memory/escalations.md:
   **Waiting:** [which agent is paused]
   **Files involved:** [list]
 
+Severity: CRITICAL (cannot continue), HIGH (major degradation), MEDIUM (needs decision)
+
 Append to .agent-memory/events.jsonl:
   {"ts":"[ISO]","event":"escalation","severity":"[LEVEL]","task":"[ID]","agent":"[role]","summary":"[one line]"}
 
-Set your mailbox STATUS: ESCALATED. Stop working. Coordinator surfaces this to the human.
+Set your mailbox STATUS: ESCALATED.
+Stop working on the blocked item.
+Coordinator will surface this to the human.
