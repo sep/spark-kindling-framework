@@ -18,5 +18,7 @@ Proposals in this folder are archived because the work they specified has since 
 | [signal_dag_streaming_proposal.md](./signal_dag_streaming_proposal.md) | Implemented | Signals, DAG execution, and streaming orchestrator all shipped — see individual files under [packages/kindling/](../../../packages/kindling/) |
 | [simplified_bootstrap.md](./simplified_bootstrap.md) | Implemented | v0.9.0/v0.9.1 refactor (single wheel + platform extras + entry-point loader + lazy platform imports) |
 | [single_notebook_bootstrap.md](./single_notebook_bootstrap.md) | Rejected | Evaluation concluded wheel distribution remains the right approach; single-notebook embedding impractical |
+| [scd_type2_support.md](./scd_type2_support.md) | Implemented | [entity_provider_delta.py](../../../packages/kindling/entity_provider_delta.py) — `DeltaMergeStrategies`, `SCD1/2MergeStrategy`, `_execute_scd2_merge`, `read_entity_as_of`; [data_entities.py](../../../packages/kindling/data_entities.py) — `SCDConfig`, `scd_config_from_tags`; [entity_provider_current_view.py](../../../packages/kindling/entity_provider_current_view.py) — `CurrentViewEntityProvider`. Phase 4 items deferred: #83, #84 |
+| [scd_type2_implementation_plan.md](./scd_type2_implementation_plan.md) | Implemented | Task artifact for TASK-20260429-001; executed in PRs #77 and #82 |
 
 Still-relevant proposals live one level up in [docs/proposals/](..).
