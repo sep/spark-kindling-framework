@@ -3,35 +3,35 @@
 | ID | Title | Status | Branch |
 |----|-------|--------|--------|
 | TASK-20260429-001 | SCD Type 2 Entity Support | ✅ MERGED (PR #77) | agent/TASK-20260429-001/scd2-support |
-| TASK-20260429-002 | SCD2 Follow-up Fixes (#78–#81) | 🔄 IN PROGRESS | agent/TASK-20260429-002/scd2-followup |
+| TASK-20260429-002 | SCD2 Follow-up Fixes (#78–#81) | ✅ MERGED (PR #82) | agent/TASK-20260429-002/scd2-followup |
 
 ---
 
-# Active Task: TASK-20260429-002 SCD2 Follow-up Fixes
-**Status:** IN PROGRESS
-**Branch:** agent/TASK-20260429-002/scd2-followup
+# Completed Task: TASK-20260429-002 SCD2 Follow-up Fixes
+**Status:** COMPLETE — merged as PR #82
 **Started:** 2026-04-29
 
 ## Goal
 Fix 4 correctness/validation gaps identified by Copilot review of PR #77. All fixes are in `entity_provider_delta.py` and `data_entities.py`.
 
 ## Acceptance Criteria
-- [ ] #78: `read_entity_as_of` SCD2 filter uses `lit(point_in_time).cast("timestamp")` — consistent with non-SCD2 path
-- [ ] #79: `_validate_scd_config()` raises `ValueError` if `__merge_key` appears in entity's declared columns
-- [ ] #80: `_execute_scd2_merge` coalesces each business key to a null-sentinel before `concat_ws` (same sentinel on both sides of MERGE)
-- [ ] #81: `_validate_scd_config()` raises `ValueError` if `current_entity_id` equals base `entityid` or is empty after strip
-- [ ] All existing tests still pass (`poe test-unit`)
-- [ ] New/updated tests cover each fix
+- [x] #78: `read_entity_as_of` SCD2 filter uses `lit(point_in_time).cast("timestamp")`
+- [x] #79: `_validate_scd_config()` raises `ValueError` if `__merge_key` appears in entity's declared columns
+- [x] #80: `_execute_scd2_merge` coalesces each business key to `__null__` sentinel before `concat_ws`
+- [x] #81: `_validate_scd_config()` raises `ValueError` if `current_entity_id` equals base `entityid` or is empty
+- [x] All existing tests pass (`poe test-unit`)
+- [x] New tests cover each fix
 
 ## Agent Plan
 | Step | Agent | Status |
 |------|-------|--------|
-| 1 | implementer | ⬜ PENDING |
-| 2 | tester | ⬜ PENDING |
-| 3 | ship | ⬜ PENDING |
+| 1 | implementer | ✅ DONE |
+| 2 | tester | ✅ DONE |
+| 3 | ship | ✅ DONE |
 
 ## Handoff Log
 - 2026-04-29: Task created by coordinator. Dispatched directly to implementer (no planner needed — fixes fully specified in issues #78–#81).
+- 2026-04-29: All 4 fixes implemented and tested. PR #82 created, Copilot reviewed, merged.
 
 ---
 

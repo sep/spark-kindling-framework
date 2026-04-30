@@ -11,3 +11,4 @@
 {"ts":"2026-04-29T20:26:00Z","event":"coordinator_closeout","task":"TASK-20260429-001","agent":"coordinator","summary":"Integrator close-out received. Release notes deferred to next versioned release file (currently 0.9.3, no target provided). Branch ready for PR."}
 {"ts":"2026-04-29T20:45:00Z","event":"task_merged","task":"TASK-20260429-001","agent":"coordinator","summary":"PR #77 merged to main. Branch agent/TASK-20260429-001/scd2-support deleted. TASK-20260429-001 fully complete."}
 {"ts":"2026-04-29T20:48:00Z","event":"task_created","task":"TASK-20260429-002","agent":"coordinator","summary":"SCD2 follow-up fixes for issues #78-81 — dispatched directly to implementer, branch agent/TASK-20260429-002/scd2-followup"}
+{"ts":"2026-04-29T21:15:00Z","event":"task_merged","task":"TASK-20260429-002","agent":"ship","summary":"PR #82 merged to main. SCD2 follow-up fixes #78-81 complete. 1086 tests passing."}
