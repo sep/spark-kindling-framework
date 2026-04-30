@@ -1,3 +1,4 @@
+import logging
 import tempfile
 import threading
 from abc import ABC, abstractmethod
@@ -9,6 +10,8 @@ from pyspark.sql import SparkSession
 
 from .injection import *
 from .spark_session import *
+
+_CONFIG_LOGGER = logging.getLogger("kindling.config")
 
 
 class ConfigService(ABC):
@@ -121,8 +124,6 @@ class DynaconfConfig(ConfigService):
         reload_context: Optional[Dict[str, Any]] = None,
     ) -> None:
 
-        print(f"Initializing DynaconfConfig:")
-
         self.spark = get_or_create_spark_session()
         self.initial_config = initial_config or {}
         self._reload_context = reload_context  # Store for hot-reload
@@ -145,24 +146,16 @@ class DynaconfConfig(ConfigService):
         # Step 2: Translate bootstrap (old → new) and add to config
         self._translate_bootstrap_to_nested()
 
-        print(f"✓ DynaconfConfig initialized")
+        _CONFIG_LOGGER.debug("DynaconfConfig initialized")
 
     def _translate_yaml_to_flat(self):
         """Translate YAML's nested keys back to flat bootstrap keys"""
 
-        # Debug: Print ALL keys that Dynaconf loaded
-        print(f"🔍 DEBUG: All Dynaconf keys loaded from YAML:")
         try:
             all_data = self.dynaconf.as_dict()
-            for key in sorted(all_data.keys()):
-                value = all_data[key]
-                # Show nested structure for debugging
-                if isinstance(value, dict):
-                    print(f"  {key}: {list(value.keys())}")
-                else:
-                    print(f"  {key}: {value}")
+            _CONFIG_LOGGER.debug("Dynaconf keys loaded from YAML: %s", sorted(all_data.keys()))
         except Exception as e:
-            print(f"  Error reading Dynaconf keys: {e}")
+            _CONFIG_LOGGER.debug("Error reading Dynaconf keys: %s", e)
 
         reverse_mappings = {
             "kindling.TELEMETRY.logging.level": "log_level",
@@ -181,7 +174,7 @@ class DynaconfConfig(ConfigService):
             value = self.dynaconf.get(new_key)
             if value is not None:
                 self.dynaconf.set(old_key, value)
-                print(f"  - Reverse translation: {new_key} → {old_key} = {value}")
+                _CONFIG_LOGGER.debug("Reverse translation: %s -> %s = %s", new_key, old_key, value)
 
         try:
             if self.dynaconf.get("kindling.delta.access_mode") is None:
@@ -203,7 +196,6 @@ class DynaconfConfig(ConfigService):
         for key, value in self.initial_config.items():
             if key not in ["spark_configs"]:  # Already handled specially
                 self.dynaconf.set(key, value)
-                # print(f"  - Bootstrap preserved: {key} = {value}")
 
     def _set_nested(self, key: str, value):
         """Set nested dict values recursively"""
@@ -212,7 +204,6 @@ class DynaconfConfig(ConfigService):
                 self._set_nested(f"{key}.{nested_key}", nested_value)
         else:
             self.dynaconf.set(key, value)
-            # print(f"  - Bootstrap translation: {key} = {value}")
 
     def _apply_bootstrap_overrides(self, bootstrap_config: Dict) -> Dict:
         """
@@ -282,7 +273,6 @@ class DynaconfConfig(ConfigService):
         for key, value in bootstrap_config.items():
             if key not in processed_keys:
                 transformed[key] = value  # Direct top-level assignment
-                # print(f"  - Preserving bootstrap key: {key} = {value}")
 
         return transformed
 
@@ -293,7 +283,7 @@ class DynaconfConfig(ConfigService):
                     spark_value = self.spark.conf.get(key.upper())
                     if spark_value is not None:
                         return spark_value
-                except:
+                except Exception:
                     pass
 
             return self.dynaconf.get(key, default)
@@ -312,7 +302,7 @@ class DynaconfConfig(ConfigService):
             try:
                 for key, value in self.spark.conf.getAll():
                     all_config[key] = value
-            except:
+            except Exception:
                 pass
 
         return all_config
@@ -347,14 +337,14 @@ class DynaconfConfig(ConfigService):
                 try:
                     self.pre_reload_signal.send(self, old_config=old_config)
                 except Exception as e:
-                    print(f"⚠️  pre_reload signal handler error: {e}")
+                    _CONFIG_LOGGER.warning("pre_reload signal handler error: %s", e)
 
             try:
                 # If we have reload context, re-download fresh config files
                 if self._reload_context:
                     from kindling.bootstrap import download_config_files
 
-                    print("♻️  Reloading configuration from storage...")
+                    _CONFIG_LOGGER.info("Reloading configuration from storage")
                     config_files = download_config_files(
                         artifacts_storage_path=self._reload_context["artifacts_storage_path"],
                         environment=self._reload_context["environment"],
@@ -376,7 +366,7 @@ class DynaconfConfig(ConfigService):
                     self._translate_bootstrap_to_nested()
                 else:
                     # Fallback: reload from existing temp files
-                    print("♻️  Reloading configuration from temp files...")
+                    _CONFIG_LOGGER.info("Reloading configuration from temp files")
                     self.dynaconf.reload()
 
                 # Increment version
@@ -386,10 +376,11 @@ class DynaconfConfig(ConfigService):
                 new_config = self.get_all()
                 changes = self._compute_changes(old_config, new_config)
 
-                # Log changes
-                print(f"✓ Config reloaded (version {self._version}, {len(changes)} changes)")
+                _CONFIG_LOGGER.info(
+                    "Config reloaded (version %s, %s changes)", self._version, len(changes)
+                )
                 for key, (old_val, new_val) in changes.items():
-                    print(f"  {key}: {old_val} → {new_val}")
+                    _CONFIG_LOGGER.debug("Config changed: %s: %s -> %s", key, old_val, new_val)
 
                 result = {
                     "version": self._version,
@@ -405,7 +396,7 @@ class DynaconfConfig(ConfigService):
                             self, changes=changes, version=self._version, new_config=new_config
                         )
                     except Exception as e:
-                        print(f"⚠️  post_reload signal handler error: {e}")
+                        _CONFIG_LOGGER.warning("post_reload signal handler error: %s", e)
 
                 return result
 
@@ -413,14 +404,16 @@ class DynaconfConfig(ConfigService):
                 # Rollback on failure
                 self.dynaconf = old_dynaconf
                 error_msg = f"Config reload failed: {e}"
-                print(f"❌ {error_msg}")
+                _CONFIG_LOGGER.error(error_msg)
 
                 # Emit reload_failed signal
                 if self.reload_failed_signal:
                     try:
                         self.reload_failed_signal.send(self, error=e, old_config=old_config)
                     except Exception as signal_error:
-                        print(f"⚠️  reload_failed signal handler error: {signal_error}")
+                        _CONFIG_LOGGER.warning(
+                            "reload_failed signal handler error: %s", signal_error
+                        )
 
                 return {
                     "version": self._version,
@@ -456,7 +449,7 @@ class DynaconfConfig(ConfigService):
                     spark_value = self.spark.conf.get(key)
                     if spark_value is not None:
                         return spark_value
-                except:
+                except Exception:
                     pass
 
             return self.dynaconf.get_fresh(key, default=default)
@@ -504,11 +497,6 @@ def configure_injector_with_config(
         workspace_id: Workspace ID for workspace-specific config
         app_name: Application name for app-specific config
     """
-    print("Setting up config ...")
-    # print(f"Config files: {config_files}")
-    # print(f"initial_config : {initial_config}")
-    # print(f"artifacts_storage_path: {artifacts_storage_path}")
-
     # Ensure Dynaconf runs Kindling's custom secret loader.
     from kindling.config_loaders import register_kindling_loaders
 
@@ -536,4 +524,4 @@ def configure_injector_with_config(
         reload_context=reload_context,
     )
 
-    print("✓ Config configured in GlobalInjector")
+    _CONFIG_LOGGER.debug("Config configured in GlobalInjector")
