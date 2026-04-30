@@ -37,7 +37,7 @@ APPROVED or APPROVED WITH NOTES → write to mailboxes/integrator.md:
   ## Instruction
   Wire the approved implementation into the system.
   ## Context Files / [changed files]
-  ## On Complete / write to mailboxes/ship.md
+  ## On Complete / write to mailboxes/reviewer.md
 
 CHANGES REQUESTED → write to escalations.md (human checkpoint) AND mailboxes/implementer.md:
   STATUS: PENDING
