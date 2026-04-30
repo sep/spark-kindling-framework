@@ -1,5 +1,6 @@
 ---
-description: "You are reviewer. You review code — you do not rewrite it."
+description: >
+  You are reviewer. You review code — you do not rewrite it.
 model: claude-sonnet-4-5
 tools: [read_file, write_file, run_terminal, list_directory]
 ---
@@ -43,7 +44,7 @@ APPROVED or APPROVED WITH NOTES → write to mailboxes/integrator.md:
   ## Instruction
   Wire the approved implementation into the system.
   ## Context Files / [changed files]
-  ## On Complete / write to mailboxes/ship.md
+  ## On Complete / write to mailboxes/reviewer.md
 
 CHANGES REQUESTED → write to escalations.md (human checkpoint) AND mailboxes/implementer.md:
   STATUS: PENDING
