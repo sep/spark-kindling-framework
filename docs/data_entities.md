@@ -402,6 +402,63 @@ def clean_sales_data(bronze_raw_sales):
                           .dropDuplicates(["id"])
 ```
 
+## SCD Type 2 Entities
+
+Entities tagged `scd.type: "2"` automatically receive Slowly Changing Dimension Type 2 write semantics. The framework handles the staged-updates merge, temporal column management, and companion entity registration — no pipe-level boilerplate required.
+
+### Declaration
+
+```python
+@DataEntities.entity(
+    entityid="silver.dim_customer",
+    name="Customer Dimension",
+    merge_columns=["customer_id"],          # business key — required for SCD2
+    tags={
+        "scd.type": "2",
+        "scd.tracked": "name,email,region", # columns that trigger a new version when changed
+                                             # omit to track all non-key, non-temporal columns
+    },
+    schema=customer_schema,
+)
+```
+
+The schema you declare should contain only business columns. The framework auto-augments the Delta table with three temporal columns at `ensure_entity_table()` time:
+
+| Column | Default name | Override tag |
+|--------|-------------|--------------|
+| Version start timestamp | `__effective_from` | `scd.effective_from_col` |
+| Version end timestamp (null = current) | `__effective_to` | `scd.effective_to_col` |
+| Current-row boolean flag | `__is_current` | `scd.current_col` |
+
+### Companion entity
+
+Registering an SCD2 entity also auto-registers a read-only companion at `{entityid}.current` that is pre-filtered to current rows (`is_current=true`). Downstream pipes reference it by ID:
+
+```python
+@DataPipes.pipe(
+    pipeid="gold_active_customers",
+    input_entity_ids=["silver.dim_customer.current"],   # always current rows
+    output_entity_id="gold.active_customers",
+    ...
+)
+def gold_active_customers(dim_customer_current):
+    return dim_customer_current.select("customer_id", "name", "region")
+```
+
+Writing to a companion entity raises `NotImplementedError`.
+
+### Tag reference
+
+| Tag | Default | Description |
+|-----|---------|-------------|
+| `scd.type` | — | Set to `"2"` to enable SCD2 |
+| `scd.tracked` | all non-key, non-temporal columns | Comma-separated tracked columns |
+| `scd.effective_from_col` | `__effective_from` | Temporal column name override |
+| `scd.effective_to_col` | `__effective_to` | Temporal column name override |
+| `scd.current_col` | `__is_current` | Temporal column name override |
+| `scd.current_entity_id` | `{entityid}.current` | Override companion entity id |
+| `scd.routing_key` | `hash` | `hash` (safe for all types) or `concat` (cheaper, readable) |
+
 ## Best Practices
 
 1. **Entity Naming**: Use hierarchical naming with layer prefixes (bronze.*, silver.*, gold.*)
