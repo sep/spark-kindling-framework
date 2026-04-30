@@ -54,6 +54,45 @@ Append-only. To supersede a decision, add a new entry with
 
 ---
 
+## 2026-04-30 `kindling validate` uses standalone init, not Spark mocking
+**Status:** Accepted
+**Agent:** planner (Claude)
+**Context:** `kindling validate` must not start a SparkSession, but entity/pipe decorators
+  require the DI graph to be wired before they can fire. Two options: (A) mock SparkSession,
+  (B) call `initialize_framework(platform="standalone")` which defers SparkSession creation
+  until the first entity read/write.
+**Decision:** Use option B — call `initialize_framework()` normally. The standalone platform
+  only creates a SparkSession lazily, so validation is Spark-free as long as it only reads
+  registry state and does not call any provider methods.
+**Consequences:** Validates that the real bootstrap works end-to-end (no mock drift). Requires
+  `spark-kindling[standalone]` to be installed, which is already the dev dependency.
+
+---
+
+## 2026-04-30 `KindlingNotInitializedError` lives in `data_entities.py`, imported by `data_pipes.py`
+**Status:** Accepted
+**Agent:** planner (Claude)
+**Context:** The error needs to be raised in both `data_entities.py` and `data_pipes.py`.
+  It should be importable directly from `kindling` (top-level export).
+**Decision:** Define `KindlingNotInitializedError` in `data_entities.py` (alongside other
+  public entity types), import it into `data_pipes.py`, and export it from `packages/kindling/__init__.py`.
+**Consequences:** Single definition, no circular imports (data_pipes already imports from data_entities).
+
+---
+
+## 2026-04-30 Local scaffold config uses `provider_type: memory`, not local Delta paths
+**Status:** Accepted
+**Agent:** planner (Claude)
+**Context:** Two options for local-first scaffold: (A) `provider_type: memory` (in-memory
+  Spark tables, no filesystem), (B) local Delta paths like `/tmp/kindling-data/bronze`. Option
+  A requires no filesystem setup; option B is closer to production but requires Delta JARs.
+**Decision:** Use option A (`provider_type: memory`) for the default `env.local.yaml` overlay.
+  Keep ABFSS config as a commented block. Memory provider is already registered as a builtin.
+**Consequences:** Local runs are ephemeral (data lost on session end), which is fine for
+  development. Developers who want persistence can uncomment the ABFSS block.
+
+---
+
 ## 2026-04-29 Agent platform assignment strategy
 **Status:** Accepted
 **Agent:** coordinator (Claude Code)

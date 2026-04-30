@@ -3,35 +3,93 @@
 | ID | Title | Status | Branch |
 |----|-------|--------|--------|
 | TASK-20260429-001 | SCD Type 2 Entity Support | ✅ MERGED (PR #77) | agent/TASK-20260429-001/scd2-support |
-| TASK-20260429-002 | SCD2 Follow-up Fixes (#78–#81) | 🔄 IN PROGRESS | agent/TASK-20260429-002/scd2-followup |
+| TASK-20260429-002 | SCD2 Follow-up Fixes (#78–#81) | ✅ MERGED (PR #82) | agent/TASK-20260429-002/scd2-followup |
+| TASK-20260430-001 | Local Dev DX: Critical & High gaps (issue #85) | 🔄 IN PROGRESS | agent/TASK-20260430-001/local-dev-dx |
 
 ---
 
-# Active Task: TASK-20260429-002 SCD2 Follow-up Fixes
+# Active Task: TASK-20260430-001 — Local Dev DX: Critical & High gaps
 **Status:** IN PROGRESS
-**Branch:** agent/TASK-20260429-002/scd2-followup
+**Branch:** `agent/TASK-20260430-001/local-dev-dx`
+**Issue:** #85
+**Started:** 2026-04-30
+
+## Goal
+Address the Critical and High-severity gaps from the local Python-first developer audit (issue #85). After this task, a developer can run `kindling new`, install dependencies, and execute a pipe locally without Azure credentials, with clear error messages and working test isolation.
+
+## Scope — items in this task
+| # | Item | Severity | Type |
+|---|------|----------|------|
+| 1 | No local-first entity config in scaffold | 🔴 Critical | Template fix |
+| 2 | No `kindling run <pipe_id>` command | 🔴 Critical | New CLI command |
+| 3 | Silent failure when importing before `initialize_framework()` | 🔴 Critical | Runtime fix |
+| 4 | `kindling env check` wrong default config path | 🟠 High | CLI fix |
+| 5 | `poe test-unit` requires `kindling` on PATH | 🟠 High | Template fix |
+| 6 | No `kindling validate` command | 🟠 High | New CLI command |
+| 7 | No test isolation fixture + private API in reset | 🟠 High | Runtime + Template fix |
+| 8 | `@secret:` prefix undocumented in scaffold | 🟠 High | Template fix |
+| 11 | `kindling new` next-steps output wrong | 🟡 Medium | CLI fix |
+
+## Out of scope (deferred to future tasks)
+- `kindling entity list` / `kindling pipe list` (#9)
+- `--platform` flag on `kindling new` (#10)
+- `kindling upgrade` (#12)
+- Local-project integration test using Kindling execution (#13)
+- Devcontainer multi-package venv path (#14)
+- Low-severity items (#15–#19)
+
+## Acceptance Criteria
+- [ ] `kindling new my-app && cd my-app/packages/my-app && poetry install && kindling run bronze_to_silver --env local` succeeds without Azure credentials
+- [ ] Importing an entity module before `initialize()` raises `KindlingNotInitializedError` with an actionable message
+- [ ] `kindling env check` run from a scaffolded package root passes `config_file_exists`
+- [ ] `poetry run poe test-unit` works without `kindling` on PATH
+- [ ] `kindling validate` reports mismatched entity IDs and missing required fields without starting Spark
+- [ ] Scaffolded `conftest.py` includes `reset_kindling` fixture using public `DataEntities.reset()` / `DataPipes.reset()` API
+- [ ] `env.local.yaml` template generates a local-first config (memory provider or local delta path) with ABFSS as a commented overlay
+- [ ] `@secret:` resolution from env vars is documented in generated config comments
+- [ ] All existing unit tests pass (`poe test-unit`)
+- [ ] New unit tests cover: `kindling run` happy path, `kindling validate` with good/bad definitions, `KindlingNotInitializedError`, `DataEntities.reset()`
+
+## Agent Plan
+| Step | Agent | Input | Output | Status |
+|------|-------|-------|--------|--------|
+| 1 | planner | this brief + issue #85 + current source | design doc | ⏳ PENDING |
+| 2 | implementer | design doc | code changes across CLI + runtime + templates | — |
+| 3 | tester | implementation | unit tests for new commands + runtime fixes | — |
+| 4 | reviewer | code + tests | verdict + notes | — |
+| 5 | integrator | approved code + reviewer notes | merged to branch | — |
+| 6 | ship | branch | PR to main | — |
+
+## Handoff Log
+- 2026-04-30: Task created by coordinator. Dispatched to planner.
+
+---
+
+# Completed Task: TASK-20260429-002 SCD2 Follow-up Fixes
+**Status:** COMPLETE — merged as PR #82
 **Started:** 2026-04-29
 
 ## Goal
 Fix 4 correctness/validation gaps identified by Copilot review of PR #77. All fixes are in `entity_provider_delta.py` and `data_entities.py`.
 
 ## Acceptance Criteria
-- [ ] #78: `read_entity_as_of` SCD2 filter uses `lit(point_in_time).cast("timestamp")` — consistent with non-SCD2 path
-- [ ] #79: `_validate_scd_config()` raises `ValueError` if `__merge_key` appears in entity's declared columns
-- [ ] #80: `_execute_scd2_merge` coalesces each business key to a null-sentinel before `concat_ws` (same sentinel on both sides of MERGE)
-- [ ] #81: `_validate_scd_config()` raises `ValueError` if `current_entity_id` equals base `entityid` or is empty after strip
-- [ ] All existing tests still pass (`poe test-unit`)
-- [ ] New/updated tests cover each fix
+- [x] #78: `read_entity_as_of` SCD2 filter uses `lit(point_in_time).cast("timestamp")`
+- [x] #79: `_validate_scd_config()` raises `ValueError` if `__merge_key` appears in entity's declared columns
+- [x] #80: `_execute_scd2_merge` coalesces each business key to `__null__` sentinel before `concat_ws`
+- [x] #81: `_validate_scd_config()` raises `ValueError` if `current_entity_id` equals base `entityid` or is empty
+- [x] All existing tests pass (`poe test-unit`)
+- [x] New tests cover each fix
 
 ## Agent Plan
 | Step | Agent | Status |
 |------|-------|--------|
-| 1 | implementer | ⬜ PENDING |
-| 2 | tester | ⬜ PENDING |
-| 3 | ship | ⬜ PENDING |
+| 1 | implementer | ✅ DONE |
+| 2 | tester | ✅ DONE |
+| 3 | ship | ✅ DONE |
 
 ## Handoff Log
 - 2026-04-29: Task created by coordinator. Dispatched directly to implementer (no planner needed — fixes fully specified in issues #78–#81).
+- 2026-04-29: All 4 fixes implemented and tested. PR #82 created, Copilot reviewed, merged.
 
 ---
 
