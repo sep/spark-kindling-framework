@@ -5,6 +5,8 @@ All notable changes to spark-kindling are documented here.
 ## [Unreleased]
 
 ### Added
+- `scd.close_on_missing: "true"` tag on SCD2 entities — rows absent from the source batch are logically closed (`__effective_to = now`, `__is_current = false`) via `whenNotMatchedBySourceUpdate`; safe for full-snapshot sources (TASK-20260430-004, #83)
+- `scd.optimize_unchanged: "true"` tag on SCD2 entities — SHA2-256 hash comparison over tracked columns replaces per-column change detection; reduces merge cost for large dimensions with many unchanged rows (TASK-20260430-004, #84)
 - CLI Quick Start section in `README.md` — covers `kindling new` → `poetry install` → `kindling run` end-to-end local workflow (TASK-20260430-003)
 - Local Development section in `docs/setup_guide.md` — placed before cloud-platform sections so developers can run locally without cloud credentials (TASK-20260430-003)
 - Sentinel-based missing-key debug logging to `DynaconfConfig.get()` in `spark_config.py` — surfaces misconfigured keys without raising at call-time (TASK-20260430-003)
