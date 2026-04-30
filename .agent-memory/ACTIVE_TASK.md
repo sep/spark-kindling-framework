@@ -4,12 +4,12 @@
 |----|-------|--------|--------|
 | TASK-20260429-001 | SCD Type 2 Entity Support | ✅ MERGED (PR #77) | agent/TASK-20260429-001/scd2-support |
 | TASK-20260429-002 | SCD2 Follow-up Fixes (#78–#81) | ✅ MERGED (PR #82) | agent/TASK-20260429-002/scd2-followup |
-| TASK-20260430-001 | Local Dev DX: Critical & High gaps (issue #85) | 🔄 IN PROGRESS | agent/TASK-20260430-001/local-dev-dx |
+| TASK-20260430-001 | Local Dev DX: Critical & High gaps (issue #85) | ✅ MERGED (PR #86) | agent/TASK-20260430-001/local-dev-dx |
 
 ---
 
 # Active Task: TASK-20260430-001 — Local Dev DX: Critical & High gaps
-**Status:** IN PROGRESS
+**Status:** COMPLETE — merged as PR #86
 **Branch:** `agent/TASK-20260430-001/local-dev-dx`
 **Issue:** #85
 **Started:** 2026-04-30
