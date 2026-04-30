@@ -345,6 +345,79 @@ def _print_check_results(checks: List[Tuple[str, bool, str]]) -> bool:
     return all_passed
 
 
+# [implementer] add local app discovery for run and validate — TASK-20260430-001
+def _discover_app_py(app_path: Optional[Path]) -> Path:
+    """Find a Kindling app.py from an explicit path or conventional local layout."""
+    if app_path is not None:
+        resolved_app_path = app_path.expanduser().resolve()
+        if not resolved_app_path.exists():
+            raise click.ClickException(f"app.py not found at: {resolved_app_path}")
+        return resolved_app_path
+
+    cwd = Path.cwd()
+    candidates = [
+        cwd / "app.py",
+        *sorted((cwd / "src").glob("*/app.py")),
+        *sorted((cwd.parent / "src").glob("*/app.py")),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    raise click.ClickException(
+        "Could not find app.py. Run from your package directory or pass --app path/to/app.py"
+    )
+
+
+def _load_app_module(app_path: Path, env: Optional[str], config_dir: Optional[Path] = None) -> None:
+    """Import app.py and call its initialize() function."""
+    import importlib.util
+    import inspect
+
+    module_key = "_kindling_app"
+    module_search_path = (
+        app_path.parent.parent if app_path.parent.parent.name == "src" else app_path.parent
+    )
+    inserted_path = str(module_search_path)
+    inserted = False
+    if inserted_path not in sys.path:
+        sys.path.insert(0, inserted_path)
+        inserted = True
+
+    try:
+        spec = importlib.util.spec_from_file_location(module_key, app_path)
+        if spec is None or spec.loader is None:
+            raise click.ClickException(f"Could not load app.py at {app_path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_key] = module
+        spec.loader.exec_module(module)
+
+        initialize = getattr(module, "initialize", None)
+        if initialize is None:
+            raise click.ClickException(
+                f"app.py at {app_path} has no initialize() function. "
+                "Ensure it follows the Kindling app.py convention."
+            )
+
+        kwargs: Dict[str, Any] = {"env": env}
+        if config_dir is not None:
+            signature = inspect.signature(initialize)
+            if "config_dir" not in signature.parameters:
+                raise click.ClickException(
+                    "The selected app.py initialize() function does not accept "
+                    "--config. Update app.py or omit --config."
+                )
+            kwargs["config_dir"] = config_dir.expanduser().resolve()
+        initialize(**kwargs)
+    finally:
+        sys.modules.pop(module_key, None)
+        if inserted:
+            try:
+                sys.path.remove(inserted_path)
+            except ValueError:
+                pass
+
+
 def _detect_platform_from_environment() -> Optional[str]:
     if os.getenv("FABRIC_WORKSPACE_ID"):
         return "fabric"
@@ -358,6 +431,132 @@ def _detect_platform_from_environment() -> Optional[str]:
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def cli() -> None:
     """Kindling CLI."""
+
+
+@cli.command("run")
+@click.argument("pipe_id")
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py",
+)
+@click.option(
+    "--config",
+    "config_dir",
+    default=None,
+    type=click.Path(path_type=Path, file_okay=False, exists=False),
+    help="Config directory override, if app.py supports it",
+)
+def run_pipe(
+    pipe_id: str, env: Optional[str], app_path: Optional[Path], config_dir: Optional[Path]
+) -> None:
+    """Execute a registered pipe locally."""
+    try:
+        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, resolved_env, config_dir)
+
+    registry = GlobalInjector.get(DataPipesRegistry)
+    pipe = registry.get_pipe_definition(pipe_id)
+    if pipe is None:
+        available = ", ".join(registry.get_pipe_ids()) or "(none registered)"
+        raise click.ClickException(f"Pipe '{pipe_id}' not found. Available pipes: {available}")
+
+    click.echo(f"Running pipe: {pipe_id}")
+    executer = GlobalInjector.get(DataPipesExecution)
+    try:
+        executer.run_datapipes([pipe_id])
+    except Exception as exc:
+        raise click.ClickException(f"Pipe '{pipe_id}' failed: {exc}") from exc
+    click.echo(f"Pipe '{pipe_id}' completed successfully.")
+
+
+@cli.command("validate")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py",
+)
+def validate_app(app_path: Optional[Path]) -> None:
+    """Validate entity and pipe definitions without starting Spark."""
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.data_pipes import DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env="local")
+
+    entity_registry = GlobalInjector.get(DataEntityRegistry)
+    pipe_registry = GlobalInjector.get(DataPipesRegistry)
+    entity_ids = set(entity_registry.get_entity_ids())
+    pipe_ids = list(pipe_registry.get_pipe_ids())
+
+    checks: List[Tuple[str, bool, str]] = [
+        ("entities_registered", len(entity_ids) > 0, f"{len(entity_ids)} entity/entities"),
+        ("pipes_registered", len(pipe_ids) > 0, f"{len(pipe_ids)} pipe/pipes"),
+    ]
+
+    for pipe_id in pipe_ids:
+        pipe = pipe_registry.get_pipe_definition(pipe_id)
+        missing = [entity_id for entity_id in pipe.input_entity_ids if entity_id not in entity_ids]
+        checks.append(
+            (
+                f"pipe.{pipe_id}.input_entities",
+                len(missing) == 0,
+                "OK" if not missing else f"missing: {', '.join(missing)}",
+            )
+        )
+
+    for pipe_id in pipe_ids:
+        pipe = pipe_registry.get_pipe_definition(pipe_id)
+        entity_id = pipe.output_entity_id
+        checks.append(
+            (
+                f"pipe.{pipe_id}.output_entity",
+                entity_id in entity_ids,
+                "OK" if entity_id in entity_ids else f"missing: {entity_id}",
+            )
+        )
+
+    for entity_id in sorted(entity_ids):
+        entity = entity_registry.get_entity_definition(entity_id)
+        is_delta = entity.tags.get("provider_type", "delta") == "delta"
+        if is_delta:
+            has_merge_columns = bool(entity.merge_columns)
+            checks.append(
+                (
+                    f"entity.{entity_id}.merge_columns",
+                    has_merge_columns,
+                    "OK" if has_merge_columns else "delta entity missing merge_columns",
+                )
+            )
+
+    if _print_check_results(checks):
+        click.echo("Validation passed.")
+        return
+
+    raise click.ClickException("Validation failed - see above.")
 
 
 # =============================================================================
@@ -714,8 +913,8 @@ def _check_hadoop_jars() -> Tuple[bool, str]:
 @click.option(
     "--config",
     "config_path",
-    default="settings.yaml",
-    show_default=True,
+    default=None,
+    show_default=False,
     type=click.Path(path_type=Path, dir_okay=False, exists=False),
 )
 @click.option(
@@ -728,7 +927,7 @@ def _check_hadoop_jars() -> Tuple[bool, str]:
         "Java, PySpark, delta-spark, and hadoop-azure JARs."
     ),
 )
-def env_check(config_path: Path, local_checks: bool) -> None:
+def env_check(config_path: Optional[Path], local_checks: bool) -> None:
     """Check if local environment is ready for Kindling.
 
     \b
@@ -747,6 +946,14 @@ def env_check(config_path: Path, local_checks: bool) -> None:
         https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar
       # (and the four other JARs — see docs/local_python_first.md)
     """
+    # [implementer] auto-probe scaffold config paths — TASK-20260430-001
+    if config_path is None:
+        for candidate in (Path("config") / "settings.yaml", Path("settings.yaml")):
+            if candidate.exists():
+                config_path = candidate
+                break
+        else:
+            config_path = Path("config") / "settings.yaml"
     resolved_config_path = config_path.expanduser()
 
     checks: List[Tuple[str, bool, str]] = []
@@ -2495,8 +2702,7 @@ def new_project(
     click.echo(f"Created {cfg.snake_name}/ ({len(created)} files)")
     click.echo()
     click.echo("Next steps:")
-    click.echo(f"  cd {cfg.snake_name}")
-    click.echo(f"  cd packages/{cfg.snake_name}")
+    click.echo(f"  cd {cfg.snake_name}/packages/{cfg.snake_name}")
     click.echo("  poetry install")
     click.echo("  cp .env.example .env  # fill in your credentials, then: source .env")
     click.echo("  poetry run poe test")
