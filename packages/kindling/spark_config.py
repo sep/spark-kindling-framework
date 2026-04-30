@@ -287,9 +287,10 @@ class DynaconfConfig(ConfigService):
                 except Exception:
                     pass
 
-            if default is _MISSING:
+            missing_default = default is type(self).get.__defaults__[0]
+            if missing_default:
                 value = self.dynaconf.get(key, default)
-                if value is _MISSING:
+                if value is default:
                     _CONFIG_LOGGER.debug("Config key %s not found and no default supplied", key)
                     return None
                 return value
@@ -460,9 +461,10 @@ class DynaconfConfig(ConfigService):
                 except Exception:
                     pass
 
-            if default is _MISSING:
+            missing_default = default is type(self).get_fresh.__defaults__[0]
+            if missing_default:
                 value = self.dynaconf.get_fresh(key, default=default)
-                if value is _MISSING:
+                if value is default:
                     _CONFIG_LOGGER.debug("Config key %s not found and no default supplied", key)
                     return None
                 return value
