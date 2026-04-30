@@ -506,7 +506,7 @@ def validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
         ) from exc
 
     resolved_app = _discover_app_py(app_path)
-    resolved_env = env or "local"
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
     # [implementer] keep validate environment handling symmetric with run — TASK-20260430-002
     _load_app_module(resolved_app, env=resolved_env)
 
