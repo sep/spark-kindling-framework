@@ -8,20 +8,21 @@ name: Kindling CI/CD Pipeline
 # - Code quality checks: Always run (linting, formatting, security)
 # - Wheel builds: Only if source code changes or [build wheels] in commit message
 #
-# ON RELEASE ONLY:
+# ON TAG PUSH (v*) — release flow:
+# - Wheels always built
 # - System tests: All 3 platforms (Databricks, Synapse, Fabric) MUST pass
-# - Wheel attachment: Only attaches wheels to release if system tests pass
-# - Fail fast: Any platform failure blocks the release
+# - If all pass: GitHub release is CREATED with wheels attached atomically
+# - Release is never visible to the public until wheels are ready
 #
+# To release: push a v* tag (poe release). CI owns the GitHub release object.
 # To force wheel rebuild on any commit, include [build wheels] in commit message
 
 on:
   push:
     branches: [main, develop]
+    tags: ["v*"]
   pull_request:
     branches: [main]
-  release:
-    types: [published]
   workflow_dispatch: # Allow manual triggering
     inputs:
       system_test_platform:
@@ -281,7 +282,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     environment: testing
     outputs:
       azure_base_path: ${{ steps.base-path.outputs.azure_base_path }}
@@ -312,8 +313,8 @@ jobs:
       - name: Resolve candidate storage path
         id: base-path
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            base_path="release-candidates/${{ github.event.release.tag_name }}"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            base_path="release-candidates/${{ github.ref_name }}"
           else
             base_path="workflow-dispatch/${{ github.run_id }}"
           fi
@@ -347,8 +348,8 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # Run system tests for releases OR manual workflow dispatch
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # Run system tests for tag pushes (releases) OR manual workflow dispatch
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     environment: testing
 
     strategy:
@@ -514,10 +515,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # Build wheels for releases, when explicitly requested with commit message,
+    # Build wheels on tag push (release), when explicitly requested with commit message,
     # or when source code that affects wheel content changes
     if: |
-      github.event_name == 'release' ||
+      startsWith(github.ref, 'refs/tags/v') ||
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.head_commit.message, '[build wheels]') ||
       (github.event_name == 'push' && (
@@ -556,8 +557,8 @@ jobs:
           echo "Checking for changes that affect wheel content..."
 
           # Get list of changed files (comparing with previous commit)
-          if [ "${{ github.event_name }}" = "release" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "${{ github.event_name }} event - always build wheels"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Tag push or workflow_dispatch — always build wheels"
             echo "needs_rebuild=true" >> $GITHUB_OUTPUT
             exit 0
           fi
@@ -638,12 +639,13 @@ jobs:
           name: platform-wheels
           path: dist/*.whl
 
-  attach-wheels-to-release:
-    name: Attach Wheels to Release
+  publish-release:
+    name: Publish Release
     runs-on: ubuntu-latest
     needs: [build-wheels, system-tests]
-    # Only attach wheels to release if ALL system tests pass
-    if: github.event_name == 'release' && github.event.action == 'published' && needs.system-tests.result == 'success'
+    # Create the GitHub release only after ALL system tests pass.
+    # The release is never visible to the public until wheels are attached.
+    if: startsWith(github.ref, 'refs/tags/v') && needs.system-tests.result == 'success'
     permissions:
       contents: write
 
@@ -665,7 +667,7 @@ jobs:
           fi
 
           RUNTIME_WHEEL_NAME=$(basename "$RUNTIME_WHEEL")
-          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          RELEASE_TAG="${{ github.ref_name }}"
           printf '%s\n' \
             "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${RUNTIME_WHEEL_NAME}" \
             > dist/spark_kindling-current-url.txt
@@ -675,9 +677,12 @@ jobs:
             'pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"' \
             > dist/spark_kindling-current-install.txt
 
-      - name: Attach wheels to release
+      - name: Create release and attach wheels
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
             dist/*.whl
             dist/spark_kindling-current-url.txt
@@ -687,9 +692,9 @@ jobs:
 
       - name: Create release summary
         run: |
-          echo "# 📦 Release Assets Attached" >> $GITHUB_STEP_SUMMARY
+          echo "# 📦 Release ${{ github.ref_name }} Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The following wheels have been attached to the release:" >> $GITHUB_STEP_SUMMARY
+          echo "The following wheels are attached to the release:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Package | File |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|------|" >> $GITHUB_STEP_SUMMARY
