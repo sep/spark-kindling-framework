@@ -429,7 +429,13 @@ class SynapseAPI(PlatformAPI):
             bootstrap_params.update(_flatten_dict(overrides))
 
         config_args = [f"config:{k}={v}" for k, v in bootstrap_params.items()]
-        additional_args = job_config.get("command_line_args", "").split()
+        raw_args = job_config.get("command_line_args") or ""
+        if isinstance(raw_args, list):
+            additional_args = raw_args
+        else:
+            import shlex
+
+            additional_args = shlex.split(str(raw_args))
         all_args = config_args + additional_args
 
         # Spark configuration
@@ -1548,7 +1554,7 @@ class SynapseAPI(PlatformAPI):
         )
         try:
             response = self._make_request("DELETE", url)
-            return response.status_code in (200, 204)
+            return 200 <= response.status_code < 300
         except Exception as exc:
             err = str(exc)
             if "404" in err or "JobDefinitionNotFound" in err or "not found" in err.lower():
