@@ -18,7 +18,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import datetime
 from os import environ
 from pathlib import Path
@@ -47,7 +46,6 @@ PLATFORM_FILES_TO_REMOVE = {
         "kindling/platform_databricks.py",
         "kindling/platform_standalone.py",
     ],
-    "local": [],
 }
 
 
@@ -95,20 +93,6 @@ def build_runtime_wheel() -> tuple[str, int]:
     return wheel_path.name, size_kb
 
 
-def build_local_wheel(version: str) -> tuple[str, int]:
-    """Build the kindling-local wheel: all platforms included, full deps."""
-    print("\n📦 Building kindling-local wheel (all platforms, full deps)...")
-    with tempfile.TemporaryDirectory() as temp_dir:
-        build_dir = Path(temp_dir)
-        original_wheel = build_wheel("local", version, build_dir)
-        wheel_name = f"kindling_local-{version}-py3-none-any.whl"
-        output_path = DIST_DIR / wheel_name
-        shutil.copy2(original_wheel, output_path)
-        size_kb = output_path.stat().st_size // 1024
-        print(f"   ✅ Built: {wheel_name} ({size_kb}K)")
-        return wheel_name, size_kb
-
-
 def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
     package_name = package_dir.name
     print(f"\n📦 Building {package_name} wheel...")
@@ -154,14 +138,6 @@ def main():
         print(f"   ❌ Failed: {e}")
         results.append(("spark-kindling", "", 0, False))
 
-    try:
-        version = get_version_from_pyproject()
-        wheel_name, size_kb = build_local_wheel(version)
-        results.append(("kindling-local", wheel_name, size_kb, True))
-    except Exception as e:
-        print(f"   ❌ Failed to build kindling-local: {e}")
-        results.append(("kindling-local", "", 0, False))
-
     for package_dir in DESIGN_TIME_PACKAGE_DIRS:
         try:
             wheel_name, size_kb = build_design_time_wheel(package_dir)
@@ -193,7 +169,7 @@ def main():
     print("   pip install 'spark-kindling[synapse]'")
     print("   pip install 'spark-kindling[databricks]'")
     print("   pip install 'spark-kindling[fabric]'")
-    print("   pip install kindling-local              # local dev")
+    print("   pip install 'spark-kindling[standalone]'  # local dev / CI")
     print("   pip install spark-kindling-cli")
     print("   pip install spark-kindling-sdk")
     print("   pip install kindling-visualization")
