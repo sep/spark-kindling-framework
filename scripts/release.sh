@@ -64,7 +64,7 @@ echo "✅ Git status clean, on main, up to date with origin"
 echo ""
 
 # Verify the version in pyproject.toml matches what we're releasing
-CURRENT_VERSION=$(grep "^version = " pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+CURRENT_VERSION=$(grep '^version = "[0-9]' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
 if [ "${CURRENT_VERSION}" != "${VERSION}" ]; then
     echo "❌ Error: pyproject.toml version (${CURRENT_VERSION}) does not match release version (${VERSION})"
     echo ""
