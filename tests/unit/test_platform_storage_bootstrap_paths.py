@@ -39,7 +39,7 @@ def test_fabric_create_job_uses_base_path_for_default_bootstrap_script():
     )
 
 
-def test_synapse_run_job_uses_base_path_for_default_bootstrap_script():
+def test_synapse_create_job_uses_base_path_for_default_bootstrap_script():
     api = SynapseAPI.__new__(SynapseAPI)
     api.workspace_name = "workspace-123"
     api.spark_pool_name = "spark-pool"
@@ -47,25 +47,39 @@ def test_synapse_run_job_uses_base_path_for_default_bootstrap_script():
     api.container = "artifacts"
     api.base_path = "release-candidates/v0.8.2/synapse"
     api.base_url = "https://workspace-123.dev.azuresynapse.net"
-    api._job_mapping = {
-        "job-123": {
-            "job_config": {},
-        }
-    }
     api._make_request = MagicMock(
         return_value=MagicMock(
-            json=lambda: {
-                "id": "batch-123",
-                "state": "not_started",
-            }
+            status_code=200,
+            json=lambda: {},
         )
     )
 
-    api.run_job("job-123")
+    api.create_job("job-123", {})
 
     payload = api._make_request.call_args.kwargs["json"]
+    job_props = payload["properties"]["jobProperties"]
 
     assert (
-        payload["file"]
+        job_props["file"]
         == "abfss://artifacts@sepstdatalakedev.dfs.core.windows.net/release-candidates/v0.8.2/synapse/scripts/kindling_bootstrap.py"
     )
+
+
+def test_synapse_run_job_posts_to_execute_endpoint_and_returns_batch_id():
+    api = SynapseAPI.__new__(SynapseAPI)
+    api.workspace_name = "my-workspace"
+    api.spark_pool_name = "spark-pool"
+    api.base_url = "https://my-workspace.dev.azuresynapse.net"
+    api._make_request = MagicMock(
+        return_value=MagicMock(
+            json=lambda: {"id": 42, "state": "not_started"},
+        )
+    )
+
+    batch_id = api.run_job("my-job")
+
+    assert batch_id == "42"
+    call_args = api._make_request.call_args
+    assert call_args.args[0] == "POST"
+    assert "sparkJobDefinitions/my-job/execute" in call_args.args[1]
+    assert "api-version=2020-12-01" in call_args.args[1]
