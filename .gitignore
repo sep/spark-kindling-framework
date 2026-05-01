@@ -106,3 +106,8 @@ iac/databricks/account/tfplan
 setup_agents.sh
 ../kindling-worktrees/
 .tools/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
