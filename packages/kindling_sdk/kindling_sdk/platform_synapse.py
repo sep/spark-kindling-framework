@@ -82,9 +82,6 @@ class SynapseAPI(PlatformAPI):
         # Storage client (lazy initialized)
         self._storage_client = None
 
-        # Job tracking (maps job_name to batch_id for our simple implementation)
-        self._job_mapping = {}
-
         # Rate limiting: Synapse has 2 requests/second limit
         self._last_request_time = 0
         # 600ms between requests = ~1.67 req/sec (safe margin)
@@ -338,36 +335,195 @@ class SynapseAPI(PlatformAPI):
         return response
 
     def create_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a Spark job definition in Synapse
+        """Create a persistent Spark job definition in Azure Synapse.
 
-        NOTE: Synapse doesn't have persistent job definitions like Fabric.
-        Instead, we submit Spark batch jobs directly. This method stores the
-        job config for later use when run_job() is called.
+        Creates (or replaces) a SparkJobDefinition resource via the Synapse REST API
+        (PUT /sparkJobDefinitions/{name}?api-version=2020-12-01). The definition is
+        stored server-side so run_job() works from any process without requiring the
+        original job_config to be re-passed.
 
         Args:
-            job_name: Name for the job
+            job_name: Name for the job definition (unique per workspace).
             job_config: Job configuration containing:
-                - main_file: Entry point file path in ADLS
-                - command_line_args: Command line arguments (optional)
-                - spark_config: Spark configuration (optional)
-                - environment: Environment variables (optional)
+                - main_file: Entry point ABFSS path (required unless storage_account
+                  and container are configured for default resolution)
+                - command_line_args: Extra CLI arguments (optional)
+                - spark_config: Spark executor/driver settings (optional)
+                - app_name: Display name (optional, defaults to job_name)
+                - config_overrides: Nested dict of kindling config overrides (optional)
+                - configure_diagnostic_emitters: bool (optional, default False)
+                - test_id: Test tracking ID injected into bootstrap args (optional)
 
         Returns:
-            Dictionary with job_id (same as job_name for Synapse)
+            Dictionary with job_id, job_name, workspace_name.
         """
-        # In Synapse, there's no separate "job definition" creation step
-        # Jobs are submitted directly as Spark batch jobs
-        # We'll store the config and return the job_name as job_id
-
-        # Generate a unique job ID
         job_id = job_name
+        app_name = job_config.get("app_name", job_id)
 
-        # Store config for later use in run_job()
-        self._job_mapping[job_id] = {
-            "job_name": job_name,
-            "job_config": job_config,
-            "created_at": None,  # Will be set when run_job() is called
+        # Resolve main file
+        main_file = self._resolve_default_main_file(job_config)
+        if not main_file.startswith("abfss://"):
+            if self.storage_account and self.container:
+                main_file = (
+                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+                    f"/{main_file}"
+                )
+            else:
+                raise ValueError(
+                    "main_file must be an ABFSS path, or storage_account and container "
+                    "must be configured so the default path can be resolved."
+                )
+
+        # Build artifacts storage path (passed to bootstrap as config arg)
+        if self.storage_account and self.container:
+            artifacts_subpath = self.base_path.strip("/") if self.base_path else ""
+            if artifacts_subpath == self.container:
+                artifacts_storage_path = (
+                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/"
+                )
+            elif artifacts_subpath:
+                artifacts_storage_path = (
+                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+                    f"/{artifacts_subpath}"
+                )
+            else:
+                artifacts_storage_path = (
+                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/"
+                )
+        else:
+            artifacts_storage_path = job_config.get("artifacts_path", "artifacts")
+
+        # Bootstrap params passed as positional args to the entry-point script
+        bootstrap_params: Dict[str, str] = {
+            "app_name": app_name,
+            "artifacts_storage_path": artifacts_storage_path,
+            "platform": "synapse",
+            "use_lake_packages": "True",
+            "load_local_packages": "False",
         }
+        if "test_id" in job_config:
+            bootstrap_params["test_id"] = job_config["test_id"]
+
+        overrides = job_config.get("config_overrides", {})
+        if overrides:
+
+            def _serialize_config_value(value: Any) -> str:
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value)
+                if isinstance(value, bool):
+                    return "true" if value else "false"
+                if value is None:
+                    return "null"
+                return str(value)
+
+            def _flatten_dict(d: Dict[str, Any], parent_key: str = "") -> Dict[str, str]:
+                items: list = []
+                for k, v in d.items():
+                    new_key = f"{parent_key}.{k}" if parent_key else k
+                    if isinstance(v, dict):
+                        items.extend(_flatten_dict(v, new_key).items())
+                    else:
+                        items.append((new_key, _serialize_config_value(v)))
+                return dict(items)
+
+            bootstrap_params.update(_flatten_dict(overrides))
+
+        config_args = [f"config:{k}={v}" for k, v in bootstrap_params.items()]
+        additional_args = job_config.get("command_line_args", "").split()
+        all_args = config_args + additional_args
+
+        # Spark configuration
+        spark_conf = job_config.get("spark_config", {})
+        executor_instances = int(spark_conf.get("executor_instances", 2))
+        executor_cores = int(spark_conf.get("executor_cores", 4))
+        executor_memory = spark_conf.get("executor_memory", "28g")
+        driver_cores = int(spark_conf.get("driver_cores", 4))
+        driver_memory = spark_conf.get("driver_memory", "28g")
+
+        conf_dict: Dict[str, str] = {
+            "spark.executor.instances": str(executor_instances),
+            "spark.executor.cores": str(executor_cores),
+            "spark.executor.memory": executor_memory,
+            "spark.driver.cores": str(driver_cores),
+            "spark.driver.memory": driver_memory,
+        }
+
+        if (
+            job_config.get("configure_diagnostic_emitters", False)
+            and self.storage_account
+            and self.container
+        ):
+            log_uri = f"https://{self.storage_account}.blob.core.windows.net/{self.container}/logs"
+            conf_dict.update(
+                {
+                    "spark.synapse.diagnostic.emitters": "AzureStorageEmitter",
+                    "spark.synapse.diagnostic.emitter.AzureStorageEmitter.type": "AzureStorage",
+                    "spark.synapse.diagnostic.emitter.AzureStorageEmitter.categories": "Log,EventLog,Metrics",
+                    "spark.synapse.diagnostic.emitter.AzureStorageEmitter.uri": log_uri,
+                }
+            )
+            storage_key = job_config.get("storage_access_key") or self._try_get_storage_access_key()
+            if storage_key:
+                if job_config.get("storage_access_key"):
+                    pass
+                else:
+                    print(
+                        "🔑 Using Storage Account AccessKey for Synapse diagnostic emitters "
+                        "(derived via ARM using current login)."
+                    )
+                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = "AccessKey"
+                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.secret"] = (
+                    storage_key
+                )
+            else:
+                print(
+                    "ℹ️  No storage_access_key available; configuring Synapse diagnostic emitters "
+                    "with ManagedIdentity (stdout streaming may be unavailable if MI lacks storage access)."
+                )
+                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = (
+                    "ManagedIdentity"
+                )
+
+        env_vars = job_config.get("environment", {})
+        if env_vars:
+            print("⚠️  Environment variables are not supported in Synapse SparkJobDefinition.")
+            print("   Pass them via spark_config or command_line_args instead.")
+
+        # Build SparkJobDefinition request body
+        # Reference: https://learn.microsoft.com/en-us/rest/api/synapse/data-plane/spark-job-definition
+        job_def_body = {
+            "name": job_name,
+            "properties": {
+                "description": job_config.get("description", ""),
+                "targetBigDataPool": {
+                    "referenceName": self.spark_pool_name,
+                    "type": "BigDataPoolReference",
+                },
+                "language": "PySpark",
+                "jobProperties": {
+                    "name": job_name,
+                    "file": main_file,
+                    "className": "",
+                    "args": all_args,
+                    "jars": [],
+                    "files": [],
+                    "archives": [],
+                    "conf": conf_dict,
+                    "driverMemory": driver_memory,
+                    "driverCores": driver_cores,
+                    "executorMemory": executor_memory,
+                    "executorCores": executor_cores,
+                    "numExecutors": executor_instances,
+                },
+            },
+        }
+
+        url = (
+            f"{self.base_url}/sparkJobDefinitions/{quote(job_name, safe='')}"
+            f"?api-version=2020-12-01"
+        )
+        self._make_request("PUT", url, json=job_def_body)
+        print(f"✅ Created Synapse SparkJobDefinition: {job_name}")
 
         return {
             "job_id": job_id,
@@ -445,240 +601,40 @@ class SynapseAPI(PlatformAPI):
         return abfss_path
 
     def _update_job_files(self, job_id: str, files_path: str) -> None:
-        """Update job definition with file paths (internal)
-
-        For Synapse, this updates the stored job config with the files path
-        which will be used when the job is run.
-
-        Args:
-            job_id: Job ID to update
-            files_path: ABFSS path to uploaded files
-        """
-        if job_id not in self._job_mapping:
-            raise ValueError(f"Job {job_id} not found")
-
-        # Store the files path in the job config
-        self._job_mapping[job_id]["files_path"] = files_path
+        """No-op: file paths are embedded in the SparkJobDefinition at create_job() time."""
 
     def run_job(self, job_id: str, parameters: Optional[Dict[str, Any]] = None) -> str:
-        """Execute a Spark batch job
+        """Trigger execution of a Synapse SparkJobDefinition created by create_job().
+
+        Calls POST /sparkJobDefinitions/{name}/execute?api-version=2020-12-01.
+        The job configuration (main file, args, Spark settings) was baked into the
+        definition at create_job() time and does not need to be re-passed here.
 
         Args:
-            job_id: Job ID to run (from create_job)
-            parameters: Optional runtime parameters
+            job_id: Job definition name (returned by create_job as job_id)
+            parameters: Unused for Synapse — configuration is set at create_job() time.
 
         Returns:
-            Batch ID (run ID) for monitoring
+            Batch ID (run ID) for monitoring via get_job_status() / stream_stdout_logs().
+
+        Raises:
+            Exception: If the execute call fails or returns no batch ID.
         """
-        if job_id not in self._job_mapping:
-            raise ValueError(f"Job {job_id} not found. Call create_job first.")
-
-        job_info = self._job_mapping[job_id]
-        job_config = job_info["job_config"]
-
-        # Build Spark batch job request
-        # Reference: https://docs.microsoft.com/en-us/rest/api/synapse/data-plane/spark-batch/create-spark-batch-job
-
-        app_name = job_config.get("app_name", job_id)
-        main_file = self._resolve_default_main_file(job_config)
-
-        # Convert to ABFSS path if needed
-        if not main_file.startswith("abfss://"):
-            if self.storage_account and self.container:
-                main_file = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/{main_file}"
-            else:
-                raise ValueError(
-                    "main_file must be ABFSS path or storage_account/container must be configured"
-                )
-
-        # Build command line args with bootstrap config
-        # For Synapse, we need to provide the FULL ABFSS path for artifacts
-        # since Synapse doesn't support shortcuts like "Files/artifacts"
-        if self.storage_account and self.container:
-            # Use self.base_path instead of job_config to ensure correct storage location
-            # e.g., system-tests/run-123/synapse/data-apps/my-app/
-            artifacts_subpath = self.base_path.strip("/") if self.base_path else ""
-
-            # If artifacts_path matches container name, don't duplicate it in the path
-            # e.g., if container is "artifacts" and artifacts_path is "artifacts",
-            # use abfss://artifacts@.../ not abfss://artifacts@.../artifacts
-            if artifacts_subpath == self.container:
-                artifacts_storage_path = (
-                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/"
-                )
-            elif artifacts_subpath:
-                artifacts_storage_path = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/{artifacts_subpath}"
-            else:
-                # No subpath specified, use root of container
-                artifacts_storage_path = (
-                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/"
-                )
-        else:
-            # Fallback to relative path (will likely fail without storage config)
-            artifacts_storage_path = job_config.get("artifacts_path", "artifacts")
-
-        bootstrap_params = {
-            "app_name": app_name,
-            "artifacts_storage_path": artifacts_storage_path,  # Full ABFSS path
-            "platform": "synapse",
-            "use_lake_packages": "True",
-            "load_local_packages": "False",
-        }
-
-        # Add test_id if provided (for test tracking)
-        if "test_id" in job_config:
-            bootstrap_params["test_id"] = job_config["test_id"]
-
-        overrides = job_config.get("config_overrides", {})
-        if overrides:
-
-            def serialize_config_value(value):
-                if isinstance(value, (dict, list)):
-                    return json.dumps(value)
-                if isinstance(value, bool):
-                    return "true" if value else "false"
-                if value is None:
-                    return "null"
-                return str(value)
-
-            def flatten_dict(d, parent_key=""):
-                items = []
-                for k, v in d.items():
-                    new_key = f"{parent_key}.{k}" if parent_key else k
-                    if isinstance(v, dict):
-                        items.extend(flatten_dict(v, new_key).items())
-                    else:
-                        items.append((new_key, serialize_config_value(v)))
-                return dict(items)
-
-            bootstrap_params.update(flatten_dict(overrides))
-
-        config_args = [f"config:{k}={v}" for k, v in bootstrap_params.items()]
-        additional_args = job_config.get("command_line_args", "").split()
-        all_args = config_args + additional_args
-
-        # Build Spark configuration
-        spark_conf = job_config.get("spark_config", {})
-        conf_dict = {}
-
-        # Synapse requires executor instances to be set
-        if "executor_instances" in spark_conf:
-            conf_dict["spark.executor.instances"] = str(spark_conf["executor_instances"])
-        else:
-            # Default to 2 executors
-            conf_dict["spark.executor.instances"] = "2"
-
-        # Synapse requires executor_cores to be set to a valid integer
-        if "executor_cores" in spark_conf:
-            conf_dict["spark.executor.cores"] = str(spark_conf["executor_cores"])
-        else:
-            # Default to 4 cores per executor
-            conf_dict["spark.executor.cores"] = "4"
-
-        # Synapse requires executor_memory to be set
-        if "executor_memory" in spark_conf:
-            conf_dict["spark.executor.memory"] = spark_conf["executor_memory"]
-        else:
-            # Default to 28GB per executor
-            conf_dict["spark.executor.memory"] = "28g"
-
-        # Synapse requires driver_cores to be set to a valid integer
-        if "driver_cores" in spark_conf:
-            conf_dict["spark.driver.cores"] = str(spark_conf["driver_cores"])
-        else:
-            # Default to 4 cores for driver
-            conf_dict["spark.driver.cores"] = "4"
-
-        # Synapse requires driver_memory to be set
-        if "driver_memory" in spark_conf:
-            conf_dict["spark.driver.memory"] = spark_conf["driver_memory"]
-        else:
-            # Default to 28GB for driver
-            conf_dict["spark.driver.memory"] = "28g"
-
-        # Configure Synapse diagnostic emitters only if explicitly requested via job config
-        # If not specified, use the Spark pool's default configuration
-        # Reference: https://learn.microsoft.com/en-us/azure/synapse-analytics/spark/azure-synapse-diagnostic-emitters-azure-storage
-        if job_config.get("configure_diagnostic_emitters", False):
-            if self.storage_account and self.container:
-                # Use blob endpoint (not ADLS/abfss) as per Synapse documentation
-                log_uri = (
-                    f"https://{self.storage_account}.blob.core.windows.net/{self.container}/logs"
-                )
-
-                # Configure diagnostic emitter to write logs, event logs, and metrics
-                conf_dict["spark.synapse.diagnostic.emitters"] = "AzureStorageEmitter"
-                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.type"] = (
-                    "AzureStorage"
-                )
-                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.categories"] = (
-                    "Log,EventLog,Metrics"
-                )
-                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.uri"] = log_uri
-
-                # Use AccessKey authentication if provided in job config, otherwise try ManagedIdentity
-                storage_key = job_config.get("storage_access_key")
-                if not storage_key:
-                    # Best-effort: derive an access key using the current login creds.
-                    #
-                    # Rationale: Synapse diagnostic emitters run inside the Spark environment and
-                    # frequently cannot use the user's token to write to storage. Using an AccessKey
-                    # makes stdout streaming deterministic for system tests.
-                    storage_key = self._try_get_storage_access_key()
-                    if storage_key:
-                        print(
-                            "🔑 Using Storage Account AccessKey for Synapse diagnostic emitters "
-                            "(derived via ARM using current login)."
-                        )
-
-                if storage_key:
-                    conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = (
-                        "AccessKey"
-                    )
-                    conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.secret"] = (
-                        storage_key
-                    )
-                else:
-                    # Fallback to managed identity (may not work without proper permissions)
-                    print(
-                        "ℹ️  No storage_access_key available; configuring Synapse diagnostic emitters "
-                        "with ManagedIdentity (stdout streaming may be unavailable if MI lacks storage access)."
-                    )
-                    conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = (
-                        "ManagedIdentity"
-                    )
-
-        # Build batch job payload
-        batch_payload = {
-            "name": job_id,  # Batch job name
-            "file": main_file,  # Main Python file (ABFSS path)
-            "args": all_args,  # Command line arguments
-            "conf": conf_dict,  # Spark configuration
-        }
-
-        # Add environment variables if provided
-        env_vars = job_config.get("environment", {})
-        if env_vars:
-            # Synapse doesn't directly support env vars in batch API
-            # They would need to be set via Spark conf or passed as args
-            print(f"⚠️  Environment variables not directly supported in Synapse batch jobs")
-            print(f"   Consider passing via Spark conf or command line args")
-
-        # Submit batch job
-        url = f"{self.base_url}/livyApi/versions/2019-11-01-preview/sparkPools/{self.spark_pool_name}/batches"
-
-        response = self._make_request("POST", url, json=batch_payload)
+        url = (
+            f"{self.base_url}/sparkJobDefinitions/{quote(job_id, safe='')}"
+            f"/execute?api-version=2020-12-01"
+        )
+        response = self._make_request("POST", url)
         result = response.json()
 
-        # Extract batch ID
         batch_id = result.get("id")
         if batch_id is None:
-            raise Exception(f"No batch ID in response: {result}")
+            raise Exception(
+                f"Synapse SparkJobDefinition execute did not return a batch ID "
+                f"(job='{job_id}'): {result}"
+            )
 
-        # Update job mapping with batch ID
-        self._job_mapping[job_id]["batch_id"] = batch_id
-        self._job_mapping[job_id]["created_at"] = result.get("submittedAt")
-
+        print(f"🚀 Submitted Synapse batch job: job={job_id} batch_id={batch_id}")
         return str(batch_id)
 
     def _try_get_storage_access_key(self) -> Optional[str]:
@@ -1574,42 +1530,31 @@ class SynapseAPI(PlatformAPI):
             return [], byte_offset
 
     def delete_job(self, job_id: str) -> bool:
-        """Delete a job definition
+        """Delete a Spark job definition from Azure Synapse.
 
-        For Synapse, this removes the job from our internal tracking.
-        If the job is currently running, it will cancel the batch.
-        Completed/failed jobs are left as-is.
+        Calls DELETE /sparkJobDefinitions/{name}?api-version=2020-12-01.
+        Does not cancel active batch executions started from this definition —
+        use cancel_job(run_id) for that.
 
         Args:
-            job_id: Job ID to delete
+            job_id: Job definition name to delete.
 
         Returns:
-            True if deleted successfully
+            True if deleted (or already absent), False on error.
         """
-        if job_id not in self._job_mapping:
-            print(f"⚠️  Job {job_id} not found in tracking")
+        url = (
+            f"{self.base_url}/sparkJobDefinitions/{quote(job_id, safe='')}"
+            f"?api-version=2020-12-01"
+        )
+        try:
+            response = self._make_request("DELETE", url)
+            return response.status_code in (200, 204)
+        except Exception as exc:
+            err = str(exc)
+            if "404" in err or "JobDefinitionNotFound" in err or "not found" in err.lower():
+                return True  # Already gone
+            print(f"⚠️  Failed to delete Synapse job definition '{job_id}': {exc}")
             return False
-
-        job_info = self._job_mapping[job_id]
-
-        # Only cancel if job is still running
-        if "batch_id" in job_info:
-            batch_id = job_info["batch_id"]
-            try:
-                # Check current status before cancelling
-                status_result = self.get_job_status(run_id=str(batch_id))
-                status = status_result.get("status", "").upper()
-
-                # Only cancel if still in progress
-                if status in ["NOTSTARTED", "STARTING", "RUNNING", "INPROGRESS"]:
-                    self.cancel_job(str(batch_id))
-                # Leave completed/failed jobs as-is
-            except:
-                pass  # Best effort
-
-        # Remove from tracking
-        del self._job_mapping[job_id]
-        return True
 
     def list_spark_jobs(self) -> list:
         """List Spark batch jobs
