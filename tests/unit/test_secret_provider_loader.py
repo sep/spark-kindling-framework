@@ -158,6 +158,160 @@ class TestSecretLoaderResolution:
             assert settings.get("kindling.secrets.service.api_token") == "resolved-token-value"
 
 
+class TestSecretProviderContractMethods:
+    """Tests for secret_exists() and list_secrets() contract methods."""
+
+    def teardown_method(self):
+        GlobalInjector.reset()
+
+    def test_secret_provider_interface_exposes_secret_exists(self):
+        from kindling.platform_provider import SecretProvider
+
+        assert hasattr(
+            SecretProvider, "secret_exists"
+        ), "SecretProvider should define secret_exists()"
+
+    def test_secret_provider_interface_exposes_list_secrets(self):
+        from kindling.platform_provider import SecretProvider
+
+        assert hasattr(
+            SecretProvider, "list_secrets"
+        ), "SecretProvider should define list_secrets()"
+
+    def test_platform_services_expose_secret_exists(self):
+        from kindling.platform_databricks import DatabricksService
+        from kindling.platform_fabric import FabricService
+        from kindling.platform_standalone import StandaloneService
+        from kindling.platform_synapse import SynapseService
+
+        for svc_class in (DatabricksService, FabricService, SynapseService, StandaloneService):
+            assert hasattr(
+                svc_class, "secret_exists"
+            ), f"{svc_class.__name__} should expose secret_exists()"
+
+    def test_platform_services_expose_list_secrets(self):
+        from kindling.platform_databricks import DatabricksService
+        from kindling.platform_fabric import FabricService
+        from kindling.platform_standalone import StandaloneService
+        from kindling.platform_synapse import SynapseService
+
+        for svc_class in (DatabricksService, FabricService, SynapseService, StandaloneService):
+            assert hasattr(
+                svc_class, "list_secrets"
+            ), f"{svc_class.__name__} should expose list_secrets()"
+
+    def test_secret_exists_returns_true_when_secret_found(self):
+        from kindling.platform_provider import SecretProvider
+
+        class FakeProvider(SecretProvider):
+            def get_secret(self, secret_name: str, default=None) -> str:
+                if secret_name == "existing-secret":
+                    return "value"
+                raise KeyError(secret_name)
+
+        provider = FakeProvider()
+        assert provider.secret_exists("existing-secret") is True
+
+    def test_secret_exists_returns_false_when_secret_missing(self):
+        from kindling.platform_provider import SecretProvider
+
+        class FakeProvider(SecretProvider):
+            def get_secret(self, secret_name: str, default=None) -> str:
+                raise KeyError(secret_name)
+
+        provider = FakeProvider()
+        assert provider.secret_exists("missing-secret") is False
+
+    def test_list_secrets_default_returns_empty_list(self):
+        from kindling.platform_provider import SecretProvider
+
+        class MinimalProvider(SecretProvider):
+            def get_secret(self, secret_name: str, default=None) -> str:
+                raise KeyError(secret_name)
+
+        provider = MinimalProvider()
+        assert provider.list_secrets() == []
+
+    def test_standalone_secret_exists_with_env_var(self, monkeypatch):
+        from kindling.platform_standalone import StandaloneService
+        from unittest.mock import MagicMock
+
+        monkeypatch.setenv("KINDLING_SECRET_MY_TOKEN", "secret-value")
+
+        svc = StandaloneService.__new__(StandaloneService)
+        svc.logger = MagicMock()
+        svc._config_get = MagicMock(return_value=None)
+
+        assert svc.secret_exists("my-token") is True
+        assert svc.secret_exists("nonexistent-secret-xyz") is False
+
+    def test_standalone_list_secrets_returns_prefixed_env_vars(self, monkeypatch):
+        from kindling.platform_standalone import StandaloneService
+        from unittest.mock import MagicMock
+
+        for key in ["KINDLING_SECRET_DB_PASS", "KINDLING_SECRET_API_KEY"]:
+            monkeypatch.setenv(key, "value")
+
+        svc = StandaloneService.__new__(StandaloneService)
+        svc.logger = MagicMock()
+
+        secrets = svc.list_secrets()
+        assert "db-pass" in secrets
+        assert "api-key" in secrets
+
+    def test_platform_service_secret_provider_delegates_secret_exists(self):
+        from kindling.platform_provider import (
+            PlatformServiceProvider,
+            PlatformServiceSecretProvider,
+            SecretProvider,
+        )
+
+        class FakePlatformService:
+            def get_secret(self, secret_name, default=None):
+                return "value"
+
+            def secret_exists(self, secret_name):
+                return secret_name == "known-secret"
+
+        class FakeProvider(PlatformServiceProvider):
+            def set_service(self, svc):
+                pass
+
+            def get_service(self):
+                return FakePlatformService()
+
+        GlobalInjector.bind(PlatformServiceProvider, FakeProvider())
+
+        wrapper = PlatformServiceSecretProvider()
+        assert wrapper.secret_exists("known-secret") is True
+        assert wrapper.secret_exists("unknown-secret") is False
+
+    def test_platform_service_secret_provider_delegates_list_secrets(self):
+        from kindling.platform_provider import (
+            PlatformServiceProvider,
+            PlatformServiceSecretProvider,
+        )
+
+        class FakePlatformService:
+            def get_secret(self, secret_name, default=None):
+                raise KeyError(secret_name)
+
+            def list_secrets(self):
+                return ["token-a", "token-b"]
+
+        class FakeProvider(PlatformServiceProvider):
+            def set_service(self, svc):
+                pass
+
+            def get_service(self):
+                return FakePlatformService()
+
+        GlobalInjector.bind(PlatformServiceProvider, FakeProvider())
+
+        wrapper = PlatformServiceSecretProvider()
+        assert wrapper.list_secrets() == ["token-a", "token-b"]
+
+
 class TestSecretLoaderRegistration:
     def setup_method(self):
         GlobalInjector.reset()
