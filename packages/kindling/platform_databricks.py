@@ -274,6 +274,29 @@ class DatabricksService(PlatformService):
             )
         raise KeyError(f"Databricks secret not found: {secret_name}")
 
+    def secret_exists(self, secret_name: str) -> bool:
+        try:
+            self.get_secret(secret_name)
+            return True
+        except KeyError:
+            return False
+
+    def list_secrets(self) -> list:
+        import __main__
+
+        scope = (
+            self._config_get("kindling.secrets.secret_scope")
+            or self._config_get("secret_scope")
+            or self._config_get("secrets.secret_scope")
+        )
+        dbutils = getattr(__main__, "dbutils", None)
+        if dbutils and hasattr(dbutils, "secrets") and scope:
+            try:
+                return [s.key for s in dbutils.secrets.list(scope=scope)]
+            except Exception:
+                pass
+        return []
+
     def exists(self, path: str) -> bool:
         """Check if file/path exists using dbutils"""
         import __main__
