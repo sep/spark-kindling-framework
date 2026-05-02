@@ -6,6 +6,7 @@ services:
     volumes:
       - ..:/workspaces/kindling:cached
       - spark-warehouse:/spark-warehouse
+      - gt-hq:/home/vscode/gt-hq
     command: sleep infinity
     environment:
       - PYTHONPATH=/workspaces/kindling
@@ -13,3 +14,4 @@ services:
 
 volumes:
   spark-warehouse:
+  gt-hq:
