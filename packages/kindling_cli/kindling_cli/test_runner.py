@@ -205,8 +205,8 @@ def run_tests(options: TestRunOptions) -> int:
         return preflight_rc
 
     args = build_pytest_args(options)
-    print(f"Running: {' '.join(args)}")
-    print()
+    print(f"Running: {' '.join(args)}", flush=True)
+    print(flush=True)
     return subprocess.run(args).returncode
 
 
@@ -228,8 +228,8 @@ def run_cleanup(
     elif all_platforms:
         cmd.append("--all")
 
-    print(f"Running: {' '.join(cmd)}")
-    print()
+    print(f"Running: {' '.join(cmd)}", flush=True)
+    print(flush=True)
     result = subprocess.run(cmd)
     if result.returncode != 0 or platform or skip_packages:
         return result.returncode
@@ -239,8 +239,8 @@ def run_cleanup(
         return result.returncode
 
     package_cmd = [sys.executable, str(package_cleanup)]
-    print(f"Running: {' '.join(package_cmd)}")
-    print()
+    print(f"Running: {' '.join(package_cmd)}", flush=True)
+    print(flush=True)
     return subprocess.run(package_cmd).returncode
 
 

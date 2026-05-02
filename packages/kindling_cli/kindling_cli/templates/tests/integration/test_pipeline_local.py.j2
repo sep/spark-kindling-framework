@@ -1,0 +1,33 @@
+"""Local integration tests — exercises Kindling pipe wiring with in-memory providers.
+
+No Azure credentials required. Run these alongside unit and component tests.
+"""
+
+import pytest
+
+pytestmark = pytest.mark.integration
+
+
+class TestKindlingPipeExecution:
+    """Exercise the generated Kindling pipe wiring with a local SparkSession.
+
+    Uses memory providers so no ABFSS credentials are needed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, spark_local, reset_kindling):
+        from {{ snake_name }}.app import initialize
+
+        self.spark = spark_local
+        self.svc = initialize(env="local")
+
+    def test_generated_pipe_runs_through_kindling(self):
+        from kindling.data_pipes import DataPipesExecution
+        from kindling.injection import get_kindling_service
+
+        executor = get_kindling_service(DataPipesExecution)
+{% if layers == "medallion" %}
+        executor.run_datapipes(["bronze_to_silver"])
+{% else %}
+        executor.run_datapipes(["process_records"])
+{% endif %}
