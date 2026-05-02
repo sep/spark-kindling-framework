@@ -6,21 +6,23 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  REGISTRY: ghcr.io
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Use the versioned devcontainer image — has Java 21, Poetry, and kindling
+    # wheels pre-installed so `poetry install` resolves without hitting PyPI.
+    container:
+      image: ghcr.io/sep/spark-kindling-framework/devcontainer:{{ kindling_version }}
+      credentials:
+        username: ${{ "{{" }} github.actor {{ "}}" }}
+        password: ${{ "{{" }} secrets.GITHUB_TOKEN {{ "}}" }}
 
     steps:
       - name: Check out code
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Poetry
-        uses: abatilo/actions-poetry@v3
 
       - name: Test all packages
         shell: bash
