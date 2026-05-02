@@ -33,6 +33,18 @@ class SecretProvider(ABC):
         """Resolve secret value by name."""
         pass
 
+    def secret_exists(self, secret_name: str) -> bool:
+        """Return True if the secret exists and can be retrieved."""
+        try:
+            self.get_secret(secret_name)
+            return True
+        except (KeyError, Exception):
+            return False
+
+    def list_secrets(self) -> list:
+        """List available secret names. Returns empty list if not supported by the platform."""
+        return []
+
 
 @GlobalInjector.singleton_autobind(SecretProvider)
 class PlatformServiceSecretProvider(SecretProvider):
@@ -52,3 +64,25 @@ class PlatformServiceSecretProvider(SecretProvider):
             f"No platform secret provider available for '{secret_name}'. "
             "Ensure platform services are initialized."
         )
+
+    def secret_exists(self, secret_name: str) -> bool:
+        platform_provider = get_kindling_service(PlatformServiceProvider)
+        platform_service = platform_provider.get_service() if platform_provider else None
+
+        if platform_service and hasattr(platform_service, "secret_exists"):
+            return platform_service.secret_exists(secret_name)
+
+        try:
+            self.get_secret(secret_name)
+            return True
+        except KeyError:
+            return False
+
+    def list_secrets(self) -> list:
+        platform_provider = get_kindling_service(PlatformServiceProvider)
+        platform_service = platform_provider.get_service() if platform_provider else None
+
+        if platform_service and hasattr(platform_service, "list_secrets"):
+            return platform_service.list_secrets()
+
+        return []
