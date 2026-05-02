@@ -38,7 +38,7 @@ class SecretProvider(ABC):
         try:
             self.get_secret(secret_name)
             return True
-        except (KeyError, Exception):
+        except KeyError:
             return False
 
     def list_secrets(self) -> list:
