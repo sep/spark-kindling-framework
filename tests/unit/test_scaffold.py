@@ -115,7 +115,8 @@ def test_generate_package_creates_package_structure(tmp_path, layers, auth, inte
         assert (root / rel).is_dir(), f"Missing package dir {rel}"
 
     if integration:
-        assert (root / "tests/integration/test_pipeline.py").exists()
+        assert (root / "tests/integration/test_pipeline_azure.py").exists()
+        assert (root / "tests/integration/test_pipeline_local.py").exists()
     else:
         assert not (root / "tests/integration").exists()
 
@@ -209,10 +210,10 @@ def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path
     generate_package(cfg)
 
     pyproject = (_package_root(repo_root, "proj") / "pyproject.toml").read_text()
-    assert 'spark-kindling = {version = ">=0.9.2", extras = ["standalone"]}' in pyproject
+    assert 'spark-kindling = {version = ">=' in pyproject
+    assert 'extras = ["standalone"]}' in pyproject
     assert 'poethepoet = ">=0.24.0"' in pyproject
-    # [implementer] scaffold installs CLI commands for local DX by default — TASK-20260430-002
-    assert 'spark-kindling-cli = ">=0.9.3"' in pyproject
+    assert 'spark-kindling-cli = ">=' in pyproject
     assert 'test = { sequence = ["test-unit", "test-component"] }' in pyproject
     assert 'test-unit = "pytest tests/unit -v"' in pyproject
     assert 'test-component = "pytest tests/component -v"' in pyproject

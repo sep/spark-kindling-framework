@@ -39,7 +39,7 @@ kindling:
   # Optional secret provider configuration.
   # Use either linked_service OR key_vault_url depending on platform setup.
   secrets:
-    secret_scope: "kindling-system-tests"
+    # secret_scope: "my-secret-scope"
     # linked_service: "my-keyvault-linked-service"
     # key_vault_url: "https://my-vault.vault.azure.net/"
 """
@@ -48,6 +48,22 @@ kindling:
 def _render_settings_template(name: str) -> str:
     safe_name = (name or "").strip() or "my-kindling-app"
     return DEFAULT_SETTINGS_TEMPLATE.format(name=safe_name)
+
+
+def _infer_project_name() -> str:
+    """Read the project name from the nearest pyproject.toml, falling back to a default."""
+    import re
+
+    for candidate in (Path("pyproject.toml"), Path("../pyproject.toml")):
+        if candidate.exists():
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="ignore")
+                m = re.search(r'^name\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+                if m:
+                    return m.group(1)
+            except OSError:
+                pass
+    return "my-kindling-app"
 
 
 def _load_yaml_config(config_path: Path) -> Dict[str, Any]:
@@ -345,7 +361,6 @@ def _print_check_results(checks: List[Tuple[str, bool, str]]) -> bool:
     return all_passed
 
 
-# [implementer] add local app discovery for run and validate — TASK-20260430-001
 def _discover_app_py(app_path: Optional[Path]) -> Path:
     """Find a Kindling app.py from an explicit path or conventional local layout."""
     if app_path is not None:
@@ -359,14 +374,20 @@ def _discover_app_py(app_path: Optional[Path]) -> Path:
         cwd / "app.py",
         *sorted((cwd / "src").glob("*/app.py")),
         *sorted((cwd.parent / "src").glob("*/app.py")),
+        # repo-root layout: packages/<pkg>/src/<pkg>/app.py
+        *sorted((cwd / "packages").glob("*/src/*/app.py")),
     ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate.resolve()
-
-    raise click.ClickException(
-        "Could not find app.py. Run from your package directory or pass --app path/to/app.py"
-    )
+    found = [c.resolve() for c in candidates if c.exists()]
+    if not found:
+        raise click.ClickException(
+            "Could not find app.py. Run from your package directory or pass --app path/to/app.py"
+        )
+    if len(found) > 1:
+        listed = "\n  ".join(str(p) for p in found)
+        raise click.ClickException(
+            f"Multiple app.py files found — pass --app to select one:\n  {listed}"
+        )
+    return found[0]
 
 
 def _load_app_module(app_path: Path, env: Optional[str], config_dir: Optional[Path] = None) -> None:
@@ -454,8 +475,18 @@ def cli() -> None:
     type=click.Path(path_type=Path, file_okay=False, exists=False),
     help="Config directory override, if app.py supports it",
 )
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="Suppress INFO-level framework logs; show WARNING and above only.",
+)
 def run_pipe(
-    pipe_id: str, env: Optional[str], app_path: Optional[Path], config_dir: Optional[Path]
+    pipe_id: str,
+    env: Optional[str],
+    app_path: Optional[Path],
+    config_dir: Optional[Path],
+    quiet: bool,
 ) -> None:
     """Execute a registered pipe locally."""
     try:
@@ -465,6 +496,18 @@ def run_pipe(
         raise click.ClickException(
             "kindling package is required. Install with: pip install spark-kindling[standalone]"
         ) from exc
+
+    if quiet:
+        import logging
+
+        logging.disable(logging.INFO)
+        # Kindling's SparkLogProvider uses print() when print_logging=True,
+        # bypassing logging.disable(). The config is loaded via Dynaconf with
+        # envvar_prefix="KINDLING" and __ as the nested-key separator, and
+        # _translate_yaml_to_flat reads kindling.TELEMETRY.logging.* — so we
+        # must override the nested YAML keys, not the flat bootstrap keys.
+        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__PRINT", "false")
+        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__LEVEL", "WARNING")
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
     resolved_app = _discover_app_py(app_path)
@@ -727,13 +770,17 @@ def config_group() -> None:
 @click.option(
     "--output",
     "output_path",
-    default="settings.yaml",
+    default="config/settings.yaml",
     show_default=True,
     type=click.Path(path_type=Path, dir_okay=False, writable=True),
 )
-@click.option("--name", default="my-kindling-app", show_default=True, help="App name in config.")
+@click.option(
+    "--name",
+    default=None,
+    help="App name written into the config. Inferred from pyproject.toml when omitted.",
+)
 @click.option("--force", is_flag=True, help="Overwrite output file if it already exists.")
-def config_init(output_path: Path, name: str, force: bool) -> None:
+def config_init(output_path: Path, name: Optional[str], force: bool) -> None:
     """Generate an initial `settings.yaml` file."""
     destination = output_path.expanduser()
     if destination.exists() and not force:
@@ -741,8 +788,9 @@ def config_init(output_path: Path, name: str, force: bool) -> None:
             f"Refusing to overwrite existing file `{destination}`. Use --force to overwrite."
         )
 
+    resolved_name = name or _infer_project_name()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(_render_settings_template(name), encoding="utf-8")
+    destination.write_text(_render_settings_template(resolved_name), encoding="utf-8")
     click.echo(f"Wrote `{destination}`")
 
 
@@ -1934,8 +1982,8 @@ def app_group() -> None:
     "--output",
     "output_path",
     default=None,
-    type=click.Path(path_type=Path, dir_okay=False),
-    help="Destination .kda file. Defaults to dist/<app-dir>.kda.",
+    type=click.Path(path_type=Path),
+    help="Destination .kda file or directory. Defaults to dist/<app-dir>.kda.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) -> None:
@@ -1943,11 +1991,14 @@ def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) 
     resolved_app_path = app_path.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
 
-    resolved_output = (
-        output_path.expanduser().resolve()
-        if output_path
-        else (Path.cwd() / "dist" / f"{resolved_app_path.name}.kda").resolve()
-    )
+    if output_path is None:
+        resolved_output = (Path.cwd() / "dist" / f"{resolved_app_path.name}.kda").resolve()
+    else:
+        expanded = output_path.expanduser().resolve()
+        if expanded.is_dir():
+            resolved_output = expanded / f"{resolved_app_path.name}.kda"
+        else:
+            resolved_output = expanded
     resolved_output.parent.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(resolved_output, "w", compression=zipfile.ZIP_DEFLATED) as archive:

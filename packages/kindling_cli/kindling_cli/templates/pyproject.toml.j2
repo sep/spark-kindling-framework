@@ -1,3 +1,12 @@
+# Kindling packages are resolved from the devcontainer image's local PEP 503
+# index so `poetry install` works without a PyPI connection.
+# Outside the devcontainer (e.g. CI using the same image), this source is
+# present at the same path and resolution is identical.
+[[tool.poetry.source]]
+name = "kindling-packages"
+url = "file:///opt/kindling-packages/simple/"
+priority = "supplemental"
+
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
@@ -12,13 +21,13 @@ packages = [{include = "{{ snake_name }}", from = "src"}]
 python = "^3.10"
 # The runtime distribution is published as `spark-kindling`, while imports
 # remain `import kindling`. The standalone extra pulls in local Spark deps.
-spark-kindling = {version = ">=0.9.2", extras = ["standalone"]}
+spark-kindling = {version = ">={{ kindling_version }}", extras = ["standalone"]}
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"
 pytest-cov = ">=4.0.0"
 poethepoet = ">=0.24.0"
-spark-kindling-cli = ">=0.9.3"
+spark-kindling-cli = ">={{ kindling_version }}"
 
 [tool.poe.tasks]
 test-unit = "pytest tests/unit -v"

@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import keyword
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
+
+
+def _kindling_version() -> str:
+    try:
+        return importlib.metadata.version("spark-kindling-cli")
+    except importlib.metadata.PackageNotFoundError:
+        return "latest"
+
 
 import jinja2
 
@@ -101,6 +110,7 @@ def _repo_ctx(cfg: RepoScaffoldConfig) -> dict:
         "repo_snake_name": cfg.snake_name,
         "repo_kebab_name": cfg.kebab_name,
         "primary_package_snake_name": cfg.primary_package_snake_name,
+        "kindling_version": _kindling_version(),
     }
 
 
@@ -114,6 +124,7 @@ def _package_ctx(cfg: PackageScaffoldConfig) -> dict:
         "layers": cfg.layers,
         "integration": cfg.integration,
         "primary_package_snake_name": cfg.snake_name,
+        "kindling_version": _kindling_version(),
     }
 
 
@@ -202,8 +213,12 @@ def generate_package(cfg: PackageScaffoldConfig) -> List[Path]:
     if cfg.integration:
         _write("tests/integration/__init__.py", "")
         _write(
-            "tests/integration/test_pipeline.py",
-            _render(env, "tests/integration/test_pipeline.py.j2", ctx),
+            "tests/integration/test_pipeline_azure.py",
+            _render(env, "tests/integration/test_pipeline_azure.py.j2", ctx),
+        )
+        _write(
+            "tests/integration/test_pipeline_local.py",
+            _render(env, "tests/integration/test_pipeline_local.py.j2", ctx),
         )
 
     _write("pyproject.toml", _render(env, "pyproject.toml.j2", ctx))

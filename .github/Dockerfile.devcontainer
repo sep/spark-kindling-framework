@@ -1,0 +1,115 @@
+# Kindling developer environment image.
+#
+# Published to ghcr.io/sep/spark-kindling-framework/devcontainer:<version>
+# as part of each kindling release. Projects scaffolded with `kindling new`
+# use this as their devcontainer base so developers get a fully-working
+# environment without any install steps beyond `poetry install`.
+#
+# What's baked in:
+#   - Python 3.11 + Java 21 (for PySpark 3.5)
+#   - Poetry (for project-level dependency management)
+#   - spark-kindling and spark-kindling-cli wheels at /opt/kindling-packages/
+#   - A PEP 503 simple index at /opt/kindling-packages/simple/ so Poetry
+#     resolves these packages without hitting PyPI
+#   - Hadoop Azure JARs at /opt/hadoop-jars (ABFSS integration tests)
+#   - /tmp/hadoop-jars symlink expected by conftest.py fixtures
+#   - /spark-warehouse pre-created and owned by vscode
+
+ARG KINDLING_VERSION=0.9.5
+
+FROM mcr.microsoft.com/devcontainers/python:3.11
+
+ARG KINDLING_VERSION
+
+# System deps: Java 21 for PySpark 3.5
+RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
+    && apt-get -y install --no-install-recommends \
+        openjdk-21-jdk-headless \
+        curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Install Poetry globally (version-pinned for reproducibility)
+RUN pip install --no-cache-dir poetry==1.8.3
+
+# Build kindling wheels from source and install them.
+# The source tree is copied in at build time; /build is removed afterwards
+# so it doesn't bloat the final layer.
+WORKDIR /build
+COPY pyproject.toml poetry.lock ./
+COPY packages/ ./packages/
+
+RUN poetry build --output /opt/kindling-packages/wheels/ \
+    && cd packages/kindling_cli && poetry build --output /opt/kindling-packages/wheels/ \
+    && cd /build/packages/kindling_sdk && poetry build --output /opt/kindling-packages/wheels/ 2>/dev/null || true
+
+# Create a PEP 503 simple index from the wheels so Poetry can resolve them
+# without a network call to PyPI.
+RUN python3 - << 'EOF'
+import hashlib, pathlib, re
+
+wheels_dir = pathlib.Path("/opt/kindling-packages/wheels")
+simple_dir = pathlib.Path("/opt/kindling-packages/simple")
+simple_dir.mkdir(parents=True)
+
+packages: dict = {}
+for whl in sorted(wheels_dir.glob("*.whl")):
+    raw = whl.name.split("-")[0]
+    pkg = re.sub(r"[-_.]+", "-", raw).lower()
+    packages.setdefault(pkg, []).append(whl)
+
+# Root index
+links = "\n".join(f'<a href="{name}/">{name}</a>' for name in sorted(packages))
+(simple_dir / "index.html").write_text(
+    f"<!DOCTYPE html><html><body>\n{links}\n</body></html>\n"
+)
+
+# Per-package indexes
+for pkg_name, wheels in packages.items():
+    pkg_dir = simple_dir / pkg_name
+    pkg_dir.mkdir(exist_ok=True)
+    entries = []
+    for whl in wheels:
+        digest = hashlib.sha256(whl.read_bytes()).hexdigest()
+        entries.append(f'<a href="file://{whl}#sha256={digest}">{whl.name}</a>')
+    body = "\n".join(entries)
+    (pkg_dir / "index.html").write_text(
+        f"<!DOCTYPE html><html><body>\n{body}\n</body></html>\n"
+    )
+
+print(f"PEP 503 index created: {len(packages)} package(s)")
+EOF
+
+# Pre-install the kindling wheels into the system Python so that Poetry's
+# environment resolution (and plain `import kindling`) works immediately.
+RUN pip install --no-cache-dir \
+    "/opt/kindling-packages/wheels/spark_kindling-${KINDLING_VERSION}-py3-none-any.whl[standalone]" \
+    "/opt/kindling-packages/wheels/spark_kindling_cli-${KINDLING_VERSION}-py3-none-any.whl"
+
+# Pre-download Hadoop Azure JARs needed for local ABFSS integration tests.
+# Stored in /opt/hadoop-jars (stable image layer).
+# conftest.py fixtures reference /tmp/hadoop-jars via the symlink below.
+RUN mkdir -p /opt/hadoop-jars \
+    && curl -fsSL -o /opt/hadoop-jars/hadoop-azure-3.3.4.jar \
+        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar \
+    && curl -fsSL -o /opt/hadoop-jars/hadoop-azure-datalake-3.3.4.jar \
+        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure-datalake/3.3.4/hadoop-azure-datalake-3.3.4.jar \
+    && curl -fsSL -o /opt/hadoop-jars/azure-storage-8.6.6.jar \
+        https://repo1.maven.org/maven2/com/microsoft/azure/azure-storage/8.6.6/azure-storage-8.6.6.jar \
+    && curl -fsSL -o /opt/hadoop-jars/wildfly-openssl-1.1.3.Final.jar \
+        https://repo1.maven.org/maven2/org/wildfly/openssl/wildfly-openssl/1.1.3.Final/wildfly-openssl-1.1.3.Final.jar \
+    && curl -fsSL -o /opt/hadoop-jars/jetty-util-ajax-9.4.51.v20230217.jar \
+        https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar \
+    && ln -s /opt/hadoop-jars /tmp/hadoop-jars
+
+RUN mkdir -p /spark-warehouse && chown -R vscode:vscode /spark-warehouse
+
+# Remove build source — wheels and index are all that consumers need
+RUN rm -rf /build
+
+LABEL org.opencontainers.image.source="https://github.com/sep/spark-kindling-framework"
+LABEL org.opencontainers.image.description="Kindling developer environment — Python 3.11, Java 21, kindling wheels, Hadoop JARs"
+LABEL org.opencontainers.image.version="${KINDLING_VERSION}"
