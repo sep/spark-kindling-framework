@@ -298,7 +298,9 @@ class DatabricksService(PlatformService):
                 pass
 
         env_key = key.upper().replace("-", "_").replace(".", "_").replace(":", "_")
-        return any(os.getenv(c) is not None for c in [secret_name, env_key, f"KINDLING_SECRET_{env_key}"])
+        return any(
+            os.getenv(c) is not None for c in [secret_name, env_key, f"KINDLING_SECRET_{env_key}"]
+        )
 
     def list_secrets(self) -> list:
         import __main__
@@ -313,7 +315,9 @@ class DatabricksService(PlatformService):
             try:
                 return [s.key for s in dbutils.secrets.list(scope=scope)]
             except Exception as exc:
-                logging.warning("DatabricksService.list_secrets: failed to list scope %r: %s", scope, exc)
+                logging.warning(
+                    "DatabricksService.list_secrets: failed to list scope %r: %s", scope, exc
+                )
         return []
 
     def exists(self, path: str) -> bool:
