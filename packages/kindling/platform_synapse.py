@@ -211,6 +211,16 @@ class SynapseService(PlatformService):
             "or kindling.secrets.key_vault_url, or set environment fallback."
         )
 
+    def secret_exists(self, secret_name: str) -> bool:
+        try:
+            self.get_secret(secret_name)
+            return True
+        except (KeyError, Exception):
+            return False
+
+    def list_secrets(self) -> list:
+        return []
+
     def exists(self, path: str) -> bool:
         """Check if a file exists"""
         try:

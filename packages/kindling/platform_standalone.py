@@ -211,6 +211,18 @@ class StandaloneService(PlatformService):
 
         raise KeyError(f"Secret not found in environment: {secret_name}")
 
+    def secret_exists(self, secret_name: str) -> bool:
+        env_key = secret_name.upper().replace("-", "_").replace(".", "_").replace(":", "_")
+        return any(
+            os.getenv(k) is not None for k in [secret_name, env_key, f"KINDLING_SECRET_{env_key}"]
+        )
+
+    def list_secrets(self) -> list:
+        prefix = "KINDLING_SECRET_"
+        return [
+            k[len(prefix) :].lower().replace("_", "-") for k in os.environ if k.startswith(prefix)
+        ]
+
     def exists(self, path: str) -> bool:
         """Check if a file exists (supports local and distributed storage)"""
         try:
