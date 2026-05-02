@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import subprocess
@@ -275,11 +276,31 @@ class DatabricksService(PlatformService):
         raise KeyError(f"Databricks secret not found: {secret_name}")
 
     def secret_exists(self, secret_name: str) -> bool:
-        try:
-            self.get_secret(secret_name)
-            return True
-        except KeyError:
-            return False
+        import __main__
+
+        scope = (
+            self._config_get("kindling.secrets.secret_scope")
+            or self._config_get("secret_scope")
+            or self._config_get("secrets.secret_scope")
+        )
+        key = secret_name
+        if ":" in secret_name:
+            possible_scope, possible_key = secret_name.split(":", 1)
+            if possible_scope and possible_key:
+                scope = possible_scope
+                key = possible_key
+
+        dbutils = getattr(__main__, "dbutils", None)
+        if dbutils and hasattr(dbutils, "secrets") and scope:
+            try:
+                return any(s.key == key for s in dbutils.secrets.list(scope=scope))
+            except Exception:
+                pass
+
+        env_key = key.upper().replace("-", "_").replace(".", "_").replace(":", "_")
+        return any(
+            os.getenv(c) is not None for c in [secret_name, env_key, f"KINDLING_SECRET_{env_key}"]
+        )
 
     def list_secrets(self) -> list:
         import __main__
@@ -293,8 +314,10 @@ class DatabricksService(PlatformService):
         if dbutils and hasattr(dbutils, "secrets") and scope:
             try:
                 return [s.key for s in dbutils.secrets.list(scope=scope)]
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.warning(
+                    "DatabricksService.list_secrets: failed to list scope %r: %s", scope, exc
+                )
         return []
 
     def exists(self, path: str) -> bool:
