@@ -39,7 +39,7 @@ RUN pip install --no-cache-dir poetry==1.8.3
 # The source tree is copied in at build time; /build is removed afterwards
 # so it doesn't bloat the final layer.
 WORKDIR /build
-COPY pyproject.toml poetry.lock ./
+COPY pyproject.toml poetry.lock README.md ./
 COPY packages/ ./packages/
 
 RUN poetry build --output /opt/kindling-packages/wheels/ \

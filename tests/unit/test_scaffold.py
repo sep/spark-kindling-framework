@@ -210,10 +210,10 @@ def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path
     generate_package(cfg)
 
     pyproject = (_package_root(repo_root, "proj") / "pyproject.toml").read_text()
-    assert 'spark-kindling = {version = ">=' in pyproject
-    assert 'extras = ["standalone"]}' in pyproject
+    assert "spark-kindling = {path = " in pyproject
+    assert 'extras = ["standalone"]' in pyproject
     assert 'poethepoet = ">=0.24.0"' in pyproject
-    assert 'spark-kindling-cli = ">=' in pyproject
+    assert "spark-kindling-cli = {path = " in pyproject
     assert 'test = { sequence = ["test-unit", "test-component"] }' in pyproject
     assert 'test-unit = "pytest tests/unit -v"' in pyproject
     assert 'test-component = "pytest tests/component -v"' in pyproject
