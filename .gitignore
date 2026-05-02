@@ -120,3 +120,8 @@ refinery/
 settings/
 witness/
 .runtime/
+.claude/
+.logs/
+state.json
+CLAUDE.md
+CLAUDE.local.md
