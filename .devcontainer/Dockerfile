@@ -63,7 +63,9 @@ RUN pip install --no-cache-dir \
     databricks-sdk \
     # Build tools
     poetry \
-    poethepoet
+    poethepoet \
+    # Beads MCP server for GitHub Copilot integration
+    beads-mcp
 
 # Pre-download hadoop-azure JARs for local ABFSS integration testing.
 # Stored at /opt/hadoop-jars (stable image layer); /tmp/hadoop-jars is a
