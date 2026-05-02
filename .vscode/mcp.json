@@ -1,0 +1,7 @@
+{
+  "servers": {
+    "beads": {
+      "command": "/home/vscode/.local/bin/beads-mcp"
+    }
+  }
+}
