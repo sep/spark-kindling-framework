@@ -112,3 +112,11 @@ setup_agents.sh
 .dolt/
 *.db
 .beads-credential-key
+
+# Gas Town rig infrastructure (lives in ~/gt-hq/kindling/, not here)
+mayor/
+polecats/
+refinery/
+settings/
+witness/
+.runtime/
