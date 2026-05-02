@@ -61,6 +61,10 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/ci
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build-ci-image:
     name: Build CI Image
