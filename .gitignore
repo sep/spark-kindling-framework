@@ -45,6 +45,7 @@ local_workspace/
 
 # IDEs
 .vscode/
+!.vscode/mcp.json
 .idea/
 *.code-workspace
 *.swp
