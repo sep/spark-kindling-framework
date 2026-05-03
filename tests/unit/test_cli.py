@@ -1173,20 +1173,31 @@ def test_job_init_produces_valid_yaml():
 # ---------------------------------------------------------------------------
 
 
+_BLANK_PLATFORM_DETECT_VARS = {
+    "FABRIC_WORKSPACE_ID": "",
+    "SYNAPSE_WORKSPACE_NAME": "",
+    "DATABRICKS_HOST": "",
+}
+
+
 class TestEnvCheckPlatform:
     def _run_with_env(self, platform: str, env: dict):
         runner = CliRunner()
+        merged = {**_BLANK_PLATFORM_DETECT_VARS, **env}
         with runner.isolated_filesystem():
             runner.invoke(cli, ["config", "init"])
             result = runner.invoke(
-                cli, ["env", "check", "--platform", platform], env=env, catch_exceptions=False
+                cli, ["env", "check", "--platform", platform], env=merged, catch_exceptions=False
             )
         return result
 
     def test_databricks_all_vars_set_passes(self):
         result = self._run_with_env(
             "databricks",
-            {"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net", "DATABRICKS_TOKEN": "dapi-abc"},
+            {
+                "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+                "DATABRICKS_TOKEN": "dapi-abc",
+            },
         )
         assert "[PASS] env:DATABRICKS_HOST" in result.output
         assert "[PASS] env:DATABRICKS_TOKEN" in result.output
@@ -1252,7 +1263,10 @@ class TestEnvCheckPlatform:
     def test_platform_label_shown_in_output(self):
         result = self._run_with_env(
             "databricks",
-            {"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net", "DATABRICKS_TOKEN": "dapi-abc"},
+            {
+                "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+                "DATABRICKS_TOKEN": "dapi-abc",
+            },
         )
         assert "[PASS] platform: databricks" in result.output
 
@@ -1260,7 +1274,12 @@ class TestEnvCheckPlatform:
         runner = CliRunner()
         with runner.isolated_filesystem():
             runner.invoke(cli, ["config", "init"])
-            result = runner.invoke(cli, ["env", "check"], env={}, catch_exceptions=False)
+            result = runner.invoke(
+                cli,
+                ["env", "check"],
+                env=dict(_BLANK_PLATFORM_DETECT_VARS),
+                catch_exceptions=False,
+            )
         assert "env:DATABRICKS_HOST" not in result.output
         assert "env:FABRIC_WORKSPACE_ID" not in result.output
         assert "env:SYNAPSE_WORKSPACE_NAME" not in result.output
@@ -1272,7 +1291,11 @@ class TestEnvCheckPlatform:
             result = runner.invoke(
                 cli,
                 ["env", "check"],
-                env={"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net", "DATABRICKS_TOKEN": "dapi-abc"},
+                env={
+                    **_BLANK_PLATFORM_DETECT_VARS,
+                    "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+                    "DATABRICKS_TOKEN": "dapi-abc",
+                },
                 catch_exceptions=False,
             )
         assert "[PASS] platform: databricks" in result.output

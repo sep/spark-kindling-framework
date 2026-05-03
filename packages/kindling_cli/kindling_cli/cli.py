@@ -989,22 +989,15 @@ _HADOOP_JAR_URLS = (
 )
 
 
-_PLATFORM_ENV_VARS: Dict[str, List[str]] = {
+_PLATFORM_BASE_VARS: Dict[str, List[str]] = {
     "databricks": ["DATABRICKS_HOST", "DATABRICKS_TOKEN"],
-    "fabric": [
-        "FABRIC_WORKSPACE_ID",
-        "FABRIC_LAKEHOUSE_ID",
-        "AZURE_TENANT_ID",
-        "AZURE_CLIENT_ID",
-        "AZURE_CLIENT_SECRET",
-    ],
-    "synapse": [
-        "SYNAPSE_WORKSPACE_NAME",
-        "AZURE_TENANT_ID",
-        "AZURE_CLIENT_ID",
-        "AZURE_CLIENT_SECRET",
-    ],
+    "fabric": ["FABRIC_WORKSPACE_ID", "FABRIC_LAKEHOUSE_ID"],
+    "synapse": ["SYNAPSE_WORKSPACE_NAME"],
 }
+
+# Only required when using service-principal auth; az login / managed identity needs none of these.
+_AZURE_SP_VARS: List[str] = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"]
+_AZURE_SP_PLATFORMS: frozenset = frozenset({"fabric", "synapse"})
 
 
 def _check_java() -> Tuple[bool, str]:
@@ -1172,9 +1165,16 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
     resolved_platform = platform or _detect_platform_from_environment()
     if resolved_platform:
         checks.append(("platform", True, resolved_platform))
-        for var in _PLATFORM_ENV_VARS.get(resolved_platform, []):
+        for var in _PLATFORM_BASE_VARS.get(resolved_platform, []):
             val = os.getenv(var)
             checks.append((f"env:{var}", bool(val), "set" if val else "missing"))
+        if resolved_platform in _AZURE_SP_PLATFORMS:
+            sp_vals = [os.getenv(v) for v in _AZURE_SP_VARS]
+            if any(sp_vals):
+                for var, val in zip(_AZURE_SP_VARS, sp_vals):
+                    checks.append((f"env:{var}", bool(val), "set" if val else "missing"))
+            else:
+                checks.append(("azure_auth", True, "az login / managed identity"))
 
     if _print_check_results(checks):
         click.echo("Environment check passed.")
