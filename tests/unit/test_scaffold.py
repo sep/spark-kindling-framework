@@ -309,6 +309,42 @@ class TestScaffoldCommands:
         assert (tmp_path / "test_proj").is_dir()
         assert (tmp_path / "test_proj" / "packages" / "test_proj").is_dir()
 
+    def test_new_prints_next_steps(self, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["new", "my-proj", "--output-dir", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        assert "Next steps" in result.output
+        assert "cd my_proj/packages/my_proj" in result.output
+        assert "kindling run bronze_to_silver" in result.output
+        assert "poetry run poe test" in result.output
+        assert "kindling job init" in result.output
+
+    def test_new_minimal_layers_prints_process_pipe(self, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["new", "my-proj", "--layers", "minimal", "--output-dir", str(tmp_path)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "kindling run process" in result.output
+
+    def test_package_init_prints_next_steps(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["package", "init", "my-pkg", "--repo-root", str(repo_root)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Next steps" in result.output
+        assert "cd packages/my_pkg" in result.output
+        assert "kindling run bronze_to_silver" in result.output
+        assert "poetry run poe test" in result.output
+        assert "kindling job init" in result.output
+
     def test_new_no_integration_skips_integration_dir(self, tmp_path):
         runner = CliRunner()
         result = runner.invoke(

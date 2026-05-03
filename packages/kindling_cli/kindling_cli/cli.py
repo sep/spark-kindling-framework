@@ -2957,7 +2957,15 @@ def package_init(
     except Exception as exc:
         raise click.ClickException(f"Package scaffold failed: {exc}") from exc
 
-    click.echo(f"Created package packages/{cfg.snake_name}/ ({len(created)} files)")
+    pipe_name = "bronze_to_silver" if cfg.layers == "medallion" else "process"
+    click.echo(f"✓ Created packages/{cfg.snake_name}/")
+    click.echo()
+    click.echo("Next steps:")
+    click.echo(f"  cd packages/{cfg.snake_name}")
+    click.echo("  poetry install")
+    click.echo(f"  kindling run {pipe_name}        # run your first pipeline locally")
+    click.echo("  poetry run poe test                  # run the test suite")
+    click.echo("  kindling job init                    # scaffold a deployment config when ready")
 
 
 @cli.command("new")
@@ -3075,16 +3083,15 @@ def new_project(
     except Exception as exc:
         raise click.ClickException(f"Scaffold failed: {exc}") from exc
 
-    click.echo(f"Created {cfg.snake_name}/ ({len(created)} files)")
+    pipe_name = "bronze_to_silver" if cfg.layers == "medallion" else "process"
+    click.echo(f"✓ Created {cfg.snake_name}/")
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd {cfg.snake_name}/packages/{cfg.snake_name}")
     click.echo("  poetry install")
-    click.echo("  cp .env.example .env  # optional: only needed for Azure/cloud runs")
-    click.echo("  kindling run bronze_to_silver --env local  # no credentials needed")
-    click.echo("  poetry run poe test")
-    if cfg.integration:
-        click.echo("  poetry run poe test-integration  # requires Azure creds in .env")
+    click.echo(f"  kindling run {pipe_name}        # run your first pipeline locally")
+    click.echo("  poetry run poe test                  # run the test suite")
+    click.echo("  kindling job init                    # scaffold a deployment config when ready")
 
 
 def main() -> None:
