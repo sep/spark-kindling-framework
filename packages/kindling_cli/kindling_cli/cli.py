@@ -1022,6 +1022,11 @@ _AZURE_SP_VARS: List[str] = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT
 _AZURE_SP_PLATFORMS: frozenset = frozenset({"fabric", "synapse"})
 
 
+def _missing_platform_vars(platform: str) -> List[str]:
+    """Return required env vars for platform that are not currently set."""
+    return [var for var in _PLATFORM_BASE_VARS.get(platform, []) if not os.getenv(var)]
+
+
 def _check_java() -> Tuple[bool, str]:
     import subprocess
 
@@ -2312,6 +2317,10 @@ def job_init(
     if resolved_platform:
         source = "explicit" if platform_explicit else "auto-detected from environment"
         click.echo(f"Platform: {resolved_platform} ({source})")
+        click.echo(
+            f"Tip: Run `kindling env check --platform {resolved_platform}`"
+            " to verify credentials before creating the job."
+        )
     else:
         click.echo(
             "Platform not detected — set FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, "
@@ -2337,6 +2346,13 @@ def job_create(config_path: Path, platform: Optional[str]) -> None:
         raise click.ClickException(
             "Unable to determine platform. Set --platform or one of "
             "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    missing = _missing_platform_vars(resolved_platform)
+    if missing:
+        raise click.ClickException(
+            f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
+            f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
         )
 
     job_config = _load_mapping_file(config_path, "job config")
