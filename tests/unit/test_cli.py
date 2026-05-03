@@ -571,6 +571,8 @@ def test_app_deploy_json_output_includes_storage_path(monkeypatch):
 
 
 def test_job_create_loads_yaml_and_prints_structured_result(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "test-workspace")
+
     class FakeAPI:
         def create_job(self, job_name, job_config):
             assert job_name == "nightly-demo"
@@ -1170,6 +1172,73 @@ def test_job_init_produces_valid_yaml():
         assert isinstance(parsed, dict)
         assert parsed["job_name"] == "my-job"
         assert parsed["app_name"] == "my-app"
+
+
+def test_job_init_prints_env_check_hint_for_explicit_platform():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli, ["job", "init", "--name", "j", "--app", "a", "--platform", "fabric"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "kindling env check --platform fabric" in result.output
+
+
+def test_job_init_prints_env_check_hint_for_auto_detected_platform(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["job", "init", "--name", "j", "--app", "a"])
+
+        assert result.exit_code == 0, result.output
+        assert "kindling env check --platform databricks" in result.output
+
+
+def test_job_init_omits_env_check_hint_when_no_platform():
+    runner = CliRunner()
+    env = {"FABRIC_WORKSPACE_ID": "", "SYNAPSE_WORKSPACE_NAME": "", "DATABRICKS_HOST": ""}
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli,
+            ["job", "init", "--name", "j", "--app", "a"],
+            env=env,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "env check" not in result.output
+
+
+def test_job_create_fails_fast_when_platform_vars_missing(monkeypatch):
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("job.yaml").write_text("job_name: my-job\n", encoding="utf-8")
+        result = runner.invoke(cli, ["job", "create", "job.yaml", "--platform", "databricks"])
+
+        assert result.exit_code != 0
+        assert "Missing required environment variables" in result.output
+        assert "DATABRICKS_HOST" in result.output
+        assert "kindling env check --platform databricks" in result.output
+
+
+def test_job_create_does_not_fail_fast_when_platform_vars_present(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "token-abc")
+
+    class FakeAPI:
+        def create_job(self, job_name, job_config):
+            return {"job_id": "j-1", "job_name": job_name}
+
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (FakeAPI(), p))
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("job.yaml").write_text("job_name: my-job\n", encoding="utf-8")
+        result = runner.invoke(cli, ["job", "create", "job.yaml", "--platform", "databricks"])
+
+        assert result.exit_code == 0, result.output
+        assert "Missing" not in result.output
 
 
 # ---------------------------------------------------------------------------
