@@ -55,6 +55,7 @@ REPO_FILES = [
 PACKAGE_FILES = [
     "pyproject.toml",
     ".env.example",
+    "QUICKSTART.md",
     "config/settings.yaml",
     "config/env.local.yaml",
     "tests/conftest.py",
@@ -334,9 +335,7 @@ class TestScaffoldCommands:
         repo_root.mkdir()
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["package", "init", "my-pkg", "--repo-root", str(repo_root)]
-        )
+        result = runner.invoke(cli, ["package", "init", "my-pkg", "--repo-root", str(repo_root)])
 
         assert result.exit_code == 0, result.output
         assert "Next steps" in result.output
