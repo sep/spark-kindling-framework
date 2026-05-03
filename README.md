@@ -1,3 +1,4 @@
+<!-- polecat smoke test: workflow verified ok -->
 # Spark Kindling Framework
 
 **PyPI distribution:** `spark-kindling`
