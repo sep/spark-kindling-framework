@@ -989,6 +989,24 @@ _HADOOP_JAR_URLS = (
 )
 
 
+_PLATFORM_ENV_VARS: Dict[str, List[str]] = {
+    "databricks": ["DATABRICKS_HOST", "DATABRICKS_TOKEN"],
+    "fabric": [
+        "FABRIC_WORKSPACE_ID",
+        "FABRIC_LAKEHOUSE_ID",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+    ],
+    "synapse": [
+        "SYNAPSE_WORKSPACE_NAME",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+    ],
+}
+
+
 def _check_java() -> Tuple[bool, str]:
     import subprocess
 
@@ -1058,7 +1076,17 @@ def _check_hadoop_jars() -> Tuple[bool, str]:
         "Java, PySpark, delta-spark, and hadoop-azure JARs."
     ),
 )
-def env_check(config_path: Optional[Path], local_checks: bool) -> None:
+@click.option(
+    "--platform",
+    "platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help=(
+        "Check pre-flight credential env vars for the given platform "
+        "(synapse, databricks, or fabric). Auto-detected from environment if not set."
+    ),
+)
+def env_check(config_path: Optional[Path], local_checks: bool, platform: Optional[str]) -> None:
     """Check if local environment is ready for Kindling.
 
     \b
@@ -1069,6 +1097,18 @@ def env_check(config_path: Optional[Path], local_checks: bool) -> None:
       - pyspark installed
       - delta-spark installed
       - hadoop-azure JARs present in /tmp/hadoop-jars/
+
+    \b
+    With --platform <name>, checks that the required credential env vars for
+    the given platform are set.  The platform is also auto-detected from the
+    environment (FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST)
+    when --platform is omitted.
+
+      --platform databricks  DATABRICKS_HOST, DATABRICKS_TOKEN
+      --platform fabric      FABRIC_WORKSPACE_ID, FABRIC_LAKEHOUSE_ID,
+                             AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+      --platform synapse     SYNAPSE_WORKSPACE_NAME,
+                             AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
 
     \b
     To download the hadoop-azure JARs run:
@@ -1128,6 +1168,13 @@ def env_check(config_path: Optional[Path], local_checks: bool) -> None:
                     ", ".join(missing),
                 )
             )
+
+    resolved_platform = platform or _detect_platform_from_environment()
+    if resolved_platform:
+        checks.append(("platform", True, resolved_platform))
+        for var in _PLATFORM_ENV_VARS.get(resolved_platform, []):
+            val = os.getenv(var)
+            checks.append((f"env:{var}", bool(val), "set" if val else "missing"))
 
     if _print_check_results(checks):
         click.echo("Environment check passed.")
