@@ -335,9 +335,7 @@ class TestScaffoldCommands:
         repo_root.mkdir()
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["package", "init", "my-pkg", "--repo-root", str(repo_root)]
-        )
+        result = runner.invoke(cli, ["package", "init", "my-pkg", "--repo-root", str(repo_root)])
 
         assert result.exit_code == 0, result.output
         assert "Next steps" in result.output
