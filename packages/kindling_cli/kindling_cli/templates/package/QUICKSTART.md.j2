@@ -24,8 +24,28 @@ and fill in your Azure credentials:
 
 ```bash
 cp .env.example .env
-# Edit .env with your AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID
 ```
+{% if auth == "oauth" %}
+Edit `.env` with your service-principal credentials:
+
+```
+AZURE_CLIENT_ID=...
+AZURE_CLIENT_SECRET=...
+AZURE_TENANT_ID=...
+```
+{% elif auth == "key" %}
+Edit `.env` with your storage account key:
+
+```
+AZURE_STORAGE_KEY=...
+```
+{% else %}
+Authenticate via the Azure CLI before running:
+
+```bash
+az login
+```
+{% endif %}
 
 ## Deploy as a job
 
@@ -35,11 +55,14 @@ kindling job init
 
 # Edit job.yaml to set schedule, resources, and environment
 
-# Create the job in the platform
-kindling job create
+# Verify credentials before creating
+kindling env check --platform <platform>
 
-# Submit a run
-kindling job run
+# Create the job in the platform
+kindling job create job.yaml
+
+# Submit a run (blocks until complete)
+kindling job run <job_id> --wait
 ```
 
 ## Add more pipes and entities
@@ -53,6 +76,6 @@ src/{{ snake_name }}/
 └── transforms/     # Pure transformation logic
 ```
 
-- Add a new entity: create a class decorated with `@DataEntities` in `entities/`
+- Add a new entity: create a class registered with `DataEntities.entity(...)` in `entities/`
 - Add a new pipe: create a function decorated with `@DataPipes.pipe` in `pipes/`
 - Register new modules in `app.py` → `register_all()`
