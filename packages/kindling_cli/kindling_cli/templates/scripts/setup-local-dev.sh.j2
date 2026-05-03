@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Downloads hadoop-azure JARs needed for local Spark + ABFSS integration tests.
+# Idempotent: skips any JAR that already exists with a non-zero size.
+set -euo pipefail
+
+JAR_DIR="/tmp/hadoop-jars"
+mkdir -p "$JAR_DIR"
+
+declare -A JARS=(
+    ["hadoop-azure-3.3.4.jar"]="https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar"
+    ["hadoop-azure-datalake-3.3.4.jar"]="https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure-datalake/3.3.4/hadoop-azure-datalake-3.3.4.jar"
+    ["azure-storage-8.6.6.jar"]="https://repo1.maven.org/maven2/com/microsoft/azure/azure-storage/8.6.6/azure-storage-8.6.6.jar"
+    ["wildfly-openssl-1.1.3.Final.jar"]="https://repo1.maven.org/maven2/org/wildfly/openssl/wildfly-openssl/1.1.3.Final/wildfly-openssl-1.1.3.Final.jar"
+    ["jetty-util-ajax-9.4.51.v20230217.jar"]="https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar"
+)
+
+downloaded=0
+skipped=0
+
+for jar in "${!JARS[@]}"; do
+    dest="$JAR_DIR/$jar"
+    if [ -f "$dest" ] && [ -s "$dest" ]; then
+        echo "✓ $jar (already present)"
+        skipped=$((skipped + 1))
+    else
+        echo "  Downloading $jar ..."
+        curl -L --fail --silent --show-error -o "$dest" "${JARS[$jar]}"
+        echo "✓ $jar"
+        downloaded=$((downloaded + 1))
+    fi
+done
+
+echo ""
+echo "hadoop-azure JARs ready in $JAR_DIR ($downloaded downloaded, $skipped skipped)"
