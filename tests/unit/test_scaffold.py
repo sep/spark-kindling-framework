@@ -55,6 +55,7 @@ REPO_FILES = [
 PACKAGE_FILES = [
     "pyproject.toml",
     ".env.example",
+    "QUICKSTART.md",
     "config/settings.yaml",
     "config/env.local.yaml",
     "tests/conftest.py",
