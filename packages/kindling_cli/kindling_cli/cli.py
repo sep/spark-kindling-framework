@@ -510,6 +510,11 @@ def run_pipe(
         os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__LEVEL", "WARNING")
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    if env is not None and env != "local":
+        click.echo(
+            f"Note: --env {env} controls config loading only. "
+            "To run remotely use: kindling job run <job_id>"
+        )
     resolved_app = _discover_app_py(app_path)
     _load_app_module(resolved_app, resolved_env, config_dir)
 
