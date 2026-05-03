@@ -50,6 +50,7 @@ REPO_FILES = [
     ".devcontainer/Dockerfile",
     ".devcontainer/devcontainer.json",
     ".devcontainer/docker-compose.yml",
+    "scripts/setup-local-dev.sh",
 ]
 
 PACKAGE_FILES = [
