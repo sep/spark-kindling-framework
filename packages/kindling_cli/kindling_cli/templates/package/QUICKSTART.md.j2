@@ -4,11 +4,11 @@
 
 ```bash
 poetry install
-{% if layers == "medallion" %}
+{%- if layers == "medallion" %}
 kindling run bronze_to_silver
-{% else %}
+{%- else %}
 kindling run process
-{% endif %}
+{%- endif %}
 ```
 
 ## Run tests
