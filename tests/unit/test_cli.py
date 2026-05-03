@@ -1166,3 +1166,137 @@ def test_job_init_produces_valid_yaml():
         assert isinstance(parsed, dict)
         assert parsed["job_name"] == "my-job"
         assert parsed["app_name"] == "my-app"
+
+
+# ---------------------------------------------------------------------------
+# env check --platform
+# ---------------------------------------------------------------------------
+
+
+_BLANK_PLATFORM_DETECT_VARS = {
+    "FABRIC_WORKSPACE_ID": "",
+    "SYNAPSE_WORKSPACE_NAME": "",
+    "DATABRICKS_HOST": "",
+}
+
+
+class TestEnvCheckPlatform:
+    def _run_with_env(self, platform: str, env: dict):
+        runner = CliRunner()
+        merged = {**_BLANK_PLATFORM_DETECT_VARS, **env}
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            result = runner.invoke(
+                cli, ["env", "check", "--platform", platform], env=merged, catch_exceptions=False
+            )
+        return result
+
+    def test_databricks_all_vars_set_passes(self):
+        result = self._run_with_env(
+            "databricks",
+            {
+                "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+                "DATABRICKS_TOKEN": "dapi-abc",
+            },
+        )
+        assert "[PASS] env:DATABRICKS_HOST" in result.output
+        assert "[PASS] env:DATABRICKS_TOKEN" in result.output
+        assert result.exit_code == 0
+
+    def test_databricks_missing_token_fails(self):
+        result = self._run_with_env(
+            "databricks",
+            {"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net"},
+        )
+        assert "[FAIL] env:DATABRICKS_TOKEN" in result.output
+        assert result.exit_code != 0
+
+    def test_fabric_all_vars_set_passes(self):
+        result = self._run_with_env(
+            "fabric",
+            {
+                "FABRIC_WORKSPACE_ID": "ws-1",
+                "FABRIC_LAKEHOUSE_ID": "lh-1",
+                "AZURE_TENANT_ID": "tenant-1",
+                "AZURE_CLIENT_ID": "client-1",
+                "AZURE_CLIENT_SECRET": "secret-1",
+            },
+        )
+        assert "[PASS] env:FABRIC_WORKSPACE_ID" in result.output
+        assert "[PASS] env:FABRIC_LAKEHOUSE_ID" in result.output
+        assert "[PASS] env:AZURE_TENANT_ID" in result.output
+        assert "[PASS] env:AZURE_CLIENT_ID" in result.output
+        assert "[PASS] env:AZURE_CLIENT_SECRET" in result.output
+        assert result.exit_code == 0
+
+    def test_fabric_missing_vars_fails(self):
+        result = self._run_with_env("fabric", {})
+        assert "[FAIL] env:FABRIC_WORKSPACE_ID" in result.output
+        assert result.exit_code != 0
+
+    def test_synapse_all_vars_set_passes(self):
+        result = self._run_with_env(
+            "synapse",
+            {
+                "SYNAPSE_WORKSPACE_NAME": "my-ws",
+                "AZURE_TENANT_ID": "tenant-1",
+                "AZURE_CLIENT_ID": "client-1",
+                "AZURE_CLIENT_SECRET": "secret-1",
+            },
+        )
+        assert "[PASS] env:SYNAPSE_WORKSPACE_NAME" in result.output
+        assert "[PASS] env:AZURE_TENANT_ID" in result.output
+        assert result.exit_code == 0
+
+    def test_synapse_missing_workspace_name_fails(self):
+        result = self._run_with_env(
+            "synapse",
+            {
+                "AZURE_TENANT_ID": "tenant-1",
+                "AZURE_CLIENT_ID": "client-1",
+                "AZURE_CLIENT_SECRET": "secret-1",
+            },
+        )
+        assert "[FAIL] env:SYNAPSE_WORKSPACE_NAME" in result.output
+        assert result.exit_code != 0
+
+    def test_platform_label_shown_in_output(self):
+        result = self._run_with_env(
+            "databricks",
+            {
+                "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+                "DATABRICKS_TOKEN": "dapi-abc",
+            },
+        )
+        assert "[PASS] platform: databricks" in result.output
+
+    def test_no_platform_flag_no_env_var_checks(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            result = runner.invoke(
+                cli,
+                ["env", "check"],
+                env=dict(_BLANK_PLATFORM_DETECT_VARS),
+                catch_exceptions=False,
+            )
+        assert "env:DATABRICKS_HOST" not in result.output
+        assert "env:FABRIC_WORKSPACE_ID" not in result.output
+        assert "env:SYNAPSE_WORKSPACE_NAME" not in result.output
+
+    def test_auto_detect_databricks_from_env(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            result = runner.invoke(
+                cli,
+                ["env", "check"],
+                env={
+                    **_BLANK_PLATFORM_DETECT_VARS,
+                    "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+                    "DATABRICKS_TOKEN": "dapi-abc",
+                },
+                catch_exceptions=False,
+            )
+        assert "[PASS] platform: databricks" in result.output
+        assert "env:DATABRICKS_HOST" in result.output
