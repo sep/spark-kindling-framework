@@ -109,8 +109,66 @@ def test_run_pipe_happy_path_calls_registered_executor(monkeypatch):
     assert result.exit_code == 0
     assert "Running pipe: bronze_to_silver" in result.output
     assert "completed successfully" in result.output
+    assert "Note: --env dev controls config loading only" in result.output
+    assert "kindling job run" in result.output
     pipe_registry.get_pipe_definition.assert_called_once_with("bronze_to_silver")
     executor.run_datapipes.assert_called_once_with(["bronze_to_silver"])
+
+
+def test_run_pipe_local_env_no_warning(monkeypatch):
+    runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_definition.return_value = SimpleNamespace(pipeid="bronze_to_silver")
+    executor = Mock()
+
+    def fake_get(service_type):
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        if service_type is DataPipesExecution:
+            return executor
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
+    with runner.isolated_filesystem():
+        app_path = _write_app(Path("app.py"))
+        result = runner.invoke(
+            cli,
+            ["run", "bronze_to_silver", "--env", "local", "--app", str(app_path)],
+        )
+
+    assert result.exit_code == 0
+    assert "Note:" not in result.output
+    assert "kindling job run" not in result.output
+
+
+def test_run_pipe_kindling_env_var_no_warning(monkeypatch):
+    """KINDLING_ENV env var should not trigger the warning; only the explicit --env flag should."""
+    runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_definition.return_value = SimpleNamespace(pipeid="bronze_to_silver")
+    executor = Mock()
+
+    def fake_get(service_type):
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        if service_type is DataPipesExecution:
+            return executor
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+    monkeypatch.setenv("KINDLING_ENV", "staging")
+
+    with runner.isolated_filesystem():
+        app_path = _write_app(Path("app.py"))
+        result = runner.invoke(
+            cli,
+            ["run", "bronze_to_silver", "--app", str(app_path)],
+        )
+
+    assert result.exit_code == 0
+    assert "Note:" not in result.output
+    assert "kindling job run" not in result.output
 
 
 def test_run_pipe_unknown_pipe_lists_available_pipes(monkeypatch):
