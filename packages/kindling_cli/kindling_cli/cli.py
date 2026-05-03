@@ -460,8 +460,8 @@ def _read_settings_app_name(settings_path: Path = Path("config/settings.yaml")) 
             name = data.get("name")
             if name and str(name).strip():
                 return str(name).strip()
-    except Exception:
-        pass
+    except (OSError, yaml.YAMLError) as exc:
+        click.echo(f"Warning: could not parse {candidate}: {exc}", err=True)
     return None
 
 
@@ -518,8 +518,8 @@ _PLATFORM_SECTIONS = {
 def _render_job_template(job_name: str, app_name: str, platform: Optional[str]) -> str:
     platform_section = _PLATFORM_SECTIONS.get(platform or "", _JOB_TEMPLATE_PLATFORM_GENERIC)
     return _JOB_TEMPLATE_BASE.format(
-        job_name=job_name,
-        app_name=app_name,
+        job_name=yaml.dump(job_name, default_flow_style=True).split("\n")[0],
+        app_name=yaml.dump(app_name, default_flow_style=True).split("\n")[0],
         platform_section=platform_section,
     )
 
@@ -2225,6 +2225,13 @@ def job_init(
     inferred_name = _read_settings_app_name() or _infer_project_name()
     resolved_app_name = (app_name or inferred_name).strip()
     resolved_job_name = (name or resolved_app_name).strip()
+
+    if not resolved_app_name:
+        raise click.ClickException("Could not determine app name. Pass --app <name>.")
+    if not resolved_job_name:
+        raise click.ClickException("Could not determine job name. Pass --name <name>.")
+
+    platform_explicit = platform is not None
     resolved_platform = platform or _detect_platform_from_environment()
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -2234,7 +2241,8 @@ def job_init(
     )
     click.echo(f"Wrote `{destination}`")
     if resolved_platform:
-        click.echo(f"Platform: {resolved_platform} (auto-detected from environment)")
+        source = "explicit" if platform_explicit else "auto-detected from environment"
+        click.echo(f"Platform: {resolved_platform} ({source})")
     else:
         click.echo(
             "Platform not detected — set FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, "

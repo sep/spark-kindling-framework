@@ -1061,9 +1061,7 @@ def test_job_init_writes_job_yaml():
 def test_job_init_infers_names_from_pyproject_toml():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        Path("pyproject.toml").write_text(
-            '[tool.poetry]\nname = "my-data-app"\n', encoding="utf-8"
-        )
+        Path("pyproject.toml").write_text('[tool.poetry]\nname = "my-data-app"\n', encoding="utf-8")
         result = runner.invoke(cli, ["job", "init"])
 
         assert result.exit_code == 0, result.output
