@@ -146,6 +146,7 @@ check = ["format", "lint", "test"]
 [tool.black]
 line-length = 100
 target-version = ["py310", "py311"]
+extend-exclude = "templates/"
 
 [tool.pylint.messages_control]
 disable = [

@@ -603,7 +603,7 @@ def run_pipe(
             f"Note: --env {env} controls config loading only. "
             "To run remotely use: kindling job run <job_id>"
         )
-    if config_dir is None and not Path("config/settings.yaml").exists():
+    if app_path is None and config_dir is None and not Path("config/settings.yaml").exists():
         raise click.ClickException(
             "Config file not found at config/settings.yaml.\n"
             "  Hint: Run `kindling config init` to generate a starter config, or use --config <path>."

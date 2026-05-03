@@ -223,6 +223,7 @@ def generate_package(cfg: PackageScaffoldConfig) -> List[Path]:
 
     _write("pyproject.toml", _render(env, "pyproject.toml.j2", ctx))
     _write(".env.example", _render(env, ".env.example.j2", ctx))
+    _write("QUICKSTART.md", _render(env, "package/QUICKSTART.md.j2", ctx))
 
     return files
 

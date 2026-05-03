@@ -71,6 +71,8 @@ def test_discover_app_py_missing_override_raises_clear_error():
 def test_discover_app_py_missing_auto_discovery_raises_clear_error():
     runner = CliRunner()
     with runner.isolated_filesystem():
+        Path("config").mkdir()
+        Path("config/settings.yaml").write_text("name: test\n", encoding="utf-8")
         result = runner.invoke(cli, ["run", "pipe.one"])
 
         assert result.exit_code != 0
