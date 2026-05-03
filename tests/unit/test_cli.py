@@ -1,8 +1,11 @@
 import base64
 import json
+import sys
+import types
 import zipfile
 from pathlib import Path
 
+import click
 import yaml
 from click.testing import CliRunner
 from kindling_cli.cli import (
@@ -10,6 +13,7 @@ from kindling_cli.cli import (
     _find_wheels,
     _generate_bootstrap_notebook,
     _generate_sample_notebook,
+    _load_app_module,
     _render_environment_bootstrap_source,
     _render_starter_notebook_source,
     cli,
@@ -1300,3 +1304,81 @@ class TestEnvCheckPlatform:
             )
         assert "[PASS] platform: databricks" in result.output
         assert "env:DATABRICKS_HOST" in result.output
+
+
+# ---------------------------------------------------------------------------
+# run — actionable error messages (kindling-6m3)
+# ---------------------------------------------------------------------------
+
+
+def test_run_missing_config_gives_actionable_message():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["run", "my_pipe"])
+        assert result.exit_code != 0
+        assert "Config file not found at config/settings.yaml" in result.output
+        assert "kindling config init" in result.output
+        assert "--config" in result.output
+
+
+def test_load_app_module_syntax_error_gives_actionable_message(tmp_path):
+    app_py = tmp_path / "app.py"
+    app_py.write_text("def foo(:\n    pass\n", encoding="utf-8")
+    try:
+        _load_app_module(app_py, "local")
+        assert False, "expected ClickException"
+    except click.ClickException as exc:
+        msg = exc.format_message()
+        assert "Failed to import app.py" in msg
+        assert str(app_py) in msg
+        assert "Hint:" in msg
+
+
+def test_load_app_module_import_error_gives_actionable_message(tmp_path):
+    app_py = tmp_path / "app.py"
+    app_py.write_text("from nonexistent_package_xyz import something\n", encoding="utf-8")
+    try:
+        _load_app_module(app_py, "local")
+        assert False, "expected ClickException"
+    except click.ClickException as exc:
+        msg = exc.format_message()
+        assert "Failed to import app.py" in msg
+        assert str(app_py) in msg
+        assert "Hint:" in msg
+
+
+def test_run_missing_pipe_gives_actionable_message(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "settings.yaml").write_text("name: test-app\n", encoding="utf-8")
+
+    app_py = tmp_path / "app.py"
+    app_py.write_text("def initialize(env='local'): pass\n", encoding="utf-8")
+
+    fake_registry = types.SimpleNamespace(
+        get_pipe_definition=lambda pipe_id: None,
+        get_pipe_ids=lambda: ["bronze_to_silver", "silver_to_gold"],
+    )
+    fake_injector = types.SimpleNamespace(get=lambda cls: fake_registry)
+
+    fake_kindling_pipes = types.ModuleType("kindling.data_pipes")
+    fake_kindling_pipes.DataPipesRegistry = object
+    fake_kindling_pipes.DataPipesExecution = object
+    fake_kindling_injection = types.ModuleType("kindling.injection")
+    fake_kindling_injection.GlobalInjector = fake_injector
+
+    monkeypatch.setitem(sys.modules, "kindling.data_pipes", fake_kindling_pipes)
+    monkeypatch.setitem(sys.modules, "kindling.injection", fake_kindling_injection)
+    monkeypatch.setattr("kindling_cli.cli._load_app_module", lambda *a, **kw: None)
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("config").mkdir()
+        Path("config/settings.yaml").write_text("name: test-app\n", encoding="utf-8")
+        result = runner.invoke(cli, ["run", "slver_to_gold", "--app", str(app_py)])
+
+    assert result.exit_code != 0
+    assert "Pipe 'slver_to_gold' not found" in result.output
+    assert "bronze_to_silver" in result.output
+    assert "silver_to_gold" in result.output
+    assert "kindling validate" in result.output
