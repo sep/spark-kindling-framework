@@ -411,7 +411,20 @@ def _load_app_module(app_path: Path, env: Optional[str], config_dir: Optional[Pa
             raise click.ClickException(f"Could not load app.py at {app_path}")
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_key] = module
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except SyntaxError as exc:
+            raise click.ClickException(
+                f"Failed to import app.py: {exc}\n"
+                f"  File: {app_path}\n"
+                '  Hint: Check for syntax errors — run: python -c "import app" to see the full traceback.'
+            ) from exc
+        except ImportError as exc:
+            raise click.ClickException(
+                f"Failed to import app.py: {exc}\n"
+                f"  File: {app_path}\n"
+                '  Hint: Check for syntax errors — run: python -c "import app" to see the full traceback.'
+            ) from exc
 
         initialize = getattr(module, "initialize", None)
         if initialize is None:
@@ -590,6 +603,11 @@ def run_pipe(
             f"Note: --env {env} controls config loading only. "
             "To run remotely use: kindling job run <job_id>"
         )
+    if config_dir is None and not Path("config/settings.yaml").exists():
+        raise click.ClickException(
+            "Config file not found at config/settings.yaml.\n"
+            "  Hint: Run `kindling config init` to generate a starter config, or use --config <path>."
+        )
     resolved_app = _discover_app_py(app_path)
     _load_app_module(resolved_app, resolved_env, config_dir)
 
@@ -597,7 +615,11 @@ def run_pipe(
     pipe = registry.get_pipe_definition(pipe_id)
     if pipe is None:
         available = ", ".join(registry.get_pipe_ids()) or "(none registered)"
-        raise click.ClickException(f"Pipe '{pipe_id}' not found. Available pipes: {available}")
+        raise click.ClickException(
+            f"Pipe '{pipe_id}' not found.\n"
+            f"  Registered pipes: {available}\n"
+            "  Hint: Check for typos, or run `kindling validate` to see all registered pipes."
+        )
 
     click.echo(f"Running pipe: {pipe_id}")
     executer = GlobalInjector.get(DataPipesExecution)
