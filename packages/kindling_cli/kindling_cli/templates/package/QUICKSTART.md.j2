@@ -1,0 +1,81 @@
+# {{ snake_name }} — Quick Start
+
+## Run locally
+
+```bash
+poetry install
+{%- if layers == "medallion" %}
+kindling run bronze_to_silver
+{%- else %}
+kindling run process
+{%- endif %}
+```
+
+## Run tests
+
+```bash
+poetry run poe test
+```
+
+## Connect to ABFSS
+
+Edit `config/env.local.yaml` to set your storage paths, then copy `.env.example` to `.env`
+and fill in your Azure credentials:
+
+```bash
+cp .env.example .env
+```
+{% if auth == "oauth" %}
+Edit `.env` with your service-principal credentials:
+
+```
+AZURE_CLIENT_ID=...
+AZURE_CLIENT_SECRET=...
+AZURE_TENANT_ID=...
+```
+{% elif auth == "key" %}
+Edit `.env` with your storage account key:
+
+```
+AZURE_STORAGE_KEY=...
+```
+{% else %}
+Authenticate via the Azure CLI before running:
+
+```bash
+az login
+```
+{% endif %}
+
+## Deploy as a job
+
+```bash
+# Scaffold a job definition
+kindling job init
+
+# Edit job.yaml to set schedule, resources, and environment
+
+# Verify credentials before creating
+kindling env check --platform <platform>
+
+# Create the job in the platform
+kindling job create job.yaml
+
+# Submit a run (blocks until complete)
+kindling job run <job_id> --wait
+```
+
+## Add more pipes and entities
+
+Generated package layout:
+
+```
+src/{{ snake_name }}/
+├── entities/       # DataEntities (schemas and storage mappings)
+├── pipes/          # DataPipes (orchestration and routing)
+└── transforms/     # Pure transformation logic
+```
+
+- Add a new entity: create a class registered with `DataEntities.entity(...)` in `entities/`
+- Add a new pipe: create a function decorated with `@DataPipes.pipe` in `pipes/`
+- Register new modules in `app.py` → `register_all()`
