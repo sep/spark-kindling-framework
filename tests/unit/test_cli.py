@@ -1043,3 +1043,126 @@ class TestJobSubmitCommand:
 
         assert result.exit_code != 0
         assert "platform" in result.output.lower()
+
+
+def test_job_init_writes_job_yaml():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["job", "init", "--name", "my-job", "--app", "my-app"])
+
+        assert result.exit_code == 0, result.output
+        job_path = Path("job.yaml")
+        assert job_path.exists()
+        content = job_path.read_text(encoding="utf-8")
+        assert "job_name: my-job" in content
+        assert "app_name: my-app" in content
+
+
+def test_job_init_infers_names_from_pyproject_toml():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("pyproject.toml").write_text('[tool.poetry]\nname = "my-data-app"\n', encoding="utf-8")
+        result = runner.invoke(cli, ["job", "init"])
+
+        assert result.exit_code == 0, result.output
+        content = Path("job.yaml").read_text(encoding="utf-8")
+        assert "job_name: my-data-app" in content
+        assert "app_name: my-data-app" in content
+
+
+def test_job_init_prefers_settings_yaml_name_over_pyproject():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("pyproject.toml").write_text(
+            '[tool.poetry]\nname = "pyproject-name"\n', encoding="utf-8"
+        )
+        Path("config").mkdir()
+        Path("config/settings.yaml").write_text("name: settings-app\n", encoding="utf-8")
+        result = runner.invoke(cli, ["job", "init"])
+
+        assert result.exit_code == 0, result.output
+        content = Path("job.yaml").read_text(encoding="utf-8")
+        assert "app_name: settings-app" in content
+
+
+def test_job_init_refuses_to_overwrite_without_force():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("job.yaml").write_text("original", encoding="utf-8")
+        result = runner.invoke(cli, ["job", "init", "--name", "x", "--app", "x"])
+
+        assert result.exit_code != 0
+        assert "Refusing to overwrite existing file" in result.output
+        assert Path("job.yaml").read_text(encoding="utf-8") == "original"
+
+
+def test_job_init_overwrites_with_force():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("job.yaml").write_text("original", encoding="utf-8")
+        result = runner.invoke(
+            cli, ["job", "init", "--force", "--name", "new-job", "--app", "new-app"]
+        )
+
+        assert result.exit_code == 0, result.output
+        content = Path("job.yaml").read_text(encoding="utf-8")
+        assert "job_name: new-job" in content
+
+
+def test_job_init_includes_platform_specific_section_for_synapse(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "my-workspace")
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["job", "init", "--name", "j", "--app", "a"])
+
+        assert result.exit_code == 0, result.output
+        content = Path("job.yaml").read_text(encoding="utf-8")
+        assert "spark_config" in content
+        assert "synapse" in result.output.lower()
+        assert "auto-detected" in result.output
+
+
+def test_job_init_includes_platform_specific_section_for_databricks(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["job", "init", "--name", "j", "--app", "a"])
+
+        assert result.exit_code == 0, result.output
+        content = Path("job.yaml").read_text(encoding="utf-8")
+        assert "cluster_id" in content
+
+
+def test_job_init_accepts_explicit_platform():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli, ["job", "init", "--name", "j", "--app", "a", "--platform", "fabric"]
+        )
+
+        assert result.exit_code == 0, result.output
+        content = Path("job.yaml").read_text(encoding="utf-8")
+        assert "environment_id" in content
+
+
+def test_job_init_custom_output_path():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli, ["job", "init", "--name", "j", "--app", "a", "--output", "jobs/my-job.yaml"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert Path("jobs/my-job.yaml").exists()
+
+
+def test_job_init_produces_valid_yaml():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        runner.invoke(cli, ["job", "init", "--name", "my-job", "--app", "my-app"])
+
+        content = Path("job.yaml").read_text(encoding="utf-8")
+        parsed = yaml.safe_load(content)
+        assert isinstance(parsed, dict)
+        assert parsed["job_name"] == "my-job"
+        assert parsed["app_name"] == "my-app"
