@@ -21,8 +21,9 @@ def test_config_init_writes_settings_file():
     with runner.isolated_filesystem():
         result = runner.invoke(cli, ["config", "init", "--name", "demo-app"])
 
-        assert result.exit_code == 0
-        settings_path = Path("settings.yaml")
+        assert result.exit_code == 0, result.output
+        # Default output is config/settings.yaml (matches scaffolded project layout)
+        settings_path = Path("config/settings.yaml")
         assert settings_path.exists()
         content = settings_path.read_text(encoding="utf-8")
         assert "name: demo-app" in content
@@ -32,7 +33,8 @@ def test_config_init_writes_settings_file():
 def test_config_init_refuses_to_overwrite_without_force():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        settings_path = Path("settings.yaml")
+        settings_path = Path("config/settings.yaml")
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text("original", encoding="utf-8")
 
         result = runner.invoke(cli, ["config", "init"])
@@ -45,12 +47,13 @@ def test_config_init_refuses_to_overwrite_without_force():
 def test_config_init_overwrites_with_force():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        settings_path = Path("settings.yaml")
+        settings_path = Path("config/settings.yaml")
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text("original", encoding="utf-8")
 
         result = runner.invoke(cli, ["config", "init", "--force", "--name", "forced-app"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         content = settings_path.read_text(encoding="utf-8")
         assert "name: forced-app" in content
         assert "kindling:" in content
@@ -137,7 +140,10 @@ class TestConfigSetBasic:
     def test_updates_existing_file_preserves_other_keys(self):
         runner = CliRunner()
         with runner.isolated_filesystem():
-            runner.invoke(cli, ["config", "init", "--name", "test-app"])
+            # Write to an explicit path so config set can find it in the same directory
+            runner.invoke(
+                cli, ["config", "init", "--name", "test-app", "--output", "settings.yaml"]
+            )
             result = runner.invoke(
                 cli,
                 [
@@ -917,3 +923,123 @@ class TestEnvCheckLocal:
             result = runner.invoke(cli, ["env", "check", "--local"])
 
         assert "[FAIL] hadoop_azure_jars" in result.output
+
+
+class TestJobSubmitCommand:
+    """Tests for `kindling job submit` — the single-command remote job workflow."""
+
+    def _make_mock_api(self):
+        from unittest.mock import MagicMock
+
+        api = MagicMock()
+        api.deploy_app.return_value = "abfss://container@acct.dfs.core.windows.net/data-apps/my-app"
+        api.create_job.return_value = {
+            "job_id": "my-app",
+            "job_name": "my-app",
+            "workspace_name": "ws",
+        }
+        api.run_job.return_value = "run-42"
+        api.get_job_status.return_value = {"state": "SUCCEEDED"}
+        return api
+
+    def test_submit_no_wait_returns_run_id(self, tmp_path, monkeypatch):
+        import kindling_cli.cli as cli_mod
+
+        mock_api = self._make_mock_api()
+        monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# app")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["job", "submit", str(app_dir), "--platform", "synapse", "--no-wait"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "run-42" in result.output
+        mock_api.deploy_app.assert_called_once()
+        mock_api.create_job.assert_called_once()
+        mock_api.run_job.assert_called_once()
+
+    def test_submit_waits_for_completion_by_default(self, tmp_path, monkeypatch):
+        import kindling_cli.cli as cli_mod
+
+        mock_api = self._make_mock_api()
+        # stream_stdout_logs is a no-op in this test
+        mock_api.stream_stdout_logs.return_value = None
+        monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# app")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["job", "submit", str(app_dir), "--platform", "synapse"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "SUCCEEDED" in result.output
+        mock_api.get_job_status.assert_called()
+
+    def test_submit_fails_on_error_by_default(self, tmp_path, monkeypatch):
+        import kindling_cli.cli as cli_mod
+
+        mock_api = self._make_mock_api()
+        mock_api.get_job_status.return_value = {"state": "FAILED"}
+        mock_api.stream_stdout_logs.return_value = None
+        monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# app")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["job", "submit", str(app_dir), "--platform", "synapse"],
+        )
+
+        assert result.exit_code != 0
+        assert "FAILED" in result.output
+
+    def test_submit_no_fail_on_error_exits_zero(self, tmp_path, monkeypatch):
+        import kindling_cli.cli as cli_mod
+
+        mock_api = self._make_mock_api()
+        mock_api.get_job_status.return_value = {"state": "FAILED"}
+        mock_api.stream_stdout_logs.return_value = None
+        monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# app")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["job", "submit", str(app_dir), "--platform", "synapse", "--no-fail-on-error"],
+        )
+
+        assert result.exit_code == 0, result.output
+
+    def test_submit_requires_platform_or_env_var(self, tmp_path, monkeypatch):
+        import kindling_cli.cli as cli_mod
+
+        monkeypatch.delenv("SYNAPSE_WORKSPACE_NAME", raising=False)
+        monkeypatch.delenv("FABRIC_WORKSPACE_ID", raising=False)
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# app")
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["job", "submit", str(app_dir)])
+
+        assert result.exit_code != 0
+        assert "platform" in result.output.lower()

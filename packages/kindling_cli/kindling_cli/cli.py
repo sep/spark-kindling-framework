@@ -2204,6 +2204,133 @@ def job_run(
     _emit_result(payload, json_output, run_id)
 
 
+@job_group.command("submit")
+@click.argument(
+    "app_path",
+    type=click.Path(path_type=Path, exists=True),
+    default=None,
+    required=False,
+)
+@click.option(
+    "--job-name",
+    default=None,
+    help="Job definition name. Defaults to the app directory name.",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option(
+    "--no-logs",
+    is_flag=True,
+    default=False,
+    help="Skip log streaming; wait for completion silently.",
+)
+@click.option("--no-wait", is_flag=True, default=False, help="Return immediately after submitting.")
+@click.option("--poll-interval", default=5.0, show_default=True, type=float)
+@click.option("--timeout", default=3600.0, show_default=True, type=float)
+@click.option(
+    "--fail-on-error/--no-fail-on-error",
+    default=True,
+    show_default=True,
+    help="Exit non-zero when the job finishes in a failed state.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def job_submit(
+    app_path: Optional[Path],
+    job_name: Optional[str],
+    platform: Optional[str],
+    no_logs: bool,
+    no_wait: bool,
+    poll_interval: float,
+    timeout: float,
+    fail_on_error: bool,
+    json_output: bool,
+) -> None:
+    """Package, deploy, and run an app as a remote job in one step.
+
+    Equivalent to running: app package, app deploy, job create, job run --wait
+    in sequence. Streams logs to stdout by default.
+    """
+    # Resolve app directory
+    if app_path is None:
+        discovered = _discover_app_py(None)
+        resolved_app_path = discovered.parent
+    else:
+        resolved_app_path = app_path.expanduser().resolve()
+
+    resolved_job_name = (job_name or _default_app_name(resolved_app_path)).strip()
+    if not resolved_job_name:
+        raise click.ClickException("Job name resolved to an empty string.")
+
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    app_files = _prepare_app_files(resolved_app_path)
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+
+    click.echo(
+        f"[1/3] Deploying {len(app_files)} file(s) as `{resolved_job_name}` on {resolved_platform}..."
+    )
+    storage_path = api_client.deploy_app(resolved_job_name, app_files)
+
+    click.echo(f"[2/3] Creating job definition `{resolved_job_name}`...")
+    job_result = api_client.create_job(resolved_job_name, {"app_name": resolved_job_name})
+    job_id = str(job_result.get("job_id") or resolved_job_name)
+
+    click.echo("[3/3] Starting job run...")
+    run_id = api_client.run_job(job_id)
+    click.echo(f"Run ID: {run_id}")
+
+    payload: Dict[str, Any] = {
+        "job_name": resolved_job_name,
+        "job_id": job_id,
+        "run_id": run_id,
+        "platform": resolved_platform,
+        "storage_path": storage_path,
+    }
+
+    if no_wait:
+        _emit_result(
+            payload,
+            json_output,
+            f"Submitted `{resolved_job_name}` (run: {run_id}). Use `kindling job logs {run_id}` to follow.",
+        )
+        return
+
+    if not no_logs:
+        try:
+            api_client.stream_stdout_logs(
+                job_id=job_id,
+                run_id=run_id,
+                callback=click.echo,
+                poll_interval=poll_interval,
+                max_wait=timeout,
+            )
+        except Exception as exc:
+            click.echo(f"Log streaming ended early: {exc}", err=True)
+
+    status = _wait_for_job_run(api_client, run_id, poll_interval, timeout)
+    state = _status_value(status)
+    payload["status"] = status
+    payload["state"] = state
+    payload["succeeded"] = state in _SUCCESS_JOB_STATES
+
+    if fail_on_error and state not in _SUCCESS_JOB_STATES:
+        if json_output:
+            _emit_json(payload)
+            raise click.exceptions.Exit(1)
+        raise click.ClickException(f"Run `{run_id}` finished with state {state}.")
+
+    _emit_result(payload, json_output, f"Run `{run_id}` completed with state {state}.")
+
+
 @job_group.command("status")
 @click.argument("run_id")
 @click.option(
