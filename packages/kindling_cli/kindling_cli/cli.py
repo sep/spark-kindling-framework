@@ -1071,10 +1071,9 @@ def _check_hadoop_jars() -> Tuple[bool, str]:
     missing = [j for j in _HADOOP_AZURE_JARS if not (_HADOOP_JAR_DIR / j).exists()]
     if not missing:
         return True, str(_HADOOP_JAR_DIR)
-    urls = "\n    ".join(_HADOOP_JAR_URLS)
     return (
         False,
-        f"{len(missing)} jar(s) missing from {_HADOOP_JAR_DIR}\n  Download from:\n    {urls}",
+        f"{len(missing)} jar(s) missing from {_HADOOP_JAR_DIR}\n  Run scripts/setup-local-dev.sh to download required JARs",
     )
 
 
