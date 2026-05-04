@@ -1,44 +1,58 @@
 {
-    "name": "{{ repo_kebab_name }}",
-    "dockerComposeFile": "docker-compose.yml",
-    "service": "devcontainer",
-    "workspaceFolder": "/workspaces/{{ repo_snake_name }}",
-    "containerEnv": {
-        "POETRY_VIRTUALENVS_CREATE": "true",
-        "POETRY_VIRTUALENVS_IN_PROJECT": "true"
-    },
-    "customizations": {
-        "vscode": {
-            "extensions": [
-                "ms-python.python",
-                "ms-python.vscode-pylance",
-                "redhat.vscode-yaml"
-            ],
-            "settings": {
-{% if primary_package_snake_name %}
-                "python.defaultInterpreterPath": "/workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }}/.venv/bin/python",
-{% else %}
-                "python.defaultInterpreterPath": "/usr/local/bin/python",
-{% endif %}
-                "editor.formatOnSave": true,
-                "files.trimTrailingWhitespace": true,
-                "files.insertFinalNewline": true
-            }
-        }
-    },
-{% if primary_package_snake_name %}
-    "postCreateCommand": "bash -lc 'cd /workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }} && poetry env remove --all 2>/dev/null || true; poetry install --with dev --sync && poetry run python -c \"import kindling, pyspark\"'; bash -lc 'grep -q \"# {{ repo_kebab_name }} .env\" ~/.bashrc || { echo \"# {{ repo_kebab_name }} .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }}/.env ] && set -a && source /workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }}/.env && set +a\" >> ~/.bashrc; }'; bash /workspaces/{{ repo_snake_name }}/scripts/setup-local-dev.sh",
-    "postStartCommand": "bash -c '[ -f \"/workspaces/{{ repo_snake_name }}/packages/{{ primary_package_snake_name }}/.env\" ] && echo \"\u2705 .env loaded\" || echo \"\u26a0\ufe0f  No .env \u2014 copy packages/{{ primary_package_snake_name }}/.env.example to packages/{{ primary_package_snake_name }}/.env and fill in credentials\"'",
-{% else %}
-    "postCreateCommand": "bash -lc 'grep -q \"# {{ repo_kebab_name }} workspace\" ~/.bashrc || echo \"# {{ repo_kebab_name }} workspace\" >> ~/.bashrc'",
-    "postStartCommand": "bash -c 'echo \"\u2705 Repo initialized\"'",
-{% endif %}
-    "forwardPorts": [4040],
-    "portsAttributes": {
-        "4040": {
-            "label": "Spark UI",
-            "onAutoForward": "notify"
-        }
-    },
-    "remoteUser": "vscode"
+  "name": "Kindling Domain Development",
+  "image": "ghcr.io/sep/spark-kindling-framework/devcontainer:latest",
+  "workspaceFolder": "/workspaces/{{ repo_workspace_name }}",
+  "remoteUser": "vscode",
+  "features": {
+  },
+  "containerEnv": {
+    "PYTHONPATH": "/workspaces/{{ repo_workspace_name }}",
+    "SPARK_LOCAL_IP": "127.0.0.1"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "redhat.vscode-yaml",
+        "ms-azuretools.vscode-docker",
+        "GitHub.copilot",
+        "openai.chatgpt",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": true,
+        "python.linting.flake8Enabled": true,
+        "python.formatting.provider": "black",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": "explicit"
+        },
+        "[python]": {
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+          }
+        },
+        "isort.args": [
+          "--profile",
+          "black"
+        ],
+        "files.trimTrailingWhitespace": true,
+        "files.insertFinalNewline": true
+      }
+    }
+  },
+  "forwardPorts": [
+    4040
+  ],
+  "portsAttributes": {
+    "4040": {
+      "label": "Spark UI",
+      "onAutoForward": "notify"
+    }
+  }
 }
