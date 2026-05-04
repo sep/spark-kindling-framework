@@ -47,9 +47,7 @@ class TestValidateName:
 REPO_FILES = [
     ".gitignore",
     ".github/workflows/ci.yml",
-    ".devcontainer/Dockerfile",
     ".devcontainer/devcontainer.json",
-    ".devcontainer/docker-compose.yml",
     "scripts/setup-local-dev.sh",
 ]
 
@@ -82,13 +80,14 @@ def _package_root(repo_root: Path, package_name: str) -> Path:
 
 
 def test_generate_repo_creates_shared_files(tmp_path):
-    cfg = RepoScaffoldConfig(name="data-platform", output_dir=tmp_path)
+    repo_root = tmp_path / "data_platform"
+    cfg = RepoScaffoldConfig(name="data-platform", output_dir=repo_root)
     generate_repo(cfg)
 
-    root = tmp_path / "data_platform"
-    assert (root / "packages").is_dir()
+    assert repo_root.is_dir()
+    assert (repo_root / "packages").is_dir()
     for rel in REPO_FILES:
-        assert (root / rel).exists(), f"Missing repo file {rel}"
+        assert (repo_root / rel).exists(), f"Missing repo file {rel}"
 
 
 @pytest.mark.parametrize("layers,auth,integration", _all_options())
@@ -135,11 +134,37 @@ def test_generate_project_creates_repo_and_initial_package(tmp_path):
     assert (pkg_root / "pyproject.toml").exists()
 
 
-def test_cannot_create_repo_in_existing_directory(tmp_path):
+def test_cannot_create_repo_over_existing_generated_file(tmp_path):
     cfg = RepoScaffoldConfig(name="dupe", output_dir=tmp_path)
     generate_repo(cfg)
     with pytest.raises(FileExistsError):
         generate_repo(cfg)
+
+
+def test_repo_preserves_existing_devcontainer(tmp_path):
+    repo_root = tmp_path / "repo"
+    devcontainer = repo_root / ".devcontainer" / "devcontainer.json"
+    devcontainer.parent.mkdir(parents=True)
+    devcontainer.write_text('{"name": "existing"}', encoding="utf-8")
+
+    cfg = RepoScaffoldConfig(name="repo", output_dir=repo_root)
+    generate_repo(cfg)
+
+    assert devcontainer.read_text() == '{"name": "existing"}'
+    assert (repo_root / ".gitignore").exists()
+
+
+def test_repo_can_overwrite_existing_devcontainer(tmp_path):
+    repo_root = tmp_path / "repo"
+    devcontainer = repo_root / ".devcontainer" / "devcontainer.json"
+    devcontainer.parent.mkdir(parents=True)
+    devcontainer.write_text('{"name": "old"}', encoding="utf-8")
+
+    cfg = RepoScaffoldConfig(name="repo", output_dir=repo_root, overwrite_devcontainer=True)
+    generate_repo(cfg)
+
+    assert '"Kindling Domain Development"' in devcontainer.read_text()
+    assert (repo_root / ".gitignore").exists()
 
 
 def test_cannot_create_package_in_existing_directory(tmp_path):
@@ -246,7 +271,7 @@ def test_env_example_minimal_has_raw_path(tmp_path):
 
 
 def test_repo_ci_runs_each_package(tmp_path):
-    cfg = RepoScaffoldConfig(name="proj", output_dir=tmp_path)
+    cfg = RepoScaffoldConfig(name="proj", output_dir=tmp_path / "proj")
     generate_repo(cfg)
 
     workflow = (tmp_path / "proj" / ".github" / "workflows" / "ci.yml").read_text()
@@ -256,39 +281,76 @@ def test_repo_ci_runs_each_package(tmp_path):
 
 
 def test_repo_devcontainer_uses_repo_workspace_and_package_pythonpath_for_new(tmp_path):
-    cfg = RepoScaffoldConfig(name="my-proj", output_dir=tmp_path, primary_package_name="my-proj")
+    cfg = RepoScaffoldConfig(
+        name="my-proj", output_dir=tmp_path / "my-proj", primary_package_name="my-proj"
+    )
     generate_repo(cfg)
 
-    dcj = (tmp_path / "my_proj" / ".devcontainer" / "devcontainer.json").read_text()
-    compose = (tmp_path / "my_proj" / ".devcontainer" / "docker-compose.yml").read_text()
-    assert '"my-proj"' in dcj
-    assert "/workspaces/my_proj" in dcj
-    assert "/workspaces/my_proj/packages/my_proj/.venv/bin/python" in dcj
-    assert "cd /workspaces/my_proj/packages/my_proj" in dcj
-    assert "PYTHONPATH=/workspaces/my_proj/packages/my_proj/src" in compose
+    dcj = (tmp_path / "my-proj" / ".devcontainer" / "devcontainer.json").read_text()
+    assert '"Kindling Domain Development"' in dcj
+    assert '"image": "ghcr.io/sep/spark-kindling-framework/devcontainer:latest"' in dcj
+    assert '"workspaceFolder": "/workspaces/my-proj"' in dcj
+    assert '"PYTHONPATH": "/workspaces/my-proj"' in dcj
 
 
 def test_repo_devcontainer_defaults_to_system_python_without_primary_package(tmp_path):
-    cfg = RepoScaffoldConfig(name="repo-only", output_dir=tmp_path)
+    cfg = RepoScaffoldConfig(name="repo-only", output_dir=tmp_path / "repo-only")
     generate_repo(cfg)
 
-    dcj = (tmp_path / "repo_only" / ".devcontainer" / "devcontainer.json").read_text()
-    compose = (tmp_path / "repo_only" / ".devcontainer" / "docker-compose.yml").read_text()
+    dcj = (tmp_path / "repo-only" / ".devcontainer" / "devcontainer.json").read_text()
     assert "/usr/local/bin/python" in dcj
-    assert "Repo initialized" in dcj
-    assert "PYTHONPATH=" not in compose
+    assert "postCreateCommand" not in dcj
 
 
 class TestScaffoldCommands:
-    def test_repo_init_creates_repo_directory(self, tmp_path):
+    def test_repo_init_initializes_output_directory(self, tmp_path):
         runner = CliRunner()
         result = runner.invoke(
             cli, ["repo", "init", "data-platform", "--output-dir", str(tmp_path)]
         )
 
         assert result.exit_code == 0, result.output
-        assert (tmp_path / "data_platform").is_dir()
-        assert (tmp_path / "data_platform" / "packages").is_dir()
+        assert (tmp_path / "packages").is_dir()
+        assert (tmp_path / ".devcontainer" / "devcontainer.json").exists()
+        assert not (tmp_path / "data_platform").exists()
+
+    def test_repo_init_warns_for_existing_devcontainer(self, tmp_path):
+        devcontainer = tmp_path / ".devcontainer" / "devcontainer.json"
+        devcontainer.parent.mkdir()
+        devcontainer.write_text('{"name": "existing"}', encoding="utf-8")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["repo", "init", "data-platform", "--output-dir", str(tmp_path)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "--overwrite-devcontainer" in result.output
+        assert "already exists" in result.output
+        assert devcontainer.read_text() == '{"name": "existing"}'
+        assert (tmp_path / "packages").is_dir()
+
+    def test_repo_init_overwrites_existing_devcontainer_with_flag(self, tmp_path):
+        devcontainer = tmp_path / ".devcontainer" / "devcontainer.json"
+        devcontainer.parent.mkdir()
+        devcontainer.write_text('{"name": "old"}', encoding="utf-8")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "repo",
+                "init",
+                "data-platform",
+                "--output-dir",
+                str(tmp_path),
+                "--overwrite-devcontainer",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert '"Kindling Domain Development"' in devcontainer.read_text()
+        assert (tmp_path / "packages").is_dir()
 
     def test_package_init_creates_package_under_repo(self, tmp_path):
         repo_root = tmp_path / "repo"
