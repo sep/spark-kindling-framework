@@ -15,6 +15,7 @@ from azure.core.exceptions import *
 
 from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
+from kindling.platform_provider import azure_cloud_config, azure_env, azure_token_scope
 from kindling.spark_config import ConfigService
 
 
@@ -273,7 +274,7 @@ class FabricService(PlatformService):
             raise NotImplementedError("File delete not available without mssparkutils")
 
     def _build_base_url(self) -> str:
-        return "https://api.fabric.microsoft.com/v1/"
+        return f"{azure_env('FABRIC_API_BASE_URL', azure_cloud_config()['fabric_api_base_url'])}/"
 
     def _get_workspace_id(self) -> str:
         import notebookutils
@@ -296,7 +297,9 @@ class FabricService(PlatformService):
             return self._token_cache["token"]
 
         # Get new token
-        token_response = self.credential.get_token("https://api.fabric.microsoft.com/.default")
+        token_response = self.credential.get_token(
+            azure_token_scope("FABRIC_TOKEN_SCOPE", "https://api.fabric.microsoft.com/.default")
+        )
 
         # Cache the token
         self._token_cache = {
@@ -981,7 +984,9 @@ class FabricService(PlatformService):
         onelake_paths = {}
 
         # Get OneLake storage token
-        storage_token = self.get_token("https://storage.azure.com/.default")
+        storage_token = self.get_token(
+            azure_token_scope("AZURE_STORAGE_TOKEN_SCOPE", "https://storage.azure.com/.default")
+        )
 
         for filename, content in app_files.items():
             # Determine folder (Main for entry point, Libs for others)

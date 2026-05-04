@@ -11,7 +11,15 @@ from urllib.parse import quote
 
 import requests
 
-from .platform_provider import PlatformAPI, PlatformAPIRegistry, create_azure_credential
+from .platform_provider import (
+    PlatformAPI,
+    PlatformAPIRegistry,
+    azure_abfss_uri,
+    azure_oauth_token_endpoint,
+    azure_storage_account_url,
+    azure_storage_dfs_endpoint,
+    create_azure_credential,
+)
 
 # Databricks REST API Client (for remote operations)
 # ============================================================================
@@ -185,7 +193,7 @@ class DatabricksAPI(PlatformAPI):
                 return classic_override
 
         if self.storage_account and self.container:
-            base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+            base_url = azure_abfss_uri(self.container, self.storage_account)
             if self.base_path:
                 return f"{base_url}/{self.base_path.strip('/')}"
             return base_url
@@ -219,7 +227,7 @@ class DatabricksAPI(PlatformAPI):
                 return f"{explicit_bootstrap_root.rstrip('/')}/scripts/{main_file}"
 
             if self.storage_account and self.container:
-                base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+                base_url = azure_abfss_uri(self.container, self.storage_account)
                 if self.base_path:
                     base_url = self._join_storage_path(base_url, self.base_path)
                 return self._join_storage_path(base_url, "scripts", main_file)
@@ -228,7 +236,7 @@ class DatabricksAPI(PlatformAPI):
             return self._join_storage_path(artifacts_storage_path, "scripts", main_file)
 
         if self.storage_account and self.container:
-            base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+            base_url = azure_abfss_uri(self.container, self.storage_account)
             if self.base_path:
                 base_url = self._join_storage_path(base_url, self.base_path)
             return self._join_storage_path(base_url, "scripts", main_file)
@@ -327,7 +335,7 @@ class DatabricksAPI(PlatformAPI):
             return False
 
         try:
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            account_url = azure_storage_account_url(self.storage_account)
             credential = self.credential if self.credential else DefaultAzureCredential()
             storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
             file_system_client = storage_client.get_file_system_client(file_system=self.container)
@@ -579,7 +587,7 @@ class DatabricksAPI(PlatformAPI):
             return target_path
 
         # Initialize storage client
-        account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+        account_url = azure_storage_account_url(self.storage_account)
         credential = DefaultAzureCredential()
         storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
 
@@ -612,7 +620,7 @@ class DatabricksAPI(PlatformAPI):
                 failed_uploads.append(f"{filename}: {e}")
 
         # Construct ABFSS path
-        abfss_path = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/{full_target_path}"
+        abfss_path = azure_abfss_uri(self.container, self.storage_account, full_target_path)
 
         print(f"📂 Uploaded {uploaded_count}/{len(files)} files to: {abfss_path}")
 
@@ -767,7 +775,7 @@ class DatabricksAPI(PlatformAPI):
                         from azure.identity import DefaultAzureCredential
                         from azure.storage.filedatalake import DataLakeServiceClient
 
-                        account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+                        account_url = azure_storage_account_url(self.storage_account)
                         credential = DefaultAzureCredential()
                         storage_client = DataLakeServiceClient(
                             account_url=account_url, credential=credential
@@ -1246,15 +1254,18 @@ class DatabricksAPI(PlatformAPI):
             mount_point = f"/mnt/{mount_point.lstrip('/')}"
 
         # Build ABFSS source URL
-        source = f"abfss://{container}@{storage_account}.dfs.core.windows.net/"
+        dfs_endpoint = azure_storage_dfs_endpoint(storage_account)
+        source = f"{azure_abfss_uri(container, storage_account)}/"
 
         # Build OAuth configuration for Azure
         extra_configs = {
-            f"fs.azure.account.auth.type.{storage_account}.dfs.core.windows.net": "OAuth",
-            f"fs.azure.account.oauth.provider.type.{storage_account}.dfs.core.windows.net": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
-            f"fs.azure.account.oauth2.client.id.{storage_account}.dfs.core.windows.net": client_id,
-            f"fs.azure.account.oauth2.client.secret.{storage_account}.dfs.core.windows.net": client_secret,
-            f"fs.azure.account.oauth2.client.endpoint.{storage_account}.dfs.core.windows.net": f"https://login.microsoftonline.com/{tenant_id}/oauth2/token",
+            f"fs.azure.account.auth.type.{dfs_endpoint}": "OAuth",
+            f"fs.azure.account.oauth.provider.type.{dfs_endpoint}": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+            f"fs.azure.account.oauth2.client.id.{dfs_endpoint}": client_id,
+            f"fs.azure.account.oauth2.client.secret.{dfs_endpoint}": client_secret,
+            f"fs.azure.account.oauth2.client.endpoint.{dfs_endpoint}": azure_oauth_token_endpoint(
+                tenant_id
+            ),
         }
 
         # Prepare request payload

@@ -16,6 +16,7 @@ from kindling_cli.cli import (
     _load_app_module,
     _render_environment_bootstrap_source,
     _render_starter_notebook_source,
+    _resolve_account_url,
     cli,
 )
 
@@ -32,6 +33,29 @@ def test_config_init_writes_settings_file():
         content = settings_path.read_text(encoding="utf-8")
         assert "name: demo-app" in content
         assert "kindling:" in content
+
+
+def test_resolve_account_url_uses_blob_suffix_env(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_BLOB_ENDPOINT_SUFFIX", "blob.core.usgovcloudapi.net")
+
+    assert _resolve_account_url("acct") == "https://acct.blob.core.usgovcloudapi.net"
+
+
+def test_resolve_account_url_uses_azure_environment(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_BLOB_ENDPOINT_SUFFIX", raising=False)
+    monkeypatch.setenv("AZURE_CLOUD", "AzureUSGovernment")
+
+    assert _resolve_account_url("govacct") == "https://govacct.blob.core.usgovcloudapi.net"
+
+
+def test_resolve_account_url_preserves_explicit_endpoint(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_BLOB_ENDPOINT_SUFFIX", "blob.core.usgovcloudapi.net")
+
+    assert _resolve_account_url("acct.blob.custom.example") == "https://acct.blob.custom.example"
+    assert (
+        _resolve_account_url("https://acct.blob.custom.example")
+        == "https://acct.blob.custom.example"
+    )
 
 
 def test_config_init_refuses_to_overwrite_without_force():

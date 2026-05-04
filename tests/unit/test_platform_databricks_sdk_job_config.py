@@ -41,6 +41,19 @@ def test_resolve_artifacts_storage_path_uses_abfss_for_classic_by_default(monkey
     )
 
 
+def test_resolve_artifacts_storage_path_uses_dfs_suffix_env(monkeypatch):
+    api = _make_api()
+    monkeypatch.setenv("AZURE_STORAGE_DFS_ENDPOINT_SUFFIX", "dfs.core.usgovcloudapi.net")
+    monkeypatch.delenv("KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH", raising=False)
+
+    path = api._resolve_artifacts_storage_path({}, "classic")
+
+    assert (
+        path
+        == "abfss://artifacts@sepstdatalakedev.dfs.core.usgovcloudapi.net/system-tests/run-123/databricks"
+    )
+
+
 def test_resolve_artifacts_storage_path_honors_classic_override(monkeypatch):
     api = _make_api()
     monkeypatch.setenv("KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH", "dbfs:/mnt/artifacts")

@@ -8,7 +8,7 @@
 # What's baked in:
 #   - Python 3.11 + Java 21 (for PySpark 3.5)
 #   - Poetry (for project-level dependency management)
-#   - spark-kindling and spark-kindling-cli wheels at /opt/kindling-packages/
+#   - spark-kindling, spark-kindling-cli, and spark-kindling-sdk wheels at /opt/kindling-packages/
 #   - A PEP 503 simple index at /opt/kindling-packages/simple/ so Poetry
 #     resolves these packages without hitting PyPI
 #   - Hadoop Azure JARs at /opt/hadoop-jars (ABFSS integration tests)
@@ -87,7 +87,8 @@ EOF
 # environment resolution (and plain `import kindling`) works immediately.
 RUN pip install --no-cache-dir \
     "/opt/kindling-packages/wheels/spark_kindling-${KINDLING_VERSION}-py3-none-any.whl[standalone]" \
-    "/opt/kindling-packages/wheels/spark_kindling_cli-${KINDLING_VERSION}-py3-none-any.whl"
+    "/opt/kindling-packages/wheels/spark_kindling_cli-${KINDLING_VERSION}-py3-none-any.whl" \
+    "/opt/kindling-packages/wheels/spark_kindling_sdk-${KINDLING_VERSION}-py3-none-any.whl"
 
 # Pre-download Hadoop Azure JARs needed for local ABFSS integration tests.
 # Stored in /opt/hadoop-jars (stable image layer).
