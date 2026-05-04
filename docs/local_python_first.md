@@ -47,11 +47,17 @@ poetry run poe test-integration
 The explicit two-step flow is also available:
 
 ```bash
+git clone <your-empty-repo-url> data-platform
+cd data-platform
 kindling repo init data-platform
-cd data_platform
 kindling package init my-pipeline --repo-root .
 cd packages/my_pipeline
 ```
+
+If you start from a repo that already has a `.devcontainer/` so the Kindling
+CLI is available inside the container, `kindling repo init` will warn and leave
+that devcontainer unchanged. Re-run with `--overwrite-devcontainer` when you
+intentionally want the generated Kindling devcontainer config.
 
 To add a second package later:
 
