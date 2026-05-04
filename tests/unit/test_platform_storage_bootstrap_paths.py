@@ -56,7 +56,8 @@ def test_synapse_create_job_uses_base_path_for_default_bootstrap_script():
 
     api.create_job("job-123", {})
 
-    payload = api._make_request.call_args.kwargs["json"]
+    # call_args_list[0] is the PUT; call_args_list[1] is the GET readback poll
+    payload = api._make_request.call_args_list[0].kwargs["json"]
     job_props = payload["properties"]["jobProperties"]
 
     assert (

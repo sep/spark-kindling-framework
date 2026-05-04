@@ -529,6 +529,24 @@ class SynapseAPI(PlatformAPI):
             f"?api-version=2020-12-01"
         )
         self._make_request("PUT", url, json=job_def_body)
+
+        # Poll until the definition is readable — Synapse has eventual consistency between
+        # the data-plane PUT and the ARM-backed execute endpoint. Without this guard the
+        # immediate POST /execute returns 404 for a second or two after the PUT succeeds.
+        for attempt in range(10):
+            try:
+                self._make_request("GET", url)
+                break
+            except Exception as exc:
+                if "404" not in str(exc):
+                    raise
+                if attempt == 9:
+                    raise RuntimeError(
+                        f"Synapse SparkJobDefinition '{job_name}' not readable after PUT "
+                        f"(eventual consistency timeout)"
+                    ) from exc
+                time.sleep(2.0)
+
         print(f"✅ Created Synapse SparkJobDefinition: {job_name}")
 
         return {
