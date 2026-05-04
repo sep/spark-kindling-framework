@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+import jinja2
+
 
 def _kindling_version() -> str:
     try:
@@ -16,8 +18,6 @@ def _kindling_version() -> str:
     except importlib.metadata.PackageNotFoundError:
         return "latest"
 
-
-import jinja2
 
 _BUILTIN_TEMPLATES = Path(__file__).parent / "templates"
 
@@ -28,6 +28,7 @@ class RepoScaffoldConfig:
     output_dir: Path = field(default_factory=Path.cwd)
     template_dir: Optional[Path] = None
     primary_package_name: Optional[str] = None
+    overwrite_devcontainer: bool = False
 
     @property
     def snake_name(self) -> str:
@@ -109,6 +110,7 @@ def _repo_ctx(cfg: RepoScaffoldConfig) -> dict:
         "kebab_name": cfg.kebab_name,
         "repo_snake_name": cfg.snake_name,
         "repo_kebab_name": cfg.kebab_name,
+        "repo_workspace_name": cfg.output_dir.name or cfg.kebab_name,
         "primary_package_snake_name": cfg.primary_package_snake_name,
         "kindling_version": _kindling_version(),
     }
@@ -133,15 +135,19 @@ def _render(env: jinja2.Environment, template_name: str, ctx: dict) -> str:
 
 
 def generate_repo(cfg: RepoScaffoldConfig) -> List[Path]:
-    root = cfg.output_dir / cfg.snake_name
-    root.mkdir(parents=True, exist_ok=False)
+    root = cfg.output_dir
+    root.mkdir(parents=True, exist_ok=True)
+    devcontainer_dir = root / ".devcontainer"
+    skip_devcontainer = devcontainer_dir.exists() and not cfg.overwrite_devcontainer
 
     env = _make_env(cfg.template_dir)
     ctx = _repo_ctx(cfg)
     files: List[Path] = []
 
-    def _write(rel: str, template_name: str) -> None:
+    def _write(rel: str, template_name: str, *, overwrite: bool = False) -> None:
         path = root / rel
+        if path.exists() and not overwrite:
+            raise FileExistsError(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_render(env, template_name, ctx), encoding="utf-8")
         files.append(path)
@@ -150,9 +156,12 @@ def generate_repo(cfg: RepoScaffoldConfig) -> List[Path]:
 
     _write(".gitignore", ".gitignore.j2")
     _write(".github/workflows/ci.yml", ".github/workflows/ci.yml.j2")
-    _write(".devcontainer/Dockerfile", ".devcontainer/Dockerfile.j2")
-    _write(".devcontainer/devcontainer.json", ".devcontainer/devcontainer.json.j2")
-    _write(".devcontainer/docker-compose.yml", ".devcontainer/docker-compose.yml.j2")
+    if not skip_devcontainer:
+        _write(
+            ".devcontainer/devcontainer.json",
+            ".devcontainer/devcontainer.json.j2",
+            overwrite=cfg.overwrite_devcontainer,
+        )
     _write("scripts/setup-local-dev.sh", "scripts/setup-local-dev.sh.j2")
 
     return files
@@ -232,14 +241,14 @@ def generate_package(cfg: PackageScaffoldConfig) -> List[Path]:
 def generate_project(cfg: PackageScaffoldConfig) -> List[Path]:
     repo_cfg = RepoScaffoldConfig(
         name=cfg.name,
-        output_dir=cfg.repo_root.parent,
+        output_dir=cfg.repo_root,
         template_dir=cfg.template_dir,
         primary_package_name=cfg.name,
     )
     files = generate_repo(repo_cfg)
     package_cfg = PackageScaffoldConfig(
         name=cfg.name,
-        repo_root=repo_cfg.output_dir / repo_cfg.snake_name,
+        repo_root=repo_cfg.output_dir,
         layers=cfg.layers,
         auth=cfg.auth,
         integration=cfg.integration,

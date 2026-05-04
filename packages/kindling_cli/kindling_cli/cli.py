@@ -2869,7 +2869,7 @@ def repo_group() -> None:
     default=".",
     show_default=True,
     type=click.Path(path_type=Path, file_okay=False),
-    help="Parent directory in which to create the repo folder.",
+    help="Directory to initialize as the repo root.",
 )
 @click.option(
     "--template-dir",
@@ -2878,7 +2878,17 @@ def repo_group() -> None:
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     help="Directory of custom Jinja2 templates that overlay the built-ins.",
 )
-def repo_init(repo_name: str, output_dir: Path, template_dir: Optional[Path]) -> None:
+@click.option(
+    "--overwrite-devcontainer",
+    is_flag=True,
+    help="Replace an existing .devcontainer/devcontainer.json.",
+)
+def repo_init(
+    repo_name: str,
+    output_dir: Path,
+    template_dir: Optional[Path],
+    overwrite_devcontainer: bool,
+) -> None:
     """Create a Kindling repo root with shared dev tooling."""
     from kindling_cli.scaffold import RepoScaffoldConfig, generate_repo, validate_name
 
@@ -2891,12 +2901,14 @@ def repo_init(repo_name: str, output_dir: Path, template_dir: Optional[Path]) ->
         name=snake,
         output_dir=output_dir.expanduser().resolve(),
         template_dir=template_dir.expanduser().resolve() if template_dir else None,
+        overwrite_devcontainer=overwrite_devcontainer,
     )
 
-    target = cfg.output_dir / cfg.snake_name
-    if target.exists():
-        raise click.ClickException(
-            f"Directory already exists: {target}\nChoose a different repo name or --output-dir."
+    if (cfg.output_dir / ".devcontainer").exists() and not overwrite_devcontainer:
+        click.echo(
+            "Warning: .devcontainer/ already exists; leaving it unchanged. "
+            "Use --overwrite-devcontainer to replace .devcontainer/devcontainer.json.",
+            err=True,
         )
 
     try:
@@ -2904,7 +2916,7 @@ def repo_init(repo_name: str, output_dir: Path, template_dir: Optional[Path]) ->
     except Exception as exc:
         raise click.ClickException(f"Repo scaffold failed: {exc}") from exc
 
-    click.echo(f"Created repo {cfg.kebab_name}/ ({len(created)} files)")
+    click.echo(f"Initialized repo {cfg.kebab_name} in {cfg.output_dir} ({len(created)} files)")
 
 
 @cli.group("package")

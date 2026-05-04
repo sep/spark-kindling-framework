@@ -44,8 +44,9 @@ Run any command with `--help` for full options.
 The scaffolding commands now target true multi-package repos:
 
 ```bash
+git clone <your-empty-repo-url> data-platform
+cd data-platform
 kindling repo init data-platform
-cd data_platform
 
 kindling package init sales-ops --repo-root .
 kindling package init customer-360 --repo-root .
@@ -53,6 +54,9 @@ kindling package init customer-360 --repo-root .
 
 This produces a repo root with shared `.devcontainer/`, CI, and `.gitignore`
 plus independently buildable packages under `packages/`.
+If `.devcontainer/` already exists, `kindling repo init` warns and leaves it
+unchanged. Pass `--overwrite-devcontainer` to replace the generated
+devcontainer config.
 
 To add a second package later, return to the repo root and scaffold another
 package:
