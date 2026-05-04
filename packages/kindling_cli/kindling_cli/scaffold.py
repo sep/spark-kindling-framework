@@ -153,6 +153,7 @@ def generate_repo(cfg: RepoScaffoldConfig) -> List[Path]:
     _write(".devcontainer/Dockerfile", ".devcontainer/Dockerfile.j2")
     _write(".devcontainer/devcontainer.json", ".devcontainer/devcontainer.json.j2")
     _write(".devcontainer/docker-compose.yml", ".devcontainer/docker-compose.yml.j2")
+    _write("scripts/setup-local-dev.sh", "scripts/setup-local-dev.sh.j2")
 
     return files
 
