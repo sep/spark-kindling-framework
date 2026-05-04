@@ -47,6 +47,7 @@ def test_synapse_create_job_uses_base_path_for_default_bootstrap_script():
     api.container = "artifacts"
     api.base_path = "release-candidates/v0.8.2/synapse"
     api.base_url = "https://workspace-123.dev.azuresynapse.net"
+    api._job_mapping = {}
     api._make_request = MagicMock(
         return_value=MagicMock(
             status_code=200,
@@ -66,21 +67,66 @@ def test_synapse_create_job_uses_base_path_for_default_bootstrap_script():
     )
 
 
-def test_synapse_run_job_posts_to_execute_endpoint_and_returns_batch_id():
+def test_synapse_run_job_uses_livy_from_cache_and_returns_batch_id():
+    """run_job uses the in-process _job_mapping cache (same process as create_job)."""
     api = SynapseAPI.__new__(SynapseAPI)
     api.workspace_name = "my-workspace"
     api.spark_pool_name = "spark-pool"
     api.base_url = "https://my-workspace.dev.azuresynapse.net"
+    api._last_request_time = 0
+    api._min_request_interval = 0
     api._make_request = MagicMock(
         return_value=MagicMock(
             json=lambda: {"id": 42, "state": "not_started"},
         )
     )
+    api._job_mapping = {
+        "my-job": {
+            "file": "abfss://c@sa.dfs.core.windows.net/bootstrap.py",
+            "args": ["config:platform=synapse"],
+            "conf": {"spark.executor.instances": "2"},
+        }
+    }
 
     batch_id = api.run_job("my-job")
 
     assert batch_id == "42"
     call_args = api._make_request.call_args
     assert call_args.args[0] == "POST"
-    assert "sparkJobDefinitions/my-job/execute" in call_args.args[1]
-    assert "api-version=2020-12-01" in call_args.args[1]
+    assert "livyApi" in call_args.args[1]
+    assert "spark-pool" in call_args.args[1]
+    assert "batches" in call_args.args[1]
+
+
+def test_synapse_run_job_falls_back_to_get_for_cross_invocation():
+    """run_job fetches the SparkJobDefinition via GET when no in-process cache exists."""
+    api = SynapseAPI.__new__(SynapseAPI)
+    api.workspace_name = "my-workspace"
+    api.spark_pool_name = "spark-pool"
+    api.base_url = "https://my-workspace.dev.azuresynapse.net"
+    api._last_request_time = 0
+    api._min_request_interval = 0
+    api._job_mapping = {}
+
+    defn_response = MagicMock(
+        json=lambda: {
+            "properties": {
+                "jobProperties": {
+                    "file": "abfss://c@sa.dfs.core.windows.net/bootstrap.py",
+                    "args": ["config:platform=synapse"],
+                    "conf": {"spark.executor.instances": "2"},
+                }
+            }
+        }
+    )
+    batch_response = MagicMock(json=lambda: {"id": 99, "state": "not_started"})
+    api._make_request = MagicMock(side_effect=[defn_response, batch_response])
+
+    batch_id = api.run_job("my-job")
+
+    assert batch_id == "99"
+    get_call, post_call = api._make_request.call_args_list
+    assert get_call.args[0] == "GET"
+    assert "sparkJobDefinitions/my-job" in get_call.args[1]
+    assert post_call.args[0] == "POST"
+    assert "livyApi" in post_call.args[1]

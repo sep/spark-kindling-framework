@@ -89,6 +89,10 @@ class SynapseAPI(PlatformAPI):
         # Track batches where the diagnostic emitter root doesn't exist in storage (PathNotFound).
         # In those cases, waiting a long grace period for logs is wasted time.
         self._diag_root_missing: set[str] = set()
+        # Livy batch payloads keyed by job_id — populated by create_job, consumed by run_job.
+        # SparkJobDefinition PUT (data plane) does not sync to ARM so /execute always 404s;
+        # we keep the PUT for workspace UI visibility but submit execution via Livy directly.
+        self._job_mapping: Dict[str, Dict] = {}
 
     @classmethod
     def from_env(cls):
@@ -529,25 +533,16 @@ class SynapseAPI(PlatformAPI):
             f"?api-version=2020-12-01"
         )
         self._make_request("PUT", url, json=job_def_body)
-
-        # Poll until the definition is readable — Synapse has eventual consistency between
-        # the data-plane PUT and the ARM-backed execute endpoint. Without this guard the
-        # immediate POST /execute returns 404 for a second or two after the PUT succeeds.
-        for attempt in range(10):
-            try:
-                self._make_request("GET", url)
-                break
-            except Exception as exc:
-                if "404" not in str(exc):
-                    raise
-                if attempt == 9:
-                    raise RuntimeError(
-                        f"Synapse SparkJobDefinition '{job_name}' not readable after PUT "
-                        f"(eventual consistency timeout)"
-                    ) from exc
-                time.sleep(2.0)
-
         print(f"✅ Created Synapse SparkJobDefinition: {job_name}")
+
+        # Store the Livy batch payload so run_job() can submit directly via Livy.
+        # The SparkJobDefinition PUT (data plane) does not sync to ARM, so the
+        # /execute endpoint always returns 404. Livy submission is the reliable path.
+        self._job_mapping[job_id] = {
+            "file": main_file,
+            "args": all_args,
+            "conf": conf_dict,
+        }
 
         return {
             "job_id": job_id,
@@ -628,33 +623,59 @@ class SynapseAPI(PlatformAPI):
         """No-op: file paths are embedded in the SparkJobDefinition at create_job() time."""
 
     def run_job(self, job_id: str, parameters: Optional[Dict[str, Any]] = None) -> str:
-        """Trigger execution of a Synapse SparkJobDefinition created by create_job().
+        """Submit a Spark batch job via the Livy API.
 
-        Calls POST /sparkJobDefinitions/{name}/execute?api-version=2020-12-01.
-        The job configuration (main file, args, Spark settings) was baked into the
-        definition at create_job() time and does not need to be re-passed here.
+        The SparkJobDefinition PUT (data plane) does not sync to ARM, so the
+        POST /sparkJobDefinitions/{name}/execute endpoint always returns 404.
+        Instead, we retrieve the job definition via GET (data plane, works fine),
+        extract the Spark parameters, and submit directly via the Livy batch API.
+        This also works across CLI invocations because the definition is fetched
+        from Synapse rather than an in-memory dict.
 
         Args:
             job_id: Job definition name (returned by create_job as job_id)
-            parameters: Unused for Synapse — configuration is set at create_job() time.
+            parameters: Unused — configuration was fixed at create_job() time.
 
         Returns:
             Batch ID (run ID) for monitoring via get_job_status() / stream_stdout_logs().
 
         Raises:
-            Exception: If the execute call fails or returns no batch ID.
+            Exception: If the definition cannot be fetched or Livy submission fails.
         """
+        # Prefer the in-process cache (avoids an extra round-trip when create_job was
+        # called in the same process), but fall back to a live GET for cross-invocation use.
+        job_info = self._job_mapping.get(job_id)
+        if job_info is None:
+            defn_url = (
+                f"{self.base_url}/sparkJobDefinitions/{quote(job_id, safe='')}"
+                f"?api-version=2020-12-01"
+            )
+            resp = self._make_request("GET", defn_url)
+            props = resp.json().get("properties", {}).get("jobProperties", {})
+            job_info = {
+                "file": props.get("file", ""),
+                "args": props.get("args", []),
+                "conf": props.get("conf", {}),
+            }
+
+        batch_payload = {
+            "name": job_id,
+            "file": job_info["file"],
+            "args": job_info["args"],
+            "conf": job_info["conf"],
+        }
+
         url = (
-            f"{self.base_url}/sparkJobDefinitions/{quote(job_id, safe='')}"
-            f"/execute?api-version=2020-12-01"
+            f"{self.base_url}/livyApi/versions/2019-11-01-preview"
+            f"/sparkPools/{self.spark_pool_name}/batches"
         )
-        response = self._make_request("POST", url)
+        response = self._make_request("POST", url, json=batch_payload)
         result = response.json()
 
         batch_id = result.get("id")
         if batch_id is None:
             raise Exception(
-                f"Synapse SparkJobDefinition execute did not return a batch ID "
+                f"Synapse Livy batch submit did not return a batch ID "
                 f"(job='{job_id}'): {result}"
             )
 
