@@ -625,12 +625,20 @@ def cli() -> None:
     is_flag=True,
     help="Suppress INFO-level framework logs; show WARNING and above only.",
 )
+@click.option(
+    "--no-watermark",
+    "no_watermark",
+    is_flag=True,
+    default=False,
+    help="Bypass watermark tracking so the full dataset is processed (useful for dev backfills).",
+)
 def run_pipe(
     pipe_id: str,
     env: Optional[str],
     app_path: Optional[Path],
     config_dir: Optional[Path],
     quiet: bool,
+    no_watermark: bool,
 ) -> None:
     """Execute a registered pipe locally."""
     try:
@@ -677,10 +685,13 @@ def run_pipe(
             "  Hint: Check for typos, or run `kindling validate` to see all registered pipes."
         )
 
+    if no_watermark:
+        click.echo("Note: --no-watermark is set; watermark tracking bypassed for this run.")
     click.echo(f"Running pipe: {pipe_id}")
     executer = GlobalInjector.get(DataPipesExecution)
     try:
-        executer.run_datapipes([pipe_id])
+        # [implementer] pass no_watermark through run_datapipes kwargs — ki-70y
+        executer.run_datapipes([pipe_id], no_watermark=no_watermark)
     except Exception as exc:
         raise click.ClickException(f"Pipe '{pipe_id}' failed: {exc}") from exc
     click.echo(f"Pipe '{pipe_id}' completed successfully.")
@@ -761,6 +772,160 @@ def validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
         return
 
     raise click.ClickException("Validation failed - see above.")
+
+
+# =============================================================================
+# pipeline
+# =============================================================================
+
+
+@cli.group("pipeline")
+def pipeline_group() -> None:
+    """Locally run and inspect medallion pipeline layers."""
+
+
+@pipeline_group.command("run")
+@click.argument("pipe_id")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+@click.option(
+    "--config",
+    "config_dir",
+    default=None,
+    type=click.Path(path_type=Path, file_okay=False, exists=False),
+    help="Config directory override, if app.py supports it",
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="Suppress INFO-level framework logs; show WARNING and above only.",
+)
+@click.option(
+    "--no-watermark",
+    "no_watermark",
+    is_flag=True,
+    default=False,
+    help="Bypass watermark tracking so the full dataset is processed (useful for dev backfills).",
+)
+def pipeline_run(
+    pipe_id: str,
+    app_path: Optional[Path],
+    env: Optional[str],
+    config_dir: Optional[Path],
+    quiet: bool,
+    no_watermark: bool,
+) -> None:
+    """Run a single pipeline layer locally using already-populated upstream entity storage.
+
+    Use this as your primary dev iteration loop for medallion pipelines — run
+    one layer at a time without re-running upstream layers.
+
+    Entity data sources follow the priority stack: tests/entities/ convention
+    → kindling.yaml env mapping → registered provider.
+
+    Examples:
+
+    \b
+      kindling pipeline run bronze.ingest_fawkes --app fawkes --env dev
+      kindling pipeline run silver.stage_fawkes --app fawkes --env dev
+    """
+    try:
+        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    if quiet:
+        import logging
+
+        logging.disable(logging.INFO)
+        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__PRINT", "false")
+        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__LEVEL", "WARNING")
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, resolved_env, config_dir)
+
+    registry = GlobalInjector.get(DataPipesRegistry)
+    pipe = registry.get_pipe_definition(pipe_id)
+    if pipe is None:
+        available = ", ".join(registry.get_pipe_ids()) or "(none registered)"
+        raise click.ClickException(
+            f"Pipe '{pipe_id}' not found.\n"
+            f"  Registered pipes: {available}\n"
+            "  Hint: Check for typos, or run `kindling pipeline list` to see all registered pipes."
+        )
+
+    if no_watermark:
+        click.echo("Note: --no-watermark is set; watermark tracking bypassed for this run.")
+    click.echo(f"Running pipe: {pipe_id}")
+    executer = GlobalInjector.get(DataPipesExecution)
+    try:
+        # [implementer] pass no_watermark through run_datapipes kwargs — ki-70y
+        executer.run_datapipes([pipe_id], no_watermark=no_watermark)
+    except Exception as exc:
+        raise click.ClickException(f"Pipe '{pipe_id}' failed: {exc}") from exc
+    click.echo(f"Pipe '{pipe_id}' completed successfully.")
+
+
+@pipeline_group.command("list")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+def pipeline_list(
+    app_path: Optional[Path],
+    env: Optional[str],
+) -> None:
+    """List all registered pipeline layers for an app.
+
+    Example:
+
+    \b
+      kindling pipeline list --app fawkes
+    """
+    try:
+        from kindling.data_pipes import DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, resolved_env)
+
+    registry = GlobalInjector.get(DataPipesRegistry)
+    pipe_ids = sorted(registry.get_pipe_ids())
+    if not pipe_ids:
+        click.echo("No pipes registered.")
+        return
+
+    click.echo(f"Registered pipes ({len(pipe_ids)}):")
+    for pid in pipe_ids:
+        click.echo(f"  {pid}")
 
 
 # =============================================================================
