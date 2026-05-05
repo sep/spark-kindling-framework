@@ -129,3 +129,10 @@ witness/
 state.json
 CLAUDE.md
 CLAUDE.local.md
+
+# Agent coordination — ephemeral session state (WORKSPACE.md, CONVENTIONS.md are tracked explicitly)
+.agent-memory/ACTIVE_TASK.md
+.agent-memory/events.jsonl
+.agent-memory/mailboxes/
+.agent-memory/archive/
+job.yaml
