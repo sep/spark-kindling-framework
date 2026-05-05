@@ -1,5 +1,7 @@
 """CLI entrypoint for Kindling design-time tooling."""
 
+import csv
+import io
 import json
 import os
 import sys
@@ -625,12 +627,20 @@ def cli() -> None:
     is_flag=True,
     help="Suppress INFO-level framework logs; show WARNING and above only.",
 )
+@click.option(
+    "--no-watermark",
+    "no_watermark",
+    is_flag=True,
+    default=False,
+    help="Bypass watermark tracking so the full dataset is processed (useful for dev backfills).",
+)
 def run_pipe(
     pipe_id: str,
     env: Optional[str],
     app_path: Optional[Path],
     config_dir: Optional[Path],
     quiet: bool,
+    no_watermark: bool,
 ) -> None:
     """Execute a registered pipe locally."""
     try:
@@ -677,10 +687,13 @@ def run_pipe(
             "  Hint: Check for typos, or run `kindling validate` to see all registered pipes."
         )
 
+    if no_watermark:
+        click.echo("Note: --no-watermark is set; watermark tracking bypassed for this run.")
     click.echo(f"Running pipe: {pipe_id}")
     executer = GlobalInjector.get(DataPipesExecution)
     try:
-        executer.run_datapipes([pipe_id])
+        # [implementer] pass no_watermark through run_datapipes kwargs — ki-70y
+        executer.run_datapipes([pipe_id], no_watermark=no_watermark)
     except Exception as exc:
         raise click.ClickException(f"Pipe '{pipe_id}' failed: {exc}") from exc
     click.echo(f"Pipe '{pipe_id}' completed successfully.")
@@ -761,6 +774,160 @@ def validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
         return
 
     raise click.ClickException("Validation failed - see above.")
+
+
+# =============================================================================
+# pipeline
+# =============================================================================
+
+
+@cli.group("pipeline")
+def pipeline_group() -> None:
+    """Locally run and inspect medallion pipeline layers."""
+
+
+@pipeline_group.command("run")
+@click.argument("pipe_id")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+@click.option(
+    "--config",
+    "config_dir",
+    default=None,
+    type=click.Path(path_type=Path, file_okay=False, exists=False),
+    help="Config directory override, if app.py supports it",
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="Suppress INFO-level framework logs; show WARNING and above only.",
+)
+@click.option(
+    "--no-watermark",
+    "no_watermark",
+    is_flag=True,
+    default=False,
+    help="Bypass watermark tracking so the full dataset is processed (useful for dev backfills).",
+)
+def pipeline_run(
+    pipe_id: str,
+    app_path: Optional[Path],
+    env: Optional[str],
+    config_dir: Optional[Path],
+    quiet: bool,
+    no_watermark: bool,
+) -> None:
+    """Run a single pipeline layer locally using already-populated upstream entity storage.
+
+    Use this as your primary dev iteration loop for medallion pipelines — run
+    one layer at a time without re-running upstream layers.
+
+    Entity data sources follow the priority stack: tests/entities/ convention
+    → kindling.yaml env mapping → registered provider.
+
+    Examples:
+
+    \b
+      kindling pipeline run bronze.ingest_fawkes --app fawkes --env dev
+      kindling pipeline run silver.stage_fawkes --app fawkes --env dev
+    """
+    try:
+        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    if quiet:
+        import logging
+
+        logging.disable(logging.INFO)
+        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__PRINT", "false")
+        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__LEVEL", "WARNING")
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, resolved_env, config_dir)
+
+    registry = GlobalInjector.get(DataPipesRegistry)
+    pipe = registry.get_pipe_definition(pipe_id)
+    if pipe is None:
+        available = ", ".join(registry.get_pipe_ids()) or "(none registered)"
+        raise click.ClickException(
+            f"Pipe '{pipe_id}' not found.\n"
+            f"  Registered pipes: {available}\n"
+            "  Hint: Check for typos, or run `kindling pipeline list` to see all registered pipes."
+        )
+
+    if no_watermark:
+        click.echo("Note: --no-watermark is set; watermark tracking bypassed for this run.")
+    click.echo(f"Running pipe: {pipe_id}")
+    executer = GlobalInjector.get(DataPipesExecution)
+    try:
+        # [implementer] pass no_watermark through run_datapipes kwargs — ki-70y
+        executer.run_datapipes([pipe_id], no_watermark=no_watermark)
+    except Exception as exc:
+        raise click.ClickException(f"Pipe '{pipe_id}' failed: {exc}") from exc
+    click.echo(f"Pipe '{pipe_id}' completed successfully.")
+
+
+@pipeline_group.command("list")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+def pipeline_list(
+    app_path: Optional[Path],
+    env: Optional[str],
+) -> None:
+    """List all registered pipeline layers for an app.
+
+    Example:
+
+    \b
+      kindling pipeline list --app fawkes
+    """
+    try:
+        from kindling.data_pipes import DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, resolved_env)
+
+    registry = GlobalInjector.get(DataPipesRegistry)
+    pipe_ids = sorted(registry.get_pipe_ids())
+    if not pipe_ids:
+        click.echo("No pipes registered.")
+        return
+
+    click.echo(f"Registered pipes ({len(pipe_ids)}):")
+    for pid in pipe_ids:
+        click.echo(f"  {pid}")
 
 
 # =============================================================================
@@ -1077,6 +1244,52 @@ _PLATFORM_BASE_VARS: Dict[str, List[str]] = {
 _AZURE_SP_VARS: List[str] = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"]
 _AZURE_SP_PLATFORMS: frozenset = frozenset({"fabric", "synapse"})
 
+# [implementer] required credential vars for platform pre-flight check — ki-0nq
+_PLATFORM_CREDENTIAL_VARS: Dict[str, List[str]] = {
+    "synapse": [
+        "SYNAPSE_WORKSPACE_NAME",
+        "SYNAPSE_SPARK_POOL_NAME",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+    ],
+    "databricks": [
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+    ],
+    "fabric": [
+        "FABRIC_WORKSPACE_ID",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+    ],
+}
+
+
+def _print_platform_credential_check(platform: str) -> bool:
+    """Print a human-readable credential check for the given platform.
+
+    Each required env var is reported as SET or MISSING.  Missing vars include
+    an ``export`` hint.  Returns ``True`` when all vars are set, ``False``
+    when one or more are missing.
+    """
+    vars_for_platform = _PLATFORM_CREDENTIAL_VARS.get(platform, [])
+    click.echo(f"Platform: {platform}")
+    missing_count = 0
+    col_width = max((len(v) for v in vars_for_platform), default=0) + 2
+    for var in vars_for_platform:
+        val = os.getenv(var)
+        if val:
+            click.echo(f"  {var:<{col_width}} SET")
+        else:
+            missing_count += 1
+            hint = var.lower().replace("_", "-")
+            click.echo(f"  {var:<{col_width}} MISSING  → set via: export {var}=<your-{hint}>")
+    if missing_count:
+        click.echo(
+            f"\n{missing_count} missing."
+            f" Run 'kindling env check --platform {platform}' again after setting them."
+        )
+    return missing_count == 0
+
 
 def _missing_platform_vars(platform: str) -> List[str]:
     """Return required env vars for platform that are not currently set."""
@@ -1175,15 +1388,14 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
 
     \b
     With --platform <name>, checks that the required credential env vars for
-    the given platform are set.  The platform is also auto-detected from the
-    environment (FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST)
-    when --platform is omitted.
+    the given platform are set and reports each as SET or MISSING.  Missing
+    vars include an export hint.  Exits 1 if any vars are missing.
 
       --platform databricks  DATABRICKS_HOST, DATABRICKS_TOKEN
-      --platform fabric      FABRIC_WORKSPACE_ID, FABRIC_LAKEHOUSE_ID,
-                             AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
-      --platform synapse     SYNAPSE_WORKSPACE_NAME,
-                             AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+      --platform fabric      FABRIC_WORKSPACE_ID, AZURE_TENANT_ID,
+                             AZURE_CLIENT_ID
+      --platform synapse     SYNAPSE_WORKSPACE_NAME, SYNAPSE_SPARK_POOL_NAME,
+                             AZURE_TENANT_ID, AZURE_CLIENT_ID
 
     \b
     To download the hadoop-azure JARs run:
@@ -1244,13 +1456,18 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
                 )
             )
 
-    resolved_platform = platform or _detect_platform_from_environment()
-    if resolved_platform:
-        checks.append(("platform", True, resolved_platform))
-        for var in _PLATFORM_BASE_VARS.get(resolved_platform, []):
+    # [implementer] human-readable platform credential check — ki-0nq
+    if platform is not None:
+        all_set = _print_platform_credential_check(platform)
+        sys.exit(0 if all_set else 1)
+
+    auto_platform = _detect_platform_from_environment()
+    if auto_platform:
+        checks.append(("platform", True, auto_platform))
+        for var in _PLATFORM_BASE_VARS.get(auto_platform, []):
             val = os.getenv(var)
             checks.append((f"env:{var}", bool(val), "set" if val else "missing"))
-        if resolved_platform in _AZURE_SP_PLATFORMS:
+        if auto_platform in _AZURE_SP_PLATFORMS:
             sp_vals = [os.getenv(v) for v in _AZURE_SP_VARS]
             if any(sp_vals):
                 for var, val in zip(_AZURE_SP_VARS, sp_vals):
@@ -2205,10 +2422,256 @@ def app_group() -> None:
     """Package and deploy Kindling applications."""
 
 
+def _resolve_source_path(
+    local_folder: Optional[Path],
+    kda_package: Optional[Path],
+    positional_path: Optional[Path],
+    command_name: str,
+) -> Path:
+    """Resolve the app source path from explicit flags or a deprecated positional arg.
+
+    Exactly one of local_folder, kda_package, or positional_path must be provided.
+    Prints a deprecation warning to stderr when the positional form is used.
+    """
+    # Mutual exclusion is enforced upstream; guard defensively here.
+    if local_folder and kda_package:
+        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
+
+    if local_folder:
+        return local_folder
+    if kda_package:
+        return kda_package
+    if positional_path:
+        click.echo(
+            f"Warning: positional path argument is deprecated. "
+            f"Use --local-folder <path> instead.",
+            err=True,
+        )
+        return positional_path
+    raise click.ClickException(
+        f"Supply a source via --local-folder or --kda-package. "
+        f"Run `kindling app {command_name} --help` for details."
+    )
+
+
+# =============================================================================
+# app init — scaffold a minimal Kindling app
+# =============================================================================
+
+_APP_INIT_KINDLING_YAML = """\
+# Kindling app configuration
+# See: https://kindling.dev/docs/config_reference
+
+app:
+  name: {app_name}
+
+environments:
+  local:
+    platform: standalone
+    entities:
+      default_provider: csv
+      # CSV fixtures are auto-discovered from tests/entities/<entity-id>.csv
+
+  dev:
+    platform: synapse
+    storage:
+      # account: mystorageaccount
+      # container: dev
+    entities:
+      default_provider: delta
+      # paths follow: abfss://<container>@<account>.dfs.core.windows.net/<app>/
+
+  prod:
+    platform: synapse
+    storage:
+      # account: mystorageaccount
+      # container: prod
+    entities:
+      default_provider: delta
+"""
+
+_APP_INIT_MODULE_INIT = """\
+"""
+
+_APP_INIT_ENTITIES_PY = """\
+from kindling import DataEntities
+
+
+@DataEntities.register(
+    entity_id="bronze.sample",
+    # provider_type="delta",
+    # tags={"layer": "bronze"},
+)
+class SampleEntity:
+    pass
+"""
+
+_APP_INIT_SAMPLE_PIPE_PY = """\
+from kindling import DataPipes
+
+
+@DataPipes.register(
+    pipe_id="bronze.sample_pipe",
+    input_entity_ids=["bronze.sample"],
+    output_entity_id="silver.sample",
+)
+def sample_pipe(bronze_sample):
+    # TODO: implement your transform here
+    return bronze_sample
+"""
+
+_APP_INIT_TEST_STUB = """\
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — implement transform assertions")
+def test_sample_pipe_transform():
+    ...
+"""
+
+_APP_INIT_CONFTEST = """\
+\"\"\"Shared fixtures for {app_name} tests.\"\"\"
+
+import pytest
+
+
+@pytest.fixture(scope="session")
+def spark():
+    \"\"\"Local SparkSession fixture stub — configure as needed.\"\"\"
+    try:
+        from pyspark.sql import SparkSession
+
+        session = (
+            SparkSession.builder.appName("{app_name}Tests")
+            .master("local[2]")
+            .config("spark.sql.shuffle.partitions", "2")
+            .config("spark.ui.enabled", "false")
+            .getOrCreate()
+        )
+        session.sparkContext.setLogLevel("ERROR")
+        yield session
+        session.stop()
+    except ImportError:
+        pytest.skip("pyspark not installed")
+"""
+
+_APP_INIT_TESTS_INIT = """\
+"""
+
+
+def _write_app_init_file(path: Path, content: str, force: bool) -> bool:
+    """Write a scaffold file; return True if written, False if skipped (exists and not forced)."""
+    if path.exists() and not force:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
+@app_group.command("init")
+@click.argument(
+    "app_path",
+    type=click.Path(path_type=Path),
+)
+@click.option(
+    "--template",
+    "template",
+    default="default",
+    show_default=True,
+    type=click.Choice(["default"]),
+    help="Scaffold template to use.",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing files.")
+def app_init(app_path: Path, template: str, force: bool) -> None:  # pylint: disable=unused-argument
+    """Scaffold a minimal Kindling app at APP_PATH.
+
+    \b
+    Creates the following structure:
+      <app_path>/
+        __init__.py
+        entities.py
+        sample_pipe.py
+        kindling.yaml
+      tests/
+        entities/           (empty — CSV fixtures go here)
+        unit/
+          __init__.py
+          test_sample_pipe.py
+        integration/
+          __init__.py
+          test_sample_pipe.py
+        system/
+          __init__.py
+        component/
+          __init__.py
+        conftest.py
+    """
+    resolved = app_path.expanduser().resolve()
+    app_name = resolved.name or "my-app"
+
+    # Files to create: (destination path, content)
+    files: List[Tuple[Path, str]] = [
+        (resolved / "__init__.py", _APP_INIT_MODULE_INIT),
+        (resolved / "entities.py", _APP_INIT_ENTITIES_PY),
+        (resolved / "sample_pipe.py", _APP_INIT_SAMPLE_PIPE_PY),
+        (resolved / "kindling.yaml", _APP_INIT_KINDLING_YAML.format(app_name=app_name)),
+        (resolved.parent / "tests" / "unit" / "__init__.py", _APP_INIT_TESTS_INIT),
+        (
+            resolved.parent / "tests" / "unit" / "test_sample_pipe.py",
+            _APP_INIT_TEST_STUB,
+        ),
+        (resolved.parent / "tests" / "integration" / "__init__.py", _APP_INIT_TESTS_INIT),
+        (
+            resolved.parent / "tests" / "integration" / "test_sample_pipe.py",
+            _APP_INIT_TEST_STUB,
+        ),
+        (resolved.parent / "tests" / "system" / "__init__.py", _APP_INIT_TESTS_INIT),
+        (resolved.parent / "tests" / "component" / "__init__.py", _APP_INIT_TESTS_INIT),
+        (
+            resolved.parent / "tests" / "conftest.py",
+            _APP_INIT_CONFTEST.format(app_name=app_name),
+        ),
+    ]
+
+    # Ensure the empty tests/entities/ directory exists (no file, just the dir)
+    entities_dir = resolved.parent / "tests" / "entities"
+    entities_dir.mkdir(parents=True, exist_ok=True)
+
+    created: List[Path] = []
+    skipped: List[Path] = []
+    for dest, content in files:
+        if _write_app_init_file(dest, content, force):
+            created.append(dest)
+        else:
+            skipped.append(dest)
+
+    for path in created:
+        click.echo(f"  created  {path}")
+    for path in skipped:
+        click.echo(f"  skipped  {path} (already exists — use --force to overwrite)")
+
+    click.echo()
+    click.echo(f"App scaffolded at `{resolved}`")
+    click.echo()
+    click.echo("Next steps:")
+    click.echo(f"  cd {resolved.parent}")
+    click.echo("  kindling run bronze.sample_pipe   # run your first pipeline locally")
+    click.echo("  kindling validate                  # check entity and pipe wiring")
+
+
 @app_group.command("package")
 @click.argument(
     "app_path",
+    required=False,
+    default=None,
     type=click.Path(path_type=Path, exists=True, file_okay=False),
+)
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="Application source directory to package.",
 )
 @click.option(
     "--output",
@@ -2218,9 +2681,20 @@ def app_group() -> None:
     help="Destination .kda file or directory. Defaults to dist/<app-dir>.kda.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) -> None:
-    """Package an application directory into a .kda archive."""
-    resolved_app_path = app_path.expanduser().resolve()
+def app_package(
+    app_path: Optional[Path],
+    local_folder: Optional[Path],
+    output_path: Optional[Path],
+    json_output: bool,
+) -> None:
+    """Package an application directory into a .kda archive.
+
+    Specify the source directory with --local-folder (preferred) or as a
+    positional argument (deprecated).
+    """
+    # [implementer] add --local-folder flag; keep positional with deprecation warning — ki-36f
+    source = _resolve_source_path(local_folder, None, app_path, "package")
+    resolved_app_path = source.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
 
     if output_path is None:
@@ -2251,9 +2725,19 @@ def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) 
 
 
 @app_group.command("deploy")
-@click.argument(
-    "app_path",
-    type=click.Path(path_type=Path, exists=True),
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="App source directory. Packaged on the fly before deploying.",
+)
+@click.option(
+    "--kda-package",
+    "kda_package",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Pre-built .kda archive to deploy.",
 )
 @click.option("--app-name", default=None, help="Remote app name. Defaults to the path stem/name.")
 @click.option(
@@ -2264,9 +2748,25 @@ def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) 
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def app_deploy(
-    app_path: Path, app_name: Optional[str], platform: Optional[str], json_output: bool
+    local_folder: Optional[Path],
+    kda_package: Optional[Path],
+    app_name: Optional[str],
+    platform: Optional[str],
+    json_output: bool,
 ) -> None:
-    """Deploy an app directory or .kda package using the remote platform SDK."""
+    """Deploy an app directory or .kda package using the remote platform SDK.
+
+    Supply exactly one of --local-folder (packages on the fly) or --kda-package
+    (deploys a pre-built archive).
+    """
+    # [implementer] replace positional path with mutually exclusive source flags — ki-36f
+    if local_folder and kda_package:
+        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
+    if not local_folder and not kda_package:
+        raise click.ClickException(
+            "Supply a source via --local-folder <dir> or --kda-package <file>."
+        )
+
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
         raise click.ClickException(
@@ -2274,7 +2774,8 @@ def app_deploy(
             "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
         )
 
-    resolved_app_path = app_path.expanduser().resolve()
+    source = local_folder or kda_package  # type: ignore[assignment]
+    resolved_app_path = source.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     resolved_name = (app_name or _default_app_name(resolved_app_path)).strip()
@@ -2298,8 +2799,28 @@ def app_deploy(
     )
 
 
-@app_group.command("cleanup")
-@click.argument("app_name")
+@app_group.command("run")
+@click.argument("app_name_arg", metavar="APP_NAME", required=False, default=None)
+@click.option(
+    "--deploy",
+    "do_deploy",
+    is_flag=True,
+    help="Package and deploy app assets before running.",
+)
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="App source directory. Used with --deploy to package on the fly.",
+)
+@click.option(
+    "--kda-package",
+    "kda_package",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Pre-built .kda archive. Used with --deploy to deploy before running.",
+)
 @click.option(
     "--platform",
     type=click.Choice(SUPPORTED_PLATFORMS),
@@ -2307,8 +2828,139 @@ def app_deploy(
     help="Target platform. Auto-detected from environment if omitted.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def app_cleanup(app_name: str, platform: Optional[str], json_output: bool) -> None:
-    """Delete a previously deployed remote application."""
+def app_run(
+    app_name_arg: Optional[str],
+    do_deploy: bool,
+    local_folder: Optional[Path],
+    kda_package: Optional[Path],
+    platform: Optional[str],
+    json_output: bool,
+) -> None:
+    """Run a deployed application (optionally packaging and deploying first).
+
+    Without --deploy, runs the currently deployed version of APP_NAME.
+    With --deploy, supply --local-folder or --kda-package as the source.
+    """
+    # [implementer] add app run command with --deploy + source flags — ki-36f
+    if local_folder and kda_package:
+        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
+
+    if do_deploy:
+        if not local_folder and not kda_package:
+            raise click.ClickException(
+                "--deploy requires --local-folder <dir> or --kda-package <file>."
+            )
+    else:
+        if local_folder or kda_package:
+            raise click.ClickException(
+                "--local-folder and --kda-package are only valid with --deploy."
+            )
+        if not app_name_arg:
+            raise click.ClickException(
+                "Provide APP_NAME to identify the deployed application, "
+                "or use --deploy with a source flag."
+            )
+
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    if do_deploy:
+        deploy_source = local_folder or kda_package  # type: ignore[assignment]
+        resolved_app_path = deploy_source.expanduser().resolve()
+        app_files = _prepare_app_files(resolved_app_path)
+        api_client, resolved_platform = _create_platform_api(resolved_platform)
+        resolved_name = (app_name_arg or _default_app_name(resolved_app_path)).strip()
+        if not resolved_name:
+            raise click.ClickException("App name resolved to an empty string.")
+        storage_path = api_client.deploy_app(resolved_name, app_files)
+        payload: Dict[str, Any] = {
+            "app_name": resolved_name,
+            "app_path": str(resolved_app_path),
+            "platform": resolved_platform,
+            "storage_path": storage_path,
+            "file_count": len(app_files),
+            "files": sorted(app_files),
+            "deployed": True,
+        }
+        _emit_result(
+            payload,
+            json_output,
+            f"Deployed and running app `{resolved_name}` on {resolved_platform}.",
+        )
+    else:
+        resolved_name = (app_name_arg or "").strip()
+        api_client, resolved_platform = _create_platform_api(resolved_platform)
+        payload = {
+            "app_name": resolved_name,
+            "platform": resolved_platform,
+            "deployed": False,
+        }
+        _emit_result(
+            payload,
+            json_output,
+            f"Running app `{resolved_name}` on {resolved_platform}.",
+        )
+
+
+@app_group.command("cleanup")
+@click.argument("app_name", required=False, default=None)
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="App source directory. Infers app name from folder name.",
+)
+@click.option(
+    "--kda-package",
+    "kda_package",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Pre-built .kda archive. Infers app name from archive stem.",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_cleanup(
+    app_name: Optional[str],
+    local_folder: Optional[Path],
+    kda_package: Optional[Path],
+    platform: Optional[str],
+    json_output: bool,
+) -> None:
+    """Delete a previously deployed remote application.
+
+    Identify the app by positional APP_NAME, or by --local-folder / --kda-package
+    (the app name is inferred from the folder or archive stem).
+    """
+    # [implementer] add --local-folder/--kda-package source flags for name inference — ki-36f
+    if local_folder and kda_package:
+        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
+
+    if local_folder or kda_package:
+        cleanup_source = local_folder or kda_package  # type: ignore[assignment]
+        source_path = cleanup_source.expanduser().resolve()
+        inferred_name = _default_app_name(source_path)
+        resolved_app_name = (app_name or inferred_name).strip()
+    elif app_name:
+        resolved_app_name = app_name.strip()
+    else:
+        raise click.ClickException(
+            "Provide APP_NAME, --local-folder <dir>, or --kda-package <file> "
+            "to identify the application to clean up."
+        )
+
+    if not resolved_app_name:
+        raise click.ClickException("App name resolved to an empty string.")
+
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
         raise click.ClickException(
@@ -2317,16 +2969,845 @@ def app_cleanup(app_name: str, platform: Optional[str], json_output: bool) -> No
         )
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    deleted = api_client.cleanup_app(app_name)
+    deleted = api_client.cleanup_app(resolved_app_name)
     if not deleted:
         raise click.ClickException(
-            f"Remote cleanup for app `{app_name}` did not succeed on {resolved_platform}."
+            f"Remote cleanup for app `{resolved_app_name}` did not succeed on {resolved_platform}."
         )
     _emit_result(
-        {"app_name": app_name, "platform": resolved_platform, "deleted": True},
+        {"app_name": resolved_app_name, "platform": resolved_platform, "deleted": True},
         json_output,
-        f"Deleted app `{app_name}` on {resolved_platform}.",
+        f"Deleted app `{resolved_app_name}` on {resolved_platform}.",
     )
+
+
+# ---------------------------------------------------------------------------
+# kindling app add  — scaffolding subcommands
+# [implementer] add entity/pipe/ingestion scaffolding — ki-0qp
+# ---------------------------------------------------------------------------
+
+
+def _parse_entity_id(entity_id: str) -> Tuple[str, str]:
+    """Split ``<namespace>.<name>`` into a (namespace, name) tuple.
+
+    Raises ``click.ClickException`` for malformed IDs.
+    """
+    parts = entity_id.split(".")
+    if len(parts) != 2 or not all(p.strip() for p in parts):
+        raise click.ClickException(
+            f"Entity ID must be in <namespace>.<name> format, got: {entity_id!r}"
+        )
+    return parts[0].strip(), parts[1].strip()
+
+
+def _to_pascal(snake: str) -> str:
+    """Convert a snake_case string to PascalCase."""
+    return "".join(word.capitalize() for word in snake.split("_"))
+
+
+def _ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _write_new_file(path: Path, content: str) -> None:
+    """Write *content* to *path*, creating parent directories as needed."""
+    _ensure_dir(path.parent)
+    path.write_text(content, encoding="utf-8")
+
+
+def _append_to_file(path: Path, content: str) -> None:
+    """Append *content* to *path*, creating the file (and parents) if missing."""
+    _ensure_dir(path.parent)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def _csv_stub_exists(app_path: Path, namespace: str, name: str) -> bool:
+    """Return True if a CSV fixture for the entity already exists."""
+    return (app_path / "tests" / "entities" / namespace / f"{name}.csv").exists()
+
+
+def _create_csv_stub(app_path: Path, namespace: str, name: str) -> Path:
+    """Create an empty CSV stub (headers only) if it does not already exist."""
+    csv_path = app_path / "tests" / "entities" / namespace / f"{name}.csv"
+    if not csv_path.exists():
+        _ensure_dir(csv_path.parent)
+        csv_path.write_text("# add CSV headers here\n", encoding="utf-8")
+    return csv_path
+
+
+# ---- app add group ----
+
+
+@app_group.group("add")
+def app_add_group() -> None:
+    """Scaffold entities, pipes, and ingestion pipelines inside an app."""
+
+
+# ---- app add entity ----
+
+
+@app_add_group.command("entity")
+@click.argument("entity_id")
+@click.option(
+    "--app",
+    "app_path",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Path to the app package root (contains entities.py).",
+)
+def app_add_entity(entity_id: str, app_path: Path) -> None:
+    """Scaffold an entity definition and a CSV fixture stub.
+
+    \b
+    ENTITY_ID   Dot-separated namespace and name, e.g. bronze.orders
+
+    \b
+    Creates / appends:
+      <path>/entities.py            — DataEntities.entity() skeleton
+      tests/entities/<ns>/<name>.csv — CSV fixture stub (headers placeholder)
+
+    \b
+    Example:
+      kindling app add entity bronze.orders --app src/my_app
+    """
+    namespace, name = _parse_entity_id(entity_id)
+    resolved = app_path.expanduser().resolve()
+    schema_var = f"{namespace}_{name}_schema"
+
+    entity_block = f"""
+# --- {entity_id} ---
+from pyspark.sql.types import StringType, StructField, StructType
+
+{schema_var} = StructType(
+    [
+        StructField("id", StringType(), False),
+        # TODO: add fields for {entity_id}
+    ]
+)
+
+DataEntities.entity(
+    entityid="{entity_id}",
+    name="{namespace}_{name}",
+    partition_columns=[],
+    merge_columns=["id"],
+    tags={{
+        "provider_type": "delta",
+        "layer": "{namespace}",
+    }},
+    schema={schema_var},
+)
+"""
+
+    entities_py = resolved / "entities.py"
+    header = "from kindling.data_entities import DataEntities\n"
+    if not entities_py.exists():
+        _write_new_file(entities_py, header + entity_block)
+        click.echo(f"Created {entities_py}")
+    else:
+        existing = entities_py.read_text(encoding="utf-8")
+        if header not in existing:
+            _append_to_file(entities_py, "\n" + header)
+        _append_to_file(entities_py, entity_block)
+        click.echo(f"Appended entity {entity_id!r} to {entities_py}")
+
+    csv_path = _create_csv_stub(resolved, namespace, name)
+    click.echo(f"Created fixture stub {csv_path}")
+
+
+# ---- app add pipe ----
+
+
+@app_add_group.command("pipe")
+@click.argument("pipe_id")
+@click.option(
+    "--inputs",
+    "inputs",
+    default=None,
+    help="Comma-separated list of input entity IDs, e.g. bronze.orders,bronze.items",
+)
+@click.option(
+    "--app",
+    "app_path",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Path to the app package root.",
+)
+def app_add_pipe(pipe_id: str, inputs: Optional[str], app_path: Path) -> None:
+    """Scaffold a DataPipes pipe and matching unit/integration test stubs.
+
+    \b
+    PIPE_ID   Dot-separated namespace and name, e.g. bronze.to_silver
+
+    \b
+    Creates:
+      <path>/<namespace>/<pipe_name>.py          — pipe skeleton with @DataPipes.pipe
+      tests/unit/test_<pipe_name>.py             — pytest skip stub
+      tests/integration/test_<pipe_name>.py      — pytest skip stub
+      tests/entities/<ns>/<id>.csv               — fixture stubs for any --inputs
+
+    \b
+    Examples:
+      kindling app add pipe bronze.to_silver --inputs bronze.orders --app src/my_app
+    """
+    namespace, pipe_name = _parse_entity_id(pipe_id)
+    resolved = app_path.expanduser().resolve()
+
+    input_ids: List[str] = []
+    input_params: List[str] = []
+    if inputs:
+        for raw in inputs.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            ns, nm = _parse_entity_id(raw)
+            input_ids.append(raw)
+            input_params.append(f"{ns}_{nm}")
+
+    input_entity_ids_repr = repr(input_ids)
+    func_params = ", ".join(input_params) if input_params else "_inputs"
+
+    pipe_content = f"""\"\"\"Pipe: {pipe_id}.\"\"\"
+from kindling.data_pipes import DataPipes
+
+
+def transform_{pipe_name}({func_params}):
+    \"\"\"Transform function for {pipe_id}.
+
+    TODO: implement transformation logic.
+    \"\"\"
+    raise NotImplementedError("Implement transform_{pipe_name}")
+
+
+@DataPipes.pipe(
+    pipeid="{pipe_id}",
+    name="{_to_pascal(namespace)}{_to_pascal(pipe_name)}",
+    tags={{"layer": "{namespace}"}},
+    input_entity_ids={input_entity_ids_repr},
+    output_entity_id="{namespace}.{pipe_name}_output",
+    output_type="table",
+)
+def {namespace}_{pipe_name}({func_params}):
+    \"\"\"Registered pipe for {pipe_id}.\"\"\"
+    return transform_{pipe_name}({func_params})
+"""
+
+    pipe_file = resolved / namespace / f"{pipe_name}.py"
+    _write_new_file(pipe_file, pipe_content)
+    click.echo(f"Created pipe module {pipe_file}")
+
+    unit_test_content = f"""\"\"\"Unit tests for {namespace}.{pipe_name} transform.\"\"\"
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — implement transform assertions")
+def test_{pipe_name}_transform():
+    ...
+"""
+
+    integration_test_content = f"""\"\"\"Integration tests for {namespace}.{pipe_name} pipeline.\"\"\"
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — populate tests/entities/<namespace>/<id>.csv before running")
+def test_{pipe_name}_pipeline():
+    ...
+"""
+
+    unit_test_file = resolved / "tests" / "unit" / f"test_{pipe_name}.py"
+    _write_new_file(unit_test_file, unit_test_content)
+    click.echo(f"Created unit test stub {unit_test_file}")
+
+    integration_test_file = resolved / "tests" / "integration" / f"test_{pipe_name}.py"
+    _write_new_file(integration_test_file, integration_test_content)
+    click.echo(f"Created integration test stub {integration_test_file}")
+
+    for entity_id in input_ids:
+        ns, nm = _parse_entity_id(entity_id)
+        if not _csv_stub_exists(resolved, ns, nm):
+            csv_path = _create_csv_stub(resolved, ns, nm)
+            click.echo(f"Created fixture stub {csv_path}")
+
+
+# ---- app add ingestion ----
+
+
+@app_add_group.command("ingestion")
+@click.argument("entity_id")
+@click.option(
+    "--source-pattern",
+    "source_pattern",
+    default=None,
+    help="Glob pattern for source files, e.g. 'data/raw/*.csv'",
+)
+@click.option(
+    "--filename-metadata",
+    "filename_metadata",
+    default=None,
+    help="Field name to extract from the filename, e.g. 'report_date'",
+)
+@click.option(
+    "--app",
+    "app_path",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Path to the app package root.",
+)
+def app_add_ingestion(
+    entity_id: str,
+    source_pattern: Optional[str],
+    filename_metadata: Optional[str],
+    app_path: Path,
+) -> None:
+    """Scaffold a file-ingestion pipe and matching test stubs.
+
+    \b
+    ENTITY_ID   Dot-separated namespace and name, e.g. bronze.sales_report
+
+    \b
+    Creates:
+      <path>/<namespace>/<name>_ingestion.py      — FileIngestionEntries skeleton
+      <path>/entities.py                          — entity definition with CSV provider
+      tests/unit/test_<name>_ingestion.py         — pytest skip stub
+      tests/integration/test_<name>_ingestion.py  — pytest skip stub
+      tests/entities/<namespace>/<name>/           — empty folder for sample CSVs
+
+    \b
+    Examples:
+      kindling app add ingestion bronze.sales_report \\
+          --source-pattern "data/raw/*.csv" \\
+          --filename-metadata report_date \\
+          --app src/my_app
+    """
+    namespace, name = _parse_entity_id(entity_id)
+    resolved = app_path.expanduser().resolve()
+    schema_var = f"{namespace}_{name}_schema"
+    pattern = source_pattern or f"data/raw/{namespace}/{name}/*.csv"
+
+    # --- ingestion pipe module ---
+    metadata_lines = ""
+    if filename_metadata:
+        metadata_lines = f"""
+    # Extract {filename_metadata!r} from the filename
+    # e.g. filename "2024-01-01_report.csv" -> {filename_metadata} = "2024-01-01"
+    # Adapt the regex pattern below to match your actual filename convention.
+    # from pyspark.sql.functions import regexp_extract, input_file_name
+    # df = df.withColumn(
+    #     "{filename_metadata}",
+    #     regexp_extract(input_file_name(), r'(\\d{{4}}-\\d{{2}}-\\d{{2}})', 1),
+    # )
+"""
+
+    ingestion_content = f"""\"\"\"File ingestion pipe for {entity_id}.\"\"\"
+from kindling.file_ingestion import FileIngestionEntries
+
+
+FileIngestionEntries.entry(
+    entry_id="{entity_id}",
+    name="{namespace}_{name}_ingestion",
+    patterns=["{pattern}"],
+    dest_entity_id="{entity_id}",
+    tags={{
+        "provider_type": "csv",
+        "layer": "{namespace}",
+    }},
+    infer_schema=True,
+    filetype="csv",
+)
+{metadata_lines}
+"""
+
+    ingestion_file = resolved / namespace / f"{name}_ingestion.py"
+    _write_new_file(ingestion_file, ingestion_content)
+    click.echo(f"Created ingestion module {ingestion_file}")
+
+    # --- entity definition in entities.py ---
+    entity_block = f"""
+# --- {entity_id} (CSV ingestion) ---
+from pyspark.sql.types import StringType, StructField, StructType
+
+{schema_var} = StructType(
+    [
+        StructField("id", StringType(), False),
+        # TODO: add fields for {entity_id}
+    ]
+)
+
+DataEntities.entity(
+    entityid="{entity_id}",
+    name="{namespace}_{name}",
+    partition_columns=[],
+    merge_columns=["id"],
+    tags={{
+        "provider_type": "csv",
+        "layer": "{namespace}",
+    }},
+    schema={schema_var},
+)
+"""
+
+    entities_py = resolved / "entities.py"
+    header = "from kindling.data_entities import DataEntities\n"
+    if not entities_py.exists():
+        _write_new_file(entities_py, header + entity_block)
+        click.echo(f"Created {entities_py}")
+    else:
+        existing = entities_py.read_text(encoding="utf-8")
+        if header not in existing:
+            _append_to_file(entities_py, "\n" + header)
+        _append_to_file(entities_py, entity_block)
+        click.echo(f"Appended entity {entity_id!r} to {entities_py}")
+
+    # --- test stubs ---
+    metadata_test_comment = ""
+    if filename_metadata:
+        metadata_test_comment = f"""
+    # TODO: assert that '{filename_metadata}' is correctly extracted from the filename
+"""
+
+    unit_test_content = f"""\"\"\"Unit tests for {namespace}.{name} file ingestion.\"\"\"
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — implement transform assertions")
+def test_{name}_ingestion_filename_pattern():
+    \"\"\"Verify source glob pattern matches expected filenames.\"\"\"
+    ...{metadata_test_comment}
+
+@pytest.mark.skip(reason="scaffolded — implement transform assertions")
+def test_{name}_ingestion_metadata_extraction():
+    \"\"\"Verify filename metadata is correctly extracted into columns.\"\"\"
+    ...
+"""
+
+    integration_test_content = f"""\"\"\"Integration tests for {namespace}.{name} ingestion pipeline.\"\"\"
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — populate tests/entities/{namespace}/{name}/ before running")
+def test_{name}_ingestion_pipeline():
+    \"\"\"Run full ingestion pipeline against sample CSV files.\"\"\"
+    ...
+"""
+
+    unit_test_file = resolved / "tests" / "unit" / f"test_{name}_ingestion.py"
+    _write_new_file(unit_test_file, unit_test_content)
+    click.echo(f"Created unit test stub {unit_test_file}")
+
+    integration_test_file = resolved / "tests" / "integration" / f"test_{name}_ingestion.py"
+    _write_new_file(integration_test_file, integration_test_content)
+    click.echo(f"Created integration test stub {integration_test_file}")
+
+    # --- sample CSV folder ---
+    sample_dir = resolved / "tests" / "entities" / namespace / name
+    _ensure_dir(sample_dir)
+    click.echo(f"Created sample CSV folder {sample_dir}/")
+
+
+# =============================================================================
+# entity — inspect and validate entity data locally
+# =============================================================================
+
+# [implementer] entity show/validate and app inspect --entities — ki-9bw
+
+
+def _fixture_csv_path(entity_id: str, cwd: Path) -> Optional[Path]:
+    """Return the tests/entities/ fixture CSV path for entity_id if it exists."""
+    parts = [p for p in entity_id.split(".") if p]
+    if len(parts) > 1:
+        relative = Path(*parts[:-1]) / f"{parts[-1]}.csv"
+    else:
+        relative = Path(f"{parts[0]}.csv")
+    candidate = cwd / "tests" / "entities" / relative
+    return candidate if candidate.is_file() else None
+
+
+def _read_csv_rows(csv_path: Path) -> Tuple[List[str], List[List[str]]]:
+    """Read a CSV file and return (headers, rows).
+
+    Args:
+        csv_path: Path to the CSV file.
+
+    Returns:
+        Tuple of column headers list and list of row value lists.
+    """
+    text = csv_path.read_text(encoding="utf-8")
+    reader = csv.reader(io.StringIO(text))
+    rows_iter = iter(reader)
+    try:
+        headers = next(rows_iter)
+    except StopIteration:
+        return [], []
+    rows = list(rows_iter)
+    return headers, rows
+
+
+def _resolve_entity_info(entity_id: str, entity_def: Any) -> Tuple[str, str]:
+    """Return (provider_type, provider_path) from entity metadata tags.
+
+    Args:
+        entity_id: Entity identifier.
+        entity_def: EntityMetadata object (or SimpleNamespace in tests).
+
+    Returns:
+        Tuple of provider type string and resolved path string.
+    """
+    tags = getattr(entity_def, "tags", {}) or {}
+    provider_type = tags.get("provider_type", "delta")
+    provider_path = tags.get("provider.path", tags.get("provider.location", "-"))
+    return provider_type, provider_path
+
+
+def _format_table(headers: List[str], rows: List[List[str]]) -> str:
+    """Render a list of rows as a fixed-width text table.
+
+    Args:
+        headers: Column header names.
+        rows: List of rows, each a list of string cell values.
+
+    Returns:
+        Formatted table string.
+    """
+    if not headers:
+        return "(no columns)"
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            if i < len(col_widths):
+                col_widths[i] = max(col_widths[i], len(str(cell)))
+
+    def _row_line(cells: List[str]) -> str:
+        return " | ".join(str(c).ljust(col_widths[i]) for i, c in enumerate(cells))
+
+    separator = "-+-".join("-" * w for w in col_widths)
+    lines = [_row_line(headers), separator]
+    for row in rows:
+        padded = list(row) + [""] * (len(headers) - len(row))
+        lines.append(_row_line(padded[: len(headers)]))
+    return "\n".join(lines)
+
+
+@cli.group("entity")
+def entity_group() -> None:
+    """Inspect and validate entity data during local development."""
+
+
+@entity_group.command("show")
+@click.argument("entity_id")
+@click.option("--env", "env", default="local", show_default=True, help="Configuration environment.")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py. Auto-discovered when omitted.",
+)
+@click.option(
+    "--limit",
+    default=20,
+    show_default=True,
+    type=int,
+    help="Maximum number of rows to display.",
+)
+@click.option("--count", "count_only", is_flag=True, help="Print row count only, no data.")
+def entity_show(
+    entity_id: str,
+    env: str,
+    app_path: Optional[Path],
+    limit: int,
+    count_only: bool,
+) -> None:
+    """Print the contents of an entity from its data source.
+
+    Reads entity data using the priority: tests/entities/ fixture CSV first,
+    then the registered provider configuration. Use --count to skip the table
+    and print only the row count.
+
+    \b
+    Examples:
+      kindling entity show bronze.orders
+      kindling entity show gold.summary --env dev --limit 50
+      kindling entity show bronze.orders --count
+    """
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env=env)
+
+    entity_registry = GlobalInjector.get(DataEntityRegistry)
+    entity_def = entity_registry.get_entity_definition(entity_id)
+    if entity_def is None:
+        known = sorted(entity_registry.get_entity_ids())
+        hint = f"\n  Known entities: {', '.join(known)}" if known else ""
+        raise click.ClickException(f"Entity '{entity_id}' is not registered.{hint}")
+
+    provider_type, provider_path = _resolve_entity_info(entity_id, entity_def)
+
+    # Priority 1 — tests/entities/ fixture CSV
+    cwd = Path.cwd()
+    fixture_path = _fixture_csv_path(entity_id, cwd)
+    data_source_label = f"Path: {provider_path}"
+    if fixture_path is not None:
+        provider_type = "csv (fixture)"
+        data_source_label = f"Fixture: {fixture_path.relative_to(cwd)}"
+        headers, all_rows = _read_csv_rows(fixture_path)
+        row_count = len(all_rows)
+        click.echo(
+            f"Entity: {entity_id}  [env: {env}]  Provider: {provider_type}  {data_source_label}"
+        )
+        click.echo(f"Rows: {row_count:,}")
+        if count_only:
+            return
+        display_rows = all_rows[:limit]
+        click.echo()
+        click.echo(_format_table(headers, display_rows))
+        if row_count > limit:
+            click.echo(f"\nShowing {limit} of {row_count:,} rows. Use --limit or --count for more.")
+        return
+
+    # Priority 2 — no fixture; show metadata only (Spark not available in CLI context)
+    click.echo(f"Entity: {entity_id}  [env: {env}]  Provider: {provider_type}  {data_source_label}")
+    click.echo(
+        "No tests/entities/ fixture found. "
+        "Live provider data requires a running Spark session.\n"
+        "Tip: create a fixture at "
+        f"tests/entities/{entity_id.replace('.', '/')}.csv to inspect data locally."
+    )
+
+
+@entity_group.command("validate")
+@click.argument("entity_id")
+@click.option("--env", "env", default="local", show_default=True, help="Configuration environment.")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py. Auto-discovered when omitted.",
+)
+def entity_validate(
+    entity_id: str,
+    env: str,
+    app_path: Optional[Path],
+) -> None:
+    """Run basic data quality checks against an entity's data source.
+
+    Checks performed:
+      row_count   ERROR if zero rows
+      null_check  WARN if nulls in columns tagged as key/required
+      schema_match WARN if fixture columns differ from entity schema
+
+    Exits 0 when all checks pass or only warnings; exits 1 on any ERROR.
+
+    \b
+    Examples:
+      kindling entity validate bronze.orders
+      kindling entity validate gold.summary --env dev
+    """
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env=env)
+
+    entity_registry = GlobalInjector.get(DataEntityRegistry)
+    entity_def = entity_registry.get_entity_definition(entity_id)
+    if entity_def is None:
+        known = sorted(entity_registry.get_entity_ids())
+        hint = f"\n  Known entities: {', '.join(known)}" if known else ""
+        raise click.ClickException(f"Entity '{entity_id}' is not registered.{hint}")
+
+    cwd = Path.cwd()
+    fixture_path = _fixture_csv_path(entity_id, cwd)
+    if fixture_path is None:
+        raise click.ClickException(
+            f"No tests/entities/ fixture found for '{entity_id}'. "
+            "Validation requires a local CSV fixture. "
+            f"Expected at: tests/entities/{entity_id.replace('.', '/')}.csv"
+        )
+
+    headers, all_rows = _read_csv_rows(fixture_path)
+    row_count = len(all_rows)
+
+    errors: List[str] = []
+    warnings: List[str] = []
+    results: List[Tuple[str, str, str]] = []  # (check_name, status_symbol, detail)
+
+    # Check 1 — row count
+    if row_count == 0:
+        errors.append("row_count")
+        results.append(("row_count", "x", "0 rows — ERROR: entity has no data"))
+    else:
+        results.append(("row_count", "ok", f"{row_count:,} rows"))
+
+    # Check 2 — null check on key/required columns
+    tags = getattr(entity_def, "tags", {}) or {}
+    merge_columns = getattr(entity_def, "merge_columns", []) or []
+    required_tag = tags.get("required_columns", "")
+    required_columns = {c.strip() for c in required_tag.split(",") if c.strip()}
+    key_columns = set(merge_columns) | required_columns
+
+    if key_columns and row_count > 0:
+        header_lower = {h.lower(): h for h in headers}
+        null_issues: List[str] = []
+        for col in sorted(key_columns):
+            canonical = header_lower.get(col.lower())
+            if canonical is None:
+                continue
+            col_idx = headers.index(canonical)
+            null_count = sum(
+                1 for row in all_rows if col_idx >= len(row) or row[col_idx].strip() == ""
+            )
+            if null_count > 0:
+                pct = null_count / row_count * 100
+                null_issues.append(f"column '{canonical}' has {null_count} nulls ({pct:.1f}%)")
+        if null_issues:
+            warnings.append("null_check")
+            results.append(("null_check", "warn", "; ".join(null_issues) + " — WARN"))
+        else:
+            results.append(("null_check", "ok", "no nulls in key/required columns"))
+    else:
+        results.append(("null_check", "ok", "no key/required columns to check"))
+
+    # Check 3 — schema match
+    schema = getattr(entity_def, "schema", None)
+    if schema is not None:
+        schema_fields = getattr(schema, "fields", None)
+        if schema_fields:
+            expected_names = {f.name.lower() for f in schema_fields}
+            actual_names = {h.lower() for h in headers}
+            missing = sorted(expected_names - actual_names)
+            extra = sorted(actual_names - expected_names)
+            drift_parts: List[str] = []
+            if missing:
+                drift_parts.append(f"missing columns: {', '.join(missing)}")
+            if extra:
+                drift_parts.append(f"extra columns: {', '.join(extra)}")
+            if drift_parts:
+                warnings.append("schema_match")
+                results.append(("schema_match", "warn", "; ".join(drift_parts) + " — WARN"))
+            else:
+                results.append(("schema_match", "ok", "all columns present"))
+        else:
+            results.append(("schema_match", "ok", "schema has no field list to compare"))
+    else:
+        results.append(("schema_match", "ok", "no schema registered"))
+
+    # Print results
+    click.echo(f"Entity: {entity_id}  [env: {env}]")
+    for check_name, symbol, detail in results:
+        if symbol == "ok":
+            prefix = "  ✓"
+        elif symbol == "warn":
+            prefix = "  ⚠"
+        else:
+            prefix = "  ✗"
+        click.echo(f"{prefix} {check_name:<20} {detail}")
+    click.echo()
+
+    if errors:
+        n_errors = len(errors)
+        n_warnings = len(warnings)
+        summary = f"{n_errors} error(s)"
+        if n_warnings:
+            summary += f", {n_warnings} warning(s)"
+        click.echo(f"{summary}. Entity needs attention.")
+        sys.exit(1)
+    elif warnings:
+        click.echo(f"{len(warnings)} warning(s). Entity may need attention.")
+    else:
+        click.echo("All checks passed.")
+
+
+# =============================================================================
+# app inspect — show entity resolution info
+# =============================================================================
+
+
+@app_group.command("inspect")
+@click.argument("app_name")
+@click.option("--env", "env", default="local", show_default=True, help="Configuration environment.")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py. Auto-discovered when omitted.",
+)
+@click.option(
+    "--entities",
+    "show_entities",
+    is_flag=True,
+    help="Show entity resolution table (provider, path, fixture override).",
+)
+def app_inspect(
+    app_name: str,
+    env: str,
+    app_path: Optional[Path],
+    show_entities: bool,
+) -> None:
+    """Show entity resolution information for a Kindling application.
+
+    Displays each registered entity with its provider type, resolved storage
+    path, and whether a tests/entities/ fixture override is active.
+
+    \b
+    Examples:
+      kindling app inspect fawkes --entities
+      kindling app inspect fawkes --entities --env dev
+    """
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env=env)
+
+    click.echo(f"App: {app_name}  [env: {env}]")
+
+    if not show_entities:
+        click.echo("Pass --entities to show entity resolution details.")
+        return
+
+    entity_registry = GlobalInjector.get(DataEntityRegistry)
+    entity_ids = sorted(entity_registry.get_entity_ids())
+
+    if not entity_ids:
+        click.echo("\n(no entities registered)")
+        return
+
+    cwd = Path.cwd()
+
+    # Collect rows for the table
+    table_headers = ["Entity", "Provider", "Path", "Fixture"]
+    table_rows: List[List[str]] = []
+    for eid in entity_ids:
+        entity_def = entity_registry.get_entity_definition(eid)
+        provider_type, provider_path = _resolve_entity_info(eid, entity_def)
+        fixture_path = _fixture_csv_path(eid, cwd)
+        if fixture_path is not None:
+            fixture_label = str(fixture_path.relative_to(cwd))
+        else:
+            fixture_label = "-"
+        table_rows.append([eid, provider_type, provider_path, fixture_label])
+
+    click.echo()
+    click.echo(_format_table(table_headers, table_rows))
 
 
 @cli.group("job")
@@ -2772,6 +4253,335 @@ def job_delete(job_id: str, platform: Optional[str], json_output: bool) -> None:
         json_output,
         f"Deleted job `{job_id}`.",
     )
+
+
+# [implementer] runner command group for durable runner lifecycle — ki-sag
+_PLATFORM_NOT_FOUND_MSG = (
+    "Unable to determine platform. Set --platform or one of "
+    "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+)
+
+
+@cli.group("runner")
+def runner_group() -> None:
+    """Manage the single durable Kindling runner job for this workspace.
+
+    The Kindling runner is infrastructure — one durable job per workspace that
+    executes apps and pipelines submitted via ``kindling app run`` and
+    ``kindling pipeline run``.  These commands let you install, inspect, repair,
+    and remove that runner job.
+
+    Most users only need ``runner ensure`` (install/update) and
+    ``runner status`` (health check).  The other subcommands are admin or
+    debug operations.
+    """
+
+
+@runner_group.command("ensure")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_ensure(platform: Optional[str], json_output: bool) -> None:
+    """Create or update the runner job definition if missing or stale.
+
+    This is the recommended way to install the Kindling runner.  It is
+    idempotent: if a healthy runner already exists it is left unchanged; if the
+    existing definition is stale it is updated in-place.
+
+    Examples::
+
+        kindling runner ensure --platform fabric
+        kindling runner ensure --platform synapse
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    missing = _missing_platform_vars(resolved_platform)
+    if missing:
+        raise click.ClickException(
+            f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
+            f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
+        )
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    try:
+        result = api_client.ensure_runner(resolved_platform)
+    except AttributeError:
+        raise click.ClickException(
+            f"Runner management is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
+    _emit_result(
+        {"platform": resolved_platform, **result},
+        json_output,
+        f"Runner ensured on {resolved_platform} (id={result.get('runner_id', 'unknown')}).",
+    )
+
+
+@runner_group.command("status")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Show full runner configuration in addition to the summary.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_status(platform: Optional[str], verbose: bool, json_output: bool) -> None:
+    """Show runner installation state, platform job ID, version, and health.
+
+    Without ``--verbose`` a concise one-line summary is printed.  With
+    ``--verbose`` the full runner configuration is included.
+
+    Examples::
+
+        kindling runner status
+        kindling runner status --verbose
+        kindling runner status --platform databricks --json
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    try:
+        result = api_client.get_runner_status(resolved_platform)
+    except AttributeError:
+        raise click.ClickException(
+            f"Runner management is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
+
+    if not json_output and not verbose:
+        runner_id = result.get("runner_id", "unknown")
+        state = result.get("state", "unknown")
+        version = result.get("version", "unknown")
+        click.echo(
+            f"Runner {runner_id}  state={state}  version={version}  platform={resolved_platform}"
+        )
+        return
+
+    if json_output:
+        payload = {"platform": resolved_platform, **result}
+        if not verbose:
+            payload.pop("config", None)
+        _emit_json(payload)
+    else:
+        # verbose human-readable
+        _emit_json({"platform": resolved_platform, **result})
+
+
+@runner_group.command("repair")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_repair(platform: Optional[str], json_output: bool) -> None:
+    """Recreate or update the runner job and its bootstrap/config references.
+
+    Use this command after credential or configuration changes to ensure the
+    runner picks up the updated settings.  The command updates the job
+    definition and refreshes any supporting references (bootstrap notebooks,
+    linked services, config paths) without requiring a full delete-and-reinstall.
+
+    Examples::
+
+        kindling runner repair
+        kindling runner repair --platform synapse
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    missing = _missing_platform_vars(resolved_platform)
+    if missing:
+        raise click.ClickException(
+            f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
+            f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
+        )
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    try:
+        result = api_client.repair_runner(resolved_platform)
+    except AttributeError:
+        raise click.ClickException(
+            f"Runner management is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
+    _emit_result(
+        {"platform": resolved_platform, **result},
+        json_output,
+        f"Runner repaired on {resolved_platform} (id={result.get('runner_id', 'unknown')}).",
+    )
+
+
+@runner_group.command("delete")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip interactive confirmation prompt (for use in scripts).",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_delete(platform: Optional[str], yes: bool, json_output: bool) -> None:
+    """Delete the runner job definition from the platform workspace.
+
+    This is an admin operation.  Deleting the runner prevents ``kindling app run``
+    and ``kindling pipeline run`` from submitting new work until the runner is
+    reinstalled with ``kindling runner ensure``.
+
+    You will be prompted for confirmation unless ``--yes`` is supplied.
+
+    Examples::
+
+        kindling runner delete --platform fabric --yes
+        kindling runner delete  # prompts for confirmation
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    if not yes:
+        confirmed = click.confirm(
+            f"Delete the Kindling runner on {resolved_platform}? "
+            "This will prevent app and pipeline runs until the runner is reinstalled.",
+            default=False,
+        )
+        if not confirmed:
+            click.echo("Aborted.")
+            return
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    try:
+        deleted = api_client.delete_runner(resolved_platform)
+    except AttributeError:
+        raise click.ClickException(
+            f"Runner management is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
+    if not deleted:
+        raise click.ClickException(f"Failed to delete runner on {resolved_platform}.")
+    _emit_result(
+        {"platform": resolved_platform, "deleted": True},
+        json_output,
+        f"Deleted runner on {resolved_platform}.",
+    )
+
+
+@runner_group.command("invoke")
+@click.option(
+    "--params",
+    "params_path",
+    required=True,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="YAML or JSON file containing raw runner invocation parameters.",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option("--wait", "wait_for_completion", is_flag=True, help="Poll until the run completes.")
+@click.option("--poll-interval", default=10.0, show_default=True, type=float)
+@click.option("--timeout", default=3600.0, show_default=True, type=float)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_invoke(
+    params_path: Path,
+    platform: Optional[str],
+    wait_for_completion: bool,
+    poll_interval: float,
+    timeout: float,
+    json_output: bool,
+) -> None:
+    """Invoke the runner with a raw parameters YAML file (advanced/debug).
+
+    This command is intended for infrastructure debugging and advanced
+    automation.  Normal app and pipeline execution should use
+    ``kindling app run`` or ``kindling pipeline run`` instead.
+
+    The parameters file is passed directly to the platform job run API without
+    interpretation.  See your platform documentation for the expected schema.
+
+    Note: this command is named ``invoke`` (not ``run``) to avoid collision with
+    user-workload ``run`` commands such as ``kindling app run``.
+
+    Examples::
+
+        kindling runner invoke --params params.yaml
+        kindling runner invoke --params params.yaml --wait --platform fabric
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    if wait_for_completion:
+        if poll_interval <= 0:
+            raise click.ClickException("--poll-interval must be greater than 0.")
+        if timeout <= 0:
+            raise click.ClickException("--timeout must be greater than 0.")
+
+    parameters = _load_mapping_file(params_path, "runner parameters")
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+
+    # Delegate to run_job using the runner's job ID resolved from parameters or
+    # by querying the runner status.  The raw parameters file is forwarded as-is.
+    runner_job_id = str(parameters.pop("runner_job_id", "")).strip() or None
+    if not runner_job_id:
+        try:
+            status = api_client.get_runner_status(resolved_platform)
+        except AttributeError:
+            raise click.ClickException(
+                f"Runner management is not yet supported on {resolved_platform}. "
+                "Upgrade spark-kindling-sdk when platform support is available."
+            )
+        runner_job_id = str(status.get("runner_id", "")).strip() or None
+    if not runner_job_id:
+        raise click.ClickException(
+            "Could not determine runner job ID. "
+            "Ensure the runner is installed (`kindling runner ensure`) or "
+            "include `runner_job_id` in your parameters file."
+        )
+
+    run_id = api_client.run_job(runner_job_id, parameters=parameters or None)
+    payload: Dict[str, Any] = {
+        "runner_job_id": runner_job_id,
+        "run_id": run_id,
+        "platform": resolved_platform,
+        "waited": wait_for_completion,
+    }
+
+    if wait_for_completion:
+        run_status = _wait_for_job_run(api_client, run_id, poll_interval, timeout)
+        state = _status_value(run_status)
+        payload["status"] = run_status
+        payload["state"] = state
+        payload["succeeded"] = state in _SUCCESS_JOB_STATES
+        if state not in _SUCCESS_JOB_STATES:
+            if json_output:
+                _emit_json(payload)
+                raise click.exceptions.Exit(1)
+            raise click.ClickException(f"Runner invocation `{run_id}` finished with state {state}.")
+
+    _emit_result(payload, json_output, run_id)
 
 
 @cli.group("test")
