@@ -5,10 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from click.testing import CliRunner
-from kindling_cli.cli import _discover_app_py, cli
-
 from kindling.data_entities import DataEntities, DataEntityRegistry
 from kindling.data_pipes import DataPipes, DataPipesExecution, DataPipesRegistry
+from kindling_cli.cli import _discover_app_py, cli
 
 
 def _write_app(path: Path, body: str | None = None) -> Path:
@@ -114,7 +113,7 @@ def test_run_pipe_happy_path_calls_registered_executor(monkeypatch):
     assert "Note: --env dev controls config loading only" in result.output
     assert "kindling job run" in result.output
     pipe_registry.get_pipe_definition.assert_called_once_with("bronze_to_silver")
-    executor.run_datapipes.assert_called_once_with(["bronze_to_silver"])
+    executor.run_datapipes.assert_called_once_with(["bronze_to_silver"], no_watermark=False)
 
 
 def test_run_pipe_local_env_no_warning(monkeypatch):
@@ -375,7 +374,7 @@ def test_new_project_run_reaches_pipe_execution_with_mock_executor(monkeypatch):
     assert init_configs[-1]["platform"] == "standalone"
     assert init_configs[-1]["environment"] == "local"
     pipe_registry.get_pipe_definition.assert_called_with("bronze_to_silver")
-    executor.run_datapipes.assert_called_once_with(["bronze_to_silver"])
+    executor.run_datapipes.assert_called_once_with(["bronze_to_silver"], no_watermark=False)
 
 
 def test_env_check_auto_probes_config_settings_yaml():
@@ -410,3 +409,160 @@ def test_new_project_next_steps_use_single_cd():
     assert result.exit_code == 0
     assert "  cd demo_project/packages/demo_project" in result.output
     assert "  cd demo_project\n  cd packages/demo_project" not in result.output
+
+
+# [implementer] pipeline run / list / --no-watermark — ki-70y
+
+
+def test_pipeline_run_happy_path_calls_executor(monkeypatch):
+    """kindling pipeline run <pipe> --app <app> --env dev executes the pipe."""
+    runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_definition.return_value = SimpleNamespace(pipeid="bronze.ingest")
+    executor = Mock()
+
+    def fake_get(service_type):
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        if service_type is DataPipesExecution:
+            return executor
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
+    with runner.isolated_filesystem():
+        app_path = _write_app(Path("app.py"))
+        result = runner.invoke(
+            cli,
+            ["pipeline", "run", "bronze.ingest", "--env", "local", "--app", str(app_path)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Running pipe: bronze.ingest" in result.output
+    assert "completed successfully" in result.output
+    pipe_registry.get_pipe_definition.assert_called_once_with("bronze.ingest")
+    executor.run_datapipes.assert_called_once_with(["bronze.ingest"], no_watermark=False)
+
+
+def test_pipeline_run_unknown_pipe_lists_available_pipes(monkeypatch):
+    """Unknown pipe ID surfaces a helpful error listing registered pipes."""
+    runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_definition.return_value = None
+    pipe_registry.get_pipe_ids.return_value = ["bronze.ingest", "silver.stage"]
+
+    def fake_get(service_type):
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
+    with runner.isolated_filesystem():
+        app_path = _write_app(Path("app.py"))
+        result = runner.invoke(cli, ["pipeline", "run", "missing_pipe", "--app", str(app_path)])
+
+    assert result.exit_code != 0
+    assert "Pipe 'missing_pipe' not found" in result.output
+    assert "bronze.ingest, silver.stage" in result.output
+    assert "kindling pipeline list" in result.output
+
+
+def test_pipeline_run_no_watermark_flag_passed_to_executor(monkeypatch):
+    """--no-watermark flag is forwarded to run_datapipes."""
+    runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_definition.return_value = SimpleNamespace(pipeid="bronze.ingest")
+    executor = Mock()
+
+    def fake_get(service_type):
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        if service_type is DataPipesExecution:
+            return executor
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
+    with runner.isolated_filesystem():
+        app_path = _write_app(Path("app.py"))
+        result = runner.invoke(
+            cli,
+            ["pipeline", "run", "bronze.ingest", "--no-watermark", "--app", str(app_path)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "--no-watermark is set" in result.output
+    executor.run_datapipes.assert_called_once_with(["bronze.ingest"], no_watermark=True)
+
+
+def test_run_pipe_no_watermark_flag_passed_to_executor(monkeypatch):
+    """--no-watermark on kindling run is forwarded to run_datapipes."""
+    runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_definition.return_value = SimpleNamespace(pipeid="bronze_to_silver")
+    executor = Mock()
+
+    def fake_get(service_type):
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        if service_type is DataPipesExecution:
+            return executor
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
+    with runner.isolated_filesystem():
+        app_path = _write_app(Path("app.py"))
+        result = runner.invoke(
+            cli,
+            ["run", "bronze_to_silver", "--no-watermark", "--app", str(app_path)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "--no-watermark is set" in result.output
+    executor.run_datapipes.assert_called_once_with(["bronze_to_silver"], no_watermark=True)
+
+
+def test_pipeline_list_shows_registered_pipes(monkeypatch):
+    """kindling pipeline list prints all registered pipe IDs."""
+    runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_ids.return_value = ["bronze.ingest", "silver.stage", "gold.agg"]
+
+    def fake_get(service_type):
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
+    with runner.isolated_filesystem():
+        app_path = _write_app(Path("app.py"))
+        result = runner.invoke(cli, ["pipeline", "list", "--app", str(app_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "bronze.ingest" in result.output
+    assert "silver.stage" in result.output
+    assert "gold.agg" in result.output
+
+
+def test_pipeline_list_empty_registry_shows_message(monkeypatch):
+    """kindling pipeline list with no registered pipes shows a helpful message."""
+    runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_ids.return_value = []
+
+    def fake_get(service_type):
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
+    with runner.isolated_filesystem():
+        app_path = _write_app(Path("app.py"))
+        result = runner.invoke(cli, ["pipeline", "list", "--app", str(app_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "No pipes registered" in result.output

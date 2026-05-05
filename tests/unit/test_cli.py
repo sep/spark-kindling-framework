@@ -16,6 +16,7 @@ from kindling_cli.cli import (
     _load_app_module,
     _render_environment_bootstrap_source,
     _render_starter_notebook_source,
+    _resolve_account_url,
     cli,
 )
 
@@ -32,6 +33,29 @@ def test_config_init_writes_settings_file():
         content = settings_path.read_text(encoding="utf-8")
         assert "name: demo-app" in content
         assert "kindling:" in content
+
+
+def test_resolve_account_url_uses_blob_suffix_env(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_BLOB_ENDPOINT_SUFFIX", "blob.core.usgovcloudapi.net")
+
+    assert _resolve_account_url("acct") == "https://acct.blob.core.usgovcloudapi.net"
+
+
+def test_resolve_account_url_uses_azure_environment(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_BLOB_ENDPOINT_SUFFIX", raising=False)
+    monkeypatch.setenv("AZURE_CLOUD", "AzureUSGovernment")
+
+    assert _resolve_account_url("govacct") == "https://govacct.blob.core.usgovcloudapi.net"
+
+
+def test_resolve_account_url_preserves_explicit_endpoint(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_BLOB_ENDPOINT_SUFFIX", "blob.core.usgovcloudapi.net")
+
+    assert _resolve_account_url("acct.blob.custom.example") == "https://acct.blob.custom.example"
+    assert (
+        _resolve_account_url("https://acct.blob.custom.example")
+        == "https://acct.blob.custom.example"
+    )
 
 
 def test_config_init_refuses_to_overwrite_without_force():
@@ -73,6 +97,82 @@ def test_env_check_passes_for_generated_settings_file():
 
         assert result.exit_code == 0
         assert "Environment check passed." in result.output
+
+
+# ---------------------------------------------------------------------------
+# env check --platform  (ki-0nq)
+# ---------------------------------------------------------------------------
+
+
+def test_env_check_platform_missing_vars_exits_nonzero(monkeypatch):
+    """--platform with all vars unset should exit 1 and report MISSING."""
+    for var in (
+        "SYNAPSE_WORKSPACE_NAME",
+        "SYNAPSE_SPARK_POOL_NAME",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "synapse"])
+
+    assert result.exit_code != 0
+    assert "Platform: synapse" in result.output
+    assert "MISSING" in result.output
+    assert "missing" in result.output
+
+
+def test_env_check_platform_all_vars_set_exits_zero(monkeypatch):
+    """--platform with all required vars set should exit 0 and report SET."""
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws")
+    monkeypatch.setenv("SYNAPSE_SPARK_POOL_NAME", "pool")
+    monkeypatch.setenv("AZURE_TENANT_ID", "tid")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "synapse"])
+
+    assert result.exit_code == 0
+    assert "Platform: synapse" in result.output
+    assert "MISSING" not in result.output
+    output_lines = [l.strip() for l in result.output.splitlines() if l.strip()]
+    set_lines = [l for l in output_lines if "SET" in l]
+    assert len(set_lines) == 4
+
+
+def test_env_check_platform_missing_shows_export_hint(monkeypatch):
+    """Missing vars should include 'export VAR=<your-...' hint."""
+    for var in ("DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "databricks"])
+
+    assert "export DATABRICKS_HOST=" in result.output
+    assert "export DATABRICKS_TOKEN=" in result.output
+
+
+def test_env_check_platform_partial_set_reports_correctly(monkeypatch):
+    """If only some vars are set, SET and MISSING are both reported."""
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "wid")
+    for var in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID"):
+        monkeypatch.delenv(var, raising=False)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "fabric"])
+
+    assert result.exit_code != 0
+    assert "FABRIC_WORKSPACE_ID" in result.output
+    assert "SET" in result.output
+    assert "MISSING" in result.output
+
+
+def test_env_check_platform_help_shows_flag():
+    """--help output should mention --platform."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["env", "check", "--help"])
+    assert "--platform" in result.output
 
 
 def test_test_run_passes_explicit_layout_to_runner(monkeypatch):
@@ -475,13 +575,26 @@ def test_app_package_creates_kda_archive():
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
         (app_dir / "nested" / "settings.yaml").write_text("name: demo\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["app", "package", str(app_dir)])
+        result = runner.invoke(cli, ["app", "package", "--local-folder", str(app_dir)])
 
         assert result.exit_code == 0, result.output
         package_path = Path("dist/demo_app.kda")
         assert package_path.exists()
         with zipfile.ZipFile(package_path, "r") as archive:
             assert sorted(archive.namelist()) == ["app.py", "nested/settings.yaml"]
+
+
+def test_app_package_positional_arg_shows_deprecation_warning():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["app", "package", str(app_dir)], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert "deprecated" in result.output
 
 
 def test_app_package_json_output_is_machine_readable():
@@ -491,7 +604,7 @@ def test_app_package_json_output_is_machine_readable():
         app_dir.mkdir()
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["app", "package", str(app_dir), "--json"])
+        result = runner.invoke(cli, ["app", "package", "--local-folder", str(app_dir), "--json"])
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -507,10 +620,52 @@ def test_app_deploy_rejects_unsafe_kda_paths():
         with zipfile.ZipFile(package_path, "w") as archive:
             archive.writestr("../escape.py", "print('nope')\n")
 
-        result = runner.invoke(cli, ["app", "deploy", str(package_path), "--platform", "fabric"])
+        result = runner.invoke(
+            cli,
+            ["app", "deploy", "--kda-package", str(package_path), "--platform", "fabric"],
+        )
 
         assert result.exit_code != 0
         assert "unsafe relative path traversal" in result.output
+
+
+def test_app_deploy_rejects_both_source_flags(monkeypatch):
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (object(), platform),
+    )
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("", encoding="utf-8")
+        kda = Path("demo_app.kda")
+        with zipfile.ZipFile(kda, "w") as archive:
+            archive.writestr("app.py", "")
+
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "deploy",
+                "--local-folder",
+                str(app_dir),
+                "--kda-package",
+                str(kda),
+                "--platform",
+                "fabric",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+
+def test_app_deploy_requires_source_flag():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "deploy", "--platform", "fabric"])
+    assert result.exit_code != 0
+    assert "--local-folder" in result.output or "source" in result.output
 
 
 def test_app_deploy_uses_platform_sdk(monkeypatch):
@@ -535,11 +690,37 @@ def test_app_deploy_uses_platform_sdk(monkeypatch):
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
         (app_dir / "pipelines" / "job.yml").write_text("job_name: demo\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["app", "deploy", str(app_dir), "--platform", "fabric"])
+        result = runner.invoke(
+            cli, ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric"]
+        )
 
         assert result.exit_code == 0, result.output
         assert fake_api.calls[0][0] == "demo_app"
         assert sorted(fake_api.calls[0][1]) == ["app.py", "pipelines/job.yml"]
+        assert "Deployed app `demo_app`" in result.output
+
+
+def test_app_deploy_kda_package_flag(monkeypatch):
+    class FakeAPI:
+        def deploy_app(self, app_name, app_files):
+            return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/demo"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        kda = Path("demo_app.kda")
+        with zipfile.ZipFile(kda, "w") as archive:
+            archive.writestr("app.py", "print('hello')\n")
+
+        result = runner.invoke(
+            cli, ["app", "deploy", "--kda-package", str(kda), "--platform", "fabric"]
+        )
+
+        assert result.exit_code == 0, result.output
         assert "Deployed app `demo_app`" in result.output
 
 
@@ -560,7 +741,8 @@ def test_app_deploy_json_output_includes_storage_path(monkeypatch):
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
 
         result = runner.invoke(
-            cli, ["app", "deploy", str(app_dir), "--platform", "fabric", "--json"]
+            cli,
+            ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric", "--json"],
         )
 
         assert result.exit_code == 0, result.output
@@ -568,6 +750,187 @@ def test_app_deploy_json_output_includes_storage_path(monkeypatch):
         assert payload["app_name"] == "demo_app"
         assert payload["platform"] == "fabric"
         assert payload["storage_path"].startswith("abfss://")
+
+
+def test_app_run_without_deploy_requires_app_name(monkeypatch):
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (object(), platform),
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "run", "--platform", "fabric"])
+    assert result.exit_code != 0
+    assert "APP_NAME" in result.output or "deployed" in result.output
+
+
+def test_app_run_without_deploy_succeeds_with_app_name(monkeypatch):
+    class FakeAPI:
+        pass
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "run", "orders", "--platform", "fabric"])
+    assert result.exit_code == 0, result.output
+    assert "orders" in result.output
+
+
+def test_app_run_with_deploy_and_local_folder(monkeypatch):
+    class FakeAPI:
+        def deploy_app(self, app_name, app_files):
+            return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/orders"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("orders")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("", encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "run",
+                "orders",
+                "--deploy",
+                "--local-folder",
+                str(app_dir),
+                "--platform",
+                "fabric",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "orders" in result.output
+
+
+def test_app_run_deploy_requires_source_flag(monkeypatch):
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "run", "orders", "--deploy", "--platform", "fabric"])
+    assert result.exit_code != 0
+    assert "--local-folder" in result.output or "--kda-package" in result.output
+
+
+def test_app_run_source_flag_without_deploy_is_rejected(monkeypatch):
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("orders")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("", encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            ["app", "run", "orders", "--local-folder", str(app_dir), "--platform", "fabric"],
+        )
+        assert result.exit_code != 0
+        assert "--deploy" in result.output
+
+
+def test_app_cleanup_positional_name(monkeypatch):
+    class FakeAPI:
+        def cleanup_app(self, app_name):
+            assert app_name == "orders"
+            return True
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "cleanup", "orders", "--platform", "fabric"])
+    assert result.exit_code == 0, result.output
+    assert "orders" in result.output
+
+
+def test_app_cleanup_local_folder_infers_name(monkeypatch):
+    class FakeAPI:
+        def cleanup_app(self, app_name):
+            assert app_name == "orders"
+            return True
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("orders")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("", encoding="utf-8")
+
+        result = runner.invoke(
+            cli, ["app", "cleanup", "--local-folder", str(app_dir), "--platform", "fabric"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "orders" in result.output
+
+
+def test_app_cleanup_kda_package_infers_name(monkeypatch):
+    class FakeAPI:
+        def cleanup_app(self, app_name):
+            assert app_name == "orders"
+            return True
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        kda = Path("orders.kda")
+        with zipfile.ZipFile(kda, "w") as archive:
+            archive.writestr("app.py", "")
+
+        result = runner.invoke(
+            cli, ["app", "cleanup", "--kda-package", str(kda), "--platform", "fabric"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "orders" in result.output
+
+
+def test_app_cleanup_rejects_both_source_flags(monkeypatch):
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("orders")
+        app_dir.mkdir()
+        kda = Path("orders.kda")
+        with zipfile.ZipFile(kda, "w") as archive:
+            archive.writestr("app.py", "")
+
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "cleanup",
+                "--local-folder",
+                str(app_dir),
+                "--kda-package",
+                str(kda),
+                "--platform",
+                "fabric",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+
+def test_app_cleanup_requires_identifier():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "cleanup", "--platform", "fabric"])
+    assert result.exit_code != 0
 
 
 def test_job_create_loads_yaml_and_prints_structured_result(monkeypatch):
@@ -1272,8 +1635,10 @@ class TestEnvCheckPlatform:
                 "DATABRICKS_TOKEN": "dapi-abc",
             },
         )
-        assert "[PASS] env:DATABRICKS_HOST" in result.output
-        assert "[PASS] env:DATABRICKS_TOKEN" in result.output
+        # New human-readable format: SET / MISSING
+        assert "DATABRICKS_HOST" in result.output
+        assert "SET" in result.output
+        assert "MISSING" not in result.output
         assert result.exit_code == 0
 
     def test_databricks_missing_token_fails(self):
@@ -1281,7 +1646,8 @@ class TestEnvCheckPlatform:
             "databricks",
             {"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net"},
         )
-        assert "[FAIL] env:DATABRICKS_TOKEN" in result.output
+        assert "DATABRICKS_TOKEN" in result.output
+        assert "MISSING" in result.output
         assert result.exit_code != 0
 
     def test_fabric_all_vars_set_passes(self):
@@ -1289,22 +1655,20 @@ class TestEnvCheckPlatform:
             "fabric",
             {
                 "FABRIC_WORKSPACE_ID": "ws-1",
-                "FABRIC_LAKEHOUSE_ID": "lh-1",
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
-                "AZURE_CLIENT_SECRET": "secret-1",
             },
         )
-        assert "[PASS] env:FABRIC_WORKSPACE_ID" in result.output
-        assert "[PASS] env:FABRIC_LAKEHOUSE_ID" in result.output
-        assert "[PASS] env:AZURE_TENANT_ID" in result.output
-        assert "[PASS] env:AZURE_CLIENT_ID" in result.output
-        assert "[PASS] env:AZURE_CLIENT_SECRET" in result.output
+        assert "FABRIC_WORKSPACE_ID" in result.output
+        assert "AZURE_TENANT_ID" in result.output
+        assert "AZURE_CLIENT_ID" in result.output
+        assert "MISSING" not in result.output
         assert result.exit_code == 0
 
     def test_fabric_missing_vars_fails(self):
         result = self._run_with_env("fabric", {})
-        assert "[FAIL] env:FABRIC_WORKSPACE_ID" in result.output
+        assert "FABRIC_WORKSPACE_ID" in result.output
+        assert "MISSING" in result.output
         assert result.exit_code != 0
 
     def test_synapse_all_vars_set_passes(self):
@@ -1312,13 +1676,14 @@ class TestEnvCheckPlatform:
             "synapse",
             {
                 "SYNAPSE_WORKSPACE_NAME": "my-ws",
+                "SYNAPSE_SPARK_POOL_NAME": "my-pool",
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
-                "AZURE_CLIENT_SECRET": "secret-1",
             },
         )
-        assert "[PASS] env:SYNAPSE_WORKSPACE_NAME" in result.output
-        assert "[PASS] env:AZURE_TENANT_ID" in result.output
+        assert "SYNAPSE_WORKSPACE_NAME" in result.output
+        assert "AZURE_TENANT_ID" in result.output
+        assert "MISSING" not in result.output
         assert result.exit_code == 0
 
     def test_synapse_missing_workspace_name_fails(self):
@@ -1327,10 +1692,10 @@ class TestEnvCheckPlatform:
             {
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
-                "AZURE_CLIENT_SECRET": "secret-1",
             },
         )
-        assert "[FAIL] env:SYNAPSE_WORKSPACE_NAME" in result.output
+        assert "SYNAPSE_WORKSPACE_NAME" in result.output
+        assert "MISSING" in result.output
         assert result.exit_code != 0
 
     def test_platform_label_shown_in_output(self):
@@ -1341,7 +1706,8 @@ class TestEnvCheckPlatform:
                 "DATABRICKS_TOKEN": "dapi-abc",
             },
         )
-        assert "[PASS] platform: databricks" in result.output
+        # New format uses "Platform: <name>" header
+        assert "Platform: databricks" in result.output
 
     def test_no_platform_flag_no_env_var_checks(self):
         runner = CliRunner()
@@ -1451,3 +1817,232 @@ def test_run_missing_pipe_gives_actionable_message(monkeypatch, tmp_path):
     assert "bronze_to_silver" in result.output
     assert "silver_to_gold" in result.output
     assert "kindling validate" in result.output
+
+
+# ---------------------------------------------------------------------------
+# runner command group — ki-sag
+# ---------------------------------------------------------------------------
+
+
+class _FakeRunnerAPI:
+    """Minimal fake platform API for runner tests."""
+
+    def ensure_runner(self, platform):
+        return {"runner_id": "runner-001", "state": "HEALTHY", "version": "1.2.3"}
+
+    def get_runner_status(self, platform):
+        return {"runner_id": "runner-001", "state": "HEALTHY", "version": "1.2.3"}
+
+    def repair_runner(self, platform):
+        return {"runner_id": "runner-001", "state": "HEALTHY", "version": "1.2.3"}
+
+    def delete_runner(self, platform):
+        return True
+
+    def run_job(self, job_id, parameters=None):
+        return "run-999"
+
+
+def test_runner_help_lists_all_subcommands():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "--help"])
+    assert result.exit_code == 0, result.output
+    for sub in ("ensure", "status", "repair", "delete", "invoke"):
+        assert sub in result.output
+
+
+def test_runner_ensure_succeeds(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws-test")
+    monkeypatch.setenv("SYNAPSE_DEV_ENDPOINT", "https://dev.endpoint")
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure", "--platform", "synapse"])
+    assert result.exit_code == 0, result.output
+    assert "runner-001" in result.output
+
+
+def test_runner_ensure_json_output(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws-test")
+    monkeypatch.setenv("SYNAPSE_DEV_ENDPOINT", "https://dev.endpoint")
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure", "--platform", "synapse", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["runner_id"] == "runner-001"
+    assert payload["platform"] == "synapse"
+
+
+def test_runner_ensure_requires_platform_or_env():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure"])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
+
+
+def test_runner_ensure_fails_when_platform_vars_missing(monkeypatch):
+    # DATABRICKS_HOST set but TOKEN absent
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure", "--platform", "databricks"])
+    assert result.exit_code != 0
+    assert "Missing required environment variables" in result.output
+
+
+def test_runner_status_summary(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "status", "--platform", "synapse"])
+    assert result.exit_code == 0, result.output
+    assert "runner-001" in result.output
+    assert "HEALTHY" in result.output
+
+
+def test_runner_status_verbose(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "status", "--platform", "synapse", "--verbose"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["runner_id"] == "runner-001"
+
+
+def test_runner_status_json(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "status", "--platform", "fabric", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["runner_id"] == "runner-001"
+    assert payload["platform"] == "fabric"
+
+
+def test_runner_status_requires_platform_or_env():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "status"])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
+
+
+def test_runner_repair_succeeds(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws-test")
+    monkeypatch.setenv("SYNAPSE_DEV_ENDPOINT", "https://dev.endpoint")
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "repair", "--platform", "synapse"])
+    assert result.exit_code == 0, result.output
+    assert "runner-001" in result.output
+
+
+def test_runner_repair_requires_platform_or_env():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "repair"])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
+
+
+def test_runner_delete_prompts_when_yes_not_supplied(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    # Supply 'n' to the confirmation prompt
+    result = runner.invoke(cli, ["runner", "delete", "--platform", "fabric"], input="n\n")
+    assert result.exit_code == 0, result.output
+    assert "Aborted" in result.output
+
+
+def test_runner_delete_skips_prompt_with_yes_flag(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "delete", "--platform", "fabric", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+
+
+def test_runner_delete_confirms_and_proceeds(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    # Supply 'y' to the confirmation prompt
+    result = runner.invoke(cli, ["runner", "delete", "--platform", "fabric"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+
+
+def test_runner_delete_json_output(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "delete", "--platform", "synapse", "--yes", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["deleted"] is True
+    assert payload["platform"] == "synapse"
+
+
+def test_runner_delete_requires_platform_or_env():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "delete", "--yes"])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
+
+
+def test_runner_invoke_runs_job(monkeypatch, tmp_path):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text("runner_job_id: runner-001\napp_name: my-app\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["runner", "invoke", "--params", str(params_file), "--platform", "synapse", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["run_id"] == "run-999"
+    assert payload["runner_job_id"] == "runner-001"
+
+
+def test_runner_invoke_looks_up_runner_id_when_missing_from_params(monkeypatch, tmp_path):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text("app_name: my-app\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["runner", "invoke", "--params", str(params_file), "--platform", "fabric", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["run_id"] == "run-999"
+    # runner_job_id resolved from status
+    assert payload["runner_job_id"] == "runner-001"
+
+
+def test_runner_invoke_rejects_non_positive_poll_interval(monkeypatch, tmp_path):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text("runner_job_id: runner-001\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "runner",
+            "invoke",
+            "--params",
+            str(params_file),
+            "--platform",
+            "synapse",
+            "--wait",
+            "--poll-interval",
+            "0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "poll-interval" in result.output.lower()
+
+
+def test_runner_invoke_requires_platform_or_env(tmp_path):
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text("runner_job_id: runner-001\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "invoke", "--params", str(params_file)])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output

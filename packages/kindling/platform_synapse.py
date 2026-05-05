@@ -14,10 +14,25 @@ from azure.core.exceptions import *
 
 from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
+from kindling.platform_provider import azure_cloud_config, azure_env, azure_token_scope
 from kindling.spark_config import ConfigService
 from kindling.spark_session import *
 
 mssparkutils = None
+
+
+def _storage_dfs_endpoint(storage_account: str) -> str:
+    suffix = azure_env(
+        "AZURE_STORAGE_DFS_ENDPOINT_SUFFIX",
+        f"dfs.{azure_cloud_config()['storage_suffix']}",
+    ).lstrip(".")
+    return f"{storage_account}.{suffix}"
+
+
+def _abfss_uri(container: str, storage_account: str, path: str = "") -> str:
+    base = f"abfss://{container}@{_storage_dfs_endpoint(storage_account)}"
+    clean_path = path.strip("/")
+    return f"{base}/{clean_path}" if clean_path else base
 
 
 def _get_mssparkutils():
@@ -314,7 +329,9 @@ class SynapseService(PlatformService):
             return self._token_cache["token"]
 
         # Get new token
-        token_response = self.credential.get_token("https://dev.azuresynapse.net/.default")
+        token_response = self.credential.get_token(
+            azure_token_scope("AZURE_SYNAPSE_TOKEN_SCOPE", "https://dev.azuresynapse.net/.default")
+        )
 
         # Cache the token
         self._token_cache = {
@@ -848,7 +865,11 @@ class SynapseService(PlatformService):
 
         # Step 1: Upload files to workspace storage
         self.logger.debug(f"Uploading {len(app_files)} files to workspace storage...")
-        deployment_path = f"abfss://{self.workspace_name}@{self.storage_account}.dfs.core.windows.net/kindling_jobs/{job_name}"
+        deployment_path = _abfss_uri(
+            self.workspace_name,
+            self.storage_account,
+            f"kindling_jobs/{job_name}",
+        )
         storage_paths = self._upload_files_to_storage(deployment_path, app_files)
         self.logger.debug(f"Uploaded files to: {deployment_path}")
 

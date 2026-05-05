@@ -1,16 +1,45 @@
+import os
 import time
 import uuid
 from functools import reduce
+from pathlib import Path
 from typing import Optional
 
 from kindling.data_entities import *
 from kindling.data_pipes import *
+from kindling.entity_provider_csv import (
+    FixtureCSVEntityProvider,
+    resolve_fixture_csv_path,
+)
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log import *
 from kindling.watermarking import *
 from pyspark.sql.functions import col
+
+
+def _is_local_execution() -> bool:
+    """
+    Return True when running in local/standalone mode.
+
+    Checks the active platform service; falls back to True when no platform
+    service is registered (e.g. during unit tests with no bootstrap).
+    """
+    try:
+        from kindling.platform_provider import PlatformServiceProvider  # noqa: PLC0415
+
+        provider = GlobalInjector.get(PlatformServiceProvider)
+        svc = provider.get_service() if provider is not None else None
+        if svc is None:
+            # No platform bootstrapped — treat as local.
+            return True
+        platform_name = getattr(svc, "get_platform_name", lambda: "")()
+        return str(platform_name).strip().lower() == "standalone"
+    except Exception:  # noqa: BLE001
+        # Best-effort: if we cannot determine the platform, assume non-local
+        # to avoid silently skipping registered providers on real platforms.
+        return False
 
 
 @GlobalInjector.singleton_autobind()
@@ -41,10 +70,23 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             if usewm:
                 # Watermarking uses the legacy path (Delta-specific)
                 return self.wms.read_current_entity_changes(entity, pipe)
-            else:
-                # Get appropriate provider for this entity
-                provider = self.provider_registry.get_provider_for_entity(entity)
-                return provider.read_entity(entity)
+
+            # [implementer] tests/entities/ auto-discovery convention — ki-bsi
+            # Priority: explicit --source > kindling.yaml env mapping > fixture CSV > registry
+            # Fixture discovery applies only when running locally (standalone platform).
+            if _is_local_execution():
+                cwd = Path(os.getcwd())
+                fixture_path = resolve_fixture_csv_path(entity.entityid, cwd)
+                if fixture_path is not None:
+                    self.logger.info(
+                        f"Using fixture CSV for entity '{entity.entityid}': {fixture_path}"
+                    )
+                    fixture_provider = FixtureCSVEntityProvider(fixture_path)
+                    return fixture_provider.read_entity(entity)
+
+            # Get appropriate provider for this entity
+            provider = self.provider_registry.get_provider_for_entity(entity)
+            return provider.read_entity(entity)
 
         return entity_reader
 

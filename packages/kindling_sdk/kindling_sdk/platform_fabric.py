@@ -13,7 +13,15 @@ from urllib.parse import quote
 import requests
 from azure.core.exceptions import *
 
-from .platform_provider import PlatformAPI, PlatformAPIRegistry, create_azure_credential
+from .platform_provider import (
+    PlatformAPI,
+    PlatformAPIRegistry,
+    azure_abfss_uri,
+    azure_storage_account_url,
+    azure_token_scope,
+    create_azure_credential,
+    fabric_api_base_url,
+)
 
 # Fabric REST API Client (for remote operations)
 # ============================================================================
@@ -92,7 +100,7 @@ class FabricAPI(PlatformAPI):
         self.storage_account = storage_account
         self.container = container
         self.base_path = base_path
-        self.base_url = "https://api.fabric.microsoft.com/v1"
+        self.base_url = fabric_api_base_url()
         self._token = None
         self._token_expiry = 0
         self._storage_client = None
@@ -112,7 +120,7 @@ class FabricAPI(PlatformAPI):
         self.storage_account = storage_account
         self.container = container
         self.base_path = base_path
-        self.base_url = "https://api.fabric.microsoft.com/v1"
+        self.base_url = fabric_api_base_url()
         self._token = None
         self._token_expiry = 0
         self._storage_client = None
@@ -185,7 +193,9 @@ class FabricAPI(PlatformAPI):
                 "Set kindling.secrets.key_vault_url or SYSTEM_TEST_KEY_VAULT_URL."
             )
 
-        token = self.credential.get_token("https://vault.azure.net/.default").token
+        token = self.credential.get_token(
+            azure_token_scope("AZURE_KEYVAULT_TOKEN_SCOPE", "https://vault.azure.net/.default")
+        ).token
         encoded_name = quote(secret_name, safe="")
         url = f"{key_vault_url.rstrip('/')}/secrets/{encoded_name}?api-version=7.4"
         response = requests.put(
@@ -216,7 +226,9 @@ class FabricAPI(PlatformAPI):
         if not key_vault_url:
             return False
 
-        token = self.credential.get_token("https://vault.azure.net/.default").token
+        token = self.credential.get_token(
+            azure_token_scope("AZURE_KEYVAULT_TOKEN_SCOPE", "https://vault.azure.net/.default")
+        ).token
         encoded_name = quote(secret_name, safe="")
         url = f"{key_vault_url.rstrip('/')}/secrets/{encoded_name}?api-version=7.4"
         response = requests.delete(
@@ -270,7 +282,7 @@ class FabricAPI(PlatformAPI):
 
             # Initialize storage client if needed
             if not self._storage_client:
-                account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+                account_url = azure_storage_account_url(self.storage_account)
                 self._storage_client = DataLakeServiceClient(
                     account_url=account_url, credential=self.credential
                 )
@@ -323,13 +335,19 @@ class FabricAPI(PlatformAPI):
         # Different tokens for different APIs
         if scope == "storage":
             # OneLake uses Azure Storage scope
-            token_obj = self.credential.get_token("https://storage.azure.com/.default")
+            token_obj = self.credential.get_token(
+                azure_token_scope("AZURE_STORAGE_TOKEN_SCOPE", "https://storage.azure.com/.default")
+            )
             return token_obj.token
         else:
             # Fabric API uses Fabric-specific scope
             # Refresh token if expired
             if not self._token or time.time() >= self._token_expiry:
-                token_obj = self.credential.get_token("https://api.fabric.microsoft.com/.default")
+                token_obj = self.credential.get_token(
+                    azure_token_scope(
+                        "FABRIC_TOKEN_SCOPE", "https://api.fabric.microsoft.com/.default"
+                    )
+                )
                 self._token = token_obj.token
                 # Set expiry 5 minutes before actual expiry
                 self._token_expiry = token_obj.expires_on - 300
@@ -457,7 +475,7 @@ class FabricAPI(PlatformAPI):
                 artifacts_storage_path = "Files/artifacts"
         elif self.storage_account and self.container:
             # ABFSS mode: Files uploaded to abfss://.../{base_path}/data-apps/
-            base_url = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
+            base_url = azure_abfss_uri(self.container, self.storage_account)
             if self.base_path:
                 artifacts_storage_path = f"{base_url}/{self.base_path.strip('/')}"
             else:
@@ -539,7 +557,7 @@ class FabricAPI(PlatformAPI):
                 main_file = main_file[6:]  # Remove "Files/" prefix
 
             # Construct full ABFSS path
-            main_file = f"abfss://{container}@{storage_account}.dfs.core.windows.net/{main_file}"
+            main_file = azure_abfss_uri(container, storage_account, main_file)
 
         # Check for environment_id in job_config
         environment_id = job_config.get("environment_id")
@@ -637,7 +655,7 @@ class FabricAPI(PlatformAPI):
 
         # Initialize storage client if needed
         if not self._storage_client:
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            account_url = azure_storage_account_url(self.storage_account)
             self._storage_client = DataLakeServiceClient(
                 account_url=account_url, credential=self.credential
             )
@@ -670,7 +688,7 @@ class FabricAPI(PlatformAPI):
                 failed_uploads.append(f"{filename}: {e}")
 
         # Construct ABFSS path
-        abfss_path = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/{full_target_path}"
+        abfss_path = azure_abfss_uri(self.container, self.storage_account, full_target_path)
 
         print(f"📂 Uploaded {uploaded_count}/{len(files)} files to: {abfss_path}")
 
@@ -946,7 +964,7 @@ class FabricAPI(PlatformAPI):
 
         # Initialize storage client if needed
         if not self._storage_client:
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            account_url = azure_storage_account_url(self.storage_account)
             self._storage_client = DataLakeServiceClient(
                 account_url=account_url, credential=self.credential
             )
@@ -1008,7 +1026,7 @@ class FabricAPI(PlatformAPI):
 
         # Initialize storage client if needed
         if not self._storage_client:
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            account_url = azure_storage_account_url(self.storage_account)
             self._storage_client = DataLakeServiceClient(
                 account_url=account_url, credential=self.credential
             )
@@ -1085,7 +1103,7 @@ class FabricAPI(PlatformAPI):
 
         # Initialize storage client if needed
         if not self._storage_client:
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            account_url = azure_storage_account_url(self.storage_account)
             self._storage_client = DataLakeServiceClient(
                 account_url=account_url, credential=self.credential
             )
