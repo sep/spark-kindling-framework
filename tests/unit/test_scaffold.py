@@ -257,6 +257,11 @@ def test_env_example_medallion_has_bronze_and_silver_paths(tmp_path):
     env_ex = (_package_root(repo_root, "proj") / ".env.example").read_text()
     assert "ABFSS_BRONZE_PATH" in env_ex
     assert "ABFSS_SILVER_PATH" in env_ex
+    assert "AZURE_CLOUD" in env_ex
+    assert "AZURE_STORAGE_DFS_ENDPOINT_SUFFIX" in env_ex
+    assert "AZURE_STORAGE_BLOB_ENDPOINT_SUFFIX" in env_ex
+    assert "AZURE_STORAGE_TOKEN_SCOPE" in env_ex
+    assert "AZURE_AUTHORITY_HOST" in env_ex
 
 
 def test_env_example_minimal_has_raw_path(tmp_path):
@@ -268,6 +273,20 @@ def test_env_example_minimal_has_raw_path(tmp_path):
     env_ex = (_package_root(repo_root, "proj") / ".env.example").read_text()
     assert "ABFSS_RAW_PATH" in env_ex
     assert "ABFSS_BRONZE_PATH" not in env_ex
+
+
+def test_generated_conftest_uses_azure_endpoint_env_overrides(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    cfg = PackageScaffoldConfig(name="proj", repo_root=repo_root, auth="oauth")
+    generate_package(cfg)
+
+    conftest = (_package_root(repo_root, "proj") / "tests" / "conftest.py").read_text()
+    assert "AZURE_STORAGE_DFS_ENDPOINT_SUFFIX" in conftest
+    assert "AZURE_STORAGE_TOKEN_SCOPE" in conftest
+    assert "AZURE_AUTHORITY_HOST" in conftest
+    assert 'f"{account}.dfs.core.windows.net"' not in conftest
+    assert "login.microsoftonline.com/{tenant}" not in conftest
 
 
 def test_repo_ci_runs_each_package(tmp_path):
