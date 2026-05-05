@@ -2516,7 +2516,7 @@ from kindling import DataPipes
     output_entity_id="silver.sample",
 )
 def sample_pipe(bronze_sample):
-    # TODO(ki-krj): implement transform
+    # TODO: implement your transform here
     return bronze_sample
 """
 
@@ -4309,7 +4309,13 @@ def runner_ensure(platform: Optional[str], json_output: bool) -> None:
         )
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    result = api_client.ensure_runner(resolved_platform)
+    try:
+        result = api_client.ensure_runner(resolved_platform)
+    except AttributeError:
+        raise click.ClickException(
+            f"Runner management is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
     _emit_result(
         {"platform": resolved_platform, **result},
         json_output,
@@ -4347,7 +4353,13 @@ def runner_status(platform: Optional[str], verbose: bool, json_output: bool) -> 
         raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    result = api_client.get_runner_status(resolved_platform)
+    try:
+        result = api_client.get_runner_status(resolved_platform)
+    except AttributeError:
+        raise click.ClickException(
+            f"Runner management is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
 
     if not json_output and not verbose:
         runner_id = result.get("runner_id", "unknown")
@@ -4401,7 +4413,13 @@ def runner_repair(platform: Optional[str], json_output: bool) -> None:
         )
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    result = api_client.repair_runner(resolved_platform)
+    try:
+        result = api_client.repair_runner(resolved_platform)
+    except AttributeError:
+        raise click.ClickException(
+            f"Runner management is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
     _emit_result(
         {"platform": resolved_platform, **result},
         json_output,
@@ -4452,7 +4470,13 @@ def runner_delete(platform: Optional[str], yes: bool, json_output: bool) -> None
             return
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    deleted = api_client.delete_runner(resolved_platform)
+    try:
+        deleted = api_client.delete_runner(resolved_platform)
+    except AttributeError:
+        raise click.ClickException(
+            f"Runner management is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
     if not deleted:
         raise click.ClickException(f"Failed to delete runner on {resolved_platform}.")
     _emit_result(
@@ -4522,7 +4546,13 @@ def runner_invoke(
     # by querying the runner status.  The raw parameters file is forwarded as-is.
     runner_job_id = str(parameters.pop("runner_job_id", "")).strip() or None
     if not runner_job_id:
-        status = api_client.get_runner_status(resolved_platform)
+        try:
+            status = api_client.get_runner_status(resolved_platform)
+        except AttributeError:
+            raise click.ClickException(
+                f"Runner management is not yet supported on {resolved_platform}. "
+                "Upgrade spark-kindling-sdk when platform support is available."
+            )
         runner_job_id = str(status.get("runner_id", "")).strip() or None
     if not runner_job_id:
         raise click.ClickException(
