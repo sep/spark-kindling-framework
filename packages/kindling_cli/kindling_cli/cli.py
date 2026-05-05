@@ -3238,13 +3238,20 @@ def test_{pipe_name}_pipeline():
     "--source-pattern",
     "source_pattern",
     default=None,
-    help="Glob pattern for source files, e.g. 'data/raw/*.csv'",
+    help=(
+        "Regex pattern for matching filenames. Named groups become DataFrame columns. "
+        r"e.g. r'sales_(?P<report_date>\d{4}-\d{2}-\d{2})\.csv'"
+    ),
 )
 @click.option(
     "--filename-metadata",
     "filename_metadata",
     default=None,
-    help="Field name to extract from the filename, e.g. 'report_date'",
+    help=(
+        "Field name to extract from the filename via a named capture group. "
+        "Ignored when --source-pattern is provided. "
+        "e.g. 'report_date' generates (?P<report_date>...) in the default pattern."
+    ),
 )
 @click.option(
     "--app",
@@ -3265,6 +3272,12 @@ def app_add_ingestion(
     ENTITY_ID   Dot-separated namespace and name, e.g. bronze.sales_report
 
     \b
+    The --source-pattern is a Python regex matched against the filename (not
+    the full ABFSS path). Named groups in the regex are automatically extracted
+    as columns by the framework — no manual regexp_extract needed.
+    The base storage path is provided at runtime via process_path() or kindling.yaml.
+
+    \b
     Creates:
       <path>/<namespace>/<name>_ingestion.py      — FileIngestionEntries skeleton
       <path>/entities.py                          — entity definition with CSV provider
@@ -3275,46 +3288,45 @@ def app_add_ingestion(
     \b
     Examples:
       kindling app add ingestion bronze.sales_report \\
-          --source-pattern "data/raw/*.csv" \\
+          --source-pattern r"sales_(?P<report_date>\\d{4}-\\d{2}-\\d{2})\\.csv" \\
+          --app src/my_app
+
+      kindling app add ingestion bronze.sales_report \\
           --filename-metadata report_date \\
           --app src/my_app
     """
     namespace, name = _parse_entity_id(entity_id)
     resolved = app_path.expanduser().resolve()
     schema_var = f"{namespace}_{name}_schema"
-    pattern = source_pattern or f"data/raw/{namespace}/{name}/*.csv"
 
-    # --- ingestion pipe module ---
-    metadata_lines = ""
-    if filename_metadata:
-        metadata_lines = f"""
-    # Extract {filename_metadata!r} from the filename
-    # e.g. filename "2024-01-01_report.csv" -> {filename_metadata} = "2024-01-01"
-    # Adapt the regex pattern below to match your actual filename convention.
-    # from pyspark.sql.functions import regexp_extract, input_file_name
-    # df = df.withColumn(
-    #     "{filename_metadata}",
-    #     regexp_extract(input_file_name(), r'(\\d{{4}}-\\d{{2}}-\\d{{2}})', 1),
-    # )
-"""
+    if source_pattern:
+        pattern = source_pattern
+    elif filename_metadata:
+        pattern = rf"{name}_(?P<{filename_metadata}>\d{{4}}-\d{{2}}-\d{{2}})\.csv"
+    else:
+        pattern = rf"{name}\.csv"
 
-    ingestion_content = f"""\"\"\"File ingestion pipe for {entity_id}.\"\"\"
+    ingestion_content = f"""\"\"\"File ingestion pipe for {entity_id}.
+
+Filename pattern: {pattern!r}
+Named groups in the pattern are automatically extracted as DataFrame columns.
+The base storage path is passed to process_path() at runtime (or via kindling.yaml).
+\"\"\"
 from kindling.file_ingestion import FileIngestionEntries
 
 
 FileIngestionEntries.entry(
     entry_id="{entity_id}",
     name="{namespace}_{name}_ingestion",
-    patterns=["{pattern}"],
+    patterns=[r"{pattern}"],
     dest_entity_id="{entity_id}",
     tags={{
         "provider_type": "csv",
         "layer": "{namespace}",
     }},
-    infer_schema=True,
+    infer_schema=False,
     filetype="csv",
 )
-{metadata_lines}
 """
 
     ingestion_file = resolved / namespace / f"{name}_ingestion.py"
@@ -3371,7 +3383,7 @@ import pytest
 
 @pytest.mark.skip(reason="scaffolded — implement transform assertions")
 def test_{name}_ingestion_filename_pattern():
-    \"\"\"Verify source glob pattern matches expected filenames.\"\"\"
+    \"\"\"Verify source regex pattern matches expected filenames.\"\"\"
     ...{metadata_test_comment}
 
 @pytest.mark.skip(reason="scaffolded — implement transform assertions")
