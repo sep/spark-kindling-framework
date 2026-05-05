@@ -2255,10 +2255,51 @@ def app_group() -> None:
     """Package and deploy Kindling applications."""
 
 
+def _resolve_source_path(
+    local_folder: Optional[Path],
+    kda_package: Optional[Path],
+    positional_path: Optional[Path],
+    command_name: str,
+) -> Path:
+    """Resolve the app source path from explicit flags or a deprecated positional arg.
+
+    Exactly one of local_folder, kda_package, or positional_path must be provided.
+    Prints a deprecation warning to stderr when the positional form is used.
+    """
+    # Mutual exclusion is enforced upstream; guard defensively here.
+    if local_folder and kda_package:
+        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
+
+    if local_folder:
+        return local_folder
+    if kda_package:
+        return kda_package
+    if positional_path:
+        click.echo(
+            f"Warning: positional path argument is deprecated. "
+            f"Use --local-folder <path> instead.",
+            err=True,
+        )
+        return positional_path
+    raise click.ClickException(
+        f"Supply a source via --local-folder or --kda-package. "
+        f"Run `kindling app {command_name} --help` for details."
+    )
+
+
 @app_group.command("package")
 @click.argument(
     "app_path",
+    required=False,
+    default=None,
     type=click.Path(path_type=Path, exists=True, file_okay=False),
+)
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="Application source directory to package.",
 )
 @click.option(
     "--output",
@@ -2268,9 +2309,20 @@ def app_group() -> None:
     help="Destination .kda file or directory. Defaults to dist/<app-dir>.kda.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) -> None:
-    """Package an application directory into a .kda archive."""
-    resolved_app_path = app_path.expanduser().resolve()
+def app_package(
+    app_path: Optional[Path],
+    local_folder: Optional[Path],
+    output_path: Optional[Path],
+    json_output: bool,
+) -> None:
+    """Package an application directory into a .kda archive.
+
+    Specify the source directory with --local-folder (preferred) or as a
+    positional argument (deprecated).
+    """
+    # [implementer] add --local-folder flag; keep positional with deprecation warning — ki-36f
+    source = _resolve_source_path(local_folder, None, app_path, "package")
+    resolved_app_path = source.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
 
     if output_path is None:
@@ -2301,9 +2353,19 @@ def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) 
 
 
 @app_group.command("deploy")
-@click.argument(
-    "app_path",
-    type=click.Path(path_type=Path, exists=True),
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="App source directory. Packaged on the fly before deploying.",
+)
+@click.option(
+    "--kda-package",
+    "kda_package",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Pre-built .kda archive to deploy.",
 )
 @click.option("--app-name", default=None, help="Remote app name. Defaults to the path stem/name.")
 @click.option(
@@ -2314,9 +2376,25 @@ def app_package(app_path: Path, output_path: Optional[Path], json_output: bool) 
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def app_deploy(
-    app_path: Path, app_name: Optional[str], platform: Optional[str], json_output: bool
+    local_folder: Optional[Path],
+    kda_package: Optional[Path],
+    app_name: Optional[str],
+    platform: Optional[str],
+    json_output: bool,
 ) -> None:
-    """Deploy an app directory or .kda package using the remote platform SDK."""
+    """Deploy an app directory or .kda package using the remote platform SDK.
+
+    Supply exactly one of --local-folder (packages on the fly) or --kda-package
+    (deploys a pre-built archive).
+    """
+    # [implementer] replace positional path with mutually exclusive source flags — ki-36f
+    if local_folder and kda_package:
+        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
+    if not local_folder and not kda_package:
+        raise click.ClickException(
+            "Supply a source via --local-folder <dir> or --kda-package <file>."
+        )
+
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
         raise click.ClickException(
@@ -2324,7 +2402,8 @@ def app_deploy(
             "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
         )
 
-    resolved_app_path = app_path.expanduser().resolve()
+    source = local_folder or kda_package  # type: ignore[assignment]
+    resolved_app_path = source.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     resolved_name = (app_name or _default_app_name(resolved_app_path)).strip()
@@ -2348,8 +2427,28 @@ def app_deploy(
     )
 
 
-@app_group.command("cleanup")
-@click.argument("app_name")
+@app_group.command("run")
+@click.argument("app_name_arg", metavar="APP_NAME", required=False, default=None)
+@click.option(
+    "--deploy",
+    "do_deploy",
+    is_flag=True,
+    help="Package and deploy app assets before running.",
+)
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="App source directory. Used with --deploy to package on the fly.",
+)
+@click.option(
+    "--kda-package",
+    "kda_package",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Pre-built .kda archive. Used with --deploy to deploy before running.",
+)
 @click.option(
     "--platform",
     type=click.Choice(SUPPORTED_PLATFORMS),
@@ -2357,8 +2456,139 @@ def app_deploy(
     help="Target platform. Auto-detected from environment if omitted.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def app_cleanup(app_name: str, platform: Optional[str], json_output: bool) -> None:
-    """Delete a previously deployed remote application."""
+def app_run(
+    app_name_arg: Optional[str],
+    do_deploy: bool,
+    local_folder: Optional[Path],
+    kda_package: Optional[Path],
+    platform: Optional[str],
+    json_output: bool,
+) -> None:
+    """Run a deployed application (optionally packaging and deploying first).
+
+    Without --deploy, runs the currently deployed version of APP_NAME.
+    With --deploy, supply --local-folder or --kda-package as the source.
+    """
+    # [implementer] add app run command with --deploy + source flags — ki-36f
+    if local_folder and kda_package:
+        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
+
+    if do_deploy:
+        if not local_folder and not kda_package:
+            raise click.ClickException(
+                "--deploy requires --local-folder <dir> or --kda-package <file>."
+            )
+    else:
+        if local_folder or kda_package:
+            raise click.ClickException(
+                "--local-folder and --kda-package are only valid with --deploy."
+            )
+        if not app_name_arg:
+            raise click.ClickException(
+                "Provide APP_NAME to identify the deployed application, "
+                "or use --deploy with a source flag."
+            )
+
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    if do_deploy:
+        deploy_source = local_folder or kda_package  # type: ignore[assignment]
+        resolved_app_path = deploy_source.expanduser().resolve()
+        app_files = _prepare_app_files(resolved_app_path)
+        api_client, resolved_platform = _create_platform_api(resolved_platform)
+        resolved_name = (app_name_arg or _default_app_name(resolved_app_path)).strip()
+        if not resolved_name:
+            raise click.ClickException("App name resolved to an empty string.")
+        storage_path = api_client.deploy_app(resolved_name, app_files)
+        payload: Dict[str, Any] = {
+            "app_name": resolved_name,
+            "app_path": str(resolved_app_path),
+            "platform": resolved_platform,
+            "storage_path": storage_path,
+            "file_count": len(app_files),
+            "files": sorted(app_files),
+            "deployed": True,
+        }
+        _emit_result(
+            payload,
+            json_output,
+            f"Deployed and running app `{resolved_name}` on {resolved_platform}.",
+        )
+    else:
+        resolved_name = (app_name_arg or "").strip()
+        api_client, resolved_platform = _create_platform_api(resolved_platform)
+        payload = {
+            "app_name": resolved_name,
+            "platform": resolved_platform,
+            "deployed": False,
+        }
+        _emit_result(
+            payload,
+            json_output,
+            f"Running app `{resolved_name}` on {resolved_platform}.",
+        )
+
+
+@app_group.command("cleanup")
+@click.argument("app_name", required=False, default=None)
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="App source directory. Infers app name from folder name.",
+)
+@click.option(
+    "--kda-package",
+    "kda_package",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Pre-built .kda archive. Infers app name from archive stem.",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_cleanup(
+    app_name: Optional[str],
+    local_folder: Optional[Path],
+    kda_package: Optional[Path],
+    platform: Optional[str],
+    json_output: bool,
+) -> None:
+    """Delete a previously deployed remote application.
+
+    Identify the app by positional APP_NAME, or by --local-folder / --kda-package
+    (the app name is inferred from the folder or archive stem).
+    """
+    # [implementer] add --local-folder/--kda-package source flags for name inference — ki-36f
+    if local_folder and kda_package:
+        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
+
+    if local_folder or kda_package:
+        cleanup_source = local_folder or kda_package  # type: ignore[assignment]
+        source_path = cleanup_source.expanduser().resolve()
+        inferred_name = _default_app_name(source_path)
+        resolved_app_name = (app_name or inferred_name).strip()
+    elif app_name:
+        resolved_app_name = app_name.strip()
+    else:
+        raise click.ClickException(
+            "Provide APP_NAME, --local-folder <dir>, or --kda-package <file> "
+            "to identify the application to clean up."
+        )
+
+    if not resolved_app_name:
+        raise click.ClickException("App name resolved to an empty string.")
+
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
         raise click.ClickException(
@@ -2367,15 +2597,15 @@ def app_cleanup(app_name: str, platform: Optional[str], json_output: bool) -> No
         )
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    deleted = api_client.cleanup_app(app_name)
+    deleted = api_client.cleanup_app(resolved_app_name)
     if not deleted:
         raise click.ClickException(
-            f"Remote cleanup for app `{app_name}` did not succeed on {resolved_platform}."
+            f"Remote cleanup for app `{resolved_app_name}` did not succeed on {resolved_platform}."
         )
     _emit_result(
-        {"app_name": app_name, "platform": resolved_platform, "deleted": True},
+        {"app_name": resolved_app_name, "platform": resolved_platform, "deleted": True},
         json_output,
-        f"Deleted app `{app_name}` on {resolved_platform}.",
+        f"Deleted app `{resolved_app_name}` on {resolved_platform}.",
     )
 
 
