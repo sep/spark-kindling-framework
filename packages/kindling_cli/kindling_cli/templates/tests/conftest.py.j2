@@ -39,6 +39,58 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "requires_azure: skipped when Azure creds are absent")
 {% if integration %}
 
+AZURE_CLOUD_CONFIGS = {
+    "AzurePublicCloud": {
+        "aliases": {"AzurePublicCloud", "AZURE_PUBLIC_CLOUD", "public", "publiccloud"},
+        "authority": "https://login.microsoftonline.com",
+        "storage_suffix": "core.windows.net",
+        "storage_scope": "https://storage.azure.com/.default",
+    },
+    "AzureUSGovernment": {
+        "aliases": {"AzureUSGovernment", "AZURE_US_GOVERNMENT", "government", "gov", "usgov"},
+        "authority": "https://login.microsoftonline.us",
+        "storage_suffix": "core.usgovcloudapi.net",
+        "storage_scope": "https://storage.usgovcloudapi.net/.default",
+    },
+    "AzureChinaCloud": {
+        "aliases": {"AzureChinaCloud", "AZURE_CHINA_CLOUD", "china"},
+        "authority": "https://login.chinacloudapi.cn",
+        "storage_suffix": "core.chinacloudapi.cn",
+        "storage_scope": "https://storage.chinacloudapi.cn/.default",
+    },
+}
+
+
+def _azure_env(name: str, default: str) -> str:
+    return os.getenv(name, default).strip().rstrip("/")
+
+
+def _azure_cloud_config() -> dict:
+    value = os.getenv("AZURE_CLOUD") or "AzurePublicCloud"
+    folded = value.replace("-", "").replace("_", "").lower()
+    for name, config in AZURE_CLOUD_CONFIGS.items():
+        aliases = {name, *config["aliases"]}
+        if any(alias.replace("-", "").replace("_", "").lower() == folded for alias in aliases):
+            return config
+    return AZURE_CLOUD_CONFIGS["AzurePublicCloud"]
+
+
+def _storage_dfs_endpoint(account: str) -> str:
+    suffix = _azure_env(
+        "AZURE_STORAGE_DFS_ENDPOINT_SUFFIX",
+        f"dfs.{_azure_cloud_config()['storage_suffix']}",
+    ).lstrip(".")
+    return f"{account}.{suffix}"
+
+
+def _storage_token_scope() -> str:
+    return _azure_env("AZURE_STORAGE_TOKEN_SCOPE", _azure_cloud_config()["storage_scope"])
+
+
+def _login_endpoint(tenant: str) -> str:
+    authority = _azure_env("AZURE_AUTHORITY_HOST", _azure_cloud_config()["authority"])
+    return f"{authority}/{tenant}/oauth2/token"
+
 def pytest_collection_modifyitems(config, items):
     for item in items:
         if "requires_azure" in item.keywords and not _azure_creds_available():
@@ -114,8 +166,8 @@ def spark_abfss():
     tenant = os.environ["AZURE_TENANT_ID"]
     client_id = os.environ["AZURE_CLIENT_ID"]
     client_secret = os.environ["AZURE_CLIENT_SECRET"]
-    endpoint = f"{account}.dfs.core.windows.net"
-    token_endpoint = f"https://login.microsoftonline.com/{tenant}/oauth2/token"
+    endpoint = _storage_dfs_endpoint(account)
+    token_endpoint = _login_endpoint(tenant)
 
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
@@ -174,7 +226,7 @@ def spark_abfss():
 
     account = os.environ["AZURE_STORAGE_ACCOUNT"]
     key = os.environ["AZURE_STORAGE_KEY"]
-    endpoint = f"{account}.dfs.core.windows.net"
+    endpoint = _storage_dfs_endpoint(account)
 
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
@@ -223,14 +275,14 @@ def spark_abfss():
         pytest.skip("AZURE_STORAGE_ACCOUNT not set")
 
     account = os.environ["AZURE_STORAGE_ACCOUNT"]
-    endpoint = f"{account}.dfs.core.windows.net"
+    endpoint = _storage_dfs_endpoint(account)
 
     from azure.identity import DefaultAzureCredential
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
 
     credential = DefaultAzureCredential()
-    token = credential.get_token("https://storage.azure.com/.default").token
+    token = credential.get_token(_storage_token_scope()).token
 
     jar_dir = "/tmp/hadoop-jars"
     extra_jars = ",".join(

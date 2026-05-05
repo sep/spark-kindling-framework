@@ -9,7 +9,16 @@ from urllib.parse import quote
 
 import requests
 
-from .platform_provider import PlatformAPI, PlatformAPIRegistry, create_azure_credential
+from .platform_provider import (
+    PlatformAPI,
+    PlatformAPIRegistry,
+    azure_abfss_uri,
+    azure_management_endpoint,
+    azure_storage_account_url,
+    azure_synapse_dev_endpoint_suffix,
+    azure_token_scope,
+    create_azure_credential,
+)
 
 # Synapse REST API Client (for remote operations)
 # ============================================================================
@@ -75,7 +84,8 @@ class SynapseAPI(PlatformAPI):
         self.storage_account = storage_account
         self.container = container
         self.base_path = base_path
-        self.base_url = f"https://{workspace_name}.dev.azuresynapse.net"
+        synapse_suffix = azure_synapse_dev_endpoint_suffix()
+        self.base_url = f"https://{workspace_name}.{synapse_suffix.lstrip('.')}"
 
         self.credential = create_azure_credential(credential=credential)
 
@@ -163,7 +173,9 @@ class SynapseAPI(PlatformAPI):
 
         import requests
 
-        token = self.credential.get_token("https://vault.azure.net/.default").token
+        token = self.credential.get_token(
+            azure_token_scope("AZURE_KEYVAULT_TOKEN_SCOPE", "https://vault.azure.net/.default")
+        ).token
         encoded_name = quote(secret_name, safe="")
         url = f"{key_vault_url.rstrip('/')}/secrets/{encoded_name}?api-version=7.4"
         response = requests.put(
@@ -196,7 +208,9 @@ class SynapseAPI(PlatformAPI):
 
         import requests
 
-        token = self.credential.get_token("https://vault.azure.net/.default").token
+        token = self.credential.get_token(
+            azure_token_scope("AZURE_KEYVAULT_TOKEN_SCOPE", "https://vault.azure.net/.default")
+        ).token
         encoded_name = quote(secret_name, safe="")
         url = f"{key_vault_url.rstrip('/')}/secrets/{encoded_name}?api-version=7.4"
         response = requests.delete(
@@ -251,7 +265,7 @@ class SynapseAPI(PlatformAPI):
             return False
 
         try:
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            account_url = azure_storage_account_url(self.storage_account)
             service_client = DataLakeServiceClient(
                 account_url=account_url, credential=self.credential
             )
@@ -287,7 +301,9 @@ class SynapseAPI(PlatformAPI):
             raise ValueError("No credential configured")
 
         # Synapse uses the .default scope
-        token = self.credential.get_token("https://dev.azuresynapse.net/.default")
+        token = self.credential.get_token(
+            azure_token_scope("AZURE_SYNAPSE_TOKEN_SCOPE", "https://dev.azuresynapse.net/.default")
+        )
         return token.token
 
     def _make_request(
@@ -368,10 +384,7 @@ class SynapseAPI(PlatformAPI):
         main_file = self._resolve_default_main_file(job_config)
         if not main_file.startswith("abfss://"):
             if self.storage_account and self.container:
-                main_file = (
-                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
-                    f"/{main_file}"
-                )
+                main_file = azure_abfss_uri(self.container, self.storage_account, main_file)
             else:
                 raise ValueError(
                     "main_file must be an ABFSS path, or storage_account and container "
@@ -382,18 +395,13 @@ class SynapseAPI(PlatformAPI):
         if self.storage_account and self.container:
             artifacts_subpath = self.base_path.strip("/") if self.base_path else ""
             if artifacts_subpath == self.container:
-                artifacts_storage_path = (
-                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/"
-                )
+                artifacts_storage_path = f"{azure_abfss_uri(self.container, self.storage_account)}/"
             elif artifacts_subpath:
-                artifacts_storage_path = (
-                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net"
-                    f"/{artifacts_subpath}"
+                artifacts_storage_path = azure_abfss_uri(
+                    self.container, self.storage_account, artifacts_subpath
                 )
             else:
-                artifacts_storage_path = (
-                    f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/"
-                )
+                artifacts_storage_path = f"{azure_abfss_uri(self.container, self.storage_account)}/"
         else:
             artifacts_storage_path = job_config.get("artifacts_path", "artifacts")
 
@@ -463,7 +471,10 @@ class SynapseAPI(PlatformAPI):
             and self.storage_account
             and self.container
         ):
-            log_uri = f"https://{self.storage_account}.blob.core.windows.net/{self.container}/logs"
+            log_uri = (
+                f"{azure_storage_account_url(self.storage_account, service='blob')}"
+                f"/{self.container}/logs"
+            )
             conf_dict.update(
                 {
                     "spark.synapse.diagnostic.emitters": "AzureStorageEmitter",
@@ -572,7 +583,7 @@ class SynapseAPI(PlatformAPI):
 
         # Initialize storage client if needed
         if not self._storage_client:
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            account_url = azure_storage_account_url(self.storage_account)
             self._storage_client = DataLakeServiceClient(
                 account_url=account_url, credential=self.credential
             )
@@ -606,7 +617,7 @@ class SynapseAPI(PlatformAPI):
                 failed_uploads.append(f"{filename}: {e}")
 
         # Construct ABFSS path
-        abfss_path = f"abfss://{self.container}@{self.storage_account}.dfs.core.windows.net/{full_target_path}"
+        abfss_path = azure_abfss_uri(self.container, self.storage_account, full_target_path)
 
         print(f"📂 Uploaded {uploaded_count}/{len(files)} files to: {abfss_path}")
 
@@ -713,9 +724,15 @@ class SynapseAPI(PlatformAPI):
             try:
                 import requests
 
-                token = self.credential.get_token("https://management.azure.com/.default").token
+                management_endpoint = azure_management_endpoint()
+                token = self.credential.get_token(
+                    azure_token_scope(
+                        "AZURE_MANAGEMENT_TOKEN_SCOPE",
+                        f"{management_endpoint}/.default",
+                    )
+                ).token
                 url = (
-                    "https://management.azure.com/subscriptions/"
+                    f"{management_endpoint}/subscriptions/"
                     f"{subscription_id}/resourceGroups/{resource_group}/providers/"
                     f"Microsoft.Storage/storageAccounts/{account_name}/listKeys"
                     "?api-version=2023-01-01"
@@ -1028,7 +1045,7 @@ class SynapseAPI(PlatformAPI):
 
         # Initialize storage client if needed
         if not self._storage_client:
-            account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+            account_url = azure_storage_account_url(self.storage_account)
             self._storage_client = DataLakeServiceClient(
                 account_url=account_url, credential=self.credential
             )
@@ -1516,7 +1533,7 @@ class SynapseAPI(PlatformAPI):
 
             # Reuse or create storage client
             if not self._storage_client:
-                account_url = f"https://{self.storage_account}.dfs.core.windows.net"
+                account_url = azure_storage_account_url(self.storage_account)
                 self._storage_client = DataLakeServiceClient(
                     account_url=account_url, credential=self.credential
                 )
