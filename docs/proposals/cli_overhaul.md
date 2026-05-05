@@ -69,7 +69,7 @@ The current job-centered command names make those questions harder than necessar
    Normal app and pipeline runs should use the existing Kindling runner job, creating or updating it only when necessary.
 
 4. **Remote run commands should be end-to-end.**
-   A normal run should package/deploy what is needed, start execution, stream logs by default, and report final status.
+   A normal run should use the existing deployed app by default, start execution, stream logs by default, and report final status. Deploying new app assets should be explicit via `--deploy`.
 
 5. **Low-level job commands should stay available for operators.**
    CI, support, and debugging sometimes need raw job controls, but those should not be the primary tutorial path.
@@ -155,16 +155,20 @@ Recommended behavior:
 
 1. Resolve platform.
 2. Ensure the Kindling runner exists.
-3. Package or deploy app assets when needed.
+3. Resolve the already-deployed app by name.
 4. Submit a run to the single runner job with app config.
 5. Stream logs by default.
 6. Return run id, status, and useful artifact paths.
 
+If `--deploy` is passed, `app run` packages/deploys app assets before starting the run. This keeps repeated runs fast while preserving a single-command "deploy then run" workflow when a developer wants it.
+
+If the argument is a local path, `app run` should require `--deploy` or an explicit `--app-name`; otherwise users may think local source changes are being used when the runner is actually executing the last deployed app.
+
 Examples:
 
 ```bash
-kindling app run ./orders --platform synapse
 kindling app run orders --env dev
+kindling app run ./orders --deploy --platform synapse
 kindling app run orders --no-wait
 kindling app run orders --parameters params.yaml
 ```
@@ -214,6 +218,14 @@ kindling app cleanup orders
 
 Pipeline commands should exist if users naturally think in terms of running one pipe or pipeline inside an app.
 
+At the data layer, `kindling pipeline run` and `kindling app run --pipeline` are the same operation. Pipelines declare `input_entity_ids`, and the entity-provider registry supplies the data at runtime. The `--env` flag selects the configured data sources. There is no separate pipeline data model or separate runner path.
+
+For that reason, `pipeline run` should be documented as a scoped shorthand for:
+
+```bash
+kindling app run <app-name> --pipeline <pipeline-id>
+```
+
 #### `kindling pipeline run`
 
 Run a named pipeline through the Kindling runner.
@@ -229,7 +241,7 @@ Recommended behavior:
 
 1. Resolve the app and pipeline id.
 2. Ensure runner exists.
-3. Deploy app/config if requested or required.
+3. Deploy app/config only when `--deploy` is passed or when the run cannot proceed without deployed assets.
 4. Run the single Kindling runner job with `app_name`, `pipeline_id`, environment, and parameters.
 
 #### `kindling pipeline status`
@@ -260,7 +272,7 @@ kindling pipeline cancel <run-id>
 
 ### Runner Commands
 
-Runner commands manage the single durable Kindling remote job definition.
+Runner commands manage the single durable Kindling runner on the remote platform.
 
 #### `kindling runner ensure`
 
@@ -274,7 +286,7 @@ This is the replacement mental model for `job create`.
 
 #### `kindling runner status`
 
-Show runner installation state, platform job id, version, and last known health.
+Show runner installation state, runner id, version, and last known health.
 
 ```bash
 kindling runner status
@@ -298,15 +310,15 @@ kindling runner delete
 
 This should be treated as an admin operation and likely require confirmation or `--yes`.
 
-#### `kindling runner run`
+#### `kindling runner invoke`
 
 Optional advanced/debug command that invokes the runner with a raw parameters file.
 
 ```bash
-kindling runner run --params params.yaml
+kindling runner invoke --params params.yaml
 ```
 
-This is useful for support and CI, but should not be the happy path.
+This is useful for support and CI, but should not be the happy path. `invoke` avoids overloading `run`, which should mean user workload execution.
 
 ---
 
@@ -342,14 +354,16 @@ Compatibility aliases can print guidance:
 
 ## Command Mapping
 
+`kindling run <pipe_id>` is a breaking-change risk because existing users and scripts may rely on it. Phase 1 should keep it as a local shortcut with a deprecation notice pointing to `kindling pipeline run --local`. Removal can wait until Phase 4.
+
 | Current command | Proposed command | Notes |
 | --- | --- | --- |
-| `kindling run <pipe_id>` | `kindling pipeline run <pipe_id> --local` or `kindling local run <pipe_id>` | Avoid top-level `run` ambiguity. |
+| `kindling run <pipe_id>` | `kindling pipeline run <pipe_id> --local` | Keep as a deprecated local shortcut in Phase 1. |
 | `kindling app package` | `kindling app package` | Keep. |
 | `kindling app deploy` | `kindling app deploy` | Keep, clarify deploy-only behavior. |
 | `kindling job submit <app>` | `kindling app run <app>` | Main happy path. |
 | `kindling job create job.yaml` | `kindling runner ensure` | Runner job is infrastructure. |
-| `kindling job run <job-id>` | `kindling runner run --params params.yaml` | Advanced/debug only. |
+| `kindling job run <job-id>` | `kindling runner invoke --params params.yaml` | Advanced/debug only. |
 | `kindling job status <run-id>` | `kindling app status <run-id>` | Alias acceptable. |
 | `kindling job logs <run-id>` | `kindling app logs <run-id>` | Alias acceptable. |
 | `kindling job cancel <run-id>` | `kindling app cancel <run-id>` | Alias acceptable. |
@@ -380,7 +394,7 @@ Recommendation:
   - `state`
   - `succeeded`
   - `storage_path`
-  - `runner_job_id`
+  - `runner_id`
 
 ### Wait and Logs Flags
 
@@ -434,7 +448,9 @@ Add:
 
 Keep existing job commands unchanged.
 
-Internally, `app run` can call the existing `job submit` implementation while names settle.
+Defer `runner repair` and `runner delete` to Phase 3. They are admin/destructive operations and need clearer runner identity and platform cleanup semantics before implementation.
+
+Internally, `app run` can reuse the existing `job submit` implementation while names settle, but it should not always deploy. The Phase 1 behavior should be run-only by default, with `--deploy` opting into package/deploy before execution.
 
 ### Phase 2: Reframe Documentation
 
@@ -443,6 +459,7 @@ Update README and docs so the primary workflow is:
 ```bash
 kindling app deploy ./orders
 kindling app run orders --platform synapse
+kindling app run ./orders --deploy --platform synapse
 kindling app logs <run-id>
 ```
 
@@ -473,18 +490,53 @@ Do not remove commands until downstream CI and docs have migrated.
 
 ## Open Questions
 
-1. Should `pipeline` be a first-class CLI group, or should pipeline execution remain under `app run --pipeline <id>`?
+These questions are triaged by whether Phase 1 needs a decision before implementation.
 
-2. Should `kindling run <pipe_id>` remain as a local-only shortcut, or move to `kindling pipeline run <pipe_id> --local`?
+1. **DEFER:** Should `pipeline` be a first-class CLI group, or should pipeline execution remain under `app run --pipeline <id>`?
 
-3. Should `app run` always deploy first, or should it default to running the currently deployed app and require `--deploy` to upload changes?
+   The data layer is the same either way. Phase 1 can ship `app run --pipeline`, with `pipeline run` added later as a convenience alias.
 
-4. How should the runner determine app/config versions?
+2. **RESOLVED FOR PHASE 1:** Should `kindling run <pipe_id>` remain as a local-only shortcut, or move to `kindling pipeline run <pipe_id> --local`?
+
+   Keep `kindling run <pipe_id>` as a local shortcut in Phase 1 and print a deprecation notice pointing to `kindling pipeline run <pipe_id> --local`. Remove only after downstream users and scripts have migrated.
+
+3. **RESOLVED FOR PHASE 1:** Should `app run` always deploy first, or should it default to running the currently deployed app and require `--deploy` to upload changes?
+
+   `app run` defaults to run-only against the currently deployed app. `--deploy` packages/deploys assets before the run. A local path argument without `--deploy` should fail with a clear message.
+
+4. **DEFER:** How should the runner determine app/config versions?
    Options include latest deployed app path, content hash, explicit `.kda`, or config path parameter.
 
-5. Should the runner be one job per workspace, one per platform, or one per environment within a workspace?
+   For Phase 1, the runner uses the currently deployed app/config. Version pinning can be a Phase 3 concern.
 
-6. Should runner install/update be automatic during `app run`, or should production environments require explicit `runner ensure`?
+5. **RESOLVED FOR PHASE 1:** Should the runner be one job per workspace, one per platform, or one per environment within a workspace?
+
+   Use one runner per platform workspace. Environment is a run/config parameter, not a separate runner. If dev/test/prod use separate workspaces, they naturally get separate runners.
+
+6. **DEFER:** Should runner install/update be automatic during `app run`, or should production environments require explicit `runner ensure`?
+
+   Safe default: auto-ensure in dev/non-prod, require explicit `runner ensure` in prod. This can be a config flag or policy later.
+
+---
+
+## Relationship to `kindling test run`
+
+`kindling app run` and `kindling test run` are related but not interchangeable.
+
+Integration tests bootstrap the full DI container, write fixture DataFrames to entity-provider storage paths, and invoke pipelines through the same execution layer that `app run` uses. The difference is the data source and verification step:
+
+| | `kindling app run` | `kindling test run` |
+| --- | --- | --- |
+| Data source | Live entity providers configured for `--env` | Fixture DataFrames written by test setup |
+| Verification | None; validates side effects operationally | Assertions in test code |
+| Purpose | Production or batch execution | Correctness verification |
+
+Recommended user guidance:
+
+1. Use `kindling test run` first for controlled data and assertions.
+2. Use `kindling app run` after tests pass to execute against configured live data sources.
+
+This prevents users from treating `app run --env dev` as a substitute for tests.
 
 ---
 
@@ -493,9 +545,12 @@ Do not remove commands until downstream CI and docs have migrated.
 For the first overhaul pass:
 
 1. Add `kindling app run` as the primary remote execution command.
-2. Make `app run` call the existing package/deploy/create/run flow.
-3. Add `kindling runner ensure` as the explicit infrastructure command.
-4. Leave `job` commands in place as compatibility/advanced commands.
-5. Update docs to stop presenting jobs as the normal unit of work.
+2. Make `app run` run the currently deployed app by default.
+3. Add `--deploy` to `app run` for explicit package/deploy/run behavior.
+4. Add `kindling runner ensure` as the explicit infrastructure command.
+5. Add `kindling app run --pipeline <pipeline-id>` before deciding whether `pipeline` needs a first-class group.
+6. Keep `kindling run <pipe_id>` as a deprecated local shortcut during Phase 1.
+7. Leave `job` commands in place as compatibility/advanced commands.
+8. Update docs to stop presenting jobs as the normal unit of work.
 
 This gives users the right mental model quickly without forcing a large SDK rewrite in the same change.
