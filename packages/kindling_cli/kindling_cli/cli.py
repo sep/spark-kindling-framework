@@ -4255,6 +4255,305 @@ def job_delete(job_id: str, platform: Optional[str], json_output: bool) -> None:
     )
 
 
+# [implementer] runner command group for durable runner lifecycle — ki-sag
+_PLATFORM_NOT_FOUND_MSG = (
+    "Unable to determine platform. Set --platform or one of "
+    "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+)
+
+
+@cli.group("runner")
+def runner_group() -> None:
+    """Manage the single durable Kindling runner job for this workspace.
+
+    The Kindling runner is infrastructure — one durable job per workspace that
+    executes apps and pipelines submitted via ``kindling app run`` and
+    ``kindling pipeline run``.  These commands let you install, inspect, repair,
+    and remove that runner job.
+
+    Most users only need ``runner ensure`` (install/update) and
+    ``runner status`` (health check).  The other subcommands are admin or
+    debug operations.
+    """
+
+
+@runner_group.command("ensure")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_ensure(platform: Optional[str], json_output: bool) -> None:
+    """Create or update the runner job definition if missing or stale.
+
+    This is the recommended way to install the Kindling runner.  It is
+    idempotent: if a healthy runner already exists it is left unchanged; if the
+    existing definition is stale it is updated in-place.
+
+    Examples::
+
+        kindling runner ensure --platform fabric
+        kindling runner ensure --platform synapse
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    missing = _missing_platform_vars(resolved_platform)
+    if missing:
+        raise click.ClickException(
+            f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
+            f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
+        )
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    result = api_client.ensure_runner(resolved_platform)
+    _emit_result(
+        {"platform": resolved_platform, **result},
+        json_output,
+        f"Runner ensured on {resolved_platform} (id={result.get('runner_id', 'unknown')}).",
+    )
+
+
+@runner_group.command("status")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Show full runner configuration in addition to the summary.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_status(platform: Optional[str], verbose: bool, json_output: bool) -> None:
+    """Show runner installation state, platform job ID, version, and health.
+
+    Without ``--verbose`` a concise one-line summary is printed.  With
+    ``--verbose`` the full runner configuration is included.
+
+    Examples::
+
+        kindling runner status
+        kindling runner status --verbose
+        kindling runner status --platform databricks --json
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    result = api_client.get_runner_status(resolved_platform)
+
+    if not json_output and not verbose:
+        runner_id = result.get("runner_id", "unknown")
+        state = result.get("state", "unknown")
+        version = result.get("version", "unknown")
+        click.echo(
+            f"Runner {runner_id}  state={state}  version={version}  platform={resolved_platform}"
+        )
+        return
+
+    if json_output:
+        payload = {"platform": resolved_platform, **result}
+        if not verbose:
+            payload.pop("config", None)
+        _emit_json(payload)
+    else:
+        # verbose human-readable
+        _emit_json({"platform": resolved_platform, **result})
+
+
+@runner_group.command("repair")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_repair(platform: Optional[str], json_output: bool) -> None:
+    """Recreate or update the runner job and its bootstrap/config references.
+
+    Use this command after credential or configuration changes to ensure the
+    runner picks up the updated settings.  The command updates the job
+    definition and refreshes any supporting references (bootstrap notebooks,
+    linked services, config paths) without requiring a full delete-and-reinstall.
+
+    Examples::
+
+        kindling runner repair
+        kindling runner repair --platform synapse
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    missing = _missing_platform_vars(resolved_platform)
+    if missing:
+        raise click.ClickException(
+            f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
+            f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
+        )
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    result = api_client.repair_runner(resolved_platform)
+    _emit_result(
+        {"platform": resolved_platform, **result},
+        json_output,
+        f"Runner repaired on {resolved_platform} (id={result.get('runner_id', 'unknown')}).",
+    )
+
+
+@runner_group.command("delete")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip interactive confirmation prompt (for use in scripts).",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_delete(platform: Optional[str], yes: bool, json_output: bool) -> None:
+    """Delete the runner job definition from the platform workspace.
+
+    This is an admin operation.  Deleting the runner prevents ``kindling app run``
+    and ``kindling pipeline run`` from submitting new work until the runner is
+    reinstalled with ``kindling runner ensure``.
+
+    You will be prompted for confirmation unless ``--yes`` is supplied.
+
+    Examples::
+
+        kindling runner delete --platform fabric --yes
+        kindling runner delete  # prompts for confirmation
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    if not yes:
+        confirmed = click.confirm(
+            f"Delete the Kindling runner on {resolved_platform}? "
+            "This will prevent app and pipeline runs until the runner is reinstalled.",
+            default=False,
+        )
+        if not confirmed:
+            click.echo("Aborted.")
+            return
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    deleted = api_client.delete_runner(resolved_platform)
+    if not deleted:
+        raise click.ClickException(f"Failed to delete runner on {resolved_platform}.")
+    _emit_result(
+        {"platform": resolved_platform, "deleted": True},
+        json_output,
+        f"Deleted runner on {resolved_platform}.",
+    )
+
+
+@runner_group.command("invoke")
+@click.option(
+    "--params",
+    "params_path",
+    required=True,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="YAML or JSON file containing raw runner invocation parameters.",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform.  Auto-detected from environment if omitted.",
+)
+@click.option("--wait", "wait_for_completion", is_flag=True, help="Poll until the run completes.")
+@click.option("--poll-interval", default=10.0, show_default=True, type=float)
+@click.option("--timeout", default=3600.0, show_default=True, type=float)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def runner_invoke(
+    params_path: Path,
+    platform: Optional[str],
+    wait_for_completion: bool,
+    poll_interval: float,
+    timeout: float,
+    json_output: bool,
+) -> None:
+    """Invoke the runner with a raw parameters YAML file (advanced/debug).
+
+    This command is intended for infrastructure debugging and advanced
+    automation.  Normal app and pipeline execution should use
+    ``kindling app run`` or ``kindling pipeline run`` instead.
+
+    The parameters file is passed directly to the platform job run API without
+    interpretation.  See your platform documentation for the expected schema.
+
+    Note: this command is named ``invoke`` (not ``run``) to avoid collision with
+    user-workload ``run`` commands such as ``kindling app run``.
+
+    Examples::
+
+        kindling runner invoke --params params.yaml
+        kindling runner invoke --params params.yaml --wait --platform fabric
+    """
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    if wait_for_completion:
+        if poll_interval <= 0:
+            raise click.ClickException("--poll-interval must be greater than 0.")
+        if timeout <= 0:
+            raise click.ClickException("--timeout must be greater than 0.")
+
+    parameters = _load_mapping_file(params_path, "runner parameters")
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+
+    # Delegate to run_job using the runner's job ID resolved from parameters or
+    # by querying the runner status.  The raw parameters file is forwarded as-is.
+    runner_job_id = str(parameters.pop("runner_job_id", "")).strip() or None
+    if not runner_job_id:
+        status = api_client.get_runner_status(resolved_platform)
+        runner_job_id = str(status.get("runner_id", "")).strip() or None
+    if not runner_job_id:
+        raise click.ClickException(
+            "Could not determine runner job ID. "
+            "Ensure the runner is installed (`kindling runner ensure`) or "
+            "include `runner_job_id` in your parameters file."
+        )
+
+    run_id = api_client.run_job(runner_job_id, parameters=parameters or None)
+    payload: Dict[str, Any] = {
+        "runner_job_id": runner_job_id,
+        "run_id": run_id,
+        "platform": resolved_platform,
+        "waited": wait_for_completion,
+    }
+
+    if wait_for_completion:
+        run_status = _wait_for_job_run(api_client, run_id, poll_interval, timeout)
+        state = _status_value(run_status)
+        payload["status"] = run_status
+        payload["state"] = state
+        payload["succeeded"] = state in _SUCCESS_JOB_STATES
+        if state not in _SUCCESS_JOB_STATES:
+            if json_output:
+                _emit_json(payload)
+                raise click.exceptions.Exit(1)
+            raise click.ClickException(f"Runner invocation `{run_id}` finished with state {state}.")
+
+    _emit_result(payload, json_output, run_id)
+
+
 @cli.group("test")
 def test_group() -> None:
     """Run Kindling project test suites."""

@@ -1817,3 +1817,232 @@ def test_run_missing_pipe_gives_actionable_message(monkeypatch, tmp_path):
     assert "bronze_to_silver" in result.output
     assert "silver_to_gold" in result.output
     assert "kindling validate" in result.output
+
+
+# ---------------------------------------------------------------------------
+# runner command group — ki-sag
+# ---------------------------------------------------------------------------
+
+
+class _FakeRunnerAPI:
+    """Minimal fake platform API for runner tests."""
+
+    def ensure_runner(self, platform):
+        return {"runner_id": "runner-001", "state": "HEALTHY", "version": "1.2.3"}
+
+    def get_runner_status(self, platform):
+        return {"runner_id": "runner-001", "state": "HEALTHY", "version": "1.2.3"}
+
+    def repair_runner(self, platform):
+        return {"runner_id": "runner-001", "state": "HEALTHY", "version": "1.2.3"}
+
+    def delete_runner(self, platform):
+        return True
+
+    def run_job(self, job_id, parameters=None):
+        return "run-999"
+
+
+def test_runner_help_lists_all_subcommands():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "--help"])
+    assert result.exit_code == 0, result.output
+    for sub in ("ensure", "status", "repair", "delete", "invoke"):
+        assert sub in result.output
+
+
+def test_runner_ensure_succeeds(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws-test")
+    monkeypatch.setenv("SYNAPSE_DEV_ENDPOINT", "https://dev.endpoint")
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure", "--platform", "synapse"])
+    assert result.exit_code == 0, result.output
+    assert "runner-001" in result.output
+
+
+def test_runner_ensure_json_output(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws-test")
+    monkeypatch.setenv("SYNAPSE_DEV_ENDPOINT", "https://dev.endpoint")
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure", "--platform", "synapse", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["runner_id"] == "runner-001"
+    assert payload["platform"] == "synapse"
+
+
+def test_runner_ensure_requires_platform_or_env():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure"])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
+
+
+def test_runner_ensure_fails_when_platform_vars_missing(monkeypatch):
+    # DATABRICKS_HOST set but TOKEN absent
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure", "--platform", "databricks"])
+    assert result.exit_code != 0
+    assert "Missing required environment variables" in result.output
+
+
+def test_runner_status_summary(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "status", "--platform", "synapse"])
+    assert result.exit_code == 0, result.output
+    assert "runner-001" in result.output
+    assert "HEALTHY" in result.output
+
+
+def test_runner_status_verbose(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "status", "--platform", "synapse", "--verbose"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["runner_id"] == "runner-001"
+
+
+def test_runner_status_json(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "status", "--platform", "fabric", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["runner_id"] == "runner-001"
+    assert payload["platform"] == "fabric"
+
+
+def test_runner_status_requires_platform_or_env():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "status"])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
+
+
+def test_runner_repair_succeeds(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws-test")
+    monkeypatch.setenv("SYNAPSE_DEV_ENDPOINT", "https://dev.endpoint")
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "repair", "--platform", "synapse"])
+    assert result.exit_code == 0, result.output
+    assert "runner-001" in result.output
+
+
+def test_runner_repair_requires_platform_or_env():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "repair"])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
+
+
+def test_runner_delete_prompts_when_yes_not_supplied(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    # Supply 'n' to the confirmation prompt
+    result = runner.invoke(cli, ["runner", "delete", "--platform", "fabric"], input="n\n")
+    assert result.exit_code == 0, result.output
+    assert "Aborted" in result.output
+
+
+def test_runner_delete_skips_prompt_with_yes_flag(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "delete", "--platform", "fabric", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+
+
+def test_runner_delete_confirms_and_proceeds(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    # Supply 'y' to the confirmation prompt
+    result = runner.invoke(cli, ["runner", "delete", "--platform", "fabric"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+
+
+def test_runner_delete_json_output(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "delete", "--platform", "synapse", "--yes", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["deleted"] is True
+    assert payload["platform"] == "synapse"
+
+
+def test_runner_delete_requires_platform_or_env():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "delete", "--yes"])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
+
+
+def test_runner_invoke_runs_job(monkeypatch, tmp_path):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text("runner_job_id: runner-001\napp_name: my-app\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["runner", "invoke", "--params", str(params_file), "--platform", "synapse", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["run_id"] == "run-999"
+    assert payload["runner_job_id"] == "runner-001"
+
+
+def test_runner_invoke_looks_up_runner_id_when_missing_from_params(monkeypatch, tmp_path):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text("app_name: my-app\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["runner", "invoke", "--params", str(params_file), "--platform", "fabric", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["run_id"] == "run-999"
+    # runner_job_id resolved from status
+    assert payload["runner_job_id"] == "runner-001"
+
+
+def test_runner_invoke_rejects_non_positive_poll_interval(monkeypatch, tmp_path):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text("runner_job_id: runner-001\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "runner",
+            "invoke",
+            "--params",
+            str(params_file),
+            "--platform",
+            "synapse",
+            "--wait",
+            "--poll-interval",
+            "0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "poll-interval" in result.output.lower()
+
+
+def test_runner_invoke_requires_platform_or_env(tmp_path):
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text("runner_job_id: runner-001\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "invoke", "--params", str(params_file)])
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
