@@ -475,13 +475,26 @@ def test_app_package_creates_kda_archive():
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
         (app_dir / "nested" / "settings.yaml").write_text("name: demo\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["app", "package", str(app_dir)])
+        result = runner.invoke(cli, ["app", "package", "--local-folder", str(app_dir)])
 
         assert result.exit_code == 0, result.output
         package_path = Path("dist/demo_app.kda")
         assert package_path.exists()
         with zipfile.ZipFile(package_path, "r") as archive:
             assert sorted(archive.namelist()) == ["app.py", "nested/settings.yaml"]
+
+
+def test_app_package_positional_arg_shows_deprecation_warning():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["app", "package", str(app_dir)], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert "deprecated" in result.output
 
 
 def test_app_package_json_output_is_machine_readable():
@@ -491,7 +504,7 @@ def test_app_package_json_output_is_machine_readable():
         app_dir.mkdir()
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["app", "package", str(app_dir), "--json"])
+        result = runner.invoke(cli, ["app", "package", "--local-folder", str(app_dir), "--json"])
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -507,10 +520,52 @@ def test_app_deploy_rejects_unsafe_kda_paths():
         with zipfile.ZipFile(package_path, "w") as archive:
             archive.writestr("../escape.py", "print('nope')\n")
 
-        result = runner.invoke(cli, ["app", "deploy", str(package_path), "--platform", "fabric"])
+        result = runner.invoke(
+            cli,
+            ["app", "deploy", "--kda-package", str(package_path), "--platform", "fabric"],
+        )
 
         assert result.exit_code != 0
         assert "unsafe relative path traversal" in result.output
+
+
+def test_app_deploy_rejects_both_source_flags(monkeypatch):
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (object(), platform),
+    )
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("", encoding="utf-8")
+        kda = Path("demo_app.kda")
+        with zipfile.ZipFile(kda, "w") as archive:
+            archive.writestr("app.py", "")
+
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "deploy",
+                "--local-folder",
+                str(app_dir),
+                "--kda-package",
+                str(kda),
+                "--platform",
+                "fabric",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+
+def test_app_deploy_requires_source_flag():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "deploy", "--platform", "fabric"])
+    assert result.exit_code != 0
+    assert "--local-folder" in result.output or "source" in result.output
 
 
 def test_app_deploy_uses_platform_sdk(monkeypatch):
@@ -535,11 +590,37 @@ def test_app_deploy_uses_platform_sdk(monkeypatch):
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
         (app_dir / "pipelines" / "job.yml").write_text("job_name: demo\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["app", "deploy", str(app_dir), "--platform", "fabric"])
+        result = runner.invoke(
+            cli, ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric"]
+        )
 
         assert result.exit_code == 0, result.output
         assert fake_api.calls[0][0] == "demo_app"
         assert sorted(fake_api.calls[0][1]) == ["app.py", "pipelines/job.yml"]
+        assert "Deployed app `demo_app`" in result.output
+
+
+def test_app_deploy_kda_package_flag(monkeypatch):
+    class FakeAPI:
+        def deploy_app(self, app_name, app_files):
+            return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/demo"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        kda = Path("demo_app.kda")
+        with zipfile.ZipFile(kda, "w") as archive:
+            archive.writestr("app.py", "print('hello')\n")
+
+        result = runner.invoke(
+            cli, ["app", "deploy", "--kda-package", str(kda), "--platform", "fabric"]
+        )
+
+        assert result.exit_code == 0, result.output
         assert "Deployed app `demo_app`" in result.output
 
 
@@ -560,7 +641,8 @@ def test_app_deploy_json_output_includes_storage_path(monkeypatch):
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
 
         result = runner.invoke(
-            cli, ["app", "deploy", str(app_dir), "--platform", "fabric", "--json"]
+            cli,
+            ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric", "--json"],
         )
 
         assert result.exit_code == 0, result.output
@@ -568,6 +650,187 @@ def test_app_deploy_json_output_includes_storage_path(monkeypatch):
         assert payload["app_name"] == "demo_app"
         assert payload["platform"] == "fabric"
         assert payload["storage_path"].startswith("abfss://")
+
+
+def test_app_run_without_deploy_requires_app_name(monkeypatch):
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (object(), platform),
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "run", "--platform", "fabric"])
+    assert result.exit_code != 0
+    assert "APP_NAME" in result.output or "deployed" in result.output
+
+
+def test_app_run_without_deploy_succeeds_with_app_name(monkeypatch):
+    class FakeAPI:
+        pass
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "run", "orders", "--platform", "fabric"])
+    assert result.exit_code == 0, result.output
+    assert "orders" in result.output
+
+
+def test_app_run_with_deploy_and_local_folder(monkeypatch):
+    class FakeAPI:
+        def deploy_app(self, app_name, app_files):
+            return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/orders"
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("orders")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("", encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "run",
+                "orders",
+                "--deploy",
+                "--local-folder",
+                str(app_dir),
+                "--platform",
+                "fabric",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "orders" in result.output
+
+
+def test_app_run_deploy_requires_source_flag(monkeypatch):
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "run", "orders", "--deploy", "--platform", "fabric"])
+    assert result.exit_code != 0
+    assert "--local-folder" in result.output or "--kda-package" in result.output
+
+
+def test_app_run_source_flag_without_deploy_is_rejected(monkeypatch):
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("orders")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("", encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            ["app", "run", "orders", "--local-folder", str(app_dir), "--platform", "fabric"],
+        )
+        assert result.exit_code != 0
+        assert "--deploy" in result.output
+
+
+def test_app_cleanup_positional_name(monkeypatch):
+    class FakeAPI:
+        def cleanup_app(self, app_name):
+            assert app_name == "orders"
+            return True
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "cleanup", "orders", "--platform", "fabric"])
+    assert result.exit_code == 0, result.output
+    assert "orders" in result.output
+
+
+def test_app_cleanup_local_folder_infers_name(monkeypatch):
+    class FakeAPI:
+        def cleanup_app(self, app_name):
+            assert app_name == "orders"
+            return True
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("orders")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("", encoding="utf-8")
+
+        result = runner.invoke(
+            cli, ["app", "cleanup", "--local-folder", str(app_dir), "--platform", "fabric"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "orders" in result.output
+
+
+def test_app_cleanup_kda_package_infers_name(monkeypatch):
+    class FakeAPI:
+        def cleanup_app(self, app_name):
+            assert app_name == "orders"
+            return True
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (FakeAPI(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        kda = Path("orders.kda")
+        with zipfile.ZipFile(kda, "w") as archive:
+            archive.writestr("app.py", "")
+
+        result = runner.invoke(
+            cli, ["app", "cleanup", "--kda-package", str(kda), "--platform", "fabric"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "orders" in result.output
+
+
+def test_app_cleanup_rejects_both_source_flags(monkeypatch):
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("orders")
+        app_dir.mkdir()
+        kda = Path("orders.kda")
+        with zipfile.ZipFile(kda, "w") as archive:
+            archive.writestr("app.py", "")
+
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "cleanup",
+                "--local-folder",
+                str(app_dir),
+                "--kda-package",
+                str(kda),
+                "--platform",
+                "fabric",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+
+def test_app_cleanup_requires_identifier():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["app", "cleanup", "--platform", "fabric"])
+    assert result.exit_code != 0
 
 
 def test_job_create_loads_yaml_and_prints_structured_result(monkeypatch):
