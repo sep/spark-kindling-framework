@@ -2814,6 +2814,429 @@ def app_cleanup(
     )
 
 
+# ---------------------------------------------------------------------------
+# kindling app add  — scaffolding subcommands
+# [implementer] add entity/pipe/ingestion scaffolding — ki-0qp
+# ---------------------------------------------------------------------------
+
+
+def _parse_entity_id(entity_id: str) -> Tuple[str, str]:
+    """Split ``<namespace>.<name>`` into a (namespace, name) tuple.
+
+    Raises ``click.ClickException`` for malformed IDs.
+    """
+    parts = entity_id.split(".")
+    if len(parts) != 2 or not all(p.strip() for p in parts):
+        raise click.ClickException(
+            f"Entity ID must be in <namespace>.<name> format, got: {entity_id!r}"
+        )
+    return parts[0].strip(), parts[1].strip()
+
+
+def _to_pascal(snake: str) -> str:
+    """Convert a snake_case string to PascalCase."""
+    return "".join(word.capitalize() for word in snake.split("_"))
+
+
+def _ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _write_new_file(path: Path, content: str) -> None:
+    """Write *content* to *path*, creating parent directories as needed."""
+    _ensure_dir(path.parent)
+    path.write_text(content, encoding="utf-8")
+
+
+def _append_to_file(path: Path, content: str) -> None:
+    """Append *content* to *path*, creating the file (and parents) if missing."""
+    _ensure_dir(path.parent)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def _csv_stub_exists(app_path: Path, namespace: str, name: str) -> bool:
+    """Return True if a CSV fixture for the entity already exists."""
+    return (app_path / "tests" / "entities" / namespace / f"{name}.csv").exists()
+
+
+def _create_csv_stub(app_path: Path, namespace: str, name: str) -> Path:
+    """Create an empty CSV stub (headers only) if it does not already exist."""
+    csv_path = app_path / "tests" / "entities" / namespace / f"{name}.csv"
+    if not csv_path.exists():
+        _ensure_dir(csv_path.parent)
+        csv_path.write_text("# add CSV headers here\n", encoding="utf-8")
+    return csv_path
+
+
+# ---- app add group ----
+
+
+@app_group.group("add")
+def app_add_group() -> None:
+    """Scaffold entities, pipes, and ingestion pipelines inside an app."""
+
+
+# ---- app add entity ----
+
+
+@app_add_group.command("entity")
+@click.argument("entity_id")
+@click.option(
+    "--app",
+    "app_path",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Path to the app package root (contains entities.py).",
+)
+def app_add_entity(entity_id: str, app_path: Path) -> None:
+    """Scaffold an entity definition and a CSV fixture stub.
+
+    \b
+    ENTITY_ID   Dot-separated namespace and name, e.g. bronze.orders
+
+    \b
+    Creates / appends:
+      <path>/entities.py            — DataEntities.entity() skeleton
+      tests/entities/<ns>/<name>.csv — CSV fixture stub (headers placeholder)
+
+    \b
+    Example:
+      kindling app add entity bronze.orders --app src/my_app
+    """
+    namespace, name = _parse_entity_id(entity_id)
+    resolved = app_path.expanduser().resolve()
+    schema_var = f"{namespace}_{name}_schema"
+
+    entity_block = f"""
+# --- {entity_id} ---
+from pyspark.sql.types import StringType, StructField, StructType
+
+{schema_var} = StructType(
+    [
+        StructField("id", StringType(), False),
+        # TODO: add fields for {entity_id}
+    ]
+)
+
+DataEntities.entity(
+    entityid="{entity_id}",
+    name="{namespace}_{name}",
+    partition_columns=[],
+    merge_columns=["id"],
+    tags={{
+        "provider_type": "delta",
+        "layer": "{namespace}",
+    }},
+    schema={schema_var},
+)
+"""
+
+    entities_py = resolved / "entities.py"
+    header = "from kindling.data_entities import DataEntities\n"
+    if not entities_py.exists():
+        _write_new_file(entities_py, header + entity_block)
+        click.echo(f"Created {entities_py}")
+    else:
+        existing = entities_py.read_text(encoding="utf-8")
+        if header not in existing:
+            _append_to_file(entities_py, "\n" + header)
+        _append_to_file(entities_py, entity_block)
+        click.echo(f"Appended entity {entity_id!r} to {entities_py}")
+
+    csv_path = _create_csv_stub(resolved, namespace, name)
+    click.echo(f"Created fixture stub {csv_path}")
+
+
+# ---- app add pipe ----
+
+
+@app_add_group.command("pipe")
+@click.argument("pipe_id")
+@click.option(
+    "--inputs",
+    "inputs",
+    default=None,
+    help="Comma-separated list of input entity IDs, e.g. bronze.orders,bronze.items",
+)
+@click.option(
+    "--app",
+    "app_path",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Path to the app package root.",
+)
+def app_add_pipe(pipe_id: str, inputs: Optional[str], app_path: Path) -> None:
+    """Scaffold a DataPipes pipe and matching unit/integration test stubs.
+
+    \b
+    PIPE_ID   Dot-separated namespace and name, e.g. bronze.to_silver
+
+    \b
+    Creates:
+      <path>/<namespace>/<pipe_name>.py          — pipe skeleton with @DataPipes.pipe
+      tests/unit/test_<pipe_name>.py             — pytest skip stub
+      tests/integration/test_<pipe_name>.py      — pytest skip stub
+      tests/entities/<ns>/<id>.csv               — fixture stubs for any --inputs
+
+    \b
+    Examples:
+      kindling app add pipe bronze.to_silver --inputs bronze.orders --app src/my_app
+    """
+    namespace, pipe_name = _parse_entity_id(pipe_id)
+    resolved = app_path.expanduser().resolve()
+
+    input_ids: List[str] = []
+    input_params: List[str] = []
+    if inputs:
+        for raw in inputs.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            ns, nm = _parse_entity_id(raw)
+            input_ids.append(raw)
+            input_params.append(f"{ns}_{nm}")
+
+    input_entity_ids_repr = repr(input_ids)
+    func_params = ", ".join(input_params) if input_params else "_inputs"
+
+    pipe_content = f"""\"\"\"Pipe: {pipe_id}.\"\"\"
+from kindling.data_pipes import DataPipes
+
+
+def transform_{pipe_name}({func_params}):
+    \"\"\"Transform function for {pipe_id}.
+
+    TODO: implement transformation logic.
+    \"\"\"
+    raise NotImplementedError("Implement transform_{pipe_name}")
+
+
+@DataPipes.pipe(
+    pipeid="{pipe_id}",
+    name="{_to_pascal(namespace)}{_to_pascal(pipe_name)}",
+    tags={{"layer": "{namespace}"}},
+    input_entity_ids={input_entity_ids_repr},
+    output_entity_id="{namespace}.{pipe_name}_output",
+    output_type="table",
+)
+def {namespace}_{pipe_name}({func_params}):
+    \"\"\"Registered pipe for {pipe_id}.\"\"\"
+    return transform_{pipe_name}({func_params})
+"""
+
+    pipe_file = resolved / namespace / f"{pipe_name}.py"
+    _write_new_file(pipe_file, pipe_content)
+    click.echo(f"Created pipe module {pipe_file}")
+
+    unit_test_content = f"""\"\"\"Unit tests for {namespace}.{pipe_name} transform.\"\"\"
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — implement transform assertions")
+def test_{pipe_name}_transform():
+    ...
+"""
+
+    integration_test_content = f"""\"\"\"Integration tests for {namespace}.{pipe_name} pipeline.\"\"\"
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — populate tests/entities/<namespace>/<id>.csv before running")
+def test_{pipe_name}_pipeline():
+    ...
+"""
+
+    unit_test_file = resolved / "tests" / "unit" / f"test_{pipe_name}.py"
+    _write_new_file(unit_test_file, unit_test_content)
+    click.echo(f"Created unit test stub {unit_test_file}")
+
+    integration_test_file = resolved / "tests" / "integration" / f"test_{pipe_name}.py"
+    _write_new_file(integration_test_file, integration_test_content)
+    click.echo(f"Created integration test stub {integration_test_file}")
+
+    for entity_id in input_ids:
+        ns, nm = _parse_entity_id(entity_id)
+        if not _csv_stub_exists(resolved, ns, nm):
+            csv_path = _create_csv_stub(resolved, ns, nm)
+            click.echo(f"Created fixture stub {csv_path}")
+
+
+# ---- app add ingestion ----
+
+
+@app_add_group.command("ingestion")
+@click.argument("entity_id")
+@click.option(
+    "--source-pattern",
+    "source_pattern",
+    default=None,
+    help="Glob pattern for source files, e.g. 'data/raw/*.csv'",
+)
+@click.option(
+    "--filename-metadata",
+    "filename_metadata",
+    default=None,
+    help="Field name to extract from the filename, e.g. 'report_date'",
+)
+@click.option(
+    "--app",
+    "app_path",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Path to the app package root.",
+)
+def app_add_ingestion(
+    entity_id: str,
+    source_pattern: Optional[str],
+    filename_metadata: Optional[str],
+    app_path: Path,
+) -> None:
+    """Scaffold a file-ingestion pipe and matching test stubs.
+
+    \b
+    ENTITY_ID   Dot-separated namespace and name, e.g. bronze.sales_report
+
+    \b
+    Creates:
+      <path>/<namespace>/<name>_ingestion.py      — FileIngestionEntries skeleton
+      <path>/entities.py                          — entity definition with CSV provider
+      tests/unit/test_<name>_ingestion.py         — pytest skip stub
+      tests/integration/test_<name>_ingestion.py  — pytest skip stub
+      tests/entities/<namespace>/<name>/           — empty folder for sample CSVs
+
+    \b
+    Examples:
+      kindling app add ingestion bronze.sales_report \\
+          --source-pattern "data/raw/*.csv" \\
+          --filename-metadata report_date \\
+          --app src/my_app
+    """
+    namespace, name = _parse_entity_id(entity_id)
+    resolved = app_path.expanduser().resolve()
+    schema_var = f"{namespace}_{name}_schema"
+    pattern = source_pattern or f"data/raw/{namespace}/{name}/*.csv"
+
+    # --- ingestion pipe module ---
+    metadata_lines = ""
+    if filename_metadata:
+        metadata_lines = f"""
+    # Extract {filename_metadata!r} from the filename
+    # e.g. filename "2024-01-01_report.csv" -> {filename_metadata} = "2024-01-01"
+    # Adapt the regex pattern below to match your actual filename convention.
+    # from pyspark.sql.functions import regexp_extract, input_file_name
+    # df = df.withColumn(
+    #     "{filename_metadata}",
+    #     regexp_extract(input_file_name(), r'(\\d{{4}}-\\d{{2}}-\\d{{2}})', 1),
+    # )
+"""
+
+    ingestion_content = f"""\"\"\"File ingestion pipe for {entity_id}.\"\"\"
+from kindling.file_ingestion import FileIngestionEntries
+
+
+FileIngestionEntries.entry(
+    entry_id="{entity_id}",
+    name="{namespace}_{name}_ingestion",
+    patterns=["{pattern}"],
+    dest_entity_id="{entity_id}",
+    tags={{
+        "provider_type": "csv",
+        "layer": "{namespace}",
+    }},
+    infer_schema=True,
+    filetype="csv",
+)
+{metadata_lines}
+"""
+
+    ingestion_file = resolved / namespace / f"{name}_ingestion.py"
+    _write_new_file(ingestion_file, ingestion_content)
+    click.echo(f"Created ingestion module {ingestion_file}")
+
+    # --- entity definition in entities.py ---
+    entity_block = f"""
+# --- {entity_id} (CSV ingestion) ---
+from pyspark.sql.types import StringType, StructField, StructType
+
+{schema_var} = StructType(
+    [
+        StructField("id", StringType(), False),
+        # TODO: add fields for {entity_id}
+    ]
+)
+
+DataEntities.entity(
+    entityid="{entity_id}",
+    name="{namespace}_{name}",
+    partition_columns=[],
+    merge_columns=["id"],
+    tags={{
+        "provider_type": "csv",
+        "layer": "{namespace}",
+    }},
+    schema={schema_var},
+)
+"""
+
+    entities_py = resolved / "entities.py"
+    header = "from kindling.data_entities import DataEntities\n"
+    if not entities_py.exists():
+        _write_new_file(entities_py, header + entity_block)
+        click.echo(f"Created {entities_py}")
+    else:
+        existing = entities_py.read_text(encoding="utf-8")
+        if header not in existing:
+            _append_to_file(entities_py, "\n" + header)
+        _append_to_file(entities_py, entity_block)
+        click.echo(f"Appended entity {entity_id!r} to {entities_py}")
+
+    # --- test stubs ---
+    metadata_test_comment = ""
+    if filename_metadata:
+        metadata_test_comment = f"""
+    # TODO: assert that '{filename_metadata}' is correctly extracted from the filename
+"""
+
+    unit_test_content = f"""\"\"\"Unit tests for {namespace}.{name} file ingestion.\"\"\"
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — implement transform assertions")
+def test_{name}_ingestion_filename_pattern():
+    \"\"\"Verify source glob pattern matches expected filenames.\"\"\"
+    ...{metadata_test_comment}
+
+@pytest.mark.skip(reason="scaffolded — implement transform assertions")
+def test_{name}_ingestion_metadata_extraction():
+    \"\"\"Verify filename metadata is correctly extracted into columns.\"\"\"
+    ...
+"""
+
+    integration_test_content = f"""\"\"\"Integration tests for {namespace}.{name} ingestion pipeline.\"\"\"
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — populate tests/entities/{namespace}/{name}/ before running")
+def test_{name}_ingestion_pipeline():
+    \"\"\"Run full ingestion pipeline against sample CSV files.\"\"\"
+    ...
+"""
+
+    unit_test_file = resolved / "tests" / "unit" / f"test_{name}_ingestion.py"
+    _write_new_file(unit_test_file, unit_test_content)
+    click.echo(f"Created unit test stub {unit_test_file}")
+
+    integration_test_file = resolved / "tests" / "integration" / f"test_{name}_ingestion.py"
+    _write_new_file(integration_test_file, integration_test_content)
+    click.echo(f"Created integration test stub {integration_test_file}")
+
+    # --- sample CSV folder ---
+    sample_dir = resolved / "tests" / "entities" / namespace / name
+    _ensure_dir(sample_dir)
+    click.echo(f"Created sample CSV folder {sample_dir}/")
+
+
 @cli.group("job")
 def job_group() -> None:
     """Create and manage remote Spark jobs."""
