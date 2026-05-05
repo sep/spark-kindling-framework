@@ -46,6 +46,10 @@ To deprecate a convention: mark `[DEPRECATED - see DECISIONS.md DATE]` — do no
 - Integration tests: local Spark session allowed, no cloud
 - System tests: require live cloud infra — tag with `@pytest.mark.system` etc.
 - Fixtures in `conftest.py`; use pytest-mock
+- **Two separate environments — keep them separate:**
+  - **CLI / framework changes**: develop in the kindling devcontainer; run `poe build` to produce wheels in `dist/`
+  - **Domain / consumer tests** (`tests/local-project/`, Fawkes, etc.): run inside the `kindling-domain` devcontainer, which installs built wheels as a consumer would
+  - Do NOT run framework tests in the domain container or domain tests in the framework container
 - **Always use `poe` tasks to run tests — never `python -m pytest` directly:**
   - `poe test-unit` — unit tests only
   - `poe test-quick` — unit + integration

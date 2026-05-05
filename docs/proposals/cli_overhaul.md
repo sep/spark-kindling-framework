@@ -57,6 +57,43 @@ The current job-centered command names make those questions harder than necessar
 
 ---
 
+## Execution Model
+
+Kindling has two distinct execution environments. The CLI must make this distinction explicit rather than conflating them under a single `run` concept.
+
+### Local execution
+
+Spark runs on the developer's machine or CI runner. The Kindling runtime is invoked in-process. Data comes from wherever the entity providers are configured to read — this may be local files (`tests/entities/`) or external cloud storage, depending on env config.
+
+Used for: development iteration, unit and integration testing.
+
+CLI entry point: `kindling pipeline run` (proposed) or `kindling run` (current).
+
+### Remote execution
+
+Code is submitted to and runs inside a platform Spark pool (Synapse, Fabric, Databricks). The Kindling runner job receives the app config and executes it. Data comes from platform cloud storage.
+
+Used for: system testing, staging, production batch runs.
+
+CLI entry point: `kindling app run`.
+
+### Test suite alignment
+
+| Suite | Spark runs | What is invoked | Data |
+|---|---|---|---|
+| unit | local / in-process | transform function directly | anything — CSVs, hardcoded rows, `tests/entities/` |
+| component | local / in-process | DI container wiring | none |
+| integration | local machine | full Kindling pipeline via runtime | `tests/entities/` convention or cloud storage |
+| system | remote Spark pool | runner on platform | platform cloud storage |
+
+`kindling pipeline run --env dev` is the CLI equivalent of an integration test without assertions. `kindling app run --env staging` is the CLI equivalent of a system test without assertions. The `--env` flag selects data sources; local vs. remote is determined by which command group is used.
+
+### The `tests/entities/` convention
+
+A file at `tests/entities/<name>.csv` is auto-discovered as the data source for a simple entity ID, or `tests/entities/<namespace>/<name>.csv` for dotted entity IDs (dots become path separators; the last segment becomes `<name>.csv`). For example, `bronze.orders` maps to `tests/entities/bronze/orders.csv`. The file is resolved automatically by the entity-provider layer during local execution when no other provider is configured for the active env.
+
+---
+
 ## Design Principles
 
 1. **Apps and pipelines are user concepts.**
@@ -88,8 +125,8 @@ A deployable Kindling application: code plus config that can be run by the Kindl
 Examples:
 
 ```bash
-kindling app package ./orders
-kindling app deploy ./orders
+kindling app package --local-folder ./orders
+kindling app deploy --local-folder ./orders
 kindling app run orders
 ```
 
@@ -127,24 +164,95 @@ A platform-native implementation detail. Jobs may still be exposed for advanced 
 
 ### App Commands
 
+#### `kindling app add`
+
+Scaffold new building blocks into an existing app. Each subcommand generates the source file and all relevant test scaffolding so new code has a place to be tested immediately.
+
+##### `kindling app add module`
+
+Add a new module to an app.
+
+```bash
+kindling app add module bronze --app ./orders
+```
+
+Generated:
+- `orders/bronze/__init__.py`
+- `orders/bronze/bronze.py` — module skeleton
+- `tests/unit/test_bronze.py` — unit test skeleton
+
+##### `kindling app add entity`
+
+Add a new entity definition and a fixture stub for use in unit and integration tests.
+
+```bash
+kindling app add entity bronze.orders --app ./orders
+```
+
+Generated:
+- Entity definition appended to `orders/bronze/entities.py`
+- `tests/entities/bronze/orders.csv` — column headers only, populated by the developer
+
+##### `kindling app add pipe`
+
+Add a new data pipe, its transform function, and test scaffolding for all three tiers.
+
+```bash
+kindling app add pipe bronze.ingest_orders --app ./orders
+kindling app add pipe silver.clean_orders --inputs bronze.orders,bronze.products --app ./orders
+```
+
+Generated:
+- `orders/bronze/ingest_orders.py` — pipe registration and transform function skeleton
+- `tests/unit/test_ingest_orders.py` — calls the transform function directly with data from `tests/entities/`
+- `tests/integration/test_ingest_orders.py` — runs the full pipeline via Kindling runtime, asserts on output entity
+- `tests/entities/bronze/orders.csv` — fixture stub for each declared input entity, if not already present
+
+**Test discoverability:** Generated test files follow pytest naming conventions (`test_*.py` in `tests/unit/` and `tests/integration/`) so they are picked up automatically by `kindling test run --suite unit` and `--suite integration` with no additional registration.
+
+**Skip stubs:** Scaffolded tests are generated as `pytest.mark.skip` rather than empty `pass` bodies. This ensures they appear in test run output immediately — signaling that they need to be implemented — without silently passing before the developer has filled them in.
+
+```python
+@pytest.mark.skip(reason="scaffolded — implement transform assertions")
+def test_ingest_orders_transform():
+    ...
+
+@pytest.mark.skip(reason="scaffolded — populate tests/entities/bronze/orders.csv before running")
+def test_ingest_orders_pipeline():
+    ...
+```
+
+The integration test skip message points explicitly at the CSV that needs data, so the developer knows exactly what to do next.
+
+---
+
 #### `kindling app package`
 
 Build a `.kda` archive from a local app directory.
 
 Status: keep.
 
+Source is specified with `--local-folder`, consistent with `app deploy` and `app run --deploy`.
+
 ```bash
-kindling app package ./orders
+kindling app package --local-folder ./orders
+kindling app package --local-folder ./orders --output dist/orders.kda
 ```
 
 #### `kindling app deploy`
 
-Deploy an app directory or `.kda` package to the configured platform artifact location.
+Deploy app assets to the configured platform artifact location.
 
 Status: keep, but clarify that this deploys app assets only and does not run the app.
 
+The source must be specified explicitly using one of two mutually exclusive flags:
+
+- `--local-folder <path>` — package and deploy a local app directory on the fly.
+- `--kda-package <path>` — deploy a pre-built `.kda` archive. Use this in CI when packaging is a separate step.
+
 ```bash
-kindling app deploy ./orders --platform synapse
+kindling app deploy --local-folder ./orders --platform synapse
+kindling app deploy --kda-package dist/orders.kda --platform synapse --env prod
 ```
 
 #### `kindling app run`
@@ -160,15 +268,18 @@ Recommended behavior:
 5. Stream logs by default.
 6. Return run id, status, and useful artifact paths.
 
-If `--deploy` is passed, `app run` packages/deploys app assets before starting the run. This keeps repeated runs fast while preserving a single-command "deploy then run" workflow when a developer wants it.
+If `--deploy` is passed, `app run` deploys app assets before starting the run. The same source flags as `app deploy` apply:
 
-If the argument is a local path, `app run` should require `--deploy` or an explicit `--app-name`; otherwise users may think local source changes are being used when the runner is actually executing the last deployed app.
+- `--deploy --local-folder <path>` — package and deploy a local directory, then run.
+- `--deploy --kda-package <path>` — deploy a pre-built `.kda`, then run.
+
+Without `--deploy`, `app run` runs against the currently deployed app. This keeps repeated runs fast and makes it explicit when new code is being pushed.
 
 Examples:
 
 ```bash
 kindling app run orders --env dev
-kindling app run ./orders --deploy --platform synapse
+kindling app run orders --deploy --local-folder ./orders --platform synapse
 kindling app run orders --no-wait
 kindling app run orders --parameters params.yaml
 ```
@@ -208,8 +319,12 @@ Remove deployed app assets.
 
 Status: keep.
 
+Accepts a positional app name, or `--local-folder`/`--kda-package` to infer the name from the source.
+
 ```bash
 kindling app cleanup orders
+kindling app cleanup --local-folder ./orders
+kindling app cleanup --kda-package dist/orders.kda
 ```
 
 ---
@@ -235,13 +350,15 @@ Examples:
 ```bash
 kindling pipeline run bronze.ingest_orders --app orders
 kindling pipeline run daily_orders --app orders --env prod
+kindling pipeline run bronze.ingest_orders --app orders --deploy --local-folder ./orders
+kindling pipeline run bronze.ingest_orders --app orders --deploy --kda-package dist/orders.kda
 ```
 
 Recommended behavior:
 
 1. Resolve the app and pipeline id.
 2. Ensure runner exists.
-3. Deploy app/config only when `--deploy` is passed or when the run cannot proceed without deployed assets.
+3. When `--deploy` is passed, deploy from `--local-folder` or `--kda-package` before running.
 4. Run the single Kindling runner job with `app_name`, `pipeline_id`, environment, and parameters.
 
 #### `kindling pipeline status`
@@ -359,8 +476,8 @@ Compatibility aliases can print guidance:
 | Current command | Proposed command | Notes |
 | --- | --- | --- |
 | `kindling run <pipe_id>` | `kindling pipeline run <pipe_id> --local` | Keep as a deprecated local shortcut in Phase 1. |
-| `kindling app package` | `kindling app package` | Keep. |
-| `kindling app deploy` | `kindling app deploy` | Keep, clarify deploy-only behavior. |
+| `kindling app package <path>` | `kindling app package --local-folder <path>` | Consistent source flag. |
+| `kindling app deploy <path>` | `kindling app deploy --local-folder <path>` or `--kda-package <path>` | Make source type explicit. |
 | `kindling job submit <app>` | `kindling app run <app>` | Main happy path. |
 | `kindling job create job.yaml` | `kindling runner ensure` | Runner job is infrastructure. |
 | `kindling job run <job-id>` | `kindling runner invoke --params params.yaml` | Advanced/debug only. |
@@ -457,9 +574,9 @@ Internally, `app run` can reuse the existing `job submit` implementation while n
 Update README and docs so the primary workflow is:
 
 ```bash
-kindling app deploy ./orders
+kindling app deploy --local-folder ./orders
 kindling app run orders --platform synapse
-kindling app run ./orders --deploy --platform synapse
+kindling app run orders --deploy --local-folder ./orders --platform synapse
 kindling app logs <run-id>
 ```
 
