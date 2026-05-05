@@ -306,16 +306,23 @@ Since generated files follow pytest naming conventions (`test_*.py` in `tests/un
 so that I have the correct ingestion scaffolding for a bronze CSV source without writing the file scanning boilerplate.
 
 ```bash
+# Option A: provide a full filename regex (named groups become columns automatically)
 kindling app add ingestion bronze.fawkes_raw \
-  --source-pattern "abfss://raw@{account}.dfs.core.windows.net/fawkes/*.csv" \
+  --source-pattern 'fawkes_(?P<test_name>[^_]+)_(?P<frequency>\d+)hz\.csv' \
+  --app ./fawkes
+
+# Option B: let --filename-metadata generate a default single-group pattern
+kindling app add ingestion bronze.fawkes_raw \
   --filename-metadata frequency \
   --app ./fawkes
 ```
 
+The base storage path (ABFSS URL) is set in `kindling.yaml` per environment and passed to
+`process_path()` at runtime — it is not part of the filename pattern.
+
 Generated:
 ```
-fawkes/bronze/fawkes_raw_ingestion.py     # file ingestion entry using file_ingestion.py patterns
-                                          # includes filename metadata extraction (e.g. frequency)
+fawkes/bronze/fawkes_raw_ingestion.py     # FileIngestionEntries entry with filename regex
 fawkes/bronze/entities.py                 # bronze.fawkes_raw entity definition with CSV provider
 tests/unit/test_fawkes_raw_ingestion.py   # unit test: filename pattern matching, metadata extraction
 tests/integration/test_fawkes_raw_ingestion.py  # integration test: reads from tests/entities/bronze/fawkes_raw/

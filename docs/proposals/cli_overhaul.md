@@ -90,7 +90,7 @@ CLI entry point: `kindling app run`.
 
 ### The `tests/entities/` convention
 
-A file at `tests/entities/<entity-id>.csv` (or `tests/entities/<namespace>/<entity-id>.csv` for dotted entity IDs) is auto-discovered as the data source for that entity during local execution when no other provider is configured for the active env. This applies to both unit tests (read directly in test code) and integration tests (resolved automatically by the entity-provider layer).
+A file at `tests/entities/<name>.csv` is auto-discovered as the data source for a simple entity ID, or `tests/entities/<namespace>/<name>.csv` for dotted entity IDs (dots become path separators; the last segment becomes `<name>.csv`). For example, `bronze.orders` maps to `tests/entities/bronze/orders.csv`. The file is resolved automatically by the entity-provider layer during local execution when no other provider is configured for the active env.
 
 ---
 

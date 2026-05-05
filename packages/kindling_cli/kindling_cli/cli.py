@@ -3240,7 +3240,7 @@ def test_{pipe_name}_pipeline():
     default=None,
     help=(
         "Regex pattern for matching filenames. Named groups become DataFrame columns. "
-        r"e.g. r'sales_(?P<report_date>\d{4}-\d{2}-\d{2})\.csv'"
+        "e.g. 'sales_(?P<report_date>[^.]+)\\.csv' (use single quotes in shell to avoid escaping)."
     ),
 )
 @click.option(
@@ -3288,7 +3288,7 @@ def app_add_ingestion(
     \b
     Examples:
       kindling app add ingestion bronze.sales_report \\
-          --source-pattern r"sales_(?P<report_date>\\d{4}-\\d{2}-\\d{2})\\.csv" \\
+          --source-pattern 'sales_(?P<report_date>[^.]+)[.]csv' \\
           --app src/my_app
 
       kindling app add ingestion bronze.sales_report \\
@@ -3302,7 +3302,7 @@ def app_add_ingestion(
     if source_pattern:
         pattern = source_pattern
     elif filename_metadata:
-        pattern = rf"{name}_(?P<{filename_metadata}>\d{{4}}-\d{{2}}-\d{{2}})\.csv"
+        pattern = rf"{name}_(?P<{filename_metadata}>[^_.]+)\.csv"
     else:
         pattern = rf"{name}\.csv"
 
