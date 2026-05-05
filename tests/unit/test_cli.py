@@ -99,6 +99,82 @@ def test_env_check_passes_for_generated_settings_file():
         assert "Environment check passed." in result.output
 
 
+# ---------------------------------------------------------------------------
+# env check --platform  (ki-0nq)
+# ---------------------------------------------------------------------------
+
+
+def test_env_check_platform_missing_vars_exits_nonzero(monkeypatch):
+    """--platform with all vars unset should exit 1 and report MISSING."""
+    for var in (
+        "SYNAPSE_WORKSPACE_NAME",
+        "SYNAPSE_SPARK_POOL_NAME",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "synapse"])
+
+    assert result.exit_code != 0
+    assert "Platform: synapse" in result.output
+    assert "MISSING" in result.output
+    assert "missing" in result.output
+
+
+def test_env_check_platform_all_vars_set_exits_zero(monkeypatch):
+    """--platform with all required vars set should exit 0 and report SET."""
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws")
+    monkeypatch.setenv("SYNAPSE_SPARK_POOL_NAME", "pool")
+    monkeypatch.setenv("AZURE_TENANT_ID", "tid")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "synapse"])
+
+    assert result.exit_code == 0
+    assert "Platform: synapse" in result.output
+    assert "MISSING" not in result.output
+    output_lines = [l.strip() for l in result.output.splitlines() if l.strip()]
+    set_lines = [l for l in output_lines if "SET" in l]
+    assert len(set_lines) == 4
+
+
+def test_env_check_platform_missing_shows_export_hint(monkeypatch):
+    """Missing vars should include 'export VAR=<your-...' hint."""
+    for var in ("DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "databricks"])
+
+    assert "export DATABRICKS_HOST=" in result.output
+    assert "export DATABRICKS_TOKEN=" in result.output
+
+
+def test_env_check_platform_partial_set_reports_correctly(monkeypatch):
+    """If only some vars are set, SET and MISSING are both reported."""
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "wid")
+    for var in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID"):
+        monkeypatch.delenv(var, raising=False)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "fabric"])
+
+    assert result.exit_code != 0
+    assert "FABRIC_WORKSPACE_ID" in result.output
+    assert "SET" in result.output
+    assert "MISSING" in result.output
+
+
+def test_env_check_platform_help_shows_flag():
+    """--help output should mention --platform."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["env", "check", "--help"])
+    assert "--platform" in result.output
+
+
 def test_test_run_passes_explicit_layout_to_runner(monkeypatch):
     captured = {}
 
@@ -1296,8 +1372,10 @@ class TestEnvCheckPlatform:
                 "DATABRICKS_TOKEN": "dapi-abc",
             },
         )
-        assert "[PASS] env:DATABRICKS_HOST" in result.output
-        assert "[PASS] env:DATABRICKS_TOKEN" in result.output
+        # New human-readable format: SET / MISSING
+        assert "DATABRICKS_HOST" in result.output
+        assert "SET" in result.output
+        assert "MISSING" not in result.output
         assert result.exit_code == 0
 
     def test_databricks_missing_token_fails(self):
@@ -1305,7 +1383,8 @@ class TestEnvCheckPlatform:
             "databricks",
             {"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net"},
         )
-        assert "[FAIL] env:DATABRICKS_TOKEN" in result.output
+        assert "DATABRICKS_TOKEN" in result.output
+        assert "MISSING" in result.output
         assert result.exit_code != 0
 
     def test_fabric_all_vars_set_passes(self):
@@ -1313,22 +1392,20 @@ class TestEnvCheckPlatform:
             "fabric",
             {
                 "FABRIC_WORKSPACE_ID": "ws-1",
-                "FABRIC_LAKEHOUSE_ID": "lh-1",
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
-                "AZURE_CLIENT_SECRET": "secret-1",
             },
         )
-        assert "[PASS] env:FABRIC_WORKSPACE_ID" in result.output
-        assert "[PASS] env:FABRIC_LAKEHOUSE_ID" in result.output
-        assert "[PASS] env:AZURE_TENANT_ID" in result.output
-        assert "[PASS] env:AZURE_CLIENT_ID" in result.output
-        assert "[PASS] env:AZURE_CLIENT_SECRET" in result.output
+        assert "FABRIC_WORKSPACE_ID" in result.output
+        assert "AZURE_TENANT_ID" in result.output
+        assert "AZURE_CLIENT_ID" in result.output
+        assert "MISSING" not in result.output
         assert result.exit_code == 0
 
     def test_fabric_missing_vars_fails(self):
         result = self._run_with_env("fabric", {})
-        assert "[FAIL] env:FABRIC_WORKSPACE_ID" in result.output
+        assert "FABRIC_WORKSPACE_ID" in result.output
+        assert "MISSING" in result.output
         assert result.exit_code != 0
 
     def test_synapse_all_vars_set_passes(self):
@@ -1336,13 +1413,14 @@ class TestEnvCheckPlatform:
             "synapse",
             {
                 "SYNAPSE_WORKSPACE_NAME": "my-ws",
+                "SYNAPSE_SPARK_POOL_NAME": "my-pool",
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
-                "AZURE_CLIENT_SECRET": "secret-1",
             },
         )
-        assert "[PASS] env:SYNAPSE_WORKSPACE_NAME" in result.output
-        assert "[PASS] env:AZURE_TENANT_ID" in result.output
+        assert "SYNAPSE_WORKSPACE_NAME" in result.output
+        assert "AZURE_TENANT_ID" in result.output
+        assert "MISSING" not in result.output
         assert result.exit_code == 0
 
     def test_synapse_missing_workspace_name_fails(self):
@@ -1351,10 +1429,10 @@ class TestEnvCheckPlatform:
             {
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
-                "AZURE_CLIENT_SECRET": "secret-1",
             },
         )
-        assert "[FAIL] env:SYNAPSE_WORKSPACE_NAME" in result.output
+        assert "SYNAPSE_WORKSPACE_NAME" in result.output
+        assert "MISSING" in result.output
         assert result.exit_code != 0
 
     def test_platform_label_shown_in_output(self):
@@ -1365,7 +1443,8 @@ class TestEnvCheckPlatform:
                 "DATABRICKS_TOKEN": "dapi-abc",
             },
         )
-        assert "[PASS] platform: databricks" in result.output
+        # New format uses "Platform: <name>" header
+        assert "Platform: databricks" in result.output
 
     def test_no_platform_flag_no_env_var_checks(self):
         runner = CliRunner()

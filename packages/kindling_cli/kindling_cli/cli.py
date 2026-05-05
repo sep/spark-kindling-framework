@@ -1077,6 +1077,52 @@ _PLATFORM_BASE_VARS: Dict[str, List[str]] = {
 _AZURE_SP_VARS: List[str] = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"]
 _AZURE_SP_PLATFORMS: frozenset = frozenset({"fabric", "synapse"})
 
+# [implementer] required credential vars for platform pre-flight check — ki-0nq
+_PLATFORM_CREDENTIAL_VARS: Dict[str, List[str]] = {
+    "synapse": [
+        "SYNAPSE_WORKSPACE_NAME",
+        "SYNAPSE_SPARK_POOL_NAME",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+    ],
+    "databricks": [
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+    ],
+    "fabric": [
+        "FABRIC_WORKSPACE_ID",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+    ],
+}
+
+
+def _print_platform_credential_check(platform: str) -> bool:
+    """Print a human-readable credential check for the given platform.
+
+    Each required env var is reported as SET or MISSING.  Missing vars include
+    an ``export`` hint.  Returns ``True`` when all vars are set, ``False``
+    when one or more are missing.
+    """
+    vars_for_platform = _PLATFORM_CREDENTIAL_VARS.get(platform, [])
+    click.echo(f"Platform: {platform}")
+    missing_count = 0
+    col_width = max((len(v) for v in vars_for_platform), default=0) + 2
+    for var in vars_for_platform:
+        val = os.getenv(var)
+        if val:
+            click.echo(f"  {var:<{col_width}} SET")
+        else:
+            missing_count += 1
+            hint = var.lower().replace("_", "-")
+            click.echo(f"  {var:<{col_width}} MISSING  → set via: export {var}=<your-{hint}>")
+    if missing_count:
+        click.echo(
+            f"\n{missing_count} missing."
+            f" Run 'kindling env check --platform {platform}' again after setting them."
+        )
+    return missing_count == 0
+
 
 def _missing_platform_vars(platform: str) -> List[str]:
     """Return required env vars for platform that are not currently set."""
@@ -1175,15 +1221,14 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
 
     \b
     With --platform <name>, checks that the required credential env vars for
-    the given platform are set.  The platform is also auto-detected from the
-    environment (FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST)
-    when --platform is omitted.
+    the given platform are set and reports each as SET or MISSING.  Missing
+    vars include an export hint.  Exits 1 if any vars are missing.
 
       --platform databricks  DATABRICKS_HOST, DATABRICKS_TOKEN
-      --platform fabric      FABRIC_WORKSPACE_ID, FABRIC_LAKEHOUSE_ID,
-                             AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
-      --platform synapse     SYNAPSE_WORKSPACE_NAME,
-                             AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+      --platform fabric      FABRIC_WORKSPACE_ID, AZURE_TENANT_ID,
+                             AZURE_CLIENT_ID
+      --platform synapse     SYNAPSE_WORKSPACE_NAME, SYNAPSE_SPARK_POOL_NAME,
+                             AZURE_TENANT_ID, AZURE_CLIENT_ID
 
     \b
     To download the hadoop-azure JARs run:
@@ -1244,13 +1289,18 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
                 )
             )
 
-    resolved_platform = platform or _detect_platform_from_environment()
-    if resolved_platform:
-        checks.append(("platform", True, resolved_platform))
-        for var in _PLATFORM_BASE_VARS.get(resolved_platform, []):
+    # [implementer] human-readable platform credential check — ki-0nq
+    if platform is not None:
+        all_set = _print_platform_credential_check(platform)
+        sys.exit(0 if all_set else 1)
+
+    auto_platform = _detect_platform_from_environment()
+    if auto_platform:
+        checks.append(("platform", True, auto_platform))
+        for var in _PLATFORM_BASE_VARS.get(auto_platform, []):
             val = os.getenv(var)
             checks.append((f"env:{var}", bool(val), "set" if val else "missing"))
-        if resolved_platform in _AZURE_SP_PLATFORMS:
+        if auto_platform in _AZURE_SP_PLATFORMS:
             sp_vals = [os.getenv(v) for v in _AZURE_SP_VARS]
             if any(sp_vals):
                 for var, val in zip(_AZURE_SP_VARS, sp_vals):
