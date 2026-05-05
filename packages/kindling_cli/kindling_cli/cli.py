@@ -2287,6 +2287,211 @@ def _resolve_source_path(
     )
 
 
+# =============================================================================
+# app init — scaffold a minimal Kindling app
+# =============================================================================
+
+_APP_INIT_KINDLING_YAML = """\
+# Kindling app configuration
+# See: https://kindling.dev/docs/config_reference
+
+app:
+  name: {app_name}
+
+environments:
+  local:
+    platform: standalone
+    entities:
+      default_provider: csv
+      # CSV fixtures are auto-discovered from tests/entities/<entity-id>.csv
+
+  dev:
+    platform: synapse
+    storage:
+      # account: mystorageaccount
+      # container: dev
+    entities:
+      default_provider: delta
+      # paths follow: abfss://<container>@<account>.dfs.core.windows.net/<app>/
+
+  prod:
+    platform: synapse
+    storage:
+      # account: mystorageaccount
+      # container: prod
+    entities:
+      default_provider: delta
+"""
+
+_APP_INIT_MODULE_INIT = """\
+"""
+
+_APP_INIT_ENTITIES_PY = """\
+from kindling import DataEntities
+
+
+@DataEntities.register(
+    entity_id="bronze.sample",
+    # provider_type="delta",
+    # tags={"layer": "bronze"},
+)
+class SampleEntity:
+    pass
+"""
+
+_APP_INIT_SAMPLE_PIPE_PY = """\
+from kindling import DataPipes
+
+
+@DataPipes.register(
+    pipe_id="bronze.sample_pipe",
+    input_entity_ids=["bronze.sample"],
+    output_entity_id="silver.sample",
+)
+def sample_pipe(bronze_sample):
+    # TODO(ki-krj): implement transform
+    return bronze_sample
+"""
+
+_APP_INIT_TEST_STUB = """\
+import pytest
+
+
+@pytest.mark.skip(reason="scaffolded — implement transform assertions")
+def test_sample_pipe_transform():
+    ...
+"""
+
+_APP_INIT_CONFTEST = """\
+\"\"\"Shared fixtures for {app_name} tests.\"\"\"
+
+import pytest
+
+
+@pytest.fixture(scope="session")
+def spark():
+    \"\"\"Local SparkSession fixture stub — configure as needed.\"\"\"
+    try:
+        from pyspark.sql import SparkSession
+
+        session = (
+            SparkSession.builder.appName("{app_name}Tests")
+            .master("local[2]")
+            .config("spark.sql.shuffle.partitions", "2")
+            .config("spark.ui.enabled", "false")
+            .getOrCreate()
+        )
+        session.sparkContext.setLogLevel("ERROR")
+        yield session
+        session.stop()
+    except ImportError:
+        pytest.skip("pyspark not installed")
+"""
+
+_APP_INIT_TESTS_INIT = """\
+"""
+
+
+def _write_app_init_file(path: Path, content: str, force: bool) -> bool:
+    """Write a scaffold file; return True if written, False if skipped (exists and not forced)."""
+    if path.exists() and not force:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
+@app_group.command("init")
+@click.argument(
+    "app_path",
+    type=click.Path(path_type=Path),
+)
+@click.option(
+    "--template",
+    "template",
+    default="default",
+    show_default=True,
+    type=click.Choice(["default"]),
+    help="Scaffold template to use.",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing files.")
+def app_init(app_path: Path, template: str, force: bool) -> None:  # pylint: disable=unused-argument
+    """Scaffold a minimal Kindling app at APP_PATH.
+
+    \b
+    Creates the following structure:
+      <app_path>/
+        __init__.py
+        entities.py
+        sample_pipe.py
+        kindling.yaml
+      tests/
+        entities/           (empty — CSV fixtures go here)
+        unit/
+          __init__.py
+          test_sample_pipe.py
+        integration/
+          __init__.py
+          test_sample_pipe.py
+        system/
+          __init__.py
+        component/
+          __init__.py
+        conftest.py
+    """
+    resolved = app_path.expanduser().resolve()
+    app_name = resolved.name or "my-app"
+
+    # Files to create: (destination path, content)
+    files: List[Tuple[Path, str]] = [
+        (resolved / "__init__.py", _APP_INIT_MODULE_INIT),
+        (resolved / "entities.py", _APP_INIT_ENTITIES_PY),
+        (resolved / "sample_pipe.py", _APP_INIT_SAMPLE_PIPE_PY),
+        (resolved / "kindling.yaml", _APP_INIT_KINDLING_YAML.format(app_name=app_name)),
+        (resolved.parent / "tests" / "unit" / "__init__.py", _APP_INIT_TESTS_INIT),
+        (
+            resolved.parent / "tests" / "unit" / "test_sample_pipe.py",
+            _APP_INIT_TEST_STUB,
+        ),
+        (resolved.parent / "tests" / "integration" / "__init__.py", _APP_INIT_TESTS_INIT),
+        (
+            resolved.parent / "tests" / "integration" / "test_sample_pipe.py",
+            _APP_INIT_TEST_STUB,
+        ),
+        (resolved.parent / "tests" / "system" / "__init__.py", _APP_INIT_TESTS_INIT),
+        (resolved.parent / "tests" / "component" / "__init__.py", _APP_INIT_TESTS_INIT),
+        (
+            resolved.parent / "tests" / "conftest.py",
+            _APP_INIT_CONFTEST.format(app_name=app_name),
+        ),
+    ]
+
+    # Ensure the empty tests/entities/ directory exists (no file, just the dir)
+    entities_dir = resolved.parent / "tests" / "entities"
+    entities_dir.mkdir(parents=True, exist_ok=True)
+
+    created: List[Path] = []
+    skipped: List[Path] = []
+    for dest, content in files:
+        if _write_app_init_file(dest, content, force):
+            created.append(dest)
+        else:
+            skipped.append(dest)
+
+    for path in created:
+        click.echo(f"  created  {path}")
+    for path in skipped:
+        click.echo(f"  skipped  {path} (already exists — use --force to overwrite)")
+
+    click.echo()
+    click.echo(f"App scaffolded at `{resolved}`")
+    click.echo()
+    click.echo("Next steps:")
+    click.echo(f"  cd {resolved.parent}")
+    click.echo("  kindling run bronze.sample_pipe   # run your first pipeline locally")
+    click.echo("  kindling validate                  # check entity and pipe wiring")
+
+
 @app_group.command("package")
 @click.argument(
     "app_path",
