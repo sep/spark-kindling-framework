@@ -1,5 +1,7 @@
 """CLI entrypoint for Kindling design-time tooling."""
 
+import csv
+import io
 import json
 import os
 import sys
@@ -2248,6 +2250,412 @@ def app_cleanup(app_name: str, platform: Optional[str], json_output: bool) -> No
         json_output,
         f"Deleted app `{app_name}` on {resolved_platform}.",
     )
+
+
+# =============================================================================
+# entity — inspect and validate entity data locally
+# =============================================================================
+
+# [implementer] entity show/validate and app inspect --entities — ki-9bw
+
+
+def _fixture_csv_path(entity_id: str, cwd: Path) -> Optional[Path]:
+    """Return the tests/entities/ fixture CSV path for entity_id if it exists."""
+    parts = [p for p in entity_id.split(".") if p]
+    if len(parts) > 1:
+        relative = Path(*parts[:-1]) / f"{parts[-1]}.csv"
+    else:
+        relative = Path(f"{parts[0]}.csv")
+    candidate = cwd / "tests" / "entities" / relative
+    return candidate if candidate.is_file() else None
+
+
+def _read_csv_rows(csv_path: Path) -> Tuple[List[str], List[List[str]]]:
+    """Read a CSV file and return (headers, rows).
+
+    Args:
+        csv_path: Path to the CSV file.
+
+    Returns:
+        Tuple of column headers list and list of row value lists.
+    """
+    text = csv_path.read_text(encoding="utf-8")
+    reader = csv.reader(io.StringIO(text))
+    rows_iter = iter(reader)
+    try:
+        headers = next(rows_iter)
+    except StopIteration:
+        return [], []
+    rows = list(rows_iter)
+    return headers, rows
+
+
+def _resolve_entity_info(entity_id: str, entity_def: Any) -> Tuple[str, str]:
+    """Return (provider_type, provider_path) from entity metadata tags.
+
+    Args:
+        entity_id: Entity identifier.
+        entity_def: EntityMetadata object (or SimpleNamespace in tests).
+
+    Returns:
+        Tuple of provider type string and resolved path string.
+    """
+    tags = getattr(entity_def, "tags", {}) or {}
+    provider_type = tags.get("provider_type", "delta")
+    provider_path = tags.get("provider.path", tags.get("provider.location", "-"))
+    return provider_type, provider_path
+
+
+def _format_table(headers: List[str], rows: List[List[str]]) -> str:
+    """Render a list of rows as a fixed-width text table.
+
+    Args:
+        headers: Column header names.
+        rows: List of rows, each a list of string cell values.
+
+    Returns:
+        Formatted table string.
+    """
+    if not headers:
+        return "(no columns)"
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            if i < len(col_widths):
+                col_widths[i] = max(col_widths[i], len(str(cell)))
+
+    def _row_line(cells: List[str]) -> str:
+        return " | ".join(str(c).ljust(col_widths[i]) for i, c in enumerate(cells))
+
+    separator = "-+-".join("-" * w for w in col_widths)
+    lines = [_row_line(headers), separator]
+    for row in rows:
+        padded = list(row) + [""] * (len(headers) - len(row))
+        lines.append(_row_line(padded[: len(headers)]))
+    return "\n".join(lines)
+
+
+@cli.group("entity")
+def entity_group() -> None:
+    """Inspect and validate entity data during local development."""
+
+
+@entity_group.command("show")
+@click.argument("entity_id")
+@click.option("--env", "env", default="local", show_default=True, help="Configuration environment.")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py. Auto-discovered when omitted.",
+)
+@click.option(
+    "--limit",
+    default=20,
+    show_default=True,
+    type=int,
+    help="Maximum number of rows to display.",
+)
+@click.option("--count", "count_only", is_flag=True, help="Print row count only, no data.")
+def entity_show(
+    entity_id: str,
+    env: str,
+    app_path: Optional[Path],
+    limit: int,
+    count_only: bool,
+) -> None:
+    """Print the contents of an entity from its data source.
+
+    Reads entity data using the priority: tests/entities/ fixture CSV first,
+    then the registered provider configuration. Use --count to skip the table
+    and print only the row count.
+
+    \b
+    Examples:
+      kindling entity show bronze.orders
+      kindling entity show gold.summary --env dev --limit 50
+      kindling entity show bronze.orders --count
+    """
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env=env)
+
+    entity_registry = GlobalInjector.get(DataEntityRegistry)
+    entity_def = entity_registry.get_entity_definition(entity_id)
+    if entity_def is None:
+        known = sorted(entity_registry.get_entity_ids())
+        hint = f"\n  Known entities: {', '.join(known)}" if known else ""
+        raise click.ClickException(f"Entity '{entity_id}' is not registered.{hint}")
+
+    provider_type, provider_path = _resolve_entity_info(entity_id, entity_def)
+
+    # Priority 1 — tests/entities/ fixture CSV
+    cwd = Path.cwd()
+    fixture_path = _fixture_csv_path(entity_id, cwd)
+    data_source_label = f"Path: {provider_path}"
+    if fixture_path is not None:
+        provider_type = "csv (fixture)"
+        data_source_label = f"Fixture: {fixture_path.relative_to(cwd)}"
+        headers, all_rows = _read_csv_rows(fixture_path)
+        row_count = len(all_rows)
+        click.echo(
+            f"Entity: {entity_id}  [env: {env}]  Provider: {provider_type}  {data_source_label}"
+        )
+        click.echo(f"Rows: {row_count:,}")
+        if count_only:
+            return
+        display_rows = all_rows[:limit]
+        click.echo()
+        click.echo(_format_table(headers, display_rows))
+        if row_count > limit:
+            click.echo(f"\nShowing {limit} of {row_count:,} rows. Use --limit or --count for more.")
+        return
+
+    # Priority 2 — no fixture; show metadata only (Spark not available in CLI context)
+    click.echo(f"Entity: {entity_id}  [env: {env}]  Provider: {provider_type}  {data_source_label}")
+    click.echo(
+        "No tests/entities/ fixture found. "
+        "Live provider data requires a running Spark session.\n"
+        "Tip: create a fixture at "
+        f"tests/entities/{entity_id.replace('.', '/')}.csv to inspect data locally."
+    )
+
+
+@entity_group.command("validate")
+@click.argument("entity_id")
+@click.option("--env", "env", default="local", show_default=True, help="Configuration environment.")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py. Auto-discovered when omitted.",
+)
+def entity_validate(
+    entity_id: str,
+    env: str,
+    app_path: Optional[Path],
+) -> None:
+    """Run basic data quality checks against an entity's data source.
+
+    Checks performed:
+      row_count   ERROR if zero rows
+      null_check  WARN if nulls in columns tagged as key/required
+      schema_match WARN if fixture columns differ from entity schema
+
+    Exits 0 when all checks pass or only warnings; exits 1 on any ERROR.
+
+    \b
+    Examples:
+      kindling entity validate bronze.orders
+      kindling entity validate gold.summary --env dev
+    """
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env=env)
+
+    entity_registry = GlobalInjector.get(DataEntityRegistry)
+    entity_def = entity_registry.get_entity_definition(entity_id)
+    if entity_def is None:
+        known = sorted(entity_registry.get_entity_ids())
+        hint = f"\n  Known entities: {', '.join(known)}" if known else ""
+        raise click.ClickException(f"Entity '{entity_id}' is not registered.{hint}")
+
+    cwd = Path.cwd()
+    fixture_path = _fixture_csv_path(entity_id, cwd)
+    if fixture_path is None:
+        raise click.ClickException(
+            f"No tests/entities/ fixture found for '{entity_id}'. "
+            "Validation requires a local CSV fixture. "
+            f"Expected at: tests/entities/{entity_id.replace('.', '/')}.csv"
+        )
+
+    headers, all_rows = _read_csv_rows(fixture_path)
+    row_count = len(all_rows)
+
+    errors: List[str] = []
+    warnings: List[str] = []
+    results: List[Tuple[str, str, str]] = []  # (check_name, status_symbol, detail)
+
+    # Check 1 — row count
+    if row_count == 0:
+        errors.append("row_count")
+        results.append(("row_count", "x", "0 rows — ERROR: entity has no data"))
+    else:
+        results.append(("row_count", "ok", f"{row_count:,} rows"))
+
+    # Check 2 — null check on key/required columns
+    tags = getattr(entity_def, "tags", {}) or {}
+    merge_columns = getattr(entity_def, "merge_columns", []) or []
+    required_tag = tags.get("required_columns", "")
+    required_columns = {c.strip() for c in required_tag.split(",") if c.strip()}
+    key_columns = set(merge_columns) | required_columns
+
+    if key_columns and row_count > 0:
+        header_lower = {h.lower(): h for h in headers}
+        null_issues: List[str] = []
+        for col in sorted(key_columns):
+            canonical = header_lower.get(col.lower())
+            if canonical is None:
+                continue
+            col_idx = headers.index(canonical)
+            null_count = sum(
+                1 for row in all_rows if col_idx >= len(row) or row[col_idx].strip() == ""
+            )
+            if null_count > 0:
+                pct = null_count / row_count * 100
+                null_issues.append(f"column '{canonical}' has {null_count} nulls ({pct:.1f}%)")
+        if null_issues:
+            warnings.append("null_check")
+            results.append(("null_check", "warn", "; ".join(null_issues) + " — WARN"))
+        else:
+            results.append(("null_check", "ok", "no nulls in key/required columns"))
+    else:
+        results.append(("null_check", "ok", "no key/required columns to check"))
+
+    # Check 3 — schema match
+    schema = getattr(entity_def, "schema", None)
+    if schema is not None:
+        schema_fields = getattr(schema, "fields", None)
+        if schema_fields:
+            expected_names = {f.name.lower() for f in schema_fields}
+            actual_names = {h.lower() for h in headers}
+            missing = sorted(expected_names - actual_names)
+            extra = sorted(actual_names - expected_names)
+            drift_parts: List[str] = []
+            if missing:
+                drift_parts.append(f"missing columns: {', '.join(missing)}")
+            if extra:
+                drift_parts.append(f"extra columns: {', '.join(extra)}")
+            if drift_parts:
+                warnings.append("schema_match")
+                results.append(("schema_match", "warn", "; ".join(drift_parts) + " — WARN"))
+            else:
+                results.append(("schema_match", "ok", "all columns present"))
+        else:
+            results.append(("schema_match", "ok", "schema has no field list to compare"))
+    else:
+        results.append(("schema_match", "ok", "no schema registered"))
+
+    # Print results
+    click.echo(f"Entity: {entity_id}  [env: {env}]")
+    for check_name, symbol, detail in results:
+        if symbol == "ok":
+            prefix = "  ✓"
+        elif symbol == "warn":
+            prefix = "  ⚠"
+        else:
+            prefix = "  ✗"
+        click.echo(f"{prefix} {check_name:<20} {detail}")
+    click.echo()
+
+    if errors:
+        n_errors = len(errors)
+        n_warnings = len(warnings)
+        summary = f"{n_errors} error(s)"
+        if n_warnings:
+            summary += f", {n_warnings} warning(s)"
+        click.echo(f"{summary}. Entity needs attention.")
+        sys.exit(1)
+    elif warnings:
+        click.echo(f"{len(warnings)} warning(s). Entity may need attention.")
+    else:
+        click.echo("All checks passed.")
+
+
+# =============================================================================
+# app inspect — show entity resolution info
+# =============================================================================
+
+
+@app_group.command("inspect")
+@click.argument("app_name")
+@click.option("--env", "env", default="local", show_default=True, help="Configuration environment.")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py. Auto-discovered when omitted.",
+)
+@click.option(
+    "--entities",
+    "show_entities",
+    is_flag=True,
+    help="Show entity resolution table (provider, path, fixture override).",
+)
+def app_inspect(
+    app_name: str,
+    env: str,
+    app_path: Optional[Path],
+    show_entities: bool,
+) -> None:
+    """Show entity resolution information for a Kindling application.
+
+    Displays each registered entity with its provider type, resolved storage
+    path, and whether a tests/entities/ fixture override is active.
+
+    \b
+    Examples:
+      kindling app inspect fawkes --entities
+      kindling app inspect fawkes --entities --env dev
+    """
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env=env)
+
+    click.echo(f"App: {app_name}  [env: {env}]")
+
+    if not show_entities:
+        click.echo("Pass --entities to show entity resolution details.")
+        return
+
+    entity_registry = GlobalInjector.get(DataEntityRegistry)
+    entity_ids = sorted(entity_registry.get_entity_ids())
+
+    if not entity_ids:
+        click.echo("\n(no entities registered)")
+        return
+
+    cwd = Path.cwd()
+
+    # Collect rows for the table
+    table_headers = ["Entity", "Provider", "Path", "Fixture"]
+    table_rows: List[List[str]] = []
+    for eid in entity_ids:
+        entity_def = entity_registry.get_entity_definition(eid)
+        provider_type, provider_path = _resolve_entity_info(eid, entity_def)
+        fixture_path = _fixture_csv_path(eid, cwd)
+        if fixture_path is not None:
+            fixture_label = str(fixture_path.relative_to(cwd))
+        else:
+            fixture_label = "-"
+        table_rows.append([eid, provider_type, provider_path, fixture_label])
+
+    click.echo()
+    click.echo(_format_table(table_headers, table_rows))
 
 
 @cli.group("job")
