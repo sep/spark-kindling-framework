@@ -2,9 +2,12 @@
 CSV Entity Provider
 
 Read-only entity provider for CSV files using Spark's CSV reader.
+Includes FixtureCSVEntityProvider for auto-discovered tests/entities/ fixtures.
 """
 
-from typing import Any, Dict
+import logging
+from pathlib import Path
+from typing import Optional
 
 from injector import inject
 from pyspark.sql import DataFrame
@@ -14,6 +17,114 @@ from .entity_provider import BaseEntityProvider
 from .injection import GlobalInjector
 from .spark_config import get_or_create_spark_session
 from .spark_log_provider import PythonLoggerProvider
+
+_logger = logging.getLogger(__name__)
+
+
+def _entity_id_to_fixture_path(entity_id: str, base_dir: Path) -> Path:
+    """
+    Map an entity ID to its expected fixture CSV path under base_dir.
+
+    Dotted entity IDs map to nested directories:
+        bronze.orders  -> <base_dir>/bronze/orders.csv
+        orders         -> <base_dir>/orders.csv
+
+    Args:
+        entity_id: Entity identifier (may contain dots)
+        base_dir: Root directory to search under
+
+    Returns:
+        Expected Path for the fixture CSV file
+    """
+    parts = [p.strip() for p in entity_id.split(".") if p.strip()]
+    if not parts:
+        parts = [entity_id]
+    if len(parts) > 1:
+        relative = Path(*parts[:-1], f"{parts[-1]}.csv")
+    else:
+        relative = Path(f"{parts[0]}.csv")
+    return base_dir / relative
+
+
+def resolve_fixture_csv_path(entity_id: str, cwd: Path) -> Optional[Path]:
+    """
+    Return the fixture CSV path if it exists under tests/entities/ relative to cwd.
+
+    Returns None when the convention does not apply (file absent).
+
+    Args:
+        entity_id: Entity identifier (may contain dots)
+        cwd: Working directory from which kindling was invoked
+
+    Returns:
+        Absolute Path to the CSV fixture, or None if not found
+    """
+    base_dir = cwd / "tests" / "entities"
+    candidate = _entity_id_to_fixture_path(entity_id, base_dir)
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+class FixtureCSVEntityProvider(BaseEntityProvider):
+    """
+    Entity provider that reads a single fixture CSV file from tests/entities/.
+
+    This provider is instantiated per-entity during local execution when the
+    auto-discovery convention applies.  It is NOT registered as a singleton in
+    the DI container — callers construct it directly.
+
+    Raises:
+        ValueError: If the CSV exists but contains no data rows (headers only).
+    """
+
+    def __init__(self, csv_path: Path) -> None:
+        """
+        Args:
+            csv_path: Absolute path to the fixture CSV file.
+        """
+        self._csv_path = csv_path
+
+    def read_entity(self, entity_metadata: EntityMetadata) -> DataFrame:
+        """
+        Read the fixture CSV as a batch DataFrame.
+
+        Args:
+            entity_metadata: Entity metadata (used for error messages only).
+
+        Returns:
+            DataFrame containing the fixture data.
+
+        Raises:
+            ValueError: If the CSV has no data rows (headers only).
+        """
+        path_str = str(self._csv_path)
+        _logger.info(
+            "Reading fixture CSV for entity '%s' from %s",
+            entity_metadata.entityid,
+            path_str,
+        )
+
+        spark = get_or_create_spark_session()
+        df = (
+            spark.read.format("csv")
+            .option("header", True)
+            .option("inferSchema", True)
+            .load(path_str)
+        )
+
+        # Guard against headers-only fixtures to give a clear error early.
+        if df.count() == 0:
+            raise ValueError(
+                f"Entity '{entity_metadata.entityid}' fixture at {path_str} has no data rows. "
+                "Populate it before running."
+            )
+
+        return df
+
+    def check_entity_exists(self, entity_metadata: EntityMetadata) -> bool:
+        """Return True if the fixture file exists on disk."""
+        return self._csv_path.is_file()
 
 
 @GlobalInjector.singleton_autobind()
@@ -76,7 +187,8 @@ class CSVEntityProvider(BaseEntityProvider):
         path = config.get("path")
         if not path:
             raise ValueError(
-                f"CSV provider requires 'path' in tags (provider.path) for entity '{entity_metadata.entityid}'"
+                f"CSV provider requires 'path' in tags (provider.path) for entity "
+                f"'{entity_metadata.entityid}'"
             )
 
         # Extract CSV options with defaults
@@ -133,8 +245,11 @@ class CSVEntityProvider(BaseEntityProvider):
             # Load CSV
             df = reader.load(path)
 
+            row_count = df.count()
+            col_count = len(df.columns)
             self.logger.info(
-                f"Successfully read CSV entity '{entity_metadata.entityid}': {df.count()} rows, {len(df.columns)} columns"
+                f"Successfully read CSV entity '{entity_metadata.entityid}': "
+                f"{row_count} rows, {col_count} columns"
             )
 
             return df
@@ -161,7 +276,8 @@ class CSVEntityProvider(BaseEntityProvider):
 
         if not path:
             self.logger.warning(
-                f"Cannot check existence for entity '{entity_metadata.entityid}': no path in tags (provider.path)"
+                f"Cannot check existence for entity '{entity_metadata.entityid}': "
+                "no path in tags (provider.path)"
             )
             return False
 
