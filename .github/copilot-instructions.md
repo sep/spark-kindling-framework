@@ -2,29 +2,15 @@
 
 ## Mandatory — every session
 
-Read memory banks before starting any task:
-  .agent-memory/WORKSPACE.md
-  .agent-memory/ACTIVE_TASK.md
-  .agent-memory/DECISIONS.md
-  .agent-memory/CONVENTIONS.md
+This project uses the Gas Town harness and beads (`bd`) for workflow.
 
-Check .agent-memory/mailboxes/[your-role].md for pending work.
+Start by loading the current beads context:
 
-## Handoff format
+```bash
+bd prime
+bd ready --json
+```
 
-Append to .agent-memory/ACTIVE_TASK.md when handing off:
-  ## Handoff: [from] → [to] @ [timestamp]
-  **Did:** | **Touched:** | **Decided:** | **Need from you:** | **Blockers:**
-
-## Mailbox dispatch
-
-Write to next agent mailbox:
-  STATUS: PENDING
-  TASK: / FROM: / RECEIVED: / ## Instruction / ## Context Files / ## On Complete
-
-## Conventions
-
-Never deviate from .agent-memory/CONVENTIONS.md without a DECISIONS.md entry first.
 # Beads Issue Tracking
 
 This project uses [Beads (bd)](https://github.com/steveyegge/beads) for issue tracking.
