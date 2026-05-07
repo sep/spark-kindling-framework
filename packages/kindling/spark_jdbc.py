@@ -183,7 +183,7 @@ def create_sql_database(connection, dbname):
     BEGIN
         EXEC ('CREATE SCHEMA [{dbname}]')
     END
-    """
+    """  # nosec B608 — dbname is a developer-supplied schema identifier, not end-user input
 
     execute_ddl(connection, create_schema_statement)
 
