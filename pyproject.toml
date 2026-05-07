@@ -190,3 +190,10 @@ markers = [
 
 [tool.coverage.run]
 data_file = ".coverage"
+
+[tool.bandit]
+exclude_dirs = ["tests", "scripts"]
+skips = [
+    "B101",  # assert_used — fine in non-production code paths
+    "B603",  # subprocess_without_shell_equals_true — we control these calls
+]
