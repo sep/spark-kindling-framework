@@ -20,7 +20,7 @@ pip install spark-kindling-sdk
 
 - `kindling repo init` — scaffold a multi-package repo root with shared dev tooling
 - `kindling package init` — scaffold a package under `packages/<name>` in an existing repo
-- `kindling new` — convenience command that creates a repo plus its first package
+- `kindling project new` — convenience command that creates a repo plus its first package
 - `kindling config init` — generate a starter `settings.yaml`
 - `kindling config set <key> <value>` — set a config value using dot-notation
 - `kindling env check` — validate the local Python/config environment
@@ -29,6 +29,10 @@ pip install spark-kindling-sdk
 - `kindling workspace deploy` — upload the runtime wheel, bootstrap script, config, and notebooks to artifact storage
 - `kindling app package` — build a `.kda` archive from a local app directory
 - `kindling app deploy` — deploy an app directory or `.kda` package through the SDK
+- `kindling app run` — run a deployed app name, local app directory, or `.kda` package
+- `kindling app status` — fetch the current app run status
+- `kindling app logs` — fetch or stream app run logs
+- `kindling app cancel` — cancel an active app run
 - `kindling app cleanup` — remove a deployed app from remote storage
 - `kindling job create` — create a remote job from a YAML/JSON config file
 - `kindling job run` — start a job run, optionally with parameters
@@ -82,7 +86,7 @@ poetry run poe build
 The CI job fails if no package `pyproject.toml` files are found under
 `packages/`.
 
-For the single-package quick start, `kindling new my-pipeline` still works and
+For the single-package quick start, `kindling project new my-pipeline` still works and
 creates a repo with an initial package at `packages/my_pipeline/`.
 
 ## Related

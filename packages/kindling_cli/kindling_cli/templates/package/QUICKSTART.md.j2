@@ -5,9 +5,9 @@
 ```bash
 poetry install
 {%- if layers == "medallion" %}
-kindling run bronze_to_silver
+kindling pipeline run bronze_to_silver
 {%- else %}
-kindling run process
+kindling pipeline run process
 {%- endif %}
 ```
 
@@ -47,22 +47,14 @@ az login
 ```
 {% endif %}
 
-## Deploy as a job
+## Run remotely
 
 ```bash
-# Scaffold a job definition
-kindling job init
-
-# Edit job.yaml to set schedule, resources, and environment
-
-# Verify credentials before creating
+# Verify credentials before running
 kindling env check --platform <platform>
 
-# Create the job in the platform
-kindling job create job.yaml
-
-# Submit a run (blocks until complete)
-kindling job run <job_id> --wait
+# Run the app (blocks until complete)
+kindling app run . --platform <platform>
 ```
 
 ## Add more pipes and entities

@@ -5,9 +5,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from click.testing import CliRunner
+from kindling_cli.cli import _discover_app_py, cli
+
 from kindling.data_entities import DataEntities, DataEntityRegistry
 from kindling.data_pipes import DataPipes, DataPipesExecution, DataPipesRegistry
-from kindling_cli.cli import _discover_app_py, cli
 
 
 def _write_app(path: Path, body: str | None = None) -> Path:
@@ -61,7 +62,7 @@ def test_discover_app_py_uses_explicit_override():
 def test_discover_app_py_missing_override_raises_clear_error():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli, ["run", "pipe.one", "--app", "missing/app.py"])
+        result = runner.invoke(cli, ["pipeline", "run", "pipe.one", "--app", "missing/app.py"])
 
         assert result.exit_code != 0
         assert "app.py not found at:" in result.output
@@ -72,7 +73,7 @@ def test_discover_app_py_missing_auto_discovery_raises_clear_error():
     with runner.isolated_filesystem():
         Path("config").mkdir()
         Path("config/settings.yaml").write_text("name: test\n", encoding="utf-8")
-        result = runner.invoke(cli, ["run", "pipe.one"])
+        result = runner.invoke(cli, ["pipeline", "run", "pipe.one"])
 
         assert result.exit_code != 0
         assert "Could not find app.py" in result.output
@@ -104,14 +105,14 @@ def test_run_pipe_happy_path_calls_registered_executor(monkeypatch):
 
         result = runner.invoke(
             cli,
-            ["run", "bronze_to_silver", "--env", "dev", "--app", str(app_path)],
+            ["pipeline", "run", "bronze_to_silver", "--env", "dev", "--app", str(app_path)],
         )
 
     assert result.exit_code == 0
     assert "Running pipe: bronze_to_silver" in result.output
     assert "completed successfully" in result.output
     assert "Note: --env dev controls config loading only" in result.output
-    assert "kindling job run" in result.output
+    assert "kindling app run" in result.output
     pipe_registry.get_pipe_definition.assert_called_once_with("bronze_to_silver")
     executor.run_datapipes.assert_called_once_with(["bronze_to_silver"], no_watermark=False)
 
@@ -135,12 +136,12 @@ def test_run_pipe_local_env_no_warning(monkeypatch):
         app_path = _write_app(Path("app.py"))
         result = runner.invoke(
             cli,
-            ["run", "bronze_to_silver", "--env", "local", "--app", str(app_path)],
+            ["pipeline", "run", "bronze_to_silver", "--env", "local", "--app", str(app_path)],
         )
 
     assert result.exit_code == 0
     assert "Note:" not in result.output
-    assert "kindling job run" not in result.output
+    assert "kindling app run" not in result.output
 
 
 def test_run_pipe_kindling_env_var_no_warning(monkeypatch):
@@ -164,12 +165,12 @@ def test_run_pipe_kindling_env_var_no_warning(monkeypatch):
         app_path = _write_app(Path("app.py"))
         result = runner.invoke(
             cli,
-            ["run", "bronze_to_silver", "--app", str(app_path)],
+            ["pipeline", "run", "bronze_to_silver", "--app", str(app_path)],
         )
 
     assert result.exit_code == 0
     assert "Note:" not in result.output
-    assert "kindling job run" not in result.output
+    assert "kindling app run" not in result.output
 
 
 def test_run_pipe_unknown_pipe_lists_available_pipes(monkeypatch):
@@ -187,7 +188,7 @@ def test_run_pipe_unknown_pipe_lists_available_pipes(monkeypatch):
 
     with runner.isolated_filesystem():
         app_path = _write_app(Path("app.py"))
-        result = runner.invoke(cli, ["run", "missing_pipe", "--app", str(app_path)])
+        result = runner.invoke(cli, ["pipeline", "run", "missing_pipe", "--app", str(app_path)])
 
     assert result.exit_code != 0
     assert "Pipe 'missing_pipe' not found" in result.output
@@ -229,7 +230,7 @@ def test_validate_good_registry_checks_pass(monkeypatch):
 
     with runner.isolated_filesystem():
         app_path = _write_app(Path("app.py"))
-        result = runner.invoke(cli, ["validate", "--app", str(app_path)])
+        result = runner.invoke(cli, ["app", "validate", "--app", str(app_path)])
 
     assert result.exit_code == 0
     assert "[PASS] entities_registered" in result.output
@@ -274,7 +275,7 @@ def test_validate_env_option_is_passed_to_app_initialize(monkeypatch):
             "def initialize(env=None, config_dir=None):\n"
             "    Path('seen-env.txt').write_text(env or '', encoding='utf-8')\n",
         )
-        result = runner.invoke(cli, ["validate", "--env", "dev", "--app", str(app_path)])
+        result = runner.invoke(cli, ["app", "validate", "--env", "dev", "--app", str(app_path)])
 
         assert Path("seen-env.txt").read_text(encoding="utf-8") == "dev"
 
@@ -310,7 +311,7 @@ def test_validate_bad_registry_checks_fail_with_missing_references(monkeypatch):
 
     with runner.isolated_filesystem():
         app_path = _write_app(Path("app.py"))
-        result = runner.invoke(cli, ["validate", "--app", str(app_path)])
+        result = runner.invoke(cli, ["app", "validate", "--app", str(app_path)])
 
     assert result.exit_code != 0
     assert "[FAIL] pipe.bronze_to_silver.input_entities: missing: bronze.records" in result.output
@@ -351,13 +352,14 @@ def test_new_project_run_reaches_pipe_execution_with_mock_executor(monkeypatch):
 
     with runner.isolated_filesystem():
         try:
-            result_new = runner.invoke(cli, ["new", "logistics-data"])
+            result_new = runner.invoke(cli, ["project", "new", "logistics-data"])
             assert result_new.exit_code == 0, result_new.output
 
             package_dir = Path("logistics_data/packages/logistics_data")
             result_run = runner.invoke(
                 cli,
                 [
+                    "pipeline",
                     "run",
                     "bronze_to_silver",
                     "--env",
@@ -404,7 +406,7 @@ def test_env_check_falls_back_to_root_settings_yaml():
 def test_new_project_next_steps_use_single_cd():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli, ["new", "demo-project", "--no-integration"])
+        result = runner.invoke(cli, ["project", "new", "demo-project", "--no-integration"])
 
     assert result.exit_code == 0
     assert "  cd demo_project/packages/demo_project" in result.output
@@ -465,7 +467,7 @@ def test_pipeline_run_unknown_pipe_lists_available_pipes(monkeypatch):
     assert result.exit_code != 0
     assert "Pipe 'missing_pipe' not found" in result.output
     assert "bronze.ingest, silver.stage" in result.output
-    assert "kindling pipeline list" in result.output
+    assert "kindling app validate" in result.output
 
 
 def test_pipeline_run_no_watermark_flag_passed_to_executor(monkeypatch):
@@ -497,7 +499,7 @@ def test_pipeline_run_no_watermark_flag_passed_to_executor(monkeypatch):
 
 
 def test_run_pipe_no_watermark_flag_passed_to_executor(monkeypatch):
-    """--no-watermark on kindling run is forwarded to run_datapipes."""
+    """--no-watermark on kindling pipeline run is forwarded to run_datapipes."""
     runner = CliRunner()
     pipe_registry = Mock()
     pipe_registry.get_pipe_definition.return_value = SimpleNamespace(pipeid="bronze_to_silver")
@@ -516,7 +518,7 @@ def test_run_pipe_no_watermark_flag_passed_to_executor(monkeypatch):
         app_path = _write_app(Path("app.py"))
         result = runner.invoke(
             cli,
-            ["run", "bronze_to_silver", "--no-watermark", "--app", str(app_path)],
+            ["pipeline", "run", "bronze_to_silver", "--no-watermark", "--app", str(app_path)],
         )
 
     assert result.exit_code == 0, result.output

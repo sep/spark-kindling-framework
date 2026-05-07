@@ -54,16 +54,16 @@ Use `kindling run` to execute a pipe from your local package without deploying:
 
 ```bash
 # Run from the package directory — app.py is auto-discovered
-kindling run bronze_to_silver
+kindling pipeline run bronze_to_silver
 
 # Explicit app path and environment overlay
-kindling run bronze_to_silver --app src/my_pipeline/app.py --env local
+kindling pipeline run bronze_to_silver --app src/my_pipeline/app.py --env local
 ```
 
-Use `kindling validate` to check entity/pipe wiring without starting Spark:
+Use `kindling app validate` to check entity/pipe wiring without starting Spark:
 
 ```bash
-kindling validate
+kindling app validate
 ```
 
 See [Local Python-First Development](local_python_first.md) for full details on
@@ -74,14 +74,13 @@ both commands, the memory-first scaffold, and `KindlingNotInitializedError`.
 The CLI exposes design-time lifecycle commands beyond config/workspace:
 
 ```bash
-kindling app package <app-dir>
-kindling app deploy <app-dir-or-kda> --platform fabric
+kindling app package <app-path>
+kindling app deploy --local-folder <app-dir> --platform fabric
 kindling app cleanup <app-name> --platform fabric
-kindling job create job.yaml --platform synapse
-kindling job run <job-id> --platform synapse
-kindling job status <run-id> --platform synapse
-kindling job logs <run-id> --platform synapse
-kindling job cancel <run-id> --platform synapse
+kindling app run <app-name-or-path> --platform synapse
+kindling app status <run-id> --platform synapse
+kindling app logs <run-id> --platform synapse
+kindling app cancel <run-id> --platform synapse
 kindling job delete <job-id> --platform synapse
 ```
 
