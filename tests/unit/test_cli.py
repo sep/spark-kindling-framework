@@ -1318,7 +1318,7 @@ class TestEnvCheckLocal:
 
 
 class TestAppRunCommand:
-    """Tests for `kindling app run` — the single-command remote app workflow."""
+    """Tests for `kindling app run` — local standalone and remote app workflows."""
 
     def _make_mock_api(self):
         from unittest.mock import MagicMock
@@ -1333,6 +1333,54 @@ class TestAppRunCommand:
         api.run_job.return_value = "run-42"
         api.get_job_status.return_value = {"state": "SUCCEEDED"}
         return api
+
+    def test_standalone_default_runs_all_registered_pipes(self, tmp_path, monkeypatch):
+        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
+        from kindling.injection import GlobalInjector
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text(
+            "def initialize(env=None):\n    return None\n",
+            encoding="utf-8",
+        )
+
+        pipe_registry = types.SimpleNamespace(
+            get_pipe_ids=lambda: ["silver.stage", "bronze.ingest"]
+        )
+        executor = types.SimpleNamespace(calls=[])
+
+        def run_datapipes(pipe_ids, **kwargs):
+            executor.calls.append((pipe_ids, kwargs))
+
+        executor.run_datapipes = run_datapipes
+
+        def fake_get(service_type):
+            if service_type is DataPipesRegistry:
+                return pipe_registry
+            if service_type is DataPipesExecution:
+                return executor
+            raise AssertionError(f"unexpected service: {service_type!r}")
+
+        monkeypatch.setattr(GlobalInjector, "get", fake_get)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["app", "run", str(app_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert "standalone" in result.output
+        assert executor.calls == [(["bronze.ingest", "silver.stage"], {"use_dag": True})]
+
+    def test_standalone_rejects_remote_only_options(self, tmp_path):
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("def initialize(env=None):\n    return None\n")
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["app", "run", str(app_dir), "--no-wait"])
+
+        assert result.exit_code != 0
+        assert "remote app runs" in result.output
 
     def test_submit_no_wait_returns_run_id(self, tmp_path, monkeypatch):
         import kindling_cli.cli as cli_mod
@@ -1419,7 +1467,7 @@ class TestAppRunCommand:
 
         assert result.exit_code == 0, result.output
 
-    def test_submit_requires_platform_or_env_var(self, tmp_path, monkeypatch):
+    def test_remote_submit_requires_platform_or_env_var(self, tmp_path, monkeypatch):
         import kindling_cli.cli as cli_mod
 
         monkeypatch.delenv("SYNAPSE_WORKSPACE_NAME", raising=False)
@@ -1431,10 +1479,19 @@ class TestAppRunCommand:
         (app_dir / "app.py").write_text("# app")
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["app", "run", str(app_dir)])
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "run",
+                str(app_dir),
+                "--platform",
+                "synapse",
+            ],
+        )
 
         assert result.exit_code != 0
-        assert "platform" in result.output.lower()
+        assert "SYNAPSE_WORKSPACE_NAME" in result.output
 
 
 def test_job_init_writes_job_yaml():

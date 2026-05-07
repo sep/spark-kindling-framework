@@ -29,10 +29,10 @@ pip install spark-kindling-sdk
 - `kindling workspace deploy` — upload the runtime wheel, bootstrap script, config, and notebooks to artifact storage
 - `kindling app package` — build a `.kda` archive from a local app directory
 - `kindling app deploy` — deploy an app directory or `.kda` package through the SDK
-- `kindling app run` — run a deployed app name, local app directory, or `.kda` package
-- `kindling app status` — fetch the current app run status
-- `kindling app logs` — fetch or stream app run logs
-- `kindling app cancel` — cancel an active app run
+- `kindling app run` — run all local app pipes on `standalone`, or run remotely with `--platform synapse|fabric|databricks`
+- `kindling app status` — fetch the current remote app run status
+- `kindling app logs` — fetch or stream remote app run logs
+- `kindling app cancel` — cancel an active remote app run
 - `kindling app cleanup` — remove a deployed app from remote storage
 - `kindling job create` — create a remote job from a YAML/JSON config file
 - `kindling job run` — start a job run, optionally with parameters

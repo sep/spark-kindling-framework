@@ -447,7 +447,7 @@ kindling app cleanup orders
 so that I can observe the run without separate log polling.
 
 ```bash
-kindling app run orders --env dev
+kindling app run orders --platform synapse --env dev
 ```
 
 **As a developer, I want to deploy my local app and run it in one command**
@@ -468,7 +468,7 @@ kindling pipeline run bronze.ingest_orders --app orders --env dev
 so that I can execute the full medallion chain (bronze → silver → gold) without manually sequencing each layer.
 
 ```bash
-kindling app run myproject --env dev
+kindling app run ./myproject --platform standalone --env dev
 ```
 
 When no `--pipeline` is specified, `app run` executes all registered pipes in topological order based on their declared input/output entity dependencies. Bronze ingestion runs first, its output feeds silver staging, silver output feeds gold curation.
@@ -477,15 +477,15 @@ When no `--pipeline` is specified, `app run` executes all registered pipes in to
 so that I can vary inputs like date ranges or batch sizes without changing config files.
 
 ```bash
-kindling app run orders --parameters params.yaml
-kindling app run orders --param start_date=2026-01-01 --param batch_size=500
+kindling app run orders --platform synapse --parameters params.yaml
+kindling app run orders --platform synapse --param start_date=2026-01-01 --param batch_size=500
 ```
 
 **As a developer, I want to start a run and get the run id immediately without waiting**
 so that I can submit multiple runs in parallel from a script.
 
 ```bash
-kindling app run orders --no-wait --json
+kindling app run orders --platform synapse --no-wait --json
 ```
 
 **As a developer, I want to check the status of a run by its run id**
@@ -549,7 +549,7 @@ kindling runner delete
 so that I can parse run results and fail the build on error.
 
 ```bash
-kindling app run dist/orders.kda --no-wait --json > run.json
+kindling app run dist/orders.kda --platform synapse --no-wait --json > run.json
 RUN_ID=$(jq -r '.run_id' run.json)
 kindling app status $RUN_ID --poll --json
 ```
@@ -587,7 +587,7 @@ kindling app deploy --kda-package dist/orders.kda --platform synapse
 so that CI does not leave stale data in shared dev storage.
 
 ```bash
-kindling app cleanup orders --env ci
+kindling app cleanup orders --platform synapse
 ```
 
 **As a CI pipeline, I want to ensure the runner is installed before running jobs**
@@ -595,7 +595,7 @@ so that a missing runner does not cause an obscure failure inside `app run`.
 
 ```bash
 kindling runner ensure --platform synapse
-kindling app run orders --no-wait --json
+kindling app run orders --platform synapse --no-wait --json
 ```
 
 ---

@@ -4,11 +4,7 @@
 
 ```bash
 poetry install
-{%- if layers == "medallion" %}
-kindling pipeline run bronze_to_silver
-{%- else %}
-kindling pipeline run process
-{%- endif %}
+kindling app run .
 ```
 
 ## Run tests
@@ -50,10 +46,13 @@ az login
 ## Run remotely
 
 ```bash
-# Verify credentials before running
+# Run locally with standalone Spark
+kindling app run . --platform standalone
+
+# Verify credentials before running remotely
 kindling env check --platform <platform>
 
-# Run the app (blocks until complete)
+# Run remotely (blocks until complete)
 kindling app run . --platform <platform>
 ```
 
