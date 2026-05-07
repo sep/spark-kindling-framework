@@ -429,7 +429,7 @@ kindling app deploy --kda-package dist/orders.kda --platform synapse --env prod
 so that I know whether my local changes are reflected in the remote environment.
 
 ```bash
-kindling app status orders --deployed
+kindling app inspect orders --env dev
 ```
 
 **As a developer, I want to clean up deployed app artifacts for an old app version**
@@ -551,7 +551,7 @@ so that I can parse run results and fail the build on error.
 ```bash
 kindling app run dist/orders.kda --platform synapse --no-wait --json > run.json
 RUN_ID=$(jq -r '.run_id' run.json)
-kindling app status $RUN_ID --poll --json
+kindling app status $RUN_ID --platform synapse
 ```
 
 **As a CI pipeline, I want a single command that deploys and runs, waits for completion, and exits non-zero on failure**
@@ -671,5 +671,5 @@ kindling app deploy --kda-package dist/orders.kda --platform synapse --env prod
 so that I can roll back to it if the current version is broken.
 
 ```bash
-kindling app status orders --env prod --deployed
+kindling app inspect orders --env prod
 ```
