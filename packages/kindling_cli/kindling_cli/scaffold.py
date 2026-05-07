@@ -97,7 +97,7 @@ def _make_env(template_dir: Optional[Path]) -> jinja2.Environment:
     if template_dir:
         loaders.append(jinja2.FileSystemLoader(str(template_dir)))
     loaders.append(jinja2.FileSystemLoader(str(_BUILTIN_TEMPLATES)))
-    return jinja2.Environment(
+    return jinja2.Environment(  # nosec B701 — generates code/YAML, not HTML; autoescape would corrupt templates
         loader=jinja2.ChoiceLoader(loaders),
         keep_trailing_newline=True,
         undefined=jinja2.StrictUndefined,
