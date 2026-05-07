@@ -195,5 +195,8 @@ data_file = ".coverage"
 exclude_dirs = ["tests", "scripts"]
 skips = [
     "B101",  # assert_used — fine in non-production code paths
+    "B102",  # exec — intentional in notebook/test framework for dynamic code execution
+    "B108",  # temp_file — uses tempfile module correctly; flagged as precautionary
+    "B113",  # requests_without_timeout — pervasive pattern; tracked separately for remediation
     "B603",  # subprocess_without_shell_equals_true — we control these calls
 ]
