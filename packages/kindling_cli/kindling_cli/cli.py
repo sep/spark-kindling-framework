@@ -15,6 +15,7 @@ import click
 import yaml
 
 SUPPORTED_PLATFORMS = ("databricks", "fabric", "synapse")
+APP_RUN_PLATFORMS = ("standalone", *SUPPORTED_PLATFORMS)
 
 AZURE_CLOUD_CONFIGS = {
     "AzurePublicCloud": {
@@ -444,6 +445,31 @@ def _discover_app_py(app_path: Optional[Path]) -> Path:
         listed = "\n  ".join(str(p) for p in found)
         raise click.ClickException(
             f"Multiple app.py files found — pass --app to select one:\n  {listed}"
+        )
+    return found[0]
+
+
+def _discover_app_py_under(app_root: Path) -> Path:
+    """Discover app.py below an explicit app root."""
+    root = app_root.expanduser().resolve()
+    if root.is_file():
+        return root
+
+    candidates = [
+        root / "app.py",
+        *sorted((root / "src").glob("*/app.py")),
+        *sorted((root / "packages").glob("*/src/*/app.py")),
+    ]
+    found = [candidate.resolve() for candidate in candidates if candidate.exists()]
+    if not found:
+        raise click.ClickException(
+            f"Could not find app.py under `{root}`. "
+            "Pass a local app directory, repo root, package root, or app.py path."
+        )
+    if len(found) > 1:
+        listed = "\n  ".join(str(path) for path in found)
+        raise click.ClickException(
+            f"Multiple app.py files found under `{root}` - pass the app.py path to select one:\n  {listed}"
         )
     return found[0]
 
@@ -2582,7 +2608,7 @@ def app_init(app_path: Path, template: str, force: bool) -> None:  # pylint: dis
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd {resolved.parent}")
-    click.echo("  kindling pipeline run bronze.sample_pipe   # run your first pipeline locally")
+    click.echo("  kindling app run .                         # run the app locally")
     click.echo("  kindling app validate                       # check entity and pipe wiring")
 
 
@@ -2846,6 +2872,75 @@ def _run_remote_app(
     _emit_result(payload, json_output, f"Run `{run_id}` completed with state {state}.")
 
 
+# pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+# pylint: disable=import-outside-toplevel,broad-exception-caught
+def _run_standalone_app(
+    app_ref: str,
+    env: Optional[str],
+    parameters_path: Optional[Path],
+    param_overrides: Tuple[str, ...],
+    no_logs: bool,
+    no_wait: bool,
+    json_output: bool,
+) -> None:
+    """Run all registered app pipes locally with the standalone runtime."""
+    if parameters_path or param_overrides:
+        raise click.ClickException(
+            "Runtime parameters are not supported for standalone app runs yet."
+        )
+    if no_logs:
+        raise click.ClickException("--no-logs is only valid for remote app runs.")
+    if no_wait:
+        raise click.ClickException("--no-wait is only valid for remote app runs.")
+
+    try:
+        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    source_path = Path(app_ref).expanduser()
+    if not source_path.exists():
+        raise click.ClickException(
+            f"Standalone app runs require a local app path. `{app_ref}` was not found."
+        )
+    if source_path.is_file() and source_path.suffix.lower() == ".kda":
+        raise click.ClickException(
+            "Standalone app runs require an unpacked local app directory or app.py path, not a .kda package."
+        )
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py_under(source_path)
+    _load_app_module(resolved_app, resolved_env)
+
+    registry = GlobalInjector.get(DataPipesRegistry)
+    pipe_ids = sorted(registry.get_pipe_ids())
+    if not pipe_ids:
+        raise click.ClickException("No pipes registered for this app.")
+
+    click.echo(f"Running app locally with standalone platform: {len(pipe_ids)} pipe(s).")
+    executer = GlobalInjector.get(DataPipesExecution)
+    try:
+        executer.run_datapipes(pipe_ids, use_dag=True)
+    except Exception as exc:
+        raise click.ClickException(f"App run failed: {exc}") from exc
+
+    payload = {
+        "app_path": str(resolved_app),
+        "environment": resolved_env,
+        "platform": "standalone",
+        "pipes": pipe_ids,
+        "succeeded": True,
+    }
+    _emit_result(
+        payload,
+        json_output,
+        f"App completed successfully ({len(pipe_ids)} pipe(s)).",
+    )
+
+
 @app_group.command("run")
 @click.argument("app", required=True)
 @click.option("--app-name", default=None, help="App name to use when APP is a local path.")
@@ -2865,9 +2960,10 @@ def _run_remote_app(
 )
 @click.option(
     "--platform",
-    type=click.Choice(SUPPORTED_PLATFORMS),
-    default=None,
-    help="Target platform. Auto-detected from environment if omitted.",
+    type=click.Choice(APP_RUN_PLATFORMS),
+    default="standalone",
+    show_default=True,
+    help="Execution platform. Use standalone for local runs; cloud platforms run remotely.",
 )
 @click.option("--no-logs", is_flag=True, default=False, help="Skip log streaming.")
 @click.option("--no-wait", is_flag=True, default=False, help="Return immediately after starting.")
@@ -2894,7 +2990,21 @@ def app_run(
     fail_on_error: bool,
     json_output: bool,
 ) -> None:
-    """Run a deployed app name, local app directory, or .kda package."""
+    """Run an app locally with standalone or remotely on a managed platform."""
+    if platform == "standalone":
+        if app_name:
+            raise click.ClickException("--app-name is only valid for remote app runs.")
+        _run_standalone_app(
+            app,
+            env,
+            parameters_path,
+            param_overrides,
+            no_logs,
+            no_wait,
+            json_output,
+        )
+        return
+
     _run_remote_app(
         app,
         app_name,
@@ -4884,13 +4994,12 @@ def package_init(
     except Exception as exc:
         raise click.ClickException(f"Package scaffold failed: {exc}") from exc
 
-    pipe_name = "bronze_to_silver" if cfg.layers == "medallion" else "process"
     click.echo(f"✓ Created packages/{cfg.snake_name}/")
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd packages/{cfg.snake_name}")
     click.echo("  poetry install")
-    click.echo(f"  kindling pipeline run {pipe_name}        # run your first pipeline locally")
+    click.echo("  kindling app run .                       # run the app locally")
     click.echo("  poetry run poe test                  # run the test suite")
     click.echo("  kindling job init                    # scaffold a deployment config when ready")
 
@@ -5015,13 +5124,12 @@ def new_project(
     except Exception as exc:
         raise click.ClickException(f"Scaffold failed: {exc}") from exc
 
-    pipe_name = "bronze_to_silver" if cfg.layers == "medallion" else "process"
     click.echo(f"✓ Created {cfg.snake_name}/")
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd {cfg.snake_name}/packages/{cfg.snake_name}")
     click.echo("  poetry install")
-    click.echo(f"  kindling pipeline run {pipe_name}        # run your first pipeline locally")
+    click.echo("  kindling app run .                       # run the app locally")
     click.echo("  poetry run poe test                  # run the test suite")
     click.echo("  kindling job init                    # scaffold a deployment config when ready")
 
