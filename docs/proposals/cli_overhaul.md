@@ -1,10 +1,17 @@
 # Kindling CLI Overhaul Proposal
 
 **Date:** 2026-05-05
-**Status:** Proposal
+**Status:** Historical proposal
 **Scope:** CLI command model, app/pipeline execution, runner job lifecycle, command consistency
 
 ---
+
+> This proposal is retained as design history. The current CLI has moved to a
+> consistent `kindling <noun> <verb>` surface where `kindling app run <path>`
+> defaults to local standalone execution, and remote execution is explicit with
+> `--platform synapse|fabric|databricks`. There is no `app run --deploy` or
+> `app run --pipeline`; use `kindling app deploy`, `kindling app run`, and
+> `kindling pipeline run` as separate noun/verb commands.
 
 ## Executive Summary
 

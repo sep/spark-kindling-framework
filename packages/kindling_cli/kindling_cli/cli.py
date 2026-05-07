@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import logging
 import os
 import sys
 import time
@@ -177,6 +178,23 @@ def _emit_result(data: Dict[str, Any], json_output: bool, human_message: str) ->
         _emit_json(data)
     else:
         click.echo(human_message)
+
+
+def _emit_progress(message: str, json_output: bool = False) -> None:
+    """Emit progress without contaminating JSON stdout."""
+    click.echo(message, err=json_output)
+
+
+def _configure_quiet_logging() -> None:
+    """Suppress framework info logs for local interactive runs."""
+    logging.disable(logging.INFO)
+    # Kindling's SparkLogProvider uses print() when print_logging=True,
+    # bypassing logging.disable(). The config is loaded via Dynaconf with
+    # envvar_prefix="KINDLING" and __ as the nested-key separator, and
+    # _translate_yaml_to_flat reads kindling.TELEMETRY.logging.* — so we
+    # must override the nested YAML keys, not the flat bootstrap keys.
+    os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__PRINT", "false")
+    os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__LEVEL", "WARNING")
 
 
 def _status_value(status: Dict[str, Any]) -> str:
@@ -644,22 +662,13 @@ def _run_local_pipe(
         ) from exc
 
     if quiet:
-        import logging
-
-        logging.disable(logging.INFO)
-        # Kindling's SparkLogProvider uses print() when print_logging=True,
-        # bypassing logging.disable(). The config is loaded via Dynaconf with
-        # envvar_prefix="KINDLING" and __ as the nested-key separator, and
-        # _translate_yaml_to_flat reads kindling.TELEMETRY.logging.* — so we
-        # must override the nested YAML keys, not the flat bootstrap keys.
-        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__PRINT", "false")
-        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__LEVEL", "WARNING")
+        _configure_quiet_logging()
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
     if env is not None and env != "local":
         click.echo(
             f"Note: --env {env} controls config loading only. "
-            "To run remotely use: kindling app run <app>"
+            "To run remotely use: kindling app run <app> --platform <platform>"
         )
     if app_path is None and config_dir is None and not Path("config/settings.yaml").exists():
         raise click.ClickException(
@@ -2804,16 +2813,20 @@ def _run_remote_app(
         resolved_app_path = source_path.resolve()
         app_files = _prepare_app_files(resolved_app_path)
         file_count = len(app_files)
-        click.echo(
+        _emit_progress(
             f"[1/3] Deploying {len(app_files)} file(s) as `{resolved_name}` "
-            f"on {resolved_platform}..."
+            f"on {resolved_platform}...",
+            json_output,
         )
         storage_path = api_client.deploy_app(resolved_name, app_files)
     else:
-        click.echo(f"[1/2] Using deployed app `{resolved_name}` on {resolved_platform}...")
+        _emit_progress(
+            f"[1/2] Using deployed app `{resolved_name}` on {resolved_platform}...",
+            json_output,
+        )
 
     step_prefix = "[2/3]" if has_local_source else "[1/2]"
-    click.echo(f"{step_prefix} Creating job definition `{resolved_name}`...")
+    _emit_progress(f"{step_prefix} Creating job definition `{resolved_name}`...", json_output)
     job_config: Dict[str, Any] = {"app_name": resolved_name}
     if env:
         job_config["environment"] = env
@@ -2821,9 +2834,9 @@ def _run_remote_app(
     job_id = str(job_result.get("job_id") or resolved_name)
 
     step_prefix = "[3/3]" if has_local_source else "[2/2]"
-    click.echo(f"{step_prefix} Starting app run...")
+    _emit_progress(f"{step_prefix} Starting app run...", json_output)
     run_id = api_client.run_job(job_id, parameters=parameters or None)
-    click.echo(f"Run ID: {run_id}")
+    _emit_progress(f"Run ID: {run_id}", json_output)
 
     payload: Dict[str, Any] = {
         "app_name": resolved_name,
@@ -2850,7 +2863,7 @@ def _run_remote_app(
             api_client.stream_stdout_logs(
                 job_id=job_id,
                 run_id=run_id,
-                callback=click.echo,
+                callback=(lambda line: click.echo(line, err=True)) if json_output else click.echo,
                 poll_interval=poll_interval,
                 max_wait=timeout,
             )
@@ -2877,6 +2890,8 @@ def _run_remote_app(
 def _run_standalone_app(
     app_ref: str,
     env: Optional[str],
+    config_dir: Optional[Path],
+    quiet: bool,
     parameters_path: Optional[Path],
     param_overrides: Tuple[str, ...],
     no_logs: bool,
@@ -2892,6 +2907,8 @@ def _run_standalone_app(
         raise click.ClickException("--no-logs is only valid for remote app runs.")
     if no_wait:
         raise click.ClickException("--no-wait is only valid for remote app runs.")
+    if quiet:
+        _configure_quiet_logging()
 
     try:
         from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
@@ -2908,19 +2925,23 @@ def _run_standalone_app(
         )
     if source_path.is_file() and source_path.suffix.lower() == ".kda":
         raise click.ClickException(
-            "Standalone app runs require an unpacked local app directory or app.py path, not a .kda package."
+            "Standalone app runs require an unpacked local app directory or "
+            "app.py path, not a .kda package."
         )
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
     resolved_app = _discover_app_py_under(source_path)
-    _load_app_module(resolved_app, resolved_env)
+    _load_app_module(resolved_app, resolved_env, config_dir)
 
     registry = GlobalInjector.get(DataPipesRegistry)
     pipe_ids = sorted(registry.get_pipe_ids())
     if not pipe_ids:
         raise click.ClickException("No pipes registered for this app.")
 
-    click.echo(f"Running app locally with standalone platform: {len(pipe_ids)} pipe(s).")
+    _emit_progress(
+        f"Running app locally with standalone platform: {len(pipe_ids)} pipe(s).",
+        json_output,
+    )
     executer = GlobalInjector.get(DataPipesExecution)
     try:
         executer.run_datapipes(pipe_ids, use_dag=True)
@@ -2945,6 +2966,19 @@ def _run_standalone_app(
 @click.argument("app", required=True)
 @click.option("--app-name", default=None, help="App name to use when APP is a local path.")
 @click.option("--env", default=None, help="Runtime environment to pass to the app run.")
+@click.option(
+    "--config",
+    "config_dir",
+    default=None,
+    type=click.Path(path_type=Path, file_okay=False, exists=False),
+    help="Config directory override for standalone app runs, if app.py supports it.",
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    help="For standalone app runs, suppress INFO-level framework logs.",
+)
 @click.option(
     "--parameters",
     "parameters_path",
@@ -2980,6 +3014,8 @@ def app_run(
     app: str,
     app_name: Optional[str],
     env: Optional[str],
+    config_dir: Optional[Path],
+    quiet: bool,
     parameters_path: Optional[Path],
     param_overrides: Tuple[str, ...],
     platform: Optional[str],
@@ -2997,6 +3033,8 @@ def app_run(
         _run_standalone_app(
             app,
             env,
+            config_dir,
+            quiet,
             parameters_path,
             param_overrides,
             no_logs,
@@ -3004,6 +3042,11 @@ def app_run(
             json_output,
         )
         return
+
+    if config_dir is not None:
+        raise click.ClickException("--config is only valid for standalone app runs.")
+    if quiet:
+        raise click.ClickException("--quiet is only valid for standalone app runs.")
 
     _run_remote_app(
         app,
@@ -4366,9 +4409,9 @@ def runner_group() -> None:
     """Manage the single durable Kindling runner job for this workspace.
 
     The Kindling runner is infrastructure — one durable job per workspace that
-    executes apps and pipelines submitted via ``kindling app run`` and
-    ``kindling pipeline run``.  These commands let you install, inspect, repair,
-    and remove that runner job.
+    executes remote app runs submitted via
+    ``kindling app run --platform <platform>``.  These commands let you install,
+    inspect, repair, and remove that runner job.
 
     Most users only need ``runner ensure`` (install/update) and
     ``runner status`` (health check).  The other subcommands are admin or
@@ -4543,9 +4586,9 @@ def runner_repair(platform: Optional[str], json_output: bool) -> None:
 def runner_delete(platform: Optional[str], yes: bool, json_output: bool) -> None:
     """Delete the runner job definition from the platform workspace.
 
-    This is an admin operation.  Deleting the runner prevents ``kindling app run``
-    and ``kindling pipeline run`` from submitting new work until the runner is
-    reinstalled with ``kindling runner ensure``.
+    This is an admin operation.  Deleting the runner prevents remote
+    ``kindling app run --platform <platform>`` commands from submitting new work
+    until the runner is reinstalled with ``kindling runner ensure``.
 
     You will be prompted for confirmation unless ``--yes`` is supplied.
 
@@ -4561,7 +4604,7 @@ def runner_delete(platform: Optional[str], yes: bool, json_output: bool) -> None
     if not yes:
         confirmed = click.confirm(
             f"Delete the Kindling runner on {resolved_platform}? "
-            "This will prevent app and pipeline runs until the runner is reinstalled.",
+            "This will prevent remote app runs until the runner is reinstalled.",
             default=False,
         )
         if not confirmed:
