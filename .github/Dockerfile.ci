@@ -19,7 +19,7 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 RUN pip install --no-cache-dir --upgrade pip wheel gitpython
 
 # Install Poetry
-RUN pip install --no-cache-dir poetry==1.8.5
+RUN pip install --no-cache-dir poetry==2.4.0
 
 # Configure Poetry to create virtualenv in project
 RUN poetry config virtualenvs.in-project true
