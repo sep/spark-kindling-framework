@@ -61,7 +61,7 @@ jobs:
           bash scripts/build_platform_wheels.sh
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: platform-wheels
           path: dist/*.whl
@@ -238,7 +238,7 @@ jobs:
             github.event.inputs.system_test_platform == 'all' ||
             github.event.inputs.system_test_platform == matrix.platform
           )
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: system-test-results-${{ matrix.artifact_suffix }}
           path: test-results/

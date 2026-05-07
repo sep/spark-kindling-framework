@@ -139,7 +139,7 @@ jobs:
         run: mkdir -p output && cp -r htmlcov test-results/unit-test-results.xml output/ 2>/dev/null || true
 
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: unit-test-results
@@ -187,7 +187,7 @@ jobs:
         run: mypy packages/kindling/ --html-report output/mypy-report || true
 
       - name: Upload code quality reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: code-quality-reports
@@ -228,7 +228,7 @@ jobs:
           poe test-integration-ci
 
       - name: Upload integration test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: integration-test-results
@@ -271,7 +271,7 @@ jobs:
           python tests/integration/test_kda_packaging.py
 
       - name: Upload KDA test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: kda-test-results
@@ -465,7 +465,7 @@ jobs:
           poe test-system-ci --platform ${{ matrix.platform }}
 
       - name: Upload system test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: |
           always() &&
           (
@@ -504,7 +504,7 @@ jobs:
           bandit -r packages/ -ll -s B101,B102,B108,B113,B603 -f json -o output/bandit-report.json
 
       - name: Upload security reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: security-reports
@@ -641,7 +641,7 @@ jobs:
 
       - name: Upload wheel artifacts
         if: steps.check-changes.outputs.needs_rebuild == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: platform-wheels
           path: dist/*.whl
