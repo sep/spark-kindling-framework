@@ -600,41 +600,7 @@ def cli() -> None:
     """Kindling CLI."""
 
 
-@cli.command("run")
-@click.argument("pipe_id")
-@click.option(
-    "--env",
-    default=None,
-    help="Environment overlay (default: KINDLING_ENV or 'local')",
-)
-@click.option(
-    "--app",
-    "app_path",
-    default=None,
-    type=click.Path(path_type=Path, dir_okay=False, exists=False),
-    help="Path to app.py",
-)
-@click.option(
-    "--config",
-    "config_dir",
-    default=None,
-    type=click.Path(path_type=Path, file_okay=False, exists=False),
-    help="Config directory override, if app.py supports it",
-)
-@click.option(
-    "--quiet",
-    "-q",
-    is_flag=True,
-    help="Suppress INFO-level framework logs; show WARNING and above only.",
-)
-@click.option(
-    "--no-watermark",
-    "no_watermark",
-    is_flag=True,
-    default=False,
-    help="Bypass watermark tracking so the full dataset is processed (useful for dev backfills).",
-)
-def run_pipe(
+def _run_local_pipe(
     pipe_id: str,
     env: Optional[str],
     app_path: Optional[Path],
@@ -667,7 +633,7 @@ def run_pipe(
     if env is not None and env != "local":
         click.echo(
             f"Note: --env {env} controls config loading only. "
-            "To run remotely use: kindling job run <job_id>"
+            "To run remotely use: kindling app run <app>"
         )
     if app_path is None and config_dir is None and not Path("config/settings.yaml").exists():
         raise click.ClickException(
@@ -684,7 +650,7 @@ def run_pipe(
         raise click.ClickException(
             f"Pipe '{pipe_id}' not found.\n"
             f"  Registered pipes: {available}\n"
-            "  Hint: Check for typos, or run `kindling validate` to see all registered pipes."
+            "  Hint: Check for typos, or run `kindling app validate` to see all registered pipes."
         )
 
     if no_watermark:
@@ -699,16 +665,7 @@ def run_pipe(
     click.echo(f"Pipe '{pipe_id}' completed successfully.")
 
 
-@cli.command("validate")
-@click.option(
-    "--app",
-    "app_path",
-    default=None,
-    type=click.Path(path_type=Path, dir_okay=False, exists=False),
-    help="Path to app.py",
-)
-@click.option("--env", "env", default=None, help="Configuration environment to load")
-def validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
+def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
     """Validate entity and pipe definitions without starting Spark."""
     try:
         from kindling.data_entities import DataEntityRegistry
@@ -842,45 +799,7 @@ def pipeline_run(
       kindling pipeline run bronze.ingest_myproject --app myproject --env dev
       kindling pipeline run silver.stage_myproject --app myproject --env dev
     """
-    try:
-        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
-        from kindling.injection import GlobalInjector
-    except ImportError as exc:
-        raise click.ClickException(
-            "kindling package is required. Install with: pip install spark-kindling[standalone]"
-        ) from exc
-
-    if quiet:
-        import logging
-
-        logging.disable(logging.INFO)
-        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__PRINT", "false")
-        os.environ.setdefault("KINDLING_KINDLING__TELEMETRY__LOGGING__LEVEL", "WARNING")
-
-    resolved_env = env or os.getenv("KINDLING_ENV", "local")
-    resolved_app = _discover_app_py(app_path)
-    _load_app_module(resolved_app, resolved_env, config_dir)
-
-    registry = GlobalInjector.get(DataPipesRegistry)
-    pipe = registry.get_pipe_definition(pipe_id)
-    if pipe is None:
-        available = ", ".join(registry.get_pipe_ids()) or "(none registered)"
-        raise click.ClickException(
-            f"Pipe '{pipe_id}' not found.\n"
-            f"  Registered pipes: {available}\n"
-            "  Hint: Check for typos, or run `kindling pipeline list` to see all registered pipes."
-        )
-
-    if no_watermark:
-        click.echo("Note: --no-watermark is set; watermark tracking bypassed for this run.")
-    click.echo(f"Running pipe: {pipe_id}")
-    executer = GlobalInjector.get(DataPipesExecution)
-    try:
-        # [implementer] pass no_watermark through run_datapipes kwargs — ki-70y
-        executer.run_datapipes([pipe_id], no_watermark=no_watermark)
-    except Exception as exc:
-        raise click.ClickException(f"Pipe '{pipe_id}' failed: {exc}") from exc
-    click.echo(f"Pipe '{pipe_id}' completed successfully.")
+    _run_local_pipe(pipe_id, env, app_path, config_dir, quiet, no_watermark)
 
 
 @pipeline_group.command("list")
@@ -1712,9 +1631,9 @@ def _deploy_bootstrap_script(
     if _upload_blob(
         blob_service_client, container, dest, bootstrap.read_bytes(), overwrite=overwrite
     ):
-        click.echo(f"  kindling_bootstrap.py")
+        click.echo("  kindling_bootstrap.py")
     else:
-        click.echo(f"  kindling_bootstrap.py (exists, skipped)")
+        click.echo("  kindling_bootstrap.py (exists, skipped)")
     return True
 
 
@@ -2419,7 +2338,21 @@ def workspace_deploy(
 
 @cli.group("app")
 def app_group() -> None:
-    """Package and deploy Kindling applications."""
+    """Validate, package, deploy, run, and inspect Kindling applications."""
+
+
+@app_group.command("validate")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py",
+)
+@click.option("--env", "env", default=None, help="Configuration environment to load")
+def app_validate(env: Optional[str], app_path: Optional[Path]) -> None:
+    """Validate entity and pipe definitions without starting Spark."""
+    _validate_app(env, app_path)
 
 
 def _resolve_source_path(
@@ -2428,10 +2361,9 @@ def _resolve_source_path(
     positional_path: Optional[Path],
     command_name: str,
 ) -> Path:
-    """Resolve the app source path from explicit flags or a deprecated positional arg.
+    """Resolve the app source path from explicit flags or a positional path.
 
     Exactly one of local_folder, kda_package, or positional_path must be provided.
-    Prints a deprecation warning to stderr when the positional form is used.
     """
     # Mutual exclusion is enforced upstream; guard defensively here.
     if local_folder and kda_package:
@@ -2442,11 +2374,6 @@ def _resolve_source_path(
     if kda_package:
         return kda_package
     if positional_path:
-        click.echo(
-            f"Warning: positional path argument is deprecated. "
-            f"Use --local-folder <path> instead.",
-            err=True,
-        )
         return positional_path
     raise click.ClickException(
         f"Supply a source via --local-folder or --kda-package. "
@@ -2655,8 +2582,8 @@ def app_init(app_path: Path, template: str, force: bool) -> None:  # pylint: dis
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd {resolved.parent}")
-    click.echo("  kindling run bronze.sample_pipe   # run your first pipeline locally")
-    click.echo("  kindling validate                  # check entity and pipe wiring")
+    click.echo("  kindling pipeline run bronze.sample_pipe   # run your first pipeline locally")
+    click.echo("  kindling app validate                       # check entity and pipe wiring")
 
 
 @app_group.command("package")
@@ -2689,10 +2616,9 @@ def app_package(
 ) -> None:
     """Package an application directory into a .kda archive.
 
-    Specify the source directory with --local-folder (preferred) or as a
-    positional argument (deprecated).
+    Specify the source directory as APP_PATH or with --local-folder.
     """
-    # [implementer] add --local-folder flag; keep positional with deprecation warning — ki-36f
+    # [implementer] add --local-folder flag; keep positional for noun-verb ergonomics - ki-36f
     source = _resolve_source_path(local_folder, None, app_path, "package")
     resolved_app_path = source.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
@@ -2799,67 +2725,25 @@ def app_deploy(
     )
 
 
-@app_group.command("run")
-@click.argument("app_name_arg", metavar="APP_NAME", required=False, default=None)
-@click.option(
-    "--deploy",
-    "do_deploy",
-    is_flag=True,
-    help="Package and deploy app assets before running.",
-)
-@click.option(
-    "--local-folder",
-    "local_folder",
-    default=None,
-    type=click.Path(path_type=Path, exists=True, file_okay=False),
-    help="App source directory. Used with --deploy to package on the fly.",
-)
-@click.option(
-    "--kda-package",
-    "kda_package",
-    default=None,
-    type=click.Path(path_type=Path, exists=True, dir_okay=False),
-    help="Pre-built .kda archive. Used with --deploy to deploy before running.",
-)
-@click.option(
-    "--platform",
-    type=click.Choice(SUPPORTED_PLATFORMS),
-    default=None,
-    help="Target platform. Auto-detected from environment if omitted.",
-)
-@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def app_run(
-    app_name_arg: Optional[str],
-    do_deploy: bool,
-    local_folder: Optional[Path],
-    kda_package: Optional[Path],
+def _run_remote_app(
+    app_ref: str,
+    app_name: Optional[str],
+    env: Optional[str],
+    parameters_path: Optional[Path],
+    param_overrides: Tuple[str, ...],
     platform: Optional[str],
+    no_logs: bool,
+    no_wait: bool,
+    poll_interval: float,
+    timeout: float,
+    fail_on_error: bool,
     json_output: bool,
 ) -> None:
-    """Run a deployed application (optionally packaging and deploying first).
-
-    Without --deploy, runs the currently deployed version of APP_NAME.
-    With --deploy, supply --local-folder or --kda-package as the source.
-    """
-    # [implementer] add app run command with --deploy + source flags — ki-36f
-    if local_folder and kda_package:
-        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
-
-    if do_deploy:
-        if not local_folder and not kda_package:
-            raise click.ClickException(
-                "--deploy requires --local-folder <dir> or --kda-package <file>."
-            )
-    else:
-        if local_folder or kda_package:
-            raise click.ClickException(
-                "--local-folder and --kda-package are only valid with --deploy."
-            )
-        if not app_name_arg:
-            raise click.ClickException(
-                "Provide APP_NAME to identify the deployed application, "
-                "or use --deploy with a source flag."
-            )
+    """Run a deployed app name or package/deploy/run a local app path."""
+    if poll_interval <= 0:
+        raise click.ClickException("--poll-interval must be greater than 0.")
+    if timeout <= 0:
+        raise click.ClickException("--timeout must be greater than 0.")
 
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
@@ -2868,42 +2752,262 @@ def app_run(
             "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
         )
 
-    if do_deploy:
-        deploy_source = local_folder or kda_package  # type: ignore[assignment]
-        resolved_app_path = deploy_source.expanduser().resolve()
+    source_path = Path(app_ref).expanduser()
+    has_local_source = source_path.exists()
+    resolved_name = (
+        app_name or _default_app_name(source_path) if has_local_source else app_name or app_ref
+    )
+    resolved_name = resolved_name.strip()
+    if not resolved_name:
+        raise click.ClickException("App name resolved to an empty string.")
+
+    api_client, resolved_platform = _create_platform_api(resolved_platform)
+    storage_path: Optional[str] = None
+    file_count: Optional[int] = None
+    parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else {}
+    for raw_param in param_overrides:
+        if "=" not in raw_param:
+            raise click.ClickException("--param values must use KEY=VALUE syntax.")
+        key, value = raw_param.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise click.ClickException("--param keys must not be empty.")
+        _set_nested_key(parameters, key, _coerce_value(value))
+
+    if has_local_source:
+        resolved_app_path = source_path.resolve()
         app_files = _prepare_app_files(resolved_app_path)
-        api_client, resolved_platform = _create_platform_api(resolved_platform)
-        resolved_name = (app_name_arg or _default_app_name(resolved_app_path)).strip()
-        if not resolved_name:
-            raise click.ClickException("App name resolved to an empty string.")
+        file_count = len(app_files)
+        click.echo(
+            f"[1/3] Deploying {len(app_files)} file(s) as `{resolved_name}` "
+            f"on {resolved_platform}..."
+        )
         storage_path = api_client.deploy_app(resolved_name, app_files)
-        payload: Dict[str, Any] = {
-            "app_name": resolved_name,
-            "app_path": str(resolved_app_path),
-            "platform": resolved_platform,
-            "storage_path": storage_path,
-            "file_count": len(app_files),
-            "files": sorted(app_files),
-            "deployed": True,
-        }
-        _emit_result(
-            payload,
-            json_output,
-            f"Deployed and running app `{resolved_name}` on {resolved_platform}.",
-        )
     else:
-        resolved_name = (app_name_arg or "").strip()
-        api_client, resolved_platform = _create_platform_api(resolved_platform)
-        payload = {
-            "app_name": resolved_name,
-            "platform": resolved_platform,
-            "deployed": False,
-        }
+        click.echo(f"[1/2] Using deployed app `{resolved_name}` on {resolved_platform}...")
+
+    step_prefix = "[2/3]" if has_local_source else "[1/2]"
+    click.echo(f"{step_prefix} Creating job definition `{resolved_name}`...")
+    job_config: Dict[str, Any] = {"app_name": resolved_name}
+    if env:
+        job_config["environment"] = env
+    job_result = api_client.create_job(resolved_name, job_config)
+    job_id = str(job_result.get("job_id") or resolved_name)
+
+    step_prefix = "[3/3]" if has_local_source else "[2/2]"
+    click.echo(f"{step_prefix} Starting app run...")
+    run_id = api_client.run_job(job_id, parameters=parameters or None)
+    click.echo(f"Run ID: {run_id}")
+
+    payload: Dict[str, Any] = {
+        "app_name": resolved_name,
+        "job_id": job_id,
+        "run_id": run_id,
+        "platform": resolved_platform,
+    }
+    if storage_path is not None:
+        payload["storage_path"] = storage_path
+    if file_count is not None:
+        payload["file_count"] = file_count
+
+    if no_wait:
         _emit_result(
             payload,
             json_output,
-            f"Running app `{resolved_name}` on {resolved_platform}.",
+            f"Started `{resolved_name}` (run: {run_id}). "
+            f"Use `kindling app logs {run_id}` to follow.",
         )
+        return
+
+    if not no_logs:
+        try:
+            api_client.stream_stdout_logs(
+                job_id=job_id,
+                run_id=run_id,
+                callback=click.echo,
+                poll_interval=poll_interval,
+                max_wait=timeout,
+            )
+        except Exception as exc:
+            click.echo(f"Log streaming ended early: {exc}", err=True)
+
+    status = _wait_for_job_run(api_client, run_id, poll_interval, timeout)
+    state = _status_value(status)
+    payload["status"] = status
+    payload["state"] = state
+    payload["succeeded"] = state in _SUCCESS_JOB_STATES
+
+    if fail_on_error and state not in _SUCCESS_JOB_STATES:
+        if json_output:
+            _emit_json(payload)
+            raise click.exceptions.Exit(1)
+        raise click.ClickException(f"Run `{run_id}` finished with state {state}.")
+
+    _emit_result(payload, json_output, f"Run `{run_id}` completed with state {state}.")
+
+
+@app_group.command("run")
+@click.argument("app", required=True)
+@click.option("--app-name", default=None, help="App name to use when APP is a local path.")
+@click.option("--env", default=None, help="Runtime environment to pass to the app run.")
+@click.option(
+    "--parameters",
+    "parameters_path",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Optional YAML/JSON file of runtime parameters.",
+)
+@click.option(
+    "--param",
+    "param_overrides",
+    multiple=True,
+    help="Runtime parameter override in KEY=VALUE form. Repeatable.",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option("--no-logs", is_flag=True, default=False, help="Skip log streaming.")
+@click.option("--no-wait", is_flag=True, default=False, help="Return immediately after starting.")
+@click.option("--poll-interval", default=5.0, show_default=True, type=float)
+@click.option("--timeout", default=3600.0, show_default=True, type=float)
+@click.option(
+    "--fail-on-error/--no-fail-on-error",
+    default=True,
+    show_default=True,
+    help="Exit non-zero when the app run finishes in a failed state.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_run(
+    app: str,
+    app_name: Optional[str],
+    env: Optional[str],
+    parameters_path: Optional[Path],
+    param_overrides: Tuple[str, ...],
+    platform: Optional[str],
+    no_logs: bool,
+    no_wait: bool,
+    poll_interval: float,
+    timeout: float,
+    fail_on_error: bool,
+    json_output: bool,
+) -> None:
+    """Run a deployed app name, local app directory, or .kda package."""
+    _run_remote_app(
+        app,
+        app_name,
+        env,
+        parameters_path,
+        param_overrides,
+        platform,
+        no_logs,
+        no_wait,
+        poll_interval,
+        timeout,
+        fail_on_error,
+        json_output,
+    )
+
+
+@app_group.command("status")
+@click.argument("run_id")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def app_status(run_id: str, platform: Optional[str]) -> None:
+    """Fetch the current status for an app run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    _emit_json(api_client.get_job_status(run_id))
+
+
+@app_group.command("logs")
+@click.argument("run_id")
+@click.option("--job-id", default=None, help="Job identifier. Required when --stream is used.")
+@click.option("--from-line", default=0, show_default=True, type=int)
+@click.option("--size", default=1000, show_default=True, type=int)
+@click.option("--stream", is_flag=True, help="Tail stdout logs until completion or timeout.")
+@click.option("--poll-interval", default=5.0, show_default=True, type=float)
+@click.option("--max-wait", default=300.0, show_default=True, type=float)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+def app_logs(
+    run_id: str,
+    job_id: Optional[str],
+    from_line: int,
+    size: int,
+    stream: bool,
+    poll_interval: float,
+    max_wait: float,
+    platform: Optional[str],
+) -> None:
+    """Fetch or stream logs for an app run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    if stream and not job_id:
+        raise click.ClickException("--job-id is required when --stream is used.")
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    if stream:
+        api_client.stream_stdout_logs(
+            job_id=job_id,
+            run_id=run_id,
+            callback=click.echo,
+            poll_interval=poll_interval,
+            max_wait=max_wait,
+        )
+        return
+
+    _emit_json(api_client.get_job_logs(run_id, from_line=from_line, size=size))
+
+
+@app_group.command("cancel")
+@click.argument("run_id")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_cancel(run_id: str, platform: Optional[str], json_output: bool) -> None:
+    """Cancel an app run."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(
+            "Unable to determine platform. Set --platform or one of "
+            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+        )
+
+    api_client, _ = _create_platform_api(resolved_platform)
+    cancelled = api_client.cancel_job(run_id)
+    if not cancelled:
+        raise click.ClickException(f"Failed to cancel run `{run_id}`.")
+    _emit_result(
+        {"run_id": run_id, "platform": resolved_platform, "cancelled": True},
+        json_output,
+        f"Cancelled run `{run_id}`.",
+    )
 
 
 @app_group.command("cleanup")
@@ -4008,133 +4112,6 @@ def job_run(
     _emit_result(payload, json_output, run_id)
 
 
-@job_group.command("submit")
-@click.argument(
-    "app_path",
-    type=click.Path(path_type=Path, exists=True),
-    default=None,
-    required=False,
-)
-@click.option(
-    "--job-name",
-    default=None,
-    help="Job definition name. Defaults to the app directory name.",
-)
-@click.option(
-    "--platform",
-    type=click.Choice(SUPPORTED_PLATFORMS),
-    default=None,
-    help="Target platform. Auto-detected from environment if omitted.",
-)
-@click.option(
-    "--no-logs",
-    is_flag=True,
-    default=False,
-    help="Skip log streaming; wait for completion silently.",
-)
-@click.option("--no-wait", is_flag=True, default=False, help="Return immediately after submitting.")
-@click.option("--poll-interval", default=5.0, show_default=True, type=float)
-@click.option("--timeout", default=3600.0, show_default=True, type=float)
-@click.option(
-    "--fail-on-error/--no-fail-on-error",
-    default=True,
-    show_default=True,
-    help="Exit non-zero when the job finishes in a failed state.",
-)
-@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def job_submit(
-    app_path: Optional[Path],
-    job_name: Optional[str],
-    platform: Optional[str],
-    no_logs: bool,
-    no_wait: bool,
-    poll_interval: float,
-    timeout: float,
-    fail_on_error: bool,
-    json_output: bool,
-) -> None:
-    """Package, deploy, and run an app as a remote job in one step.
-
-    Equivalent to running: app package, app deploy, job create, job run --wait
-    in sequence. Streams logs to stdout by default.
-    """
-    # Resolve app directory
-    if app_path is None:
-        discovered = _discover_app_py(None)
-        resolved_app_path = discovered.parent
-    else:
-        resolved_app_path = app_path.expanduser().resolve()
-
-    resolved_job_name = (job_name or _default_app_name(resolved_app_path)).strip()
-    if not resolved_job_name:
-        raise click.ClickException("Job name resolved to an empty string.")
-
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
-
-    app_files = _prepare_app_files(resolved_app_path)
-    api_client, resolved_platform = _create_platform_api(resolved_platform)
-
-    click.echo(
-        f"[1/3] Deploying {len(app_files)} file(s) as `{resolved_job_name}` on {resolved_platform}..."
-    )
-    storage_path = api_client.deploy_app(resolved_job_name, app_files)
-
-    click.echo(f"[2/3] Creating job definition `{resolved_job_name}`...")
-    job_result = api_client.create_job(resolved_job_name, {"app_name": resolved_job_name})
-    job_id = str(job_result.get("job_id") or resolved_job_name)
-
-    click.echo("[3/3] Starting job run...")
-    run_id = api_client.run_job(job_id)
-    click.echo(f"Run ID: {run_id}")
-
-    payload: Dict[str, Any] = {
-        "job_name": resolved_job_name,
-        "job_id": job_id,
-        "run_id": run_id,
-        "platform": resolved_platform,
-        "storage_path": storage_path,
-    }
-
-    if no_wait:
-        _emit_result(
-            payload,
-            json_output,
-            f"Submitted `{resolved_job_name}` (run: {run_id}). Use `kindling job logs {run_id}` to follow.",
-        )
-        return
-
-    if not no_logs:
-        try:
-            api_client.stream_stdout_logs(
-                job_id=job_id,
-                run_id=run_id,
-                callback=click.echo,
-                poll_interval=poll_interval,
-                max_wait=timeout,
-            )
-        except Exception as exc:
-            click.echo(f"Log streaming ended early: {exc}", err=True)
-
-    status = _wait_for_job_run(api_client, run_id, poll_interval, timeout)
-    state = _status_value(status)
-    payload["status"] = status
-    payload["state"] = state
-    payload["succeeded"] = state in _SUCCESS_JOB_STATES
-
-    if fail_on_error and state not in _SUCCESS_JOB_STATES:
-        if json_output:
-            _emit_json(payload)
-            raise click.exceptions.Exit(1)
-        raise click.ClickException(f"Run `{run_id}` finished with state {state}.")
-
-    _emit_result(payload, json_output, f"Run `{run_id}` completed with state {state}.")
-
-
 @job_group.command("status")
 @click.argument("run_id")
 @click.option(
@@ -4903,7 +4880,7 @@ def package_init(
         )
 
     try:
-        created = generate_package(cfg)
+        generate_package(cfg)
     except Exception as exc:
         raise click.ClickException(f"Package scaffold failed: {exc}") from exc
 
@@ -4913,12 +4890,17 @@ def package_init(
     click.echo("Next steps:")
     click.echo(f"  cd packages/{cfg.snake_name}")
     click.echo("  poetry install")
-    click.echo(f"  kindling run {pipe_name}        # run your first pipeline locally")
+    click.echo(f"  kindling pipeline run {pipe_name}        # run your first pipeline locally")
     click.echo("  poetry run poe test                  # run the test suite")
     click.echo("  kindling job init                    # scaffold a deployment config when ready")
 
 
-@cli.command("new")
+@cli.group("project")
+def project_group() -> None:
+    """Scaffold complete Kindling projects."""
+
+
+@project_group.command("new")
 @click.argument("project_name")
 @click.option(
     "--auth",
@@ -4992,15 +4974,15 @@ def new_project(
         ...               — shared local dev environment for the repo
 
     \b
-    `kindling new` is convenience sugar for:
+    `kindling project new` is convenience sugar for:
       1. `kindling repo init`
       2. `kindling package init`
 
     \b
     Examples:
-      kindling new my-pipeline
-      kindling new my-pipeline --auth key --layers minimal
-      kindling new my-pipeline --auth cli --no-integration --output-dir ~/projects
+      kindling project new my-pipeline
+      kindling project new my-pipeline --auth key --layers minimal
+      kindling project new my-pipeline --auth cli --no-integration --output-dir ~/projects
     """
     from kindling_cli.scaffold import (
         PackageScaffoldConfig,
@@ -5029,7 +5011,7 @@ def new_project(
         )
 
     try:
-        created = generate_project(cfg)
+        generate_project(cfg)
     except Exception as exc:
         raise click.ClickException(f"Scaffold failed: {exc}") from exc
 
@@ -5039,7 +5021,7 @@ def new_project(
     click.echo("Next steps:")
     click.echo(f"  cd {cfg.snake_name}/packages/{cfg.snake_name}")
     click.echo("  poetry install")
-    click.echo(f"  kindling run {pipe_name}        # run your first pipeline locally")
+    click.echo(f"  kindling pipeline run {pipe_name}        # run your first pipeline locally")
     click.echo("  poetry run poe test                  # run the test suite")
     click.echo("  kindling job init                    # scaffold a deployment config when ready")
 

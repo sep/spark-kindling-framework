@@ -17,7 +17,7 @@ pip install "spark-kindling-cli @ ${CURRENT_CLI_URL}"
 pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
 
 # Then scaffold and work on your local repo + package.
-kindling new my-pipeline
+kindling project new my-pipeline
 cd my_pipeline/packages/my_pipeline
 poetry install
 cp .env.example .env
@@ -145,14 +145,14 @@ scaffolded packages in the repo.
 Use `kindling run` to execute a registered pipe without deploying to a remote platform:
 
 ```bash
-kindling run bronze_to_silver
+kindling pipeline run bronze_to_silver
 ```
 
 The command auto-discovers `app.py` by walking up from the current directory. You
 can also be explicit:
 
 ```bash
-kindling run bronze_to_silver --app src/my_pipeline/app.py --env local
+kindling pipeline run bronze_to_silver --app src/my_pipeline/app.py --env local
 ```
 
 `--env` selects the config overlay (defaults to the `KINDLING_ENV` env var, then
@@ -167,11 +167,11 @@ If the pipe ID is not registered, the error message lists all available pipe IDs
 
 ## Validating Definitions Without Spark
 
-`kindling validate` checks that your entity and pipe definitions are internally
+`kindling app validate` checks that your entity and pipe definitions are internally
 consistent — without starting a SparkSession:
 
 ```bash
-kindling validate
+kindling app validate
 ```
 
 Example output:
@@ -191,7 +191,7 @@ Checks performed:
 - Every pipe's input entities and output entity exist in the registry
 - Every delta entity has `merge_columns` set
 
-`kindling validate` is safe to run in CI before tests because it never creates a
+`kindling app validate` is safe to run in CI before tests because it never creates a
 Spark context.
 
 ## Local Memory Providers (No Azure Needed)
@@ -234,13 +234,12 @@ The CLI now covers the basic local-to-remote app lifecycle:
 kindling app package path/to/app-dir
 
 # Deploy an app directory or .kda package
-kindling app deploy path/to/app-dir --platform fabric --app-name my-app
+kindling app deploy --local-folder path/to/app-dir --platform fabric --app-name my-app
 
-# Create and run remote jobs from YAML/JSON
-kindling job create job.yaml --platform synapse
-kindling job run <job-id> --platform synapse
-kindling job status <run-id> --platform synapse
-kindling job logs <run-id> --platform synapse
+# Run an app remotely from a local directory or from a deployed app name
+kindling app run path/to/app-dir --platform synapse
+kindling app status <run-id> --platform synapse
+kindling app logs <run-id> --platform synapse
 ```
 
 These remote operations use `spark-kindling-sdk`, so install it alongside the

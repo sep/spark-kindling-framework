@@ -14,7 +14,6 @@ The current CLI exposes both app-level and job-level workflows:
 - `kindling app deploy`
 - `kindling job create`
 - `kindling job run`
-- `kindling job submit`
 - `kindling job status`
 - `kindling job logs`
 - `kindling job cancel`
@@ -38,9 +37,9 @@ This proposal reframes the CLI around that model:
 
 The current CLI creates an avoidable conceptual split:
 
-- `kindling run <pipe_id>` runs a local pipe.
+- `kindling pipeline run <pipe_id>` runs a local pipe.
 - `kindling app deploy` deploys app files but does not run them.
-- `kindling job submit` is the closest remote "run this app" command, but it is hidden under `job`.
+- `kindling app run` is the remote "run this app" command.
 - `kindling job create` / `job run` imply users should manage job definitions as their main workflow.
 
 This is inconsistent with Kindling's design. Users should not need to think about platform job definitions for ordinary app or pipeline execution.
@@ -232,7 +231,7 @@ Build a `.kda` archive from a local app directory.
 
 Status: keep.
 
-Source is specified with `--local-folder`, consistent with `app deploy` and `app run --deploy`.
+Source can be specified positionally for local package input or with `--local-folder`.
 
 ```bash
 kindling app package --local-folder ./orders
@@ -268,23 +267,20 @@ Recommended behavior:
 5. Stream logs by default.
 6. Return run id, status, and useful artifact paths.
 
-If `--deploy` is passed, `app run` deploys app assets before starting the run. The same source flags as `app deploy` apply:
-
-- `--deploy --local-folder <path>` — package and deploy a local directory, then run.
-- `--deploy --kda-package <path>` — deploy a pre-built `.kda`, then run.
-
-Without `--deploy`, `app run` runs against the currently deployed app. This keeps repeated runs fast and makes it explicit when new code is being pushed.
+When APP is a local directory or `.kda` path, `app run` deploys that source before
+starting the run. When APP is not a local path, it is treated as an already
+deployed app name.
 
 Examples:
 
 ```bash
 kindling app run orders --env dev
-kindling app run orders --deploy --local-folder ./orders --platform synapse
+kindling app run ./orders --platform synapse
 kindling app run orders --no-wait
 kindling app run orders --parameters params.yaml
 ```
 
-This should replace `kindling job submit` as the happy path.
+This is the happy path for remote app execution.
 
 #### `kindling app status`
 
@@ -350,8 +346,7 @@ Examples:
 ```bash
 kindling pipeline run bronze.ingest_orders --app orders
 kindling pipeline run daily_orders --app orders --env prod
-kindling pipeline run bronze.ingest_orders --app orders --deploy --local-folder ./orders
-kindling pipeline run bronze.ingest_orders --app orders --deploy --kda-package dist/orders.kda
+kindling pipeline run bronze.ingest_orders --app orders
 ```
 
 Recommended behavior:
@@ -448,7 +443,6 @@ Current commands:
 - `kindling job init`
 - `kindling job create`
 - `kindling job run`
-- `kindling job submit`
 - `kindling job status`
 - `kindling job logs`
 - `kindling job cancel`
@@ -456,7 +450,7 @@ Current commands:
 
 Recommended direction:
 
-- Replace `job submit` with `app run`.
+- Use `app run` for app execution.
 - Replace normal `job create` usage with `runner ensure`.
 - Keep `job status`, `job logs`, and `job cancel` as aliases or advanced commands if platform-native run ids remain useful.
 - Consider hiding raw job commands from top-level README examples.
@@ -464,21 +458,21 @@ Recommended direction:
 Compatibility aliases can print guidance:
 
 ```text
-`kindling job submit` is now `kindling app run`.
+Run apps with `kindling app run`.
 ```
 
 ---
 
 ## Command Mapping
 
-`kindling run <pipe_id>` is a breaking-change risk because existing users and scripts may rely on it. Phase 1 should keep it as a local shortcut with a deprecation notice pointing to `kindling pipeline run --local`. Removal can wait until Phase 4.
+`kindling pipeline run <pipe_id>` is a breaking-change risk because existing users and scripts may rely on it. Phase 1 should keep it as a local shortcut with a deprecation notice pointing to `kindling pipeline run --local`. Removal can wait until Phase 4.
 
 | Current command | Proposed command | Notes |
 | --- | --- | --- |
-| `kindling run <pipe_id>` | `kindling pipeline run <pipe_id> --local` | Keep as a deprecated local shortcut in Phase 1. |
+| `kindling pipeline run <pipe_id>` | `kindling pipeline run <pipe_id> --local` | Keep as a deprecated local shortcut in Phase 1. |
 | `kindling app package <path>` | `kindling app package --local-folder <path>` | Consistent source flag. |
 | `kindling app deploy <path>` | `kindling app deploy --local-folder <path>` or `--kda-package <path>` | Make source type explicit. |
-| `kindling job submit <app>` | `kindling app run <app>` | Main happy path. |
+| `kindling app run <app>` | `kindling app run <app>` | Main happy path. |
 | `kindling job create job.yaml` | `kindling runner ensure` | Runner job is infrastructure. |
 | `kindling job run <job-id>` | `kindling runner invoke --params params.yaml` | Advanced/debug only. |
 | `kindling job status <run-id>` | `kindling app status <run-id>` | Alias acceptable. |
@@ -567,7 +561,8 @@ Keep existing job commands unchanged.
 
 Defer `runner repair` and `runner delete` to Phase 3. They are admin/destructive operations and need clearer runner identity and platform cleanup semantics before implementation.
 
-Internally, `app run` can reuse the existing `job submit` implementation while names settle, but it should not always deploy. The Phase 1 behavior should be run-only by default, with `--deploy` opting into package/deploy before execution.
+`app run` owns the package/deploy/run path when APP is a local path and the run-only
+path when APP is a deployed app name.
 
 ### Phase 2: Reframe Documentation
 
@@ -576,7 +571,7 @@ Update README and docs so the primary workflow is:
 ```bash
 kindling app deploy --local-folder ./orders
 kindling app run orders --platform synapse
-kindling app run orders --deploy --local-folder ./orders --platform synapse
+kindling app run ./orders --platform synapse
 kindling app logs <run-id>
 ```
 
@@ -597,7 +592,6 @@ Refactor SDK and CLI naming around the single runner job:
 
 Add deprecation warnings or compatibility messages:
 
-- `kindling job submit` -> `kindling app run`
 - `kindling job create` -> `kindling runner ensure`
 - `kindling job delete` -> `kindling runner delete`
 
@@ -613,9 +607,9 @@ These questions are triaged by whether Phase 1 needs a decision before implement
 
    The data layer is the same either way. Phase 1 can ship `app run --pipeline`, with `pipeline run` added later as a convenience alias.
 
-2. **RESOLVED FOR PHASE 1:** Should `kindling run <pipe_id>` remain as a local-only shortcut, or move to `kindling pipeline run <pipe_id> --local`?
+2. **RESOLVED FOR PHASE 1:** Should `kindling pipeline run <pipe_id>` remain as a local-only shortcut, or move to `kindling pipeline run <pipe_id> --local`?
 
-   Keep `kindling run <pipe_id>` as a local shortcut in Phase 1 and print a deprecation notice pointing to `kindling pipeline run <pipe_id> --local`. Remove only after downstream users and scripts have migrated.
+   Keep `kindling pipeline run <pipe_id>` as a local shortcut in Phase 1 and print a deprecation notice pointing to `kindling pipeline run <pipe_id> --local`. Remove only after downstream users and scripts have migrated.
 
 3. **RESOLVED FOR PHASE 1:** Should `app run` always deploy first, or should it default to running the currently deployed app and require `--deploy` to upload changes?
 
@@ -666,7 +660,7 @@ For the first overhaul pass:
 3. Add `--deploy` to `app run` for explicit package/deploy/run behavior.
 4. Add `kindling runner ensure` as the explicit infrastructure command.
 5. Add `kindling app run --pipeline <pipeline-id>` before deciding whether `pipeline` needs a first-class group.
-6. Keep `kindling run <pipe_id>` as a deprecated local shortcut during Phase 1.
+6. Keep `kindling pipeline run <pipe_id>` as a deprecated local shortcut during Phase 1.
 7. Leave `job` commands in place as compatibility/advanced commands.
 8. Update docs to stop presenting jobs as the normal unit of work.
 
