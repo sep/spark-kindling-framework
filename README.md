@@ -100,7 +100,7 @@ pip install 'spark-kindling[standalone]' spark-kindling-cli
 kindling project new my-app
 cd my_app/packages/my_app
 poetry install
-kindling pipeline run bronze_to_silver --env local
+kindling app run . --env local
 ```
 
 No Azure credentials needed — the scaffold uses in-memory entity providers by default.
