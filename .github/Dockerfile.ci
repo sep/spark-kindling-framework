@@ -14,8 +14,12 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
+# Upgrade pip, wheel, and gitpython before installing Poetry to resolve known CVEs
+# in the versions shipped with the base devcontainer image.
+RUN pip install --no-cache-dir --upgrade pip wheel gitpython
+
 # Install Poetry
-RUN pip install --no-cache-dir poetry==1.8.3
+RUN pip install --no-cache-dir poetry==1.8.5
 
 # Configure Poetry to create virtualenv in project
 RUN poetry config virtualenvs.in-project true
