@@ -1371,6 +1371,89 @@ class TestAppRunCommand:
         assert "standalone" in result.output
         assert executor.calls == [(["bronze.ingest", "silver.stage"], {"use_dag": True})]
 
+    def test_standalone_json_keeps_stdout_machine_readable(self, tmp_path, monkeypatch):
+        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
+        from kindling.injection import GlobalInjector
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("def initialize(env=None):\n    return None\n")
+
+        pipe_registry = types.SimpleNamespace(get_pipe_ids=lambda: ["bronze.ingest"])
+        executor = types.SimpleNamespace(run_datapipes=lambda pipe_ids, **kwargs: None)
+
+        def fake_get(service_type):
+            if service_type is DataPipesRegistry:
+                return pipe_registry
+            if service_type is DataPipesExecution:
+                return executor
+            raise AssertionError(f"unexpected service: {service_type!r}")
+
+        monkeypatch.setattr(GlobalInjector, "get", fake_get)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["app", "run", str(app_dir), "--json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["platform"] == "standalone"
+        assert payload["pipes"] == ["bronze.ingest"]
+        assert "Running app locally" not in result.stdout
+        assert "Running app locally" in result.stderr
+
+    def test_standalone_accepts_config_and_quiet(self, tmp_path, monkeypatch):
+        import kindling_cli.cli as cli_mod
+
+        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
+        from kindling.injection import GlobalInjector
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        app_py = app_dir / "app.py"
+        app_py.write_text("def initialize(env=None, config_dir=None):\n    return None\n")
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        loaded = {}
+
+        def fake_load_app_module(path, env=None, config_dir=None):
+            loaded["path"] = path
+            loaded["env"] = env
+            loaded["config_dir"] = config_dir
+
+        quiet_calls = []
+        pipe_registry = types.SimpleNamespace(get_pipe_ids=lambda: ["bronze.ingest"])
+        executor = types.SimpleNamespace(run_datapipes=lambda pipe_ids, **kwargs: None)
+
+        def fake_get(service_type):
+            if service_type is DataPipesRegistry:
+                return pipe_registry
+            if service_type is DataPipesExecution:
+                return executor
+            raise AssertionError(f"unexpected service: {service_type!r}")
+
+        monkeypatch.setattr(cli_mod, "_load_app_module", fake_load_app_module)
+        monkeypatch.setattr(cli_mod, "_configure_quiet_logging", lambda: quiet_calls.append(True))
+        monkeypatch.setattr(GlobalInjector, "get", fake_get)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "app",
+                "run",
+                str(app_dir),
+                "--env",
+                "dev",
+                "--config",
+                str(config_dir),
+                "--quiet",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert quiet_calls == [True]
+        assert loaded == {"path": app_py, "env": "dev", "config_dir": config_dir}
+
     def test_standalone_rejects_remote_only_options(self, tmp_path):
         app_dir = tmp_path / "myapp"
         app_dir.mkdir()
@@ -1403,6 +1486,46 @@ class TestAppRunCommand:
         mock_api.deploy_app.assert_called_once()
         mock_api.create_job.assert_called_once()
         mock_api.run_job.assert_called_once()
+
+    def test_remote_json_keeps_stdout_machine_readable(self, tmp_path, monkeypatch):
+        import kindling_cli.cli as cli_mod
+
+        mock_api = self._make_mock_api()
+        monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# app")
+
+        result = CliRunner().invoke(
+            cli,
+            ["app", "run", str(app_dir), "--platform", "fabric", "--no-wait", "--json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["run_id"] == "run-42"
+        assert payload["platform"] == "fabric"
+        assert "[1/3]" not in result.stdout
+        assert "[1/3]" in result.stderr
+
+    def test_remote_rejects_standalone_only_options(self, tmp_path, monkeypatch):
+        import kindling_cli.cli as cli_mod
+
+        mock_api = self._make_mock_api()
+        monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# app")
+
+        result = CliRunner().invoke(
+            cli,
+            ["app", "run", str(app_dir), "--platform", "fabric", "--config", "config"],
+        )
+
+        assert result.exit_code != 0
+        assert "--config is only valid for standalone app runs" in result.output
 
     def test_submit_waits_for_completion_by_default(self, tmp_path, monkeypatch):
         import kindling_cli.cli as cli_mod
