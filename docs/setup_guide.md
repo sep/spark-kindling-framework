@@ -9,10 +9,10 @@ For local development, scaffold a project with the CLI and run it without cloud 
 ```bash
 pip install 'spark-kindling[standalone]' spark-kindling-cli
 
-kindling new my-app
+kindling project new my-app
 cd my_app/packages/my_app
 poetry install
-kindling run bronze_to_silver --env local
+kindling pipeline run bronze_to_silver --env local
 ```
 
 The scaffold uses in-memory entity providers by default — no Azure storage account needed.

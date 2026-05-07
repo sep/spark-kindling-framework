@@ -386,7 +386,7 @@ class TestScaffoldCommands:
 
     def test_new_creates_repo_and_initial_package(self, tmp_path):
         runner = CliRunner()
-        result = runner.invoke(cli, ["new", "test-proj", "--output-dir", str(tmp_path)])
+        result = runner.invoke(cli, ["project", "new", "test-proj", "--output-dir", str(tmp_path)])
 
         assert result.exit_code == 0, result.output
         assert (tmp_path / "test_proj").is_dir()
@@ -394,23 +394,24 @@ class TestScaffoldCommands:
 
     def test_new_prints_next_steps(self, tmp_path):
         runner = CliRunner()
-        result = runner.invoke(cli, ["new", "my-proj", "--output-dir", str(tmp_path)])
+        result = runner.invoke(cli, ["project", "new", "my-proj", "--output-dir", str(tmp_path)])
 
         assert result.exit_code == 0, result.output
         assert "Next steps" in result.output
         assert "cd my_proj/packages/my_proj" in result.output
-        assert "kindling run bronze_to_silver" in result.output
+        assert "kindling pipeline run bronze_to_silver" in result.output
         assert "poetry run poe test" in result.output
         assert "kindling job init" in result.output
 
     def test_new_minimal_layers_prints_process_pipe(self, tmp_path):
         runner = CliRunner()
         result = runner.invoke(
-            cli, ["new", "my-proj", "--layers", "minimal", "--output-dir", str(tmp_path)]
+            cli,
+            ["project", "new", "my-proj", "--layers", "minimal", "--output-dir", str(tmp_path)],
         )
 
         assert result.exit_code == 0, result.output
-        assert "kindling run process" in result.output
+        assert "kindling pipeline run process" in result.output
 
     def test_package_init_prints_next_steps(self, tmp_path):
         repo_root = tmp_path / "repo"
@@ -422,14 +423,15 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         assert "Next steps" in result.output
         assert "cd packages/my_pkg" in result.output
-        assert "kindling run bronze_to_silver" in result.output
+        assert "kindling pipeline run bronze_to_silver" in result.output
         assert "poetry run poe test" in result.output
         assert "kindling job init" in result.output
 
     def test_new_no_integration_skips_integration_dir(self, tmp_path):
         runner = CliRunner()
         result = runner.invoke(
-            cli, ["new", "my-app", "--no-integration", "--output-dir", str(tmp_path)]
+            cli,
+            ["project", "new", "my-app", "--no-integration", "--output-dir", str(tmp_path)],
         )
 
         assert result.exit_code == 0, result.output
@@ -438,7 +440,7 @@ class TestScaffoldCommands:
     def test_new_existing_directory_fails(self, tmp_path):
         (tmp_path / "my_app").mkdir()
         runner = CliRunner()
-        result = runner.invoke(cli, ["new", "my-app", "--output-dir", str(tmp_path)])
+        result = runner.invoke(cli, ["project", "new", "my-app", "--output-dir", str(tmp_path)])
 
         assert result.exit_code != 0
         assert "already exists" in result.output.lower()
@@ -464,7 +466,15 @@ class TestScaffoldCommands:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["new", "my-proj", "--template-dir", str(tmpl_dir), "--output-dir", str(tmp_path)],
+            [
+                "project",
+                "new",
+                "my-proj",
+                "--template-dir",
+                str(tmpl_dir),
+                "--output-dir",
+                str(tmp_path),
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -481,7 +491,15 @@ class TestScaffoldCommands:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["new", "my-proj", "--template-dir", str(tmpl_dir), "--output-dir", str(tmp_path)],
+            [
+                "project",
+                "new",
+                "my-proj",
+                "--template-dir",
+                str(tmpl_dir),
+                "--output-dir",
+                str(tmp_path),
+            ],
         )
 
         assert result.exit_code == 0, result.output

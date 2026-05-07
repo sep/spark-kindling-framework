@@ -71,14 +71,14 @@ kindling env list
 so that I can iterate quickly without deploying to a remote platform.
 
 ```bash
-kindling run bronze.ingest_orders --env dev
+kindling pipeline run bronze.ingest_orders --env dev
 ```
 
 **As a developer, I want to run a pipe locally with a specific config file**
 so that I can test different parameter sets without changing my defaults.
 
 ```bash
-kindling run bronze.ingest_orders --config ./local-test-config.yaml
+kindling pipeline run bronze.ingest_orders --config ./local-test-config.yaml
 ```
 
 **As a developer, I want to see what apps and pipes are registered in my project**
@@ -102,7 +102,7 @@ The silver pipe reads from the `bronze.fawkes` Delta entity that already exists 
 so that I can do a full backfill during development without resetting watermark state manually.
 
 ```bash
-kindling run bronze.ingest_orders --no-watermark
+kindling pipeline run bronze.ingest_orders --no-watermark
 ```
 
 ---
@@ -454,7 +454,7 @@ kindling app run orders --env dev
 so that I do not have to run `deploy` and `run` separately during rapid iteration.
 
 ```bash
-kindling app run orders --deploy --local-folder ./orders --platform synapse
+kindling app run ./orders --platform synapse
 ```
 
 **As a developer, I want to run a specific pipeline within an app**
@@ -549,7 +549,7 @@ kindling runner delete
 so that I can parse run results and fail the build on error.
 
 ```bash
-kindling app run orders --deploy --kda-package dist/orders.kda --no-wait --json > run.json
+kindling app run dist/orders.kda --no-wait --json > run.json
 RUN_ID=$(jq -r '.run_id' run.json)
 kindling app status $RUN_ID --poll --json
 ```
@@ -558,7 +558,7 @@ kindling app status $RUN_ID --poll --json
 so that CI job configuration stays simple.
 
 ```bash
-kindling app run orders --deploy --kda-package dist/orders.kda --fail-on-error --platform synapse
+kindling app run dist/orders.kda --fail-on-error --platform synapse
 ```
 
 **As a CI pipeline, I want to run unit and component tests and produce a report**

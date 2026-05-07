@@ -35,6 +35,23 @@ def test_config_init_writes_settings_file():
         assert "kindling:" in content
 
 
+def test_top_level_commands_follow_noun_verb_grammar():
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "\n  run " not in result.output
+    assert "\n  validate " not in result.output
+    assert "\n  new " not in result.output
+    assert "\n  project " in result.output
+
+
+def test_job_group_does_not_expose_app_submit_shortcut():
+    result = CliRunner().invoke(cli, ["job", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "\n  submit " not in result.output
+
+
 def test_resolve_account_url_uses_blob_suffix_env(monkeypatch):
     monkeypatch.setenv("AZURE_STORAGE_BLOB_ENDPOINT_SUFFIX", "blob.core.usgovcloudapi.net")
 
@@ -584,7 +601,7 @@ def test_app_package_creates_kda_archive():
             assert sorted(archive.namelist()) == ["app.py", "nested/settings.yaml"]
 
 
-def test_app_package_positional_arg_shows_deprecation_warning():
+def test_app_package_accepts_positional_path():
     runner = CliRunner()
     with runner.isolated_filesystem():
         app_dir = Path("demo_app")
@@ -594,7 +611,7 @@ def test_app_package_positional_arg_shows_deprecation_warning():
         result = runner.invoke(cli, ["app", "package", str(app_dir)], catch_exceptions=False)
 
         assert result.exit_code == 0, result.output
-        assert "deprecated" in result.output
+        assert "deprecated" not in result.output.lower()
 
 
 def test_app_package_json_output_is_machine_readable():
@@ -752,7 +769,7 @@ def test_app_deploy_json_output_includes_storage_path(monkeypatch):
         assert payload["storage_path"].startswith("abfss://")
 
 
-def test_app_run_without_deploy_requires_app_name(monkeypatch):
+def test_app_run_requires_app_argument(monkeypatch):
     monkeypatch.setattr(
         "kindling_cli.cli._create_platform_api",
         lambda platform: (object(), platform),
@@ -760,31 +777,58 @@ def test_app_run_without_deploy_requires_app_name(monkeypatch):
     runner = CliRunner()
     result = runner.invoke(cli, ["app", "run", "--platform", "fabric"])
     assert result.exit_code != 0
-    assert "APP_NAME" in result.output or "deployed" in result.output
+    assert "Missing argument 'APP'" in result.output
 
 
-def test_app_run_without_deploy_succeeds_with_app_name(monkeypatch):
+def test_app_run_deployed_name_creates_and_runs_job(monkeypatch):
     class FakeAPI:
-        pass
+        def __init__(self):
+            self.created = []
+            self.runs = []
+
+        def create_job(self, job_name, job_config):
+            self.created.append((job_name, job_config))
+            return {"job_id": "job-1"}
+
+        def run_job(self, job_id, parameters=None):
+            self.runs.append((job_id, parameters))
+            return "run-1"
+
+    fake_api = FakeAPI()
 
     monkeypatch.setattr(
         "kindling_cli.cli._create_platform_api",
-        lambda platform: (FakeAPI(), platform),
+        lambda platform: (fake_api, platform),
     )
     runner = CliRunner()
-    result = runner.invoke(cli, ["app", "run", "orders", "--platform", "fabric"])
+    result = runner.invoke(cli, ["app", "run", "orders", "--platform", "fabric", "--no-wait"])
     assert result.exit_code == 0, result.output
-    assert "orders" in result.output
+    assert "run-1" in result.output
+    assert fake_api.created == [("orders", {"app_name": "orders"})]
+    assert fake_api.runs == [("job-1", None)]
 
 
-def test_app_run_with_deploy_and_local_folder(monkeypatch):
+def test_app_run_with_local_path_deploys_creates_and_runs(monkeypatch):
     class FakeAPI:
+        def __init__(self):
+            self.deployed = []
+            self.created = []
+
         def deploy_app(self, app_name, app_files):
+            self.deployed.append((app_name, app_files))
             return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/orders"
 
+        def create_job(self, job_name, job_config):
+            self.created.append((job_name, job_config))
+            return {"job_id": "job-1"}
+
+        def run_job(self, job_id, parameters=None):
+            return "run-1"
+
+    fake_api = FakeAPI()
     monkeypatch.setattr(
         "kindling_cli.cli._create_platform_api",
-        lambda platform: (FakeAPI(), platform),
+        lambda platform: (fake_api, platform),
     )
 
     runner = CliRunner()
@@ -798,39 +842,18 @@ def test_app_run_with_deploy_and_local_folder(monkeypatch):
             [
                 "app",
                 "run",
-                "orders",
-                "--deploy",
-                "--local-folder",
                 str(app_dir),
                 "--platform",
                 "fabric",
+                "--no-wait",
             ],
         )
 
-        assert result.exit_code == 0, result.output
-        assert "orders" in result.output
-
-
-def test_app_run_deploy_requires_source_flag(monkeypatch):
-    runner = CliRunner()
-    result = runner.invoke(cli, ["app", "run", "orders", "--deploy", "--platform", "fabric"])
-    assert result.exit_code != 0
-    assert "--local-folder" in result.output or "--kda-package" in result.output
-
-
-def test_app_run_source_flag_without_deploy_is_rejected(monkeypatch):
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        app_dir = Path("orders")
-        app_dir.mkdir()
-        (app_dir / "app.py").write_text("", encoding="utf-8")
-
-        result = runner.invoke(
-            cli,
-            ["app", "run", "orders", "--local-folder", str(app_dir), "--platform", "fabric"],
-        )
-        assert result.exit_code != 0
-        assert "--deploy" in result.output
+    assert result.exit_code == 0, result.output
+    assert "run-1" in result.output
+    assert fake_api.deployed[0][0] == "orders"
+    assert sorted(fake_api.deployed[0][1]) == ["app.py"]
+    assert fake_api.created == [("orders", {"app_name": "orders"})]
 
 
 def test_app_cleanup_positional_name(monkeypatch):
@@ -1294,8 +1317,8 @@ class TestEnvCheckLocal:
         assert "[FAIL] hadoop_azure_jars" in result.output
 
 
-class TestJobSubmitCommand:
-    """Tests for `kindling job submit` — the single-command remote job workflow."""
+class TestAppRunCommand:
+    """Tests for `kindling app run` — the single-command remote app workflow."""
 
     def _make_mock_api(self):
         from unittest.mock import MagicMock
@@ -1324,7 +1347,7 @@ class TestJobSubmitCommand:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["job", "submit", str(app_dir), "--platform", "synapse", "--no-wait"],
+            ["app", "run", str(app_dir), "--platform", "synapse", "--no-wait"],
         )
 
         assert result.exit_code == 0, result.output
@@ -1348,7 +1371,7 @@ class TestJobSubmitCommand:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["job", "submit", str(app_dir), "--platform", "synapse"],
+            ["app", "run", str(app_dir), "--platform", "synapse"],
         )
 
         assert result.exit_code == 0, result.output
@@ -1370,7 +1393,7 @@ class TestJobSubmitCommand:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["job", "submit", str(app_dir), "--platform", "synapse"],
+            ["app", "run", str(app_dir), "--platform", "synapse"],
         )
 
         assert result.exit_code != 0
@@ -1391,7 +1414,7 @@ class TestJobSubmitCommand:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["job", "submit", str(app_dir), "--platform", "synapse", "--no-fail-on-error"],
+            ["app", "run", str(app_dir), "--platform", "synapse", "--no-fail-on-error"],
         )
 
         assert result.exit_code == 0, result.output
@@ -1408,7 +1431,7 @@ class TestJobSubmitCommand:
         (app_dir / "app.py").write_text("# app")
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["job", "submit", str(app_dir)])
+        result = runner.invoke(cli, ["app", "run", str(app_dir)])
 
         assert result.exit_code != 0
         assert "platform" in result.output.lower()
@@ -1479,10 +1502,13 @@ def test_job_init_overwrites_with_force():
 
 
 def test_job_init_includes_platform_specific_section_for_synapse(monkeypatch):
-    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "my-workspace")
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli, ["job", "init", "--name", "j", "--app", "a"])
+        result = runner.invoke(
+            cli,
+            ["job", "init", "--name", "j", "--app", "a"],
+            env={**_BLANK_PLATFORM_DETECT_VARS, "SYNAPSE_WORKSPACE_NAME": "my-workspace"},
+        )
 
         assert result.exit_code == 0, result.output
         content = Path("job.yaml").read_text(encoding="utf-8")
@@ -1492,10 +1518,16 @@ def test_job_init_includes_platform_specific_section_for_synapse(monkeypatch):
 
 
 def test_job_init_includes_platform_specific_section_for_databricks(monkeypatch):
-    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli, ["job", "init", "--name", "j", "--app", "a"])
+        result = runner.invoke(
+            cli,
+            ["job", "init", "--name", "j", "--app", "a"],
+            env={
+                **_BLANK_PLATFORM_DETECT_VARS,
+                "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+            },
+        )
 
         assert result.exit_code == 0, result.output
         content = Path("job.yaml").read_text(encoding="utf-8")
@@ -1549,10 +1581,16 @@ def test_job_init_prints_env_check_hint_for_explicit_platform():
 
 
 def test_job_init_prints_env_check_hint_for_auto_detected_platform(monkeypatch):
-    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli, ["job", "init", "--name", "j", "--app", "a"])
+        result = runner.invoke(
+            cli,
+            ["job", "init", "--name", "j", "--app", "a"],
+            env={
+                **_BLANK_PLATFORM_DETECT_VARS,
+                "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+            },
+        )
 
         assert result.exit_code == 0, result.output
         assert "kindling env check --platform databricks" in result.output
@@ -1742,14 +1780,14 @@ class TestEnvCheckPlatform:
 
 
 # ---------------------------------------------------------------------------
-# run — actionable error messages (kindling-6m3)
+# pipeline run — actionable error messages (kindling-6m3)
 # ---------------------------------------------------------------------------
 
 
 def test_run_missing_config_gives_actionable_message():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli, ["run", "my_pipe"])
+        result = runner.invoke(cli, ["pipeline", "run", "my_pipe"])
         assert result.exit_code != 0
         assert "Config file not found at config/settings.yaml" in result.output
         assert "kindling config init" in result.output
@@ -1810,13 +1848,13 @@ def test_run_missing_pipe_gives_actionable_message(monkeypatch, tmp_path):
     with runner.isolated_filesystem():
         Path("config").mkdir()
         Path("config/settings.yaml").write_text("name: test-app\n", encoding="utf-8")
-        result = runner.invoke(cli, ["run", "slver_to_gold", "--app", str(app_py)])
+        result = runner.invoke(cli, ["pipeline", "run", "slver_to_gold", "--app", str(app_py)])
 
     assert result.exit_code != 0
     assert "Pipe 'slver_to_gold' not found" in result.output
     assert "bronze_to_silver" in result.output
     assert "silver_to_gold" in result.output
-    assert "kindling validate" in result.output
+    assert "kindling pipeline list" in result.output or "kindling app validate" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1875,7 +1913,7 @@ def test_runner_ensure_json_output(monkeypatch):
 
 def test_runner_ensure_requires_platform_or_env():
     runner = CliRunner()
-    result = runner.invoke(cli, ["runner", "ensure"])
+    result = runner.invoke(cli, ["runner", "ensure"], env=dict(_BLANK_PLATFORM_DETECT_VARS))
     assert result.exit_code != 0
     assert "Unable to determine platform" in result.output
 
@@ -1920,7 +1958,7 @@ def test_runner_status_json(monkeypatch):
 
 def test_runner_status_requires_platform_or_env():
     runner = CliRunner()
-    result = runner.invoke(cli, ["runner", "status"])
+    result = runner.invoke(cli, ["runner", "status"], env=dict(_BLANK_PLATFORM_DETECT_VARS))
     assert result.exit_code != 0
     assert "Unable to determine platform" in result.output
 
@@ -1937,7 +1975,7 @@ def test_runner_repair_succeeds(monkeypatch):
 
 def test_runner_repair_requires_platform_or_env():
     runner = CliRunner()
-    result = runner.invoke(cli, ["runner", "repair"])
+    result = runner.invoke(cli, ["runner", "repair"], env=dict(_BLANK_PLATFORM_DETECT_VARS))
     assert result.exit_code != 0
     assert "Unable to determine platform" in result.output
 
@@ -1980,7 +2018,9 @@ def test_runner_delete_json_output(monkeypatch):
 
 def test_runner_delete_requires_platform_or_env():
     runner = CliRunner()
-    result = runner.invoke(cli, ["runner", "delete", "--yes"])
+    result = runner.invoke(
+        cli, ["runner", "delete", "--yes"], env=dict(_BLANK_PLATFORM_DETECT_VARS)
+    )
     assert result.exit_code != 0
     assert "Unable to determine platform" in result.output
 
@@ -2043,6 +2083,10 @@ def test_runner_invoke_requires_platform_or_env(tmp_path):
     params_file = tmp_path / "params.yaml"
     params_file.write_text("runner_job_id: runner-001\n", encoding="utf-8")
     runner = CliRunner()
-    result = runner.invoke(cli, ["runner", "invoke", "--params", str(params_file)])
+    result = runner.invoke(
+        cli,
+        ["runner", "invoke", "--params", str(params_file)],
+        env=dict(_BLANK_PLATFORM_DETECT_VARS),
+    )
     assert result.exit_code != 0
     assert "Unable to determine platform" in result.output
