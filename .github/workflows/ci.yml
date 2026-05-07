@@ -492,16 +492,16 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install security tools
-        run: pip install safety bandit
+        run: pip install pip-audit bandit
 
-      - name: Run safety check for known vulnerabilities
+      - name: Audit dependencies for known vulnerabilities
         run: |
           mkdir -p output
-          safety check --json --output output/safety-report.json || true
+          pip-audit --format json -o output/pip-audit-report.json
 
-      - name: Run bandit security analysis
+      - name: Run bandit SAST analysis
         run: |
-          bandit -r packages/ -f json -o output/bandit-report.json || true
+          bandit -r packages/ -ll -f json -o output/bandit-report.json
 
       - name: Upload security reports
         uses: actions/upload-artifact@v4
