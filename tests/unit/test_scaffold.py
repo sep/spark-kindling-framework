@@ -399,7 +399,7 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         assert "Next steps" in result.output
         assert "cd my_proj/packages/my_proj" in result.output
-        assert "kindling pipeline run bronze_to_silver" in result.output
+        assert "kindling app run ." in result.output
         assert "poetry run poe test" in result.output
         assert "kindling job init" in result.output
 
@@ -411,7 +411,7 @@ class TestScaffoldCommands:
         )
 
         assert result.exit_code == 0, result.output
-        assert "kindling pipeline run process" in result.output
+        assert "kindling app run ." in result.output
 
     def test_package_init_prints_next_steps(self, tmp_path):
         repo_root = tmp_path / "repo"
@@ -423,7 +423,7 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         assert "Next steps" in result.output
         assert "cd packages/my_pkg" in result.output
-        assert "kindling pipeline run bronze_to_silver" in result.output
+        assert "kindling app run ." in result.output
         assert "poetry run poe test" in result.output
         assert "kindling job init" in result.output
 

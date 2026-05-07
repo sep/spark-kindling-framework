@@ -140,9 +140,20 @@ done
 That means local day-to-day work stays package-scoped, while CI validates all
 scaffolded packages in the repo.
 
+## Running an App Locally
+
+Use `kindling app run` to execute all registered pipes locally with the
+standalone platform:
+
+```bash
+kindling app run .
+kindling app run . --platform standalone --env local
+```
+
 ## Running a Pipe Locally
 
-Use `kindling run` to execute a registered pipe without deploying to a remote platform:
+Use `kindling pipeline run` to execute one registered pipe without deploying to
+a remote platform:
 
 ```bash
 kindling pipeline run bronze_to_silver
@@ -197,8 +208,9 @@ Spark context.
 ## Local Memory Providers (No Azure Needed)
 
 The generated `env.local.yaml` now scaffolds entity tags with
-`provider_type: memory` by default. This means `kindling run` and unit/component
-tests work out of the box — no Azure credentials or ABFSS paths required.
+`provider_type: memory` by default. This means `kindling app run`,
+`kindling pipeline run`, and unit/component tests work out of the box - no Azure
+credentials or ABFSS paths required.
 
 To switch to real Azure storage, uncomment the ABFSS block in `env.local.yaml`
 and set the required env vars in your `.env` file.
@@ -236,14 +248,17 @@ kindling app package path/to/app-dir
 # Deploy an app directory or .kda package
 kindling app deploy --local-folder path/to/app-dir --platform fabric --app-name my-app
 
+# Run all registered pipes locally with standalone Spark
+kindling app run path/to/app-dir
+
 # Run an app remotely from a local directory or from a deployed app name
 kindling app run path/to/app-dir --platform synapse
 kindling app status <run-id> --platform synapse
 kindling app logs <run-id> --platform synapse
 ```
 
-These remote operations use `spark-kindling-sdk`, so install it alongside the
-CLI when you want deploy/manage capabilities.
+Remote operations use `spark-kindling-sdk`, so install it alongside the CLI when
+you want deploy/manage capabilities.
 
 ## Artifact Storage and Workspace Bootstrap
 

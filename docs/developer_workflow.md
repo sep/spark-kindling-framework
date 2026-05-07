@@ -48,9 +48,18 @@ kindling workspace deploy --platform synapse --storage-account <account>
 The Python deploy helpers now prefer the combined runtime wheel and only fall
 back to legacy `kindling_<platform>-*.whl` artifacts when needed.
 
-## Running a Pipe Locally
+## Running Apps and Pipes Locally
 
-Use `kindling run` to execute a pipe from your local package without deploying:
+Use `kindling app run` to execute all registered pipes locally with the
+standalone platform:
+
+```bash
+kindling app run .
+kindling app run . --platform standalone --env local
+```
+
+Use `kindling pipeline run` to execute one pipe from your local package without
+deploying:
 
 ```bash
 # Run from the package directory — app.py is auto-discovered
@@ -75,6 +84,7 @@ The CLI exposes design-time lifecycle commands beyond config/workspace:
 
 ```bash
 kindling app package <app-path>
+kindling app run <app-path>                       # local standalone
 kindling app deploy --local-folder <app-dir> --platform fabric
 kindling app cleanup <app-name> --platform fabric
 kindling app run <app-name-or-path> --platform synapse
