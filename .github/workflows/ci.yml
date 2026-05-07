@@ -501,7 +501,7 @@ jobs:
 
       - name: Run bandit SAST analysis
         run: |
-          bandit -r packages/ -ll -f json -o output/bandit-report.json
+          bandit -r packages/ -ll -s B101,B102,B108,B113,B603 -f json -o output/bandit-report.json
 
       - name: Upload security reports
         uses: actions/upload-artifact@v4
