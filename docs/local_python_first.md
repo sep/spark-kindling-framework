@@ -36,7 +36,7 @@ poetry run poe test-integration
 
 ## What The Scaffold Creates
 
-`kindling new` now creates a multi-package repo with:
+`kindling project new` now creates a multi-package repo with:
 
 - repo root shared files: `.devcontainer/`, `.github/workflows/ci.yml`, `.gitignore`
 - package-local source at `packages/<pkg>/src/<pkg>/...`

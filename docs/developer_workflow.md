@@ -80,17 +80,44 @@ both commands, the memory-first scaffold, and `KindlingNotInitializedError`.
 
 ## CLI Lifecycle Commands
 
-The CLI exposes design-time lifecycle commands beyond config/workspace:
+The CLI exposes design-time lifecycle commands beyond config/workspace.
+
+### App workflow
 
 ```bash
 kindling app package <app-path>
-kindling app run <app-path>                       # local standalone
+kindling app run <app-path>                           # local standalone
 kindling app deploy --local-folder <app-dir> --platform fabric
-kindling app cleanup <app-name> --platform fabric
-kindling app run <app-name-or-path> --platform synapse
+kindling app run <app-name-or-path> --platform synapse  # submits to runner
 kindling app status <run-id> --platform synapse
 kindling app logs <run-id> --platform synapse
 kindling app cancel <run-id> --platform synapse
+kindling app cleanup <app-name> --platform fabric
+```
+
+### Runner workflow
+
+The durable runner is the remote execution vehicle. Manage it separately from app work:
+
+```bash
+kindling runner ensure --platform synapse   # install if not present
+kindling runner status --platform synapse   # check health
+kindling runner repair --platform synapse   # reinstall
+kindling runner delete --platform synapse   # remove
+```
+
+Remote `kindling app run` checks that a runner exists before submitting. If none is found it exits with a hint to run `kindling runner ensure`.
+
+### Advanced platform job operations
+
+`kindling job *` commands give direct access to platform job primitives. Use them for debugging, CI automation, or operator tasks — not for normal app workflows.
+
+```bash
+kindling job create job.yaml --platform synapse
+kindling job run <job-id> --platform synapse
+kindling job status <run-id> --platform synapse
+kindling job logs <run-id> --platform synapse
+kindling job cancel <run-id> --platform synapse
 kindling job delete <job-id> --platform synapse
 ```
 

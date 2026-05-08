@@ -645,7 +645,10 @@ class SynapseAPI(PlatformAPI):
 
         Args:
             job_id: Job definition name (returned by create_job as job_id)
-            parameters: Unused — configuration was fixed at create_job() time.
+            parameters: Optional per-run config overrides.  Each key/value is
+                injected as a ``config:<key>=<value>`` arg, replacing any
+                matching arg already present in the stored definition.  This is
+                how submit_app_run passes the target app_name to the runner.
 
         Returns:
             Batch ID (run ID) for monitoring via get_job_status() / stream_stdout_logs().
@@ -669,10 +672,17 @@ class SynapseAPI(PlatformAPI):
                 "conf": props.get("conf", {}),
             }
 
+        run_args = list(job_info["args"])
+        if parameters:
+            for k, v in parameters.items():
+                run_args = [a for a in run_args if not a.startswith(f"config:{k}=")]
+                val = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                run_args.append(f"config:{k}={val}")
+
         batch_payload = {
             "name": job_id,
             "file": job_info["file"],
-            "args": job_info["args"],
+            "args": run_args,
             "conf": job_info["conf"],
         }
 
@@ -1649,6 +1659,27 @@ class SynapseAPI(PlatformAPI):
         except Exception as e:
             print(f"⚠️  Failed to list jobs: {e}")
             return []
+
+    # --- Runner lifecycle ---
+
+    def find_job_by_name(self, name: str) -> Optional[str]:
+        """Return the job definition name if it exists in the workspace, else None.
+
+        For Synapse, job_id == job_name, so a successful GET is sufficient.
+        The in-process cache is checked first to avoid a round-trip when the
+        definition was just created in the same session.
+        """
+        if name in self._job_mapping:
+            return name
+        try:
+            url = (
+                f"{self.base_url}/sparkJobDefinitions/{quote(name, safe='')}"
+                f"?api-version=2020-12-01"
+            )
+            self._make_request("GET", url)
+            return name
+        except Exception:
+            return None
 
 
 # Expose in module

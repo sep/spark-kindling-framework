@@ -73,15 +73,15 @@ RUN pip install --no-cache-dir \
 # expected path without any manual setup.
 RUN mkdir -p /opt/hadoop-jars \
     && curl -fsSL -o /opt/hadoop-jars/hadoop-azure-3.3.4.jar \
-        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar \
+    https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar \
     && curl -fsSL -o /opt/hadoop-jars/hadoop-azure-datalake-3.3.4.jar \
-        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure-datalake/3.3.4/hadoop-azure-datalake-3.3.4.jar \
+    https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure-datalake/3.3.4/hadoop-azure-datalake-3.3.4.jar \
     && curl -fsSL -o /opt/hadoop-jars/azure-storage-8.6.6.jar \
-        https://repo1.maven.org/maven2/com/microsoft/azure/azure-storage/8.6.6/azure-storage-8.6.6.jar \
+    https://repo1.maven.org/maven2/com/microsoft/azure/azure-storage/8.6.6/azure-storage-8.6.6.jar \
     && curl -fsSL -o /opt/hadoop-jars/wildfly-openssl-1.1.3.Final.jar \
-        https://repo1.maven.org/maven2/org/wildfly/openssl/wildfly-openssl/1.1.3.Final/wildfly-openssl-1.1.3.Final.jar \
+    https://repo1.maven.org/maven2/org/wildfly/openssl/wildfly-openssl/1.1.3.Final/wildfly-openssl-1.1.3.Final.jar \
     && curl -fsSL -o /opt/hadoop-jars/jetty-util-ajax-9.4.51.v20230217.jar \
-        https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar \
+    https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar \
     && ln -s /opt/hadoop-jars /tmp/hadoop-jars
 
 # Set up workspace directory for Spark
@@ -98,13 +98,13 @@ ENV GT_VERSION=1.0.1 \
 RUN set -eux; \
     # gastown (gt)
     curl -fsSL "https://github.com/gastownhall/gastown/releases/download/v${GT_VERSION}/gastown_${GT_VERSION}_linux_amd64.tar.gz" \
-        | tar -xz -C /usr/local/bin gt; \
+    | tar -xz -C /usr/local/bin gt; \
     # dolt
     curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" \
-        | tar -xz --strip-components=2 -C /usr/local/bin dolt-linux-amd64/bin/dolt; \
+    | tar -xz --strip-components=2 -C /usr/local/bin dolt-linux-amd64/bin/dolt; \
     # beads (bd)
     curl -fsSL "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz" \
-        | tar -xz -C /usr/local/bin bd; \
+    | tar -xz -C /usr/local/bin bd; \
     chmod +x /usr/local/bin/gt /usr/local/bin/dolt /usr/local/bin/bd
 
 # Node.js LTS + Claude Code CLI (agents need the `claude` binary)
