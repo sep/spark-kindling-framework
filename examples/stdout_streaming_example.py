@@ -17,7 +17,7 @@ Requirements:
 
     Synapse:
         - SYNAPSE_WORKSPACE_NAME
-        - SYNAPSE_SPARK_POOL
+        - SYNAPSE_SPARK_POOL_NAME
         - AZURE_STORAGE_ACCOUNT
 
     Databricks:
@@ -79,12 +79,12 @@ def create_synapse_client():
     from kindling.platform_synapse import SynapseAPI
 
     workspace_name = os.getenv("SYNAPSE_WORKSPACE_NAME")
-    spark_pool_name = os.getenv("SYNAPSE_SPARK_POOL")
+    spark_pool_name = os.getenv("SYNAPSE_SPARK_POOL_NAME")
     storage_account = os.getenv("AZURE_STORAGE_ACCOUNT")
     container = os.getenv("AZURE_CONTAINER", "artifacts")
 
     if not workspace_name or not spark_pool_name:
-        print("❌ SYNAPSE_WORKSPACE_NAME and SYNAPSE_SPARK_POOL must be set")
+        print("❌ SYNAPSE_WORKSPACE_NAME and SYNAPSE_SPARK_POOL_NAME must be set")
         sys.exit(1)
 
     print(f"📡 Connecting to Synapse workspace: {workspace_name}")
