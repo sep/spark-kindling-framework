@@ -8,12 +8,23 @@ services:
       - spark-warehouse:/spark-warehouse
       - gt-hq:/home/vscode/gt-hq
       - kindling-domain:/home/vscode/kindling-domain
+      - claude-state:/home/vscode/.claude
+      - codex-state:/home/vscode/.codex
+      - gh-config:/home/vscode/.config/gh
     command: sleep infinity
     environment:
       - PYTHONPATH=/workspaces/kindling
       - SPARK_LOCAL_IP=127.0.0.1
+      - GT_TOWN_ROOT=/home/vscode/gt-hq
+      - GT_ROOT=/home/vscode/gt-hq/kindling
+      - GT_RIG=kindling
 
 volumes:
   spark-warehouse:
+  claude-state:
+  codex-state:
+  gh-config:
   gt-hq:
+    external: true
+    name: gastown-hq
   kindling-domain:
