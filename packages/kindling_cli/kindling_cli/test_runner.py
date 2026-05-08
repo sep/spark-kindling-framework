@@ -216,32 +216,118 @@ def run_cleanup(
     all_platforms: bool = False,
     skip_packages: bool = False,
 ) -> int:
-    """Run repository-provided cleanup script when present."""
-    cleanup_script = Path("scripts/cleanup_test_resources.py")
-    if not cleanup_script.exists():
-        print(f"Cleanup script not found: {cleanup_script}")
+    """Delete orphaned system-test jobs and data-apps from configured platforms."""
+    storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT", "").strip()
+    if not storage_account:
+        print("Error: AZURE_STORAGE_ACCOUNT environment variable not set")
         return 1
 
-    cmd = [sys.executable, str(cleanup_script)]
-    if platform:
-        cmd.extend(["--platform", platform])
-    elif all_platforms:
-        cmd.append("--all")
+    container = os.environ.get("AZURE_CONTAINER", "artifacts")
+    base_path = os.environ.get("AZURE_BASE_PATH", "")
 
-    print(f"Running: {' '.join(cmd)}", flush=True)
-    print(flush=True)
-    result = subprocess.run(cmd)
-    if result.returncode != 0 or platform or skip_packages:
-        return result.returncode
+    platforms: List[str]
+    if all_platforms:
+        platforms = ["fabric", "synapse", "databricks"]
+    elif platform:
+        platforms = [platform]
+    else:
+        print("Must specify either --platform or --all")
+        return 1
 
+    print("Kindling Test Resource Cleanup")
+    print("=" * 50)
+    print(f"Storage: {storage_account}/{container}")
+    print()
+
+    total_jobs = 0
+    total_apps = 0
+    for p in platforms:
+        jobs, apps = _cleanup_platform(p, storage_account, container, base_path)
+        total_jobs += jobs
+        total_apps += apps
+        print()
+
+    print("=" * 50)
+    print("Cleanup complete!")
+    print(f"  Jobs deleted: {total_jobs}")
+    print(f"  Data-apps deleted: {total_apps}")
+    print(f"  Total: {total_jobs + total_apps}")
+
+    if skip_packages:
+        return 0
+    return _cleanup_old_packages()
+
+
+def _cleanup_platform(platform: str, storage_account: str, container: str, base_path: str) -> tuple:
+    print(f"Cleaning up {platform} test resources...")
+    jobs_deleted = 0
+    try:
+        from kindling_sdk.platform_provider import create_platform_api_from_env
+
+        client, _ = create_platform_api_from_env(platform)
+        list_fn = getattr(client, "list_jobs", None) or getattr(client, "list_spark_jobs")
+        jobs = list_fn()
+        for job in jobs:
+            name = job.get("settings", {}).get("name", "") or job.get("displayName", "")
+            if not name.startswith("systest-"):
+                continue
+            job_id = job.get("job_id") or job.get("id")
+            try:
+                if client.delete_job(job_id):
+                    print(f"  Deleted job: {name}")
+                    jobs_deleted += 1
+            except Exception as exc:
+                print(f"  Failed to delete job {name}: {exc}")
+    except ImportError:
+        print(f"  Warning: spark-kindling-sdk not installed; skipping {platform} job cleanup")
+    except Exception as exc:
+        print(f"  Error listing {platform} jobs: {exc}")
+
+    apps_deleted = _cleanup_storage_apps(storage_account, container, base_path)
+    return jobs_deleted, apps_deleted
+
+
+def _cleanup_storage_apps(storage_account: str, container: str, base_path: str) -> int:
+    apps_deleted = 0
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.storage.filedatalake import DataLakeServiceClient
+    except ImportError:
+        print("  Warning: azure-storage-file-datalake not installed; skipping storage cleanup")
+        return 0
+
+    try:
+        account_url = f"https://{storage_account}.dfs.core.windows.net"
+        fs_client = DataLakeServiceClient(
+            account_url, credential=DefaultAzureCredential()
+        ).get_file_system_client(container)
+        data_apps_path = f"{base_path}/data-apps" if base_path else "data-apps"
+        for path in fs_client.get_paths(path=data_apps_path):
+            if not path.is_directory:
+                continue
+            app_name = path.name.split("/")[-1]
+            if not (app_name.startswith("universal-test-app-") or "test" in app_name.lower()):
+                continue
+            try:
+                fs_client.get_directory_client(path.name).delete_directory()
+                print(f"  Deleted data-app: {app_name}")
+                apps_deleted += 1
+            except Exception as exc:
+                print(f"  Failed to delete data-app {app_name}: {exc}")
+    except Exception as exc:
+        print(f"  Error cleaning up storage apps: {exc}")
+
+    return apps_deleted
+
+
+def _cleanup_old_packages() -> int:
     package_cleanup = Path("scripts/cleanup_old_packages.py")
     if not package_cleanup.exists():
-        return result.returncode
-
-    package_cmd = [sys.executable, str(package_cleanup)]
-    print(f"Running: {' '.join(package_cmd)}", flush=True)
+        return 0
+    cmd = [sys.executable, str(package_cleanup)]
+    print(f"Running: {' '.join(cmd)}", flush=True)
     print(flush=True)
-    return subprocess.run(package_cmd).returncode
+    return subprocess.run(cmd).returncode
 
 
 def flatten_pytest_args(values: Iterable[str]) -> List[str]:
