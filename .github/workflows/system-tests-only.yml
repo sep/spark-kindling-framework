@@ -206,7 +206,7 @@ jobs:
           FABRIC_LAKEHOUSE_ID: ${{ secrets.FABRIC_LAKEHOUSE_ID }}
           CONFIG__platform_fabric__kindling__secrets__key_vault_url: ${{ secrets.CONFIG__platform_fabric__kindling__secrets__key_vault_url }}
           SYNAPSE_WORKSPACE_NAME: ${{ secrets.SYNAPSE_WORKSPACE_NAME }}
-          SYNAPSE_SPARK_POOL: ${{ secrets.SYNAPSE_SPARK_POOL }}
+          SYNAPSE_SPARK_POOL_NAME: ${{ secrets.SYNAPSE_SPARK_POOL_NAME }}
           CONFIG__platform_synapse__kindling__secrets__key_vault_url: ${{ secrets.CONFIG__platform_synapse__kindling__secrets__key_vault_url }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
