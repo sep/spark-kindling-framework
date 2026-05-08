@@ -40,8 +40,8 @@
 			}
 		}
 	},
-	"postCreateCommand": "poetry env remove --all 2>/dev/null; poetry install --with dev --sync && poetry run python -c \"import xdist\" && git config --unset-all core.hooksPath; pre-commit install && bash -lc 'grep -q \"# kindling .env auto-load\" ~/.bashrc || { echo \"# kindling .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/kindling/.env ] && set -a && source /workspaces/kindling/.env && set +a\" >> ~/.bashrc; }'",
-	"postStartCommand": "bash -c '[ -f \"/workspaces/kindling/.env\" ] && echo \"✅ .env will load in new terminals\" || echo \"⚠️  No .env file found\"'",
+	"postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex /home/vscode/gt-hq 2>/dev/null || true && poetry env remove --all 2>/dev/null; poetry install --with dev --sync && poetry run python -c \"import xdist\" && git config --unset-all core.hooksPath; pre-commit install && bash -lc 'grep -q \"# kindling .env auto-load\" ~/.bashrc || { echo \"# kindling .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/kindling/.env ] && set -a && source /workspaces/kindling/.env && set +a\" >> ~/.bashrc; }; [ -f /home/vscode/gt-hq/mayor/town.json ] && (cd /home/vscode/gt-hq && gt enable && gt shell install) || true'",
+	"postStartCommand": "bash -c '[ -f \"/workspaces/kindling/.env\" ] && echo \"✅ .env will load in new terminals\" || echo \"⚠️  No .env file found\"; [ -f /home/vscode/gt-hq/mayor/town.json ] && (cd /home/vscode/gt-hq && gt dolt start) || true'",
 	"initializeCommand": "echo '⚙️  Initializing devcontainer...'",
 	"forwardPorts": [
 		4040
