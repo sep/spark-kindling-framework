@@ -57,7 +57,7 @@ Additional platform secrets used by system tests:
 - `FABRIC_WORKSPACE_ID`
 - `FABRIC_LAKEHOUSE_ID`
 - `SYNAPSE_WORKSPACE_NAME`
-- `SYNAPSE_SPARK_POOL`
+- `SYNAPSE_SPARK_POOL_NAME`
 - `DATABRICKS_HOST`
 - `DATABRICKS_CLUSTER_ID`
 - platform Key Vault / test resource secrets already referenced in the workflow
