@@ -113,7 +113,7 @@ class SynapseAPI(PlatformAPI):
             - SYNAPSE_WORKSPACE_NAME
 
         Optional environment variables:
-            - SYNAPSE_SPARK_POOL or SYNAPSE_SPARK_POOL_NAME
+            - SYNAPSE_SPARK_POOL_NAME
             - AZURE_STORAGE_ACCOUNT (for file uploads)
             - AZURE_CONTAINER (default: "artifacts")
             - AZURE_BASE_PATH (default: "system-tests")
@@ -133,7 +133,7 @@ class SynapseAPI(PlatformAPI):
 
         return cls(
             workspace_name=workspace_name,
-            spark_pool_name=os.getenv("SYNAPSE_SPARK_POOL") or os.getenv("SYNAPSE_SPARK_POOL_NAME"),
+            spark_pool_name=os.getenv("SYNAPSE_SPARK_POOL_NAME"),
             storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
             container=os.getenv("AZURE_CONTAINER", "artifacts"),
             base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),

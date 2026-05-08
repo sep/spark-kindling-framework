@@ -80,10 +80,10 @@ def cleanup_synapse(storage_account: str, container: str, base_path: str = ""):
     print("🧹 Cleaning up Synapse test resources...")
 
     workspace_name = os.getenv("SYNAPSE_WORKSPACE_NAME")
-    spark_pool = os.getenv("SYNAPSE_SPARK_POOL") or os.getenv("SYNAPSE_SPARK_POOL_NAME")
+    spark_pool = os.getenv("SYNAPSE_SPARK_POOL_NAME")
 
     if not workspace_name or not spark_pool:
-        print("⚠️  Skipping Synapse: Missing SYNAPSE_WORKSPACE_NAME or SYNAPSE_SPARK_POOL")
+        print("⚠️  Skipping Synapse: Missing SYNAPSE_WORKSPACE_NAME or SYNAPSE_SPARK_POOL_NAME")
         return 0, 0
 
     client = SynapseAPI(
