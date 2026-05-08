@@ -2789,11 +2789,10 @@ def app_deploy(
             "Supply a source via --local-folder <dir> or --kda-package <file>."
         )
 
-    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
-
     source = local_folder or kda_package  # type: ignore[assignment]
     resolved_app_path = source.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
+    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     resolved_name = (app_name or _default_app_name(resolved_app_path)).strip()
     if not resolved_name:
