@@ -276,6 +276,26 @@ def _wait_for_job_run(
         time.sleep(poll_interval)
 
 
+def _wait_for_app_run(
+    api_client, run_id: str, poll_interval: float, timeout: float
+) -> Dict[str, Any]:
+    """Poll an app run until it reaches a known terminal state or times out."""
+    deadline = time.monotonic() + timeout
+    last_status: Dict[str, Any] = {}
+
+    while True:
+        last_status = api_client.get_app_run_status(run_id)
+        state = _status_value(last_status)
+        if state in _TERMINAL_JOB_STATES:
+            return last_status
+        if time.monotonic() >= deadline:
+            raise click.ClickException(
+                f"Timed out waiting for run `{run_id}` after {timeout:g} seconds. "
+                f"Last observed state: {state}."
+            )
+        time.sleep(poll_interval)
+
+
 def _create_platform_api(platform: str):
     """Construct a remote platform API client from the current environment."""
     try:
@@ -562,6 +582,47 @@ def _detect_platform_from_environment() -> Optional[str]:
     if os.getenv("DATABRICKS_HOST"):
         return "databricks"
     return None
+
+
+_PLATFORM_NOT_FOUND_MSG = (
+    "Unable to determine platform. Set --platform or one of "
+    "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+)
+
+
+def _resolve_remote_platform(platform: Optional[str], require_credentials: bool = False) -> str:
+    """Resolve remote platform and optionally enforce base credential variables."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    if require_credentials:
+        missing = _missing_platform_vars(resolved_platform)
+        if missing:
+            raise click.ClickException(
+                f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
+                f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
+            )
+
+    return resolved_platform
+
+
+def _validate_logs_options(
+    from_line: int,
+    size: int,
+    stream: bool,
+    poll_interval: float,
+    max_wait: float,
+) -> None:
+    """Validate shared options for app/job log retrieval and streaming."""
+    if from_line < 0:
+        raise click.ClickException("--from-line must be greater than or equal to 0.")
+    if size <= 0:
+        raise click.ClickException("--size must be greater than 0.")
+    if stream and poll_interval <= 0:
+        raise click.ClickException("--poll-interval must be greater than 0.")
+    if stream and max_wait <= 0:
+        raise click.ClickException("--max-wait must be greater than 0.")
 
 
 def _read_settings_app_name(settings_path: Path = Path("config/settings.yaml")) -> Optional[str]:
@@ -2728,12 +2789,7 @@ def app_deploy(
             "Supply a source via --local-folder <dir> or --kda-package <file>."
         )
 
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
+    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
 
     source = local_folder or kda_package  # type: ignore[assignment]
     resolved_app_path = source.expanduser().resolve()
@@ -2780,12 +2836,7 @@ def _run_remote_app(
     if timeout <= 0:
         raise click.ClickException("--timeout must be greater than 0.")
 
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
+    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
 
     source_path = Path(app_ref).expanduser()
     has_local_source = source_path.exists()
@@ -2826,22 +2877,40 @@ def _run_remote_app(
         )
 
     step_prefix = "[2/3]" if has_local_source else "[1/2]"
-    _emit_progress(f"{step_prefix} Creating job definition `{resolved_name}`...", json_output)
-    job_config: Dict[str, Any] = {"app_name": resolved_name}
-    if env:
-        job_config["environment"] = env
-    job_result = api_client.create_job(resolved_name, job_config)
-    job_id = str(job_result.get("job_id") or resolved_name)
+    _emit_progress(f"{step_prefix} Verifying runner on {resolved_platform}...", json_output)
+    try:
+        runner_status = api_client.get_runner_status(resolved_platform)
+    except NotImplementedError:
+        raise click.ClickException(
+            f"Runner management is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
+    runner_id = runner_status.get("runner_id")
+    if not runner_id:
+        raise click.ClickException(
+            f"No Kindling runner found on {resolved_platform}. "
+            f"Run 'kindling runner ensure --platform {resolved_platform}' to install it."
+        )
 
     step_prefix = "[3/3]" if has_local_source else "[2/2]"
-    _emit_progress(f"{step_prefix} Starting app run...", json_output)
-    run_id = api_client.run_job(job_id, parameters=parameters or None)
+    _emit_progress(f"{step_prefix} Submitting app run `{resolved_name}`...", json_output)
+    try:
+        run_id = api_client.submit_app_run(
+            resolved_name,
+            environment=env or None,
+            parameters=parameters or None,
+        )
+    except NotImplementedError:
+        raise click.ClickException(
+            f"Runner-aligned app submission is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
     _emit_progress(f"Run ID: {run_id}", json_output)
 
     payload: Dict[str, Any] = {
         "app_name": resolved_name,
-        "job_id": job_id,
         "run_id": run_id,
+        "runner_id": runner_id,
         "platform": resolved_platform,
     }
     if storage_path is not None:
@@ -2860,17 +2929,18 @@ def _run_remote_app(
 
     if not no_logs:
         try:
-            api_client.stream_stdout_logs(
-                job_id=job_id,
+            api_client.stream_app_run_logs(
                 run_id=run_id,
                 callback=(lambda line: click.echo(line, err=True)) if json_output else click.echo,
                 poll_interval=poll_interval,
                 max_wait=timeout,
             )
+        except NotImplementedError:
+            pass
         except Exception as exc:
             click.echo(f"Log streaming ended early: {exc}", err=True)
 
-    status = _wait_for_job_run(api_client, run_id, poll_interval, timeout)
+    status = _wait_for_app_run(api_client, run_id, poll_interval, timeout)
     state = _status_value(status)
     payload["status"] = status
     payload["state"] = state
@@ -3074,20 +3144,14 @@ def app_run(
 )
 def app_status(run_id: str, platform: Optional[str]) -> None:
     """Fetch the current status for an app run."""
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
+    resolved_platform = _resolve_remote_platform(platform)
 
     api_client, _ = _create_platform_api(resolved_platform)
-    _emit_json(api_client.get_job_status(run_id))
+    _emit_json(api_client.get_app_run_status(run_id))
 
 
 @app_group.command("logs")
 @click.argument("run_id")
-@click.option("--job-id", default=None, help="Job identifier. Required when --stream is used.")
 @click.option("--from-line", default=0, show_default=True, type=int)
 @click.option("--size", default=1000, show_default=True, type=int)
 @click.option("--stream", is_flag=True, help="Tail stdout logs until completion or timeout.")
@@ -3101,7 +3165,6 @@ def app_status(run_id: str, platform: Optional[str]) -> None:
 )
 def app_logs(
     run_id: str,
-    job_id: Optional[str],
     from_line: int,
     size: int,
     stream: bool,
@@ -3110,20 +3173,12 @@ def app_logs(
     platform: Optional[str],
 ) -> None:
     """Fetch or stream logs for an app run."""
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
-
-    if stream and not job_id:
-        raise click.ClickException("--job-id is required when --stream is used.")
+    resolved_platform = _resolve_remote_platform(platform)
+    _validate_logs_options(from_line, size, stream, poll_interval, max_wait)
 
     api_client, _ = _create_platform_api(resolved_platform)
     if stream:
-        api_client.stream_stdout_logs(
-            job_id=job_id,
+        api_client.stream_app_run_logs(
             run_id=run_id,
             callback=click.echo,
             poll_interval=poll_interval,
@@ -3131,7 +3186,7 @@ def app_logs(
         )
         return
 
-    _emit_json(api_client.get_job_logs(run_id, from_line=from_line, size=size))
+    _emit_json(api_client.get_app_run_logs(run_id, from_line=from_line, size=size))
 
 
 @app_group.command("cancel")
@@ -3145,15 +3200,10 @@ def app_logs(
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def app_cancel(run_id: str, platform: Optional[str], json_output: bool) -> None:
     """Cancel an app run."""
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
+    resolved_platform = _resolve_remote_platform(platform)
 
     api_client, _ = _create_platform_api(resolved_platform)
-    cancelled = api_client.cancel_job(run_id)
+    cancelled = api_client.cancel_app_run(run_id)
     if not cancelled:
         raise click.ClickException(f"Failed to cancel run `{run_id}`.")
     _emit_result(
@@ -3218,12 +3268,7 @@ def app_cleanup(
     if not resolved_app_name:
         raise click.ClickException("App name resolved to an empty string.")
 
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
+    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     deleted = api_client.cleanup_app(resolved_app_name)
@@ -4169,19 +4214,7 @@ def job_init(
 )
 def job_create(config_path: Path, platform: Optional[str]) -> None:
     """Create a remote job definition from a YAML or JSON config file."""
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
-
-    missing = _missing_platform_vars(resolved_platform)
-    if missing:
-        raise click.ClickException(
-            f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
-            f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
-        )
+    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
 
     job_config = _load_mapping_file(config_path, "job config")
     job_name = str(job_config.get("job_name") or "").strip()
@@ -4275,12 +4308,7 @@ def job_run(
 )
 def job_status(run_id: str, platform: Optional[str]) -> None:
     """Fetch the current status for a job run."""
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
+    resolved_platform = _resolve_remote_platform(platform)
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     _emit_json(api_client.get_job_status(run_id))
@@ -4315,12 +4343,8 @@ def job_logs(
     platform: Optional[str],
 ) -> None:
     """Fetch or stream logs for a remote job run."""
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
+    resolved_platform = _resolve_remote_platform(platform)
+    _validate_logs_options(from_line, size, stream, poll_interval, max_wait)
 
     if stream and not job_id:
         raise click.ClickException("--job-id is required when --stream is used.")
@@ -4350,12 +4374,7 @@ def job_logs(
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def job_cancel(run_id: str, platform: Optional[str], json_output: bool) -> None:
     """Cancel a remote job run."""
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
+    resolved_platform = _resolve_remote_platform(platform)
 
     api_client, _ = _create_platform_api(resolved_platform)
     cancelled = api_client.cancel_job(run_id)
@@ -4379,12 +4398,7 @@ def job_cancel(run_id: str, platform: Optional[str], json_output: bool) -> None:
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def job_delete(job_id: str, platform: Optional[str], json_output: bool) -> None:
     """Delete a remote job definition."""
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-        )
+    resolved_platform = _resolve_remote_platform(platform)
 
     api_client, _ = _create_platform_api(resolved_platform)
     deleted = api_client.delete_job(job_id)
@@ -4398,10 +4412,6 @@ def job_delete(job_id: str, platform: Optional[str], json_output: bool) -> None:
 
 
 # [implementer] runner command group for durable runner lifecycle — ki-sag
-_PLATFORM_NOT_FOUND_MSG = (
-    "Unable to determine platform. Set --platform or one of "
-    "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
-)
 
 
 @cli.group("runner")
@@ -4439,21 +4449,12 @@ def runner_ensure(platform: Optional[str], json_output: bool) -> None:
         kindling runner ensure --platform fabric
         kindling runner ensure --platform synapse
     """
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
-
-    missing = _missing_platform_vars(resolved_platform)
-    if missing:
-        raise click.ClickException(
-            f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
-            f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
-        )
+    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     try:
         result = api_client.ensure_runner(resolved_platform)
-    except AttributeError:
+    except (AttributeError, NotImplementedError):
         raise click.ClickException(
             f"Runner management is not yet supported on {resolved_platform}. "
             "Upgrade spark-kindling-sdk when platform support is available."
@@ -4497,7 +4498,7 @@ def runner_status(platform: Optional[str], verbose: bool, json_output: bool) -> 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     try:
         result = api_client.get_runner_status(resolved_platform)
-    except AttributeError:
+    except (AttributeError, NotImplementedError):
         raise click.ClickException(
             f"Runner management is not yet supported on {resolved_platform}. "
             "Upgrade spark-kindling-sdk when platform support is available."
@@ -4543,21 +4544,12 @@ def runner_repair(platform: Optional[str], json_output: bool) -> None:
         kindling runner repair
         kindling runner repair --platform synapse
     """
-    resolved_platform = platform or _detect_platform_from_environment()
-    if not resolved_platform:
-        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
-
-    missing = _missing_platform_vars(resolved_platform)
-    if missing:
-        raise click.ClickException(
-            f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
-            f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
-        )
+    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     try:
         result = api_client.repair_runner(resolved_platform)
-    except AttributeError:
+    except (AttributeError, NotImplementedError):
         raise click.ClickException(
             f"Runner management is not yet supported on {resolved_platform}. "
             "Upgrade spark-kindling-sdk when platform support is available."
@@ -4614,7 +4606,7 @@ def runner_delete(platform: Optional[str], yes: bool, json_output: bool) -> None
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     try:
         deleted = api_client.delete_runner(resolved_platform)
-    except AttributeError:
+    except (AttributeError, NotImplementedError):
         raise click.ClickException(
             f"Runner management is not yet supported on {resolved_platform}. "
             "Upgrade spark-kindling-sdk when platform support is available."
