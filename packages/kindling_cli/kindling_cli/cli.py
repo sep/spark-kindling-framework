@@ -298,6 +298,13 @@ def _wait_for_app_run(
 
 def _create_platform_api(platform: str):
     """Construct a remote platform API client from the current environment."""
+    missing = _missing_platform_vars(platform)
+    if missing:
+        raise click.ClickException(
+            f"Missing required environment variables for {platform}: {', '.join(missing)}.\n"
+            f"Run `kindling env check --platform {platform}` to verify your credentials."
+        )
+
     try:
         from kindling_sdk.platform_provider import create_platform_api_from_env
     except ImportError as exc:
@@ -2792,7 +2799,7 @@ def app_deploy(
     source = local_folder or kda_package  # type: ignore[assignment]
     resolved_app_path = source.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
-    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
+    resolved_platform = _resolve_remote_platform(platform)
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     resolved_name = (app_name or _default_app_name(resolved_app_path)).strip()
     if not resolved_name:
@@ -2835,7 +2842,7 @@ def _run_remote_app(
     if timeout <= 0:
         raise click.ClickException("--timeout must be greater than 0.")
 
-    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
+    resolved_platform = _resolve_remote_platform(platform)
 
     source_path = Path(app_ref).expanduser()
     has_local_source = source_path.exists()
@@ -3267,7 +3274,7 @@ def app_cleanup(
     if not resolved_app_name:
         raise click.ClickException("App name resolved to an empty string.")
 
-    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
+    resolved_platform = _resolve_remote_platform(platform)
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     deleted = api_client.cleanup_app(resolved_app_name)
@@ -4213,7 +4220,7 @@ def job_init(
 )
 def job_create(config_path: Path, platform: Optional[str]) -> None:
     """Create a remote job definition from a YAML or JSON config file."""
-    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
+    resolved_platform = _resolve_remote_platform(platform)
 
     job_config = _load_mapping_file(config_path, "job config")
     job_name = str(job_config.get("job_name") or "").strip()
@@ -4448,7 +4455,7 @@ def runner_ensure(platform: Optional[str], json_output: bool) -> None:
         kindling runner ensure --platform fabric
         kindling runner ensure --platform synapse
     """
-    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
+    resolved_platform = _resolve_remote_platform(platform)
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     try:
@@ -4543,7 +4550,7 @@ def runner_repair(platform: Optional[str], json_output: bool) -> None:
         kindling runner repair
         kindling runner repair --platform synapse
     """
-    resolved_platform = _resolve_remote_platform(platform, require_credentials=True)
+    resolved_platform = _resolve_remote_platform(platform)
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     try:
