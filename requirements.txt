@@ -4,8 +4,8 @@ dynaconf>=3.2.0
 blinker>=1.7.0
 
 # Spark and Delta dependencies
-pyspark>=3.4.0
-delta-spark>=2.4.0
+pyspark>=3.4.0,<4.0.0
+delta-spark>=2.4.0,<4.0.0
 
 # Azure dependencies (optional for Synapse/Fabric support)
 azure-synapse-artifacts>=0.17.0
