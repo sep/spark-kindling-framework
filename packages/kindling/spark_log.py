@@ -52,6 +52,9 @@ class SparkLogger:
     def error(self, msg: str, include_traceback: bool = False):
         self._log("error", msg, include_traceback=include_traceback)
 
+    def exception(self, msg: str):
+        self._log("error", msg, include_traceback=True)
+
     def _is_level_enabled(self, level: str) -> bool:
         """Check if the given log level should be logged based on current logger level"""
         # Get the effective level (handles inheritance from parent loggers)
