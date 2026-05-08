@@ -1682,6 +1682,16 @@ class FabricAPI(PlatformAPI):
         except requests.HTTPError:
             return False
 
+    def find_job_by_name(self, name: str) -> Optional[str]:
+        """Return the item GUID for the given job displayName, or None if not found."""
+        try:
+            for item in self.list_spark_jobs():
+                if item.get("displayName") == name:
+                    return item.get("id")
+        except Exception:
+            pass
+        return None
+
     def list_spark_jobs(self) -> list:
         """List all Spark job definitions in the workspace
 

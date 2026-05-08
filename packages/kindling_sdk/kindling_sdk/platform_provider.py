@@ -80,6 +80,8 @@ def azure_cloud_config() -> Dict[str, str]:
 class PlatformAPI(ABC):
     """Abstract interface for remote platform API operations."""
 
+    RUNNER_JOB_NAME: str = "kindling-runner"
+
     @abstractmethod
     def get_platform_name(self) -> str:
         pass
@@ -144,6 +146,11 @@ class PlatformAPI(ABC):
     ) -> bool:
         pass
 
+    @abstractmethod
+    def find_job_by_name(self, name: str) -> Optional[str]:
+        """Return the platform job ID for the given job name, or None if not found."""
+        pass
+
     def deploy_spark_job(
         self, app_files: Dict[str, str], job_config: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -153,6 +160,86 @@ class PlatformAPI(ABC):
         result = self.create_job(job_name, job_config)
         result["deployment_path"] = deployment_path
         return result
+
+    # --- Runner lifecycle ---
+    # All implemented here using the abstract job primitives + find_job_by_name,
+    # so every platform adapter gets full runner support for free.
+
+    def ensure_runner(self, platform: str) -> Dict[str, Any]:
+        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
+        if runner_id is None:
+            result = self.create_job(self.RUNNER_JOB_NAME, {"app_name": self.RUNNER_JOB_NAME})
+            runner_id = str(result.get("job_id", self.RUNNER_JOB_NAME))
+        return {"runner_id": runner_id, "state": "installed"}
+
+    def get_runner_status(self, platform: str) -> Dict[str, Any]:
+        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
+        if runner_id is None:
+            return {"runner_id": None, "state": "not_installed"}
+        return {"runner_id": runner_id, "state": "installed"}
+
+    def repair_runner(self, platform: str) -> Dict[str, Any]:
+        existing_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
+        if existing_id is not None:
+            self.delete_job(existing_id)
+        result = self.create_job(self.RUNNER_JOB_NAME, {"app_name": self.RUNNER_JOB_NAME})
+        runner_id = str(result.get("job_id", self.RUNNER_JOB_NAME))
+        return {"runner_id": runner_id, "state": "installed"}
+
+    def delete_runner(self, platform: str) -> bool:
+        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
+        if runner_id is None:
+            return True
+        return self.delete_job(runner_id)
+
+    # --- Runner-aligned app submission ---
+    # These delegate directly to the existing abstract job primitives so every
+    # platform adapter gets them for free once run_job/get_job_status/etc. work.
+
+    def submit_app_run(
+        self,
+        app_name: str,
+        environment: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
+        if runner_id is None:
+            raise RuntimeError(
+                f"Kindling runner '{self.RUNNER_JOB_NAME}' not found. "
+                "Run 'kindling runner ensure' before submitting app runs."
+            )
+        run_params: Dict[str, Any] = {"app_name": app_name}
+        if environment:
+            run_params["environment"] = environment
+        if parameters:
+            run_params.update(parameters)
+        return self.run_job(runner_id, parameters=run_params)
+
+    def get_app_run_status(self, run_id: str) -> Dict[str, Any]:
+        status = self.get_job_status(run_id)
+        return {**status, "runner_id": self.RUNNER_JOB_NAME}
+
+    def get_app_run_logs(self, run_id: str, from_line: int = 0, size: int = 1000) -> Dict[str, Any]:
+        return self.get_job_logs(run_id, from_line=from_line, size=size)
+
+    def stream_app_run_logs(
+        self,
+        run_id: str,
+        callback: Optional[Callable[[str], None]] = None,
+        poll_interval: float = 5.0,
+        max_wait: float = 300.0,
+    ) -> List[str]:
+        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME) or self.RUNNER_JOB_NAME
+        return self.stream_stdout_logs(
+            job_id=runner_id,
+            run_id=run_id,
+            callback=callback,
+            poll_interval=poll_interval,
+            max_wait=max_wait,
+        )
+
+    def cancel_app_run(self, run_id: str) -> bool:
+        return self.cancel_job(run_id)
 
 
 class PlatformAPIRegistry:

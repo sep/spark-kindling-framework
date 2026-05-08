@@ -1189,6 +1189,16 @@ class DatabricksAPI(PlatformAPI):
         except Exception:
             return False
 
+    def find_job_by_name(self, name: str) -> Optional[str]:
+        """Return the numeric job ID (as str) for the given job name, or None if not found."""
+        try:
+            for job in self.client.jobs.list():
+                if job.settings and job.settings.name == name:
+                    return str(job.job_id)
+        except Exception:
+            pass
+        return None
+
     def list_spark_jobs(self) -> list:
         """List all job definitions in the workspace using SDK
 
