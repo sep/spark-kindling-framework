@@ -29,19 +29,28 @@ pip install spark-kindling-sdk
 - `kindling workspace deploy` — upload the runtime wheel, bootstrap script, config, and notebooks to artifact storage
 - `kindling app package` — build a `.kda` archive from a local app directory
 - `kindling app deploy` — deploy an app directory or `.kda` package through the SDK
-- `kindling app run` — run all local app pipes on `standalone`, or run remotely with `--platform synapse|fabric|databricks`
+- `kindling app run` — run all local app pipes on `standalone`, or submit to the durable Kindling runner on a managed platform
 - `kindling app status` — fetch the current remote app run status
 - `kindling app logs` — fetch or stream remote app run logs
 - `kindling app cancel` — cancel an active remote app run
 - `kindling app cleanup` — remove a deployed app from remote storage
+- `kindling runner ensure` — install or verify the durable Kindling runner on a platform
+- `kindling runner status` — check whether the runner is installed and healthy
+- `kindling runner repair` — reinstall the runner (delete and recreate)
+- `kindling runner delete` — remove the runner from a platform
+
+Run any command with `--help` for full options.
+
+## Advanced Platform Job Operations
+
+The `kindling job *` commands give direct access to platform job primitives. They are intended for operators, CI pipelines, and debugging — not for normal app workflows.
+
 - `kindling job create` — create a remote job from a YAML/JSON config file
 - `kindling job run` — start a job run, optionally with parameters
 - `kindling job status` — fetch the current run status
 - `kindling job logs` — fetch or stream run logs
 - `kindling job cancel` — cancel an active run
 - `kindling job delete` — delete a remote job definition
-
-Run any command with `--help` for full options.
 
 ## Scaffolding
 

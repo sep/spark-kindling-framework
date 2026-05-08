@@ -685,6 +685,27 @@ def test_app_deploy_requires_source_flag():
     assert "--local-folder" in result.output or "source" in result.output
 
 
+def test_app_deploy_fails_fast_when_platform_vars_missing(monkeypatch):
+    monkeypatch.delenv("FABRIC_WORKSPACE_ID", raising=False)
+    monkeypatch.delenv("FABRIC_LAKEHOUSE_ID", raising=False)
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric"],
+        )
+
+    assert result.exit_code != 0
+    assert "Missing required environment variables for fabric" in result.output
+    assert "FABRIC_WORKSPACE_ID" in result.output
+    assert "FABRIC_LAKEHOUSE_ID" in result.output
+
+
 def test_app_deploy_uses_platform_sdk(monkeypatch):
     class FakeAPI:
         def __init__(self):
@@ -783,15 +804,13 @@ def test_app_run_requires_app_argument(monkeypatch):
 def test_app_run_deployed_name_creates_and_runs_job(monkeypatch):
     class FakeAPI:
         def __init__(self):
-            self.created = []
-            self.runs = []
+            self.submitted = []
 
-        def create_job(self, job_name, job_config):
-            self.created.append((job_name, job_config))
-            return {"job_id": "job-1"}
+        def get_runner_status(self, platform):
+            return {"runner_id": "kindling-runner", "state": "installed"}
 
-        def run_job(self, job_id, parameters=None):
-            self.runs.append((job_id, parameters))
+        def submit_app_run(self, app_name, environment=None, parameters=None):
+            self.submitted.append((app_name, environment, parameters))
             return "run-1"
 
     fake_api = FakeAPI()
@@ -804,25 +823,24 @@ def test_app_run_deployed_name_creates_and_runs_job(monkeypatch):
     result = runner.invoke(cli, ["app", "run", "orders", "--platform", "fabric", "--no-wait"])
     assert result.exit_code == 0, result.output
     assert "run-1" in result.output
-    assert fake_api.created == [("orders", {"app_name": "orders"})]
-    assert fake_api.runs == [("job-1", None)]
+    assert fake_api.submitted == [("orders", None, None)]
 
 
 def test_app_run_with_local_path_deploys_creates_and_runs(monkeypatch):
     class FakeAPI:
         def __init__(self):
             self.deployed = []
-            self.created = []
+            self.submitted = []
 
         def deploy_app(self, app_name, app_files):
             self.deployed.append((app_name, app_files))
             return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/orders"
 
-        def create_job(self, job_name, job_config):
-            self.created.append((job_name, job_config))
-            return {"job_id": "job-1"}
+        def get_runner_status(self, platform):
+            return {"runner_id": "kindling-runner", "state": "installed"}
 
-        def run_job(self, job_id, parameters=None):
+        def submit_app_run(self, app_name, environment=None, parameters=None):
+            self.submitted.append((app_name, environment, parameters))
             return "run-1"
 
     fake_api = FakeAPI()
@@ -853,7 +871,7 @@ def test_app_run_with_local_path_deploys_creates_and_runs(monkeypatch):
     assert "run-1" in result.output
     assert fake_api.deployed[0][0] == "orders"
     assert sorted(fake_api.deployed[0][1]) == ["app.py"]
-    assert fake_api.created == [("orders", {"app_name": "orders"})]
+    assert fake_api.submitted[0][0] == "orders"
 
 
 def test_app_cleanup_positional_name(monkeypatch):
@@ -954,6 +972,17 @@ def test_app_cleanup_requires_identifier():
     runner = CliRunner()
     result = runner.invoke(cli, ["app", "cleanup", "--platform", "fabric"])
     assert result.exit_code != 0
+
+
+def test_app_cleanup_fails_fast_when_platform_vars_missing(monkeypatch):
+    monkeypatch.delenv("FABRIC_WORKSPACE_ID", raising=False)
+    monkeypatch.delenv("FABRIC_LAKEHOUSE_ID", raising=False)
+
+    result = CliRunner().invoke(cli, ["app", "cleanup", "orders", "--platform", "fabric"])
+    assert result.exit_code != 0
+    assert "Missing required environment variables for fabric" in result.output
+    assert "FABRIC_WORKSPACE_ID" in result.output
+    assert "FABRIC_LAKEHOUSE_ID" in result.output
 
 
 def test_job_create_loads_yaml_and_prints_structured_result(monkeypatch):
@@ -1208,6 +1237,112 @@ def test_job_logs_stream_requires_job_id():
     assert "--job-id is required when --stream is used." in result.output
 
 
+def test_app_logs_rejects_negative_from_line():
+    result = CliRunner().invoke(
+        cli,
+        ["app", "logs", "run-123", "--platform", "fabric", "--from-line", "-1"],
+    )
+
+    assert result.exit_code != 0
+    assert "--from-line must be greater than or equal to 0." in result.output
+
+
+def test_job_logs_rejects_non_positive_size():
+    result = CliRunner().invoke(
+        cli,
+        ["job", "logs", "run-123", "--platform", "fabric", "--size", "0"],
+    )
+
+    assert result.exit_code != 0
+    assert "--size must be greater than 0." in result.output
+
+
+def test_job_logs_stream_rejects_non_positive_poll_interval():
+    result = CliRunner().invoke(
+        cli,
+        [
+            "job",
+            "logs",
+            "run-123",
+            "--platform",
+            "fabric",
+            "--stream",
+            "--job-id",
+            "job-123",
+            "--poll-interval",
+            "0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--poll-interval must be greater than 0." in result.output
+
+
+def test_app_status_uses_runner_aligned_sdk(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import kindling_cli.cli as cli_mod
+
+    api = MagicMock()
+    api.get_app_run_status.return_value = {"state": "SUCCEEDED", "runner_id": "kindling-runner"}
+    monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (api, p))
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "ws")
+
+    result = CliRunner().invoke(cli, ["app", "status", "run-1", "--platform", "fabric"])
+
+    assert result.exit_code == 0, result.output
+    api.get_app_run_status.assert_called_once_with("run-1")
+    assert "SUCCEEDED" in result.output
+
+
+def test_app_cancel_uses_runner_aligned_sdk(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import kindling_cli.cli as cli_mod
+
+    api = MagicMock()
+    api.cancel_app_run.return_value = True
+    monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (api, p))
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "ws")
+
+    result = CliRunner().invoke(cli, ["app", "cancel", "run-1", "--platform", "fabric"])
+
+    assert result.exit_code == 0, result.output
+    api.cancel_app_run.assert_called_once_with("run-1")
+
+
+def test_app_logs_stream_does_not_require_job_id(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import kindling_cli.cli as cli_mod
+
+    api = MagicMock()
+    api.stream_app_run_logs.return_value = []
+    monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (api, p))
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "ws")
+
+    result = CliRunner().invoke(cli, ["app", "logs", "run-1", "--platform", "fabric", "--stream"])
+
+    assert result.exit_code == 0, result.output
+    api.stream_app_run_logs.assert_called_once()
+
+
+def test_app_logs_non_stream_uses_runner_aligned_sdk(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import kindling_cli.cli as cli_mod
+
+    api = MagicMock()
+    api.get_app_run_logs.return_value = {"lines": ["line1"], "total": 1}
+    monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (api, p))
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "ws")
+
+    result = CliRunner().invoke(cli, ["app", "logs", "run-1", "--platform", "fabric"])
+
+    assert result.exit_code == 0, result.output
+    api.get_app_run_logs.assert_called_once_with("run-1", from_line=0, size=1000)
+
+
 def test_workspace_deploy_fails_when_config_missing_unless_allowed(monkeypatch):
     monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
 
@@ -1325,13 +1460,13 @@ class TestAppRunCommand:
 
         api = MagicMock()
         api.deploy_app.return_value = "abfss://container@acct.dfs.core.windows.net/data-apps/my-app"
-        api.create_job.return_value = {
-            "job_id": "my-app",
-            "job_name": "my-app",
-            "workspace_name": "ws",
+        api.get_runner_status.return_value = {"runner_id": "kindling-runner", "state": "installed"}
+        api.submit_app_run.return_value = "run-42"
+        api.get_app_run_status.return_value = {
+            "state": "SUCCEEDED",
+            "runner_id": "kindling-runner",
         }
-        api.run_job.return_value = "run-42"
-        api.get_job_status.return_value = {"state": "SUCCEEDED"}
+        api.stream_app_run_logs.return_value = []
         return api
 
     def test_standalone_default_runs_all_registered_pipes(self, tmp_path, monkeypatch):
@@ -1484,8 +1619,8 @@ class TestAppRunCommand:
         assert result.exit_code == 0, result.output
         assert "run-42" in result.output
         mock_api.deploy_app.assert_called_once()
-        mock_api.create_job.assert_called_once()
-        mock_api.run_job.assert_called_once()
+        mock_api.get_runner_status.assert_called_once()
+        mock_api.submit_app_run.assert_called_once()
 
     def test_remote_json_keeps_stdout_machine_readable(self, tmp_path, monkeypatch):
         import kindling_cli.cli as cli_mod
@@ -1531,8 +1666,6 @@ class TestAppRunCommand:
         import kindling_cli.cli as cli_mod
 
         mock_api = self._make_mock_api()
-        # stream_stdout_logs is a no-op in this test
-        mock_api.stream_stdout_logs.return_value = None
         monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
 
         app_dir = tmp_path / "myapp"
@@ -1547,14 +1680,13 @@ class TestAppRunCommand:
 
         assert result.exit_code == 0, result.output
         assert "SUCCEEDED" in result.output
-        mock_api.get_job_status.assert_called()
+        mock_api.get_app_run_status.assert_called()
 
     def test_submit_fails_on_error_by_default(self, tmp_path, monkeypatch):
         import kindling_cli.cli as cli_mod
 
         mock_api = self._make_mock_api()
-        mock_api.get_job_status.return_value = {"state": "FAILED"}
-        mock_api.stream_stdout_logs.return_value = None
+        mock_api.get_app_run_status.return_value = {"state": "FAILED"}
         monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
 
         app_dir = tmp_path / "myapp"
@@ -1574,8 +1706,7 @@ class TestAppRunCommand:
         import kindling_cli.cli as cli_mod
 
         mock_api = self._make_mock_api()
-        mock_api.get_job_status.return_value = {"state": "FAILED"}
-        mock_api.stream_stdout_logs.return_value = None
+        mock_api.get_app_run_status.return_value = {"state": "FAILED"}
         monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
 
         app_dir = tmp_path / "myapp"
