@@ -25,9 +25,21 @@ def _pipe_registry():
 @pytest.fixture(scope="module", autouse=True)
 def initialize_{{ snake_name }}():
     """Bootstrap the Kindling framework and register {{ snake_name }} modules."""
-    from {{ snake_name }}.app import initialize
+    from kindling.bootstrap import initialize_framework
 
-    initialize(env="local")
+    initialize_framework(
+        {
+            "platform": "standalone",
+            "environment": "local",
+            "config_files": ["config/settings.yaml", "config/env.local.yaml"],
+        }
+    )
+    import {{ snake_name }}.entities.records  # noqa: F401
+{% if layers == "medallion" %}
+    import {{ snake_name }}.pipes.bronze_to_silver  # noqa: F401
+{% else %}
+    import {{ snake_name }}.pipes.process  # noqa: F401
+{% endif %}
 
 
 @pytest.mark.component

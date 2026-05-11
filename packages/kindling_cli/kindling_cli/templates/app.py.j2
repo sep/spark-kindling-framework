@@ -1,25 +1,42 @@
 """Application entrypoint for {{ kebab_name }}.
 
 Responsibilities:
-  - Locate config files relative to this package
-  - Import entity/pipe modules to trigger registration side-effects
+  - Locate app config files relative to this app directory
+  - Import domain package modules to trigger registration side-effects
   - Expose initialize() for use by tests, notebooks, and deployed jobs
 
 Local usage:
-    from {{ snake_name }}.app import initialize
+    from app import initialize
     svc = initialize()   # reads config/env.local.yaml by default
 
-Notebook/job usage (after installing the wheel):
-    from {{ snake_name }}.app import initialize
-    svc = initialize(env="prod")
+The app is intentionally separate from the {{ package_kebab_name }} wheel. In a
+deployed environment, install the wheel. In a local checkout, this file adds the
+repo package src directory to sys.path as a convenience.
 """
 
 import os
+import sys
 from pathlib import Path
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _local_package_src() -> Path:
+    return _repo_root() / "packages" / "{{ package_snake_name }}" / "src"
+
+
+def _ensure_local_package_importable() -> None:
+    package_src = _local_package_src()
+    if package_src.exists():
+        package_src_text = str(package_src)
+        if package_src_text not in sys.path:
+            sys.path.insert(0, package_src_text)
+
+
 def _config_dir() -> Path:
-    return Path(__file__).parent.parent.parent / "config"
+    return Path(__file__).resolve().parent / "config"
 
 
 def _config_files(env: str) -> list[str]:
@@ -33,11 +50,12 @@ def _config_files(env: str) -> list[str]:
 
 def register_all() -> None:
     """Import all entity and pipe modules to trigger @DataEntities / @DataPipes registration."""
-    import {{ snake_name }}.entities.records  # noqa: F401
+    _ensure_local_package_importable()
+    import {{ package_snake_name }}.entities.records  # noqa: F401
 {% if layers == "medallion" %}
-    import {{ snake_name }}.pipes.bronze_to_silver  # noqa: F401
+    import {{ package_snake_name }}.pipes.bronze_to_silver  # noqa: F401
 {% else %}
-    import {{ snake_name }}.pipes.process  # noqa: F401
+    import {{ package_snake_name }}.pipes.process  # noqa: F401
 {% endif %}
 
 

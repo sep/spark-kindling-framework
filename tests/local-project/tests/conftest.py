@@ -14,8 +14,13 @@ from pathlib import Path
 
 import pytest
 
-# Make sales_ops importable without installing the package
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+_PROJECT_ROOT = Path(__file__).parent.parent
+_KINDLING_ROOT = _PROJECT_ROOT.parent.parent
+
+# Make the app entrypoint and sales_ops package importable without installing.
+sys.path.insert(0, str(_PROJECT_ROOT / "apps" / "sales_ops"))
+sys.path.insert(0, str(_PROJECT_ROOT / "src"))
+sys.path.insert(0, str(_KINDLING_ROOT / "packages"))
 
 
 def _abfss_creds_available() -> bool:
@@ -170,10 +175,11 @@ def reset_kindling_for_integration():
     from kindling.data_pipes import DataPipes
     from kindling.injection import GlobalInjector
 
-    _sales_ops_modules = [k for k in sys.modules if k.startswith("sales_ops")]
+    _sales_ops_modules = [k for k in sys.modules if k == "app" or k.startswith("sales_ops")]
 
     def _reset():
         from injector import singleton
+
         from kindling.spark_config import ConfigService, DynaconfConfig
 
         GlobalInjector.reset()

@@ -71,6 +71,40 @@ class PackageScaffoldConfig:
         return self.repo_snake_name.replace("_", "-")
 
 
+@dataclass
+class AppScaffoldConfig:
+    name: str
+    repo_root: Path
+    package_name: Optional[str] = None
+    layers: str = "medallion"
+    auth: str = "oauth"
+    template_dir: Optional[Path] = None
+
+    @property
+    def snake_name(self) -> str:
+        return _to_snake(self.name)
+
+    @property
+    def kebab_name(self) -> str:
+        return self.snake_name.replace("_", "-")
+
+    @property
+    def package_snake_name(self) -> str:
+        return _to_snake(self.package_name or self.name)
+
+    @property
+    def package_kebab_name(self) -> str:
+        return self.package_snake_name.replace("_", "-")
+
+    @property
+    def repo_snake_name(self) -> str:
+        return _to_snake(self.repo_root.name)
+
+    @property
+    def repo_kebab_name(self) -> str:
+        return self.repo_snake_name.replace("_", "-")
+
+
 # Backward-compatible alias for older imports/tests.
 ScaffoldConfig = PackageScaffoldConfig
 
@@ -130,6 +164,20 @@ def _package_ctx(cfg: PackageScaffoldConfig) -> dict:
     }
 
 
+def _app_ctx(cfg: AppScaffoldConfig) -> dict:
+    return {
+        "snake_name": cfg.snake_name,
+        "kebab_name": cfg.kebab_name,
+        "package_snake_name": cfg.package_snake_name,
+        "package_kebab_name": cfg.package_kebab_name,
+        "repo_snake_name": cfg.repo_snake_name,
+        "repo_kebab_name": cfg.repo_kebab_name,
+        "auth": cfg.auth,
+        "layers": cfg.layers,
+        "kindling_version": _kindling_version(),
+    }
+
+
 def _render(env: jinja2.Environment, template_name: str, ctx: dict) -> str:
     return env.get_template(template_name).render(ctx)
 
@@ -153,6 +201,7 @@ def generate_repo(cfg: RepoScaffoldConfig) -> List[Path]:
         files.append(path)
 
     (root / "packages").mkdir(parents=True, exist_ok=True)
+    (root / "apps").mkdir(parents=True, exist_ok=True)
 
     _write(".gitignore", ".gitignore.j2")
     _write(".github/workflows/ci.yml", ".github/workflows/ci.yml.j2")
@@ -186,7 +235,6 @@ def generate_package(cfg: PackageScaffoldConfig) -> List[Path]:
 
     _write("src/__init__.py", "")
     _write(f"src/{pkg}/__init__.py", "")
-    _write(f"src/{pkg}/app.py", _render(env, "app.py.j2", ctx))
 
     _write(f"src/{pkg}/entities/__init__.py", "")
     _write(
@@ -233,6 +281,30 @@ def generate_package(cfg: PackageScaffoldConfig) -> List[Path]:
 
     _write("pyproject.toml", _render(env, "pyproject.toml.j2", ctx))
     _write(".env.example", _render(env, ".env.example.j2", ctx))
+    _write("QUICKSTART.md", _render(env, "package/PACKAGE_QUICKSTART.md.j2", ctx))
+
+    return files
+
+
+def generate_app(cfg: AppScaffoldConfig) -> List[Path]:
+    root = cfg.repo_root / "apps" / cfg.snake_name
+    root.mkdir(parents=True, exist_ok=False)
+
+    env = _make_env(cfg.template_dir)
+    ctx = _app_ctx(cfg)
+    files: List[Path] = []
+
+    def _write(rel: str, content: str) -> Path:
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        files.append(p)
+        return p
+
+    _write("app.py", _render(env, "app.py.j2", ctx))
+    _write("config/settings.yaml", _render(env, "config/settings.yaml.j2", ctx))
+    _write("config/env.local.yaml", _render(env, "config/env.local.yaml.j2", ctx))
+    _write(".env.example", _render(env, ".env.example.j2", ctx))
     _write("QUICKSTART.md", _render(env, "package/QUICKSTART.md.j2", ctx))
 
     return files
@@ -255,4 +327,13 @@ def generate_project(cfg: PackageScaffoldConfig) -> List[Path]:
         template_dir=cfg.template_dir,
     )
     files.extend(generate_package(package_cfg))
+    app_cfg = AppScaffoldConfig(
+        name=cfg.name,
+        repo_root=repo_cfg.output_dir,
+        package_name=cfg.name,
+        layers=cfg.layers,
+        auth=cfg.auth,
+        template_dir=cfg.template_dir,
+    )
+    files.extend(generate_app(app_cfg))
     return files
