@@ -355,7 +355,7 @@ def test_new_project_run_reaches_pipe_execution_with_mock_executor(monkeypatch):
             result_new = runner.invoke(cli, ["project", "new", "logistics-data"])
             assert result_new.exit_code == 0, result_new.output
 
-            package_dir = Path("logistics_data/packages/logistics_data")
+            app_dir = Path("logistics_data/apps/logistics_data")
             result_run = runner.invoke(
                 cli,
                 [
@@ -365,7 +365,7 @@ def test_new_project_run_reaches_pipe_execution_with_mock_executor(monkeypatch):
                     "--env",
                     "local",
                     "--app",
-                    str(package_dir / "src/logistics_data/app.py"),
+                    str(app_dir / "app.py"),
                 ],
             )
         finally:
@@ -409,8 +409,8 @@ def test_new_project_next_steps_use_single_cd():
         result = runner.invoke(cli, ["project", "new", "demo-project", "--no-integration"])
 
     assert result.exit_code == 0
-    assert "  cd demo_project/packages/demo_project" in result.output
-    assert "  cd demo_project\n  cd packages/demo_project" not in result.output
+    assert "  cd demo_project/apps/demo_project" in result.output
+    assert "  cd demo_project\n  cd apps/demo_project" not in result.output
 
 
 # [implementer] pipeline run / list / --no-watermark — ki-70y

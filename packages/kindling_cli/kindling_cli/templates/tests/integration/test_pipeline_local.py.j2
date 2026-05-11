@@ -16,10 +16,22 @@ class TestKindlingPipeExecution:
 
     @pytest.fixture(autouse=True)
     def _setup(self, spark_local, reset_kindling):
-        from {{ snake_name }}.app import initialize
+        from kindling.bootstrap import initialize_framework
 
         self.spark = spark_local
-        self.svc = initialize(env="local")
+        self.svc = initialize_framework(
+            {
+                "platform": "standalone",
+                "environment": "local",
+                "config_files": ["config/settings.yaml", "config/env.local.yaml"],
+            }
+        )
+        import {{ snake_name }}.entities.records  # noqa: F401
+{% if layers == "medallion" %}
+        import {{ snake_name }}.pipes.bronze_to_silver  # noqa: F401
+{% else %}
+        import {{ snake_name }}.pipes.process  # noqa: F401
+{% endif %}
 
     def test_generated_pipe_runs_through_kindling(self):
         from kindling.data_pipes import DataPipesExecution

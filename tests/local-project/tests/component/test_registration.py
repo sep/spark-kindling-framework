@@ -36,7 +36,7 @@ def initialize_sales_ops():
     here), so entity tags will carry unresolved strings — that's fine for the
     metadata assertions below.
     """
-    from sales_ops.app import initialize
+    from app import initialize
 
     initialize(env="local")
 

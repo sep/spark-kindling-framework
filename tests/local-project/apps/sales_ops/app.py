@@ -1,25 +1,32 @@
 """Sales Ops application entrypoint.
 
 Responsibilities:
-  - Locate config files relative to this package
+  - Locate app-owned config files relative to this app directory
   - Import entity/pipe modules to trigger registration side-effects
   - Expose initialize() for use by tests, notebooks, and deployed jobs
 
 Local usage:
-    from sales_ops.app import initialize
+    from app import initialize
     svc = initialize()   # reads config/env.local.yaml by default
 
 Notebook/job usage (after installing the wheel):
-    from sales_ops.app import initialize
+    from app import initialize
     svc = initialize(env="prod")
 """
 
 import os
+import sys
 from pathlib import Path
+
+_APP_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _APP_DIR.parent.parent
+_PACKAGE_SRC = _REPO_ROOT / "src"
+if _PACKAGE_SRC.exists():
+    sys.path.insert(0, str(_PACKAGE_SRC))
 
 
 def _config_dir() -> Path:
-    return Path(__file__).parent.parent.parent / "config"
+    return _APP_DIR / "config"
 
 
 def _config_files(env: str) -> list[str]:

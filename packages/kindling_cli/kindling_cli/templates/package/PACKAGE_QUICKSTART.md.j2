@@ -1,0 +1,38 @@
+# {{ snake_name }} — Package Quick Start
+
+This folder is a reusable Python package. It contains entities, pipes, and
+transforms that can be imported by one or more Kindling apps.
+
+## Develop
+
+```bash
+poetry install
+poetry run poe test
+poetry run poe build
+```
+
+## Use From An App
+
+Apps live outside package folders, normally under the repo-level `apps/`
+directory:
+
+```bash
+kindling app init {{ kebab_name }} --package {{ kebab_name }} --repo-root ../..
+cd ../../apps/{{ snake_name }}
+kindling app run .
+```
+
+## Add More Pipes And Entities
+
+Package layout:
+
+```text
+src/{{ snake_name }}/
+├── entities/       # DataEntities (schemas and storage mappings)
+├── pipes/          # DataPipes (orchestration and routing)
+└── transforms/     # Pure transformation logic
+```
+
+- Add a new entity: create a class registered with `DataEntities.entity(...)` in `entities/`
+- Add a new pipe: create a function decorated with `@DataPipes.pipe` in `pipes/`
+- Register new modules from an app's `app.py` → `register_all()`

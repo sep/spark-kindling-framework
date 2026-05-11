@@ -2,7 +2,7 @@
 
 Each @DataPipes.pipe decorator fires at import time.
 Import order matters: initialize_framework() must run before this module
-is imported (see {{ snake_name }}.app.register_all).
+is imported (see apps/<app>/app.py register_all).
 """
 
 from kindling.data_pipes import DataPipes

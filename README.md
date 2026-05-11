@@ -98,8 +98,7 @@ Install the CLI and scaffold a new project:
 pip install 'spark-kindling[standalone]' spark-kindling-cli
 
 kindling project new my-app
-cd my_app/packages/my_app
-poetry install
+cd my_app/apps/my_app
 kindling app run . --env local
 ```
 

@@ -10,7 +10,7 @@ Developer-oriented use cases for the Kindling CLI, organized by phase of the dev
 so that I get a working project structure without reading docs first.
 
 ```bash
-kindling app init ./orders --template default
+kindling app init orders --package orders --repo-root .
 ```
 
 **As a developer, I want to configure environment-specific settings for my app**
