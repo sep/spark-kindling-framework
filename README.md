@@ -160,7 +160,7 @@ executer.run_datapipes(["customers.transform"])
 
 ### Data Apps & Deployment
 - **Package apps** as .kda archives (Kindling Data Apps)
-- **Deploy as Spark jobs** - automated job creation and execution
+- **Run through the durable runner** - apps submit to one managed platform runner
 - **Cross-platform deployment** - same app runs on all platforms
 - **Artifact management** - wheels, configs, and dependencies
 

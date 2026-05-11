@@ -17,7 +17,7 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 - `app_name`: Data app name to auto-run after framework initialization.
 - `artifacts_storage_path`: Artifacts root used to download config and wheels (enables hot reload and lake package loading).
 - `platform`: Platform selector (`fabric`, `synapse`, `databricks`); used to choose the platform module.
-- `platform_environment`: Alias for `platform` used by some job runners.
+- `platform_environment`: Alias for `platform` used by platform runner internals.
 - `environment`: Environment name used for config layering (for example `development`, `prod`).
 - `workspace_id`: Workspace identifier used for workspace-specific config selection.
 - `use_lake_packages`: If true, load Kindling and extensions from artifacts storage (instead of local environment).
@@ -29,7 +29,7 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 Job-deployment (system-test / deployment API) keys:
 
 - `entry_point`: Python entry point filename for the deployed app (default depends on platform deployer).
-- `parameters`: Parameter list/values passed to the job runner (platform-specific).
+- `parameters`: Parameter list/values passed to the platform runner (platform-specific).
 - `libraries`: Additional libraries for the job (platform-specific).
 - `additional_files`: Extra `.py` files packaged into the job (Synapse uses this for `py_files`).
 - `command_line_arguments`: Fabric Spark job definition argument string.

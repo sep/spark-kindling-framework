@@ -52,6 +52,9 @@ kindling app run . --platform standalone
 # Verify credentials before running remotely
 kindling env check --platform <platform>
 
+# Install or verify the durable runner once per workspace
+kindling runner ensure --platform <platform>
+
 # Run remotely (blocks until complete)
 kindling app run . --platform <platform>
 ```

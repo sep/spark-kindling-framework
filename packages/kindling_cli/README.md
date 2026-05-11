@@ -10,7 +10,8 @@ pip install spark-kindling-cli
 ```
 
 Depends on `spark-kindling-sdk` for remote platform lifecycle operations.
-Install the SDK alongside the CLI when you want to deploy apps or manage jobs:
+Install the SDK alongside the CLI when you want to deploy apps or manage the
+durable runner:
 
 ```bash
 pip install spark-kindling-sdk
@@ -40,17 +41,6 @@ pip install spark-kindling-sdk
 - `kindling runner delete` — remove the runner from a platform
 
 Run any command with `--help` for full options.
-
-## Advanced Platform Job Operations
-
-The `kindling job *` commands give direct access to platform job primitives. They are intended for operators, CI pipelines, and debugging — not for normal app workflows.
-
-- `kindling job create` — create a remote job from a YAML/JSON config file
-- `kindling job run` — start a job run, optionally with parameters
-- `kindling job status` — fetch the current run status
-- `kindling job logs` — fetch or stream run logs
-- `kindling job cancel` — cancel an active run
-- `kindling job delete` — delete a remote job definition
 
 ## Scaffolding
 
