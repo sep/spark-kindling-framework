@@ -4598,7 +4598,7 @@ def new_project(
     output_dir: Path,
     template_dir: Optional[Path],
 ) -> None:
-    """Scaffold a new Kindling multi-package repo with an initial package.
+    """Scaffold a new Kindling repo with an initial package and app.
 
     \b
     Creates PROJECT_NAME/ as a repo root with shared tooling plus:
