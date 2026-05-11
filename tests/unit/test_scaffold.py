@@ -11,7 +11,6 @@ from kindling_cli.scaffold import (
     RepoScaffoldConfig,
     generate_app,
     generate_package,
-    generate_project,
     generate_repo,
     validate_name,
 )
@@ -145,21 +144,6 @@ def test_generate_app_creates_independent_app_structure(tmp_path):
         assert (root / rel).exists(), f"Missing app file {rel}"
     app_py = (root / "app.py").read_text()
     assert '"packages" / "sales_ops" / "src"' in app_py
-
-
-def test_generate_project_creates_repo_and_initial_package(tmp_path):
-    cfg = PackageScaffoldConfig(name="sales_ops", repo_root=tmp_path / "sales_ops")
-    generate_project(cfg)
-
-    repo_root = tmp_path / "sales_ops"
-    pkg_root = _package_root(repo_root, "sales_ops")
-    app_root = repo_root / "apps" / "sales_ops"
-    assert repo_root.is_dir()
-    assert pkg_root.is_dir()
-    assert app_root.is_dir()
-    assert (repo_root / ".devcontainer").is_dir()
-    assert (pkg_root / "pyproject.toml").exists()
-    assert (app_root / "app.py").exists()
 
 
 def test_cannot_create_repo_over_existing_generated_file(tmp_path):
@@ -430,32 +414,62 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         assert (repo_root / "apps" / "sales_ops" / "app.py").exists()
 
-    def test_new_creates_repo_and_initial_package(self, tmp_path):
+    def test_repo_package_app_init_create_explicit_structure(self, tmp_path):
         runner = CliRunner()
-        result = runner.invoke(cli, ["project", "new", "test-proj", "--output-dir", str(tmp_path)])
+        repo_root = tmp_path / "test_proj"
+        result_repo = runner.invoke(
+            cli,
+            ["repo", "init", "test-proj", "--output-dir", str(repo_root)],
+        )
+        result_package = runner.invoke(
+            cli,
+            ["package", "init", "test-proj", "--repo-root", str(repo_root)],
+        )
+        result_app = runner.invoke(
+            cli,
+            ["app", "init", "test-proj", "--package", "test-proj", "--repo-root", str(repo_root)],
+        )
 
-        assert result.exit_code == 0, result.output
-        assert (tmp_path / "test_proj").is_dir()
-        assert (tmp_path / "test_proj" / "packages" / "test_proj").is_dir()
-        assert (tmp_path / "test_proj" / "apps" / "test_proj").is_dir()
+        assert result_repo.exit_code == 0, result_repo.output
+        assert result_package.exit_code == 0, result_package.output
+        assert result_app.exit_code == 0, result_app.output
+        assert repo_root.is_dir()
+        assert (repo_root / "packages" / "test_proj").is_dir()
+        assert (repo_root / "apps" / "test_proj").is_dir()
 
-    def test_new_prints_next_steps(self, tmp_path):
-        runner = CliRunner()
-        result = runner.invoke(cli, ["project", "new", "my-proj", "--output-dir", str(tmp_path)])
-
-        assert result.exit_code == 0, result.output
-        assert "Next steps" in result.output
-        assert "cd my_proj/apps/my_proj" in result.output
-        assert "kindling app run ." in result.output
-        assert "cd ../../packages/my_proj && poetry run poe test" in result.output
-        assert "kindling runner ensure --platform <platform>" in result.output
-        assert "kindling app run . --platform <platform>" in result.output
-
-    def test_new_minimal_layers_prints_process_pipe(self, tmp_path):
+    def test_app_init_prints_next_steps(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["project", "new", "my-proj", "--layers", "minimal", "--output-dir", str(tmp_path)],
+            ["app", "init", "my-proj", "--package", "my-proj", "--repo-root", str(repo_root)],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Next steps" in result.output
+        assert "cd apps/my_proj" in result.output
+        assert "kindling app run ." in result.output
+        assert "kindling runner ensure --platform <platform>" in result.output
+        assert "kindling app run . --platform <platform>" in result.output
+
+    def test_app_init_minimal_layers_prints_run_step(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "init",
+                "my-proj",
+                "--package",
+                "my-proj",
+                "--layers",
+                "minimal",
+                "--repo-root",
+                str(repo_root),
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -474,20 +488,26 @@ class TestScaffoldCommands:
         assert "poetry run poe test" in result.output
         assert "kindling app init my_pkg --package my_pkg" in result.output
 
-    def test_new_no_integration_skips_integration_dir(self, tmp_path):
+    def test_package_init_no_integration_skips_integration_dir(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["project", "new", "my-app", "--no-integration", "--output-dir", str(tmp_path)],
+            ["package", "init", "my-app", "--no-integration", "--repo-root", str(repo_root)],
         )
 
         assert result.exit_code == 0, result.output
-        assert not (tmp_path / "my_app" / "packages" / "my_app" / "tests" / "integration").exists()
+        assert not (repo_root / "packages" / "my_app" / "tests" / "integration").exists()
 
-    def test_new_existing_directory_fails(self, tmp_path):
-        (tmp_path / "my_app").mkdir()
+    def test_app_init_existing_directory_fails(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        (repo_root / "apps" / "my_app").mkdir(parents=True)
         runner = CliRunner()
-        result = runner.invoke(cli, ["project", "new", "my-app", "--output-dir", str(tmp_path)])
+        result = runner.invoke(
+            cli,
+            ["app", "init", "my-app", "--package", "my-app", "--repo-root", str(repo_root)],
+        )
 
         assert result.exit_code != 0
         assert "already exists" in result.output.lower()
@@ -511,21 +531,25 @@ class TestScaffoldCommands:
         (tmpl_dir / "app.py.j2").write_text("# CUSTOM_MARKER\n")
 
         runner = CliRunner()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
         result = runner.invoke(
             cli,
             [
-                "project",
-                "new",
+                "app",
+                "init",
+                "my-proj",
+                "--package",
                 "my-proj",
                 "--template-dir",
                 str(tmpl_dir),
-                "--output-dir",
-                str(tmp_path),
+                "--repo-root",
+                str(repo_root),
             ],
         )
 
         assert result.exit_code == 0, result.output
-        app_py = (tmp_path / "my_proj" / "apps" / "my_proj" / "app.py").read_text()
+        app_py = (repo_root / "apps" / "my_proj" / "app.py").read_text()
         assert "CUSTOM_MARKER" in app_py
 
     def test_template_dir_falls_back_to_builtin(self, tmp_path):
@@ -534,19 +558,20 @@ class TestScaffoldCommands:
         (tmpl_dir / "app.py.j2").write_text("# override\n")
 
         runner = CliRunner()
+        repo_root = tmp_path / "repo"
         result = runner.invoke(
             cli,
             [
-                "project",
-                "new",
+                "repo",
+                "init",
                 "my-proj",
                 "--template-dir",
                 str(tmpl_dir),
                 "--output-dir",
-                str(tmp_path),
+                str(repo_root),
             ],
         )
 
         assert result.exit_code == 0, result.output
-        gitignore = (tmp_path / "my_proj" / ".gitignore").read_text()
+        gitignore = (repo_root / ".gitignore").read_text()
         assert ".env" in gitignore

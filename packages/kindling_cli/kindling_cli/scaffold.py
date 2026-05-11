@@ -308,32 +308,3 @@ def generate_app(cfg: AppScaffoldConfig) -> List[Path]:
     _write("QUICKSTART.md", _render(env, "package/QUICKSTART.md.j2", ctx))
 
     return files
-
-
-def generate_project(cfg: PackageScaffoldConfig) -> List[Path]:
-    repo_cfg = RepoScaffoldConfig(
-        name=cfg.name,
-        output_dir=cfg.repo_root,
-        template_dir=cfg.template_dir,
-        primary_package_name=cfg.name,
-    )
-    files = generate_repo(repo_cfg)
-    package_cfg = PackageScaffoldConfig(
-        name=cfg.name,
-        repo_root=repo_cfg.output_dir,
-        layers=cfg.layers,
-        auth=cfg.auth,
-        integration=cfg.integration,
-        template_dir=cfg.template_dir,
-    )
-    files.extend(generate_package(package_cfg))
-    app_cfg = AppScaffoldConfig(
-        name=cfg.name,
-        repo_root=repo_cfg.output_dir,
-        package_name=cfg.name,
-        layers=cfg.layers,
-        auth=cfg.auth,
-        template_dir=cfg.template_dir,
-    )
-    files.extend(generate_app(app_cfg))
-    return files
