@@ -21,7 +21,6 @@ pip install spark-kindling-sdk
 
 - `kindling repo init` — scaffold a multi-package repo root with shared dev tooling
 - `kindling package init` — scaffold a package under `packages/<name>` in an existing repo
-- `kindling project new` — convenience command that creates a repo plus its first package
 - `kindling config init` — generate a starter `settings.yaml`
 - `kindling config set <key> <value>` — set a config value using dot-notation
 - `kindling env check` — validate the local Python/config environment
@@ -85,8 +84,11 @@ poetry run poe build
 The CI job fails if no package `pyproject.toml` files are found under
 `packages/`.
 
-For the single-package quick start, `kindling project new my-pipeline` still works and
-creates a repo with an initial package at `packages/my_pipeline/`.
+Apps are scaffolded separately from packages:
+
+```bash
+kindling app init sales-ops --package sales-ops --repo-root .
+```
 
 ## Related
 

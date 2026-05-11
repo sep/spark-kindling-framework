@@ -92,13 +92,16 @@ See [docs/release_process.md](./docs/release_process.md) for install-from-releas
 
 ## CLI Quick Start
 
-Install the CLI and scaffold a new project:
+Install the CLI and scaffold a repo, package, and app explicitly:
 
 ```bash
 pip install 'spark-kindling[standalone]' spark-kindling-cli
 
-kindling project new my-app
-cd my_app/apps/my_app
+kindling repo init my-app --output-dir ./my_app
+cd my_app
+kindling package init my-app
+kindling app init my-app --package my-app
+cd apps/my_app
 kindling app run . --env local
 ```
 

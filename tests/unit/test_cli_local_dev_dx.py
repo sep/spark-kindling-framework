@@ -324,7 +324,7 @@ def test_validate_bad_registry_checks_fail_with_missing_references(monkeypatch):
 
 
 # [tester] scaffolded local run reaches executor boundary without Azure credentials — TASK-20260430-002
-def test_new_project_run_reaches_pipe_execution_with_mock_executor(monkeypatch):
+def test_explicit_scaffold_run_reaches_pipe_execution_with_mock_executor(monkeypatch):
     runner = CliRunner()
     pipe_registry = Mock()
     pipe_registry.get_pipe_definition.return_value = SimpleNamespace(pipeid="bronze_to_silver")
@@ -352,8 +352,29 @@ def test_new_project_run_reaches_pipe_execution_with_mock_executor(monkeypatch):
 
     with runner.isolated_filesystem():
         try:
-            result_new = runner.invoke(cli, ["project", "new", "logistics-data"])
-            assert result_new.exit_code == 0, result_new.output
+            result_repo = runner.invoke(
+                cli,
+                ["repo", "init", "logistics-data", "--output-dir", "logistics_data"],
+            )
+            assert result_repo.exit_code == 0, result_repo.output
+            result_package = runner.invoke(
+                cli,
+                ["package", "init", "logistics-data", "--repo-root", "logistics_data"],
+            )
+            assert result_package.exit_code == 0, result_package.output
+            result_app = runner.invoke(
+                cli,
+                [
+                    "app",
+                    "init",
+                    "logistics-data",
+                    "--package",
+                    "logistics-data",
+                    "--repo-root",
+                    "logistics_data",
+                ],
+            )
+            assert result_app.exit_code == 0, result_app.output
 
             app_dir = Path("logistics_data/apps/logistics_data")
             result_run = runner.invoke(
@@ -403,14 +424,36 @@ def test_env_check_falls_back_to_root_settings_yaml():
     assert "[PASS] config_file_exists: settings.yaml" in result.output
 
 
-def test_new_project_next_steps_use_single_cd():
+def test_scaffold_next_steps_use_single_cd():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli, ["project", "new", "demo-project", "--no-integration"])
+        result_repo = runner.invoke(
+            cli,
+            ["repo", "init", "demo-project", "--output-dir", "demo_project"],
+        )
+        assert result_repo.exit_code == 0, result_repo.output
+        result_package = runner.invoke(
+            cli,
+            ["package", "init", "demo-project", "--repo-root", "demo_project"],
+        )
+        result_app = runner.invoke(
+            cli,
+            [
+                "app",
+                "init",
+                "demo-project",
+                "--package",
+                "demo-project",
+                "--repo-root",
+                "demo_project",
+            ],
+        )
 
-    assert result.exit_code == 0
-    assert "  cd demo_project/apps/demo_project" in result.output
-    assert "  cd demo_project\n  cd apps/demo_project" not in result.output
+    assert result_package.exit_code == 0, result_package.output
+    assert result_app.exit_code == 0, result_app.output
+    assert "  cd packages/demo_project" in result_package.output
+    assert "  cd apps/demo_project" in result_app.output
+    assert "  cd demo_project\n  cd apps/demo_project" not in result_app.output
 
 
 # [implementer] pipeline run / list / --no-watermark — ki-70y
