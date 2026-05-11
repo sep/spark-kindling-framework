@@ -6,8 +6,10 @@ import pytest
 from click.testing import CliRunner
 from kindling_cli.cli import cli
 from kindling_cli.scaffold import (
+    AppScaffoldConfig,
     PackageScaffoldConfig,
     RepoScaffoldConfig,
+    generate_app,
     generate_package,
     generate_project,
     generate_repo,
@@ -62,6 +64,14 @@ PACKAGE_FILES = [
     "tests/component/test_registration.py",
 ]
 
+APP_FILES = [
+    "app.py",
+    ".env.example",
+    "QUICKSTART.md",
+    "config/settings.yaml",
+    "config/env.local.yaml",
+]
+
 
 def _all_options():
     for layers in ("medallion", "minimal"):
@@ -86,6 +96,7 @@ def test_generate_repo_creates_shared_files(tmp_path):
 
     assert repo_root.is_dir()
     assert (repo_root / "packages").is_dir()
+    assert (repo_root / "apps").is_dir()
     for rel in REPO_FILES:
         assert (repo_root / rel).exists(), f"Missing repo file {rel}"
 
@@ -122,16 +133,33 @@ def test_generate_package_creates_package_structure(tmp_path, layers, auth, inte
         assert not (root / "tests/integration").exists()
 
 
+def test_generate_app_creates_independent_app_structure(tmp_path):
+    repo_root = tmp_path / "kindling_repo"
+    repo_root.mkdir()
+
+    cfg = AppScaffoldConfig(name="sales_ops", repo_root=repo_root, package_name="sales_ops")
+    generate_app(cfg)
+
+    root = repo_root / "apps" / "sales_ops"
+    for rel in APP_FILES:
+        assert (root / rel).exists(), f"Missing app file {rel}"
+    app_py = (root / "app.py").read_text()
+    assert '"packages" / "sales_ops" / "src"' in app_py
+
+
 def test_generate_project_creates_repo_and_initial_package(tmp_path):
     cfg = PackageScaffoldConfig(name="sales_ops", repo_root=tmp_path / "sales_ops")
     generate_project(cfg)
 
     repo_root = tmp_path / "sales_ops"
     pkg_root = _package_root(repo_root, "sales_ops")
+    app_root = repo_root / "apps" / "sales_ops"
     assert repo_root.is_dir()
     assert pkg_root.is_dir()
+    assert app_root.is_dir()
     assert (repo_root / ".devcontainer").is_dir()
     assert (pkg_root / "pyproject.toml").exists()
+    assert (app_root / "app.py").exists()
 
 
 def test_cannot_create_repo_over_existing_generated_file(tmp_path):
@@ -179,10 +207,12 @@ def test_cannot_create_package_in_existing_directory(tmp_path):
 def test_app_py_imports_correct_entity_module_medallion(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    cfg = PackageScaffoldConfig(name="acme", repo_root=repo_root, layers="medallion")
-    generate_package(cfg)
+    cfg = AppScaffoldConfig(
+        name="acme-app", package_name="acme", repo_root=repo_root, layers="medallion"
+    )
+    generate_app(cfg)
 
-    app = (_package_root(repo_root, "acme") / "src" / "acme" / "app.py").read_text()
+    app = (repo_root / "apps" / "acme_app" / "app.py").read_text()
     assert "import acme.entities.records" in app
     assert "import acme.pipes.bronze_to_silver" in app
 
@@ -190,10 +220,12 @@ def test_app_py_imports_correct_entity_module_medallion(tmp_path):
 def test_app_py_imports_correct_pipe_module_minimal(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    cfg = PackageScaffoldConfig(name="acme", repo_root=repo_root, layers="minimal")
-    generate_package(cfg)
+    cfg = AppScaffoldConfig(
+        name="acme-app", package_name="acme", repo_root=repo_root, layers="minimal"
+    )
+    generate_app(cfg)
 
-    app = (_package_root(repo_root, "acme") / "src" / "acme" / "app.py").read_text()
+    app = (repo_root / "apps" / "acme_app" / "app.py").read_text()
     assert "import acme.entities.records" in app
     assert "import acme.pipes.process" in app
 
@@ -383,6 +415,20 @@ class TestScaffoldCommands:
 
         assert result.exit_code == 0, result.output
         assert (repo_root / "packages" / "sales_ops").is_dir()
+        assert not (repo_root / "packages" / "sales_ops" / "src" / "sales_ops" / "app.py").exists()
+
+    def test_app_init_creates_app_under_repo(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["app", "init", "sales-ops", "--package", "sales-ops", "--repo-root", str(repo_root)],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (repo_root / "apps" / "sales_ops" / "app.py").exists()
 
     def test_new_creates_repo_and_initial_package(self, tmp_path):
         runner = CliRunner()
@@ -391,6 +437,7 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         assert (tmp_path / "test_proj").is_dir()
         assert (tmp_path / "test_proj" / "packages" / "test_proj").is_dir()
+        assert (tmp_path / "test_proj" / "apps" / "test_proj").is_dir()
 
     def test_new_prints_next_steps(self, tmp_path):
         runner = CliRunner()
@@ -398,9 +445,9 @@ class TestScaffoldCommands:
 
         assert result.exit_code == 0, result.output
         assert "Next steps" in result.output
-        assert "cd my_proj/packages/my_proj" in result.output
+        assert "cd my_proj/apps/my_proj" in result.output
         assert "kindling app run ." in result.output
-        assert "poetry run poe test" in result.output
+        assert "cd ../../packages/my_proj && poetry run poe test" in result.output
         assert "kindling runner ensure --platform <platform>" in result.output
         assert "kindling app run . --platform <platform>" in result.output
 
@@ -424,10 +471,8 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         assert "Next steps" in result.output
         assert "cd packages/my_pkg" in result.output
-        assert "kindling app run ." in result.output
         assert "poetry run poe test" in result.output
-        assert "kindling runner ensure --platform <platform>" in result.output
-        assert "kindling app run . --platform <platform>" in result.output
+        assert "kindling app init my_pkg --package my_pkg" in result.output
 
     def test_new_no_integration_skips_integration_dir(self, tmp_path):
         runner = CliRunner()
@@ -480,9 +525,7 @@ class TestScaffoldCommands:
         )
 
         assert result.exit_code == 0, result.output
-        app_py = (
-            tmp_path / "my_proj" / "packages" / "my_proj" / "src" / "my_proj" / "app.py"
-        ).read_text()
+        app_py = (tmp_path / "my_proj" / "apps" / "my_proj" / "app.py").read_text()
         assert "CUSTOM_MARKER" in app_py
 
     def test_template_dir_falls_back_to_builtin(self, tmp_path):

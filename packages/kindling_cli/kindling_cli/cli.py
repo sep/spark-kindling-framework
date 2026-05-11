@@ -427,15 +427,17 @@ def _discover_app_py(app_path: Optional[Path]) -> Path:
     cwd = Path.cwd()
     candidates = [
         cwd / "app.py",
+        *sorted((cwd / "apps").glob("*/app.py")),
         *sorted((cwd / "src").glob("*/app.py")),
         *sorted((cwd.parent / "src").glob("*/app.py")),
-        # repo-root layout: packages/<pkg>/src/<pkg>/app.py
+        # legacy repo-root layout: packages/<pkg>/src/<pkg>/app.py
         *sorted((cwd / "packages").glob("*/src/*/app.py")),
     ]
     found = [c.resolve() for c in candidates if c.exists()]
     if not found:
         raise click.ClickException(
-            "Could not find app.py. Run from your package directory or pass --app path/to/app.py"
+            "Could not find app.py. Run from an app directory or repo root, "
+            "or pass --app path/to/app.py"
         )
     if len(found) > 1:
         listed = "\n  ".join(str(p) for p in found)
@@ -453,6 +455,7 @@ def _discover_app_py_under(app_root: Path) -> Path:
 
     candidates = [
         root / "app.py",
+        *sorted((root / "apps").glob("*/app.py")),
         *sorted((root / "src").glob("*/app.py")),
         *sorted((root / "packages").glob("*/src/*/app.py")),
     ]
@@ -460,7 +463,7 @@ def _discover_app_py_under(app_root: Path) -> Path:
     if not found:
         raise click.ClickException(
             f"Could not find app.py under `{root}`. "
-            "Pass a local app directory, repo root, package root, or app.py path."
+            "Pass a local app directory, repo root, or app.py path."
         )
     if len(found) > 1:
         listed = "\n  ".join(str(path) for path in found)
@@ -2369,209 +2372,101 @@ def _resolve_source_path(
     )
 
 
-# =============================================================================
-# app init — scaffold a minimal Kindling app
-# =============================================================================
-
-_APP_INIT_KINDLING_YAML = """\
-# Kindling app configuration
-# See: https://kindling.dev/docs/config_reference
-
-app:
-  name: {app_name}
-
-environments:
-  local:
-    platform: standalone
-    entities:
-      default_provider: csv
-      # CSV fixtures are auto-discovered from tests/entities/<entity-id>.csv
-
-  dev:
-    platform: synapse
-    storage:
-      # account: mystorageaccount
-      # container: dev
-    entities:
-      default_provider: delta
-      # paths follow: abfss://<container>@<account>.dfs.core.windows.net/<app>/
-
-  prod:
-    platform: synapse
-    storage:
-      # account: mystorageaccount
-      # container: prod
-    entities:
-      default_provider: delta
-"""
-
-_APP_INIT_MODULE_INIT = """\
-"""
-
-_APP_INIT_ENTITIES_PY = """\
-from kindling import DataEntities
-
-
-@DataEntities.register(
-    entity_id="bronze.sample",
-    # provider_type="delta",
-    # tags={"layer": "bronze"},
-)
-class SampleEntity:
-    pass
-"""
-
-_APP_INIT_SAMPLE_PIPE_PY = """\
-from kindling import DataPipes
-
-
-@DataPipes.register(
-    pipe_id="bronze.sample_pipe",
-    input_entity_ids=["bronze.sample"],
-    output_entity_id="silver.sample",
-)
-def sample_pipe(bronze_sample):
-    # TODO: implement your transform here
-    return bronze_sample
-"""
-
-_APP_INIT_TEST_STUB = """\
-import pytest
-
-
-@pytest.mark.skip(reason="scaffolded — implement transform assertions")
-def test_sample_pipe_transform():
-    ...
-"""
-
-_APP_INIT_CONFTEST = """\
-\"\"\"Shared fixtures for {app_name} tests.\"\"\"
-
-import pytest
-
-
-@pytest.fixture(scope="session")
-def spark():
-    \"\"\"Local SparkSession fixture stub — configure as needed.\"\"\"
-    try:
-        from pyspark.sql import SparkSession
-
-        session = (
-            SparkSession.builder.appName("{app_name}Tests")
-            .master("local[2]")
-            .config("spark.sql.shuffle.partitions", "2")
-            .config("spark.ui.enabled", "false")
-            .getOrCreate()
-        )
-        session.sparkContext.setLogLevel("ERROR")
-        yield session
-        session.stop()
-    except ImportError:
-        pytest.skip("pyspark not installed")
-"""
-
-_APP_INIT_TESTS_INIT = """\
-"""
-
-
-def _write_app_init_file(path: Path, content: str, force: bool) -> bool:
-    """Write a scaffold file; return True if written, False if skipped (exists and not forced)."""
-    if path.exists() and not force:
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return True
-
-
 @app_group.command("init")
-@click.argument(
-    "app_path",
-    type=click.Path(path_type=Path),
+@click.argument("app_name")
+@click.option(
+    "--package",
+    "package_name",
+    default=None,
+    help="Domain package imported by the app. Defaults to the app name.",
 )
 @click.option(
-    "--template",
-    "template",
-    default="default",
+    "--auth",
+    type=click.Choice(["oauth", "key", "cli"]),
+    default="oauth",
     show_default=True,
-    type=click.Choice(["default"]),
-    help="Scaffold template to use.",
+    help="ABFSS authentication method for generated local config comments.",
 )
-@click.option("--force", is_flag=True, help="Overwrite existing files.")
-def app_init(app_path: Path, template: str, force: bool) -> None:  # pylint: disable=unused-argument
-    """Scaffold a minimal Kindling app at APP_PATH.
+@click.option(
+    "--layers",
+    type=click.Choice(["medallion", "minimal"]),
+    default="medallion",
+    show_default=True,
+    help="Entity/pipe template style expected from the domain package.",
+)
+@click.option(
+    "--repo-root",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Existing repo root that will receive the app under apps/.",
+)
+@click.option(
+    "--template-dir",
+    "template_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory of custom Jinja2 templates that overlay the built-ins.",
+)
+def app_init(
+    app_name: str,
+    package_name: Optional[str],
+    auth: str,
+    layers: str,
+    repo_root: Path,
+    template_dir: Optional[Path],
+) -> None:
+    """Create a Kindling app under apps/ in an existing repo.
 
     \b
-    Creates the following structure:
-      <app_path>/
-        __init__.py
-        entities.py
-        sample_pipe.py
-        kindling.yaml
-      tests/
-        entities/           (empty — CSV fixtures go here)
-        unit/
-          __init__.py
-          test_sample_pipe.py
-        integration/
-          __init__.py
-          test_sample_pipe.py
-        system/
-          __init__.py
-        component/
-          __init__.py
-        conftest.py
+    Creates:
+      apps/<app>/
+        app.py              — initialize() and register_all()
+        config/             — app-owned settings and env overlays
+        QUICKSTART.md
+
+    Apps are deployable Kindling units. They are intentionally separate from
+    reusable Python packages under packages/.
     """
-    resolved = app_path.expanduser().resolve()
-    app_name = resolved.name or "my-app"
+    from kindling_cli.scaffold import AppScaffoldConfig, generate_app, validate_name
 
-    # Files to create: (destination path, content)
-    files: List[Tuple[Path, str]] = [
-        (resolved / "__init__.py", _APP_INIT_MODULE_INIT),
-        (resolved / "entities.py", _APP_INIT_ENTITIES_PY),
-        (resolved / "sample_pipe.py", _APP_INIT_SAMPLE_PIPE_PY),
-        (resolved / "kindling.yaml", _APP_INIT_KINDLING_YAML.format(app_name=app_name)),
-        (resolved.parent / "tests" / "unit" / "__init__.py", _APP_INIT_TESTS_INIT),
-        (
-            resolved.parent / "tests" / "unit" / "test_sample_pipe.py",
-            _APP_INIT_TEST_STUB,
-        ),
-        (resolved.parent / "tests" / "integration" / "__init__.py", _APP_INIT_TESTS_INIT),
-        (
-            resolved.parent / "tests" / "integration" / "test_sample_pipe.py",
-            _APP_INIT_TEST_STUB,
-        ),
-        (resolved.parent / "tests" / "system" / "__init__.py", _APP_INIT_TESTS_INIT),
-        (resolved.parent / "tests" / "component" / "__init__.py", _APP_INIT_TESTS_INIT),
-        (
-            resolved.parent / "tests" / "conftest.py",
-            _APP_INIT_CONFTEST.format(app_name=app_name),
-        ),
-    ]
+    raw_name = app_name
+    try:
+        snake = validate_name(raw_name)
+        package_snake = validate_name(package_name or raw_name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
-    # Ensure the empty tests/entities/ directory exists (no file, just the dir)
-    entities_dir = resolved.parent / "tests" / "entities"
-    entities_dir.mkdir(parents=True, exist_ok=True)
+    resolved_repo_root = repo_root.expanduser().resolve()
+    if not resolved_repo_root.exists():
+        raise click.ClickException(f"Repo root does not exist: {resolved_repo_root}")
 
-    created: List[Path] = []
-    skipped: List[Path] = []
-    for dest, content in files:
-        if _write_app_init_file(dest, content, force):
-            created.append(dest)
-        else:
-            skipped.append(dest)
+    cfg = AppScaffoldConfig(
+        name=snake,
+        repo_root=resolved_repo_root,
+        package_name=package_snake,
+        layers=layers,
+        auth=auth,
+        template_dir=template_dir.expanduser().resolve() if template_dir else None,
+    )
+    target = cfg.repo_root / "apps" / cfg.snake_name
+    if target.exists():
+        raise click.ClickException(
+            f"App already exists: {target}\nChoose a different app name or --repo-root."
+        )
 
-    for path in created:
-        click.echo(f"  created  {path}")
-    for path in skipped:
-        click.echo(f"  skipped  {path} (already exists — use --force to overwrite)")
+    try:
+        generate_app(cfg)
+    except Exception as exc:
+        raise click.ClickException(f"App scaffold failed: {exc}") from exc
 
-    click.echo()
-    click.echo(f"App scaffolded at `{resolved}`")
+    click.echo(f"✓ Created apps/{cfg.snake_name}/")
     click.echo()
     click.echo("Next steps:")
-    click.echo(f"  cd {resolved.parent}")
-    click.echo("  kindling app run .                         # run the app locally")
-    click.echo("  kindling app validate                       # check entity and pipe wiring")
+    click.echo(f"  cd apps/{cfg.snake_name}")
+    click.echo("  kindling app run .                       # run the app locally")
+    click.echo("  kindling runner ensure --platform <platform>  # install remote runner")
+    click.echo("  kindling app run . --platform <platform>      # run remotely")
 
 
 @app_group.command("package")
@@ -4638,10 +4533,8 @@ def package_init(
     click.echo("Next steps:")
     click.echo(f"  cd packages/{cfg.snake_name}")
     click.echo("  poetry install")
-    click.echo("  kindling app run .                       # run the app locally")
     click.echo("  poetry run poe test                  # run the test suite")
-    click.echo("  kindling runner ensure --platform <platform>  # install remote runner")
-    click.echo("  kindling app run . --platform <platform>      # run remotely")
+    click.echo(f"  cd ../.. && kindling app init {cfg.snake_name} --package {cfg.snake_name}")
 
 
 @cli.group("project")
@@ -4711,12 +4604,13 @@ def new_project(
     Creates PROJECT_NAME/ as a repo root with shared tooling plus:
 
       packages/<pkg>/
-        src/<pkg>/app.py  — initialize() and register_all()
         entities/         — DataEntities.entity() registrations
         pipes/            — @DataPipes.pipe decorators
         transforms/       — pure-PySpark functions (unit-testable)
-        config/           — package-local config and env examples
         tests/            — unit/component/integration tests
+      apps/<app>/
+        app.py            — initialize() and register_all()
+        config/           — app-owned config and env examples
       .github/workflows/
         ci.yml            — starter CI for all packages
       .devcontainer/
@@ -4726,6 +4620,7 @@ def new_project(
     `kindling project new` is convenience sugar for:
       1. `kindling repo init`
       2. `kindling package init`
+      3. `kindling app init`
 
     \b
     Examples:
@@ -4767,10 +4662,9 @@ def new_project(
     click.echo(f"✓ Created {cfg.snake_name}/")
     click.echo()
     click.echo("Next steps:")
-    click.echo(f"  cd {cfg.snake_name}/packages/{cfg.snake_name}")
-    click.echo("  poetry install")
+    click.echo(f"  cd {cfg.snake_name}/apps/{cfg.snake_name}")
     click.echo("  kindling app run .                       # run the app locally")
-    click.echo("  poetry run poe test                  # run the test suite")
+    click.echo(f"  cd ../../packages/{cfg.snake_name} && poetry run poe test")
     click.echo("  kindling runner ensure --platform <platform>  # install remote runner")
     click.echo("  kindling app run . --platform <platform>      # run remotely")
 

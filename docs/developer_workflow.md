@@ -54,6 +54,7 @@ Use `kindling app run` to execute all registered pipes locally with the
 standalone platform:
 
 ```bash
+cd apps/my_pipeline
 kindling app run .
 kindling app run . --platform standalone --env local
 ```
@@ -62,11 +63,11 @@ Use `kindling pipeline run` to execute one pipe from your local package without
 deploying:
 
 ```bash
-# Run from the package directory — app.py is auto-discovered
+# Run from the app directory — app.py is auto-discovered
 kindling pipeline run bronze_to_silver
 
 # Explicit app path and environment overlay
-kindling pipeline run bronze_to_silver --app src/my_pipeline/app.py --env local
+kindling pipeline run bronze_to_silver --app apps/my_pipeline/app.py --env local
 ```
 
 Use `kindling app validate` to check entity/pipe wiring without starting Spark:
