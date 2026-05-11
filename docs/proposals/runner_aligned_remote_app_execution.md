@@ -1,7 +1,7 @@
 # Runner-Aligned Remote App Execution Proposal
 
 **Date:** 2026-05-07
-**Status:** Proposed
+**Status:** Implemented
 **Scope:** remote app execution model, runner semantics, CLI behavior, migration from per-run job creation
 
 ---
@@ -20,7 +20,8 @@ The result is a simpler and more consistent mental model:
 
 - `kindling app run` runs an app
 - `kindling runner ensure|status|repair|delete` manages runner infrastructure
-- `kindling job *` remains available for advanced/operator use, but is no longer part of the normal app run path
+- lower-level SDK job primitives remain available for platform internals, but
+  there is no end-user direct-job workflow
 
 ---
 
@@ -69,7 +70,7 @@ This mismatch creates several issues.
 1. Make remote app execution follow the documented durable-runner model.
 2. Preserve `kindling app run` as the main user-facing remote execution command.
 3. Keep `kindling runner *` as the infrastructure/admin command family.
-4. Keep `kindling job *` available for advanced/debug/operator scenarios.
+4. Keep low-level job primitives in the SDK for platform internals and specialized automation.
 5. Avoid breaking local standalone app execution.
 6. Keep `kindling app run` end-to-end: submit work, stream logs by default, and report final status.
 7. Establish a single remote execution path that can later support richer scheduling, retries, queueing, audit metadata, and policy enforcement.
@@ -78,11 +79,10 @@ This mismatch creates several issues.
 
 ## Non-Goals
 
-1. Removing `kindling job *` commands in this phase.
+1. Replacing platform-native jobs entirely; the runner is still implemented using platform-native job primitives.
 2. Changing local `kindling pipeline run` semantics.
 3. Redesigning app packaging or deployment artifact formats.
-4. Replacing platform-native jobs entirely; the runner is still implemented using platform-native job primitives.
-5. Solving multi-app scheduling or tenancy policy in this proposal.
+4. Solving multi-app scheduling or tenancy policy in this proposal.
 
 ---
 
@@ -147,16 +147,6 @@ kindling runner ensure --platform synapse
 kindling runner status --platform synapse
 kindling runner repair --platform synapse
 kindling runner delete --platform synapse
-```
-
-### Job Workflow
-
-Raw job commands remain available, but the docs should describe them as advanced and operational.
-
-```bash
-kindling job create job.yaml --platform synapse
-kindling job run <job-id> --platform synapse
-kindling job status <run-id> --platform synapse
 ```
 
 ---
@@ -297,16 +287,6 @@ Suggested language:
 
 This group already describes the right mental model. After implementation, that description will become fully accurate rather than partially aspirational.
 
-### `kindling job`
-
-Help text and primary docs should describe this group as advanced/platform-native operations.
-
-Suggested language:
-
-> Advanced platform job operations for operators, CI, and debugging.
-
----
-
 ## Migration Strategy
 
 This should be a staged migration, not a flag day.
@@ -327,12 +307,14 @@ This should be a staged migration, not a flag day.
 
 - update developer workflow docs
 - update CLI package README
-- keep job commands documented under advanced/ops sections rather than main happy-path sections
+- keep lower-level SDK job primitives documented as platform internals rather
+  than CLI user workflows
 
 ### Phase 4: Compatibility Messaging
 
 - add notes in release docs describing the internal shift from direct app jobs to runner-submitted app runs
-- explicitly state that `job *` remains supported for advanced use
+- explicitly state that direct jobs are SDK/platform internals, while runner
+  commands are the CLI surface
 
 ---
 
@@ -343,7 +325,7 @@ This proposal is intended to preserve the external happy path:
 - `kindling app run <app> --platform <platform>` still works
 - `kindling app status/logs/cancel` still work
 - local standalone behavior stays unchanged
-- `kindling job *` still exists
+- there is no generated `job.yaml` or top-level end-user direct-job workflow
 
 What changes is the remote execution path behind those commands.
 
@@ -414,8 +396,8 @@ Some users may have built workflows assuming every app corresponds to a platform
 
 Mitigation:
 
-- preserve `kindling job *`
-- document the new recommended path without removing advanced capabilities
+- preserve SDK job primitives for platform internals and specialized automation
+- document the runner/app path without exposing a separate CLI job workflow
 
 ---
 
@@ -450,7 +432,7 @@ Specifically:
 - keep `kindling app run` as the primary remote execution command
 - route remote app runs through the durable runner
 - keep runner lifecycle explicit and separate
-- keep raw job commands available for advanced use
+- keep raw SDK job primitives available for advanced/platform-internal use
 - update docs and SDK contracts to match the implementation
 
 This is the smallest change that restores consistency between strategy, docs, implementation, and user expectations.

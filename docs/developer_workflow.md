@@ -108,20 +108,7 @@ kindling runner delete --platform synapse   # remove
 
 Remote `kindling app run` checks that a runner exists before submitting. If none is found it exits with a hint to run `kindling runner ensure`.
 
-### Advanced platform job operations
-
-`kindling job *` commands give direct access to platform job primitives. Use them for debugging, CI automation, or operator tasks — not for normal app workflows.
-
-```bash
-kindling job create job.yaml --platform synapse
-kindling job run <job-id> --platform synapse
-kindling job status <run-id> --platform synapse
-kindling job logs <run-id> --platform synapse
-kindling job cancel <run-id> --platform synapse
-kindling job delete <job-id> --platform synapse
-```
-
-Remote app/job commands require `spark-kindling-sdk`.
+Remote app and runner commands require `spark-kindling-sdk`.
 
 ## Authentication
 
