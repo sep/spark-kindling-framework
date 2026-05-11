@@ -290,16 +290,19 @@ def _cleanup_platform(platform: str, storage_account: str, container: str, base_
 def _cleanup_storage_apps(storage_account: str, container: str, base_path: str) -> int:
     apps_deleted = 0
     try:
-        from azure.identity import DefaultAzureCredential
         from azure.storage.filedatalake import DataLakeServiceClient
+        from kindling_sdk.platform_provider import (
+            azure_storage_account_url,
+            create_azure_credential,
+        )
     except ImportError:
         print("  Warning: azure-storage-file-datalake not installed; skipping storage cleanup")
         return 0
 
     try:
-        account_url = f"https://{storage_account}.dfs.core.windows.net"
+        account_url = azure_storage_account_url(storage_account)
         fs_client = DataLakeServiceClient(
-            account_url, credential=DefaultAzureCredential()
+            account_url, credential=create_azure_credential()
         ).get_file_system_client(container)
         data_apps_path = f"{base_path}/data-apps" if base_path else "data-apps"
         for path in fs_client.get_paths(path=data_apps_path):

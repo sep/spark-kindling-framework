@@ -19,7 +19,9 @@ def test_runtime_fabric_base_url_uses_azure_cloud(monkeypatch):
 
 
 def test_runtime_synapse_token_scope_uses_env(monkeypatch):
-    monkeypatch.setenv("AZURE_SYNAPSE_TOKEN_SCOPE", "https://dev.azuresynapse.us/.default")
+    monkeypatch.setenv(
+        "AZURE_SYNAPSE_TOKEN_SCOPE", "https://dev.azuresynapse.usgovcloudapi.net/.default"
+    )
 
     svc = SynapseService.__new__(SynapseService)
     svc._token_cache = {}
@@ -33,7 +35,7 @@ def test_runtime_synapse_token_scope_uses_env(monkeypatch):
     svc.credential = credential
 
     assert svc._get_token() == "token"
-    assert credential.scope == "https://dev.azuresynapse.us/.default"
+    assert credential.scope == "https://dev.azuresynapse.usgovcloudapi.net/.default"
 
 
 def test_runtime_synapse_token_scope_uses_azure_cloud(monkeypatch):
@@ -52,7 +54,7 @@ def test_runtime_synapse_token_scope_uses_azure_cloud(monkeypatch):
     svc.credential = credential
 
     assert svc._get_token() == "token"
-    assert credential.scope == "https://dev.azuresynapse.us/.default"
+    assert credential.scope == "https://dev.azuresynapse.usgovcloudapi.net/.default"
 
 
 def test_runtime_synapse_deployment_path_uses_dfs_suffix_env(monkeypatch):
