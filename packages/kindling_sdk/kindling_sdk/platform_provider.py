@@ -31,8 +31,8 @@ AZURE_CLOUD_CONFIGS = {
         "storage_scope": "https://storage.usgovcloudapi.net/.default",
         "arm_endpoint": "https://management.usgovcloudapi.net",
         "arm_scope": "https://management.usgovcloudapi.net/.default",
-        "synapse_suffix": "dev.azuresynapse.us",
-        "synapse_scope": "https://dev.azuresynapse.us/.default",
+        "synapse_suffix": "dev.azuresynapse.usgovcloudapi.net",
+        "synapse_scope": "https://dev.azuresynapse.usgovcloudapi.net/.default",
         "keyvault_scope": "https://vault.usgovcloudapi.net/.default",
         "fabric_api_base_url": "https://api.fabric.microsoft.us/v1",
         "fabric_scope": "https://api.fabric.microsoft.us/.default",
@@ -381,6 +381,7 @@ def create_azure_credential(
     tenant_id: Optional[str] = None,
     client_id: Optional[str] = None,
     client_secret: Optional[str] = None,
+    additionally_allowed_tenants: Optional[List[str]] = None,
 ) -> Any:
     """Create an Azure credential, preferring explicit service principal auth.
 
@@ -410,6 +411,10 @@ def create_azure_credential(
             client_id=resolved_client_id,
             client_secret=resolved_client_secret,
             authority=azure_authority_host(),
+            additionally_allowed_tenants=additionally_allowed_tenants,
         )
 
-    return DefaultAzureCredential(authority=azure_authority_host())
+    return DefaultAzureCredential(
+        authority=azure_authority_host(),
+        additionally_allowed_tenants=additionally_allowed_tenants,
+    )
