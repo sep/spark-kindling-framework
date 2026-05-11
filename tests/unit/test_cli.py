@@ -42,7 +42,7 @@ def test_top_level_commands_follow_noun_verb_grammar():
     assert "\n  run " not in result.output
     assert "\n  validate " not in result.output
     assert "\n  new " not in result.output
-    assert "\n  project " in result.output
+    assert "\n  project " not in result.output
 
 
 def test_top_level_commands_do_not_expose_job_group():

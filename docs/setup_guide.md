@@ -9,8 +9,11 @@ For local development, scaffold a project with the CLI and run it without cloud 
 ```bash
 pip install 'spark-kindling[standalone]' spark-kindling-cli
 
-kindling project new my-app
-cd my_app/apps/my_app
+kindling repo init my-app --output-dir ./my_app
+cd my_app
+kindling package init my-app
+kindling app init my-app --package my-app
+cd apps/my_app
 kindling app run . --env local
 ```
 

@@ -16,9 +16,12 @@ pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"
 pip install "spark-kindling-cli @ ${CURRENT_CLI_URL}"
 pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
 
-# Then scaffold and work on your local repo + package.
-kindling project new my-pipeline
-cd my_pipeline/packages/my_pipeline
+# Then scaffold and work on your local repo, package, and app.
+kindling repo init my-pipeline --output-dir ./my_pipeline
+cd my_pipeline
+kindling package init my-pipeline
+kindling app init my-pipeline --package my-pipeline
+cd packages/my_pipeline
 poetry install
 cp .env.example .env
 # Update .env with your environment settings
@@ -36,7 +39,7 @@ poetry run poe test-integration
 
 ## What The Scaffold Creates
 
-`kindling project new` now creates a multi-package repo with:
+The explicit scaffold flow creates:
 
 - repo root shared files: `.devcontainer/`, `.github/workflows/ci.yml`, `.gitignore`
 - package-local source at `packages/<pkg>/src/<pkg>/...`
@@ -44,7 +47,7 @@ poetry run poe test-integration
 - package-local `pyproject.toml` with `poethepoet` tasks
 - app-local entrypoint and config at `apps/<app>/app.py` and `apps/<app>/config/`
 
-The explicit flow is also available:
+Run the commands as separate steps so repos, packages, and apps can evolve independently:
 
 ```bash
 git clone <your-empty-repo-url> data-platform
