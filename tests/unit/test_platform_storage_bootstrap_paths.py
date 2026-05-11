@@ -142,7 +142,7 @@ def test_synapse_run_job_uses_livy_from_cache_and_returns_batch_id():
 
 
 def test_synapse_run_job_uses_dev_endpoint_suffix_env(monkeypatch):
-    monkeypatch.setenv("AZURE_SYNAPSE_DEV_ENDPOINT_SUFFIX", "dev.azuresynapse.us")
+    monkeypatch.setenv("AZURE_SYNAPSE_DEV_ENDPOINT_SUFFIX", "dev.azuresynapse.usgovcloudapi.net")
 
     api = SynapseAPI(
         workspace_name="my-workspace",
@@ -167,7 +167,7 @@ def test_synapse_run_job_uses_dev_endpoint_suffix_env(monkeypatch):
     assert batch_id == "42"
     call_args = api._make_request.call_args
     assert call_args.args[0] == "POST"
-    assert call_args.args[1].startswith("https://my-workspace.dev.azuresynapse.us/")
+    assert call_args.args[1].startswith("https://my-workspace.dev.azuresynapse.usgovcloudapi.net/")
     assert "/livyApi/" in call_args.args[1]
 
 
