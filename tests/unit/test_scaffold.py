@@ -401,7 +401,8 @@ class TestScaffoldCommands:
         assert "cd my_proj/packages/my_proj" in result.output
         assert "kindling app run ." in result.output
         assert "poetry run poe test" in result.output
-        assert "kindling job init" in result.output
+        assert "kindling runner ensure --platform <platform>" in result.output
+        assert "kindling app run . --platform <platform>" in result.output
 
     def test_new_minimal_layers_prints_process_pipe(self, tmp_path):
         runner = CliRunner()
@@ -425,7 +426,8 @@ class TestScaffoldCommands:
         assert "cd packages/my_pkg" in result.output
         assert "kindling app run ." in result.output
         assert "poetry run poe test" in result.output
-        assert "kindling job init" in result.output
+        assert "kindling runner ensure --platform <platform>" in result.output
+        assert "kindling app run . --platform <platform>" in result.output
 
     def test_new_no_integration_skips_integration_dir(self, tmp_path):
         runner = CliRunner()
