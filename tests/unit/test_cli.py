@@ -128,6 +128,7 @@ def test_env_check_platform_missing_vars_exits_nonzero(monkeypatch):
         "SYNAPSE_SPARK_POOL_NAME",
         "AZURE_TENANT_ID",
         "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
     ):
         monkeypatch.delenv(var, raising=False)
     runner = CliRunner()
@@ -146,6 +147,7 @@ def test_env_check_platform_all_vars_set_exits_zero(monkeypatch):
     monkeypatch.setenv("SYNAPSE_SPARK_POOL_NAME", "pool")
     monkeypatch.setenv("AZURE_TENANT_ID", "tid")
     monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "secret")
     runner = CliRunner()
     with runner.isolated_filesystem():
         result = runner.invoke(cli, ["env", "check", "--platform", "synapse"])
@@ -155,7 +157,7 @@ def test_env_check_platform_all_vars_set_exits_zero(monkeypatch):
     assert "MISSING" not in result.output
     output_lines = [l.strip() for l in result.output.splitlines() if l.strip()]
     set_lines = [l for l in output_lines if "SET" in l]
-    assert len(set_lines) == 4
+    assert len(set_lines) == 5
 
 
 def test_env_check_platform_missing_shows_export_hint(monkeypatch):
@@ -173,7 +175,7 @@ def test_env_check_platform_missing_shows_export_hint(monkeypatch):
 def test_env_check_platform_partial_set_reports_correctly(monkeypatch):
     """If only some vars are set, SET and MISSING are both reported."""
     monkeypatch.setenv("FABRIC_WORKSPACE_ID", "wid")
-    for var in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID"):
+    for var in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)
     runner = CliRunner()
     with runner.isolated_filesystem():

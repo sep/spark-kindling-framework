@@ -603,6 +603,7 @@ def _read_settings_app_name(settings_path: Path = Path("config/settings.yaml")) 
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(package_name="spark-kindling-cli", prog_name="kindling")
 def cli() -> None:
     """Kindling CLI."""
 
@@ -1168,6 +1169,7 @@ _PLATFORM_CREDENTIAL_VARS: Dict[str, List[str]] = {
         "SYNAPSE_SPARK_POOL_NAME",
         "AZURE_TENANT_ID",
         "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
     ],
     "databricks": [
         "DATABRICKS_HOST",
@@ -1177,6 +1179,7 @@ _PLATFORM_CREDENTIAL_VARS: Dict[str, List[str]] = {
         "FABRIC_WORKSPACE_ID",
         "AZURE_TENANT_ID",
         "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
     ],
 }
 
@@ -1548,17 +1551,7 @@ def _get_blob_service_client(storage_account: str):
 
     account_url = _resolve_account_url(storage_account)
     credential = create_azure_credential(additionally_allowed_tenants=["*"])
-    client = BlobServiceClient(account_url=account_url, credential=credential)
-
-    # Verify connection
-    try:
-        client.get_account_information()
-    except Exception as exc:
-        raise click.ClickException(
-            f"Failed to authenticate to {account_url}. Try: az login\nError: {exc}"
-        ) from exc
-
-    return client
+    return BlobServiceClient(account_url=account_url, credential=credential)
 
 
 def _upload_blob(
