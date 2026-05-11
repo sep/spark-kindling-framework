@@ -15,16 +15,11 @@
 
 ## Executive Summary
 
-The current CLI exposes both app-level and job-level workflows:
+The previous CLI exposed both app-level and job-level workflows, including raw
+job create/run/status/logs/cancel/delete commands.
 
 - `kindling app package`
 - `kindling app deploy`
-- `kindling job create`
-- `kindling job run`
-- `kindling job status`
-- `kindling job logs`
-- `kindling job cancel`
-- `kindling job delete`
 
 That surface suggests each app or pipeline maps to a distinct remote job definition. That does not match Kindling's intended design.
 
@@ -36,7 +31,7 @@ This proposal reframes the CLI around that model:
 
 - **Apps and pipelines** become the primary user-facing concepts.
 - **Runner/job infrastructure** becomes an admin or internal concern.
-- Direct job commands remain available only where they are useful for operations, debugging, or CI.
+- Direct job primitives remain SDK/platform internals; the CLI surface is app and runner oriented.
 
 ---
 
@@ -47,7 +42,7 @@ The current CLI creates an avoidable conceptual split:
 - `kindling pipeline run <pipe_id>` runs a local pipe.
 - `kindling app deploy` deploys app files but does not run them.
 - `kindling app run` is the remote "run this app" command.
-- `kindling job create` / `job run` imply users should manage job definitions as their main workflow.
+- direct job create/run commands imply users should manage job definitions as their main workflow.
 
 This is inconsistent with Kindling's design. Users should not need to think about platform job definitions for ordinary app or pipeline execution.
 
@@ -114,8 +109,8 @@ A file at `tests/entities/<name>.csv` is auto-discovered as the data source for 
 4. **Remote run commands should be end-to-end.**
    A normal run should use the existing deployed app by default, start execution, stream logs by default, and report final status. Deploying new app assets should be explicit via `--deploy`.
 
-5. **Low-level job commands should stay available for operators.**
-   CI, support, and debugging sometimes need raw job controls, but those should not be the primary tutorial path.
+5. **Low-level job primitives should stay behind SDK/platform boundaries.**
+   CI, support, and debugging can use SDK primitives when needed, but the CLI should not teach users to manage raw job definitions.
 
 6. **Command names should be consistent across local and remote execution.**
    `run` should mean "execute a user workload." Where local vs remote matters, make that explicit with options or command groups.
@@ -443,30 +438,14 @@ This is useful for support and CI, but should not be the happy path. `invoke` av
 
 ### Job Commands
 
-Job commands should be demoted to advanced operations or compatibility aliases.
-
-Current commands:
-
-- `kindling job init`
-- `kindling job create`
-- `kindling job run`
-- `kindling job status`
-- `kindling job logs`
-- `kindling job cancel`
-- `kindling job delete`
+Job commands should be removed from the end-user CLI surface.
 
 Recommended direction:
 
 - Use `app run` for app execution.
 - Replace normal `job create` usage with `runner ensure`.
-- Keep `job status`, `job logs`, and `job cancel` as aliases or advanced commands if platform-native run ids remain useful.
-- Consider hiding raw job commands from top-level README examples.
-
-Compatibility aliases can print guidance:
-
-```text
-Run apps with `kindling app run`.
-```
+- Use `app status`, `app logs`, and `app cancel` for app-run observability.
+- Keep lower-level job primitives in the SDK for platform internals.
 
 ---
 
@@ -480,12 +459,12 @@ Run apps with `kindling app run`.
 | `kindling app package <path>` | `kindling app package --local-folder <path>` | Consistent source flag. |
 | `kindling app deploy <path>` | `kindling app deploy --local-folder <path>` or `--kda-package <path>` | Make source type explicit. |
 | `kindling app run <app>` | `kindling app run <app>` | Main happy path. |
-| `kindling job create job.yaml` | `kindling runner ensure` | Runner job is infrastructure. |
-| `kindling job run <job-id>` | `kindling runner invoke --params params.yaml` | Advanced/debug only. |
-| `kindling job status <run-id>` | `kindling app status <run-id>` | Alias acceptable. |
-| `kindling job logs <run-id>` | `kindling app logs <run-id>` | Alias acceptable. |
-| `kindling job cancel <run-id>` | `kindling app cancel <run-id>` | Alias acceptable. |
-| `kindling job delete <job-id>` | `kindling runner delete` | Admin operation. |
+| direct job create | `kindling runner ensure` | Runner job is infrastructure. |
+| direct job run | `kindling runner invoke --params params.yaml` | Runner-only debug surface. |
+| direct job status | `kindling app status <run-id>` | Keep user-facing noun app-oriented. |
+| direct job logs | `kindling app logs <run-id>` | Keep user-facing noun app-oriented. |
+| direct job cancel | `kindling app cancel <run-id>` | Keep user-facing noun app-oriented. |
+| direct job delete | `kindling runner delete` | Admin operation. |
 
 ---
 
@@ -497,8 +476,7 @@ Commands should consistently support `--json` when they return structured data.
 
 Current inconsistency:
 
-- `job create` always emits JSON.
-- `job run`, `job cancel`, and `job delete` support `--json`.
+- direct job commands existed with inconsistent JSON behavior.
 
 Recommendation:
 
@@ -582,7 +560,7 @@ kindling app run ./orders --platform synapse
 kindling app logs <run-id>
 ```
 
-Document direct job commands as advanced platform operations.
+Document direct SDK job primitives as platform internals rather than CLI workflows.
 
 ### Phase 3: Introduce Runner Semantics
 
@@ -595,14 +573,14 @@ Refactor SDK and CLI naming around the single runner job:
 
 `create_job` can remain in the SDK as a platform primitive, but CLI should call it through runner-oriented helpers.
 
-### Phase 4: Deprecate Confusing Commands
+### Phase 4: Remove Confusing Commands
 
-Add deprecation warnings or compatibility messages:
+Remove direct job commands from the end-user CLI surface:
 
-- `kindling job create` -> `kindling runner ensure`
-- `kindling job delete` -> `kindling runner delete`
+- direct job create -> `kindling runner ensure`
+- direct job delete -> `kindling runner delete`
 
-Do not remove commands until downstream CI and docs have migrated.
+Keep SDK job primitives available for platform internals and specialized automation.
 
 ---
 

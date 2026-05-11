@@ -252,6 +252,7 @@ kindling app deploy --local-folder path/to/app-dir --platform fabric --app-name 
 kindling app run path/to/app-dir
 
 # Run an app remotely from a local directory or from a deployed app name
+kindling runner ensure --platform synapse
 kindling app run path/to/app-dir --platform synapse
 kindling app status <run-id> --platform synapse
 kindling app logs <run-id> --platform synapse
