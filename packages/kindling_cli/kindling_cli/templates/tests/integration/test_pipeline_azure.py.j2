@@ -22,10 +22,22 @@ class TestPipelineViaKindling:
 
     @pytest.fixture(autouse=True)
     def _setup(self, spark_abfss):
-        from {{ snake_name }}.app import initialize
+        from kindling.bootstrap import initialize_framework
 
         self.spark = spark_abfss
-        self.svc = initialize(env="local")
+        self.svc = initialize_framework(
+            {
+                "platform": "standalone",
+                "environment": "local",
+                "config_files": ["config/settings.yaml", "config/env.local.yaml"],
+            }
+        )
+        import {{ snake_name }}.entities.records  # noqa: F401
+{% if layers == "medallion" %}
+        import {{ snake_name }}.pipes.bronze_to_silver  # noqa: F401
+{% else %}
+        import {{ snake_name }}.pipes.process  # noqa: F401
+{% endif %}
 
     def test_read_source_entity(self):
         from kindling.data_entities import DataEntityRegistry

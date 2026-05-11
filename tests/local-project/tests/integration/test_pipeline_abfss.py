@@ -129,7 +129,7 @@ class TestPipelineViaKindling:
 
     def test_initialize_standalone_framework_with_local_config(self):
         """Framework initialises against standalone platform using local YAML config."""
-        from sales_ops.app import initialize
+        from app import initialize
 
         svc = initialize(env="local")
 
@@ -138,9 +138,10 @@ class TestPipelineViaKindling:
 
     def test_entity_paths_resolved_from_env(self):
         """After framework init, entity tags contain the ABFSS paths from env vars."""
+        from app import initialize
+
         from kindling.data_entities import DataEntityRegistry
         from kindling.injection import GlobalInjector
-        from sales_ops.app import initialize
 
         initialize(env="local")
 

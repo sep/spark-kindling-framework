@@ -1,7 +1,7 @@
 """Entity registrations for {{ kebab_name }}.
 
 Each DataEntities.entity() call fires at import time as a side effect.
-These are imported by {{ snake_name }}.app.register_all().
+These are imported by the app's register_all().
 """
 
 from kindling.data_entities import DataEntities
@@ -50,6 +50,6 @@ DataEntities.entity(
 #   merge_columns — list of business key column names
 #   tags          — at minimum {"layer": "gold"}
 #
-# Then import your new file in app.py's register_all():
+# Then import your new file in apps/<app>/app.py's register_all():
 #   from {{ snake_name }}.entities import records, my_new_entity  # noqa: F401
 # ---------------------------------------------------------------------------

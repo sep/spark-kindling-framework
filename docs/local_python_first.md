@@ -40,18 +40,19 @@ poetry run poe test-integration
 
 - repo root shared files: `.devcontainer/`, `.github/workflows/ci.yml`, `.gitignore`
 - package-local source at `packages/<pkg>/src/<pkg>/...`
-- package-local config at `packages/<pkg>/config/`
 - package-local tests at `packages/<pkg>/tests/`
 - package-local `pyproject.toml` with `poethepoet` tasks
+- app-local entrypoint and config at `apps/<app>/app.py` and `apps/<app>/config/`
 
-The explicit two-step flow is also available:
+The explicit flow is also available:
 
 ```bash
 git clone <your-empty-repo-url> data-platform
 cd data-platform
 kindling repo init data-platform
 kindling package init my-pipeline --repo-root .
-cd packages/my_pipeline
+kindling app init my-pipeline --package my-pipeline --repo-root .
+cd apps/my_pipeline
 ```
 
 If you start from a repo that already has a `.devcontainer/` so the Kindling
@@ -146,6 +147,7 @@ Use `kindling app run` to execute all registered pipes locally with the
 standalone platform:
 
 ```bash
+cd apps/my_pipeline
 kindling app run .
 kindling app run . --platform standalone --env local
 ```
@@ -163,7 +165,7 @@ The command auto-discovers `app.py` by walking up from the current directory. Yo
 can also be explicit:
 
 ```bash
-kindling pipeline run bronze_to_silver --app src/my_pipeline/app.py --env local
+kindling pipeline run bronze_to_silver --app apps/my_pipeline/app.py --env local
 ```
 
 `--env` selects the config overlay (defaults to the `KINDLING_ENV` env var, then

@@ -1,9 +1,11 @@
-# {{ snake_name }} — Quick Start
+# {{ snake_name }} — App Quick Start
+
+This folder is a deployable Kindling app. It imports domain code from the
+`{{ package_kebab_name }}` package, but it is not itself a Python wheel.
 
 ## Run locally
 
 ```bash
-poetry install
 kindling app run .
 ```
 
@@ -59,17 +61,16 @@ kindling runner ensure --platform <platform>
 kindling app run . --platform <platform>
 ```
 
-## Add more pipes and entities
+## App layout
 
-Generated package layout:
+Generated app layout:
 
+```text
+app.py
+config/
+├── settings.yaml
+└── env.local.yaml
 ```
-src/{{ snake_name }}/
-├── entities/       # DataEntities (schemas and storage mappings)
-├── pipes/          # DataPipes (orchestration and routing)
-└── transforms/     # Pure transformation logic
-```
 
-- Add a new entity: create a class registered with `DataEntities.entity(...)` in `entities/`
-- Add a new pipe: create a function decorated with `@DataPipes.pipe` in `pipes/`
-- Register new modules in `app.py` → `register_all()`
+Add entities, pipes, and transforms in `packages/{{ package_snake_name }}/src/{{ package_snake_name }}/`.
+Then import new modules in this app's `app.py` → `register_all()`.
