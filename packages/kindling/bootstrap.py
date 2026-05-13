@@ -1083,13 +1083,13 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             logger.error(f"Failed to install extension {package_spec}: {e}")
 
     # Install required packages (dependencies - no import, from PyPI)
-    required = bootstrap_config.get("required_packages", [])
+    required = bootstrap_config.get("required_packages") or []
     logger.info(f"Required packages: {required}")
     for package in required:
         load_if_needed(package)
 
     # Install and import extensions (Kindling extensions from artifacts storage)
-    extensions = bootstrap_config.get("extensions", [])
+    extensions = bootstrap_config.get("extensions") or []
     logger.info(f"Extensions to load: {extensions}")
 
     if extensions and artifacts_storage_path:
@@ -1360,8 +1360,8 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     try:
         # Read from general kindling config (not bootstrap namespace)
         # bootstrap is just for temp backwards compatibility mapping
-        required_packages = config_service.get("kindling.required_packages", [])
-        extensions = config_service.get("kindling.extensions", [])
+        required_packages = config_service.get("kindling.required_packages", []) or []
+        extensions = config_service.get("kindling.extensions", []) or []
 
         # Deduplicate extensions - prefer versioned specs over plain names
         # e.g., keep "kindling-otel-azure>=0.3.0a1" instead of "kindling-otel-azure"
