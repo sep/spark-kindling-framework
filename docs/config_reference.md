@@ -181,6 +181,7 @@ Common tags:
 Batch:
 
 - `provider.table_name`: In-memory table name.
+- `provider.seed.rows`: Optional list of inline row mappings used to seed a memory entity on first read. Requires a schema on the entity. Existing table/store data takes precedence; seed rows are not written if data already exists. Use for small starter data in local standalone runs; prefer `tests/entities/<entity>.csv` for larger samples and test fixtures.
 
 Streaming reads:
 
