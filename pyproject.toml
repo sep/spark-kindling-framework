@@ -84,7 +84,7 @@ ipython = ">=8.0.0"
 jupyter = ">=1.0.0"
 poethepoet = ">=0.24.0"
 requests = ">=2.31.0"
-azure-mgmt-storage = "22.1.0"
+azure-mgmt-storage = "22.2.0"
 spark-kindling-cli = {path = "packages/kindling_cli", develop = true}
 spark-kindling-sdk = {path = "packages/kindling_sdk", develop = true}
 # Platform SDKs needed by dev/CI tooling — they're also runtime deps under
