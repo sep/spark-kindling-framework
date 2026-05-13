@@ -1,3 +1,4 @@
+import builtins
 import json
 import os
 import shutil
@@ -1252,16 +1253,18 @@ class DataAppManager(DataAppRunner):
         try:
             self.logger.info(f"Executing app: {app_name}")
 
-            exec_globals = {
-                "__name__": f"app_{app_name}",
-                "__file__": f"{app_name}/main.py",
-                "framework": self.framework,
-                "logger": self.logger,
-            }
-
             import __main__
 
-            exec_globals.update(__main__.__dict__)
+            exec_globals = dict(__main__.__dict__)
+            exec_globals.update(
+                {
+                    "__name__": f"app_{app_name}",
+                    "__file__": f"{app_name}/main.py",
+                    "__builtins__": builtins,
+                    "framework": self.framework,
+                    "logger": self.logger,
+                }
+            )
 
             compiled_code = compile(code, f"{app_name}/main.py", "exec")
 

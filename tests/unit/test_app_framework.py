@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+
 from kindling.data_apps import (
     DataAppConfig,
     DataAppConstants,
@@ -93,6 +94,7 @@ class TestAppManagerHelpers:
         manager = Mock(spec=DataAppManager)
         manager.artifacts_path = "/artifacts"
         manager.logger = Mock()
+        manager.framework = "framework-value"
 
         # Mock config service
         mock_config = Mock()
@@ -105,6 +107,7 @@ class TestAppManagerHelpers:
         manager._get_packages_dir = DataAppManager._get_packages_dir.__get__(manager)
         manager._extract_package_name = DataAppManager._extract_package_name.__get__(manager)
         manager._parse_package_spec = DataAppManager._parse_package_spec.__get__(manager)
+        manager._execute_app = DataAppManager._execute_app.__get__(manager)
 
         return manager
 
@@ -134,6 +137,23 @@ class TestAppManagerHelpers:
         name, version = mock_app_manager._parse_package_spec("pandas")
         assert name == "pandas"
         assert version is None
+
+    def test_execute_app_preserves_import_builtins(self, mock_app_manager, monkeypatch):
+        """App execution should not inherit broken import machinery from __main__."""
+        import __main__
+
+        monkeypatch.setitem(__main__.__dict__, "__builtins__", None)
+
+        result = mock_app_manager._execute_app(
+            "testapp",
+            "from datetime import datetime\n"
+            "assert datetime is not None\n"
+            "assert framework == 'framework-value'\n"
+            "assert logger is not None\n"
+            "result = 'ok'\n",
+        )
+
+        assert result == "ok"
 
 
 if __name__ == "__main__":
