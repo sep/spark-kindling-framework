@@ -69,6 +69,7 @@ APP_FILES = [
     "QUICKSTART.md",
     "config/settings.yaml",
     "config/env.local.yaml",
+    "tests/entities/bronze/records.csv",  # medallion default
 ]
 
 
@@ -575,3 +576,69 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         gitignore = (repo_root / ".gitignore").read_text()
         assert ".env" in gitignore
+
+
+class TestAppFixtureCSVs:
+    """Fixture CSV generation smoke tests."""
+
+    def test_medallion_app_creates_bronze_fixture_csv(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        cfg = AppScaffoldConfig(name="acme", repo_root=repo_root, layers="medallion")
+        generate_app(cfg)
+
+        csv = repo_root / "apps" / "acme" / "tests" / "entities" / "bronze" / "records.csv"
+        assert csv.exists(), "bronze fixture CSV missing"
+        header = csv.read_text().splitlines()[0]
+        assert "id" in header
+        assert "date" in header
+        assert "value" in header
+
+    def test_minimal_app_creates_raw_fixture_csv(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        cfg = AppScaffoldConfig(name="acme", repo_root=repo_root, layers="minimal")
+        generate_app(cfg)
+
+        csv = repo_root / "apps" / "acme" / "tests" / "entities" / "raw" / "records.csv"
+        assert csv.exists(), "raw fixture CSV missing"
+        header = csv.read_text().splitlines()[0]
+        assert "id" in header
+        assert "value" in header
+
+    def test_minimal_app_does_not_create_bronze_fixture(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        cfg = AppScaffoldConfig(name="acme", repo_root=repo_root, layers="minimal")
+        generate_app(cfg)
+
+        bronze_csv = repo_root / "apps" / "acme" / "tests" / "entities" / "bronze" / "records.csv"
+        assert not bronze_csv.exists()
+
+
+class TestPipeSignatures:
+    """Smoke tests for generated pipe parameter names."""
+
+    def test_medallion_bronze_to_silver_uses_entity_kwarg(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        cfg = PackageScaffoldConfig(name="acme", repo_root=repo_root, layers="medallion")
+        generate_package(cfg)
+
+        pipe = (
+            _package_root(repo_root, "acme") / "src" / "acme" / "pipes" / "bronze_to_silver.py"
+        ).read_text()
+        assert "def bronze_to_silver(bronze_records)" in pipe
+        assert "spark" not in pipe.split("def bronze_to_silver")[1].split("):")[0]
+
+    def test_minimal_process_uses_entity_kwarg(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        cfg = PackageScaffoldConfig(name="acme", repo_root=repo_root, layers="minimal")
+        generate_package(cfg)
+
+        pipe = (
+            _package_root(repo_root, "acme") / "src" / "acme" / "pipes" / "process.py"
+        ).read_text()
+        assert "def process_records(raw_records)" in pipe
+        assert "spark" not in pipe.split("def process_records")[1].split("):")[0]

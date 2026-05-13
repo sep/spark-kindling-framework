@@ -366,7 +366,21 @@ class S3EntityPathLocator(EntityPathLocator):
 
 ## Integration with Data Pipes
 
-The Data Entities Framework integrates seamlessly with the Data Pipes Framework:
+The Data Entities Framework integrates seamlessly with the Data Pipes Framework.
+
+### Input parameter naming
+
+The runtime binds each input entity to the pipe function as a keyword argument.
+The parameter name is derived from the entity ID by replacing every `.` with `_`:
+
+| `input_entity_ids` entry | Expected parameter name |
+|--------------------------|------------------------|
+| `"bronze.records"` | `bronze_records` |
+| `"silver.clean_sales"` | `silver_clean_sales` |
+| `"a.b.c"` | `a_b_c` |
+
+The pipe function must declare exactly these names — no extra positional arguments
+and no `spark` parameter (Spark is not injected into batch pipe functions).
 
 ```python
 # Entity definition

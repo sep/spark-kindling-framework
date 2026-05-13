@@ -234,10 +234,10 @@ class MemoryEntityProvider(
         )
 
         try:
-            # Write to memory table (overwrite)
-            df.write.format("memory").mode("overwrite").saveAsTable(table_name)
+            # Register as a Spark temp view (supported in all Spark modes)
+            df.createOrReplaceTempView(table_name)
 
-            # Also store in in-memory dict for backup
+            # Mirror in the in-memory store for direct dict access
             self._memory_store[entity_metadata.entityid] = df
 
             self.logger.info(f"Successfully wrote memory entity '{entity_metadata.entityid}'")
@@ -264,15 +264,15 @@ class MemoryEntityProvider(
         )
 
         try:
-            # Write to memory table (append)
-            df.write.format("memory").mode("append").saveAsTable(table_name)
-
-            # Update in-memory store (append)
+            # Union with any existing data then re-register the temp view
             if entity_metadata.entityid in self._memory_store:
                 existing_df = self._memory_store[entity_metadata.entityid]
-                self._memory_store[entity_metadata.entityid] = existing_df.union(df)
+                combined = existing_df.union(df)
             else:
-                self._memory_store[entity_metadata.entityid] = df
+                combined = df
+
+            combined.createOrReplaceTempView(table_name)
+            self._memory_store[entity_metadata.entityid] = combined
 
             self.logger.info(f"Successfully appended to memory entity '{entity_metadata.entityid}'")
 
