@@ -1915,3 +1915,82 @@ def test_runner_invoke_requires_platform_or_env(tmp_path):
     )
     assert result.exit_code != 0
     assert "Unable to determine platform" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Standalone app run — exit code / success semantics
+# ---------------------------------------------------------------------------
+
+
+def _make_execution_result(all_succeeded: bool, failed_pipe_ids=None):
+    """Build a minimal ExecutionResult stand-in for CLI tests."""
+    from unittest.mock import MagicMock
+
+    result = MagicMock()
+    result.all_succeeded = all_succeeded
+    result.failed_count = 0 if all_succeeded else len(failed_pipe_ids or [])
+    result.failed_pipes = list(failed_pipe_ids or [])
+    return result
+
+
+def _patch_standalone_run(monkeypatch, tmp_path, execution_result):
+    """
+    Patch the internal seams of _run_standalone_app so the test doesn't
+    need a real Spark/kindling install.
+
+    Returns the app_dir path the CLI should be invoked with.
+    """
+    from unittest.mock import MagicMock
+
+    app_dir = tmp_path / "myapp"
+    app_dir.mkdir()
+    (app_dir / "app.py").write_text("# stub\n")
+
+    # Skip app module loading (module-level helpers — patchable by dotted name)
+    monkeypatch.setattr("kindling_cli.cli._load_app_module", lambda *a, **kw: None)
+    monkeypatch.setattr("kindling_cli.cli._discover_app_py_under", lambda p: app_dir / "app.py")
+
+    # Stub registry that reports one pipe
+    fake_registry = MagicMock()
+    fake_registry.get_pipe_ids.return_value = ["pipe_a"]
+
+    # Stub executer that returns the supplied result
+    fake_executer = MagicMock()
+    fake_executer.run_datapipes.return_value = execution_result
+
+    call_count = [0]
+
+    def fake_get(cls):
+        call_count[0] += 1
+        # First call → DataPipesRegistry, second → DataPipesExecution
+        return fake_registry if call_count[0] == 1 else fake_executer
+
+    # GlobalInjector is imported inside the function from kindling.injection
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
+    return app_dir
+
+
+def test_standalone_run_exits_0_on_success(monkeypatch, tmp_path):
+    """Exit code 0 when all pipes succeed."""
+    app_dir = _patch_standalone_run(monkeypatch, tmp_path, _make_execution_result(True))
+    result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
+    assert result.exit_code == 0
+
+
+def test_standalone_run_exits_1_when_pipe_fails(monkeypatch, tmp_path):
+    """Exit code 1 when any pipe fails (fail_on_error default=True)."""
+    app_dir = _patch_standalone_run(
+        monkeypatch, tmp_path, _make_execution_result(False, ["pipe_a"])
+    )
+    result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
+    assert result.exit_code == 1
+
+
+def test_standalone_run_exits_0_with_no_fail_on_error_even_when_pipe_fails(monkeypatch, tmp_path):
+    """--no-fail-on-error: exit 0 even when a pipe fails."""
+    app_dir = _patch_standalone_run(
+        monkeypatch, tmp_path, _make_execution_result(False, ["pipe_a"])
+    )
+    result = CliRunner().invoke(cli, ["app", "run", "--no-fail-on-error", str(app_dir)])
+    assert result.exit_code == 0

@@ -16,8 +16,8 @@ from kindling.data_pipes import DataPipes
     output_entity_id="silver.records",
     output_type="table",
 )
-def bronze_to_silver(bronze_df, spark):
+def bronze_to_silver(bronze_records):
     """Promote bronze records to the silver layer."""
     from {{ snake_name }}.transforms.quality import clean_records
 
-    return clean_records(bronze_df)
+    return clean_records(bronze_records)

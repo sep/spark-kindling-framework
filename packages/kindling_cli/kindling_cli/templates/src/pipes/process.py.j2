@@ -11,7 +11,7 @@ from kindling.data_pipes import DataPipes
     output_entity_id="raw.records",
     output_type="table",
 )
-def process_records(raw_df, spark):
+def process_records(raw_records):
     from {{ snake_name }}.transforms.quality import clean_records
 
-    return clean_records(raw_df)
+    return clean_records(raw_records)
