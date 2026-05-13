@@ -307,4 +307,10 @@ def generate_app(cfg: AppScaffoldConfig) -> List[Path]:
     _write(".env.example", _render(env, ".env.example.j2", ctx))
     _write("QUICKSTART.md", _render(env, "package/QUICKSTART.md.j2", ctx))
 
+    # Fixture CSVs — seed data for local runs without cloud storage
+    if cfg.layers == "medallion":
+        _write("tests/entities/bronze/records.csv", "id,date,value\n1,2024-01-01,hello\n")
+    else:
+        _write("tests/entities/raw/records.csv", "id,value\n1,hello\n")
+
     return files

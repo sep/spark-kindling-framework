@@ -154,56 +154,40 @@ class TestMemoryEntityProvider:
             provider.read_entity_as_stream(entity_metadata)
 
     def test_write_to_entity(self, provider, entity_metadata):
-        """Test writing DataFrame to memory table"""
+        """write_to_entity registers a temp view and mirrors into _memory_store"""
         mock_df = MagicMock()
         mock_df.count.return_value = 100
-        mock_writer = MagicMock()
-        mock_writer.mode.return_value = mock_writer
-        mock_writer.saveAsTable.return_value = None
-
-        mock_df.write.format.return_value = mock_writer
 
         provider.write_to_entity(mock_df, entity_metadata)
 
-        mock_df.write.format.assert_called_with("memory")
-        mock_writer.mode.assert_called_with("overwrite")
-        mock_writer.saveAsTable.assert_called_with("test_table")
-
-        # Should also store in memory dict
-        assert entity_metadata.entityid in provider._memory_store
+        mock_df.createOrReplaceTempView.assert_called_once_with("test_table")
+        assert provider._memory_store[entity_metadata.entityid] is mock_df
 
     def test_append_to_entity_new_entity(self, provider, entity_metadata):
-        """Test appending to new entity"""
+        """append_to_entity on a fresh entity registers the view directly"""
         mock_df = MagicMock()
         mock_df.count.return_value = 50
-        mock_writer = MagicMock()
-        mock_writer.mode.return_value = mock_writer
-        mock_writer.saveAsTable.return_value = None
-
-        mock_df.write.format.return_value = mock_writer
 
         provider.append_to_entity(mock_df, entity_metadata)
 
-        mock_writer.mode.assert_called_with("append")
-        assert entity_metadata.entityid in provider._memory_store
+        mock_df.createOrReplaceTempView.assert_called_once_with("test_table")
+        assert provider._memory_store[entity_metadata.entityid] is mock_df
 
     def test_append_to_entity_existing_entity(self, provider, entity_metadata):
-        """Test appending to existing entity unions DataFrames"""
+        """append_to_entity on an existing entity unions then re-registers the view"""
+        combined_df = MagicMock()
         existing_df = MagicMock()
-        existing_df.union.return_value = MagicMock()
+        existing_df.union.return_value = combined_df
         provider._memory_store[entity_metadata.entityid] = existing_df
 
         mock_df = MagicMock()
-        mock_writer = MagicMock()
-        mock_writer.mode.return_value = mock_writer
-        mock_writer.saveAsTable.return_value = None
-
-        mock_df.write.format.return_value = mock_writer
+        mock_df.count.return_value = 10
 
         provider.append_to_entity(mock_df, entity_metadata)
 
-        # Should union with existing DataFrame
-        existing_df.union.assert_called_with(mock_df)
+        existing_df.union.assert_called_once_with(mock_df)
+        combined_df.createOrReplaceTempView.assert_called_once_with("test_table")
+        assert provider._memory_store[entity_metadata.entityid] is combined_df
 
     def test_append_as_stream(self, provider, entity_metadata):
         """Test streaming write to memory sink"""
@@ -315,7 +299,8 @@ class TestMemoryProviderErrorHandling:
         )
 
         mock_df = MagicMock()
-        mock_df.write.format.side_effect = Exception("Write error")
+        mock_df.count.return_value = 0
+        mock_df.createOrReplaceTempView.side_effect = Exception("Write error")
 
         with pytest.raises(Exception, match="Write error"):
             provider.write_to_entity(mock_df, entity)

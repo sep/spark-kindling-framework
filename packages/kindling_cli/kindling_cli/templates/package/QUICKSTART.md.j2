@@ -3,11 +3,30 @@
 This folder is a deployable Kindling app. It imports domain code from the
 `{{ package_kebab_name }}` package, but it is not itself a Python wheel.
 
-## Run locally
+## First run
+
+The app ships with fixture CSV files under `tests/entities/`. When you run
+locally (standalone Spark), Kindling loads those CSVs automatically instead of
+reading from cloud storage — no credentials needed:
 
 ```bash
 kindling app run .
 ```
+
+Fixture files are named after the entity they seed:
+
+| Entity ID | Fixture path |
+|-----------|-------------|
+{% if layers == "medallion" -%}
+| `bronze.records` | `tests/entities/bronze/records.csv` |
+{% else -%}
+| `raw.records` | `tests/entities/raw/records.csv` |
+{% endif %}
+Edit the CSV to change the seed data. Once you're ready to read from real
+storage, set your storage paths in `config/env.local.yaml` and remove (or
+rename) the fixture file — the real provider takes over automatically.
+
+## Run locally
 
 ## Run tests
 
