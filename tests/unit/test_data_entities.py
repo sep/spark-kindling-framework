@@ -426,8 +426,7 @@ class TestDataEntitiesDecorator:
             schema={"id": "string", "value": "int"},
         )
 
-        # Decorator should return None
-        assert result is None, "Decorator should return None"
+        assert callable(result), "Decorator factory should return an identity decorator"
 
         # Should call register_entity on the registry
         mock_registry.register_entity.assert_called_once_with(
@@ -438,6 +437,49 @@ class TestDataEntitiesDecorator:
             tags={"source": "test"},
             schema={"id": "string", "value": "int"},
         ), "Should call register_entity with correct parameters"
+
+    def test_decorator_syntax_returns_original_class(self):
+        """Test @DataEntities.entity syntax registers and leaves the class unchanged."""
+        mock_registry = MagicMock()
+        DataEntities.deregistry = mock_registry
+
+        @DataEntities.entity(
+            entityid="decorated_entity",
+            name="Decorated Entity",
+            partition_columns=[],
+            merge_columns=[],
+            tags={},
+            schema={},
+        )
+        class DecoratedEntity:
+            pass
+
+        assert DecoratedEntity.__name__ == "DecoratedEntity"
+        mock_registry.register_entity.assert_called_once_with(
+            "decorated_entity",
+            name="Decorated Entity",
+            partition_columns=[],
+            merge_columns=[],
+            tags={},
+            schema={},
+        )
+
+    def test_sql_entity_decorator_syntax_returns_original_class(self):
+        """Test @DataEntities.sql_entity syntax registers and leaves the class unchanged."""
+        mock_registry = MagicMock()
+        DataEntities.deregistry = mock_registry
+
+        @DataEntities.sql_entity(
+            entityid="reporting.decorated",
+            name="decorated",
+            sql="SELECT 1",
+        )
+        class DecoratedSqlEntity:
+            pass
+
+        assert DecoratedSqlEntity.__name__ == "DecoratedSqlEntity"
+        mock_registry.register_entity.assert_called_once()
+        assert mock_registry.register_entity.call_args[0][0] == "reporting.decorated"
 
     def test_decorator_removes_entityid_from_params(self):
         """Test that decorator removes entityid before passing to register_entity"""

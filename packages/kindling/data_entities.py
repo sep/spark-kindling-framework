@@ -319,6 +319,11 @@ class DataEntities:
 
     deregistry = None
 
+    @staticmethod
+    def _identity_decorator(obj):
+        """Return decorated classes/functions unchanged after registration."""
+        return obj
+
     # [implementer] expose public test reset API — TASK-20260430-001
     @classmethod
     def reset(cls) -> None:
@@ -388,7 +393,7 @@ class DataEntities:
             schema=None,
             sql=resolved_sql,
         )
-        return None
+        return cls._identity_decorator
 
     @classmethod
     def entity(cls, **decorator_params):
@@ -423,7 +428,7 @@ class DataEntities:
 
         cls.deregistry.register_entity(entityid, **decorator_params)
 
-        return None
+        return cls._identity_decorator
 
 
 class DataEntityRegistry(ABC):
