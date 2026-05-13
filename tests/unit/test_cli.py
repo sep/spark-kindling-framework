@@ -2005,6 +2005,10 @@ def test_app_add_only_scaffolds_executor():
     assert " pipe" not in result.output
     assert "ingestion" not in result.output
 
+    executor_help = CliRunner().invoke(cli, ["app", "add", "executor", "--help"])
+    assert executor_help.exit_code == 0
+    assert "--pattern [batch|structured-streaming|file-ingestion]" in executor_help.output
+
 
 def test_package_add_owns_entity_pipe_ingestion_scaffolds():
     result = CliRunner().invoke(cli, ["package", "add", "--help"])
@@ -2045,6 +2049,68 @@ def test_app_add_executor_creates_entrypoint_and_app_yaml(tmp_path):
     app_config = yaml.safe_load((app_dir / "app.yaml").read_text(encoding="utf-8"))
     assert app_config["name"] == "sales_ops"
     assert app_config["entry_point"] == "main.py"
+
+
+def test_app_add_executor_supports_structured_streaming_pattern(tmp_path):
+    app_dir = tmp_path / "apps" / "streaming_app"
+    app_dir.mkdir(parents=True)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "app",
+            "add",
+            "executor",
+            "--app",
+            str(app_dir),
+            "--pattern",
+            "structured-streaming",
+            "--module",
+            "sales.entities.records",
+            "--module",
+            "sales.pipes.bronze_to_silver",
+            "--pipe",
+            "bronze_to_silver",
+            "--checkpoint-path",
+            "abfss://checkpoints/app",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    content = (app_dir / "main.py").read_text(encoding="utf-8")
+    assert "from kindling.execution_orchestrator import ExecutionOrchestrator" in content
+    assert "PIPE_IDS = ['bronze_to_silver']" in content
+    assert 'streaming_options["base_checkpoint_path"] = CHECKPOINT_PATH' in content
+    assert "orchestrator.execute_streaming(" in content
+
+
+def test_app_add_executor_supports_file_ingestion_pattern(tmp_path):
+    app_dir = tmp_path / "apps" / "ingestion_app"
+    app_dir.mkdir(parents=True)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "app",
+            "add",
+            "executor",
+            "--app",
+            str(app_dir),
+            "--pattern",
+            "file-ingestion",
+            "--module",
+            "sales.ingestion.orders",
+            "--source-path",
+            "abfss://landing/orders",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    content = (app_dir / "main.py").read_text(encoding="utf-8")
+    assert "from kindling.file_ingestion import FileIngestionProcessor" in content
+    assert "SOURCE_PATH = 'abfss://landing/orders'" in content
+    assert 'os.environ.get("KINDLING_INGESTION_PATH")' in content
+    assert "processor.process_path(source_path)" in content
 
 
 def test_package_add_entity_uses_package_option(tmp_path):
