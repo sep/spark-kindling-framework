@@ -2045,16 +2045,33 @@ def test_app_add_executor_creates_entrypoint_and_app_yaml(tmp_path):
     ) in content
     assert "get_kindling_service(DataPipesExecution)" in content
     assert "run_datapipes(pipe_ids, use_dag=USE_DAG)" in content
-    assert "_add_local_package_paths()" in content
+    assert "_add_local_package_paths()" not in content
 
     app_config = yaml.safe_load((app_dir / "app.yaml").read_text(encoding="utf-8"))
     assert app_config["name"] == "sales_ops"
     assert app_config["entry_point"] == "main.py"
+    app_settings = yaml.safe_load(
+        (app_dir / "config" / "settings.yaml").read_text(encoding="utf-8")
+    )
+    assert app_settings["kindling"]["extensions"] == ["sales"]
 
 
 def test_app_add_executor_auto_discovers_app_directory_from_repo_root(tmp_path, monkeypatch):
     app_dir = tmp_path / "apps" / "sales_ops"
     app_dir.mkdir(parents=True)
+    package_dir = tmp_path / "packages" / "sales"
+    package_dir.mkdir(parents=True)
+    (package_dir / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[tool.poetry]",
+                'name = "sales-domain"',
+                'version = "1.2.3"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     (app_dir / "app.py").write_text(
         "\n".join(
             [
@@ -2075,6 +2092,10 @@ def test_app_add_executor_auto_discovers_app_directory_from_repo_root(tmp_path, 
     assert (app_dir / "app.yaml").exists()
     assert not (tmp_path / "main.py").exists()
     assert not (tmp_path / "app.yaml").exists()
+    app_settings = yaml.safe_load(
+        (app_dir / "config" / "settings.yaml").read_text(encoding="utf-8")
+    )
+    assert app_settings["kindling"]["extensions"] == ["sales-domain==1.2.3"]
 
 
 def test_app_add_executor_supports_structured_streaming_pattern(tmp_path):
