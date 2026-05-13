@@ -7,6 +7,7 @@ Tests in-memory operations, rate streams, and memory sinks.
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_memory import MemoryEntityProvider
 
@@ -60,11 +61,29 @@ class TestMemoryEntityProvider:
         assert result == mock_df
 
     def test_read_entity_not_found_raises(self, provider, entity_metadata):
-        """Test that reading non-existent entity raises ValueError"""
+        """Test that reading non-existent entity raises ValueError when schema is None"""
         provider.spark.table.side_effect = Exception("Table not found")
+        # entity_metadata.schema is None by default in the fixture
 
         with pytest.raises(ValueError, match="Memory entity.*not found"):
             provider.read_entity(entity_metadata)
+
+    def test_read_entity_not_found_returns_empty_df_when_schema_known(
+        self, provider, entity_metadata
+    ):
+        """Empty DataFrame returned (not raised) when entity absent but schema is available."""
+        from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
+        schema = StructType([StructField("id", IntegerType()), StructField("name", StringType())])
+        entity_metadata.schema = schema
+        provider.spark.table.side_effect = Exception("Table not found")
+        mock_empty_df = MagicMock()
+        provider.spark.createDataFrame.return_value = mock_empty_df
+
+        result = provider.read_entity(entity_metadata)
+
+        provider.spark.createDataFrame.assert_called_once_with([], schema)
+        assert result is mock_empty_df
 
     def test_read_entity_as_stream_rate_source(self, provider, entity_metadata):
         """Test reading entity as rate stream"""

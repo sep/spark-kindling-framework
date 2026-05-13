@@ -20,6 +20,16 @@ from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 from packaging.version import InvalidVersion, Version
 
+
+def _storage_suffix() -> str:
+    cloud = (os.getenv("AZURE_CLOUD") or "").strip().lower().replace("-", "").replace("_", "")
+    if cloud in {"azureusgovernment", "azuregovernment", "government", "gov", "usgov"}:
+        return "core.usgovcloudapi.net"
+    if cloud in {"azurechinacloud", "china"}:
+        return "core.chinacloudapi.cn"
+    return "core.windows.net"
+
+
 # ============================================================================
 # CONFIGURATION - Same as main deploy.py
 # ============================================================================
@@ -69,7 +79,7 @@ def deploy_extension_wheels(wheels: List[Path]) -> None:
     print(f"\n☁️  Deploying to: {STORAGE_ACCOUNT}/{CONTAINER}/{PACKAGES_PATH}/\n")
 
     # Create BlobServiceClient with DefaultAzureCredential
-    account_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
+    account_url = f"https://{STORAGE_ACCOUNT}.blob.{_storage_suffix()}"
 
     try:
         credential = DefaultAzureCredential()
@@ -101,7 +111,7 @@ def deploy_extension_wheels(wheels: List[Path]) -> None:
 
     print(f"\n✅ Successfully deployed {upload_count} extension wheel(s)\n")
     print("🔗 Extensions location:")
-    print(f"   abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/{PACKAGES_PATH}/")
+    print(f"   abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.{_storage_suffix()}/{PACKAGES_PATH}/")
 
 
 def main():
