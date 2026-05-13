@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_csv import (
     FixtureCSVEntityProvider,
@@ -326,6 +327,23 @@ class TestCreatePipeEntityReaderFixtureConvention:
         assert result is mock_df
         # Verify load was called with the nested path
         mock_reader.load.assert_called_once_with(str(csv_file))
+
+    def test_watermark_skipped_on_local_execution(self, tmp_path):
+        """usewm=True is a no-op on standalone — wms must never be called."""
+        strategy = self._make_strategy()
+        mock_provider = MagicMock()
+        mock_provider.read_entity.return_value = MagicMock()
+        strategy.provider_registry.get_provider_for_entity.return_value = mock_provider
+        entity = _make_entity("bronze.records")
+
+        with (
+            patch("kindling.simple_read_persist_strategy._is_local_execution", return_value=True),
+            patch("kindling.simple_read_persist_strategy.os.getcwd", return_value=str(tmp_path)),
+        ):
+            reader = strategy.create_pipe_entity_reader("my_pipe")
+            reader(entity, usewm=True)
+
+        strategy.wms.read_current_entity_changes.assert_not_called()
 
     def test_headers_only_csv_raises_clear_error(self, tmp_path):
         """Headers-only fixture raises ValueError with a helpful message."""

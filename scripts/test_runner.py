@@ -12,6 +12,15 @@ from importlib.util import find_spec
 from typing import List, Optional
 
 
+def _storage_suffix() -> str:
+    cloud = (os.getenv("AZURE_CLOUD") or "").strip().lower().replace("-", "").replace("_", "")
+    if cloud in {"azureusgovernment", "azuregovernment", "government", "gov", "usgov"}:
+        return "core.usgovcloudapi.net"
+    if cloud in {"azurechinacloud", "china"}:
+        return "core.chinacloudapi.cn"
+    return "core.windows.net"
+
+
 def _load_dotenv(path: str = ".env") -> None:
     """Best-effort loader for .env files used in local system testing.
 
@@ -490,7 +499,7 @@ def run_deploy_app(
         print(f"📦 Prepared {len(app_files)} app files")
 
         # Connect to Azure Storage
-        account_url = f"https://{storage_account}.blob.core.windows.net"
+        account_url = f"https://{storage_account}.blob.{_storage_suffix()}"
         credential = DefaultAzureCredential()
         blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
 
