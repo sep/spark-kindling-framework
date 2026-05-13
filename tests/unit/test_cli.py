@@ -2045,15 +2045,44 @@ def test_app_add_executor_creates_entrypoint_and_app_yaml(tmp_path):
     ) in content
     assert "get_kindling_service(DataPipesExecution)" in content
     assert "run_datapipes(pipe_ids, use_dag=USE_DAG)" in content
+    assert "_add_local_package_paths()" in content
 
     app_config = yaml.safe_load((app_dir / "app.yaml").read_text(encoding="utf-8"))
     assert app_config["name"] == "sales_ops"
     assert app_config["entry_point"] == "main.py"
 
 
+def test_app_add_executor_auto_discovers_app_directory_from_repo_root(tmp_path, monkeypatch):
+    app_dir = tmp_path / "apps" / "sales_ops"
+    app_dir.mkdir(parents=True)
+    (app_dir / "app.py").write_text(
+        "\n".join(
+            [
+                "def register_all():",
+                "    import sales.entities.records",
+                "    import sales.pipes.bronze_to_silver",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, ["app", "add", "executor"])
+
+    assert result.exit_code == 0, result.output
+    assert (app_dir / "main.py").exists()
+    assert (app_dir / "app.yaml").exists()
+    assert not (tmp_path / "main.py").exists()
+    assert not (tmp_path / "app.yaml").exists()
+
+
 def test_app_add_executor_supports_structured_streaming_pattern(tmp_path):
     app_dir = tmp_path / "apps" / "streaming_app"
     app_dir.mkdir(parents=True)
+    (app_dir / "app.py").write_text(
+        "def initialize(env=None):\n    return None\n", encoding="utf-8"
+    )
 
     result = CliRunner().invoke(
         cli,
@@ -2087,6 +2116,9 @@ def test_app_add_executor_supports_structured_streaming_pattern(tmp_path):
 def test_app_add_executor_supports_file_ingestion_pattern(tmp_path):
     app_dir = tmp_path / "apps" / "ingestion_app"
     app_dir.mkdir(parents=True)
+    (app_dir / "app.py").write_text(
+        "def initialize(env=None):\n    return None\n", encoding="utf-8"
+    )
 
     result = CliRunner().invoke(
         cli,
