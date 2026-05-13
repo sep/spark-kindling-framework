@@ -1994,3 +1994,74 @@ def test_standalone_run_exits_0_with_no_fail_on_error_even_when_pipe_fails(monke
     )
     result = CliRunner().invoke(cli, ["app", "run", "--no-fail-on-error", str(app_dir)])
     assert result.exit_code == 0
+
+
+def test_app_add_only_scaffolds_executor():
+    result = CliRunner().invoke(cli, ["app", "add", "--help"])
+
+    assert result.exit_code == 0
+    assert "executor" in result.output
+    assert " entity" not in result.output
+    assert " pipe" not in result.output
+    assert "ingestion" not in result.output
+
+
+def test_package_add_owns_entity_pipe_ingestion_scaffolds():
+    result = CliRunner().invoke(cli, ["package", "add", "--help"])
+
+    assert result.exit_code == 0
+    assert "entity" in result.output
+    assert "pipe" in result.output
+    assert "ingestion" in result.output
+
+
+def test_app_add_executor_creates_entrypoint_and_app_yaml(tmp_path):
+    app_dir = tmp_path / "apps" / "sales_ops"
+    app_dir.mkdir(parents=True)
+    (app_dir / "app.py").write_text(
+        "\n".join(
+            [
+                "def register_all():",
+                "    import sales.entities.records",
+                "    import sales.pipes.bronze_to_silver",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli, ["app", "add", "executor", "--app", str(app_dir)])
+
+    assert result.exit_code == 0, result.output
+    executor = app_dir / "main.py"
+    assert executor.exists()
+    content = executor.read_text(encoding="utf-8")
+    assert (
+        "REGISTRATION_MODULES = ['sales.entities.records', " "'sales.pipes.bronze_to_silver']"
+    ) in content
+    assert "get_kindling_service(DataPipesExecution)" in content
+    assert "run_datapipes(pipe_ids, use_dag=USE_DAG)" in content
+
+    app_config = yaml.safe_load((app_dir / "app.yaml").read_text(encoding="utf-8"))
+    assert app_config["name"] == "sales_ops"
+    assert app_config["entry_point"] == "main.py"
+
+
+def test_package_add_entity_uses_package_option(tmp_path):
+    package_dir = tmp_path / "packages" / "sales" / "src" / "sales"
+    package_dir.mkdir(parents=True)
+
+    result = CliRunner().invoke(
+        cli,
+        ["package", "add", "entity", "bronze.orders", "--package", str(package_dir)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (package_dir / "entities.py").exists()
+    assert (package_dir / "tests" / "entities" / "bronze" / "orders.csv").exists()
+
+    old_result = CliRunner().invoke(
+        cli,
+        ["app", "add", "entity", "bronze.orders", "--app", str(package_dir)],
+    )
+    assert old_result.exit_code != 0
