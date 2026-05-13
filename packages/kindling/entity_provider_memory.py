@@ -5,7 +5,7 @@ Entity provider for in-memory DataFrames, useful for testing and temporary data.
 Supports all 4 provider interfaces (batch read/write, streaming read/write).
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from injector import inject
 from pyspark.sql import DataFrame
@@ -104,6 +104,46 @@ class MemoryEntityProvider(
         config = self._get_provider_config(entity_metadata)
         return config.get("table_name", entity_metadata.name)
 
+    def _get_seed_rows(self, entity_metadata: EntityMetadata) -> Optional[List[dict]]:
+        """Return inline seed rows from provider config, or None if not configured."""
+        config = self._get_provider_config(entity_metadata)
+        return config.get("seed.rows")
+
+    def _create_seed_dataframe(self, entity_metadata: EntityMetadata, rows: Any) -> DataFrame:
+        """Create a DataFrame from inline seed rows, validating structure and schema."""
+        eid = entity_metadata.entityid
+
+        if entity_metadata.schema is None:
+            raise ValueError(
+                f"Memory entity '{eid}' has provider.seed.rows but no schema defined. "
+                "A schema is required to materialize seed rows."
+            )
+        if not isinstance(rows, (list, tuple)):
+            raise ValueError(
+                f"Memory entity '{eid}' provider.seed.rows must be a list, got {type(rows).__name__}."
+            )
+
+        schema_fields = {f.name for f in entity_metadata.schema.fields}
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"Memory entity '{eid}' provider.seed.rows[{i}] must be a mapping, "
+                    f"got {type(row).__name__}."
+                )
+            unknown = set(row.keys()) - schema_fields
+            if unknown:
+                raise ValueError(
+                    f"Memory entity '{eid}' provider.seed.rows[{i}] contains unknown "
+                    f"field(s): {sorted(unknown)}. Schema fields: {sorted(schema_fields)}."
+                )
+
+        try:
+            return self.spark.createDataFrame(list(rows), entity_metadata.schema)
+        except Exception as exc:
+            raise ValueError(
+                f"Memory entity '{eid}' provider.seed.rows could not be materialized: {exc}"
+            ) from exc
+
     def read_entity(self, entity_metadata: EntityMetadata) -> DataFrame:
         """
         Read entity from memory table or in-memory store.
@@ -139,6 +179,17 @@ class MemoryEntityProvider(
             self.logger.info(
                 f"Read memory entity '{entity_metadata.entityid}' from in-memory store"
             )
+            return df
+
+        # Materialize inline seed rows if configured (first-read fallback before empty DataFrame)
+        seed_rows = self._get_seed_rows(entity_metadata)
+        if seed_rows is not None:
+            self.logger.info(
+                f"Seeding memory entity '{entity_metadata.entityid}' from provider.seed.rows "
+                f"({len(seed_rows)} row(s))"
+            )
+            df = self._create_seed_dataframe(entity_metadata, seed_rows)
+            self.write_to_entity(df, entity_metadata)
             return df
 
         # Entity not found — return empty DataFrame if schema is known, else raise

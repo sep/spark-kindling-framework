@@ -275,6 +275,141 @@ class TestMemoryEntityProvider:
         assert table_name == "results"
 
 
+class TestMemoryProviderSeedRows:
+    """Tests for provider.seed.rows inline seeding."""
+
+    @pytest.fixture
+    def provider(self):
+        logger_provider = MagicMock()
+        logger_provider.get_logger.return_value = MagicMock()
+        provider = MemoryEntityProvider(logger_provider)
+        provider.spark = MagicMock()
+        return provider
+
+    @pytest.fixture
+    def seeded_entity(self):
+        from pyspark.sql.types import StringType, StructField, StructType
+
+        schema = StructType([StructField("id", StringType()), StructField("value", StringType())])
+        return EntityMetadata(
+            entityid="temp.seed_test",
+            name="seed_test",
+            partition_columns=[],
+            merge_columns=["id"],
+            tags={
+                "provider_type": "memory",
+                "provider.seed.rows": [{"id": "1", "value": "hello"}],
+            },
+            schema=schema,
+        )
+
+    def test_seed_rows_creates_dataframe_when_entity_absent(self, provider, seeded_entity):
+        """Seed rows are materialized when no table/store data exists."""
+        provider.spark.table.side_effect = Exception("Table not found")
+        mock_seed_df = MagicMock()
+        provider.spark.createDataFrame.return_value = mock_seed_df
+        mock_seed_df.count.return_value = 1
+        mock_seed_df.createOrReplaceTempView = MagicMock()
+
+        result = provider.read_entity(seeded_entity)
+
+        assert result is mock_seed_df
+        provider.spark.createDataFrame.assert_called_once_with(
+            [{"id": "1", "value": "hello"}], seeded_entity.schema
+        )
+
+    def test_existing_store_data_wins_over_seed_rows(self, provider, seeded_entity):
+        """Imperative writes to _memory_store take priority over seed rows."""
+        provider.spark.table.side_effect = Exception("Table not found")
+        existing_df = MagicMock()
+        provider._memory_store[seeded_entity.entityid] = existing_df
+
+        result = provider.read_entity(seeded_entity)
+
+        assert result is existing_df
+        provider.spark.createDataFrame.assert_not_called()
+
+    def test_existing_table_wins_over_seed_rows(self, provider, seeded_entity):
+        """A registered temp view takes priority over seed rows."""
+        table_df = MagicMock()
+        table_df.count.return_value = 5
+        provider.spark.table.return_value = table_df
+
+        result = provider.read_entity(seeded_entity)
+
+        assert result is table_df
+        provider.spark.createDataFrame.assert_not_called()
+
+    def test_seed_rows_without_schema_raises(self, provider):
+        """Seed rows on a schema-less entity raise ValueError."""
+        entity = EntityMetadata(
+            entityid="temp.no_schema",
+            name="no_schema",
+            partition_columns=[],
+            merge_columns=[],
+            tags={"provider_type": "memory", "provider.seed.rows": [{"id": "1"}]},
+            schema=None,
+        )
+        provider.spark.table.side_effect = Exception("not found")
+
+        with pytest.raises(ValueError, match="no schema defined"):
+            provider.read_entity(entity)
+
+    def test_seed_rows_non_list_raises(self, provider, seeded_entity):
+        """Non-list seed.rows raises ValueError."""
+        seeded_entity.tags["provider.seed.rows"] = "not-a-list"
+        provider.spark.table.side_effect = Exception("not found")
+
+        with pytest.raises(ValueError, match="must be a list"):
+            provider.read_entity(seeded_entity)
+
+    def test_seed_rows_non_dict_row_raises(self, provider, seeded_entity):
+        """Non-mapping row in seed.rows raises ValueError with row index."""
+        seeded_entity.tags["provider.seed.rows"] = ["not-a-dict"]
+        provider.spark.table.side_effect = Exception("not found")
+
+        with pytest.raises(ValueError, match=r"seed\.rows\[0\].*mapping"):
+            provider.read_entity(seeded_entity)
+
+    def test_seed_rows_unknown_field_raises(self, provider, seeded_entity):
+        """Row with a field not in the schema raises ValueError naming the bad field."""
+        seeded_entity.tags["provider.seed.rows"] = [{"id": "1", "value": "x", "extra": "bad"}]
+        provider.spark.table.side_effect = Exception("not found")
+
+        with pytest.raises(ValueError, match="unknown.*field.*extra"):
+            provider.read_entity(seeded_entity)
+
+    def test_seed_rows_spark_error_wrapped(self, provider, seeded_entity):
+        """Spark createDataFrame errors are wrapped with entity context."""
+        provider.spark.table.side_effect = Exception("not found")
+        provider.spark.createDataFrame.side_effect = Exception("type mismatch")
+
+        with pytest.raises(ValueError, match="could not be materialized"):
+            provider.read_entity(seeded_entity)
+
+    def test_no_seed_rows_config_keeps_empty_df_behavior(self, provider):
+        """Entities without seed config still return empty DataFrame when schema is known."""
+        from pyspark.sql.types import StringType, StructField, StructType
+
+        schema = StructType([StructField("id", StringType())])
+        entity = EntityMetadata(
+            entityid="temp.plain",
+            name="plain",
+            partition_columns=[],
+            merge_columns=[],
+            tags={"provider_type": "memory"},
+            schema=schema,
+        )
+        provider.spark.table.side_effect = Exception("not found")
+        mock_empty = MagicMock()
+        provider.spark.createDataFrame.return_value = mock_empty
+
+        result = provider.read_entity(entity)
+
+        assert result is mock_empty
+        provider.spark.createDataFrame.assert_called_once_with([], schema)
+
+
 class TestMemoryProviderErrorHandling:
     """Tests for error handling in MemoryEntityProvider"""
 
