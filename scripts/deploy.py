@@ -19,6 +19,16 @@ from typing import List, Optional
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 
+
+def _storage_suffix() -> str:
+    cloud = (os.getenv("AZURE_CLOUD") or "").strip().lower().replace("-", "").replace("_", "")
+    if cloud in {"azureusgovernment", "azuregovernment", "government", "gov", "usgov"}:
+        return "core.usgovcloudapi.net"
+    if cloud in {"azurechinacloud", "china"}:
+        return "core.chinacloudapi.cn"
+    return "core.windows.net"
+
+
 # ============================================================================
 # CONFIGURATION - Update these for your storage account
 # ============================================================================
@@ -174,7 +184,7 @@ def deploy_wheels(wheels: List[Path], version: str) -> None:
 
     # Create BlobServiceClient with DefaultAzureCredential
     # This supports: Azure CLI (az login), environment variables, managed identity
-    account_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
+    account_url = f"https://{STORAGE_ACCOUNT}.blob.{_storage_suffix()}"
 
     try:
         credential = DefaultAzureCredential()
@@ -223,15 +233,15 @@ def deploy_wheels(wheels: List[Path], version: str) -> None:
     print()
     print("🔗 Bootstrap paths:")
     print(
-        f"   artifacts_storage_path: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/{BASE_PATH}"
+        f"   artifacts_storage_path: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.{_storage_suffix()}/{BASE_PATH}"
         if BASE_PATH
-        else f"   artifacts_storage_path: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net"
+        else f"   artifacts_storage_path: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.{_storage_suffix()}"
     )
     print(
-        f"   wheel_root: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/{PACKAGES_PATH}"
+        f"   wheel_root: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.{_storage_suffix()}/{PACKAGES_PATH}"
     )
     print(
-        f"   bootstrap_script: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/{SCRIPTS_PATH}/kindling_bootstrap.py"
+        f"   bootstrap_script: abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.{_storage_suffix()}/{SCRIPTS_PATH}/kindling_bootstrap.py"
     )
 
 

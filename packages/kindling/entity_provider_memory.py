@@ -141,7 +141,13 @@ class MemoryEntityProvider(
             )
             return df
 
-        # Entity not found
+        # Entity not found — return empty DataFrame if schema is known, else raise
+        if entity_metadata.schema is not None:
+            self.logger.info(
+                f"Memory entity '{entity_metadata.entityid}' has no data; returning empty DataFrame"
+            )
+            return self.spark.createDataFrame([], entity_metadata.schema)
+
         raise ValueError(
             f"Memory entity '{entity_metadata.entityid}' not found. "
             f"Write data first or check table name: {table_name}"

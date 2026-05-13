@@ -5,6 +5,8 @@ from functools import reduce
 from pathlib import Path
 from typing import Optional
 
+from pyspark.sql.functions import col
+
 from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.entity_provider_csv import (
@@ -16,7 +18,6 @@ from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log import *
 from kindling.watermarking import *
-from pyspark.sql.functions import col
 
 
 def _is_local_execution() -> bool:
@@ -67,7 +68,7 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
     def create_pipe_entity_reader(self, pipe: str):
         def entity_reader(entity, usewm):
-            if usewm:
+            if usewm and not _is_local_execution():
                 # Watermarking uses the legacy path (Delta-specific)
                 return self.wms.read_current_entity_changes(entity, pipe)
 

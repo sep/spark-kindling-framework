@@ -18,6 +18,15 @@ from typing import List, Tuple
 from packaging.version import InvalidVersion, Version
 
 
+def _storage_suffix() -> str:
+    cloud = (os.getenv("AZURE_CLOUD") or "").strip().lower().replace("-", "").replace("_", "")
+    if cloud in {"azureusgovernment", "azuregovernment", "government", "gov", "usgov"}:
+        return "core.usgovcloudapi.net"
+    if cloud in {"azurechinacloud", "china"}:
+        return "core.chinacloudapi.cn"
+    return "core.windows.net"
+
+
 def parse_wheel_version(filename: str) -> Tuple[str, Version, bool]:
     """
     Parse wheel filename to extract package name, version, and alpha status.
@@ -105,7 +114,7 @@ def main():
     print("=" * 80)
 
     # Connect to Azure Storage
-    account_url = f"https://{storage_account}.blob.core.windows.net"
+    account_url = f"https://{storage_account}.blob.{_storage_suffix()}"
     credential = DefaultAzureCredential()
     blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
     container_client = blob_service_client.get_container_client(container)
