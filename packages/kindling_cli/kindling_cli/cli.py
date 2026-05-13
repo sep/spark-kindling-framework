@@ -725,7 +725,28 @@ def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
                 )
             )
 
-    if _print_check_results(checks):
+    _print_check_results(checks)
+
+    # Warn about delta source entities that have no fixture CSV (local runs will need cloud creds)
+    cwd = Path.cwd()
+    source_entity_ids: set = set()
+    for pipe_id in pipe_ids:
+        pipe = pipe_registry.get_pipe_definition(pipe_id)
+        source_entity_ids.update(pipe.input_entity_ids)
+    for entity_id in sorted(source_entity_ids):
+        if entity_id not in entity_ids:
+            continue
+        entity = entity_registry.get_entity_definition(entity_id)
+        is_delta = entity.tags.get("provider_type", "delta") == "delta"
+        if is_delta and _fixture_csv_path(entity_id, cwd) is None:
+            parts = entity_id.replace(".", "/")
+            click.echo(
+                f"[WARN] entity.{entity_id}.fixture: no fixture CSV at"
+                f" tests/entities/{parts}.csv — local runs will require cloud storage"
+            )
+
+    all_passed = all(passed for _, passed, _ in checks)
+    if all_passed:
         click.echo("Validation passed.")
         return
 
@@ -2746,6 +2767,7 @@ def _run_standalone_app(
     no_logs: bool,
     no_wait: bool,
     json_output: bool,
+    fail_on_error: bool = True,
 ) -> None:
     """Run all registered app pipes locally with the standalone runtime."""
     if parameters_path or param_overrides:
@@ -2793,17 +2815,29 @@ def _run_standalone_app(
     )
     executer = GlobalInjector.get(DataPipesExecution)
     try:
-        executer.run_datapipes(pipe_ids, use_dag=True)
+        result = executer.run_datapipes(pipe_ids, use_dag=True)
     except Exception as exc:
         raise click.ClickException(f"App run failed: {exc}") from exc
 
+    succeeded = result is None or result.all_succeeded
     payload = {
         "app_path": str(resolved_app),
         "environment": resolved_env,
         "platform": "standalone",
         "pipes": pipe_ids,
-        "succeeded": True,
+        "succeeded": succeeded,
     }
+    if not succeeded:
+        payload["failed_pipes"] = result.failed_pipes
+        _emit_result(
+            payload,
+            json_output,
+            f"App run completed with {result.failed_count} failure(s): {', '.join(result.failed_pipes)}",
+        )
+        if fail_on_error:
+            raise click.exceptions.Exit(1)
+        return
+
     _emit_result(
         payload,
         json_output,
@@ -2889,6 +2923,7 @@ def app_run(
             no_logs,
             no_wait,
             json_output,
+            fail_on_error=fail_on_error,
         )
         return
 
