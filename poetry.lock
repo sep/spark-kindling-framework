@@ -4203,7 +4203,7 @@ files = [
 
 [[package]]
 name = "spark-kindling-cli"
-version = "0.9.9"
+version = "0.9.17"
 description = "Command-line tooling for Kindling"
 optional = false
 python-versions = "^3.10"
@@ -4215,7 +4215,7 @@ develop = true
 click = ">=8.1.0"
 jinja2 = ">=3.1.0"
 pyyaml = ">=6.0"
-spark-kindling-sdk = "^0.9.9"
+spark-kindling-sdk = "^0.9.10"
 
 [package.extras]
 deploy = ["azure-identity (>=1.15.0)", "azure-storage-blob (>=12.14.0)", "requests (>=2.31.0)"]
@@ -4227,7 +4227,7 @@ url = "packages/kindling_cli"
 
 [[package]]
 name = "spark-kindling-sdk"
-version = "0.9.9"
+version = "0.9.17"
 description = "Design-time platform SDK for Kindling"
 optional = false
 python-versions = "^3.10"

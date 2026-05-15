@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 import zipfile
@@ -2418,6 +2419,12 @@ def _resolve_source_path(
     help="Existing repo root that will receive the app under apps/.",
 )
 @click.option(
+    "--pattern",
+    type=click.Choice(["batch", "streaming", "file-ingestion"]),
+    default=None,
+    help="Execution pattern to scaffold. Omit for a minimal hello-world app.",
+)
+@click.option(
     "--template-dir",
     "template_dir",
     default=None,
@@ -2430,6 +2437,7 @@ def app_init(
     auth: str,
     layers: str,
     repo_root: Path,
+    pattern: Optional[str],
     template_dir: Optional[Path],
 ) -> None:
     """Create a Kindling app under apps/ in an existing repo.
@@ -2437,8 +2445,10 @@ def app_init(
     \b
     Creates:
       apps/<app>/
-        app.py              — initialize() and register_all()
-        config/             — app-owned settings and env overlays
+        app.py          — execution entrypoint (pattern-specific)
+        app.yaml        — app metadata and entry point
+        lake-reqs.txt   — artifact-backed package requirements
+        config/         — app-owned settings and env overlays
         QUICKSTART.md
 
     Apps are deployable Kindling units. They are intentionally separate from
@@ -2463,6 +2473,7 @@ def app_init(
         package_name=package_snake,
         layers=layers,
         auth=auth,
+        pattern=pattern,
         template_dir=template_dir.expanduser().resolve() if template_dir else None,
     )
     target = cfg.repo_root / "apps" / cfg.snake_name
@@ -2771,7 +2782,7 @@ def _run_standalone_app(
     json_output: bool,
     fail_on_error: bool = True,
 ) -> None:
-    """Run all registered app pipes locally with the standalone runtime."""
+    """Run an app locally by executing its entrypoint as a subprocess."""
     if parameters_path or param_overrides:
         raise click.ClickException(
             "Runtime parameters are not supported for standalone app runs yet."
@@ -2780,16 +2791,6 @@ def _run_standalone_app(
         raise click.ClickException("--no-logs is only valid for remote app runs.")
     if no_wait:
         raise click.ClickException("--no-wait is only valid for remote app runs.")
-    if quiet:
-        _configure_quiet_logging()
-
-    try:
-        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
-        from kindling.injection import GlobalInjector
-    except ImportError as exc:
-        raise click.ClickException(
-            "kindling package is required. Install with: pip install spark-kindling[standalone]"
-        ) from exc
 
     source_path = Path(app_ref).expanduser()
     if not source_path.exists():
@@ -2804,47 +2805,30 @@ def _run_standalone_app(
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
     resolved_app = _discover_app_py_under(source_path)
-    _load_app_module(resolved_app, resolved_env, config_dir)
 
-    registry = GlobalInjector.get(DataPipesRegistry)
-    pipe_ids = sorted(registry.get_pipe_ids())
-    if not pipe_ids:
-        raise click.ClickException("No pipes registered for this app.")
+    run_env = {**os.environ, "KINDLING_ENV": resolved_env}
+    if config_dir is not None:
+        run_env["KINDLING_CONFIG_DIR"] = str(config_dir.expanduser().resolve())
+    if quiet:
+        run_env["KINDLING_LOG_LEVEL"] = "WARNING"
 
-    _emit_progress(
-        f"Running app locally with standalone platform: {len(pipe_ids)} pipe(s).",
-        json_output,
-    )
-    executer = GlobalInjector.get(DataPipesExecution)
-    try:
-        result = executer.run_datapipes(pipe_ids, use_dag=True)
-    except Exception as exc:
-        raise click.ClickException(f"App run failed: {exc}") from exc
+    _emit_progress(f"Running app locally: {resolved_app}", json_output)
+    result = subprocess.run([sys.executable, str(resolved_app)], env=run_env)
 
-    succeeded = result is None or result.all_succeeded
+    succeeded = result.returncode == 0
     payload = {
         "app_path": str(resolved_app),
         "environment": resolved_env,
         "platform": "standalone",
-        "pipes": pipe_ids,
         "succeeded": succeeded,
     }
     if not succeeded:
-        payload["failed_pipes"] = result.failed_pipes
-        _emit_result(
-            payload,
-            json_output,
-            f"App run completed with {result.failed_count} failure(s): {', '.join(result.failed_pipes)}",
-        )
+        _emit_result(payload, json_output, f"App run failed (exit code {result.returncode}).")
         if fail_on_error:
-            raise click.exceptions.Exit(1)
+            raise click.exceptions.Exit(result.returncode)
         return
 
-    _emit_result(
-        payload,
-        json_output,
-        f"App completed successfully ({len(pipe_ids)} pipe(s)).",
-    )
+    _emit_result(payload, json_output, "App completed successfully.")
 
 
 @app_group.command("run")
@@ -3391,7 +3375,7 @@ _logger().info(
     )
 
 
-@app_add_group.command("executor")
+@app_add_group.command("executor", deprecated=True)
 @click.option(
     "--app",
     "app_path",
@@ -3466,10 +3450,10 @@ def app_add_executor(
     checkpoint_path: Optional[str],
     use_dag: bool,
 ) -> None:
-    """Scaffold a deployable executor for an app.
+    """Deprecated. Use `kindling app init --pattern <pattern>` instead.
 
-    The executor imports package modules to trigger registration, then runs
-    selected pipes (or all registered pipes) through DataPipesExecution.
+    The execution entrypoint is now scaffolded by `app init`. This command
+    will be removed in a future release.
     """
     resolved = _discover_executor_app_root(app_path)
 

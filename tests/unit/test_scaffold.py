@@ -193,7 +193,11 @@ def test_app_py_imports_correct_entity_module_medallion(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     cfg = AppScaffoldConfig(
-        name="acme-app", package_name="acme", repo_root=repo_root, layers="medallion"
+        name="acme-app",
+        package_name="acme",
+        repo_root=repo_root,
+        layers="medallion",
+        pattern="batch",
     )
     generate_app(cfg)
 
@@ -206,7 +210,7 @@ def test_app_py_imports_correct_pipe_module_minimal(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     cfg = AppScaffoldConfig(
-        name="acme-app", package_name="acme", repo_root=repo_root, layers="minimal"
+        name="acme-app", package_name="acme", repo_root=repo_root, layers="minimal", pattern="batch"
     )
     generate_app(cfg)
 
