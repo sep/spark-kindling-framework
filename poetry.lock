@@ -4203,7 +4203,7 @@ files = [
 
 [[package]]
 name = "spark-kindling-cli"
-version = "0.9.17"
+version = "0.9.18"
 description = "Command-line tooling for Kindling"
 optional = false
 python-versions = "^3.10"
@@ -4227,7 +4227,7 @@ url = "packages/kindling_cli"
 
 [[package]]
 name = "spark-kindling-sdk"
-version = "0.9.17"
+version = "0.9.18"
 description = "Design-time platform SDK for Kindling"
 optional = false
 python-versions = "^3.10"
