@@ -1,10 +1,9 @@
-"""{{ kebab_name }} — Kindling app entrypoint.
+"""{{ kebab_name }} — Kindling batch app entrypoint.
 
 Run locally:    kindling app run .
 Run remotely:   kindling app run . --platform <platform>
 """
 
-import logging
 import os
 import sys
 from pathlib import Path
@@ -15,7 +14,13 @@ _src = Path(__file__).resolve().parents[2] / "packages" / "{{ package_snake_name
 if _src.exists() and str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
+import {{ package_snake_name }}.entities.records  # noqa: F401
+{% if layers == "medallion" %}import {{ package_snake_name }}.pipes.bronze_to_silver  # noqa: F401
+{% else %}import {{ package_snake_name }}.pipes.process  # noqa: F401
+{% endif %}
 from kindling.bootstrap import initialize_framework
+from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
+from kindling.injection import get_kindling_service
 
 _env = os.environ.get("KINDLING_ENV", "local")
 _config_dir = Path(os.environ.get("KINDLING_CONFIG_DIR", "")) or Path(__file__).resolve().parent / "config"
@@ -26,4 +31,6 @@ if _env_file.exists():
 
 initialize_framework({"platform": "standalone", "environment": _env, "config_files": _configs})
 
-logging.getLogger(__name__).info("Hello from {{ kebab_name }}!")
+registry = get_kindling_service(DataPipesRegistry)
+execution = get_kindling_service(DataPipesExecution)
+execution.run_datapipes(sorted(registry.get_pipe_ids()), use_dag=True)

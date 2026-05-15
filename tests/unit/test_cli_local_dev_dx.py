@@ -372,11 +372,28 @@ def test_explicit_scaffold_run_reaches_pipe_execution_with_mock_executor(monkeyp
                     "logistics-data",
                     "--repo-root",
                     "logistics_data",
+                    "--pattern",
+                    "batch",
                 ],
             )
             assert result_app.exit_code == 0, result_app.output
 
             app_dir = Path("logistics_data/apps/logistics_data")
+            # pipeline run uses _load_app_module which requires initialize(); write a
+            # compatibility shim so this test can exercise the pipeline run path.
+            (app_dir / "app.py").write_text(
+                "import sys\n"
+                "from pathlib import Path\n"
+                "_src = Path(__file__).resolve().parents[2] / 'packages' / 'logistics_data' / 'src'\n"
+                "if _src.exists() and str(_src) not in sys.path:\n"
+                "    sys.path.insert(0, str(_src))\n"
+                "import logistics_data.entities.records\n"
+                "import logistics_data.pipes.bronze_to_silver\n"
+                "def initialize(env=None):\n"
+                "    from kindling.bootstrap import initialize_framework\n"
+                "    return initialize_framework({'platform': 'standalone', 'environment': env or 'local'})\n",
+                encoding="utf-8",
+            )
             result_run = runner.invoke(
                 cli,
                 [

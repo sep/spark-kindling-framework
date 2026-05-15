@@ -30,6 +30,7 @@ WORKDIR /workspace
 # Copy dependency files first (for better caching)
 COPY pyproject.toml poetry.lock ./
 COPY packages/kindling_cli ./packages/kindling_cli
+COPY packages/kindling_sdk ./packages/kindling_sdk
 
 # Install dependencies (this layer will be cached unless poetry.lock changes)
 RUN poetry install --with dev --no-root

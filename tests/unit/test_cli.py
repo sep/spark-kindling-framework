@@ -1188,62 +1188,40 @@ class TestAppRunCommand:
         api.stream_app_run_logs.return_value = []
         return api
 
-    def test_standalone_default_runs_all_registered_pipes(self, tmp_path, monkeypatch):
-        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
-        from kindling.injection import GlobalInjector
+    def test_standalone_default_runs_app_as_subprocess(self, tmp_path, monkeypatch):
+        import subprocess
 
         app_dir = tmp_path / "myapp"
         app_dir.mkdir()
-        (app_dir / "app.py").write_text(
-            "def initialize(env=None):\n    return None\n",
-            encoding="utf-8",
-        )
+        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
 
-        pipe_registry = types.SimpleNamespace(
-            get_pipe_ids=lambda: ["silver.stage", "bronze.ingest"]
-        )
-        executor = types.SimpleNamespace(calls=[])
+        calls = []
 
-        def run_datapipes(pipe_ids, **kwargs):
-            executor.calls.append((pipe_ids, kwargs))
+        def fake_run(cmd, env=None, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0)
 
-        executor.run_datapipes = run_datapipes
-
-        def fake_get(service_type):
-            if service_type is DataPipesRegistry:
-                return pipe_registry
-            if service_type is DataPipesExecution:
-                return executor
-            raise AssertionError(f"unexpected service: {service_type!r}")
-
-        monkeypatch.setattr(GlobalInjector, "get", fake_get)
+        monkeypatch.setattr(subprocess, "run", fake_run)
 
         runner = CliRunner()
         result = runner.invoke(cli, ["app", "run", str(app_dir)])
 
         assert result.exit_code == 0, result.output
         assert "standalone" in result.output
-        assert executor.calls == [(["bronze.ingest", "silver.stage"], {"use_dag": True})]
+        assert len(calls) == 1
+        assert str(app_dir / "app.py") in calls[0][-1]
 
     def test_standalone_json_keeps_stdout_machine_readable(self, tmp_path, monkeypatch):
-        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
-        from kindling.injection import GlobalInjector
+        import subprocess
 
         app_dir = tmp_path / "myapp"
         app_dir.mkdir()
-        (app_dir / "app.py").write_text("def initialize(env=None):\n    return None\n")
+        (app_dir / "app.py").write_text("# stub\n")
 
-        pipe_registry = types.SimpleNamespace(get_pipe_ids=lambda: ["bronze.ingest"])
-        executor = types.SimpleNamespace(run_datapipes=lambda pipe_ids, **kwargs: None)
+        def fake_run(cmd, env=None, **kwargs):
+            return subprocess.CompletedProcess(cmd, returncode=0)
 
-        def fake_get(service_type):
-            if service_type is DataPipesRegistry:
-                return pipe_registry
-            if service_type is DataPipesExecution:
-                return executor
-            raise AssertionError(f"unexpected service: {service_type!r}")
-
-        monkeypatch.setattr(GlobalInjector, "get", fake_get)
+        monkeypatch.setattr(subprocess, "run", fake_run)
 
         runner = CliRunner()
         result = runner.invoke(cli, ["app", "run", str(app_dir), "--json"])
@@ -1251,44 +1229,26 @@ class TestAppRunCommand:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
         assert payload["platform"] == "standalone"
-        assert payload["pipes"] == ["bronze.ingest"]
+        assert payload["succeeded"] is True
         assert "Running app locally" not in result.stdout
         assert "Running app locally" in result.stderr
 
     def test_standalone_accepts_config_and_quiet(self, tmp_path, monkeypatch):
-        import kindling_cli.cli as cli_mod
-
-        from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
-        from kindling.injection import GlobalInjector
+        import subprocess
 
         app_dir = tmp_path / "myapp"
         app_dir.mkdir()
-        app_py = app_dir / "app.py"
-        app_py.write_text("def initialize(env=None, config_dir=None):\n    return None\n")
+        (app_dir / "app.py").write_text("# stub\n")
         config_dir = tmp_path / "config"
         config_dir.mkdir()
 
-        loaded = {}
+        captured_env = {}
 
-        def fake_load_app_module(path, env=None, config_dir=None):
-            loaded["path"] = path
-            loaded["env"] = env
-            loaded["config_dir"] = config_dir
+        def fake_run(cmd, env=None, **kwargs):
+            captured_env.update(env or {})
+            return subprocess.CompletedProcess(cmd, returncode=0)
 
-        quiet_calls = []
-        pipe_registry = types.SimpleNamespace(get_pipe_ids=lambda: ["bronze.ingest"])
-        executor = types.SimpleNamespace(run_datapipes=lambda pipe_ids, **kwargs: None)
-
-        def fake_get(service_type):
-            if service_type is DataPipesRegistry:
-                return pipe_registry
-            if service_type is DataPipesExecution:
-                return executor
-            raise AssertionError(f"unexpected service: {service_type!r}")
-
-        monkeypatch.setattr(cli_mod, "_load_app_module", fake_load_app_module)
-        monkeypatch.setattr(cli_mod, "_configure_quiet_logging", lambda: quiet_calls.append(True))
-        monkeypatch.setattr(GlobalInjector, "get", fake_get)
+        monkeypatch.setattr(subprocess, "run", fake_run)
 
         result = CliRunner().invoke(
             cli,
@@ -1305,8 +1265,9 @@ class TestAppRunCommand:
         )
 
         assert result.exit_code == 0, result.output
-        assert quiet_calls == [True]
-        assert loaded == {"path": app_py, "env": "dev", "config_dir": config_dir}
+        assert captured_env["KINDLING_ENV"] == "dev"
+        assert captured_env["KINDLING_CONFIG_DIR"] == str(config_dir.resolve())
+        assert captured_env["KINDLING_LOG_LEVEL"] == "WARNING"
 
     def test_standalone_rejects_remote_only_options(self, tmp_path):
         app_dir = tmp_path / "myapp"
@@ -1935,38 +1896,24 @@ def _make_execution_result(all_succeeded: bool, failed_pipe_ids=None):
 
 def _patch_standalone_run(monkeypatch, tmp_path, execution_result):
     """
-    Patch the internal seams of _run_standalone_app so the test doesn't
+    Patch subprocess.run for _run_standalone_app so the test doesn't
     need a real Spark/kindling install.
 
     Returns the app_dir path the CLI should be invoked with.
+    execution_result.all_succeeded controls the subprocess returncode.
     """
-    from unittest.mock import MagicMock
+    import subprocess
 
     app_dir = tmp_path / "myapp"
     app_dir.mkdir()
     (app_dir / "app.py").write_text("# stub\n")
 
-    # Skip app module loading (module-level helpers — patchable by dotted name)
-    monkeypatch.setattr("kindling_cli.cli._load_app_module", lambda *a, **kw: None)
-    monkeypatch.setattr("kindling_cli.cli._discover_app_py_under", lambda p: app_dir / "app.py")
+    returncode = 0 if execution_result.all_succeeded else 1
 
-    # Stub registry that reports one pipe
-    fake_registry = MagicMock()
-    fake_registry.get_pipe_ids.return_value = ["pipe_a"]
+    def fake_run(cmd, env=None, **kwargs):
+        return subprocess.CompletedProcess(cmd, returncode=returncode)
 
-    # Stub executer that returns the supplied result
-    fake_executer = MagicMock()
-    fake_executer.run_datapipes.return_value = execution_result
-
-    call_count = [0]
-
-    def fake_get(cls):
-        call_count[0] += 1
-        # First call → DataPipesRegistry, second → DataPipesExecution
-        return fake_registry if call_count[0] == 1 else fake_executer
-
-    # GlobalInjector is imported inside the function from kindling.injection
-    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
     return app_dir
 
