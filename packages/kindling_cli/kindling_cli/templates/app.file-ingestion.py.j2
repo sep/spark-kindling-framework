@@ -13,13 +13,13 @@ from pathlib import Path
 # Local dev: make the checked-out package importable without installing it.
 # In deployed environments the wheel is loaded from artifacts storage.
 _src = Path(__file__).resolve().parents[2] / "packages" / "{{ package_snake_name }}" / "src"
-if _src.exists() and str(_src) not in sys.path:
-    sys.path.insert(0, str(_src))
-
-import {{ package_snake_name }}.entities.records  # noqa: F401
-{% if layers == "medallion" %}import {{ package_snake_name }}.pipes.bronze_to_silver  # noqa: F401
-{% else %}import {{ package_snake_name }}.pipes.process  # noqa: F401
-{% endif %}
+if _src.exists():
+    if str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
+    import {{ package_snake_name }}.entities.records  # noqa: F401
+    {% if layers == "medallion" %}import {{ package_snake_name }}.pipes.bronze_to_silver  # noqa: F401
+    {% else %}import {{ package_snake_name }}.pipes.process  # noqa: F401
+    {% endif %}
 from kindling.bootstrap import initialize_framework
 from kindling.file_ingestion import FileIngestionProcessor
 from kindling.injection import get_kindling_service
