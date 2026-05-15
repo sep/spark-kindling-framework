@@ -15,7 +15,7 @@
 #   - /tmp/hadoop-jars symlink expected by conftest.py fixtures
 #   - /spark-warehouse pre-created and owned by vscode
 
-ARG KINDLING_VERSION=0.9.9
+ARG KINDLING_VERSION=0.9.17
 
 FROM mcr.microsoft.com/devcontainers/python:3.11
 
