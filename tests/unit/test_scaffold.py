@@ -189,7 +189,7 @@ def test_cannot_create_package_in_existing_directory(tmp_path):
         generate_package(cfg)
 
 
-def test_app_py_imports_correct_entity_module_medallion(tmp_path):
+def test_app_py_batch_scaffold_has_no_live_domain_imports(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     cfg = AppScaffoldConfig(
@@ -202,11 +202,13 @@ def test_app_py_imports_correct_entity_module_medallion(tmp_path):
     generate_app(cfg)
 
     app = (repo_root / "apps" / "acme_app" / "app.py").read_text()
-    assert "import acme.entities.records" in app
-    assert "import acme.pipes.bronze_to_silver" in app
+    # Template provides example comments, not live imports — the package doesn't exist yet
+    assert "acme.entities.records" in app
+    live_imports = [l for l in app.splitlines() if l.startswith("import acme")]
+    assert not live_imports, f"Unexpected live domain imports: {live_imports}"
 
 
-def test_app_py_imports_correct_pipe_module_minimal(tmp_path):
+def test_app_py_batch_scaffold_minimal_has_no_live_domain_imports(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     cfg = AppScaffoldConfig(
@@ -215,8 +217,9 @@ def test_app_py_imports_correct_pipe_module_minimal(tmp_path):
     generate_app(cfg)
 
     app = (repo_root / "apps" / "acme_app" / "app.py").read_text()
-    assert "import acme.entities.records" in app
-    assert "import acme.pipes.process" in app
+    assert "acme.entities.records" in app
+    live_imports = [l for l in app.splitlines() if l.startswith("import acme")]
+    assert not live_imports, f"Unexpected live domain imports: {live_imports}"
 
 
 def test_settings_yaml_has_no_default_wrapper(tmp_path):
