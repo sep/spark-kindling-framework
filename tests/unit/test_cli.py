@@ -1437,6 +1437,10 @@ _BLANK_PLATFORM_DETECT_VARS = {
     "FABRIC_WORKSPACE_ID": "",
     "SYNAPSE_WORKSPACE_NAME": "",
     "DATABRICKS_HOST": "",
+    # Blank out SP creds so real .env values don't leak into platform env-check tests
+    "AZURE_TENANT_ID": "",
+    "AZURE_CLIENT_ID": "",
+    "AZURE_CLIENT_SECRET": "",
 }
 
 
@@ -1481,6 +1485,7 @@ class TestEnvCheckPlatform:
                 "FABRIC_WORKSPACE_ID": "ws-1",
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
+                "AZURE_CLIENT_SECRET": "secret-1",
             },
         )
         assert "FABRIC_WORKSPACE_ID" in result.output
@@ -1503,6 +1508,7 @@ class TestEnvCheckPlatform:
                 "SYNAPSE_SPARK_POOL_NAME": "my-pool",
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
+                "AZURE_CLIENT_SECRET": "secret-1",
             },
         )
         assert "SYNAPSE_WORKSPACE_NAME" in result.output
