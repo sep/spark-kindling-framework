@@ -21,8 +21,8 @@ RUN pip install --no-cache-dir --upgrade pip wheel gitpython
 # Install Poetry
 RUN pip install --no-cache-dir poetry==2.4.0
 
-# Configure Poetry to create virtualenv in project
-RUN poetry config virtualenvs.in-project true
+# Install into the system Python so kindling is on PATH without activating a venv
+RUN poetry config virtualenvs.create false
 
 # Set working directory
 WORKDIR /workspace
