@@ -1,10 +1,9 @@
-"""{{ kebab_name }} — Kindling app entrypoint.
+"""{{ kebab_name }} — Kindling structured-streaming app entrypoint.
 
 Run locally:    kindling app run .
 Run remotely:   kindling app run . --platform <platform>
 """
 
-import logging
 import os
 import sys
 from pathlib import Path
@@ -15,7 +14,14 @@ _src = Path(__file__).resolve().parents[2] / "packages" / "{{ package_snake_name
 if _src.exists() and str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
+import {{ package_snake_name }}.entities.records  # noqa: F401
+{% if layers == "medallion" %}import {{ package_snake_name }}.pipes.bronze_to_silver  # noqa: F401
+{% else %}import {{ package_snake_name }}.pipes.process  # noqa: F401
+{% endif %}
 from kindling.bootstrap import initialize_framework
+from kindling.data_pipes import DataPipesRegistry
+from kindling.execution_orchestrator import ExecutionOrchestrator
+from kindling.injection import get_kindling_service
 
 _env = os.environ.get("KINDLING_ENV", "local")
 _config_dir = Path(os.environ.get("KINDLING_CONFIG_DIR", "")) or Path(__file__).resolve().parent / "config"
@@ -26,4 +32,13 @@ if _env_file.exists():
 
 initialize_framework({"platform": "standalone", "environment": _env, "config_files": _configs})
 
-logging.getLogger(__name__).info("Hello from {{ kebab_name }}!")
+registry = get_kindling_service(DataPipesRegistry)
+orchestrator = get_kindling_service(ExecutionOrchestrator)
+
+checkpoint_path = os.environ.get("KINDLING_CHECKPOINT_PATH")
+streaming_options = {"base_checkpoint_path": checkpoint_path} if checkpoint_path else None
+
+orchestrator.execute_streaming(
+    sorted(registry.get_pipe_ids()),
+    streaming_options=streaming_options,
+)

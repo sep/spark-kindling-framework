@@ -78,6 +78,7 @@ class AppScaffoldConfig:
     package_name: Optional[str] = None
     layers: str = "medallion"
     auth: str = "oauth"
+    pattern: Optional[str] = None
     template_dir: Optional[Path] = None
 
     @property
@@ -174,6 +175,7 @@ def _app_ctx(cfg: AppScaffoldConfig) -> dict:
         "repo_kebab_name": cfg.repo_kebab_name,
         "auth": cfg.auth,
         "layers": cfg.layers,
+        "pattern": cfg.pattern,
         "kindling_version": _kindling_version(),
     }
 
@@ -301,7 +303,10 @@ def generate_app(cfg: AppScaffoldConfig) -> List[Path]:
         files.append(p)
         return p
 
-    _write("app.py", _render(env, "app.py.j2", ctx))
+    app_template = f"app.{cfg.pattern}.py.j2" if cfg.pattern else "app.py.j2"
+    _write("app.py", _render(env, app_template, ctx))
+    _write("app.yaml", _render(env, "app.yaml.j2", ctx))
+    _write("lake-reqs.txt", _render(env, "lake-reqs.txt.j2", ctx))
     _write("config/settings.yaml", _render(env, "config/settings.yaml.j2", ctx))
     _write("config/env.local.yaml", _render(env, "config/env.local.yaml.j2", ctx))
     _write(".env.example", _render(env, ".env.example.j2", ctx))
