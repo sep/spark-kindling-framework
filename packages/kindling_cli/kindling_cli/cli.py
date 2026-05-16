@@ -1606,6 +1606,53 @@ def _get_blob_service_client(storage_account: str):
     return BlobServiceClient(account_url=account_url, credential=credential)
 
 
+def _warn_if_runtime_outdated(
+    blob_service_client,
+    container: str,
+    packages_path: str,
+) -> None:
+    """Emit a warning if the deployed runtime wheel is older than the CLI."""
+    try:
+        from packaging.version import Version
+    except ImportError:
+        return
+
+    try:
+        container_client = blob_service_client.get_container_client(container)
+        prefix = f"{packages_path}/" if packages_path else "packages/"
+        blobs = list(container_client.list_blobs(name_starts_with=prefix))
+    except Exception:
+        return
+
+    deployed_version = None
+    for blob in blobs:
+        name = blob.name.split("/")[-1]
+        if name.startswith("spark_kindling-") and name.endswith(".whl"):
+            parts = name.split("-")
+            if len(parts) >= 2:
+                try:
+                    v = Version(parts[1])
+                    if deployed_version is None or v > deployed_version:
+                        deployed_version = v
+                except Exception:
+                    pass
+
+    if deployed_version is None:
+        return
+
+    try:
+        cli_version = Version(_get_version("spark-kindling-cli"))
+    except Exception:
+        return
+
+    if deployed_version < cli_version:
+        click.echo(
+            f"Warning: deployed runtime is v{deployed_version} but CLI is v{cli_version}. "
+            "Run 'kindling workspace deploy' to update the runtime wheel.",
+            err=True,
+        )
+
+
 def _upload_blob(
     blob_service_client,
     container: str,
@@ -2297,6 +2344,8 @@ def workspace_deploy(
         count = _deploy_wheels(blob_service_client, resolved_container, packages_path, wheels)
         click.echo(f"  ({count} wheel(s) uploaded)")
         click.echo()
+    else:
+        _warn_if_runtime_outdated(blob_service_client, resolved_container, packages_path)
 
     # -- Bootstrap script ------------------------------------------------------
     if not skip_bootstrap_script:
@@ -2716,6 +2765,13 @@ def _run_remote_app(
             f"[1/2] Using deployed app `{resolved_name}` on {resolved_platform}...",
             json_output,
         )
+
+    try:
+        _account, _container, _base = _resolve_storage_env()
+        _packages_path = f"{_base}/packages" if _base else "packages"
+        _warn_if_runtime_outdated(_get_blob_service_client(_account), _container, _packages_path)
+    except Exception:
+        pass
 
     step_prefix = "[2/3]" if has_local_source else "[1/2]"
     _emit_progress(f"{step_prefix} Verifying runner on {resolved_platform}...", json_output)
