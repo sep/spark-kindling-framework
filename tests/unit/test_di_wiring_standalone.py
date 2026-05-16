@@ -16,14 +16,14 @@ def _run_fresh_python(code: str) -> subprocess.CompletedProcess[str]:
 
 
 @pytest.mark.requires_spark
-def test_standalone_di_constructs_data_pipe_execution_with_null_watermark_finder() -> None:
+def test_standalone_di_constructs_data_pipe_execution_with_simple_watermark_finder() -> None:
     result = _run_fresh_python(
         """
         from kindling.bootstrap import initialize_framework
         from kindling.data_entities import DataEntityRegistry
         from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
         from kindling.injection import GlobalInjector
-        from kindling.watermarking import NullWatermarkEntityFinder, WatermarkEntityFinder
+        from kindling.watermarking import SimpleWatermarkEntityFinder, WatermarkEntityFinder
 
         initialize_framework({"platform": "standalone", "environment": "local"})
 
@@ -33,14 +33,8 @@ def test_standalone_di_constructs_data_pipe_execution_with_null_watermark_finder
         executor.run_datapipes([])
 
         finder = GlobalInjector.get(WatermarkEntityFinder)
-        assert isinstance(finder, NullWatermarkEntityFinder)
-
-        try:
-            finder.get_watermark_entity_for_entity("bronze.orders")
-        except NotImplementedError:
-            pass
-        else:
-            raise AssertionError("NullWatermarkEntityFinder should fail when used")
+        assert isinstance(finder, SimpleWatermarkEntityFinder)
+        assert finder.get_watermark_entity_for_entity("bronze.orders").entityid == "system.watermarks"
         """
     )
 

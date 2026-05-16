@@ -1432,28 +1432,6 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         platformservice = initialize_platform_services(platform, config_service, logger)
         logger.info("Platform services initialized")
 
-        if platform == "standalone":
-            from kindling.watermarking import (
-                NullWatermarkEntityFinder,
-                WatermarkEntityFinder,
-            )
-
-            injector = GlobalInjector.get_injector()
-            binder = getattr(injector, "binder", None)
-            bindings = getattr(binder, "_bindings", None)
-            existing_binding = (
-                bindings.get(WatermarkEntityFinder) if hasattr(bindings, "get") else None
-            )
-            if bindings is None:
-                logger.debug(
-                    "Injector binding introspection unavailable; applying standalone "
-                    "WatermarkEntityFinder fallback binding"
-                )
-            if existing_binding is None:
-                # [implementer] make standalone DI graph constructible without app watermark boilerplate — TASK-20260430-002
-                GlobalInjector.bind(WatermarkEntityFinder, NullWatermarkEntityFinder)
-                logger.debug("Bound NullWatermarkEntityFinder for standalone platform")
-
         # Resolve any @secret references now that platform services are available.
         try:
             from kindling.config_loaders import load_secrets_from_provider
