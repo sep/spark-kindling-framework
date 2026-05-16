@@ -37,22 +37,37 @@ class WatermarkEntityFinder(ABC):
         pass
 
 
-class NullWatermarkEntityFinder(WatermarkEntityFinder):
-    """Standalone fallback that keeps DI constructible until watermarking is used."""
+@GlobalInjector.singleton_autobind()
+class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
+    """Default implementation — stores all watermarks in a single system.watermarks Delta table."""
+
+    def __init__(self):
+        from types import SimpleNamespace
+
+        schema = StructType(
+            [
+                StructField("watermark_id", StringType(), False),
+                StructField("source_entity_id", StringType(), False),
+                StructField("reader_id", StringType(), False),
+                StructField("timestamp", TimestampType(), False),
+                StructField("last_version_processed", IntegerType(), False),
+                StructField("last_execution_id", StringType(), False),
+            ]
+        )
+        self._entity = SimpleNamespace(
+            entityid="system.watermarks",
+            name="watermarks",
+            schema=schema,
+            partition_columns=[],
+            merge_columns=["watermark_id"],
+            tags={"provider_type": "delta"},
+        )
 
     def get_watermark_entity_for_entity(self, context: str) -> Any:
-        # [implementer] fail loudly if standalone fallback is asked to watermark — TASK-20260430-002
-        raise NotImplementedError(
-            "No WatermarkEntityFinder is configured. Bind a concrete WatermarkEntityFinder "
-            "before using watermark-enabled reads or writes."
-        )
+        return self._entity
 
     def get_watermark_entity_for_layer(self, layer: str) -> Any:
-        # [implementer] fail loudly if standalone fallback is asked to watermark — TASK-20260430-002
-        raise NotImplementedError(
-            "No WatermarkEntityFinder is configured. Bind a concrete WatermarkEntityFinder "
-            "before using watermark-enabled reads or writes."
-        )
+        return self._entity
 
 
 class WatermarkService(ABC):

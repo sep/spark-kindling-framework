@@ -37,6 +37,7 @@ class TestPipeMetadata:
             "input_entity_ids",
             "output_entity_id",
             "output_type",
+            "use_watermark",
         }
 
         assert (

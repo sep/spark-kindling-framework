@@ -12,62 +12,18 @@ import sys
 import time
 
 from pyspark.sql.functions import col, current_timestamp
-from pyspark.sql.types import (
-    IntegerType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
+from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 from kindling.data_entities import DataEntities, DataEntityRegistry, EntityMetadata
 from kindling.data_pipes import DataPipes
 from kindling.entity_provider import is_streamable
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.execution_orchestrator import ExecutionOrchestrator
-from kindling.injection import GlobalInjector, get_kindling_service
+from kindling.injection import get_kindling_service
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
-from kindling.watermarking import WatermarkEntityFinder
-
-
-class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
-    """Minimal WatermarkEntityFinder for system-test DI wiring."""
-
-    def __init__(self):
-        from types import SimpleNamespace
-
-        watermark_schema = StructType(
-            [
-                StructField("watermark_id", StringType(), False),
-                StructField("source_entity_id", StringType(), False),
-                StructField("reader_id", StringType(), False),
-                StructField("timestamp", TimestampType(), False),
-                StructField("last_version_processed", IntegerType(), False),
-                StructField("last_execution_id", StringType(), False),
-            ]
-        )
-
-        self.watermark_entity = SimpleNamespace(
-            entityid="system.watermarks",
-            name="watermarks",
-            schema=watermark_schema,
-            partition_columns=[],
-            merge_columns=["watermark_id"],
-            tags={"provider_type": "delta"},
-        )
-
-    def get_watermark_entity_for_entity(self, _context: str):
-        return self.watermark_entity
-
-    def get_watermark_entity_for_layer(self, _layer: str):
-        return self.watermark_entity
-
-
-def _ensure_test_watermark_finder_bound() -> None:
-    GlobalInjector.bind(WatermarkEntityFinder, SimpleWatermarkEntityFinder)
 
 
 def _emit(logger, test_id: str, test_name: str, passed: bool, details: str = "") -> None:
@@ -202,8 +158,6 @@ def _run_pipe_to_table(
     consumer_group: str,
     test_id: str,
 ) -> tuple[bool, int]:
-    _ensure_test_watermark_finder_bound()
-
     source_entity_id = f"stream.eventhub_pipe_source_{test_id}"
     sink_entity_id = f"stream.eventhub_pipe_sink_{test_id}"
     pipe_id = f"eventhub_to_delta_{test_id}"
