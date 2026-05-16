@@ -172,24 +172,25 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                                         f"Provider '{output_entity.provider_type or 'unknown'}' does not support write operations"
                                     )
 
-                        with strategy.tp.span(operation="save_watermarks"):
-                            with strategy.tp.span(
-                                operation="save_watermark", component=f"{src_input_entity_id}"
-                            ):
-                                strategy.wms.save_watermark(
-                                    src_input_entity_id,
-                                    pipe.pipeid,
-                                    src_read_version,
-                                    str(uuid.uuid4()),
-                                )
+                        if pipe.use_watermark:
+                            with strategy.tp.span(operation="save_watermarks"):
+                                with strategy.tp.span(
+                                    operation="save_watermark", component=f"{src_input_entity_id}"
+                                ):
+                                    strategy.wms.save_watermark(
+                                        src_input_entity_id,
+                                        pipe.pipeid,
+                                        src_read_version,
+                                        str(uuid.uuid4()),
+                                    )
 
-                                strategy.emit(
-                                    "persist.watermark_saved",
-                                    pipe_id=pipe.pipeid,
-                                    source_entity_id=src_input_entity_id,
-                                    version=src_read_version,
-                                    persist_id=persist_id,
-                                )
+                                    strategy.emit(
+                                        "persist.watermark_saved",
+                                        pipe_id=pipe.pipeid,
+                                        source_entity_id=src_input_entity_id,
+                                        version=src_read_version,
+                                        persist_id=persist_id,
+                                    )
 
                     duration = time.time() - start_time
                     strategy.emit(

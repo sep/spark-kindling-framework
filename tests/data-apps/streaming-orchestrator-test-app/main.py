@@ -13,7 +13,6 @@ import sys
 import threading
 import time
 from datetime import datetime
-from types import SimpleNamespace
 
 from pyspark.sql.functions import current_timestamp
 from pyspark.sql.types import StringType, StructField, StructType, TimestampType
@@ -21,7 +20,7 @@ from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 from kindling.data_entities import DataEntities, DataEntityRegistry, EntityProvider
 from kindling.data_pipes import DataPipes
 from kindling.execution_strategy import ExecutionPlanGenerator
-from kindling.injection import GlobalInjector, get_kindling_service
+from kindling.injection import get_kindling_service
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.signaling import SignalProvider
 from kindling.spark_config import ConfigService
@@ -30,37 +29,6 @@ from kindling.spark_session import get_or_create_spark_session
 from kindling.streaming_listener import KindlingStreamingListener
 from kindling.streaming_orchestrator import StreamingOrchestrator
 from kindling.streaming_query_manager import StreamingQueryManager
-from kindling.watermarking import WatermarkEntityFinder
-
-
-class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
-    """Minimal WatermarkEntityFinder for system-test DI wiring."""
-
-    def __init__(self):
-        watermark_schema = StructType(
-            [
-                StructField("watermark_id", StringType(), False),
-                StructField("source_entity_id", StringType(), False),
-                StructField("reader_id", StringType(), False),
-                StructField("timestamp", TimestampType(), False),
-                StructField("last_version_processed", StringType(), True),
-                StructField("last_execution_id", StringType(), True),
-            ]
-        )
-        self.watermark_entity = SimpleNamespace(
-            entityid="system.watermarks",
-            name="watermarks",
-            schema=watermark_schema,
-            partition_columns=[],
-            merge_columns=["watermark_id"],
-            tags={"provider_type": "delta"},
-        )
-
-    def get_watermark_entity_for_entity(self, _context: str):
-        return self.watermark_entity
-
-    def get_watermark_entity_for_layer(self, _layer: str):
-        return self.watermark_entity
 
 
 def _emit(logger, test_id: str, test_name: str, passed: bool, details: str = "") -> None:
@@ -228,8 +196,6 @@ def _entity_tags(
 
 
 def main() -> int:
-    GlobalInjector.bind(WatermarkEntityFinder, SimpleWatermarkEntityFinder)
-
     config_service = get_kindling_service(ConfigService)
     logger_provider = get_kindling_service(SparkLoggerProvider)
     logger = logger_provider.get_logger("streaming-orchestrator-test-app")

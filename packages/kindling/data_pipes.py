@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import time
 import uuid
@@ -27,6 +28,7 @@ class PipeMetadata:
     input_entity_ids: List[str]
     output_entity_id: str
     output_type: str
+    use_watermark: bool = False
 
 
 class EntityReadPersistStrategy(ABC):
@@ -80,7 +82,12 @@ class DataPipes:
                         "See your app.py register_all() for the correct order."
                     ) from exc
             decorator_params["execute"] = func
-            required_fields = {field.name for field in fields(PipeMetadata)}
+            required_fields = {
+                field.name
+                for field in fields(PipeMetadata)
+                if field.default is dataclasses.MISSING
+                and field.default_factory is dataclasses.MISSING
+            }
             missing_fields = required_fields - decorator_params.keys()
 
             if missing_fields:
@@ -365,7 +372,9 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         for i, entity_id in enumerate(pipe.input_entity_ids):
             is_first = i == 0  # True for the first entity, False for others
             key = entity_id.replace(".", "_")
-            result[key] = entity_reader(self.dpe.get_entity_definition(entity_id), is_first)
+            result[key] = entity_reader(
+                self.dpe.get_entity_definition(entity_id), pipe.use_watermark and is_first
+            )
         return result
 
 
