@@ -26,12 +26,11 @@ from pyspark.sql.types import (
 from kindling.data_entities import DataEntities, DataEntityRegistry
 from kindling.data_pipes import DataPipes
 from kindling.execution_orchestrator import ExecutionOrchestrator
-from kindling.injection import GlobalInjector, get_kindling_service
+from kindling.injection import get_kindling_service
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
-from kindling.watermarking import WatermarkEntityFinder
 
 # ---- Init ----
 
@@ -209,44 +208,6 @@ try:
             return get_feature_bool(config_service, "delta.auto_clustering", default=False) is True
         except Exception:
             return False
-
-    class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
-        """Provides watermark entities for streaming test - minimal implementation."""
-
-        def __init__(self):
-            # Define watermark entity schema (used by WatermarkManager)
-            self.watermark_schema = StructType(
-                [
-                    StructField("watermark_id", StringType(), False),
-                    StructField("source_entity_id", StringType(), False),
-                    StructField("reader_id", StringType(), False),
-                    StructField("timestamp", TimestampType(), False),
-                    StructField("last_version_processed", IntegerType(), False),
-                    StructField("last_execution_id", StringType(), False),
-                ]
-            )
-
-            # Create a dummy watermark entity
-            # NOTE: This test uses streaming mode, so watermarks aren't actually used,
-            # but WatermarkEntityFinder is required by dependency injection
-            from types import SimpleNamespace
-
-            self.watermark_entity = SimpleNamespace(
-                entityid="system.watermarks",
-                name="watermarks",
-                schema=self.watermark_schema,
-                partition_columns=[],
-                merge_columns=["watermark_id"],
-                tags={"provider_type": "delta"},
-            )
-
-        def get_watermark_entity_for_entity(self, _context: str):
-            return self.watermark_entity
-
-        def get_watermark_entity_for_layer(self, _layer: str):
-            return self.watermark_entity
-
-    GlobalInjector.bind(WatermarkEntityFinder, SimpleWatermarkEntityFinder)
 
     # ---- Define entity schemas ----
 
