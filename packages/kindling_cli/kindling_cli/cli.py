@@ -2,6 +2,7 @@
 
 import ast
 import csv
+import importlib.metadata
 import io
 import json
 import logging
@@ -605,8 +606,35 @@ def _read_settings_app_name(settings_path: Path = Path("config/settings.yaml")) 
     return None
 
 
+def _get_version(pkg: str) -> str:
+    try:
+        return importlib.metadata.version(pkg)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _version_callback(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    cli_ver = _get_version("spark-kindling-cli")
+    sdk_ver = _get_version("spark-kindling-sdk")
+    runtime_ver = _get_version("spark-kindling")
+    click.echo(f"kindling {cli_ver}")
+    click.echo(f"  sdk:     {sdk_ver}")
+    click.echo(f"  runtime: {runtime_ver}")
+    ctx.exit()
+
+
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option(package_name="spark-kindling-cli", prog_name="kindling")
+@click.option(
+    "--version",
+    "-V",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_version_callback,
+    help="Show version and exit.",
+)
 def cli() -> None:
     """Kindling CLI."""
 
