@@ -155,6 +155,11 @@ kindling app run .
 kindling app run . --platform standalone --env local
 ```
 
+Standalone app runs create a Delta-enabled Spark session by default so local
+Delta reads, writes, and `DeltaTable.forPath()` use the JVM Delta classes from
+the `delta-spark` package. To force a plain Spark session for a non-Delta app,
+run with `KINDLING_SPARK_ENABLE_DELTA=false`.
+
 ## Running a Pipe Locally
 
 Use `kindling pipeline run` to execute one registered pipe without deploying to

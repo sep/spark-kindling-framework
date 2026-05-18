@@ -2891,6 +2891,7 @@ def _run_standalone_app(
     resolved_app = _discover_app_py_under(source_path)
 
     run_env = {**os.environ, "KINDLING_ENV": resolved_env}
+    run_env.setdefault("KINDLING_SPARK_ENABLE_DELTA", "true")
     if config_dir is not None:
         run_env["KINDLING_CONFIG_DIR"] = str(config_dir.expanduser().resolve())
     if quiet:
