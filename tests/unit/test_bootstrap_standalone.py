@@ -6,6 +6,18 @@ from unittest.mock import MagicMock, patch
 from kindling.injection import GlobalInjector
 
 
+class StrictKindlingLogger:
+    def __init__(self):
+        self.debug_messages = []
+        self.info_messages = []
+
+    def debug(self, message, extra=None):
+        self.debug_messages.append((message, extra))
+
+    def info(self, message, extra=None):
+        self.info_messages.append((message, extra))
+
+
 def _config_service_with_defaults():
     config_service = MagicMock()
     config_service.dynaconf = None
@@ -134,19 +146,32 @@ def test_import_local_package_registrations_loads_entities_pipes_and_ingestion(
         if module_name.startswith("demo_domain"):
             monkeypatch.delitem(sys.modules, module_name, raising=False)
 
-    _import_local_package_registrations(MagicMock())
+    logger = StrictKindlingLogger()
+
+    _import_local_package_registrations(logger)
 
     assert os.environ["DEMO_ENTITIES_IMPORTED"] == "1"
     assert os.environ["DEMO_PIPES_IMPORTED"] == "1"
     assert os.environ["DEMO_INGESTION_IMPORTED"] == "1"
+    assert logger.info_messages == [
+        (
+            "Imported 6 local package registration modules from demo_domain",
+            None,
+        )
+    ]
 
 
 def test_import_local_package_registrations_ignores_missing_namespaces(monkeypatch):
     from kindling.bootstrap import _import_local_package_registrations
 
-    logger = MagicMock()
+    logger = StrictKindlingLogger()
     monkeypatch.setenv("KINDLING_LOCAL_PACKAGE_MODULES", json.dumps(["missing_domain"]))
 
     _import_local_package_registrations(logger)
 
-    logger.debug.assert_called_once()
+    assert logger.debug_messages == [
+        (
+            "No local package registration modules found under missing_domain",
+            None,
+        )
+    ]
