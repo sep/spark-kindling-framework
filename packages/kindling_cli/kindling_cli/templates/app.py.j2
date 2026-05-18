@@ -18,7 +18,8 @@ if _src.exists() and str(_src) not in sys.path:
 from kindling.bootstrap import initialize_framework
 
 _env = os.environ.get("KINDLING_ENV", "local")
-_config_dir = Path(os.environ.get("KINDLING_CONFIG_DIR", "")) or Path(__file__).resolve().parent / "config"
+_config_dir_env = os.environ.get("KINDLING_CONFIG_DIR")
+_config_dir = Path(_config_dir_env) if _config_dir_env else Path(__file__).resolve().parent / "config"
 _configs = [str(_config_dir / "settings.yaml")]
 _env_file = _config_dir / f"env.{_env}.yaml"
 if _env_file.exists():

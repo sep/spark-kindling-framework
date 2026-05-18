@@ -2944,7 +2944,12 @@ def _run_standalone_app(
                 [*local_package_modules, *existing_modules]
             )
     if config_dir is not None:
-        run_env["KINDLING_CONFIG_DIR"] = str(config_dir.expanduser().resolve())
+        resolved_config_dir = config_dir.expanduser().resolve()
+        run_env["KINDLING_CONFIG_DIR"] = str(resolved_config_dir)
+    else:
+        default_config_dir = resolved_app.parent / "config"
+        if default_config_dir.is_dir():
+            run_env["KINDLING_CONFIG_DIR"] = str(default_config_dir.resolve())
     if quiet:
         run_env["KINDLING_LOG_LEVEL"] = "WARNING"
 

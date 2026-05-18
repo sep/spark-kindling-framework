@@ -244,6 +244,17 @@ def test_env_local_yaml_top_level_entity_tags(tmp_path):
     assert "default:" not in env_local
 
 
+def test_app_template_uses_app_config_when_env_var_unset(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    cfg = AppScaffoldConfig(name="proj", package_name="proj", repo_root=repo_root)
+    generate_app(cfg)
+
+    app = (repo_root / "apps" / "proj" / "app.py").read_text()
+    assert '_config_dir_env = os.environ.get("KINDLING_CONFIG_DIR")' in app
+    assert "if _config_dir_env else Path(__file__).resolve().parent / \"config\"" in app
+
+
 def test_package_pyproject_uses_kebab_name(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
