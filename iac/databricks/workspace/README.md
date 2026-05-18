@@ -82,9 +82,9 @@ export ARM_TENANT_ID="..."
 Create separate `.tfvars` files per target workspace:
 
 ```bash
-terraform apply -var-file=sep.dev.tfvars   # Existing SEP dev workspace
-terraform apply -var-file=myproject.dev.tfvars   # myproject dev workspace
-terraform apply -var-file=prod.tfvars      # Production
+terraform apply -var-file=myproject.dev.tfvars   # Dev workspace
+terraform apply -var-file=myproject.staging.tfvars  # Staging workspace
+terraform apply -var-file=prod.tfvars               # Production
 ```
 
 ## Recommended Separation
