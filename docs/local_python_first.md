@@ -155,6 +155,23 @@ kindling app run .
 kindling app run . --platform standalone --env local
 ```
 
+When you want the app to import checked-out package code instead of an installed
+or artifact-backed wheel, pass one or more local package roots:
+
+```bash
+kindling app run . --local-package ../../packages/my_pipeline
+kindling app run . --local-package ../../packages/my_pipeline --local-package ../shared_domain
+```
+
+Each `--local-package` path may point at a package root with a `src/` directory
+or directly at a source directory. The resolved source paths are prepended to
+`PYTHONPATH` for that local run only.
+
+Standalone app runs create a Delta-enabled Spark session by default so local
+Delta reads, writes, and `DeltaTable.forPath()` use the JVM Delta classes from
+the `delta-spark` package. To force a plain Spark session for a non-Delta app,
+run with `KINDLING_SPARK_ENABLE_DELTA=false`.
+
 ## Running a Pipe Locally
 
 Use `kindling pipeline run` to execute one registered pipe without deploying to

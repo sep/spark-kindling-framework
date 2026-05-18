@@ -57,6 +57,7 @@ standalone platform:
 cd apps/my_pipeline
 kindling app run .
 kindling app run . --platform standalone --env local
+kindling app run . --local-package ../../packages/my_pipeline
 ```
 
 Use `kindling pipeline run` to execute one pipe from your local package without

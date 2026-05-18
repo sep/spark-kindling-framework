@@ -1,6 +1,21 @@
+import json
+import os
+import sys
 from unittest.mock import MagicMock, patch
 
 from kindling.injection import GlobalInjector
+
+
+class StrictKindlingLogger:
+    def __init__(self):
+        self.debug_messages = []
+        self.info_messages = []
+
+    def debug(self, message, extra=None):
+        self.debug_messages.append((message, extra))
+
+    def info(self, message, extra=None):
+        self.info_messages.append((message, extra))
 
 
 def _config_service_with_defaults():
@@ -50,7 +65,6 @@ def test_initialize_framework_uses_explicit_config_files_for_standalone():
     from kindling.spark_log_provider import PythonLoggerProvider
 
     GlobalInjector.reset()
-
     logger = MagicMock()
     logger_provider = MagicMock()
     logger_provider.get_logger.return_value = logger
@@ -98,3 +112,66 @@ def test_initialize_framework_uses_explicit_config_files_for_standalone():
     assert mock_configure.call_args.kwargs["platform"] == "standalone"
 
     GlobalInjector.reset()
+
+
+def test_import_local_package_registrations_loads_entities_pipes_and_ingestion(
+    tmp_path, monkeypatch
+):
+    from kindling.bootstrap import _import_local_package_registrations
+
+    src_dir = tmp_path / "src"
+    package_dir = src_dir / "demo_domain"
+    for namespace in ("entities", "pipes", "ingestion"):
+        module_dir = package_dir / namespace
+        module_dir.mkdir(parents=True)
+        (module_dir / "__init__.py").write_text("", encoding="utf-8")
+        (module_dir / "registered.py").write_text(
+            (
+                "import os\n"
+                f"os.environ['DEMO_{namespace.upper()}_IMPORTED'] = '1'\n"
+            ),
+            encoding="utf-8",
+        )
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    monkeypatch.syspath_prepend(str(src_dir))
+    monkeypatch.setenv("KINDLING_LOCAL_PACKAGE_MODULES", json.dumps(["demo_domain"]))
+    for key in (
+        "DEMO_ENTITIES_IMPORTED",
+        "DEMO_PIPES_IMPORTED",
+        "DEMO_INGESTION_IMPORTED",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for module_name in list(sys.modules):
+        if module_name.startswith("demo_domain"):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    logger = StrictKindlingLogger()
+
+    _import_local_package_registrations(logger)
+
+    assert os.environ["DEMO_ENTITIES_IMPORTED"] == "1"
+    assert os.environ["DEMO_PIPES_IMPORTED"] == "1"
+    assert os.environ["DEMO_INGESTION_IMPORTED"] == "1"
+    assert logger.info_messages == [
+        (
+            "Imported 6 local package registration modules from demo_domain",
+            None,
+        )
+    ]
+
+
+def test_import_local_package_registrations_ignores_missing_namespaces(monkeypatch):
+    from kindling.bootstrap import _import_local_package_registrations
+
+    logger = StrictKindlingLogger()
+    monkeypatch.setenv("KINDLING_LOCAL_PACKAGE_MODULES", json.dumps(["missing_domain"]))
+
+    _import_local_package_registrations(logger)
+
+    assert logger.debug_messages == [
+        (
+            "No local package registration modules found under missing_domain",
+            None,
+        )
+    ]

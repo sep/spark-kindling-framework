@@ -378,6 +378,33 @@ def _coerce_value(raw: str) -> Any:
     return raw
 
 
+def _discover_python_package_roots(pythonpath_entry: Path) -> List[str]:
+    """Return importable package roots found under a PYTHONPATH entry."""
+    package_roots = []
+    for candidate in sorted(pythonpath_entry.iterdir()):
+        if candidate.is_dir() and (candidate / "__init__.py").is_file():
+            package_roots.append(candidate.name)
+    return package_roots
+
+
+def _resolve_local_package_path(package_path: Path) -> Tuple[Path, List[str]]:
+    """Resolve a local package root/source directory and discover package roots."""
+    resolved = package_path.expanduser().resolve()
+    if not resolved.exists():
+        raise click.ClickException(f"Local package path does not exist: {resolved}")
+    if not resolved.is_dir():
+        raise click.ClickException(f"Local package path must be a directory: {resolved}")
+
+    src_dir = resolved / "src"
+    if src_dir.is_dir():
+        return src_dir, _discover_python_package_roots(src_dir)
+
+    if (resolved / "__init__.py").is_file():
+        return resolved.parent, [resolved.name]
+
+    return resolved, _discover_python_package_roots(resolved)
+
+
 def _set_nested_key(data: Dict[str, Any], dotted_key: str, value: Any) -> None:
     """Set a value in a nested dict using a dot-notation key.
 
@@ -2859,6 +2886,7 @@ def _run_standalone_app(
     env: Optional[str],
     config_dir: Optional[Path],
     quiet: bool,
+    local_packages: Tuple[Path, ...],
     parameters_path: Optional[Path],
     param_overrides: Tuple[str, ...],
     no_logs: bool,
@@ -2891,8 +2919,37 @@ def _run_standalone_app(
     resolved_app = _discover_app_py_under(source_path)
 
     run_env = {**os.environ, "KINDLING_ENV": resolved_env}
+    run_env.setdefault("KINDLING_SPARK_ENABLE_DELTA", "true")
+    if local_packages:
+        local_package_paths = []
+        local_package_modules = []
+        for path in local_packages:
+            pythonpath_entry, package_modules = _resolve_local_package_path(path)
+            local_package_paths.append(str(pythonpath_entry))
+            local_package_modules.extend(package_modules)
+        existing_pythonpath = run_env.get("PYTHONPATH")
+        run_env["PYTHONPATH"] = os.pathsep.join(
+            [*local_package_paths, *([existing_pythonpath] if existing_pythonpath else [])]
+        )
+        if local_package_modules:
+            try:
+                existing_modules = json.loads(
+                    run_env.get("KINDLING_LOCAL_PACKAGE_MODULES") or "[]"
+                )
+            except json.JSONDecodeError:
+                existing_modules = []
+            if not isinstance(existing_modules, list):
+                existing_modules = []
+            run_env["KINDLING_LOCAL_PACKAGE_MODULES"] = json.dumps(
+                [*local_package_modules, *existing_modules]
+            )
     if config_dir is not None:
-        run_env["KINDLING_CONFIG_DIR"] = str(config_dir.expanduser().resolve())
+        resolved_config_dir = config_dir.expanduser().resolve()
+        run_env["KINDLING_CONFIG_DIR"] = str(resolved_config_dir)
+    else:
+        default_config_dir = resolved_app.parent / "config"
+        if default_config_dir.is_dir():
+            run_env["KINDLING_CONFIG_DIR"] = str(default_config_dir.resolve())
     if quiet:
         run_env["KINDLING_LOG_LEVEL"] = "WARNING"
 
@@ -2933,6 +2990,16 @@ def _run_standalone_app(
     help="For standalone app runs, suppress INFO-level framework logs.",
 )
 @click.option(
+    "--local-package",
+    "local_packages",
+    multiple=True,
+    type=click.Path(path_type=Path, file_okay=False, exists=True),
+    help=(
+        "Local package root or source directory to prepend to PYTHONPATH for "
+        "standalone app runs. May be repeated."
+    ),
+)
+@click.option(
     "--parameters",
     "parameters_path",
     default=None,
@@ -2969,6 +3036,7 @@ def app_run(
     env: Optional[str],
     config_dir: Optional[Path],
     quiet: bool,
+    local_packages: Tuple[Path, ...],
     parameters_path: Optional[Path],
     param_overrides: Tuple[str, ...],
     platform: Optional[str],
@@ -2988,6 +3056,7 @@ def app_run(
             env,
             config_dir,
             quiet,
+            local_packages,
             parameters_path,
             param_overrides,
             no_logs,
@@ -3001,6 +3070,8 @@ def app_run(
         raise click.ClickException("--config is only valid for standalone app runs.")
     if quiet:
         raise click.ClickException("--quiet is only valid for standalone app runs.")
+    if local_packages:
+        raise click.ClickException("--local-package is only valid for standalone app runs.")
 
     _run_remote_app(
         app,

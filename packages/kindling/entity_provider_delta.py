@@ -35,6 +35,14 @@ from .entity_provider import (
 )
 
 
+class ReadOnlyEntityError(Exception):
+    """Raised when a write is attempted on a read-only entity."""
+
+
+class EntityPathConflictError(Exception):
+    """Raised when catalog registration exists at a different path than expected."""
+
+
 class DeltaMergeStrategy(ABC):
     """Strategy protocol for Delta merge semantics."""
 
@@ -915,8 +923,73 @@ class DeltaEntityProvider(
                     self.logger.debug(f"Path check failed: {e2}")
                     return False
 
+    def _is_read_only(self, entity) -> bool:
+        tags = getattr(entity, "tags", {}) or {}
+        return str(tags.get("read_only", "")).lower() == "true"
+
+    def _ensure_external_registration(self, entity, table_ref: DeltaTableReference) -> None:
+        """Register a read-only Delta table in the catalog without creating it."""
+        if not table_ref.table_name:
+            self.logger.debug(
+                f"Skipping external registration for read-only entity '{entity.entityid}': no table_name"
+            )
+            return
+
+        catalog_exists = self._check_catalog_table_exists(table_ref)
+
+        if catalog_exists:
+            registered_path = self._resolve_catalog_table_location(table_ref.table_name)
+            expected_path = table_ref.table_path
+
+            if not expected_path or registered_path == expected_path:
+                self.logger.debug(
+                    f"Read-only entity '{entity.entityid}' already registered at expected path"
+                )
+                return
+
+            tags = getattr(entity, "tags", {}) or {}
+            on_conflict = str(tags.get("read_only.on_path_conflict", "error")).lower()
+
+            if on_conflict == "reregister":
+                self.logger.warning(
+                    f"Read-only entity '{entity.entityid}': catalog path mismatch "
+                    f"(registered={registered_path}, expected={expected_path}). "
+                    "Re-registering per read_only.on_path_conflict=reregister."
+                )
+                quoted = self._quote_table_identifier(table_ref.table_name)
+                self.spark.sql(f"DROP TABLE IF EXISTS {quoted}")
+                escaped_path = expected_path.replace("'", "''")
+                self.spark.sql(
+                    f"CREATE TABLE IF NOT EXISTS {quoted} USING DELTA LOCATION '{escaped_path}'"
+                )
+            else:
+                raise EntityPathConflictError(
+                    f"Read-only entity '{entity.entityid}': catalog registration exists at "
+                    f"'{registered_path}' but expected '{expected_path}'. "
+                    "Set tag read_only.on_path_conflict=reregister to auto-reregister."
+                )
+        else:
+            if not table_ref.table_path:
+                self.logger.warning(
+                    f"Read-only entity '{entity.entityid}': no table_path available for registration"
+                )
+                return
+            quoted = self._quote_table_identifier(table_ref.table_name)
+            escaped_path = table_ref.table_path.replace("'", "''")
+            self.logger.info(
+                f"Registering read-only entity '{entity.entityid}' in catalog at '{table_ref.table_path}'"
+            )
+            self.spark.sql(
+                f"CREATE TABLE IF NOT EXISTS {quoted} USING DELTA LOCATION '{escaped_path}'"
+            )
+
     def _ensure_table_exists(self, entity, table_ref: DeltaTableReference):
         """Ensure table exists, create if needed"""
+
+        if self._is_read_only(entity):
+            if self._is_for_name_mode(table_ref.access_mode):
+                self._ensure_external_registration(entity, table_ref)
+            return
 
         if self._is_for_name_mode(table_ref.access_mode):
             catalog_exists = self._check_catalog_table_exists(table_ref)
@@ -1363,6 +1436,10 @@ class DeltaEntityProvider(
         return self._check_table_exists(table_ref)
 
     def append_as_stream(self, df, entity, checkpointLocation, format=None, options=None):
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(
+                f"Entity '{entity.entityid}' is read-only; streaming write operations are not permitted."
+            )
         epl = GlobalInjector.get(EntityPathLocator)
         streamFormat = format or "delta"
 
@@ -1375,6 +1452,10 @@ class DeltaEntityProvider(
 
     def merge_to_entity(self, df: DataFrame, entity):
         """Merge DataFrame to entity table with signal emissions."""
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(
+                f"Entity '{entity.entityid}' is read-only; merge operations are not permitted."
+            )
         start_time = time.time()
         table_ref = self._get_table_reference(entity)
 
@@ -1411,6 +1492,10 @@ class DeltaEntityProvider(
 
     def append_to_entity(self, df: DataFrame, entity):
         """Append DataFrame to entity table with signal emissions."""
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(
+                f"Entity '{entity.entityid}' is read-only; append operations are not permitted."
+            )
         start_time = time.time()
         table_ref = self._get_table_reference(entity)
 
@@ -1498,6 +1583,10 @@ class DeltaEntityProvider(
 
     def write_to_entity(self, df: DataFrame, entity):
         """Write DataFrame to entity table with signal emissions."""
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(
+                f"Entity '{entity.entityid}' is read-only; write operations are not permitted."
+            )
         start_time = time.time()
         table_ref = self._get_table_reference(entity)
 

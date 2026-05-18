@@ -15,7 +15,7 @@
 #   - /tmp/hadoop-jars symlink expected by conftest.py fixtures
 #   - /spark-warehouse pre-created and owned by vscode
 
-ARG KINDLING_VERSION=0.9.21
+ARG KINDLING_VERSION=0.9.22
 
 FROM mcr.microsoft.com/devcontainers/python:3.11
 
@@ -32,8 +32,8 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
-# Install Poetry globally (version-pinned for reproducibility)
-RUN pip install --no-cache-dir poetry==1.8.3
+# Install Poetry and Poe globally (version-pinned for reproducibility)
+RUN pip install --no-cache-dir poetry==1.8.3 poethepoet==0.45.0
 
 # Build kindling wheels from source and install them.
 # The source tree is copied in at build time; /build is removed afterwards
