@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import sys
 import types
 import zipfile
@@ -1289,6 +1290,69 @@ class TestAppRunCommand:
 
         assert result.exit_code == 0, result.output
         assert captured_env["KINDLING_SPARK_ENABLE_DELTA"] == "false"
+
+    def test_standalone_local_package_prepends_pythonpath(self, tmp_path, monkeypatch):
+        import subprocess
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
+        package_root = tmp_path / "packages" / "domain"
+        package_src = package_root / "src"
+        package_src.mkdir(parents=True)
+        direct_src = tmp_path / "shared_src"
+        direct_src.mkdir()
+        captured_env = {}
+
+        def fake_run(cmd, env=None, **kwargs):
+            captured_env.update(env or {})
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setenv("PYTHONPATH", "/existing/path")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "app",
+                "run",
+                str(app_dir),
+                "--local-package",
+                str(package_root),
+                "--local-package",
+                str(direct_src),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured_env["PYTHONPATH"].split(os.pathsep) == [
+            str(package_src.resolve()),
+            str(direct_src.resolve()),
+            "/existing/path",
+        ]
+
+    def test_remote_rejects_local_package_override(self, tmp_path):
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# app", encoding="utf-8")
+        package_root = tmp_path / "packages" / "domain"
+        package_root.mkdir(parents=True)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "app",
+                "run",
+                str(app_dir),
+                "--platform",
+                "synapse",
+                "--local-package",
+                str(package_root),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "--local-package is only valid for standalone app runs" in result.output
 
     def test_standalone_rejects_remote_only_options(self, tmp_path):
         app_dir = tmp_path / "myapp"
