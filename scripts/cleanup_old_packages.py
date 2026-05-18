@@ -107,7 +107,7 @@ def main():
     from azure.storage.blob import BlobServiceClient
 
     # Get Azure credentials
-    storage_account = os.getenv("AZURE_STORAGE_ACCOUNT", "mystorageaccount")
+    storage_account = os.getenv("AZURE_STORAGE_ACCOUNT", "")
     container = os.getenv("AZURE_CONTAINER", "artifacts")
 
     print("🧹 Cleaning up old package versions")

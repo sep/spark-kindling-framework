@@ -2933,9 +2933,7 @@ def _run_standalone_app(
         )
         if local_package_modules:
             try:
-                existing_modules = json.loads(
-                    run_env.get("KINDLING_LOCAL_PACKAGE_MODULES") or "[]"
-                )
+                existing_modules = json.loads(run_env.get("KINDLING_LOCAL_PACKAGE_MODULES") or "[]")
             except json.JSONDecodeError:
                 existing_modules = []
             if not isinstance(existing_modules, list):

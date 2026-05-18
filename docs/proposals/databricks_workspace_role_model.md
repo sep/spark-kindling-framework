@@ -385,4 +385,3 @@ This gives us a path to:
 
 - keep the internal platform workspace fully Kindling-native
 - avoid baking engineering assumptions into customer solution workspaces
-
