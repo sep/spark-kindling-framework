@@ -315,9 +315,26 @@ def _validate_scd_config(entity: EntityMetadata) -> None:
         )
 
 
+class _EntityIds:
+    """Auto-populated namespace of entity ID string constants.
+
+    Each registered entity gets an attribute whose name is the entityid
+    with dots replaced by underscores, and whose value is the entityid string.
+
+    Example::
+
+        @DataEntities.entity(entityid="bronze.orders", ...)
+        class BronzeOrders: ...
+
+        # DataEntities.ids.bronze_orders == "bronze.orders"
+        input_entity_ids=[DataEntities.ids.bronze_orders]
+    """
+
+
 class DataEntities:
 
     deregistry = None
+    ids = _EntityIds()
 
     @staticmethod
     def _identity_decorator(obj):
@@ -329,6 +346,7 @@ class DataEntities:
     def reset(cls) -> None:
         """Reset the entity registry. Use between tests to prevent state pollution."""
         cls.deregistry = None
+        cls.ids = _EntityIds()
 
     @classmethod
     def sql_entity(
@@ -393,6 +411,7 @@ class DataEntities:
             schema=None,
             sql=resolved_sql,
         )
+        setattr(cls.ids, entityid.replace(".", "_"), entityid)
         return cls._identity_decorator
 
     @classmethod
@@ -427,7 +446,7 @@ class DataEntities:
         del decorator_params["entityid"]
 
         cls.deregistry.register_entity(entityid, **decorator_params)
-
+        setattr(cls.ids, entityid.replace(".", "_"), entityid)
         return cls._identity_decorator
 
 
