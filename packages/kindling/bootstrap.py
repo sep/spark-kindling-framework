@@ -164,14 +164,12 @@ def _import_local_package_registrations(logger) -> None:
         total_imported += imported_for_root
         if imported_for_root == 0:
             logger.debug(
-                "No local package registration modules found under %s", module_root
+                f"No local package registration modules found under {module_root}"
             )
 
     logger.info(
-        "Imported %s local package registration module%s from %s",
-        total_imported,
-        "" if total_imported == 1 else "s",
-        ", ".join(module_roots),
+        f"Imported {total_imported} local package registration "
+        f"module{'' if total_imported == 1 else 's'} from {', '.join(module_roots)}"
     )
 
 
