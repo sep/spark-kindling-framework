@@ -1271,6 +1271,47 @@ class TestAppRunCommand:
         assert captured_env["KINDLING_CONFIG_DIR"] == str(config_dir.resolve())
         assert captured_env["KINDLING_LOG_LEVEL"] == "WARNING"
 
+    def test_standalone_defaults_config_dir_to_app_config(self, tmp_path, monkeypatch):
+        import subprocess
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
+        config_dir = app_dir / "config"
+        config_dir.mkdir()
+        captured_env = {}
+
+        def fake_run(cmd, env=None, **kwargs):
+            captured_env.update(env or {})
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert captured_env["KINDLING_CONFIG_DIR"] == str(config_dir.resolve())
+
+    def test_standalone_does_not_set_missing_default_config_dir(self, tmp_path, monkeypatch):
+        import subprocess
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
+        captured_env = {}
+
+        def fake_run(cmd, env=None, **kwargs):
+            captured_env.update(env or {})
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.delenv("KINDLING_CONFIG_DIR", raising=False)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert "KINDLING_CONFIG_DIR" not in captured_env
+
     def test_standalone_preserves_delta_env_override(self, tmp_path, monkeypatch):
         import subprocess
 
