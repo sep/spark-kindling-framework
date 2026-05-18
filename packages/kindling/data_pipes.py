@@ -57,14 +57,32 @@ class EntityReadPersistStrategy(ABC):
         pass
 
 
+class _PipeIds:
+    """Auto-populated namespace of pipe ID string constants.
+
+    Each registered pipe gets an attribute whose name is the pipeid
+    with dots and hyphens replaced by underscores, and whose value is
+    the pipeid string.
+
+    Example::
+
+        @DataPipes.pipe(pipeid="bronze_to_silver_orders", ...)
+        def transform(df): ...
+
+        # DataPipes.ids.bronze_to_silver_orders == "bronze_to_silver_orders"
+    """
+
+
 class DataPipes:
     dpregistry = None
+    ids = _PipeIds()
 
     # [implementer] expose public test reset API — TASK-20260430-001
     @classmethod
     def reset(cls) -> None:
         """Reset the pipe registry. Use between tests to prevent state pollution."""
         cls.dpregistry = None
+        cls.ids = _PipeIds()
 
     @classmethod
     def pipe(cls, **decorator_params):
@@ -96,6 +114,7 @@ class DataPipes:
             pipeid = decorator_params["pipeid"]
             del decorator_params["pipeid"]
             cls.dpregistry.register_pipe(pipeid, **decorator_params)
+            setattr(cls.ids, pipeid.replace(".", "_").replace("-", "_"), pipeid)
             return func
 
         return decorator
@@ -104,7 +123,7 @@ class DataPipes:
 class DataPipesRegistry(ABC):
     @abstractmethod
     def register_pipe(self, pipeid, **decorator_params):
-        passabstractmethod
+        pass
 
     @abstractmethod
     def get_pipe_ids(self):
