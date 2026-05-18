@@ -1266,8 +1266,29 @@ class TestAppRunCommand:
 
         assert result.exit_code == 0, result.output
         assert captured_env["KINDLING_ENV"] == "dev"
+        assert captured_env["KINDLING_SPARK_ENABLE_DELTA"] == "true"
         assert captured_env["KINDLING_CONFIG_DIR"] == str(config_dir.resolve())
         assert captured_env["KINDLING_LOG_LEVEL"] == "WARNING"
+
+    def test_standalone_preserves_delta_env_override(self, tmp_path, monkeypatch):
+        import subprocess
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# stub\n")
+        captured_env = {}
+
+        def fake_run(cmd, env=None, **kwargs):
+            captured_env.update(env or {})
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setenv("KINDLING_SPARK_ENABLE_DELTA", "false")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert captured_env["KINDLING_SPARK_ENABLE_DELTA"] == "false"
 
     def test_standalone_rejects_remote_only_options(self, tmp_path):
         app_dir = tmp_path / "myapp"
