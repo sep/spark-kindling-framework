@@ -1,6 +1,9 @@
+import importlib
 import importlib.util
 import json
 import logging
+import os
+import pkgutil
 import subprocess
 import sys
 import tempfile
@@ -34,6 +37,8 @@ level_hierarchy = {
 
 _BOOTSTRAP_STAGE_ID = uuid.uuid4().hex[:12]
 _BOOTSTRAP_LOGGER = logging.getLogger("kindling.bootstrap")
+_LOCAL_PACKAGE_MODULES_ENV = "KINDLING_LOCAL_PACKAGE_MODULES"
+_LOCAL_PACKAGE_REGISTRATION_NAMESPACES = ("entities", "pipes", "ingestion")
 
 
 def _parse_spark_conf_value(value: Any) -> Any:
@@ -98,6 +103,76 @@ def _get_spark_kindling_config() -> Dict[str, Any]:
             mapped[f"kindling.{suffix}"] = value
 
     return mapped
+
+
+def _load_local_package_module_roots() -> List[str]:
+    raw_modules = (os.getenv(_LOCAL_PACKAGE_MODULES_ENV) or "").strip()
+    if not raw_modules:
+        return []
+
+    try:
+        parsed = json.loads(raw_modules)
+    except json.JSONDecodeError:
+        parsed = raw_modules.split(os.pathsep)
+
+    if isinstance(parsed, str):
+        parsed = [parsed]
+
+    modules = []
+    seen = set()
+    for value in parsed if isinstance(parsed, list) else []:
+        if not isinstance(value, str):
+            continue
+        module = value.strip()
+        if module and module not in seen:
+            seen.add(module)
+            modules.append(module)
+    return modules
+
+
+def _import_registration_namespace(module_name: str) -> int:
+    imported_count = 0
+    package = importlib.import_module(module_name)
+    imported_count += 1
+
+    package_path = getattr(package, "__path__", None)
+    if package_path is None:
+        return imported_count
+
+    for module_info in pkgutil.walk_packages(package_path, prefix=f"{module_name}."):
+        importlib.import_module(module_info.name)
+        imported_count += 1
+    return imported_count
+
+
+def _import_local_package_registrations(logger) -> None:
+    module_roots = _load_local_package_module_roots()
+    if not module_roots:
+        return
+
+    total_imported = 0
+    for module_root in module_roots:
+        imported_for_root = 0
+        for namespace in _LOCAL_PACKAGE_REGISTRATION_NAMESPACES:
+            module_name = f"{module_root}.{namespace}"
+            try:
+                imported_for_root += _import_registration_namespace(module_name)
+            except ModuleNotFoundError as error:
+                if error.name in {module_root, module_name}:
+                    continue
+                raise
+        total_imported += imported_for_root
+        if imported_for_root == 0:
+            logger.debug(
+                "No local package registration modules found under %s", module_root
+            )
+
+    logger.info(
+        "Imported %s local package registration module%s from %s",
+        total_imported,
+        "" if total_imported == 1 else "s",
+        ", ".join(module_roots),
+    )
 
 
 def _merge_with_spark_kindling_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1232,6 +1307,10 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     if is_framework_initialized():
         _BOOTSTRAP_LOGGER.debug("Framework already initialized, skipping re-initialization")
         existing_service = get_kindling_service(PlatformServiceProvider).get_service()
+        logger_provider = get_kindling_service(PythonLoggerProvider)
+        _import_local_package_registrations(
+            logger_provider.get_logger("KindlingBootstrap")
+        )
         return existing_service
 
     # Extract bootstrap settings
@@ -1431,6 +1510,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
         platformservice = initialize_platform_services(platform, config_service, logger)
         logger.info("Platform services initialized")
+        _import_local_package_registrations(logger)
 
         # Resolve any @secret references now that platform services are available.
         try:

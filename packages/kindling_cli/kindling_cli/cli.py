@@ -378,8 +378,17 @@ def _coerce_value(raw: str) -> Any:
     return raw
 
 
-def _resolve_local_package_path(package_path: Path) -> Path:
-    """Resolve a local package root or source directory for PYTHONPATH."""
+def _discover_python_package_roots(pythonpath_entry: Path) -> List[str]:
+    """Return importable package roots found under a PYTHONPATH entry."""
+    package_roots = []
+    for candidate in sorted(pythonpath_entry.iterdir()):
+        if candidate.is_dir() and (candidate / "__init__.py").is_file():
+            package_roots.append(candidate.name)
+    return package_roots
+
+
+def _resolve_local_package_path(package_path: Path) -> Tuple[Path, List[str]]:
+    """Resolve a local package root/source directory and discover package roots."""
     resolved = package_path.expanduser().resolve()
     if not resolved.exists():
         raise click.ClickException(f"Local package path does not exist: {resolved}")
@@ -387,7 +396,13 @@ def _resolve_local_package_path(package_path: Path) -> Path:
         raise click.ClickException(f"Local package path must be a directory: {resolved}")
 
     src_dir = resolved / "src"
-    return src_dir if src_dir.is_dir() else resolved
+    if src_dir.is_dir():
+        return src_dir, _discover_python_package_roots(src_dir)
+
+    if (resolved / "__init__.py").is_file():
+        return resolved.parent, [resolved.name]
+
+    return resolved, _discover_python_package_roots(resolved)
 
 
 def _set_nested_key(data: Dict[str, Any], dotted_key: str, value: Any) -> None:
@@ -2906,11 +2921,28 @@ def _run_standalone_app(
     run_env = {**os.environ, "KINDLING_ENV": resolved_env}
     run_env.setdefault("KINDLING_SPARK_ENABLE_DELTA", "true")
     if local_packages:
-        local_package_paths = [str(_resolve_local_package_path(path)) for path in local_packages]
+        local_package_paths = []
+        local_package_modules = []
+        for path in local_packages:
+            pythonpath_entry, package_modules = _resolve_local_package_path(path)
+            local_package_paths.append(str(pythonpath_entry))
+            local_package_modules.extend(package_modules)
         existing_pythonpath = run_env.get("PYTHONPATH")
         run_env["PYTHONPATH"] = os.pathsep.join(
             [*local_package_paths, *([existing_pythonpath] if existing_pythonpath else [])]
         )
+        if local_package_modules:
+            try:
+                existing_modules = json.loads(
+                    run_env.get("KINDLING_LOCAL_PACKAGE_MODULES") or "[]"
+                )
+            except json.JSONDecodeError:
+                existing_modules = []
+            if not isinstance(existing_modules, list):
+                existing_modules = []
+            run_env["KINDLING_LOCAL_PACKAGE_MODULES"] = json.dumps(
+                [*local_package_modules, *existing_modules]
+            )
     if config_dir is not None:
         run_env["KINDLING_CONFIG_DIR"] = str(config_dir.expanduser().resolve())
     if quiet:

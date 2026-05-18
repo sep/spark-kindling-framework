@@ -1300,8 +1300,12 @@ class TestAppRunCommand:
         package_root = tmp_path / "packages" / "domain"
         package_src = package_root / "src"
         package_src.mkdir(parents=True)
+        (package_src / "orders_domain").mkdir()
+        (package_src / "orders_domain" / "__init__.py").write_text("", encoding="utf-8")
         direct_src = tmp_path / "shared_src"
         direct_src.mkdir()
+        (direct_src / "shared_domain").mkdir()
+        (direct_src / "shared_domain" / "__init__.py").write_text("", encoding="utf-8")
         captured_env = {}
 
         def fake_run(cmd, env=None, **kwargs):
@@ -1329,6 +1333,38 @@ class TestAppRunCommand:
             str(package_src.resolve()),
             str(direct_src.resolve()),
             "/existing/path",
+        ]
+        assert json.loads(captured_env["KINDLING_LOCAL_PACKAGE_MODULES"]) == [
+            "orders_domain",
+            "shared_domain",
+        ]
+
+    def test_standalone_local_package_accepts_direct_package_dir(self, tmp_path, monkeypatch):
+        import subprocess
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
+        package_dir = tmp_path / "packages" / "direct_domain"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        captured_env = {}
+
+        def fake_run(cmd, env=None, **kwargs):
+            captured_env.update(env or {})
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(
+            cli,
+            ["app", "run", str(app_dir), "--local-package", str(package_dir)],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured_env["PYTHONPATH"].split(os.pathsep)[0] == str(package_dir.parent)
+        assert json.loads(captured_env["KINDLING_LOCAL_PACKAGE_MODULES"]) == [
+            "direct_domain"
         ]
 
     def test_remote_rejects_local_package_override(self, tmp_path):
