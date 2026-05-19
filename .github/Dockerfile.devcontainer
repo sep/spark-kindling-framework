@@ -79,6 +79,16 @@ RUN mkdir -p /spark-warehouse && chown -R vscode:vscode /spark-warehouse
 # Remove build source — wheels and index are all that consumers need
 RUN rm -rf /build
 
+# ── Agent reference doc ───────────────────────────────────────────────────────
+# Baked in at a well-known path so downstream projects can generate
+# tool-specific agent instruction files via `kindling agent setup`.
+# Also written to ~/.claude/CLAUDE.md so Claude Code picks it up as
+# user-level context without any project-level configuration.
+COPY .github/kindling-agent-reference.md /opt/kindling/agent-reference.md
+RUN mkdir -p /home/vscode/.claude \
+    && cp /opt/kindling/agent-reference.md /home/vscode/.claude/CLAUDE.md \
+    && chown -R vscode:vscode /home/vscode/.claude
+
 LABEL org.opencontainers.image.source="https://github.com/sep/spark-kindling-framework"
 LABEL org.opencontainers.image.description="Kindling developer environment — Python 3.11, Java 21, kindling wheels, Hadoop JARs"
 LABEL org.opencontainers.image.version="${KINDLING_VERSION}"
