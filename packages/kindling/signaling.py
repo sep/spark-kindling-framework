@@ -13,15 +13,21 @@ Key components:
 - BlinkerSignalProvider: Default implementation using Blinker library
 """
 
+import logging
+import threading
 import uuid
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Type
 
 from injector import inject
+
 from kindling.injection import GlobalInjector
+
+_signals_logger = logging.getLogger("kindling.signals")
 
 # =============================================================================
 # Signal Payload Base Classes
@@ -371,3 +377,195 @@ class BlinkerSignalProvider(SignalProvider):
             Signal if exists, None otherwise
         """
         return self._signals.get(name)
+
+
+# =============================================================================
+# DataSignals — registry-based signal handler declarations
+# =============================================================================
+
+
+@dataclass
+class _HandlerEntry:
+    func: Callable
+    signal_name: str
+    mode: Literal["sync", "async"] = "sync"
+    priority: int = 50
+    on_error: Literal["raise", "log"] = "raise"
+    pipe_id: Optional[str] = None
+
+
+class DataSignals:
+    """Registry for declaring signal handlers with decorator syntax.
+
+    Analogous to ``DataEntities`` and ``DataPipes`` — handlers are declared
+    once with a decorator and the framework wires them into the signal system.
+
+    Two execution modes:
+
+    - ``sync`` (default): runs before pipeline continues, can transform the
+      DataFrame by returning a new one, can abort by raising.
+    - ``async``: fire-and-forget via thread pool; pipeline does not wait,
+      exceptions are logged, return values are ignored.
+
+    Example::
+
+        @DataSignals.handler("persist.before_persist", priority=10)
+        def validate_amounts(sender, df, pipe_id, **kwargs):
+            if df.filter(col("amount") < 0).count() > 0:
+                raise ValueError("negative amounts")
+
+        @DataSignals.handler("persist.before_persist", priority=20)
+        def add_audit_column(sender, df, **kwargs):
+            return df.withColumn("_loaded_at", current_timestamp())
+
+        @DataSignals.handler("persist.after_persist",
+                             mode="async", on_error="log")
+        def log_row_count(sender, df, pipe_id, **kwargs):
+            metrics.record(pipe_id, df.count())
+    """
+
+    _signal_provider: Optional[SignalProvider] = None
+    _handlers: List[_HandlerEntry] = []
+    _dispatcher_funcs: Dict[str, Callable] = {}
+    _executor: Optional[ThreadPoolExecutor] = None
+    _lock: threading.Lock = threading.Lock()
+
+    @classmethod
+    def reset(cls) -> None:
+        """Disconnect all handlers and clear the registry. Use between tests."""
+        with cls._lock:
+            if cls._signal_provider is not None:
+                for signal_name, dispatcher in cls._dispatcher_funcs.items():
+                    sig = cls._signal_provider.get_signal(signal_name)
+                    if sig is not None:
+                        try:
+                            sig.disconnect(dispatcher)
+                        except Exception:
+                            pass
+            cls._handlers = []
+            cls._dispatcher_funcs = {}
+            cls._signal_provider = None
+            if cls._executor is not None:
+                cls._executor.shutdown(wait=False)
+                cls._executor = None
+
+    @classmethod
+    def _get_provider(cls) -> SignalProvider:
+        if cls._signal_provider is None:
+            try:
+                cls._signal_provider = GlobalInjector.get(SignalProvider)
+            except Exception as exc:
+                raise RuntimeError(
+                    "DataSignals.handler decorator fired before initialize() was called. "
+                    "Import handler modules after initialize()."
+                ) from exc
+        return cls._signal_provider
+
+    @classmethod
+    def _get_executor(cls) -> ThreadPoolExecutor:
+        if cls._executor is None:
+            cls._executor = ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="kindling-signal-async"
+            )
+        return cls._executor
+
+    @classmethod
+    def _ensure_dispatcher(cls, signal_name: str) -> None:
+        if signal_name in cls._dispatcher_funcs:
+            return
+        provider = cls._get_provider()
+        sig = provider.get_signal(signal_name) or provider.create_signal(signal_name)
+
+        def dispatcher(sender, **kwargs):
+            return cls._run_handlers(signal_name, sender, **kwargs)
+
+        cls._dispatcher_funcs[signal_name] = dispatcher
+        sig.connect(dispatcher, weak=False)
+
+    @classmethod
+    def _run_handlers(cls, signal_name: str, sender, **kwargs) -> Optional[Any]:
+        pipe_id = kwargs.get("pipe_id")
+
+        entries = [
+            e
+            for e in cls._handlers
+            if e.signal_name == signal_name and (e.pipe_id is None or e.pipe_id == pipe_id)
+        ]
+
+        async_entries = [e for e in entries if e.mode == "async"]
+        sync_entries = sorted([e for e in entries if e.mode == "sync"], key=lambda e: e.priority)
+
+        for entry in async_entries:
+            cls._get_executor().submit(cls._run_async, entry, sender, kwargs.copy())
+
+        df = kwargs.get("df")
+        for entry in sync_entries:
+            try:
+                result = entry.func(sender, **kwargs)
+                if result is not None and hasattr(result, "schema"):
+                    df = result
+                    kwargs = {**kwargs, "df": df}
+            except Exception as exc:
+                if entry.on_error == "log":
+                    _signals_logger.warning(
+                        "Signal handler %r for %r failed: %s",
+                        entry.func.__name__,
+                        signal_name,
+                        exc,
+                    )
+                else:
+                    raise
+
+        return df
+
+    @classmethod
+    def _run_async(cls, entry: _HandlerEntry, sender, kwargs: dict) -> None:
+        try:
+            entry.func(sender, **kwargs)
+        except Exception as exc:
+            _signals_logger.warning(
+                "Async signal handler %r for %r failed: %s",
+                entry.func.__name__,
+                entry.signal_name,
+                exc,
+            )
+
+    @classmethod
+    def handler(
+        cls,
+        signal_name: str,
+        *,
+        mode: Literal["sync", "async"] = "sync",
+        priority: int = 50,
+        on_error: Literal["raise", "log"] = "raise",
+        pipe_id: Optional[str] = None,
+    ) -> Callable:
+        """Register a signal handler.
+
+        Args:
+            signal_name: Signal to subscribe to (e.g. ``"persist.before_persist"``).
+            mode: ``"sync"`` blocks the pipeline and can transform/abort;
+                  ``"async"`` is fire-and-forget via thread pool.
+            priority: Execution order among sync handlers (lower = earlier).
+                      Ignored for async handlers.
+            on_error: ``"raise"`` propagates exceptions (default);
+                      ``"log"`` logs and continues. Ignored for async handlers
+                      (always logs).
+            pipe_id: Scope handler to a specific pipe ID. ``None`` matches all pipes.
+        """
+
+        def decorator(func: Callable) -> Callable:
+            entry = _HandlerEntry(
+                func=func,
+                signal_name=signal_name,
+                mode=mode,
+                priority=priority,
+                on_error=on_error,
+                pipe_id=pipe_id,
+            )
+            with cls._lock:
+                cls._handlers.append(entry)
+                cls._ensure_dispatcher(signal_name)
+            return func
+
+        return decorator

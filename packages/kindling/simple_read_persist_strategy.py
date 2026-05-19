@@ -43,9 +43,39 @@ def _is_local_execution() -> bool:
         return False
 
 
+def _apply_df_transforms(results, df):
+    """Return the last non-None DataFrame returned by any signal subscriber."""
+    if results:
+        for _, retval in results:
+            if retval is not None and hasattr(retval, "schema"):
+                df = retval
+    return df
+
+
 @GlobalInjector.singleton_autobind()
 class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
-    """Strategy for reading entities and persisting pipe results with signals."""
+    """Strategy for reading entities and persisting pipe results with signals.
+
+    Subscribers can intercept and transform DataFrames at two points:
+
+    ``read.after_read`` — fired after reading a source entity. Receives
+    ``df``, ``entity_id``, ``pipe_id``, ``used_watermark``. Return a new
+    DataFrame to replace the one passed to the pipe function, or ``None``
+    to leave it unchanged.
+
+    ``persist.before_persist`` — fired before writing the pipe output.
+    Receives ``df``, ``pipe_id``, ``source_entity_id``, ``output_entity_id``,
+    ``source_version``, ``persist_id``. Return a new DataFrame to replace
+    the one written to storage, or ``None`` to leave it unchanged.
+    """
+
+    EMITS = [
+        "read.after_read",
+        "persist.before_persist",
+        "persist.after_persist",
+        "persist.watermark_saved",
+        "persist.persist_failed",
+    ]
 
     @inject
     def __init__(
@@ -67,27 +97,41 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         self._init_signal_emitter(signal_provider)
 
     def create_pipe_entity_reader(self, pipe: str):
+        strategy = self
+
         def entity_reader(entity, usewm):
             if usewm and not _is_local_execution():
                 # Watermarking uses the legacy path (Delta-specific)
-                return self.wms.read_current_entity_changes(entity, pipe)
-
-            # [implementer] tests/entities/ auto-discovery convention — ki-bsi
-            # Priority: explicit --source > kindling.yaml env mapping > fixture CSV > registry
-            # Fixture discovery applies only when running locally (standalone platform).
-            if _is_local_execution():
+                df = strategy.wms.read_current_entity_changes(entity, pipe)
+            elif _is_local_execution():
+                # [implementer] tests/entities/ auto-discovery convention — ki-bsi
+                # Priority: explicit --source > kindling.yaml env mapping > fixture CSV > registry
+                # Fixture discovery applies only when running locally (standalone platform).
                 cwd = Path(os.getcwd())
                 fixture_path = resolve_fixture_csv_path(entity.entityid, cwd)
                 if fixture_path is not None:
-                    self.logger.info(
+                    strategy.logger.info(
                         f"Using fixture CSV for entity '{entity.entityid}': {fixture_path}"
                     )
-                    fixture_provider = FixtureCSVEntityProvider(fixture_path)
-                    return fixture_provider.read_entity(entity)
+                    df = FixtureCSVEntityProvider(fixture_path).read_entity(entity)
+                else:
+                    provider = strategy.provider_registry.get_provider_for_entity(entity)
+                    df = provider.read_entity(entity)
+            else:
+                provider = strategy.provider_registry.get_provider_for_entity(entity)
+                df = provider.read_entity(entity)
 
-            # Get appropriate provider for this entity
-            provider = self.provider_registry.get_provider_for_entity(entity)
-            return provider.read_entity(entity)
+            if df is not None:
+                results = strategy.emit(
+                    "read.after_read",
+                    df=df,
+                    entity_id=entity.entityid,
+                    pipe_id=pipe.pipeid,
+                    used_watermark=usewm,
+                )
+                df = _apply_df_transforms(results, df)
+
+            return df
 
         return entity_reader
 
@@ -125,14 +169,16 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                 )
                 strategy.logger.debug(f"persist_lambda - pipe = {pipe.pipeid}")
 
-                strategy.emit(
+                results = strategy.emit(
                     "persist.before_persist",
+                    df=df,
                     pipe_id=pipe.pipeid,
                     source_entity_id=src_input_entity_id,
                     output_entity_id=pipe.output_entity_id,
                     source_version=src_read_version,
                     persist_id=persist_id,
                 )
+                df = _apply_df_transforms(results, df)
 
                 try:
                     with strategy.tp.span(
@@ -195,6 +241,7 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                     duration = time.time() - start_time
                     strategy.emit(
                         "persist.after_persist",
+                        df=df,
                         pipe_id=pipe.pipeid,
                         source_entity_id=src_input_entity_id,
                         output_entity_id=pipe.output_entity_id,
