@@ -5056,5 +5056,228 @@ def main() -> None:
     cli()
 
 
+# =============================================================================
+# kindling agent
+# =============================================================================
+
+_REFERENCE_PATHS = [
+    Path("/opt/kindling/agent-reference.md"),
+    Path(__file__).parent / "agent-reference.md",
+]
+_VERSION_FILE = ".kindling-agent-version"
+_COPILOT_MAX_CHARS = 8000
+_COPILOT_SECTIONS = ["overview", "entities", "pipes", "signals", "config", "cli"]
+
+
+def _find_reference() -> Optional[Path]:
+    for p in _REFERENCE_PATHS:
+        if p.exists():
+            return p
+    return None
+
+
+def _parse_version(content: str) -> str:
+    for line in content.splitlines():
+        if line.startswith("<!-- VERSION:"):
+            return line.replace("<!-- VERSION:", "").replace("-->", "").strip()
+    return "unknown"
+
+
+def _extract_sections(content: str) -> Dict[str, str]:
+    sections: Dict[str, str] = {}
+    current_name: Optional[str] = None
+    buf: List[str] = []
+    for line in content.splitlines():
+        if line.startswith("<!-- SECTION:"):
+            current_name = line.replace("<!-- SECTION:", "").replace("-->", "").strip()
+            buf = []
+        elif line.startswith("<!-- END SECTION -->"):
+            if current_name:
+                sections[current_name] = "\n".join(buf).strip()
+            current_name = None
+            buf = []
+        elif current_name is not None:
+            buf.append(line)
+    return sections
+
+
+def _strip_html_comments(content: str) -> str:
+    import re
+
+    return re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL).strip()
+
+
+def _discover_project_context(project_root: Path) -> str:
+    lines = []
+    settings = project_root / "settings.yaml"
+    if not settings.exists():
+        for candidate in project_root.rglob("settings.yaml"):
+            settings = candidate
+            break
+    if settings.exists():
+        try:
+            import yaml
+
+            with open(settings) as f:
+                cfg = yaml.safe_load(f) or {}
+            name = cfg.get("name") or cfg.get("kindling", {}).get("name")
+            if name:
+                lines.append(f"App name: **{name}**")
+        except Exception:
+            pass
+
+    entity_files = list(project_root.rglob("entities/*.py"))[:8]
+    if entity_files:
+        lines.append("Entity modules: " + ", ".join(f.stem for f in entity_files))
+
+    pipe_files = list(project_root.rglob("pipes/*.py"))[:8]
+    if pipe_files:
+        lines.append("Pipe modules: " + ", ".join(f.stem for f in pipe_files))
+
+    return "\n".join(lines)
+
+
+def _write_if_changed(path: Path, content: str, force: bool) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and not force:
+        existing = path.read_text()
+        if existing == content:
+            return False
+    path.write_text(content)
+    return True
+
+
+@cli.group("agent")
+def agent_group() -> None:
+    """Manage agent instruction files for Claude Code, Copilot, and Codex."""
+
+
+@agent_group.command("setup")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Regenerate files even if version is unchanged.",
+)
+@click.option(
+    "--check",
+    "check_only",
+    is_flag=True,
+    help="Report whether files are up to date without writing.",
+)
+@click.option(
+    "--project",
+    "project_root",
+    default=".",
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Project root directory (default: current directory).",
+)
+def agent_setup(force: bool, check_only: bool, project_root: Path) -> None:
+    """Generate agent instruction files from the Kindling reference doc.
+
+    \b
+    Writes (or updates) three files in the project:
+      CLAUDE.md                        — Claude Code
+      .github/copilot-instructions.md  — GitHub Copilot
+      AGENTS.md                        — Codex / OpenAI agents
+
+    Re-run whenever you pull a new devcontainer image to pick up
+    updated Kindling documentation. Safe to re-run at any time.
+    """
+    ref_path = _find_reference()
+    if ref_path is None:
+        raise click.ClickException(
+            "Kindling agent reference not found. "
+            "Expected /opt/kindling/agent-reference.md (inside devcontainer) "
+            "or a local agent-reference.md alongside the CLI."
+        )
+
+    content = ref_path.read_text()
+    version = _parse_version(content)
+    sections = _extract_sections(content)
+    clean = _strip_html_comments(content)
+
+    version_file = project_root / _VERSION_FILE
+    current_version = version_file.read_text().strip() if version_file.exists() else None
+
+    if not force and current_version == version:
+        if check_only:
+            click.echo(f"Up to date (v{version}).")
+        else:
+            click.echo(f"Already up to date (v{version}). Use --force to regenerate.")
+        return
+
+    if check_only:
+        if current_version is None:
+            click.echo(f"Not initialised — would generate v{version} files.")
+        else:
+            click.echo(
+                f"Out of date: project has v{current_version}, "
+                f"image has v{version}. Run without --check to update."
+            )
+        return
+
+    project_context = _discover_project_context(project_root)
+    project_header = ""
+    if project_context:
+        project_header = f"\n## This Project\n\n{project_context}\n\n---\n\n"
+
+    # ── CLAUDE.md ────────────────────────────────────────────────────────────
+    # Project-level file adds project context; full reference is already in
+    # ~/.claude/CLAUDE.md (user-level, baked into the devcontainer image).
+    claude_content = (
+        f"<!-- Generated by kindling agent setup v{version} — do not edit directly -->\n"
+        f"<!-- Run `kindling agent setup --force` to regenerate -->\n\n"
+        f"# Kindling Project Context\n"
+        f"{project_header}"
+        f"> The full Kindling framework reference is available at "
+        f"`~/.claude/CLAUDE.md` (loaded automatically by Claude Code).\n"
+    )
+    wrote = _write_if_changed(project_root / "CLAUDE.md", claude_content, force)
+    click.echo(f"{'✓' if wrote else '·'} CLAUDE.md")
+
+    # ── .github/copilot-instructions.md ─────────────────────────────────────
+    copilot_parts = [
+        f"<!-- Generated by kindling agent setup v{version} — do not edit directly -->\n",
+        "# Kindling Framework — Quick Reference\n",
+    ]
+    if project_context:
+        copilot_parts.append(f"## This Project\n\n{project_context}\n")
+
+    char_budget = _COPILOT_MAX_CHARS - sum(len(p) for p in copilot_parts)
+    for section_name in _COPILOT_SECTIONS:
+        body = sections.get(section_name, "")
+        if not body:
+            continue
+        block = f"\n{_strip_html_comments(body)}\n"
+        if len(block) > char_budget:
+            break
+        copilot_parts.append(block)
+        char_budget -= len(block)
+
+    copilot_content = "\n".join(copilot_parts)
+    wrote = _write_if_changed(
+        project_root / ".github" / "copilot-instructions.md", copilot_content, force
+    )
+    click.echo(f"{'✓' if wrote else '·'} .github/copilot-instructions.md")
+
+    # ── AGENTS.md ────────────────────────────────────────────────────────────
+    agents_content = (
+        f"<!-- Generated by kindling agent setup v{version} — do not edit directly -->\n"
+        f"<!-- Run `kindling agent setup --force` to regenerate -->\n\n"
+        f"# Kindling Agent Instructions\n\n"
+        f"This project uses the Kindling PySpark data pipeline framework.\n"
+    )
+    if project_context:
+        agents_content += f"\n## This Project\n\n{project_context}\n"
+    agents_content += f"\n---\n\n{clean}\n"
+
+    wrote = _write_if_changed(project_root / "AGENTS.md", agents_content, force)
+    click.echo(f"{'✓' if wrote else '·'} AGENTS.md")
+
+    # ── version stamp ────────────────────────────────────────────────────────
+    version_file.write_text(version)
+    click.echo(f"\nKindling agent files updated to v{version}.")
+
+
 if __name__ == "__main__":
     main()
