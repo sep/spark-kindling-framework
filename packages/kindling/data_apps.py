@@ -955,12 +955,12 @@ class DataAppManager(DataAppRunner):
                 if line and not line.startswith("#"):
                     lake_requirements.append(line)
 
-            self.logger.debug(f"Parsed {len(lake_requirements)} lake requirements for {app_name}")
+            self.logger.info(f"Parsed {len(lake_requirements)} lake requirements for {app_name}")
             return lake_requirements
 
         except Exception as e:
             error_msg = str(e).split("\n")[0] if "\n" in str(e) else str(e)
-            self.logger.debug(f"No lake-reqs.txt found for {app_name}: {error_msg}")
+            self.logger.warning(f"No lake-reqs.txt found for {app_name}: {error_msg}")
             return []
 
     def _extract_package_name(self, package_spec: str) -> str:
