@@ -298,14 +298,9 @@ class SynapseService(PlatformService):
 
     def list(self, path: str) -> List[str]:
         """List files in directory"""
-        import __main__
-
-        mssparkutils = getattr(__main__, "mssparkutils", None)
-        if mssparkutils:
-            files = mssparkutils.fs.ls(path)
-            return [f.name for f in files]
-        else:
-            raise NotImplementedError("Directory listing not available without mssparkutils")
+        mssparkutils = _get_mssparkutils()
+        files = mssparkutils.fs.ls(path)
+        return [f.name for f in files]
 
     def _build_base_url(self) -> str:
         spark = get_or_create_spark_session()
