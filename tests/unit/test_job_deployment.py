@@ -41,7 +41,7 @@ class TestDataAppDeployer:
         # Test missing job_name - use a real temp dir so app path validation passes
         mock_platform.deploy_app.return_value = "/storage/path"
         with tempfile.TemporaryDirectory() as tmpdir:
-            Path(tmpdir, "main.py").write_text("# test")
+            Path(tmpdir, "app.py").write_text("# test")
             with pytest.raises(ValueError, match="Missing required job config parameters"):
                 deployer.deploy_as_job(tmpdir, {})
 
@@ -56,7 +56,7 @@ class TestDataAppDeployer:
         # Create temp directory with test files
         with tempfile.TemporaryDirectory() as tmpdir:
             app_path = Path(tmpdir)
-            (app_path / "main.py").write_text("# Main file")
+            (app_path / "app.py").write_text("# Main file")
             (app_path / "config.py").write_text("# Config file")
             (app_path / "app.yaml").write_text("name: test")
 
@@ -81,7 +81,7 @@ class TestDataAppDeployer:
             call_args = mock_platform.deploy_app.call_args
             assert call_args[0][0] == "test-app"  # app_name
             app_files = call_args[0][1]
-            assert "main.py" in app_files
+            assert "app.py" in app_files
             assert "config.py" in app_files
             assert "app.yaml" in app_files
             assert storage_path == "data-apps/test-app"
@@ -119,7 +119,7 @@ class TestDataAppDeployer:
         # Create temp directory with test files
         with tempfile.TemporaryDirectory() as tmpdir:
             app_path = Path(tmpdir)
-            (app_path / "main.py").write_text("# Main file")
+            (app_path / "app.py").write_text("# Main file")
 
             # Mock dependencies
             mock_platform = Mock()
@@ -251,7 +251,7 @@ class TestAppPackager:
         with tempfile.TemporaryDirectory() as tmpdir:
             app_path = Path(tmpdir)
             (app_path / "nested").mkdir()
-            (app_path / "main.py").write_text("print('hello')")
+            (app_path / "app.py").write_text("print('hello')")
             (app_path / "utils.py").write_text("def helper(): pass")
             (app_path / "config.yaml").write_text("setting: value")
             (app_path / "lake-reqs.txt").write_text("domain-records==1.2.3")
@@ -261,12 +261,12 @@ class TestAppPackager:
             app_files = packager.prepare_app_files(str(app_path))
 
             # Verify files were packaged
-            assert "main.py" in app_files
+            assert "app.py" in app_files
             assert "utils.py" in app_files
             assert "config.yaml" in app_files
             assert "lake-reqs.txt" in app_files
             assert "nested/job.yml" in app_files
-            assert "print('hello')" in app_files["main.py"]
+            assert "print('hello')" in app_files["app.py"]
 
     def test_prepare_app_files_from_kda_includes_lake_requirements(self):
         """Test packaging dependency metadata from a KDA archive"""
@@ -275,14 +275,14 @@ class TestAppPackager:
         with tempfile.TemporaryDirectory() as tmpdir:
             kda_path = Path(tmpdir) / "demo.kda"
             with zipfile.ZipFile(kda_path, "w") as archive:
-                archive.writestr("main.py", "print('hello')")
+                archive.writestr("app.py", "print('hello')")
                 archive.writestr("lake-reqs.txt", "domain-records==1.2.3")
                 archive.writestr("notes.md", "not deployed")
 
             packager = AppPackager()
             app_files = packager.prepare_app_files(str(kda_path))
 
-            assert app_files["main.py"] == "print('hello')"
+            assert app_files["app.py"] == "print('hello')"
             assert app_files["lake-reqs.txt"] == "domain-records==1.2.3"
             assert "notes.md" not in app_files
 

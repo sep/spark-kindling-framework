@@ -5,26 +5,9 @@ Run remotely:   kindling app run . --platform <platform>
 """
 
 import logging
-import os
-import sys
-from pathlib import Path
 
-# Local dev: make the checked-out package importable without installing it.
-# In deployed environments the wheel is loaded from artifacts storage.
-_src = Path(__file__).resolve().parents[2] / "packages" / "{{ package_snake_name }}" / "src"
-if _src.exists() and str(_src) not in sys.path:
-    sys.path.insert(0, str(_src))
-
-from kindling.bootstrap import initialize_framework
-
-_env = os.environ.get("KINDLING_ENV", "local")
-_config_dir_env = os.environ.get("KINDLING_CONFIG_DIR")
-_config_dir = Path(_config_dir_env) if _config_dir_env else Path(__file__).resolve().parent / "config"
-_configs = [str(_config_dir / "settings.yaml")]
-_env_file = _config_dir / f"env.{_env}.yaml"
-if _env_file.exists():
-    _configs.append(str(_env_file))
-
-initialize_framework({"platform": "standalone", "environment": _env, "config_files": _configs})
+# Import your domain modules here to register entities and pipes:
+# import {{ package_snake_name }}.entities.records  # noqa: F401
+# import {{ package_snake_name }}.pipes.bronze_to_silver  # noqa: F401
 
 logging.getLogger(__name__).info("Hello from {{ kebab_name }}!")

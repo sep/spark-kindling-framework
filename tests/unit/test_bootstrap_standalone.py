@@ -96,7 +96,7 @@ def test_initialize_framework_uses_explicit_config_files_for_standalone():
             {
                 "platform": "standalone",
                 "environment": "local",
-                "config_files": ["config/settings.yaml", "config/env.local.yaml"],
+                "config_files": ["settings.yaml", "settings.local.yaml"],
             }
         )
 
@@ -126,10 +126,7 @@ def test_import_local_package_registrations_loads_entities_pipes_and_ingestion(
         module_dir.mkdir(parents=True)
         (module_dir / "__init__.py").write_text("", encoding="utf-8")
         (module_dir / "registered.py").write_text(
-            (
-                "import os\n"
-                f"os.environ['DEMO_{namespace.upper()}_IMPORTED'] = '1'\n"
-            ),
+            ("import os\n" f"os.environ['DEMO_{namespace.upper()}_IMPORTED'] = '1'\n"),
             encoding="utf-8",
         )
     (package_dir / "__init__.py").write_text("", encoding="utf-8")

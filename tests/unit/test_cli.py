@@ -28,8 +28,7 @@ def test_config_init_writes_settings_file():
         result = runner.invoke(cli, ["config", "init", "--name", "demo-app"])
 
         assert result.exit_code == 0, result.output
-        # Default output is config/settings.yaml (matches scaffolded project layout)
-        settings_path = Path("config/settings.yaml")
+        settings_path = Path("settings.yaml")
         assert settings_path.exists()
         content = settings_path.read_text(encoding="utf-8")
         assert "name: demo-app" in content
@@ -79,8 +78,7 @@ def test_resolve_account_url_preserves_explicit_endpoint(monkeypatch):
 def test_config_init_refuses_to_overwrite_without_force():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        settings_path = Path("config/settings.yaml")
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path = Path("settings.yaml")
         settings_path.write_text("original", encoding="utf-8")
 
         result = runner.invoke(cli, ["config", "init"])
@@ -93,8 +91,7 @@ def test_config_init_refuses_to_overwrite_without_force():
 def test_config_init_overwrites_with_force():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        settings_path = Path("config/settings.yaml")
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path = Path("settings.yaml")
         settings_path.write_text("original", encoding="utf-8")
 
         result = runner.invoke(cli, ["config", "init", "--force", "--name", "forced-app"])
@@ -751,6 +748,32 @@ def test_app_deploy_uses_platform_sdk(monkeypatch):
         assert "Deployed app `demo_app`" in result.output
 
 
+def test_app_deploy_rejects_missing_configured_entry_point(monkeypatch):
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (object(), platform),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("apps/sample_engine")
+        app_dir.mkdir(parents=True)
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        (app_dir / "app.yaml").write_text(
+            "name: sample_engine\nentry_point: app.py\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            cli,
+            ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric"],
+        )
+
+        assert result.exit_code != 0
+        assert "entry_point `app.py`" in result.output
+        assert "app.py" in result.output
+
+
 def test_app_deploy_kda_package_flag(monkeypatch):
     class FakeAPI:
         def __init__(self):
@@ -808,6 +831,80 @@ def test_app_deploy_json_output_includes_storage_path(monkeypatch):
         assert payload["app_name"] == "demo_app"
         assert payload["platform"] == "fabric"
         assert payload["storage_path"].startswith("abfss://")
+
+
+def test_package_deploy_builds_wheel_and_uploads_to_artifacts_packages(
+    monkeypatch,
+):
+    calls = {}
+
+    def fake_run(cmd, cwd=None, capture_output=False, text=False):
+        calls["build_cmd"] = cmd
+        calls["build_cwd"] = cwd
+        dist = Path(cwd) / "dist"
+        dist.mkdir(exist_ok=True)
+        (dist / "domain_records-1.2.3-py3-none-any.whl").write_bytes(b"wheel")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def fake_deploy_wheels(blob_service_client, container, packages_path, wheels):
+        calls["blob_service_client"] = blob_service_client
+        calls["container"] = container
+        calls["packages_path"] = packages_path
+        calls["wheels"] = wheels
+        return len(wheels)
+
+    monkeypatch.setattr("kindling_cli.cli.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "kindling_cli.cli._get_blob_service_client",
+        lambda account: "blob-client",
+    )
+    monkeypatch.setattr("kindling_cli.cli._deploy_wheels", fake_deploy_wheels)
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        package_dir = Path("packages/domain_records")
+        package_dir.mkdir(parents=True)
+        (package_dir / "pyproject.toml").write_text(
+            """
+[tool.poetry]
+name = "domain-records"
+version = "1.2.3"
+""",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "package",
+                "deploy",
+                "--local-folder",
+                str(package_dir),
+                "--storage-account",
+                "acct",
+                "--container",
+                "artifacts",
+                "--base-path",
+                "dev",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert calls["build_cmd"] == [
+            "poetry",
+            "build",
+            "--format",
+            "wheel",
+            "--output",
+            str(package_dir.resolve() / "dist"),
+        ]
+        assert calls["build_cwd"] == package_dir.resolve()
+        assert calls["container"] == "artifacts"
+        assert calls["packages_path"] == "dev/packages"
+        assert [wheel.name for wheel in calls["wheels"]] == [
+            "domain_records-1.2.3-py3-none-any.whl"
+        ]
+        assert "Deployed `domain_records-1.2.3-py3-none-any.whl`" in result.output
 
 
 def test_app_run_requires_app_argument(monkeypatch):
@@ -1257,13 +1354,15 @@ class TestAppRunCommand:
         app_dir = tmp_path / "myapp"
         app_dir.mkdir()
         (app_dir / "app.py").write_text("# stub\n")
-        config_dir = tmp_path / "config"
+        config_dir = tmp_path / "myconfig"
         config_dir.mkdir()
+        (config_dir / "settings.yaml").write_text("kindling: {}\n")
 
-        captured_env = {}
+        captured_cmd = {}
 
         def fake_run(cmd, env=None, **kwargs):
-            captured_env.update(env or {})
+            captured_cmd["cmd"] = cmd
+            captured_cmd["env"] = env or {}
             return subprocess.CompletedProcess(cmd, returncode=0)
 
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -1283,23 +1382,28 @@ class TestAppRunCommand:
         )
 
         assert result.exit_code == 0, result.output
-        assert captured_env["KINDLING_ENV"] == "dev"
-        assert captured_env["KINDLING_SPARK_ENABLE_DELTA"] == "true"
-        assert captured_env["KINDLING_CONFIG_DIR"] == str(config_dir.resolve())
-        assert captured_env["KINDLING_LOG_LEVEL"] == "WARNING"
+        cmd = captured_cmd["cmd"]
+        env = captured_cmd["env"]
+        assert "-m" in cmd and "kindling._runner" in cmd
+        assert "--env" in cmd and "dev" in cmd
+        assert str(config_dir / "settings.yaml") in cmd
+        assert env["KINDLING_ENV"] == "dev"
+        assert env["KINDLING_SPARK_ENABLE_DELTA"] == "true"
+        assert env["KINDLING_LOG_LEVEL"] == "WARNING"
+        assert "KINDLING_CONFIG_DIR" not in env
 
-    def test_standalone_defaults_config_dir_to_app_config(self, tmp_path, monkeypatch):
+    def test_standalone_uses_kindling_runner_module(self, tmp_path, monkeypatch):
         import subprocess
 
         app_dir = tmp_path / "myapp"
         app_dir.mkdir()
         (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
-        config_dir = app_dir / "config"
-        config_dir.mkdir()
-        captured_env = {}
+        (app_dir / "settings.yaml").write_text("kindling: {}\n", encoding="utf-8")
+
+        captured_cmd = []
 
         def fake_run(cmd, env=None, **kwargs):
-            captured_env.update(env or {})
+            captured_cmd.extend(cmd)
             return subprocess.CompletedProcess(cmd, returncode=0)
 
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -1307,27 +1411,9 @@ class TestAppRunCommand:
         result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
 
         assert result.exit_code == 0, result.output
-        assert captured_env["KINDLING_CONFIG_DIR"] == str(config_dir.resolve())
-
-    def test_standalone_does_not_set_missing_default_config_dir(self, tmp_path, monkeypatch):
-        import subprocess
-
-        app_dir = tmp_path / "myapp"
-        app_dir.mkdir()
-        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
-        captured_env = {}
-
-        def fake_run(cmd, env=None, **kwargs):
-            captured_env.update(env or {})
-            return subprocess.CompletedProcess(cmd, returncode=0)
-
-        monkeypatch.delenv("KINDLING_CONFIG_DIR", raising=False)
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
-
-        assert result.exit_code == 0, result.output
-        assert "KINDLING_CONFIG_DIR" not in captured_env
+        assert "kindling._runner" in captured_cmd
+        assert str(app_dir / "settings.yaml") in captured_cmd
+        assert "KINDLING_CONFIG_DIR" not in dict(zip(captured_cmd, captured_cmd))
 
     def test_standalone_preserves_delta_env_override(self, tmp_path, monkeypatch):
         import subprocess
@@ -1758,7 +1844,7 @@ def test_run_missing_config_gives_actionable_message():
     with runner.isolated_filesystem():
         result = runner.invoke(cli, ["pipeline", "run", "my_pipe"])
         assert result.exit_code != 0
-        assert "Config file not found at config/settings.yaml" in result.output
+        assert "Config file not found at settings.yaml" in result.output
         assert "kindling config init" in result.output
         assert "--config" in result.output
 
@@ -1815,8 +1901,7 @@ def test_run_missing_pipe_gives_actionable_message(monkeypatch, tmp_path):
 
     runner = CliRunner()
     with runner.isolated_filesystem():
-        Path("config").mkdir()
-        Path("config/settings.yaml").write_text("name: test-app\n", encoding="utf-8")
+        Path("settings.yaml").write_text("name: test-app\n", encoding="utf-8")
         result = runner.invoke(cli, ["pipeline", "run", "slver_to_gold", "--app", str(app_py)])
 
     assert result.exit_code != 0
@@ -2167,7 +2252,7 @@ def test_app_add_executor_creates_entrypoint_and_app_yaml(tmp_path):
     result = CliRunner().invoke(cli, ["app", "add", "executor", "--app", str(app_dir)])
 
     assert result.exit_code == 0, result.output
-    executor = app_dir / "main.py"
+    executor = app_dir / "app.py"
     assert executor.exists()
     content = executor.read_text(encoding="utf-8")
     assert (
@@ -2179,7 +2264,7 @@ def test_app_add_executor_creates_entrypoint_and_app_yaml(tmp_path):
 
     app_config = yaml.safe_load((app_dir / "app.yaml").read_text(encoding="utf-8"))
     assert app_config["name"] == "sales_ops"
-    assert app_config["entry_point"] == "main.py"
+    assert app_config["entry_point"] == "app.py"
     app_settings = yaml.safe_load(
         (app_dir / "config" / "settings.yaml").read_text(encoding="utf-8")
     )
@@ -2218,9 +2303,9 @@ def test_app_add_executor_auto_discovers_app_directory_from_repo_root(tmp_path, 
     result = CliRunner().invoke(cli, ["app", "add", "executor"])
 
     assert result.exit_code == 0, result.output
-    assert (app_dir / "main.py").exists()
+    assert (app_dir / "app.py").exists()
     assert (app_dir / "app.yaml").exists()
-    assert not (tmp_path / "main.py").exists()
+    assert not (tmp_path / "app.py").exists()
     assert not (tmp_path / "app.yaml").exists()
     app_settings = yaml.safe_load(
         (app_dir / "config" / "settings.yaml").read_text(encoding="utf-8")
@@ -2257,7 +2342,7 @@ def test_app_add_executor_supports_structured_streaming_pattern(tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    content = (app_dir / "main.py").read_text(encoding="utf-8")
+    content = (app_dir / "app.py").read_text(encoding="utf-8")
     assert "from kindling.execution_orchestrator import ExecutionOrchestrator" in content
     assert "PIPE_IDS = ['bronze_to_silver']" in content
     assert 'streaming_options["base_checkpoint_path"] = CHECKPOINT_PATH' in content
@@ -2289,7 +2374,7 @@ def test_app_add_executor_supports_file_ingestion_pattern(tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    content = (app_dir / "main.py").read_text(encoding="utf-8")
+    content = (app_dir / "app.py").read_text(encoding="utf-8")
     assert "from kindling.file_ingestion import FileIngestionProcessor" in content
     assert "SOURCE_PATH = 'abfss://landing/orders'" in content
     assert 'os.environ.get("KINDLING_INGESTION_PATH")' in content

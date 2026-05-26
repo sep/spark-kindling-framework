@@ -23,7 +23,7 @@ Fixture files are named after the entity they seed:
 | `raw.records` | `tests/entities/raw/records.csv` |
 {% endif %}
 Edit the CSV to change the seed data. Once you're ready to read from real
-storage, set your storage paths in `config/env.local.yaml` and remove (or
+storage, set your storage paths in `settings.local.yaml` and remove (or
 rename) the fixture file — the real provider takes over automatically.
 
 ## Run locally
@@ -36,7 +36,7 @@ poetry run poe test
 
 ## Connect to ABFSS
 
-Edit `config/env.local.yaml` to set your storage paths, then copy `.env.example` to `.env`
+Edit `settings.local.yaml` to set your storage paths, then copy `.env.example` to `.env`
 and fill in your Azure credentials:
 
 ```bash
@@ -86,9 +86,8 @@ Generated app layout:
 
 ```text
 app.py
-config/
-├── settings.yaml
-└── env.local.yaml
+settings.yaml
+settings.local.yaml
 ```
 
 Add entities, pipes, and transforms in `packages/{{ package_snake_name }}/src/{{ package_snake_name }}/`.

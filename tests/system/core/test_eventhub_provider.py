@@ -142,7 +142,7 @@ class TestEventHubProvider:
         job_config = {
             "job_name": f"systest-eventhub-provider-{unique_suffix}",
             "app_name": app_name,
-            "entry_point": "main.py",
+            "entry_point": "app.py",
             "test_id": test_id,
             "config_overrides": {
                 "kindling": {

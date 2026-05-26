@@ -204,7 +204,7 @@ class SynapseKDADeploymentTest:
             files = kda.namelist()
 
             # Check for required files
-            required_files = ["manifest.json", "main.py", "app.yaml"]
+            required_files = ["manifest.json", "app.py", "app.yaml"]
             for required_file in required_files:
                 if required_file not in files:
                     raise ValueError(f"Required file missing from KDA: {required_file}")
@@ -240,7 +240,7 @@ class SynapseKDADeploymentTest:
 
     def _create_synapse_deployment_config(self, app_name, deployment_dir):
         """Create Synapse-specific deployment configuration"""
-        main_script = os.path.join(deployment_dir, "main.py")
+        main_script = os.path.join(deployment_dir, "app.py")
 
         config = {
             "app_name": app_name,

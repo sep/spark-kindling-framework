@@ -30,7 +30,7 @@ class TestAppConstants:
         assert DataAppConstants.REQUIREMENTS_FILE == "requirements.txt"
         assert DataAppConstants.LAKE_REQUIREMENTS_FILE == "lake-reqs.txt"
         assert DataAppConstants.BASE_CONFIG_FILE == "app.yaml"
-        assert DataAppConstants.DEFAULT_ENTRY_POINT == "main.py"
+        assert DataAppConstants.DEFAULT_ENTRY_POINT == "app.py"
 
     def test_app_constants_priorities(self):
         """Test wheel priority constants"""
@@ -107,6 +107,7 @@ class TestAppManagerHelpers:
         manager._get_packages_dir = DataAppManager._get_packages_dir.__get__(manager)
         manager._extract_package_name = DataAppManager._extract_package_name.__get__(manager)
         manager._parse_package_spec = DataAppManager._parse_package_spec.__get__(manager)
+        manager._load_app_code = DataAppManager._load_app_code.__get__(manager)
         manager._execute_app = DataAppManager._execute_app.__get__(manager)
 
         return manager
@@ -154,6 +155,25 @@ class TestAppManagerHelpers:
         )
 
         assert result == "ok"
+
+    def test_load_app_code_uses_default_app_py(self, mock_app_manager):
+        platform = Mock()
+        platform.read.return_value = "result = 'ok'\n"
+        mock_app_manager.get_platform_service.return_value = platform
+
+        code, entry_point = mock_app_manager._load_app_code("testapp", "app.py")
+
+        assert code == "result = 'ok'\n"
+        assert entry_point == "app.py"
+        platform.read.assert_called_once_with("/artifacts/data-apps/testapp/app.py")
+
+    def test_load_app_code_raises_when_entry_point_missing(self, mock_app_manager):
+        platform = Mock()
+        platform.read.side_effect = FileNotFoundError("missing")
+        mock_app_manager.get_platform_service.return_value = platform
+
+        with pytest.raises(Exception):
+            mock_app_manager._load_app_code("testapp", "app.py")
 
 
 if __name__ == "__main__":

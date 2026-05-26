@@ -64,7 +64,7 @@ def migration_job_config_provider():
         return {
             "job_name": f"systest-migration-{unique_suffix}",
             "app_name": f"{MIGRATION_APP_NAME}-{unique_suffix}",
-            "entry_point": "main.py",
+            "entry_point": "app.py",
             "test_id": unique_suffix,
         }
 

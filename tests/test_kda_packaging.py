@@ -121,7 +121,7 @@ def test_kda_packaging():
                     print(f"   - {filename}")
 
                 # Check for required files
-                required_files = ["app.yaml", "main.py", DataAppConstants.KDA_MANIFEST_FILE]
+                required_files = ["app.yaml", "app.py", DataAppConstants.KDA_MANIFEST_FILE]
 
                 missing_files = [f for f in required_files if f not in file_list]
                 if missing_files:

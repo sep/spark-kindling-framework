@@ -257,8 +257,8 @@ def generate_package(cfg: PackageScaffoldConfig) -> List[Path]:
         _render(env, f"src/transforms/quality.{layer}.py.j2", ctx),
     )
 
-    _write("config/settings.yaml", _render(env, "config/settings.yaml.j2", ctx))
-    _write("config/env.local.yaml", _render(env, "config/env.local.yaml.j2", ctx))
+    _write("settings.yaml", _render(env, "settings.yaml.j2", ctx))
+    _write("settings.local.yaml", _render(env, "settings.local.yaml.j2", ctx))
 
     _write("tests/__init__.py", "")
     _write("tests/conftest.py", _render(env, "tests/conftest.py.j2", ctx))
@@ -307,8 +307,8 @@ def generate_app(cfg: AppScaffoldConfig) -> List[Path]:
     _write("app.py", _render(env, app_template, ctx))
     _write("app.yaml", _render(env, "app.yaml.j2", ctx))
     _write("lake-reqs.txt", _render(env, "lake-reqs.txt.j2", ctx))
-    _write("config/settings.yaml", _render(env, "config/settings.yaml.j2", ctx))
-    _write("config/env.local.yaml", _render(env, "config/env.local.yaml.j2", ctx))
+    _write("settings.yaml", _render(env, "settings.yaml.j2", ctx))
+    _write("settings.local.yaml", _render(env, "settings.local.yaml.j2", ctx))
     _write(".env.example", _render(env, ".env.example.j2", ctx))
     _write("QUICKSTART.md", _render(env, "package/QUICKSTART.md.j2", ctx))
 

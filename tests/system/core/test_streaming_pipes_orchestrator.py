@@ -49,7 +49,7 @@ def streaming_pipes_job_config():
     config = {
         "job_name": f"systest-streaming-pipes-{unique_suffix}",
         "app_name": f"streaming-pipes-test-app-{unique_suffix}",
-        "entry_point": "main.py",
+        "entry_point": "app.py",
         "test_id": unique_suffix,
     }
 

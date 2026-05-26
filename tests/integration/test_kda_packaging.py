@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+
 from kindling.data_apps import KDAManifest
 
 # Add the src directory to the path
@@ -148,7 +149,7 @@ class TestKDAPackaging:
             name=app_name,
             version="1.0",
             description=merged_config.get("description", "Test app"),
-            entry_point="main.py",
+            entry_point="app.py",
             dependencies=merged_config.get("dependencies", []),
             lake_requirements=merged_config.get("lake_requirements", []),
             environment="test",
@@ -190,7 +191,7 @@ class TestKDAPackaging:
             files = kda.namelist()
 
             # Check for required files
-            required_files = ["manifest.json", "main.py", "app.yaml"]
+            required_files = ["manifest.json", "app.py", "app.yaml"]
             for required_file in required_files:
                 if required_file not in files:
                     raise ValueError(f"Required file missing from KDA: {required_file}")
@@ -226,7 +227,7 @@ class TestKDAPackaging:
 
     def _create_deployment_config(self, app_name, deployment_dir):
         """Create deployment configuration"""
-        main_script = os.path.join(deployment_dir, "main.py")
+        main_script = os.path.join(deployment_dir, "app.py")
 
         config = {
             "app_name": app_name,

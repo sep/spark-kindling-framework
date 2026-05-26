@@ -230,12 +230,12 @@ class TestDataAppPackage:
             (app_dir / "app.yaml").write_text(
                 """name: test-app
 version: 1.0.0
-entry_point: main.py
+entry_point: app.py
 description: Test application
 """
             )
 
-            (app_dir / "main.py").write_text("print('Hello from test app')")
+            (app_dir / "app.py").write_text("print('Hello from test app')")
 
             # Create KDA
             output_path = str(Path(temp_dir) / "test-app.kda")
@@ -249,7 +249,7 @@ description: Test application
             with zipfile.ZipFile(result_path, "r") as zf:
                 names = zf.namelist()
                 assert "app.yaml" in names
-                assert "main.py" in names
+                assert "app.py" in names
                 assert "kda-manifest.json" in names
 
     def test_create_with_platform_config_merge(self):
@@ -263,7 +263,7 @@ description: Test application
             (app_dir / "app.yaml").write_text(
                 """name: test-app
 version: 1.0.0
-entry_point: main.py
+entry_point: app.py
 """
             )
 
@@ -273,7 +273,7 @@ entry_point: main.py
 """
             )
 
-            (app_dir / "main.py").write_text("print('test')")
+            (app_dir / "app.py").write_text("print('test')")
 
             # Create with merge
             output_path = str(Path(temp_dir) / "test-app-synapse.kda")
@@ -301,11 +301,11 @@ entry_point: main.py
             (app_dir / "app.yaml").write_text(
                 """name: test-app
 version: 1.0.0
-entry_point: main.py
+entry_point: app.py
 """
             )
 
-            (app_dir / "main.py").write_text("print('Hello')")
+            (app_dir / "app.py").write_text("print('Hello')")
 
             # Create KDA
             kda_path = str(Path(temp_dir) / "test.kda")
@@ -317,7 +317,7 @@ entry_point: main.py
 
             # Verify extraction
             assert (extract_dir / "app.yaml").exists()
-            assert (extract_dir / "main.py").exists()
+            assert (extract_dir / "app.py").exists()
             assert manifest.name == "test-app"
             assert manifest.version == "1.0.0"
 
@@ -328,7 +328,7 @@ entry_point: main.py
         with tempfile.TemporaryDirectory() as temp_dir:
             app_dir = Path(temp_dir) / "invalid-app"
             app_dir.mkdir()
-            (app_dir / "main.py").write_text("print('test')")
+            (app_dir / "app.py").write_text("print('test')")
 
             # Should raise error
             with pytest.raises(FileNotFoundError):

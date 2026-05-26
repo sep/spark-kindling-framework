@@ -158,7 +158,7 @@ class RealABFSSKDATest:
             name=app_name,
             version="1.0",
             description=f"Azure Storage Test App for {self.target_platform}",
-            entry_point="main.py",
+            entry_point="app.py",
             dependencies=merged_config.get("dependencies", []),
             lake_requirements=merged_config.get("lake_requirements", []),
             environment=self.target_platform,
@@ -266,7 +266,7 @@ class RealABFSSKDATest:
             "app_name": "kda-test-app",
             "local_path": deployment_dir,
             "abfss_path": abfss_app_path,
-            "script_path": f"{abfss_app_path}/main.py",
+            "script_path": f"{abfss_app_path}/app.py",
             "environment_vars": {
                 "AZURE_STORAGE_ACCOUNT": self.storage_account,
                 "AZURE_CONTAINER": self.container,
@@ -328,7 +328,7 @@ class RealABFSSKDATest:
             def create_job_config(self, app_name, app_path, environment_vars=None):
                 return {
                     "app_name": app_name,
-                    "script_path": f"{app_path}/main.py",
+                    "script_path": f"{app_path}/app.py",
                     "environment_vars": environment_vars or {},
                     "platform": self.target_platform,
                     "execution_mode": "abfss-mock",

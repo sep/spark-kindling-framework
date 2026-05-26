@@ -29,7 +29,7 @@ class TestPipelineViaKindling:
             {
                 "platform": "standalone",
                 "environment": "local",
-                "config_files": ["config/settings.yaml", "config/env.local.yaml"],
+                "config_files": ["settings.yaml", "settings.local.yaml"],
             }
         )
         import {{ snake_name }}.entities.records  # noqa: F401

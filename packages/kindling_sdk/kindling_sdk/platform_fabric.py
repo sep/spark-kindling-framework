@@ -368,7 +368,7 @@ class FabricAPI(PlatformAPI):
         Uses the Create → Append → Flush pattern for OneLake uploads.
 
         Args:
-            file_path: Path within lakehouse (e.g., "Files/data-apps/my-app/main.py")
+            file_path: Path within lakehouse (e.g., "Files/data-apps/my-app/app.py")
             content: File content as string
         """
         # Build OneLake URL for lakehouse

@@ -75,7 +75,7 @@ else:
         def create_job_config(self, app_name, app_path, environment_vars=None):
             return {
                 "app_name": app_name,
-                "script_path": f"{app_path}/main.py",
+                "script_path": f"{app_path}/app.py",
                 "environment_vars": environment_vars or {},
                 "platform": "synapse",
             }

@@ -28,6 +28,8 @@ from kindling_sdk.platform_provider import (
 SUPPORTED_PLATFORMS = ("databricks", "fabric", "synapse")
 APP_RUN_PLATFORMS = ("standalone", *SUPPORTED_PLATFORMS)
 APP_EXECUTOR_PATTERNS = ("batch", "structured-streaming", "file-ingestion")
+APP_CONFIG_FILE = "app.yaml"
+DEFAULT_APP_ENTRY_POINT = "app.py"
 
 try:
     from kindling.app_files import is_deployable_app_file
@@ -358,6 +360,42 @@ def _prepare_app_files(app_path: Path) -> Dict[str, str]:
     )
 
 
+def _validate_app_entry_point(app_files: Dict[str, str], app_path: Path) -> None:
+    """Ensure app.yaml's configured entry point is included in deploy files."""
+    config_content = app_files.get(APP_CONFIG_FILE)
+    if not config_content:
+        return
+
+    try:
+        config_data = yaml.safe_load(config_content) or {}
+    except Exception as exc:
+        raise click.ClickException(
+            f"Failed to parse `{APP_CONFIG_FILE}` from `{app_path}`: {exc}"
+        ) from exc
+
+    if not isinstance(config_data, dict):
+        raise click.ClickException(
+            f"`{APP_CONFIG_FILE}` from `{app_path}` must contain a YAML object."
+        )
+
+    entry_point = str(config_data.get("entry_point", DEFAULT_APP_ENTRY_POINT)).strip()
+    if not entry_point:
+        raise click.ClickException(
+            f"`{APP_CONFIG_FILE}` from `{app_path}` has an empty entry_point."
+        )
+    if entry_point in app_files:
+        return
+
+    available = ", ".join(sorted(app_files)) or "no deployable files"
+    raise click.ClickException(
+        f"`{APP_CONFIG_FILE}` from `{app_path}` declares "
+        f"entry_point `{entry_point}`, but that file is not included in the app artifact.\n"
+        f"  Files included for deploy: {available}\n"
+        "  Hint: update app.yaml to the real entry point, deploy from the app directory "
+        "that contains it, or add the missing file."
+    )
+
+
 def _default_app_name(app_path: Path) -> str:
     return app_path.stem if app_path.is_file() else app_path.name
 
@@ -630,7 +668,7 @@ def _validate_logs_options(
         raise click.ClickException("--max-wait must be greater than 0.")
 
 
-def _read_settings_app_name(settings_path: Path = Path("config/settings.yaml")) -> Optional[str]:
+def _read_settings_app_name(settings_path: Path = Path("settings.yaml")) -> Optional[str]:
     """Read the app name from settings.yaml, returning None if not found or unreadable."""
     candidate = settings_path.expanduser()
     if not candidate.exists():
@@ -705,9 +743,9 @@ def _run_local_pipe(
             f"Note: --env {env} controls config loading only. "
             "To run remotely use: kindling app run <app> --platform <platform>"
         )
-    if app_path is None and config_dir is None and not Path("config/settings.yaml").exists():
+    if app_path is None and config_dir is None and not Path("settings.yaml").exists():
         raise click.ClickException(
-            "Config file not found at config/settings.yaml.\n"
+            "Config file not found at settings.yaml.\n"
             "  Hint: Run `kindling config init` to generate a starter config, or use --config <path>."
         )
     resolved_app = _discover_app_py(app_path)
@@ -1105,7 +1143,7 @@ def config_group() -> None:
 @click.option(
     "--output",
     "output_path",
-    default="config/settings.yaml",
+    default="settings.yaml",
     show_default=True,
     type=click.Path(path_type=Path, dir_okay=False, writable=True),
 )
@@ -1416,14 +1454,8 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
         https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar
       # (and the four other JARs — see docs/local_python_first.md)
     """
-    # [implementer] auto-probe scaffold config paths — TASK-20260430-001
     if config_path is None:
-        for candidate in (Path("config") / "settings.yaml", Path("settings.yaml")):
-            if candidate.exists():
-                config_path = candidate
-                break
-        else:
-            config_path = Path("config") / "settings.yaml"
+        config_path = Path("settings.yaml")
     resolved_config_path = config_path.expanduser()
 
     checks: List[Tuple[str, bool, str]] = []
@@ -1741,6 +1773,92 @@ def _deploy_wheels(
         _upload_blob(blob_service_client, container, dest, wheel.read_bytes(), overwrite=True)
         count += 1
     return count
+
+
+def _load_package_metadata(package_root: Path) -> Tuple[str, str]:
+    """Read package name and version from a Poetry pyproject.toml."""
+    pyproject_path = package_root / "pyproject.toml"
+    if not pyproject_path.exists():
+        raise click.ClickException(f"Package pyproject.toml not found: {pyproject_path}")
+
+    try:
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError as exc:
+        raise click.ClickException(
+            "Reading pyproject.toml on Python 3.10 requires tomli. "
+            "Install tomli or run with Python 3.11+."
+        ) from exc
+
+    try:
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        poetry_data = data.get("tool", {}).get("poetry", {})
+        package_name = str(poetry_data["name"]).strip()
+        package_version = str(poetry_data["version"]).strip()
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not read tool.poetry.name/version from {pyproject_path}: {exc}"
+        ) from exc
+
+    if not package_name or not package_version:
+        raise click.ClickException(f"{pyproject_path} must define tool.poetry.name and version.")
+    return package_name, package_version
+
+
+def _wheel_distribution_name(package_name: str) -> str:
+    """Normalize a Python distribution name the way wheel filenames do."""
+    import re
+
+    return re.sub(r"[-_.]+", "_", package_name).strip("_")
+
+
+def _build_package_wheel(package_root: Path, dist_dir: Path) -> Path:
+    """Build a package wheel with Poetry and return the matching wheel path."""
+    package_name, package_version = _load_package_metadata(package_root)
+    normalized_name = _wheel_distribution_name(package_name)
+
+    resolved_dist = dist_dir.expanduser()
+    if not resolved_dist.is_absolute():
+        resolved_dist = package_root / resolved_dist
+    resolved_dist.mkdir(parents=True, exist_ok=True)
+
+    before = {path.resolve() for path in resolved_dist.glob("*.whl")}
+    cmd = [
+        "poetry",
+        "build",
+        "--format",
+        "wheel",
+        "--output",
+        str(resolved_dist),
+    ]
+    click.echo(f"Building wheel in {package_root}...")
+    result = subprocess.run(cmd, cwd=package_root, capture_output=True, text=True)
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        raise click.ClickException(f"Package wheel build failed.\n{stderr}")
+
+    matching = sorted(
+        resolved_dist.glob(f"{normalized_name}-{package_version}-*.whl"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if matching:
+        return matching[0]
+
+    created = sorted(
+        [path for path in resolved_dist.glob("*.whl") if path.resolve() not in before],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if created:
+        return created[0]
+
+    raise click.ClickException(
+        f"Build completed but no wheel was found in {resolved_dist} for "
+        f"{package_name} {package_version}."
+    )
 
 
 def _deploy_bootstrap_script(
@@ -2565,7 +2683,8 @@ def app_init(
         app.py          — execution entrypoint (pattern-specific)
         app.yaml        — app metadata and entry point
         lake-reqs.txt   — artifact-backed package requirements
-        config/         — app-owned settings and env overlays
+        settings.yaml   — base config (deployed)
+        settings.local.yaml — local dev overlay (gitignored, never deployed)
         QUICKSTART.md
 
     Apps are deployable Kindling units. They are intentionally separate from
@@ -2723,6 +2842,7 @@ def app_deploy(
     source = local_folder or kda_package  # type: ignore[assignment]
     resolved_app_path = source.expanduser().resolve()
     app_files = _prepare_app_files(resolved_app_path)
+    _validate_app_entry_point(app_files, resolved_app_path)
     resolved_platform = _resolve_remote_platform(platform)
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     resolved_name = (app_name or _default_app_name(resolved_app_path)).strip()
@@ -2793,6 +2913,7 @@ def _run_remote_app(
     if has_local_source:
         resolved_app_path = source_path.resolve()
         app_files = _prepare_app_files(resolved_app_path)
+        _validate_app_entry_point(app_files, resolved_app_path)
         file_count = len(app_files)
         _emit_progress(
             f"[1/3] Deploying {len(app_files)} file(s) as `{resolved_name}` "
@@ -2930,6 +3051,17 @@ def _run_standalone_app(
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
     resolved_app = _discover_app_py_under(source_path)
+    app_dir = resolved_app.parent
+
+    # Resolve config files: explicit --config dir overrides auto-discovery from app dir
+    cfg_root = config_dir.expanduser().resolve() if config_dir else app_dir
+    config_files = []
+    base_cfg = cfg_root / "settings.yaml"
+    if base_cfg.exists():
+        config_files.append(str(base_cfg))
+    env_cfg = cfg_root / f"settings.{resolved_env}.yaml"
+    if env_cfg.exists():
+        config_files.append(str(env_cfg))
 
     run_env = {**os.environ, "KINDLING_ENV": resolved_env}
     run_env.setdefault("KINDLING_SPARK_ENABLE_DELTA", "true")
@@ -2954,18 +3086,20 @@ def _run_standalone_app(
             run_env["KINDLING_LOCAL_PACKAGE_MODULES"] = json.dumps(
                 [*local_package_modules, *existing_modules]
             )
-    if config_dir is not None:
-        resolved_config_dir = config_dir.expanduser().resolve()
-        run_env["KINDLING_CONFIG_DIR"] = str(resolved_config_dir)
-    else:
-        default_config_dir = resolved_app.parent / "config"
-        if default_config_dir.is_dir():
-            run_env["KINDLING_CONFIG_DIR"] = str(default_config_dir.resolve())
     if quiet:
         run_env["KINDLING_LOG_LEVEL"] = "WARNING"
 
+    runner_cmd = [
+        sys.executable,
+        "-m",
+        "kindling._runner",
+        "--env",
+        resolved_env,
+        *[arg for cfg in config_files for arg in ("--config", cfg)],
+        str(resolved_app),
+    ]
     _emit_progress(f"Running app locally: {resolved_app}", json_output)
-    result = subprocess.run([sys.executable, str(resolved_app)], env=run_env)
+    result = subprocess.run(runner_cmd, env=run_env)
 
     succeeded = result.returncode == 0
     payload = {
@@ -3405,7 +3539,7 @@ def _write_app_artifact_package_refs(app_path: Path, package_specs: List[str]) -
     if not package_specs:
         return None
 
-    settings_path = app_path / "config" / "settings.yaml"
+    settings_path = app_path / "settings.yaml"
     data: Dict[str, Any] = {}
     if settings_path.exists():
         loaded = yaml.safe_load(settings_path.read_text(encoding="utf-8")) or {}
@@ -3575,7 +3709,7 @@ _logger().info(
 )
 @click.option(
     "--entry-point",
-    default="main.py",
+    default="app.py",
     show_default=True,
     help="Executor file to create and reference from app.yaml.",
 )
@@ -4967,7 +5101,7 @@ def repo_init(
 
 @cli.group("package")
 def package_group() -> None:
-    """Scaffold Kindling packages inside an existing repo."""
+    """Create and deploy Kindling domain packages."""
 
 
 package_group.add_command(package_add_group)
@@ -5062,6 +5196,98 @@ def package_init(
     click.echo("  poetry install")
     click.echo("  poetry run poe test                  # run the test suite")
     click.echo(f"  cd ../.. && kindling app init {cfg.snake_name} --package {cfg.snake_name}")
+
+
+@package_group.command("deploy")
+@click.argument(
+    "package_path",
+    required=False,
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+)
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="Package source directory containing pyproject.toml.",
+)
+@click.option(
+    "--dist-dir",
+    "dist_dir",
+    default="dist",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help=(
+        "Directory where Poetry should write the built wheel. Relative paths "
+        "are resolved from PACKAGE_PATH."
+    ),
+)
+@click.option(
+    "--storage-account",
+    "storage_account",
+    default=None,
+    help="Storage account: name, name.domain, or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
+)
+@click.option(
+    "--container",
+    "container",
+    default=None,
+    help="Storage container name (overrides AZURE_CONTAINER env var, default: artifacts).",
+)
+@click.option(
+    "--base-path",
+    "base_path",
+    default=None,
+    help="Base path within container (overrides AZURE_BASE_PATH env var).",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def package_deploy(
+    package_path: Optional[Path],
+    local_folder: Optional[Path],
+    dist_dir: Path,
+    storage_account: Optional[str],
+    container: Optional[str],
+    base_path: Optional[str],
+    json_output: bool,
+) -> None:
+    """Build a package wheel and upload it to artifact storage.
+
+    \b
+    The wheel is uploaded to {base}/packages/ so apps can reference it from
+    lake-reqs.txt.
+    """
+    package_root = (
+        _resolve_source_path(local_folder, None, package_path, "deploy").expanduser().resolve()
+    )
+    wheel = _build_package_wheel(package_root, dist_dir)
+
+    resolved_account, resolved_container, resolved_base = _resolve_storage_env(
+        storage_account,
+        container,
+        base_path,
+    )
+    packages_path = f"{resolved_base}/packages" if resolved_base else "packages"
+
+    if not json_output:
+        click.echo(f"Packages → {packages_path}/")
+    blob_service_client = _get_blob_service_client(resolved_account)
+    count = _deploy_wheels(blob_service_client, resolved_container, packages_path, [wheel])
+
+    payload = {
+        "package_path": str(package_root),
+        "wheel": str(wheel),
+        "storage_account": resolved_account,
+        "container": resolved_container,
+        "packages_path": packages_path,
+        "uploaded_count": count,
+    }
+    _emit_result(
+        payload,
+        json_output,
+        f"Deployed `{wheel.name}` to "
+        f"`{resolved_account}/{resolved_container}/{packages_path}/`.",
+    )
 
 
 def main() -> None:

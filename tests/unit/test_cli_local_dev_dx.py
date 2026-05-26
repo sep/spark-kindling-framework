@@ -71,8 +71,7 @@ def test_discover_app_py_missing_override_raises_clear_error():
 def test_discover_app_py_missing_auto_discovery_raises_clear_error():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        Path("config").mkdir()
-        Path("config/settings.yaml").write_text("name: test\n", encoding="utf-8")
+        Path("settings.yaml").write_text("name: test\n", encoding="utf-8")
         result = runner.invoke(cli, ["pipeline", "run", "pipe.one"])
 
         assert result.exit_code != 0
@@ -417,20 +416,7 @@ def test_explicit_scaffold_run_reaches_pipe_execution_with_mock_executor(monkeyp
     executor.run_datapipes.assert_called_once_with(["bronze_to_silver"], no_watermark=False)
 
 
-def test_env_check_auto_probes_config_settings_yaml():
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        Path("config").mkdir()
-        Path("config/settings.yaml").write_text("kindling: {}\n", encoding="utf-8")
-
-        result = runner.invoke(cli, ["env", "check"])
-
-    assert result.exit_code == 0
-    assert "[PASS] config_file_exists: config/settings.yaml" in result.output
-    assert "Environment check passed." in result.output
-
-
-def test_env_check_falls_back_to_root_settings_yaml():
+def test_env_check_probes_settings_yaml():
     runner = CliRunner()
     with runner.isolated_filesystem():
         Path("settings.yaml").write_text("kindling: {}\n", encoding="utf-8")
@@ -439,6 +425,7 @@ def test_env_check_falls_back_to_root_settings_yaml():
 
     assert result.exit_code == 0
     assert "[PASS] config_file_exists: settings.yaml" in result.output
+    assert "Environment check passed." in result.output
 
 
 def test_scaffold_next_steps_use_single_cd():
