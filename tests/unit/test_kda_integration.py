@@ -35,12 +35,12 @@ class TestKDAIntegration:
             (app_dir / "app.yaml").write_text(
                 """name: test-app
 version: "1.0.0"
-entry_point: main.py
+entry_point: app.py
 """
             )
 
-            # Create main.py
-            (app_dir / "main.py").write_text(
+            # Create app.py
+            (app_dir / "app.py").write_text(
                 """print("Hello from test app")
 """
             )
@@ -64,7 +64,7 @@ entry_point: main.py
                 assert "kda-manifest.json" in names, "KDA should contain kda-manifest.json"
 
                 # Should contain app files
-                assert "main.py" in names, "KDA should contain main.py"
+                assert "app.py" in names, "KDA should contain app.py"
                 assert "app.yaml" in names, "KDA should contain app.yaml"
 
     def test_kda_platform_config_merge(self):
@@ -72,6 +72,7 @@ entry_point: main.py
         import json
 
         import yaml
+
         from kindling.data_apps import DataAppPackage
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -82,7 +83,7 @@ entry_point: main.py
             (app_dir / "app.yaml").write_text(
                 """name: test-app
 version: "1.0.0"
-entry_point: main.py
+entry_point: app.py
 spark_config:
   spark.sql.shuffle.partitions: "10"
 """
@@ -97,7 +98,7 @@ environment_vars:
 """
             )
 
-            (app_dir / "main.py").write_text("print('test')")
+            (app_dir / "app.py").write_text("print('test')")
 
             # Package for Synapse using the new utility
             kda_path = DataAppPackage.create(
@@ -136,7 +137,7 @@ class TestKDAAppStructure:
 
         if app_dir.exists():
             # Verify required files
-            assert (app_dir / "main.py").exists(), "Missing main.py"
+            assert (app_dir / "app.py").exists(), "Missing app.py"
 
             # Universal test app uses pure Python, no app.yaml required
             # It's designed to work across all platforms via framework abstraction

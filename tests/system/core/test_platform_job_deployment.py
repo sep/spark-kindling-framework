@@ -43,7 +43,7 @@ def job_config_provider():
         config = {
             "job_name": f"systest-job-deploy-{unique_suffix}",
             "app_name": f"universal-test-app-{unique_suffix}",
-            "entry_point": "main.py",
+            "entry_point": "app.py",
             "test_id": unique_suffix,
         }
         return config

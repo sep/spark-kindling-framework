@@ -4,7 +4,7 @@ from pathlib import Path
 
 def _load_is_auto_cluster_columns():
     app_path = (
-        Path(__file__).resolve().parents[1] / "data-apps" / "streaming-pipes-test-app" / "main.py"
+        Path(__file__).resolve().parents[1] / "data-apps" / "streaming-pipes-test-app" / "app.py"
     )
     module_ast = ast.parse(app_path.read_text(), filename=str(app_path))
 

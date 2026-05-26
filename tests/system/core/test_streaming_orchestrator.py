@@ -27,7 +27,7 @@ def streaming_orchestrator_job_config():
     return {
         "job_name": f"systest-streaming-orchestrator-{unique_suffix}",
         "app_name": f"streaming-orchestrator-test-app-{unique_suffix}",
-        "entry_point": "main.py",
+        "entry_point": "app.py",
         "test_id": unique_suffix,
     }
 

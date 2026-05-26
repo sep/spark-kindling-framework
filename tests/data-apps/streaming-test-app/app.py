@@ -15,6 +15,8 @@ import sys
 import threading
 import time
 
+from pyspark.sql.functions import col
+
 from kindling.injection import get_kindling_service
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
@@ -23,7 +25,6 @@ from kindling.streaming_listener import KindlingStreamingListener
 from kindling.streaming_orchestrator import StreamingOrchestrator
 from kindling.streaming_query_manager import StreamingQueryManager
 from kindling.streaming_recovery_manager import StreamingRecoveryManager
-from pyspark.sql.functions import col
 
 
 def get_test_id():

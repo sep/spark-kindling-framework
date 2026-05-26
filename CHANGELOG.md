@@ -4,6 +4,21 @@ All notable changes to spark-kindling are documented here.
 
 ## [Unreleased]
 
+## [0.9.30] - 2026-05-26
+
+### Added
+- `kindling._runner` module — standalone app execution now initializes the Kindling framework before running the app entrypoint, mirroring the remote `DataAppManager` execution path; `app.py` no longer contains bootstrap code
+- `DataAppConstants.LOCAL_SETTINGS_FILE` — `settings.local.yaml` is excluded from KDA packages at build time
+
+### Changed
+- App and package scaffolds no longer generate a `config/` subdirectory; config files now sit at the project root following ASP.NET-style layering: `settings.yaml` (base, deployed) and `settings.local.yaml` (local dev overlay, gitignored, never deployed)
+- Generated `app.py` is now a passive entrypoint — contains only domain module import stubs and a startup log line; all framework initialization is owned by the CLI runner or platform
+- `kindling app run` (standalone) invokes `python -m kindling._runner` with explicit `--config` args resolved from the app directory instead of passing `KINDLING_CONFIG_DIR`
+- Default app entrypoint renamed from `main.py` to `app.py` across CLI, `DataAppConstants`, and `notebook_framework`; `LEGACY_ENTRY_POINT` constant and silent `main.py` fallback removed
+
+### Fixed
+- `settings.local.yaml` excluded from KDA packaging in both single-platform and multi-platform build paths
+
 ### Added
 - `scd.close_on_missing: "true"` tag on SCD2 entities — rows absent from the source batch are logically closed (`__effective_to = now`, `__is_current = false`) via `whenNotMatchedBySourceUpdate`; safe for full-snapshot sources (TASK-20260430-004, #83)
 - `scd.optimize_unchanged: "true"` tag on SCD2 entities — SHA2-256 hash comparison over tracked columns replaces per-column change detection; reduces merge cost for large dimensions with many unchanged rows (TASK-20260430-004, #84)

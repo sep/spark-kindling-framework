@@ -43,7 +43,7 @@ def config_overrides_job_config():
     return {
         "job_name": f"systest-config-overrides-{test_id}",
         "app_name": f"config-secrets-test-app-{test_id}",
-        "entry_point": "main.py",
+        "entry_point": "app.py",
         "test_id": test_id,
         "config_overrides": {
             "kindling": {
@@ -198,7 +198,7 @@ class TestPlatformSecretProvider:
         job_config = {
             "job_name": f"systest-platform-secrets-{test_id}",
             "app_name": app_name,
-            "entry_point": "main.py",
+            "entry_point": "app.py",
             "test_id": test_id,
             "config_overrides": {"kindling": {"secrets": platform_secrets_config}},
         }

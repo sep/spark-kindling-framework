@@ -56,8 +56,8 @@ PACKAGE_FILES = [
     "pyproject.toml",
     ".env.example",
     "QUICKSTART.md",
-    "config/settings.yaml",
-    "config/env.local.yaml",
+    "settings.yaml",
+    "settings.local.yaml",
     "tests/conftest.py",
     "tests/unit/test_transforms.py",
     "tests/component/test_registration.py",
@@ -67,8 +67,8 @@ APP_FILES = [
     "app.py",
     ".env.example",
     "QUICKSTART.md",
-    "config/settings.yaml",
-    "config/env.local.yaml",
+    "settings.yaml",
+    "settings.local.yaml",
     "tests/entities/bronze/records.csv",  # medallion default
 ]
 
@@ -144,7 +144,7 @@ def test_generate_app_creates_independent_app_structure(tmp_path):
     for rel in APP_FILES:
         assert (root / rel).exists(), f"Missing app file {rel}"
     app_py = (root / "app.py").read_text()
-    assert '"packages" / "sales_ops" / "src"' in app_py
+    assert "Hello from sales-ops" in app_py
 
 
 def test_cannot_create_repo_over_existing_generated_file(tmp_path):
@@ -228,7 +228,7 @@ def test_settings_yaml_has_no_default_wrapper(tmp_path):
     cfg = PackageScaffoldConfig(name="proj", repo_root=repo_root)
     generate_package(cfg)
 
-    settings = (_package_root(repo_root, "proj") / "config" / "settings.yaml").read_text()
+    settings = (_package_root(repo_root, "proj") / "settings.yaml").read_text()
     assert "default:" not in settings
     assert "kindling:" in settings
 
@@ -239,20 +239,23 @@ def test_env_local_yaml_top_level_entity_tags(tmp_path):
     cfg = PackageScaffoldConfig(name="proj", repo_root=repo_root)
     generate_package(cfg)
 
-    env_local = (_package_root(repo_root, "proj") / "config" / "env.local.yaml").read_text()
+    env_local = (_package_root(repo_root, "proj") / "settings.local.yaml").read_text()
     assert env_local.startswith("entity_tags:") or "\nentity_tags:" in env_local
     assert "default:" not in env_local
 
 
-def test_app_template_uses_app_config_when_env_var_unset(tmp_path):
+def test_app_template_has_no_local_bootstrap_branching(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     cfg = AppScaffoldConfig(name="proj", package_name="proj", repo_root=repo_root)
     generate_app(cfg)
 
     app = (repo_root / "apps" / "proj" / "app.py").read_text()
-    assert '_config_dir_env = os.environ.get("KINDLING_CONFIG_DIR")' in app
-    assert "if _config_dir_env else Path(__file__).resolve().parent / \"config\"" in app
+    assert "initialize_framework" not in app
+    assert "KINDLING_CONFIG_DIR" not in app
+    assert "sys.path" not in app
+    assert "register_all" not in app
+    assert "Hello from proj" in app
 
 
 def test_package_pyproject_uses_kebab_name(tmp_path):

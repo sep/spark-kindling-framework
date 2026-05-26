@@ -22,6 +22,9 @@ individual outcomes without parsing free-form log output.
 
 import sys
 
+from pyspark.sql.functions import col, lit
+from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
+
 from kindling.data_entities import DataEntities
 from kindling.injection import GlobalInjector, get_kindling_service
 from kindling.migration import BackupStrategy, MigrationService
@@ -29,8 +32,6 @@ from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
-from pyspark.sql.functions import col, lit
-from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
 # ---------------------------------------------------------------------------
 # Bootstrap

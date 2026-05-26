@@ -1,6 +1,6 @@
 name: kda-test-app
 description: "Test app for KDA packaging and deployment validation"
-entry_point: main.py
+entry_point: app.py
 environment: integration-test
 
 dependencies:

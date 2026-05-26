@@ -469,7 +469,7 @@ class NotebookAppBuilder:
         app_name: str,
         output_path: str,
         version: str = "1.0.0",
-        entry_point: str = "main.py",
+        entry_point: str = "app.py",
         dependencies: list[str] = None,
         environment: str = "production",
         description: str = None,

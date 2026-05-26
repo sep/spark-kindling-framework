@@ -30,9 +30,10 @@ class DataAppConstants:
 
     REQUIREMENTS_FILE = "requirements.txt"
     LAKE_REQUIREMENTS_FILE = "lake-reqs.txt"
+    LOCAL_SETTINGS_FILE = "settings.local.yaml"
     BASE_CONFIG_FILE = "app.yaml"
     ENV_CONFIG_TEMPLATE = "app.{environment}.yaml"
-    DEFAULT_ENTRY_POINT = "main.py"
+    DEFAULT_ENTRY_POINT = "app.py"
 
     # KDA package constants
     KDA_EXTENSION = ".kda"
@@ -486,7 +487,9 @@ class DataAppManager(DataAppRunner):
                     details={},
                     reraise=True,
                 ):
-                    code = self._load_app_code(app_name, app_context.config.entry_point)
+                    code, loaded_entry_point = self._load_app_code(
+                        app_name, app_context.config.entry_point
+                    )
                 self.logger.info(
                     f"Step 3 complete: app code loaded ({len(code) if code else 0} chars)"
                 )
@@ -498,7 +501,7 @@ class DataAppManager(DataAppRunner):
                     details={},
                     reraise=True,
                 ):
-                    result = self._execute_app(app_name, code)
+                    result = self._execute_app(app_name, code, loaded_entry_point)
                 self.logger.info(f"Step 4 complete: result_type={type(result)}")
 
                 self.logger.info(f"App '{app_name}' completed all steps successfully")
@@ -604,6 +607,7 @@ class DataAppManager(DataAppRunner):
                             file_path.is_file()
                             and not self._is_platform_config_file(file_path)
                             and file_path.name != "app.yaml"
+                            and file_path.name != DataAppConstants.LOCAL_SETTINGS_FILE
                         ):
                             relative_path = file_path.relative_to(app_path)
                             kda_file.write(file_path, relative_path)
@@ -616,7 +620,10 @@ class DataAppManager(DataAppRunner):
                 else:
                     # Multi-platform: include all files including platform configs
                     for file_path in app_path.rglob("*"):
-                        if file_path.is_file():
+                        if (
+                            file_path.is_file()
+                            and file_path.name != DataAppConstants.LOCAL_SETTINGS_FILE
+                        ):
                             relative_path = file_path.relative_to(app_path)
                             kda_file.write(file_path, relative_path)
                             self.logger.debug(f"Added to KDA: {relative_path}")
@@ -1236,22 +1243,24 @@ class DataAppManager(DataAppRunner):
         candidates.sort(key=lambda w: w.sort_key)
         return candidates[0]
 
-    def _load_app_code(self, app_name: str, entry_point: str) -> str:
+    def _load_app_code(self, app_name: str, entry_point: str) -> Tuple[str, str]:
         try:
             app_dir = self._get_app_dir(app_name)
             code_path = f"{app_dir}{entry_point}"
 
             code_content = self.get_platform_service().read(code_path)
+
             self.logger.debug(f"Loaded app code from {entry_point} ({len(code_content)} chars)")
 
-            return code_content
+            return code_content, entry_point
 
         except Exception as e:
             raise Exception(f"Failed to load app code for {app_name}: {str(e)}")
 
-    def _execute_app(self, app_name: str, code: str) -> Any:
+    def _execute_app(self, app_name: str, code: str, entry_point: str = None) -> Any:
         try:
             self.logger.info(f"Executing app: {app_name}")
+            source_name = f"{app_name}/{entry_point or DataAppConstants.DEFAULT_ENTRY_POINT}"
 
             import __main__
 
@@ -1259,14 +1268,14 @@ class DataAppManager(DataAppRunner):
             exec_globals.update(
                 {
                     "__name__": f"app_{app_name}",
-                    "__file__": f"{app_name}/main.py",
+                    "__file__": source_name,
                     "__builtins__": builtins,
                     "framework": self.framework,
                     "logger": self.logger,
                 }
             )
 
-            compiled_code = compile(code, f"{app_name}/main.py", "exec")
+            compiled_code = compile(code, source_name, "exec")
 
             try:
                 exec(compiled_code, exec_globals)

@@ -64,7 +64,7 @@ def test_runtime_synapse_deployment_path_uses_dfs_suffix_env(monkeypatch):
     svc.logger = type("Logger", (), {"info": lambda *a: None, "debug": lambda *a: None})()
     svc.workspace_name = "workspace"
     svc.storage_account = "acct"
-    svc._upload_files_to_storage = lambda deployment_path, app_files: {"main.py": deployment_path}
+    svc._upload_files_to_storage = lambda deployment_path, app_files: {"app.py": deployment_path}
 
     captured = {}
 

@@ -68,7 +68,7 @@ class TestAzureMonitorExtension:
         job_config = {
             "job_name": job_name,
             "app_name": app_name,
-            "entry_point": "main.py",
+            "entry_point": "app.py",
             "test_id": test_id,
             "enable_system_test_azure_monitor": True,
         }

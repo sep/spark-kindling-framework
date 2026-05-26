@@ -35,7 +35,7 @@ def name_mapper_job_config():
     return {
         "job_name": f"systest-name-mapper-{unique_suffix}",
         "app_name": f"name-mapper-test-app-{unique_suffix}",
-        "entry_point": "main.py",
+        "entry_point": "app.py",
         "test_id": unique_suffix,
     }
 

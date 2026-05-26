@@ -116,7 +116,7 @@ class SynapseAppDeploymentServiceDemo:
                 }
 
             def create_job_config(self, app_name, app_path, environment_vars=None):
-                main_script = f"{app_path}/main.py"
+                main_script = f"{app_path}/app.py"
                 return {
                     "app_name": app_name,
                     "script_path": main_script,
@@ -231,7 +231,7 @@ class SynapseAppDeploymentServiceDemo:
             name=app_name,
             version="1.0",
             description="Azure Storage Test App for Synapse",
-            entry_point="main.py",
+            entry_point="app.py",
             dependencies=merged_config.get("dependencies", []),
             lake_requirements=merged_config.get("lake_requirements", []),
             environment="synapse",

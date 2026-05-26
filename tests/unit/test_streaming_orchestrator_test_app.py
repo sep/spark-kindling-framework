@@ -8,7 +8,7 @@ def _load_streaming_orchestrator_app_module():
         Path(__file__).resolve().parents[1]
         / "data-apps"
         / "streaming-orchestrator-test-app"
-        / "main.py"
+        / "app.py"
     )
     spec = importlib.util.spec_from_file_location("streaming_orchestrator_test_app", app_path)
     module = importlib.util.module_from_spec(spec)
