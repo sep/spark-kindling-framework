@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 
 from injector import inject
 
+from .app_files import is_deployable_app_file
 from .platform_provider import PlatformServiceProvider
 from .signaling import SignalEmitter, SignalProvider
 from .spark_log_provider import PythonLoggerProvider
@@ -75,7 +76,7 @@ class AppPackager:
 
         with zipfile.ZipFile(kda_path, "r") as zf:
             for file_info in zf.filelist:
-                if file_info.filename.endswith(".py") or file_info.filename.endswith(".yaml"):
+                if is_deployable_app_file(file_info.filename):
                     content = zf.read(file_info.filename).decode("utf-8")
                     app_files[file_info.filename] = content
 
@@ -93,14 +94,11 @@ class AppPackager:
         """
         app_files = {}
 
-        # Include Python files
-        for file_path in dir_path.rglob("*.py"):
-            rel_path = file_path.relative_to(dir_path)
-            with open(file_path, "r") as f:
-                app_files[str(rel_path)] = f.read()
-
-        # Include YAML config files
-        for file_path in dir_path.glob("*.yaml"):
+        for file_path in dir_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if not is_deployable_app_file(file_path.relative_to(dir_path).as_posix()):
+                continue
             rel_path = file_path.relative_to(dir_path)
             with open(file_path, "r") as f:
                 app_files[str(rel_path)] = f.read()
