@@ -5,6 +5,7 @@ Tests the DataAppDeployer orchestrator with mocked platform services.
 """
 
 import tempfile
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
@@ -249,9 +250,12 @@ class TestAppPackager:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             app_path = Path(tmpdir)
+            (app_path / "nested").mkdir()
             (app_path / "main.py").write_text("print('hello')")
             (app_path / "utils.py").write_text("def helper(): pass")
             (app_path / "config.yaml").write_text("setting: value")
+            (app_path / "lake-reqs.txt").write_text("domain-records==1.2.3")
+            (app_path / "nested" / "job.yml").write_text("job_name: demo")
 
             packager = AppPackager()
             app_files = packager.prepare_app_files(str(app_path))
@@ -260,7 +264,27 @@ class TestAppPackager:
             assert "main.py" in app_files
             assert "utils.py" in app_files
             assert "config.yaml" in app_files
+            assert "lake-reqs.txt" in app_files
+            assert "nested/job.yml" in app_files
             assert "print('hello')" in app_files["main.py"]
+
+    def test_prepare_app_files_from_kda_includes_lake_requirements(self):
+        """Test packaging dependency metadata from a KDA archive"""
+        from kindling.job_deployment import AppPackager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            kda_path = Path(tmpdir) / "demo.kda"
+            with zipfile.ZipFile(kda_path, "w") as archive:
+                archive.writestr("main.py", "print('hello')")
+                archive.writestr("lake-reqs.txt", "domain-records==1.2.3")
+                archive.writestr("notes.md", "not deployed")
+
+            packager = AppPackager()
+            app_files = packager.prepare_app_files(str(kda_path))
+
+            assert app_files["main.py"] == "print('hello')"
+            assert app_files["lake-reqs.txt"] == "domain-records==1.2.3"
+            assert "notes.md" not in app_files
 
 
 class TestJobPackagerBackwardCompat:

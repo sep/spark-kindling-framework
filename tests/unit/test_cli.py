@@ -593,6 +593,7 @@ def test_app_package_creates_kda_archive():
         app_dir = Path("demo_app")
         (app_dir / "nested").mkdir(parents=True)
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        (app_dir / "lake-reqs.txt").write_text("domain-records==1.2.3\n", encoding="utf-8")
         (app_dir / "nested" / "settings.yaml").write_text("name: demo\n", encoding="utf-8")
 
         result = runner.invoke(cli, ["app", "package", "--local-folder", str(app_dir)])
@@ -601,7 +602,11 @@ def test_app_package_creates_kda_archive():
         package_path = Path("dist/demo_app.kda")
         assert package_path.exists()
         with zipfile.ZipFile(package_path, "r") as archive:
-            assert sorted(archive.namelist()) == ["app.py", "nested/settings.yaml"]
+            assert sorted(archive.namelist()) == [
+                "app.py",
+                "lake-reqs.txt",
+                "nested/settings.yaml",
+            ]
 
 
 def test_app_package_accepts_positional_path():
@@ -729,6 +734,7 @@ def test_app_deploy_uses_platform_sdk(monkeypatch):
         app_dir = Path("demo_app")
         (app_dir / "pipelines").mkdir(parents=True)
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        (app_dir / "lake-reqs.txt").write_text("domain-records==1.2.3\n", encoding="utf-8")
         (app_dir / "pipelines" / "job.yml").write_text("job_name: demo\n", encoding="utf-8")
 
         result = runner.invoke(
@@ -737,18 +743,27 @@ def test_app_deploy_uses_platform_sdk(monkeypatch):
 
         assert result.exit_code == 0, result.output
         assert fake_api.calls[0][0] == "demo_app"
-        assert sorted(fake_api.calls[0][1]) == ["app.py", "pipelines/job.yml"]
+        assert sorted(fake_api.calls[0][1]) == [
+            "app.py",
+            "lake-reqs.txt",
+            "pipelines/job.yml",
+        ]
         assert "Deployed app `demo_app`" in result.output
 
 
 def test_app_deploy_kda_package_flag(monkeypatch):
     class FakeAPI:
+        def __init__(self):
+            self.calls = []
+
         def deploy_app(self, app_name, app_files):
+            self.calls.append((app_name, app_files))
             return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/demo"
 
+    fake_api = FakeAPI()
     monkeypatch.setattr(
         "kindling_cli.cli._create_platform_api",
-        lambda platform: (FakeAPI(), platform),
+        lambda platform: (fake_api, platform),
     )
 
     runner = CliRunner()
@@ -756,12 +771,14 @@ def test_app_deploy_kda_package_flag(monkeypatch):
         kda = Path("demo_app.kda")
         with zipfile.ZipFile(kda, "w") as archive:
             archive.writestr("app.py", "print('hello')\n")
+            archive.writestr("lake-reqs.txt", "domain-records==1.2.3\n")
 
         result = runner.invoke(
             cli, ["app", "deploy", "--kda-package", str(kda), "--platform", "fabric"]
         )
 
         assert result.exit_code == 0, result.output
+        assert fake_api.calls[0][1]["lake-reqs.txt"] == "domain-records==1.2.3\n"
         assert "Deployed app `demo_app`" in result.output
 
 
@@ -1404,9 +1421,7 @@ class TestAppRunCommand:
 
         assert result.exit_code == 0, result.output
         assert captured_env["PYTHONPATH"].split(os.pathsep)[0] == str(package_dir.parent)
-        assert json.loads(captured_env["KINDLING_LOCAL_PACKAGE_MODULES"]) == [
-            "direct_domain"
-        ]
+        assert json.loads(captured_env["KINDLING_LOCAL_PACKAGE_MODULES"]) == ["direct_domain"]
 
     def test_remote_rejects_local_package_override(self, tmp_path):
         app_dir = tmp_path / "myapp"
