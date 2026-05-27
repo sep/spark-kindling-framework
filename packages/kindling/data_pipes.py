@@ -49,7 +49,7 @@ class EntityReadPersistStrategy(ABC):
     ]
 
     @abstractmethod
-    def create_pipe_entity_reader(self, pipe: str):
+    def create_pipe_entity_reader(self, pipe: "PipeMetadata"):
         pass
 
     @abstractmethod

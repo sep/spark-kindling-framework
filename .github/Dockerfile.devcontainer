@@ -86,8 +86,10 @@ RUN rm -rf /build
 # user-level context without any project-level configuration.
 COPY .github/kindling-agent-reference.md /opt/kindling/agent-reference.md
 RUN mkdir -p /home/vscode/.claude \
+       /home/vscode/.vscode-server/data/User/globalStorage \
+       /home/vscode/.vscode-server/data/Machine \
     && cp /opt/kindling/agent-reference.md /home/vscode/.claude/CLAUDE.md \
-    && chown -R vscode:vscode /home/vscode/.claude
+    && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.vscode-server
 
 LABEL org.opencontainers.image.source="https://github.com/sep/spark-kindling-framework"
 LABEL org.opencontainers.image.description="Kindling developer environment — Python 3.11, Java 21, kindling wheels, Hadoop JARs"

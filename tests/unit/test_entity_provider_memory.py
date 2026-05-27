@@ -234,9 +234,9 @@ class TestMemoryEntityProvider:
 
         provider.append_as_stream(mock_df, entity_metadata, checkpoint_location="/tmp/cp")
 
-        # Should use default output_mode="append" and query_name=entity.name
+        # Should use default output_mode="append" and query_name derived from entityid
         mock_writer.outputMode.assert_called_with("append")
-        mock_writer.queryName.assert_called_with("results")
+        mock_writer.queryName.assert_called_with("temp_results")  # entityid="temp.results"
 
     def test_check_entity_exists_in_table(self, provider, entity_metadata):
         """Test check_entity_exists returns True when table exists"""
@@ -268,11 +268,23 @@ class TestMemoryEntityProvider:
         table_name = provider._get_table_name(entity_metadata)
         assert table_name == "test_table"
 
-    def test_get_table_name_defaults_to_entity_name(self, provider, entity_metadata):
-        """Test table name defaults to entity name when not in config"""
+    def test_get_table_name_defaults_to_sanitized_entityid(self, provider, entity_metadata):
+        """Table name defaults to entityid with dots replaced by underscores."""
         entity_metadata.tags = {"provider_type": "memory"}
         table_name = provider._get_table_name(entity_metadata)
-        assert table_name == "results"
+        assert table_name == "temp_results"  # entityid="temp.results"
+
+    def test_get_table_name_spaces_in_name_do_not_affect_default(self, provider):
+        """Entity name with spaces never leaks into the default table name."""
+        entity = EntityMetadata(
+            entityid="gold.events",
+            name="Gold Events Table",
+            partition_columns=[],
+            merge_columns=[],
+            tags={"provider_type": "memory"},
+            schema=None,
+        )
+        assert provider._get_table_name(entity) == "gold_events"
 
 
 class TestMemoryProviderSeedRows:

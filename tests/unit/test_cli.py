@@ -760,7 +760,7 @@ def test_app_deploy_rejects_missing_configured_entry_point(monkeypatch):
         app_dir.mkdir(parents=True)
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
         (app_dir / "app.yaml").write_text(
-            "name: sample_engine\nentry_point: app.py\n",
+            "name: sample_engine\nentry_point: main.py\n",
             encoding="utf-8",
         )
 
@@ -770,8 +770,8 @@ def test_app_deploy_rejects_missing_configured_entry_point(monkeypatch):
         )
 
         assert result.exit_code != 0
-        assert "entry_point `app.py`" in result.output
-        assert "app.py" in result.output
+        assert "entry_point `main.py`" in result.output
+        assert "main.py" in result.output
 
 
 def test_app_deploy_kda_package_flag(monkeypatch):
@@ -1384,7 +1384,7 @@ class TestAppRunCommand:
         assert result.exit_code == 0, result.output
         cmd = captured_cmd["cmd"]
         env = captured_cmd["env"]
-        assert "-m" in cmd and "kindling._runner" in cmd
+        assert "-m" in cmd and "kindling_cli._runner" in cmd
         assert "--env" in cmd and "dev" in cmd
         assert str(config_dir / "settings.yaml") in cmd
         assert env["KINDLING_ENV"] == "dev"
@@ -1411,7 +1411,7 @@ class TestAppRunCommand:
         result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
 
         assert result.exit_code == 0, result.output
-        assert "kindling._runner" in captured_cmd
+        assert "kindling_cli._runner" in captured_cmd
         assert str(app_dir / "settings.yaml") in captured_cmd
         assert "KINDLING_CONFIG_DIR" not in dict(zip(captured_cmd, captured_cmd))
 
@@ -2265,9 +2265,7 @@ def test_app_add_executor_creates_entrypoint_and_app_yaml(tmp_path):
     app_config = yaml.safe_load((app_dir / "app.yaml").read_text(encoding="utf-8"))
     assert app_config["name"] == "sales_ops"
     assert app_config["entry_point"] == "app.py"
-    app_settings = yaml.safe_load(
-        (app_dir / "config" / "settings.yaml").read_text(encoding="utf-8")
-    )
+    app_settings = yaml.safe_load((app_dir / "settings.yaml").read_text(encoding="utf-8"))
     assert app_settings["kindling"]["extensions"] == ["sales"]
 
 
@@ -2307,9 +2305,7 @@ def test_app_add_executor_auto_discovers_app_directory_from_repo_root(tmp_path, 
     assert (app_dir / "app.yaml").exists()
     assert not (tmp_path / "app.py").exists()
     assert not (tmp_path / "app.yaml").exists()
-    app_settings = yaml.safe_load(
-        (app_dir / "config" / "settings.yaml").read_text(encoding="utf-8")
-    )
+    app_settings = yaml.safe_load((app_dir / "settings.yaml").read_text(encoding="utf-8"))
     assert app_settings["kindling"]["extensions"] == ["sales-domain==1.2.3"]
 
 

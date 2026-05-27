@@ -243,7 +243,7 @@ class TestCreatePipeEntityReaderFixtureConvention:
                 "kindling.entity_provider_csv.get_or_create_spark_session", return_value=mock_spark
             ),
         ):
-            reader = strategy.create_pipe_entity_reader("my_pipe")
+            reader = strategy.create_pipe_entity_reader(MagicMock(pipeid="my_pipe"))
             result = reader(entity, usewm=False)
 
         assert result is mock_df
@@ -266,7 +266,7 @@ class TestCreatePipeEntityReaderFixtureConvention:
             patch("kindling.simple_read_persist_strategy._is_local_execution", return_value=True),
             patch("kindling.simple_read_persist_strategy.os.getcwd", return_value=str(tmp_path)),
         ):
-            reader = strategy.create_pipe_entity_reader("my_pipe")
+            reader = strategy.create_pipe_entity_reader(MagicMock(pipeid="my_pipe"))
             result = reader(entity, usewm=False)
 
         assert result is mock_df
@@ -290,7 +290,7 @@ class TestCreatePipeEntityReaderFixtureConvention:
             patch("kindling.simple_read_persist_strategy._is_local_execution", return_value=False),
             patch("kindling.simple_read_persist_strategy.os.getcwd", return_value=str(tmp_path)),
         ):
-            reader = strategy.create_pipe_entity_reader("my_pipe")
+            reader = strategy.create_pipe_entity_reader(MagicMock(pipeid="my_pipe"))
             result = reader(entity, usewm=False)
 
         assert result is mock_df
@@ -321,7 +321,7 @@ class TestCreatePipeEntityReaderFixtureConvention:
                 "kindling.entity_provider_csv.get_or_create_spark_session", return_value=mock_spark
             ),
         ):
-            reader = strategy.create_pipe_entity_reader("pipe")
+            reader = strategy.create_pipe_entity_reader(MagicMock(pipeid="pipe"))
             result = reader(entity, usewm=False)
 
         assert result is mock_df
@@ -340,7 +340,7 @@ class TestCreatePipeEntityReaderFixtureConvention:
             patch("kindling.simple_read_persist_strategy._is_local_execution", return_value=True),
             patch("kindling.simple_read_persist_strategy.os.getcwd", return_value=str(tmp_path)),
         ):
-            reader = strategy.create_pipe_entity_reader("my_pipe")
+            reader = strategy.create_pipe_entity_reader(MagicMock(pipeid="my_pipe"))
             reader(entity, usewm=True)
 
         strategy.wms.read_current_entity_changes.assert_not_called()
@@ -370,6 +370,6 @@ class TestCreatePipeEntityReaderFixtureConvention:
                 "kindling.entity_provider_csv.get_or_create_spark_session", return_value=mock_spark
             ),
         ):
-            reader = strategy.create_pipe_entity_reader("pipe")
+            reader = strategy.create_pipe_entity_reader(MagicMock(pipeid="pipe"))
             with pytest.raises(ValueError, match="has no data rows"):
                 reader(entity, usewm=False)

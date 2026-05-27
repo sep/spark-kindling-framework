@@ -44,7 +44,7 @@ class MemoryEntityProvider(
     Provider configuration options (via entity tags with 'provider.' prefix):
 
     **For batch operations:**
-    - provider.table_name: Memory table name (default: entity name)
+    - provider.table_name: Memory table name (default: entityid with dots replaced by underscores)
 
     **For streaming reads:**
     - provider.stream_type: "rate" or "memory" (default: "rate")
@@ -100,9 +100,9 @@ class MemoryEntityProvider(
         self._memory_store: Dict[str, DataFrame] = {}
 
     def _get_table_name(self, entity_metadata: EntityMetadata) -> str:
-        """Get memory table name from config or entity name."""
+        """Get memory table name from config or sanitized entityid."""
         config = self._get_provider_config(entity_metadata)
-        return config.get("table_name", entity_metadata.name)
+        return config.get("table_name", entity_metadata.entityid.replace(".", "_"))
 
     def _get_seed_rows(self, entity_metadata: EntityMetadata) -> Optional[List[dict]]:
         """Return inline seed rows from provider config, or None if not configured."""
@@ -362,7 +362,7 @@ class MemoryEntityProvider(
             config = {**config, **options}
 
         output_mode = config.get("output_mode", "append")
-        query_name = config.get("query_name", entity_metadata.name)
+        query_name = config.get("query_name", entity_metadata.entityid.replace(".", "_"))
         table_name = self._get_table_name(entity_metadata)
 
         self.logger.info(

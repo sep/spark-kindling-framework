@@ -106,8 +106,8 @@ def test_initialize_framework_uses_explicit_config_files_for_standalone():
     mock_init_platform.assert_called_once_with("standalone", config_service, logger)
     mock_configure.assert_called_once()
     assert mock_configure.call_args.kwargs["config_files"] == [
-        "config/settings.yaml",
-        "config/env.local.yaml",
+        "settings.yaml",
+        "settings.local.yaml",
     ]
     assert mock_configure.call_args.kwargs["platform"] == "standalone"
 

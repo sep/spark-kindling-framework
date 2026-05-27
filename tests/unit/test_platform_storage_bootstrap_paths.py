@@ -7,7 +7,9 @@ from kindling_sdk.platform_provider import azure_abfss_uri, azure_storage_accoun
 from kindling_sdk.platform_synapse import SynapseAPI
 
 
-def test_fabric_create_job_uses_base_path_for_default_bootstrap_script():
+def test_fabric_create_job_uses_base_path_for_default_bootstrap_script(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_DFS_ENDPOINT_SUFFIX", raising=False)
+    monkeypatch.delenv("AZURE_CLOUD", raising=False)
     api = FabricAPI.__new__(FabricAPI)
     api.workspace_id = "workspace-123"
     api.lakehouse_id = "lakehouse-123"
@@ -40,7 +42,9 @@ def test_fabric_create_job_uses_base_path_for_default_bootstrap_script():
     )
 
 
-def test_synapse_create_job_uses_base_path_for_default_bootstrap_script():
+def test_synapse_create_job_uses_base_path_for_default_bootstrap_script(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_DFS_ENDPOINT_SUFFIX", raising=False)
+    monkeypatch.delenv("AZURE_CLOUD", raising=False)
     api = SynapseAPI.__new__(SynapseAPI)
     api.workspace_name = "workspace-123"
     api.spark_pool_name = "spark-pool"
@@ -110,14 +114,15 @@ def test_storage_helpers_use_azure_environment(monkeypatch):
     )
 
 
-def test_synapse_run_job_uses_livy_from_cache_and_returns_batch_id():
-    """run_job uses the in-process _job_mapping cache (same process as create_job)."""
+def test_synapse_run_job_uses_livy_when_execute_unavailable():
+    """run_job uses Livy batch directly when /execute is cached as unavailable."""
     api = SynapseAPI.__new__(SynapseAPI)
     api.workspace_name = "my-workspace"
     api.spark_pool_name = "spark-pool"
     api.base_url = "https://my-workspace.dev.azuresynapse.net"
     api._last_request_time = 0
     api._min_request_interval = 0
+    api._execute_endpoint_available = False  # known-unavailable — skip /execute
     api._make_request = MagicMock(
         return_value=MagicMock(
             json=lambda: {"id": 42, "state": "not_started"},
@@ -141,7 +146,140 @@ def test_synapse_run_job_uses_livy_from_cache_and_returns_batch_id():
     assert "batches" in call_args.args[1]
 
 
+def test_synapse_run_job_tries_execute_first_and_returns_batch_id():
+    """/execute endpoint is tried first; its batch ID is returned on success."""
+    api = SynapseAPI.__new__(SynapseAPI)
+    api.workspace_name = "my-workspace"
+    api.spark_pool_name = "spark-pool"
+    api.base_url = "https://my-workspace.dev.azuresynapse.net"
+    api._last_request_time = 0
+    api._min_request_interval = 0
+    api._execute_endpoint_available = None  # untested — will probe /execute
+
+    defn_body = {
+        "name": "my-job",
+        "properties": {
+            "jobProperties": {
+                "file": "abfss://c@sa.dfs.core.windows.net/bootstrap.py",
+                "args": ["config:platform=synapse"],
+                "conf": {},
+            }
+        },
+    }
+    execute_response = MagicMock(json=lambda: {"id": 42, "state": "not_started"})
+    api._make_request = MagicMock(return_value=execute_response)
+    api._job_mapping = {
+        "my-job": {
+            "file": "abfss://c@sa.dfs.core.windows.net/bootstrap.py",
+            "args": ["config:platform=synapse"],
+            "conf": {},
+            "_defn_body": defn_body,
+        }
+    }
+
+    batch_id = api.run_job("my-job")
+
+    assert batch_id == "42"
+    assert api._execute_endpoint_available is True
+    post_call = api._make_request.call_args
+    assert post_call.args[0] == "POST"
+    assert "/execute" in post_call.args[1]
+    assert "livyApi" not in post_call.args[1]
+
+
+def test_synapse_run_job_falls_back_to_livy_on_execute_404():
+    """/execute returning 404 is cached and Livy batch is used as fallback."""
+    api = SynapseAPI.__new__(SynapseAPI)
+    api.workspace_name = "my-workspace"
+    api.spark_pool_name = "spark-pool"
+    api.base_url = "https://my-workspace.dev.azuresynapse.net"
+    api._last_request_time = 0
+    api._min_request_interval = 0
+    api._execute_endpoint_available = None
+
+    defn_body = {
+        "name": "my-job",
+        "properties": {
+            "jobProperties": {
+                "file": "abfss://c@sa.dfs.core.windows.net/bootstrap.py",
+                "args": ["config:platform=synapse"],
+                "conf": {},
+            }
+        },
+    }
+    api._job_mapping = {
+        "my-job": {
+            "file": "abfss://c@sa.dfs.core.windows.net/bootstrap.py",
+            "args": ["config:platform=synapse"],
+            "conf": {},
+            "_defn_body": defn_body,
+        }
+    }
+
+    def _side_effect(method, url, **kwargs):
+        if "/execute" in url:
+            raise Exception("Synapse API request failed: 404 - Not Found")
+        return MagicMock(json=lambda: {"id": 99})
+
+    api._make_request = MagicMock(side_effect=_side_effect)
+
+    batch_id = api.run_job("my-job")
+
+    assert batch_id == "99"
+    assert api._execute_endpoint_available is False
+    calls = api._make_request.call_args_list
+    assert any("/execute" in c.args[1] for c in calls), "expected /execute attempt"
+    assert any("livyApi" in c.args[1] for c in calls), "expected Livy fallback"
+
+
+def test_synapse_run_job_updates_definition_args_before_execute():
+    """run_job PUTs updated args to the definition before calling /execute for per-run overrides."""
+    api = SynapseAPI.__new__(SynapseAPI)
+    api.workspace_name = "my-workspace"
+    api.spark_pool_name = "spark-pool"
+    api.base_url = "https://my-workspace.dev.azuresynapse.net"
+    api._last_request_time = 0
+    api._min_request_interval = 0
+    api._execute_endpoint_available = None
+
+    defn_body = {
+        "name": "kindling-runner",
+        "properties": {
+            "jobProperties": {
+                "file": "abfss://c@sa.dfs.core.windows.net/bootstrap.py",
+                "args": ["config:app_name=kindling-runner", "config:platform=synapse"],
+                "conf": {},
+            }
+        },
+    }
+    api._job_mapping = {
+        "kindling-runner": {
+            "file": "abfss://c@sa.dfs.core.windows.net/bootstrap.py",
+            "args": ["config:app_name=kindling-runner", "config:platform=synapse"],
+            "conf": {},
+            "_defn_body": defn_body,
+        }
+    }
+
+    put_response = MagicMock(json=lambda: {})
+    execute_response = MagicMock(json=lambda: {"id": 77})
+    api._make_request = MagicMock(side_effect=[put_response, execute_response])
+
+    batch_id = api.run_job("kindling-runner", parameters={"app_name": "my-app"})
+
+    assert batch_id == "77"
+    put_call, execute_call = api._make_request.call_args_list
+    assert put_call.args[0] == "PUT"
+    assert "sparkJobDefinitions/kindling-runner" in put_call.args[1]
+    updated_args = put_call.kwargs["json"]["properties"]["jobProperties"]["args"]
+    assert "config:app_name=my-app" in updated_args
+    assert not any(a.startswith("config:app_name=kindling-runner") for a in updated_args)
+    assert execute_call.args[0] == "POST"
+    assert "/execute" in execute_call.args[1]
+
+
 def test_synapse_run_job_uses_dev_endpoint_suffix_env(monkeypatch):
+    """The /execute URL uses the cloud-specific Synapse endpoint suffix."""
     monkeypatch.setenv("AZURE_SYNAPSE_DEV_ENDPOINT_SUFFIX", "dev.azuresynapse.usgovcloudapi.net")
 
     api = SynapseAPI(
@@ -149,6 +287,16 @@ def test_synapse_run_job_uses_dev_endpoint_suffix_env(monkeypatch):
         spark_pool_name="spark-pool",
         credential=object(),
     )
+    defn_body = {
+        "name": "my-job",
+        "properties": {
+            "jobProperties": {
+                "file": "abfss://c@sa.dfs.core.usgovcloudapi.net/bootstrap.py",
+                "args": ["config:platform=synapse"],
+                "conf": {},
+            }
+        },
+    }
     api._make_request = MagicMock(
         return_value=MagicMock(
             json=lambda: {"id": 42, "state": "not_started"},
@@ -159,26 +307,31 @@ def test_synapse_run_job_uses_dev_endpoint_suffix_env(monkeypatch):
             "file": "abfss://c@sa.dfs.core.usgovcloudapi.net/bootstrap.py",
             "args": ["config:platform=synapse"],
             "conf": {},
+            "_defn_body": defn_body,
         }
     }
 
     batch_id = api.run_job("my-job")
 
     assert batch_id == "42"
-    call_args = api._make_request.call_args
-    assert call_args.args[0] == "POST"
-    assert call_args.args[1].startswith("https://my-workspace.dev.azuresynapse.usgovcloudapi.net/")
-    assert "/livyApi/" in call_args.args[1]
+    execute_call = api._make_request.call_args
+    assert execute_call.args[0] == "POST"
+    assert execute_call.args[1].startswith(
+        "https://my-workspace.dev.azuresynapse.usgovcloudapi.net/"
+    )
+    assert "/execute" in execute_call.args[1]
 
 
 def test_synapse_run_job_falls_back_to_get_for_cross_invocation():
-    """run_job fetches the SparkJobDefinition via GET when no in-process cache exists."""
+    """run_job fetches the SparkJobDefinition via GET when no in-process cache exists,
+    then submits via /execute."""
     api = SynapseAPI.__new__(SynapseAPI)
     api.workspace_name = "my-workspace"
     api.spark_pool_name = "spark-pool"
     api.base_url = "https://my-workspace.dev.azuresynapse.net"
     api._last_request_time = 0
     api._min_request_interval = 0
+    api._execute_endpoint_available = None
     api._job_mapping = {}
 
     defn_response = MagicMock(
@@ -192,8 +345,8 @@ def test_synapse_run_job_falls_back_to_get_for_cross_invocation():
             }
         }
     )
-    batch_response = MagicMock(json=lambda: {"id": 99, "state": "not_started"})
-    api._make_request = MagicMock(side_effect=[defn_response, batch_response])
+    execute_response = MagicMock(json=lambda: {"id": 99, "state": "not_started"})
+    api._make_request = MagicMock(side_effect=[defn_response, execute_response])
 
     batch_id = api.run_job("my-job")
 
@@ -202,7 +355,7 @@ def test_synapse_run_job_falls_back_to_get_for_cross_invocation():
     assert get_call.args[0] == "GET"
     assert "sparkJobDefinitions/my-job" in get_call.args[1]
     assert post_call.args[0] == "POST"
-    assert "livyApi" in post_call.args[1]
+    assert "/execute" in post_call.args[1]
 
 
 def test_fabric_run_job_uses_api_base_url_env(monkeypatch):

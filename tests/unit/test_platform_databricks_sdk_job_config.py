@@ -32,6 +32,8 @@ def test_resolve_system_test_mode_prefers_bootstrap_override():
 def test_resolve_artifacts_storage_path_uses_abfss_for_classic_by_default(monkeypatch):
     api = _make_api()
     monkeypatch.delenv("KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH", raising=False)
+    monkeypatch.delenv("AZURE_STORAGE_DFS_ENDPOINT_SUFFIX", raising=False)
+    monkeypatch.delenv("AZURE_CLOUD", raising=False)
 
     path = api._resolve_artifacts_storage_path({}, "classic")
 
@@ -66,6 +68,8 @@ def test_resolve_artifacts_storage_path_honors_classic_override(monkeypatch):
 def test_resolve_python_file_uses_abfss_for_classic_by_default(monkeypatch):
     api = _make_api()
     monkeypatch.delenv("KINDLING_DATABRICKS_CLASSIC_BOOTSTRAP_ROOT", raising=False)
+    monkeypatch.delenv("AZURE_STORAGE_DFS_ENDPOINT_SUFFIX", raising=False)
+    monkeypatch.delenv("AZURE_CLOUD", raising=False)
 
     python_file = api._resolve_python_file(
         main_file="kindling_bootstrap.py",

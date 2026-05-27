@@ -430,10 +430,14 @@ def _coerce_value(raw: str) -> Any:
 
 
 def _discover_python_package_roots(pythonpath_entry: Path) -> List[str]:
-    """Return importable package roots found under a PYTHONPATH entry."""
+    """Return importable package roots found under a PYTHONPATH entry.
+
+    Includes both regular packages (__init__.py) and namespace packages (no
+    __init__.py but still a valid importable directory on the path).
+    """
     package_roots = []
     for candidate in sorted(pythonpath_entry.iterdir()):
-        if candidate.is_dir() and (candidate / "__init__.py").is_file():
+        if candidate.is_dir() and not candidate.name.startswith((".", "_")):
             package_roots.append(candidate.name)
     return package_roots
 
@@ -3092,7 +3096,7 @@ def _run_standalone_app(
     runner_cmd = [
         sys.executable,
         "-m",
-        "kindling._runner",
+        "kindling_cli._runner",
         "--env",
         resolved_env,
         *[arg for cfg in config_files for arg in ("--config", cfg)],
