@@ -96,7 +96,7 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         self.logger = lp.get_logger("SimpleReadPersistStrategy")
         self._init_signal_emitter(signal_provider)
 
-    def create_pipe_entity_reader(self, pipe: str):
+    def create_pipe_entity_reader(self, pipe):
         strategy = self
 
         def entity_reader(entity, usewm):
