@@ -106,6 +106,10 @@ class DatabricksAPI(PlatformAPI):
                 "Databricks SDK not available. Install with: pip install databricks-sdk"
             )
 
+        # Token takes priority over service principal credentials
+        if self.token:
+            return WorkspaceClient(host=self.workspace_url, token=self.token)
+
         # Check if service principal credentials are provided
         if self.azure_tenant_id and self.azure_client_id and self.azure_client_secret:
             # Use service principal authentication
@@ -152,6 +156,7 @@ class DatabricksAPI(PlatformAPI):
 
         return cls(
             workspace_url=workspace_url,
+            token=os.getenv("DATABRICKS_TOKEN"),
             storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
             container=os.getenv("AZURE_CONTAINER", "artifacts"),
             base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
@@ -461,34 +466,27 @@ class DatabricksAPI(PlatformAPI):
         )
         all_args = config_args + additional_args
 
-        # Configure cluster log delivery to Unity Catalog Volume
-        # UC Volume /Volumes/medallion/default/logs is backed by ABFSS storage
-        # allowing programmatic access to driver logs after job completion.
-        #
-        # Cluster logs contain driver logs with application logging output (logger.info, logger.error, etc.)
-        from databricks.sdk.service.compute import VolumesStorageInfo
-
-        # Use Unity Catalog Volume (backed by ABFSS at logs/ path in artifacts container)
-        # UC Volume paths start with /Volumes/ and use VolumesStorageInfo, not DbfsStorageInfo
-        uc_volume_path = job_config.get("cluster_logs_volume", "/Volumes/medallion/default/logs")
-        log_path = f"{uc_volume_path}/cluster-logs/kindling-jobs/{job_name}"
-
-        cluster_log_conf = ClusterLogConf(volumes=VolumesStorageInfo(destination=log_path))
-
-        # Build cluster specification using compute.ClusterSpec
-        # This is the actual cluster config with spark version, node types, etc.
-        # Set data_security_mode to SINGLE_USER for UC Volumes cluster log delivery support
-        # Filter out incompatible spark configs when using SINGLE_USER mode
         spark_conf = job_config.get("spark_config", {}).copy()
-        # Remove spark.databricks.cluster.profile as it's incompatible with data_security_mode
-        spark_conf.pop("spark.databricks.cluster.profile", None)
+
+        uc_volume_path = job_config.get("cluster_logs_volume")
+        if uc_volume_path:
+            from databricks.sdk.service.compute import VolumesStorageInfo
+
+            log_path = f"{uc_volume_path}/cluster-logs/kindling-jobs/{job_name}"
+            cluster_log_conf = ClusterLogConf(volumes=VolumesStorageInfo(destination=log_path))
+            # spark.databricks.cluster.profile is incompatible with SINGLE_USER
+            spark_conf.pop("spark.databricks.cluster.profile", None)
+            data_security_mode = DataSecurityMode.SINGLE_USER
+        else:
+            cluster_log_conf = None
+            data_security_mode = None
 
         cluster_spec = ClusterSpec(
             spark_version=job_config.get("spark_version", "13.3.x-scala2.12"),
             node_type_id=job_config.get("node_type_id", "Standard_DS3_v2"),
             num_workers=job_config.get("num_workers", 1),
             cluster_log_conf=cluster_log_conf,
-            data_security_mode=DataSecurityMode.SINGLE_USER,
+            data_security_mode=data_security_mode,
             spark_conf=spark_conf if spark_conf else None,
         )
 
