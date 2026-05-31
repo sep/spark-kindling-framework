@@ -161,9 +161,19 @@ class PlatformAPI(ABC):
         result["deployment_path"] = deployment_path
         return result
 
-    # --- Runner lifecycle ---
+    # --- App job lifecycle ---
     # All implemented here using the abstract job primitives + find_job_by_name,
-    # so every platform adapter gets full runner support for free.
+    # so every platform adapter gets full app job support for free.
+
+    def ensure_app_job(self, app_name: str) -> Dict[str, Any]:
+        """Ensure a job definition exists for the given app, creating it if absent."""
+        job_id = self.find_job_by_name(app_name)
+        if job_id is None:
+            result = self.create_job(app_name, {"app_name": app_name})
+            job_id = str(result.get("job_id", app_name))
+        return {"job_id": job_id, "app_name": app_name, "state": "installed"}
+
+    # --- Runner lifecycle (deprecated) ---
 
     def ensure_runner(self, platform: str) -> Dict[str, Any]:
         runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME)

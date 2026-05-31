@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, date_format, lit
 from pyspark.sql.types import (
@@ -139,12 +140,25 @@ class WatermarkManager(WatermarkService, SignalEmitter):
 
         self.emit("watermark.before_get", source_entity_id=source_entity_id, reader_id=reader_id)
 
-        df = (
-            self.ep.read_entity(self.wef.get_watermark_entity_for_entity(source_entity_id))
-            .filter((col("source_entity_id") == source_entity_id) & (col("reader_id") == reader_id))
-            .select("last_version_processed")
-            .limit(1)
-        )
+        try:
+            df = (
+                self.ep.read_entity(self.wef.get_watermark_entity_for_entity(source_entity_id))
+                .filter(
+                    (col("source_entity_id") == source_entity_id) & (col("reader_id") == reader_id)
+                )
+                .select("last_version_processed")
+                .limit(1)
+            )
+        except AnalysisException as e:
+            if "DELTA_MISSING_DELTA_TABLE" in str(e):
+                self.logger.debug("Watermarks table does not exist yet")
+                self.emit(
+                    "watermark.watermark_missing",
+                    source_entity_id=source_entity_id,
+                    reader_id=reader_id,
+                )
+                return None
+            raise
 
         if df.isEmpty():
             self.logger.debug("No watermark")
@@ -238,6 +252,20 @@ class WatermarkManager(WatermarkService, SignalEmitter):
 
         watermark_version = self.get_watermark(entity.entityid, pipe.pipeid)
         currentVersion = self.ep.get_entity_version(entity)
+
+        if watermark_version is None and currentVersion == 0:
+            self.logger.debug(
+                f"read_current_changes - {entity.entityid} for {pipe.name}: Source entity does not exist yet"
+            )
+            self.emit(
+                "watermark.no_new_data",
+                entity_id=entity.entityid,
+                pipe_id=pipe.pipeid,
+                pipe_name=pipe.name,
+                current_version=currentVersion,
+                watermark_version=watermark_version,
+            )
+            return None
 
         if watermark_version is None:
             self.logger.debug(

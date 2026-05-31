@@ -971,15 +971,12 @@ class DataAppManager(DataAppRunner):
             return []
 
     def _extract_package_name(self, package_spec: str) -> str:
-        """Extract package name from spec (e.g., 'pandas==1.0.0' -> 'pandas')"""
-        return (
-            package_spec.split("==")[0]
-            .split(">=")[0]
-            .split("<=")[0]
-            .split("<")[0]
-            .split(">")[0]
-            .strip()
-        )
+        """Extract package name from spec (e.g., 'pandas==1.0.0' -> 'pandas').
+
+        Delegates to _parse_package_spec so wheel stems like
+        'name-1.0-py3-none-any' are also handled correctly.
+        """
+        return self._parse_package_spec(package_spec)[0]
 
     def _override_with_workspace_packages(
         self, dependencies: List[str], config: Dict[str, Any]
@@ -1051,6 +1048,8 @@ class DataAppManager(DataAppRunner):
             "pip",
             "install",
             *[str(wf) for wf in wheel_files],
+            "--find-links",
+            wheels_cache_dir,
             *DataAppConstants.PIP_COMMON_ARGS,
         ]
 
@@ -1068,7 +1067,7 @@ class DataAppManager(DataAppRunner):
     def _import_installed_packages(self, package_specs: List[str]) -> None:
         """Import packages to trigger decorator execution"""
         for package_spec in package_specs:
-            package_name = self._extract_package_name(package_spec)
+            package_name = self._normalize_pkg_name(self._extract_package_name(package_spec))
             try:
                 __import__(package_name)
                 self.logger.info(f"Imported {package_name} - decorators executed")
@@ -1105,57 +1104,90 @@ class DataAppManager(DataAppRunner):
     def _download_lake_wheels(
         self, app_name: str, lake_requirements: List[str], temp_dir: str
     ) -> str:
+        """Download all lake-resolvable wheels needed by lake_requirements.
+
+        Walks the dependency graph via wheel METADATA so callers only need to
+        list top-level packages — transitive lake deps are pulled automatically.
+        """
         if not lake_requirements:
             return ""
 
         wheels_dir = Path(temp_dir) / "wheels"
         wheels_dir.mkdir(parents=True, exist_ok=True)
 
-        downloaded_wheels = []
+        # Fetch the lake package listing once and reuse it throughout the walk.
+        all_available = self._list_available_wheels()
+        self.logger.info(
+            f"Lake packages dir contains {len(all_available)} file(s): {all_available[:10]}"
+        )
+
+        downloaded: List[str] = []
         total_size = 0
+        visited: set = set()  # normalised names already processed
+        queue: List[str] = list(lake_requirements)
 
-        for package_spec in lake_requirements:
-            wheel_path = self._find_best_wheel(package_spec)
+        while queue:
+            package_spec = queue.pop(0)
+            pkg_key = self._normalize_pkg_name(self._extract_package_name(package_spec))
 
+            if pkg_key in visited:
+                continue
+            visited.add(pkg_key)
+
+            wheel_path = self._find_best_wheel(package_spec, all_available)
             if not wheel_path:
-                self.logger.warning(f"Skipping missing wheel: {package_spec}")
+                self.logger.debug(f"Not in lake, skipping: {package_spec}")
                 continue
 
             wheel_name = wheel_path.split("/")[-1]
             local_wheel_path = wheels_dir / wheel_name
             remote_wheel_path = f"{self.artifacts_path}/packages/{wheel_name}"
 
-            if local_wheel_path.exists():
-                self.logger.debug(f"Wheel already cached: {wheel_name}")
-                continue
+            if not local_wheel_path.exists():
+                try:
+                    self.logger.debug(f"Downloading: {wheel_name}")
+                    self.get_platform_service().copy(
+                        remote_wheel_path, f"file://{local_wheel_path}", overwrite=True
+                    )
+                    file_size = local_wheel_path.stat().st_size
+                    total_size += file_size
+                    downloaded.append(wheel_name)
+                    self.logger.debug(f"Downloaded {wheel_name} ({file_size/1024/1024:.1f}MB)")
+                except Exception as exc:
+                    self.logger.error(f"Failed to download {wheel_name}: {exc}")
+                    continue
 
-            try:
-                self.logger.debug(f"Downloading wheel: {wheel_name} from {remote_wheel_path}")
+            # Inspect METADATA and enqueue any deps resolvable from the lake.
+            for req_str in self._read_wheel_requires(local_wheel_path):
+                try:
+                    from packaging.requirements import Requirement
 
-                self.get_platform_service().copy(
-                    remote_wheel_path, f"file://{local_wheel_path}", overwrite=True
-                )
+                    dep_name = Requirement(req_str).name
+                except Exception:
+                    dep_name = req_str.split(";")[0].split("[")[0].split("(")[0].strip()
 
-                file_size = local_wheel_path.stat().st_size
-                total_size += file_size
-
-                downloaded_wheels.append(wheel_name)
-
-                self.logger.debug(f"Downloaded {wheel_name} ({file_size/1024/1024:.1f}MB)")
-
-            except Exception as e:
-                self.logger.error(f"Failed to download {wheel_name}: {str(e)}")
+                dep_key = self._normalize_pkg_name(dep_name)
+                if dep_key not in visited and self._filter_matching_wheels(
+                    all_available, dep_name, None
+                ):
+                    queue.append(dep_name)
 
         self.logger.info(
-            f"Downloaded {len(downloaded_wheels)} wheels, total size: {total_size/1024/1024:.1f}MB"
+            f"Downloaded {len(downloaded)} wheels ({total_size / 1024 / 1024:.1f}MB total)"
         )
         return str(wheels_dir)
 
-    def _find_best_wheel(self, package_spec: str) -> Optional[str]:
-        """Find the best matching wheel for a package spec"""
+    def _find_best_wheel(
+        self, package_spec: str, all_wheels: Optional[List[str]] = None
+    ) -> Optional[str]:
+        """Find the best matching wheel for a package spec.
+
+        Pass ``all_wheels`` to reuse a cached listing and avoid repeated lake calls.
+        """
         package_name, version = self._parse_package_spec(package_spec)
 
-        all_wheels = self._list_available_wheels()
+        if all_wheels is None:
+            all_wheels = self._list_available_wheels()
         matching_wheels = self._filter_matching_wheels(all_wheels, package_name, version)
 
         if not matching_wheels:
@@ -1167,16 +1199,63 @@ class DataAppManager(DataAppRunner):
 
         return best_wheel.file_path
 
+    @staticmethod
+    def _normalize_pkg_name(name: str) -> str:
+        return name.lower().replace("-", "_")
+
+    def _read_wheel_requires(self, local_wheel_path: Path) -> List[str]:
+        """Return the Requires-Dist entries from a wheel's METADATA."""
+        import email.parser
+
+        try:
+            with zipfile.ZipFile(local_wheel_path) as zf:
+                metadata_entry = next(
+                    (n for n in zf.namelist() if n.endswith(".dist-info/METADATA")), None
+                )
+                if not metadata_entry:
+                    return []
+                msg = email.parser.BytesParser().parsebytes(zf.read(metadata_entry))
+                return msg.get_all("Requires-Dist") or []
+        except Exception as exc:
+            self.logger.warning(
+                f"Could not read wheel metadata from {local_wheel_path.name}: {exc}"
+            )
+            return []
+
     def _parse_package_spec(self, package_spec: str) -> Tuple[str, Optional[str]]:
-        """Parse package specification into name and version"""
-        if "==" in package_spec:
-            package_name, version = package_spec.split("==", 1)
-            return package_name.strip(), version.strip()
-        return package_spec.strip(), None
+        """Parse package specification into (name, version).
+
+        Handles PEP 508 specs ('name==1.0'), wheel filenames
+        ('name-1.0-py3-none-any.whl'), and bare wheel stems
+        ('name-1.0-py3-none-any').  For wheel stems the version
+        component is identified as the first dash-separated part
+        that starts with a digit.
+        """
+        spec = package_spec.strip()
+        # Strip .whl extension so the rest of the logic is uniform
+        if spec.endswith(".whl"):
+            spec = spec[:-4]
+
+        # PEP 508 version operators
+        for op in ("==", ">=", "<=", "!=", "~=", ">", "<"):
+            if op in spec:
+                name = spec.split(op, 1)[0].strip()
+                ver = spec.split(op, 1)[1].strip() if op == "==" else None
+                return name, ver
+
+        # Wheel stem: name[-name...]-VERSION-pytag-abitag-platform
+        # The version is the first component starting with a digit.
+        parts = spec.split("-")
+        for i in range(1, len(parts)):
+            if parts[i] and parts[i][0].isdigit():
+                return "-".join(parts[:i]), parts[i]
+
+        return spec, None
 
     def _list_available_wheels(self) -> List[str]:
         """List all available wheel files in packages directory"""
         packages_dir = self._get_packages_dir()
+        self.logger.info(f"Listing lake packages dir: {packages_dir}")
         return self.get_platform_service().list(packages_dir)
 
     def _filter_matching_wheels(
@@ -1196,13 +1275,16 @@ class DataAppManager(DataAppRunner):
             if not candidate:
                 continue
 
-            # Check name match
-            wheel_pkg_name = candidate.file_name.split("-")[0].replace("_", "-")
+            # Check name match — strip .whl in case it's a bare filename with no dashes
+            first_part = candidate.file_name.split("-")[0]
+            if first_part.endswith(".whl"):
+                first_part = first_part[:-4]
+            wheel_pkg_name = first_part.replace("_", "-")
             if wheel_pkg_name.lower() != package_name.lower().replace("_", "-"):
                 continue
 
-            # Check version match
-            if version and candidate.version != version:
+            # Check version match — a bare wheel (no version in filename) matches any spec
+            if version and candidate.version is not None and candidate.version != version:
                 continue
 
             matching.append(candidate)
@@ -1212,9 +1294,16 @@ class DataAppManager(DataAppRunner):
     def _parse_wheel_filename(
         self, file_name: str, file_path: str, current_env: str
     ) -> Optional[WheelCandidate]:
-        """Parse wheel filename into WheelCandidate"""
-        wheel_parts = file_name.split("-")
-        if len(wheel_parts) < 2:
+        """Parse wheel filename into WheelCandidate.
+
+        Handles standard wheels (name-version-py-abi-platform.whl) and
+        non-standard bare wheels (name.whl or name-py-abi-platform.whl).
+        """
+        if not file_name.endswith(".whl"):
+            return None
+        stem = file_name[:-4]  # strip .whl before splitting
+        wheel_parts = stem.split("-")
+        if not wheel_parts or not wheel_parts[0]:
             return None
 
         package_name = wheel_parts[0].replace("_", "-")

@@ -100,11 +100,8 @@ class SynapseAPI(PlatformAPI):
         # In those cases, waiting a long grace period for logs is wasted time.
         self._diag_root_missing: set[str] = set()
         # Job definition cache keyed by job_id — populated by create_job, consumed by run_job.
-        # Stores file/args/conf plus the full definition body (_defn_body) for the /execute path.
+        # Stores file/args/conf per job_id — populated by create_job, consumed by run_job.
         self._job_mapping: Dict[str, Dict] = {}
-        # None = untested, True = /execute works on this workspace, False = 404 (use Livy batch).
-        # Cached after the first submission attempt to avoid an extra round-trip on every call.
-        self._execute_endpoint_available: Optional[bool] = None
 
     @classmethod
     def from_env(cls):
@@ -296,6 +293,29 @@ class SynapseAPI(PlatformAPI):
         calls deploy_app() + create_job().
         """
         return super().deploy_spark_job(app_files, job_config)
+
+    def submit_app_run(
+        self,
+        app_name: str,
+        environment: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Submit an app run via an idempotent per-app SparkJobDefinition.
+
+        Each app gets its own definition (named after the app) built directly from
+        this client's storage/pool settings — no shared runner definition involved.
+        PUT is idempotent so re-running the same app just refreshes its definition.
+        """
+        config_overrides: Dict[str, Any] = dict(parameters or {})
+        if environment:
+            config_overrides["environment"] = environment
+
+        job_config: Dict[str, Any] = {
+            "app_name": app_name,
+            "config_overrides": config_overrides,
+        }
+        self.create_job(app_name, job_config)
+        return self.run_job(app_name)
 
     def _get_access_token(self) -> str:
         """Get Azure access token for Synapse API"""
@@ -554,7 +574,6 @@ class SynapseAPI(PlatformAPI):
             "file": main_file,
             "args": all_args,
             "conf": conf_dict,
-            "_defn_body": job_def_body,
         }
 
         return {
@@ -636,34 +655,15 @@ class SynapseAPI(PlatformAPI):
         """No-op: file paths are embedded in the SparkJobDefinition at create_job() time."""
 
     def run_job(self, job_id: str, parameters: Optional[Dict[str, Any]] = None) -> str:
-        """Submit a Spark batch job via SparkJobDefinition /execute, with Livy batch fallback.
-
-        The /execute endpoint correctly initialises the Synapse token provider (managed
-        identity, linked services). Raw Livy batch bypasses token-provider registration,
-        which causes TOKEN_PROVIDER_USER_ERROR on some Synapse workspaces — commonly
-        observed on Azure US Government Synapse.
-
-        Strategy:
-          1. Try POST /sparkJobDefinitions/{name}/execute (handles token-provider setup).
-             Per-run args are injected by updating the stored definition via PUT first.
-          2. If /execute returns 404, cache that result and fall back to Livy batch.
-             The cache ensures only one extra round-trip is paid per process lifetime.
+        """Submit a Spark job via POST /sparkJobDefinitions/{name}/execute.
 
         Args:
             job_id: Job definition name (returned by create_job as job_id)
-            parameters: Optional per-run config overrides.  Each key/value is
-                injected as a ``config:<key>=<value>`` arg, replacing any
-                matching arg already present in the stored definition.  This is
-                how submit_app_run passes the target app_name to the runner.
+            parameters: Optional per-run config overrides injected as config:k=v args.
 
         Returns:
             Batch ID (run ID) for monitoring via get_job_status() / stream_stdout_logs().
-
-        Raises:
-            Exception: If the definition cannot be fetched or both submission paths fail.
         """
-        import copy
-
         # Prefer the in-process cache (avoids an extra round-trip when create_job was
         # called in the same process), but fall back to a live GET for cross-invocation use.
         job_info = self._job_mapping.get(job_id)
@@ -679,7 +679,6 @@ class SynapseAPI(PlatformAPI):
                 "file": props.get("file", ""),
                 "args": props.get("args", []),
                 "conf": props.get("conf", {}),
-                "_defn_body": defn_data,
             }
 
         run_args = list(job_info["args"])
@@ -689,64 +688,20 @@ class SynapseAPI(PlatformAPI):
                 val = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
                 run_args.append(f"config:{k}={val}")
 
-        # --- Try /execute first (unless we already know it's unavailable) ---
-        if self._execute_endpoint_available is not False:
-            try:
-                batch_id = self._submit_via_execute(job_id, job_info, run_args)
-                if batch_id is not None:
-                    self._execute_endpoint_available = True
-                    return batch_id
-            except Exception as exc:
-                if "404" in str(exc) or "Not Found" in str(exc):
-                    # /execute is not supported on this workspace; switch to Livy for all future calls.
-                    self._execute_endpoint_available = False
-                    print(
-                        f"ℹ️  SparkJobDefinition /execute returned 404 on this workspace — "
-                        f"switching to Livy batch for all future submissions"
-                    )
-                else:
-                    # Transient failure; fall through to Livy this time but allow retry next call.
-                    print(
-                        f"⚠️  SparkJobDefinition /execute failed ({exc}) — falling back to Livy batch"
-                    )
-
-        # --- Livy batch fallback ---
-        batch_payload = {
-            "name": job_id,
-            "file": job_info["file"],
-            "args": run_args,
-            "conf": job_info["conf"],
-        }
-
-        url = (
-            f"{self.base_url}/livyApi/versions/2019-11-01-preview"
-            f"/sparkPools/{self.spark_pool_name}/batches"
-        )
-        response = self._make_request("POST", url, json=batch_payload)
-        result = response.json()
-
-        batch_id = result.get("id")
+        batch_id = self._submit_via_execute(job_id, job_info, run_args)
         if batch_id is None:
             raise Exception(
-                f"Synapse Livy batch submit did not return a batch ID "
-                f"(job='{job_id}'): {result}"
+                f"SparkJobDefinition /execute did not return a batch ID (job='{job_id}')"
             )
-
-        print(f"🚀 Submitted Synapse batch job: job={job_id} batch_id={batch_id}")
-        return str(batch_id)
+        return batch_id
 
     def _submit_via_execute(
         self, job_id: str, job_info: Dict, run_args: List[str]
     ) -> Optional[str]:
         """Submit via POST /sparkJobDefinitions/{name}/execute.
 
-        The /execute endpoint uses the stored definition; per-run args are injected by
-        updating that definition via PUT first.  This correctly initialises Synapse's
-        token provider, avoiding TOKEN_PROVIDER_USER_ERROR on gov-cloud workspaces.
-
-        NOTE: concurrent submissions using the same job_id may observe a brief race
-        window where one run's args overwrite another's.  This is acceptable for
-        typical sequential submit_app_run usage.
+        Args are passed directly in the POST body so the shared job definition is never
+        mutated, eliminating the PUT-before-execute race condition for concurrent runs.
 
         Returns:
             Batch ID string on success.
@@ -755,39 +710,13 @@ class SynapseAPI(PlatformAPI):
         Raises:
             Exception containing "404" if the endpoint is not available on this workspace.
         """
-        import copy
-
-        defn_body = job_info.get("_defn_body")
-        if defn_body is None:
-            defn_url = (
-                f"{self.base_url}/sparkJobDefinitions/{quote(job_id, safe='')}"
-                f"?api-version=2020-12-01"
-            )
-            resp = self._make_request("GET", defn_url)
-            defn_body = resp.json()
-            job_info["_defn_body"] = defn_body
-
-        # Update stored definition args when per-run overrides differ from the cached values.
-        if run_args != list(job_info.get("args", [])):
-            updated_body = copy.deepcopy(defn_body)
-            (updated_body.setdefault("properties", {}).setdefault("jobProperties", {}))[
-                "args"
-            ] = run_args
-            put_url = (
-                f"{self.base_url}/sparkJobDefinitions/{quote(job_id, safe='')}"
-                f"?api-version=2020-12-01"
-            )
-            self._make_request("PUT", put_url, json=updated_body)
-            job_info["args"] = run_args
-            job_info["_defn_body"] = updated_body
-
         execute_url = (
             f"{self.base_url}/sparkJobDefinitions/{quote(job_id, safe='')}/execute"
             f"?api-version=2020-12-01"
         )
         # /execute raises on 4xx (including 404) via _make_request; let 404 propagate
         # so run_job() can detect and cache workspace capability.
-        response = self._make_request("POST", execute_url, json={})
+        response = self._make_request("POST", execute_url, json={"args": run_args})
         result = response.json()
         batch_id = result.get("id")
         if batch_id is not None:

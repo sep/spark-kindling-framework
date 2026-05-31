@@ -9,18 +9,25 @@ description = "Kindling data pipeline project — {{ kebab_name }}"
 authors = []
 packages = [{include = "{{ snake_name }}", from = "src"}]
 
+# Kindling wheels are baked into the devcontainer image and served via a
+# local PEP 503 index at /opt/kindling-packages/simple/.  Poetry resolves
+# spark-kindling from that index so the version always matches the image —
+# no hardcoded wheel paths that break when the image is upgraded.
+[[tool.poetry.source]]
+name = "kindling-local"
+url = "file:///opt/kindling-packages/simple/"
+priority = "supplemental"
+
 [tool.poetry.dependencies]
 python = "^3.10"
-# Kindling wheels are baked into the devcontainer image at /opt/kindling-packages/wheels/.
-# Poetry resolves them directly from disk — no PyPI connection required.
-spark-kindling = {path = "/opt/kindling-packages/wheels/spark_kindling-{{ kindling_version }}-py3-none-any.whl", extras = ["standalone"]}
+spark-kindling = {version = ">={{ kindling_version }}", extras = ["standalone"]}
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"
 pytest-cov = ">=4.0.0"
 poethepoet = ">=0.24.0"
-spark-kindling-sdk = {path = "/opt/kindling-packages/wheels/spark_kindling_sdk-{{ kindling_version }}-py3-none-any.whl"}
-spark-kindling-cli = {path = "/opt/kindling-packages/wheels/spark_kindling_cli-{{ kindling_version }}-py3-none-any.whl"}
+spark-kindling-sdk = {version = ">={{ kindling_version }}"}
+spark-kindling-cli = {version = ">={{ kindling_version }}"}
 
 [tool.poe.tasks]
 test-unit = "pytest tests/unit -v"

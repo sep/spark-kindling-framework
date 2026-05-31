@@ -1919,8 +1919,8 @@ def test_run_missing_pipe_gives_actionable_message(monkeypatch, tmp_path):
 class _FakeRunnerAPI:
     """Minimal fake platform API for runner tests."""
 
-    def ensure_runner(self, platform):
-        return {"runner_id": "runner-001", "state": "HEALTHY", "version": "1.2.3"}
+    def ensure_app_job(self, app_name):
+        return {"job_id": f"job-{app_name}", "app_name": app_name, "state": "installed"}
 
     def get_runner_status(self, platform):
         return {"runner_id": "runner-001", "state": "HEALTHY", "version": "1.2.3"}
@@ -1943,26 +1943,46 @@ def test_runner_help_lists_all_subcommands():
         assert sub in result.output
 
 
-def test_runner_ensure_succeeds(monkeypatch):
-    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws-test")
-    monkeypatch.setenv("SYNAPSE_DEV_ENDPOINT", "https://dev.endpoint")
+def test_runner_ensure_single_app(monkeypatch, tmp_path):
     monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure", "--platform", "synapse", "--app", "my-app"])
+    assert result.exit_code == 0, result.output
+    assert "my-app" in result.output
+
+
+def test_runner_ensure_all_apps(monkeypatch, tmp_path):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    monkeypatch.setattr(
+        "kindling_cli.cli._discover_local_app_names",
+        lambda: [("app-one", tmp_path / "app-one"), ("app-two", tmp_path / "app-two")],
+    )
     runner = CliRunner()
     result = runner.invoke(cli, ["runner", "ensure", "--platform", "synapse"])
     assert result.exit_code == 0, result.output
-    assert "runner-001" in result.output
+    assert "app-one" in result.output
+    assert "app-two" in result.output
 
 
-def test_runner_ensure_json_output(monkeypatch):
-    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "ws-test")
-    monkeypatch.setenv("SYNAPSE_DEV_ENDPOINT", "https://dev.endpoint")
+def test_runner_ensure_no_apps_found(monkeypatch, tmp_path):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    monkeypatch.setattr("kindling_cli.cli._discover_local_app_names", lambda: [])
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runner", "ensure", "--platform", "synapse"])
+    assert result.exit_code != 0
+    assert "No apps found" in result.output
+
+
+def test_runner_ensure_json_output(monkeypatch, tmp_path):
     monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
     runner = CliRunner()
-    result = runner.invoke(cli, ["runner", "ensure", "--platform", "synapse", "--json"])
+    result = runner.invoke(
+        cli, ["runner", "ensure", "--platform", "synapse", "--app", "my-app", "--json"]
+    )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["runner_id"] == "runner-001"
     assert payload["platform"] == "synapse"
+    assert payload["apps"][0]["app_name"] == "my-app"
 
 
 def test_runner_ensure_requires_platform_or_env():
@@ -1977,7 +1997,7 @@ def test_runner_ensure_fails_when_platform_vars_missing(monkeypatch):
     monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
     monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
     runner = CliRunner()
-    result = runner.invoke(cli, ["runner", "ensure", "--platform", "databricks"])
+    result = runner.invoke(cli, ["runner", "ensure", "--platform", "databricks", "--app", "my-app"])
     assert result.exit_code != 0
     assert "Missing required environment variables" in result.output
 
