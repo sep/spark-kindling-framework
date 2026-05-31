@@ -502,6 +502,31 @@ def _print_check_results(checks: List[Tuple[str, bool, str]]) -> bool:
     return all_passed
 
 
+def _discover_local_app_names() -> List[Tuple[str, Path]]:
+    """Return (app_name, app_dir) for every app found under the current directory."""
+    cwd = Path.cwd()
+    candidate_dirs: List[Path] = []
+
+    if (cwd / APP_CONFIG_FILE).exists():
+        candidate_dirs.append(cwd)
+
+    for pattern in ("apps", "src"):
+        for d in sorted((cwd / pattern).glob("*")):
+            if d.is_dir() and (d / APP_CONFIG_FILE).exists():
+                candidate_dirs.append(d)
+
+    results: List[Tuple[str, Path]] = []
+    for app_dir in candidate_dirs:
+        try:
+            data = yaml.safe_load((app_dir / APP_CONFIG_FILE).read_text(encoding="utf-8")) or {}
+            app_name = (data.get("name") or app_dir.name).strip()
+        except Exception:
+            app_name = app_dir.name
+        if app_name:
+            results.append((app_name, app_dir))
+    return results
+
+
 def _discover_app_py(app_path: Optional[Path]) -> Path:
     """Find a Kindling app.py from an explicit path or conventional local layout."""
     if app_path is not None:
@@ -3031,6 +3056,7 @@ def _run_standalone_app(
     no_wait: bool,
     json_output: bool,
     fail_on_error: bool = True,
+    dotenv_paths: Tuple[Path, ...] = (),
 ) -> None:
     """Run an app locally by executing its entrypoint as a subprocess."""
     if parameters_path or param_overrides:
@@ -3066,6 +3092,11 @@ def _run_standalone_app(
     env_cfg = cfg_root / f"settings.{resolved_env}.yaml"
     if env_cfg.exists():
         config_files.append(str(env_cfg))
+
+    from kindling_cli.test_runner import load_dotenv as _load_dotenv
+
+    for dotenv_path in dotenv_paths:
+        _load_dotenv(dotenv_path)
 
     run_env = {**os.environ, "KINDLING_ENV": resolved_env}
     run_env.setdefault("KINDLING_SPARK_ENABLE_DELTA", "true")
@@ -3179,6 +3210,21 @@ def _run_standalone_app(
     help="Exit non-zero when the app run finishes in a failed state.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+@click.option(
+    "--dotenv",
+    "dotenv_paths",
+    multiple=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help=(
+        "Dotenv file to load before running the app. Repeatable. "
+        "Defaults to .env in the current directory."
+    ),
+)
+@click.option(
+    "--no-dotenv",
+    is_flag=True,
+    help="Do not load .env before running the app.",
+)
 def app_run(
     app: str,
     app_name: Optional[str],
@@ -3195,11 +3241,20 @@ def app_run(
     timeout: float,
     fail_on_error: bool,
     json_output: bool,
+    dotenv_paths: Tuple[Path, ...],
+    no_dotenv: bool,
 ) -> None:
     """Run an app locally with standalone or remotely on a managed platform."""
     if platform == "standalone":
         if app_name:
             raise click.ClickException("--app-name is only valid for remote app runs.")
+        resolved_dotenvs: Tuple[Path, ...]
+        if no_dotenv:
+            resolved_dotenvs = ()
+        elif dotenv_paths:
+            resolved_dotenvs = dotenv_paths
+        else:
+            resolved_dotenvs = (Path(".env"),)
         _run_standalone_app(
             app,
             env,
@@ -3212,6 +3267,7 @@ def app_run(
             no_wait,
             json_output,
             fail_on_error=fail_on_error,
+            dotenv_paths=resolved_dotenvs,
         )
         return
 
@@ -3221,6 +3277,8 @@ def app_run(
         raise click.ClickException("--quiet is only valid for standalone app runs.")
     if local_packages:
         raise click.ClickException("--local-package is only valid for standalone app runs.")
+    if dotenv_paths or no_dotenv:
+        raise click.ClickException("--dotenv/--no-dotenv is only valid for standalone app runs.")
 
     _run_remote_app(
         app,
@@ -4577,12 +4635,11 @@ def app_inspect(
 
 @cli.group("runner")
 def runner_group() -> None:
-    """Manage the single durable Kindling runner job for this workspace.
+    """Manage per-app job definitions for remote execution.
 
-    The Kindling runner is infrastructure — one durable job per workspace that
-    executes remote app runs submitted via
-    ``kindling app run --platform <platform>``.  These commands let you install,
-    inspect, repair, and remove that runner job.
+    Each app gets its own durable job definition on the platform.
+    ``runner ensure`` creates those definitions so that
+    ``kindling app run --platform <platform>`` can submit runs against them.
 
     Most users only need ``runner ensure`` (install/update) and
     ``runner status`` (health check).  The other subcommands are admin or
@@ -4597,34 +4654,57 @@ def runner_group() -> None:
     default=None,
     help="Target platform.  Auto-detected from environment if omitted.",
 )
+@click.option(
+    "--app",
+    "app_name",
+    default=None,
+    help="App name to ensure.  If omitted, ensures job definitions for all discovered apps.",
+)
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def runner_ensure(platform: Optional[str], json_output: bool) -> None:
-    """Create or update the runner job definition if missing or stale.
+def runner_ensure(platform: Optional[str], app_name: Optional[str], json_output: bool) -> None:
+    """Create job definitions for one app or all discovered apps.
 
-    This is the recommended way to install the Kindling runner.  It is
-    idempotent: if a healthy runner already exists it is left unchanged; if the
-    existing definition is stale it is updated in-place.
+    Idempotent: existing definitions are left unchanged.  Without ``--app``
+    the command scans the current directory for apps and ensures each one.
 
     Examples::
 
         kindling runner ensure --platform fabric
-        kindling runner ensure --platform synapse
+        kindling runner ensure --platform synapse --app my-app
     """
     resolved_platform = _resolve_remote_platform(platform)
-
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    try:
-        result = api_client.ensure_runner(resolved_platform)
-    except (AttributeError, NotImplementedError):
-        raise click.ClickException(
-            f"Runner management is not yet supported on {resolved_platform}. "
-            "Upgrade spark-kindling-sdk when platform support is available."
-        )
-    _emit_result(
-        {"platform": resolved_platform, **result},
-        json_output,
-        f"Runner ensured on {resolved_platform} (id={result.get('runner_id', 'unknown')}).",
-    )
+
+    if app_name:
+        app_names = [app_name]
+    else:
+        discovered = _discover_local_app_names()
+        if not discovered:
+            raise click.ClickException(
+                "No apps found in the current directory. "
+                "Use --app <name> to specify an app explicitly."
+            )
+        app_names = [name for name, _ in discovered]
+
+    results = []
+    for name in app_names:
+        try:
+            result = api_client.ensure_app_job(name)
+        except (AttributeError, NotImplementedError):
+            raise click.ClickException(
+                f"App job management is not yet supported on {resolved_platform}. "
+                "Upgrade spark-kindling-sdk when platform support is available."
+            )
+        results.append(result)
+
+    if json_output:
+        _emit_json({"platform": resolved_platform, "apps": results})
+    else:
+        for r in results:
+            click.echo(
+                f"App job ensured: {r['app_name']} (id={r.get('job_id', 'unknown')}) "
+                f"on {resolved_platform}."
+            )
 
 
 @runner_group.command("status")

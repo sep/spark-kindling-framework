@@ -106,6 +106,105 @@ class StandaloneService(PlatformService):
             self.logger.debug(f"Could not get Hadoop FileSystem: {e}")
             return None
 
+    @staticmethod
+    def _parse_abfss_uri(path: str):
+        """Return (account_url, container, remote_path) from an abfss:// URI."""
+        rest = path[len("abfss://") :]
+        at_idx = rest.index("@")
+        container = rest[:at_idx]
+        rest_after_at = rest[at_idx + 1 :]
+        slash_idx = rest_after_at.index("/") if "/" in rest_after_at else len(rest_after_at)
+        hostname = rest_after_at[:slash_idx]
+        remote_path = rest_after_at[slash_idx:].lstrip("/")
+        return f"https://{hostname}", container, remote_path
+
+    @staticmethod
+    def _parse_blob_https_uri(path: str):
+        """Return (account_url, container, remote_path) from an https://...blob.core... URI.
+
+        Converts the blob endpoint to the DFS endpoint so the ADLS SDK can be used.
+        e.g. https://account.blob.core.usgovcloudapi.net/container/path
+          -> account_url=https://account.dfs.core.usgovcloudapi.net
+             container=container, remote_path=path
+        """
+        # Strip scheme
+        rest = path[len("https://") :]
+        slash_idx = rest.index("/") if "/" in rest else len(rest)
+        hostname = rest[:slash_idx]  # account.blob.core.X
+        path_part = rest[slash_idx:].lstrip("/")  # container/rest/of/path
+        # Swap .blob.core. -> .dfs.core. for ADLS Gen2 DFS endpoint
+        dfs_hostname = hostname.replace(".blob.core.", ".dfs.core.", 1)
+        account_url = f"https://{dfs_hostname}"
+        path_segments = path_part.split("/", 1)
+        container = path_segments[0]
+        remote_path = path_segments[1] if len(path_segments) > 1 else ""
+        return account_url, container, remote_path
+
+    def _is_azure_storage_path(self, path: str) -> bool:
+        """Return True for abfss:// URIs and https://...blob.core... URLs."""
+        return path.startswith("abfss://") or (
+            path.startswith("https://") and ".blob.core." in path
+        )
+
+    def _parse_azure_storage_uri(self, path: str):
+        """Return (account_url, container, remote_path) for any supported Azure storage URI."""
+        if path.startswith("abfss://"):
+            return self._parse_abfss_uri(path)
+        return self._parse_blob_https_uri(path)
+
+    def _get_adls_fs_client(self, account_url: str, container: str):
+        """Return a DataLake FileSystemClient using available credentials."""
+        from azure.storage.filedatalake import DataLakeServiceClient
+
+        storage_key = os.getenv("AZURE_STORAGE_KEY") or os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
+        if storage_key:
+            credential = storage_key
+        else:
+            from azure.identity import DefaultAzureCredential
+
+            credential = DefaultAzureCredential()
+        return DataLakeServiceClient(
+            account_url=account_url, credential=credential
+        ).get_file_system_client(container)
+
+    def _adls_list(self, path: str) -> List[str]:
+        """List files in an Azure storage directory via Azure Data Lake SDK.
+
+        Supports both abfss:// URIs and https://...blob.core... URLs.
+        """
+        try:
+            account_url, container, remote_path = self._parse_azure_storage_uri(path)
+            # Strip trailing slash — Azure SDK path= arg doesn't want one
+            remote_path = remote_path.rstrip("/")
+            self.logger.info(
+                f"ADLS list: account={account_url} container={container} path={remote_path!r}"
+            )
+            fs_client = self._get_adls_fs_client(account_url, container)
+            items = [
+                item.name.split("/")[-1]
+                for item in fs_client.get_paths(path=remote_path or "/")
+                if not item.is_directory
+            ]
+            self.logger.info(f"ADLS list returned {len(items)} item(s)")
+            return items
+        except Exception as exc:
+            self.logger.warning(f"ADLS list failed for {path}: {exc}")
+            return []
+
+    def _adls_download(self, source: str, destination: str) -> None:
+        """Download a file from an Azure storage path to a local path via Azure Data Lake SDK.
+
+        Supports both abfss:// URIs and https://...blob.core... URLs.
+        """
+        local_path = (
+            destination[len("file://") :] if destination.startswith("file://") else destination
+        )
+        account_url, container, remote_path = self._parse_azure_storage_uri(source)
+        fs_client = self._get_adls_fs_client(account_url, container)
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(local_path, "wb") as f:
+            f.write(fs_client.get_file_client(remote_path).download_file().readall())
+
     def _is_distributed_path(self, path: str) -> bool:
         """Check if path is for distributed storage (HDFS/S3/ABFS/GCS)"""
         return path.startswith(
@@ -266,6 +365,16 @@ class StandaloneService(PlatformService):
                 fs.copyFromLocalFile(False, overwrite, src_path, dst_path)
                 return
 
+        # ADLS SDK fallback for Azure storage sources when Spark/Hadoop is unavailable
+        if self._is_azure_storage_path(source):
+            local_dest = (
+                destination[len("file://") :] if destination.startswith("file://") else destination
+            )
+            if not overwrite and Path(local_dest).exists():
+                raise FileExistsError(f"Destination {destination} already exists")
+            self._adls_download(source, destination)
+            return
+
         # Fall back to local filesystem
         source_path = (
             Path(source) if Path(source).is_absolute() else self.local_workspace_path / source
@@ -362,6 +471,10 @@ class StandaloneService(PlatformService):
                     status_list = fs.listStatus(hadoop_path)
                     return [status.getPath().getName() for status in status_list]
                 return []
+
+        # ADLS SDK fallback for Azure storage paths when Spark/Hadoop is unavailable
+        if self._is_azure_storage_path(path):
+            return self._adls_list(path)
 
         # Fall back to local filesystem
         dir_path = Path(path) if Path(path).is_absolute() else self.local_workspace_path / path

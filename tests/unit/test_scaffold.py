@@ -275,10 +275,11 @@ def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path
     generate_package(cfg)
 
     pyproject = (_package_root(repo_root, "proj") / "pyproject.toml").read_text()
-    assert "spark-kindling = {path = " in pyproject
+    assert "spark-kindling = {version = " in pyproject
     assert 'extras = ["standalone"]' in pyproject
     assert 'poethepoet = ">=0.24.0"' in pyproject
-    assert "spark-kindling-cli = {path = " in pyproject
+    assert "spark-kindling-cli = {version = " in pyproject
+    assert "kindling-local" in pyproject  # local PEP 503 index source
     assert 'test = { sequence = ["test-unit", "test-component"] }' in pyproject
     assert 'test-unit = "pytest tests/unit -v"' in pyproject
     assert 'test-component = "pytest tests/component -v"' in pyproject
@@ -356,7 +357,7 @@ def test_repo_devcontainer_defaults_to_system_python_without_primary_package(tmp
 
     dcj = (tmp_path / "repo-only" / ".devcontainer" / "devcontainer.json").read_text()
     assert "/usr/local/bin/python" in dcj
-    assert "postCreateCommand" not in dcj
+    assert "postCreateCommand" in dcj
 
 
 class TestScaffoldCommands:
