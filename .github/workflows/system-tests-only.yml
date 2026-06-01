@@ -46,7 +46,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Activate virtualenv
         run: |
@@ -81,7 +81,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Activate virtualenv and install project
         run: |
@@ -145,7 +145,7 @@ jobs:
         if: |
           github.event.inputs.system_test_platform == 'all' ||
           github.event.inputs.system_test_platform == matrix.platform
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Activate virtualenv and install project
         if: |
