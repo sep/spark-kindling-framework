@@ -102,7 +102,7 @@ jobs:
           echo "Building image: $IMAGE"
 
       - name: Build and push CI image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: .github/Dockerfile.ci
@@ -717,7 +717,7 @@ jobs:
           fi
 
       - name: Build and push devcontainer image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: .github/Dockerfile.devcontainer
