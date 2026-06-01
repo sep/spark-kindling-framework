@@ -283,7 +283,7 @@ jobs:
         run: pip install -e .
 
       - name: Download wheel artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: platform-wheels
           path: dist/
@@ -626,7 +626,7 @@ jobs:
 
     steps:
       - name: Download wheel artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: platform-wheels
           path: dist/
@@ -751,7 +751,7 @@ jobs:
 
     steps:
       - name: Download all test results
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
 
       - name: Generate test summary
         run: |
