@@ -132,7 +132,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
         run: |
-          python -m poethepoem test-unit-ci
+          poe test-unit-ci
 
       - name: Create output directory for backwards compatibility
         run: mkdir -p output && cp -r htmlcov test-results/unit-test-results.xml output/ 2>/dev/null || true
@@ -211,7 +211,7 @@ jobs:
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
           AZURE_BASE_PATH: ci-tests/${{ github.run_id }}
         run: |
-          python -m poethepoem test-integration-ci
+          poe test-integration-ci
 
       - name: Upload integration test results
         uses: actions/upload-artifact@v4
@@ -430,7 +430,7 @@ jobs:
           KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT: ${{ github.event.inputs.system_test_stream_max_wait }}
           KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT: ${{ github.event.inputs.system_test_completion_timeout }}
         run: |
-          python -m poethepoem test-system-ci --platform ${{ matrix.platform }}
+          poe test-system-ci --platform ${{ matrix.platform }}
 
       - name: Upload system test results
         uses: actions/upload-artifact@v4
