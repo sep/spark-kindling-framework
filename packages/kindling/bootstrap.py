@@ -481,6 +481,7 @@ def download_config_files(
     if not config_files:
         _BOOTSTRAP_LOGGER.info("No YAML config files found")
         default_config = temp_path / "default_settings.yaml"
+        default_config.parent.mkdir(parents=True, exist_ok=True)
         default_config.write_text(_get_minimal_default_config())
         config_files.append(str(default_config))
         _BOOTSTRAP_LOGGER.info("Using built-in default config")
