@@ -334,26 +334,80 @@ class DatabricksService(PlatformService):
         except:
             return False
 
+    def _adls_credential(self):
+        """Return an Azure credential for ADLS SDK operations."""
+        storage_key = os.getenv("AZURE_STORAGE_KEY") or os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
+        if storage_key:
+            return storage_key
+        from azure.identity import DefaultAzureCredential
+
+        return DefaultAzureCredential()
+
+    def _adls_fs_client(self, account_url: str, container: str):
+        """Return a DataLake FileSystemClient."""
+        from azure.storage.filedatalake import DataLakeServiceClient
+
+        return DataLakeServiceClient(
+            account_url=account_url, credential=self._adls_credential()
+        ).get_file_system_client(container)
+
+    @staticmethod
+    def _parse_abfss(path: str):
+        """Parse abfss://container@account.dfs.X/path → (account_url, container, remote_path)."""
+        rest = path[len("abfss://") :]
+        at = rest.index("@")
+        container = rest[:at]
+        rest2 = rest[at + 1 :]
+        slash = rest2.index("/") if "/" in rest2 else len(rest2)
+        hostname = rest2[:slash]
+        remote_path = rest2[slash:].lstrip("/")
+        return f"https://{hostname}", container, remote_path
+
     def copy(self, source: str, destination: str, overwrite: bool = False) -> None:
-        """Copy file using dbutils"""
+        """Copy file using dbutils, with ADLS SDK fallback for ABFS sources."""
         import __main__
 
         dbutils = getattr(__main__, "dbutils", None)
-        if not dbutils:
-            raise Exception("dbutils not available")
+        if dbutils:
+            try:
+                dbutils.fs.cp(source, destination, overwrite)
+                return
+            except Exception:
+                pass  # fall through to ADLS SDK
 
-        dbutils.fs.cp(source, destination, overwrite)
+        if source.startswith("abfss://"):
+            local_dest = (
+                destination[len("file://") :] if destination.startswith("file://") else destination
+            )
+            account_url, container, remote_path = self._parse_abfss(source)
+            fs_client = self._adls_fs_client(account_url, container)
+            from pathlib import Path as _Path
+
+            _Path(local_dest).parent.mkdir(parents=True, exist_ok=True)
+            with open(local_dest, "wb") as f:
+                f.write(fs_client.get_file_client(remote_path).download_file().readall())
+            return
+
+        if not dbutils:
+            raise Exception("dbutils not available and source is not ABFS")
 
     def read(self, path: str, encoding: str = "utf-8") -> Union[str, bytes]:
-        """Read file content"""
+        """Read file content, with ADLS SDK fallback when dbutils cannot access ABFS."""
         if path.startswith("/dbfs/") or path.startswith("dbfs:/") or path.startswith("abfss://"):
-            # Use dbutils for DBFS and ABFSS paths
             import __main__
 
             dbutils = getattr(__main__, "dbutils", None)
             if dbutils:
-                # dbutils.fs.head returns up to 1MB by default
-                return dbutils.fs.head(path, 1024 * 1024 * 10)  # 10MB max
+                try:
+                    return dbutils.fs.head(path, 1024 * 1024 * 10)  # 10MB max
+                except Exception:
+                    pass  # fall through to ADLS SDK
+
+            if path.startswith("abfss://"):
+                account_url, container, remote_path = self._parse_abfss(path)
+                fs_client = self._adls_fs_client(account_url, container)
+                data = fs_client.get_file_client(remote_path).download_file().readall()
+                return data.decode(encoding) if encoding else data
 
         # For local paths, use standard file operations
         with open(path, "r" if encoding else "rb") as f:
@@ -384,15 +438,37 @@ class DatabricksService(PlatformService):
             f.write(content)
 
     def list(self, path: str) -> List[str]:
-        """List files in directory"""
+        """List files in directory, with ADLS SDK fallback for ABFS paths."""
         import __main__
 
         dbutils = getattr(__main__, "dbutils", None)
+        if dbutils:
+            try:
+                files = dbutils.fs.ls(path)
+                result = [f.name for f in files]
+                if result or not path.startswith("abfss://"):
+                    return result
+                # Empty result for ABFS — may be UC access issue; fall through to SDK
+            except Exception:
+                pass  # fall through to ADLS SDK
+
+        if path.startswith("abfss://"):
+            try:
+                account_url, container, remote_path = self._parse_abfss(path)
+                remote_path = remote_path.rstrip("/")
+                fs_client = self._adls_fs_client(account_url, container)
+                return [
+                    item.name.split("/")[-1]
+                    for item in fs_client.get_paths(path=remote_path or "/")
+                    if not item.is_directory
+                ]
+            except Exception as exc:
+                self.logger.warning(f"ADLS list failed for {path}: {exc}")
+                return []
+
         if not dbutils:
             raise Exception("dbutils not available")
-
-        files = dbutils.fs.ls(path)
-        return [f.name for f in files]
+        return []
 
     def _build_base_url(self) -> str:
         """Build Databricks API base URL from workspace_id or DATABRICKS_HOST env var"""
