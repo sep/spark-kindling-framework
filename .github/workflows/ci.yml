@@ -125,14 +125,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Activate virtualenv and install project
-        run: |
-          cd /workspace
-          . .venv/bin/activate
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
-          cd $GITHUB_WORKSPACE
-          pip install -e .
+      - name: Install project in editable mode
+        run: pip install -e .
 
       - name: Run unit tests
         env:
@@ -173,13 +167,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Activate virtualenv
-        run: |
-          cd /workspace
-          . .venv/bin/activate
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
-
       - name: Run Black formatter check
         run: black --check --diff packages/ tests/
 
@@ -214,14 +201,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Activate virtualenv and install project
-        run: |
-          cd /workspace
-          . .venv/bin/activate
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
-          cd $GITHUB_WORKSPACE
-          pip install -e .
+      - name: Install project in editable mode
+        run: pip install -e .
 
       - name: Run integration tests
         env:
@@ -253,14 +234,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Activate virtualenv and install project
-        run: |
-          cd /workspace
-          . .venv/bin/activate
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
-          cd $GITHUB_WORKSPACE
-          pip install -e .
+      - name: Install project in editable mode
+        run: pip install -e .
 
       - name: Run KDA packaging tests
         env:
@@ -300,18 +275,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Activate virtualenv and install project
+      - name: Install project in editable mode
         if: |
           github.event_name != 'workflow_dispatch' ||
           github.event.inputs.system_test_platform == 'all' ||
           github.event.inputs.system_test_platform == matrix.platform
-        run: |
-          cd /workspace
-          . .venv/bin/activate
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
-          cd $GITHUB_WORKSPACE
-          pip install -e .
+        run: pip install -e .
 
       - name: Download wheel artifacts
         uses: actions/download-artifact@v5
@@ -380,14 +349,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Activate virtualenv and install project
-        run: |
-          cd /workspace
-          . .venv/bin/activate
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
-          cd $GITHUB_WORKSPACE
-          pip install -e .
+      - name: Install project in editable mode
+        run: pip install -e .
 
       - name: Resolve Databricks lane config
         if: |
