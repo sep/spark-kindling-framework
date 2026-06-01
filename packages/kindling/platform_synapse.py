@@ -292,15 +292,22 @@ class SynapseService(PlatformService):
         ).get_file_system_client(container)
 
     def read(self, path: str, encoding: str = "utf-8") -> Union[str, bytes]:
-        """Read file content, with ADLS SDK fallback when mssparkutils token fails."""
+        """Read file content, with retry + ADLS SDK fallback when mssparkutils token fails.
+
+        Synapse TokenLibrary emits 'CacheException: Cache miss' during token
+        refresh; retrying handles transient fetch failures.
+        """
         if path.startswith("abfss://") or path.startswith("wasbs://"):
-            try:
-                mssparkutils = _get_mssparkutils()
-                if mssparkutils:
-                    content = mssparkutils.fs.head(path, 10000000)  # Read up to ~10MB
-                    return content if encoding else content.encode(encoding or "utf-8")
-            except Exception:
-                pass  # fall through to ADLS SDK
+            mssparkutils = _get_mssparkutils()
+            if mssparkutils:
+                for attempt in range(3):
+                    try:
+                        content = mssparkutils.fs.head(path, 10000000)  # Read up to ~10MB
+                        return content if encoding else content.encode(encoding or "utf-8")
+                    except Exception:
+                        if attempt < 2:
+                            time.sleep(3 * (attempt + 1))
+                # all retries exhausted — fall through to ADLS SDK
 
             if path.startswith("abfss://"):
                 try:
@@ -331,16 +338,20 @@ class SynapseService(PlatformService):
             f.write(content)
 
     def list(self, path: str) -> List[str]:
-        """List files in directory, with ADLS SDK fallback when mssparkutils token fails."""
-        try:
-            mssparkutils = _get_mssparkutils()
-            files = mssparkutils.fs.ls(path)
-            result = [f.name for f in files]
-            if result or not path.startswith("abfss://"):
-                return result
-            # Empty result on ABFS path — token may have failed; try SDK
-        except Exception:
-            pass
+        """List files in directory, with retry + ADLS SDK fallback when mssparkutils token fails."""
+        mssparkutils = _get_mssparkutils()
+        if mssparkutils:
+            for attempt in range(3):
+                try:
+                    files = mssparkutils.fs.ls(path)
+                    result = [f.name for f in files]
+                    if result or not path.startswith("abfss://"):
+                        return result
+                    # Empty on ABFS — might be token failure; retry
+                except Exception:
+                    pass
+                if attempt < 2:
+                    time.sleep(3 * (attempt + 1))
 
         if path.startswith("abfss://"):
             try:
