@@ -703,26 +703,39 @@ class SynapseAPI(PlatformAPI):
         Args are passed directly in the POST body so the shared job definition is never
         mutated, eliminating the PUT-before-execute race condition for concurrent runs.
 
-        Returns:
-            Batch ID string on success.
-            None on non-fatal failure (the caller falls back to Livy batch).
+        Synapse exhibits eventual consistency: a freshly created SparkJobDefinition
+        (via PUT) may return 404 on /execute for a few seconds.  We retry up to
+        _EXECUTE_404_RETRIES times with brief back-off before giving up.
 
-        Raises:
-            Exception containing "404" if the endpoint is not available on this workspace.
+        Returns:
+            Batch ID string on success, None if response body has no 'id'.
         """
         execute_url = (
             f"{self.base_url}/sparkJobDefinitions/{quote(job_id, safe='')}/execute"
             f"?api-version=2020-12-01"
         )
-        # /execute raises on 4xx (including 404) via _make_request; let 404 propagate
-        # so run_job() can detect and cache workspace capability.
-        response = self._make_request("POST", execute_url, json={"args": run_args})
-        result = response.json()
-        batch_id = result.get("id")
-        if batch_id is not None:
-            print(f"🚀 Submitted Synapse job via /execute: job={job_id} batch_id={batch_id}")
-            return str(batch_id)
-        return None
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                response = self._make_request("POST", execute_url, json={"args": run_args})
+                result = response.json()
+                batch_id = result.get("id")
+                if batch_id is not None:
+                    print(
+                        f"🚀 Submitted Synapse job via /execute: job={job_id} batch_id={batch_id}"
+                    )
+                    return str(batch_id)
+                return None
+            except Exception as exc:
+                if "404" in str(exc) and attempt < max_retries - 1:
+                    delay = 5 * (attempt + 1)
+                    print(
+                        f"⏳ SparkJobDefinition not yet visible (attempt {attempt + 1}/{max_retries}),"
+                        f" retrying in {delay}s…"
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
 
     def _try_get_storage_access_key(self) -> Optional[str]:
         """Best-effort: fetch a storage account access key using ARM.
