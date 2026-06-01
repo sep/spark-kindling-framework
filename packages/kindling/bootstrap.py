@@ -867,7 +867,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             # Use --ignore-installed to force installation even if package exists in system site-packages
             # This is critical for platforms like Databricks where system packages may be outdated
             subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "--ignore-installed", package_spec]
+                [sys.executable, "-m", "pip", "install", "-q", "--ignore-installed", package_spec]
             )
             logger.info(f"Successfully installed package: {package_spec}")
 
