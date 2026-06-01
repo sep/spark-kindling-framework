@@ -967,7 +967,9 @@ class DataAppManager(DataAppRunner):
 
         except Exception as e:
             error_msg = str(e).split("\n")[0] if "\n" in str(e) else str(e)
-            self.logger.warning(f"No lake-reqs.txt found for {app_name}: {error_msg}")
+            self.logger.warning(
+                f"No lake-reqs.txt found for {app_name} at {app_dir}{DataAppConstants.LAKE_REQUIREMENTS_FILE}: {error_msg}"
+            )
             return []
 
     def _extract_package_name(self, package_spec: str) -> str:
@@ -1110,6 +1112,7 @@ class DataAppManager(DataAppRunner):
         list top-level packages — transitive lake deps are pulled automatically.
         """
         if not lake_requirements:
+            self.logger.info(f"No lake requirements for {app_name} — skipping wheel download")
             return ""
 
         wheels_dir = Path(temp_dir) / "wheels"
