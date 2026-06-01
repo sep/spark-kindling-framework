@@ -742,13 +742,14 @@ def _install_wheel(
                 "install",
                 install_target,
                 "--disable-pip-version-check",
+                "-q",  # suppress verbose download/install output to keep job logs readable
             ],
             capture_output=True,
             text=True,
         )
 
-        # Print stdout (normal output)
-        if result.stdout:
+        # Suppress verbose pip stdout — only print on failure
+        if result.returncode != 0 and result.stdout:
             print(result.stdout)
 
         # Print stderr but filter out non-critical pip dependency warnings
