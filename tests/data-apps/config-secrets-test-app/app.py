@@ -35,7 +35,7 @@ def emit_result(logger, test_id: str, test_name: str, passed: bool, message: str
     status = "PASSED" if passed else "FAILED"
     suffix = f" {message}" if message else ""
     line = f"TEST_ID={test_id} test={test_name} status={status}{suffix}"
-    logger.info(line)
+    logger.warning(line)
     print(line)
 
 
@@ -46,7 +46,7 @@ def main():
     expected = build_expected(test_id)
 
     start_line = f"TEST_ID={test_id} status=STARTED component=config_secrets"
-    logger.info(start_line)
+    logger.warning(start_line)
     print(start_line)
 
     checks = {
@@ -96,7 +96,7 @@ def main():
 
     final = "PASSED" if all_passed else "FAILED"
     complete_line = f"TEST_ID={test_id} status=COMPLETED result={final}"
-    logger.info(complete_line)
+    logger.warning(complete_line)
     print(complete_line)
 
     sys.exit(0 if all_passed else 1)

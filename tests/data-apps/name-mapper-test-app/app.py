@@ -17,7 +17,7 @@ def _emit(logger, test_id: str, test_name: str, passed: bool, details: str = "")
     status = "PASSED" if passed else "FAILED"
     suffix = f" {details}" if details else ""
     line = f"TEST_ID={test_id} test={test_name} status={status}{suffix}"
-    logger.info(line)
+    logger.warning(line)
     print(line, flush=True)
     return line
 
@@ -267,7 +267,7 @@ def main() -> int:
 
     test_id = str(config_service.get("test_id") or "unknown")
     start_line = f"TEST_ID={test_id} status=STARTED component=name_mapper"
-    logger.info(start_line)
+    logger.warning(start_line)
     print(start_line, flush=True)
 
     mapper = get_kindling_service(EntityNameMapper)
@@ -286,7 +286,7 @@ def main() -> int:
     if not write_schema:
         _emit(logger, test_id, "namespace_resolution", False, "schema=None write_schema=None")
         final_line = f"TEST_ID={test_id} status=COMPLETED result=FAILED"
-        logger.info(final_line)
+        logger.warning(final_line)
         print(final_line, flush=True)
         return 1
 
@@ -372,13 +372,13 @@ def main() -> int:
             _run_case("three_part_name", three_part_entityid, expected_three_part)
 
         for line in emitted_lines:
-            logger.info(line)
+            logger.warning(line)
             print(line, flush=True)
 
         passed = all(test_results)
         final_result = "PASSED" if passed else "FAILED"
         final_line = f"TEST_ID={test_id} status=COMPLETED result={final_result}"
-        logger.info(final_line)
+        logger.warning(final_line)
         print(final_line, flush=True)
         return 0 if passed else 1
     finally:

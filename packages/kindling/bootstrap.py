@@ -1550,7 +1550,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 runner = get_kindling_service(DataAppRunner)
                 logger.debug(f"Got DataAppRunner: {type(runner).__name__}")
                 runner.run_app(app_name)
-                logger.info(f"App '{app_name}' completed successfully")
+                logger.warning(f"App '{app_name}' completed successfully")
             except Exception as app_error:
                 logger.exception(f"App execution failed: {str(app_error)}")
                 raise
