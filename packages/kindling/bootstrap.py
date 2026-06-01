@@ -163,9 +163,7 @@ def _import_local_package_registrations(logger) -> None:
                 raise
         total_imported += imported_for_root
         if imported_for_root == 0:
-            logger.debug(
-                f"No local package registration modules found under {module_root}"
-            )
+            logger.debug(f"No local package registration modules found under {module_root}")
 
     logger.info(
         f"Imported {total_imported} local package registration "
@@ -1306,9 +1304,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         _BOOTSTRAP_LOGGER.debug("Framework already initialized, skipping re-initialization")
         existing_service = get_kindling_service(PlatformServiceProvider).get_service()
         logger_provider = get_kindling_service(PythonLoggerProvider)
-        _import_local_package_registrations(
-            logger_provider.get_logger("KindlingBootstrap")
-        )
+        _import_local_package_registrations(logger_provider.get_logger("KindlingBootstrap"))
         return existing_service
 
     # Extract bootstrap settings

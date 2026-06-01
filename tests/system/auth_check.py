@@ -15,7 +15,6 @@ import os
 import sys
 from typing import Iterable, Optional
 
-
 ALL_PLATFORMS = ("fabric", "synapse", "databricks")
 
 
@@ -91,7 +90,10 @@ def check_authentication() -> bool:
     print("=" * 60)
 
     try:
-        from azure.identity import ClientSecretCredential, DefaultAzureCredential  # noqa: F401
+        from azure.identity import (  # noqa: F401
+            ClientSecretCredential,
+            DefaultAzureCredential,
+        )
 
         print("✅ Azure Identity SDK available")
     except ImportError as exc:
