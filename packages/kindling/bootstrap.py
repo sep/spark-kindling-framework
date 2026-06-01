@@ -1293,6 +1293,40 @@ def load_workspace_packages(platform, packages, logger):
         logger.warning(f"Workspace package loading failed: {str(e)}")
 
 
+def _apply_spark_configs(config_service, logger) -> None:
+    """Push spark_configs entries from the config service to the live Spark session.
+
+    Settings defined under spark_configs in settings.yaml or passed via
+    config:spark_configs=... are stored in Dynaconf but have no effect unless
+    they are explicitly pushed to SparkConf.  This function does that push.
+    """
+    try:
+        from kindling.spark_session import get_or_create_spark_session
+
+        spark = get_or_create_spark_session()
+        if spark is None:
+            return
+
+        # spark_configs may be keyed as "spark_configs" (flat) or "SPARK_CONFIGS"
+        # (Dynaconf-uppercased).  Try both.
+        raw = config_service.get("spark_configs") or config_service.get("SPARK_CONFIGS")
+        if not raw or not isinstance(raw, dict):
+            return
+
+        applied = []
+        for key, value in raw.items():
+            try:
+                spark.conf.set(key, str(value))
+                applied.append(key)
+            except Exception as exc:
+                logger.warning(f"Could not apply spark_config '{key}': {exc}")
+
+        if applied:
+            logger.info(f"Applied {len(applied)} spark_config(s) to session: {applied}")
+    except Exception as exc:
+        logger.warning(f"spark_configs application failed: {exc}")
+
+
 def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None):
     """Linear framework initialization with Dynaconf config loading"""
 
@@ -1505,6 +1539,10 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
         platformservice = initialize_platform_services(platform, config_service, logger)
         logger.info("Platform services initialized")
+
+        # Apply spark_configs to the live Spark session.
+        # This must happen after the session exists so conf.set() works.
+        _apply_spark_configs(config_service, logger)
         _import_local_package_registrations(logger)
 
         # Resolve any @secret references now that platform services are available.
