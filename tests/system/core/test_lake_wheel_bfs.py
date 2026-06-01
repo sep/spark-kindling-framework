@@ -35,6 +35,29 @@ from tests.system.test_helpers import (
     get_system_test_stream_max_wait,
 )
 
+
+def _test_artifacts_storage_path() -> str:
+    """Construct the abfss:// path that matches where the test wheels are uploaded.
+
+    Uses the same storage account/container/base_path as the lake_test_wheels fixture
+    so the cloud app's artifacts_storage_path points at exactly the right location.
+    """
+    storage_account = os.getenv("AZURE_STORAGE_ACCOUNT", "")
+    container = os.getenv("AZURE_CONTAINER", "artifacts")
+    base_path = os.getenv("AZURE_BASE_PATH", "").rstrip("/")
+    cloud = (os.getenv("AZURE_CLOUD") or "").strip().lower().replace("-", "").replace("_", "")
+    if cloud in {"azureusgovernment", "azuregovernment", "government", "gov", "usgov"}:
+        suffix = "core.usgovcloudapi.net"
+    elif cloud in {"azurechinacloud", "china"}:
+        suffix = "core.chinacloudapi.cn"
+    else:
+        suffix = "core.windows.net"
+    path = f"abfss://{container}@{storage_account}.dfs.{suffix}"
+    if base_path:
+        path = f"{path}/{base_path}"
+    return path
+
+
 # ── markers ────────────────────────────────────────────────────────────────────
 MARKER_B = "LAKE_BFS_MARKER: test_lake_dep_b imported"
 MARKER_A = "LAKE_BFS_MARKER: test_lake_dep_a imported"
@@ -210,11 +233,15 @@ def bfs_test_app(platform_client, lake_test_wheels):
     app_name = f"systest-lake-bfs-{suffix}"
     job_name = f"systest-lake-bfs-job-{suffix}"
 
+    artifacts_path = _test_artifacts_storage_path()
     job_config = {
         "job_name": job_name,
         "app_name": app_name,
         "entry_point": "app.py",
         "test_id": suffix,
+        # Tell the running executor where to find lake packages.  This must
+        # match the path where lake_test_wheels uploads the test wheels.
+        "config_overrides": {"kindling": {"artifacts_storage_path": artifacts_path}},
     }
 
     app_files = {
@@ -260,7 +287,8 @@ class TestLakeWheelBFS:
                 run_id=run_id,
                 print_lines=True,
                 poll_interval=get_system_test_poll_interval(10.0),
-                max_wait=get_system_test_stream_max_wait(300.0),
+                # 600s: Fabric/Synapse can take 3-5 min to cold-start + execute
+                max_wait=get_system_test_stream_max_wait(600.0),
             )
 
             log = stdout_validator.get_content()
@@ -277,9 +305,11 @@ class TestLakeWheelBFS:
                 "Bootstrap reported app failure — BFS likely did not load test_lake_dep_b "
                 "(lake-reqs.txt only lists test_lake_dep_a; transitive dep must be fetched via BFS)"
             )
-            assert (
-                "completed successfully" in log
-            ), "App did not complete successfully — check bootstrap logs for errors"
+            assert "completed successfully" in log, (
+                "App did not log completion — possible causes: job startup timeout "
+                f"(log length={len(log)} chars), bootstrap crash, or BFS install failure. "
+                "Re-run with KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT=900 if timeout suspected."
+            )
 
         finally:
             try:
