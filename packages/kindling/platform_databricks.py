@@ -364,8 +364,21 @@ class DatabricksService(PlatformService):
         return f"https://{hostname}", container, remote_path
 
     def copy(self, source: str, destination: str, overwrite: bool = False) -> None:
-        """Copy file using dbutils, with ADLS SDK fallback for ABFS sources."""
+        """Copy file using dbutils, with UC-Volume staging fallback for ABFS sources.
+
+        On Databricks Unity Catalog clusters dbutils.fs.cp from abfss:// to
+        file:// often fails because UC restricts direct ABFS→local copies.
+        The workaround is to stage via a UC Volume (/Volumes/...) which is a
+        local FUSE mount — abfss→Volume works in UC, then shutil copies to
+        the final local destination.
+        """
+        import shutil as _shutil
+
         import __main__
+
+        local_dest = (
+            destination[len("file://") :] if destination.startswith("file://") else destination
+        )
 
         dbutils = getattr(__main__, "dbutils", None)
         if dbutils:
@@ -373,20 +386,39 @@ class DatabricksService(PlatformService):
                 dbutils.fs.cp(source, destination, overwrite)
                 return
             except Exception:
-                pass  # fall through to ADLS SDK
+                pass  # fall through to Volume staging or ADLS SDK
 
         if source.startswith("abfss://"):
-            local_dest = (
-                destination[len("file://") :] if destination.startswith("file://") else destination
-            )
-            account_url, container, remote_path = self._parse_abfss(source)
-            fs_client = self._adls_fs_client(account_url, container)
-            from pathlib import Path as _Path
+            # Try UC Volume staging: abfss→Volume (dbutils supports this in UC),
+            # then Volume→local via shutil (Volumes are FUSE-mounted local paths).
+            temp_path = None
+            if hasattr(self.config, "get"):
+                temp_path = self.config.get("kindling.temp_path") or self.config.get("temp_path")
+            if temp_path and str(temp_path).startswith("/Volumes/") and dbutils:
+                try:
+                    filename = source.split("/")[-1]
+                    volume_file = f"{str(temp_path).rstrip('/')}/{filename}"
+                    dbutils.fs.cp(source, volume_file, overwrite)
+                    from pathlib import Path as _Path
 
-            _Path(local_dest).parent.mkdir(parents=True, exist_ok=True)
-            with open(local_dest, "wb") as f:
-                f.write(fs_client.get_file_client(remote_path).download_file().readall())
-            return
+                    _Path(local_dest).parent.mkdir(parents=True, exist_ok=True)
+                    _shutil.copy2(volume_file, local_dest)
+                    return
+                except Exception:
+                    pass  # fall through to ADLS SDK
+
+            # Last resort: ADLS SDK with DefaultAzureCredential / storage key
+            try:
+                account_url, container, remote_path = self._parse_abfss(source)
+                fs_client = self._adls_fs_client(account_url, container)
+                from pathlib import Path as _Path
+
+                _Path(local_dest).parent.mkdir(parents=True, exist_ok=True)
+                with open(local_dest, "wb") as f:
+                    f.write(fs_client.get_file_client(remote_path).download_file().readall())
+                return
+            except Exception as exc:
+                raise Exception(f"All copy strategies failed for {source}: {exc}") from exc
 
         if not dbutils:
             raise Exception("dbutils not available and source is not ABFS")

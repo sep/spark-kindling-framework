@@ -264,20 +264,54 @@ class SynapseService(PlatformService):
         else:
             raise NotImplementedError("File delete not available without mssparkutils")
 
+    @staticmethod
+    def _adls_credential():
+        storage_key = os.getenv("AZURE_STORAGE_KEY") or os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
+        if storage_key:
+            return storage_key
+        from azure.identity import DefaultAzureCredential
+
+        return DefaultAzureCredential()
+
+    @staticmethod
+    def _parse_abfss(path: str):
+        rest = path[len("abfss://") :]
+        at = rest.index("@")
+        container = rest[:at]
+        rest2 = rest[at + 1 :]
+        slash = rest2.index("/") if "/" in rest2 else len(rest2)
+        hostname = rest2[:slash]
+        remote_path = rest2[slash:].lstrip("/")
+        return f"https://{hostname}", container, remote_path
+
+    def _adls_fs_client(self, account_url: str, container: str):
+        from azure.storage.filedatalake import DataLakeServiceClient
+
+        return DataLakeServiceClient(
+            account_url=account_url, credential=self._adls_credential()
+        ).get_file_system_client(container)
+
     def read(self, path: str, encoding: str = "utf-8") -> Union[str, bytes]:
-        """Read file content"""
-        try:
-            # For ABFSS paths, use mssparkutils
-            if path.startswith("abfss://") or path.startswith("wasbs://"):
+        """Read file content, with ADLS SDK fallback when mssparkutils token fails."""
+        if path.startswith("abfss://") or path.startswith("wasbs://"):
+            try:
                 mssparkutils = _get_mssparkutils()
                 if mssparkutils:
                     content = mssparkutils.fs.head(path, 10000000)  # Read up to ~10MB
-                    if encoding:
-                        return content
-                    else:
-                        return content.encode(encoding or "utf-8")
+                    return content if encoding else content.encode(encoding or "utf-8")
+            except Exception:
+                pass  # fall through to ADLS SDK
 
-            # For local paths, use regular file I/O
+            if path.startswith("abfss://"):
+                try:
+                    account_url, container, remote_path = self._parse_abfss(path)
+                    fs_client = self._adls_fs_client(account_url, container)
+                    data = fs_client.get_file_client(remote_path).download_file().readall()
+                    return data.decode(encoding) if encoding else data
+                except Exception as exc:
+                    raise FileNotFoundError(f"Failed to read file {path}: {exc}") from exc
+
+        try:
             with open(path, "r" if encoding else "rb") as f:
                 return f.read()
         except Exception as e:
@@ -297,10 +331,31 @@ class SynapseService(PlatformService):
             f.write(content)
 
     def list(self, path: str) -> List[str]:
-        """List files in directory"""
-        mssparkutils = _get_mssparkutils()
-        files = mssparkutils.fs.ls(path)
-        return [f.name for f in files]
+        """List files in directory, with ADLS SDK fallback when mssparkutils token fails."""
+        try:
+            mssparkutils = _get_mssparkutils()
+            files = mssparkutils.fs.ls(path)
+            result = [f.name for f in files]
+            if result or not path.startswith("abfss://"):
+                return result
+            # Empty result on ABFS path — token may have failed; try SDK
+        except Exception:
+            pass
+
+        if path.startswith("abfss://"):
+            try:
+                account_url, container, remote_path = self._parse_abfss(path)
+                remote_path = remote_path.rstrip("/")
+                fs_client = self._adls_fs_client(account_url, container)
+                return [
+                    item.name.split("/")[-1]
+                    for item in fs_client.get_paths(path=remote_path or "/")
+                    if not item.is_directory
+                ]
+            except Exception as exc:
+                self.logger.warning(f"ADLS list failed for {path}: {exc}")
+
+        return []
 
     def _build_base_url(self) -> str:
         spark = get_or_create_spark_session()
