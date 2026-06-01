@@ -21,10 +21,8 @@ RUN pip install --no-cache-dir --upgrade pip wheel gitpython
 # Install Poetry
 RUN pip install --no-cache-dir poetry==2.4.0
 
-# Install packages into system Python — no venv needed inside the container.
-# Workflow steps invoke tools directly (python -m poethepoem, black, etc.)
-# without activating a virtualenv.
-RUN poetry config virtualenvs.create false
+# Create the venv inside the project so all tools are at a predictable path.
+RUN poetry config virtualenvs.in-project true
 
 # Set working directory
 WORKDIR /workspace
@@ -34,8 +32,12 @@ COPY pyproject.toml poetry.lock ./
 COPY packages/kindling_cli ./packages/kindling_cli
 COPY packages/kindling_sdk ./packages/kindling_sdk
 
-# Install dependencies into system Python
+# Install dependencies — creates /workspace/.venv
 RUN poetry install --with dev --no-root
+
+# Put the venv on PATH so every subsequent layer and every workflow step
+# finds the right python/pip/black/poe without explicit activation.
+ENV PATH="/workspace/.venv/bin:${PATH}"
 
 # Default command
 CMD ["/bin/bash"]
