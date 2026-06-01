@@ -117,7 +117,8 @@ class TestComplexTracing:
 
         # Wait for completion
         print("⏳ Waiting for job to complete...")
-        timeout = get_system_test_completion_timeout(600.0)
+        # 900s: Synapse Spark pool cold-start (5-8 min) + force_reinstall (1-2 min) + app
+        timeout = get_system_test_completion_timeout(900.0)
         poll_interval = get_system_test_poll_interval(15.0)
         start_time = time.time()
         final_status = None
