@@ -1356,7 +1356,7 @@ class DataAppManager(DataAppRunner):
             exec_globals = dict(__main__.__dict__)
             exec_globals.update(
                 {
-                    "__name__": f"app_{app_name}",
+                    "__name__": "__main__",
                     "__file__": source_name,
                     "__builtins__": builtins,
                     "framework": self.framework,
