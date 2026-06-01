@@ -305,9 +305,13 @@ class TestLakeWheelBFS:
                 "Bootstrap reported app failure — BFS likely did not load test_lake_dep_b "
                 "(lake-reqs.txt only lists test_lake_dep_a; transitive dep must be fetched via BFS)"
             )
-            assert "completed successfully" in log, (
-                "App did not log completion — possible causes: job startup timeout "
-                f"(log length={len(log)} chars), bootstrap crash, or BFS install failure. "
+            # DataAppManager._execute_app sets __name__ = "app_<name>" (not "__main__"),
+            # so the app must be written without an __name__ guard.  The bootstrap
+            # prints "BOOTSTRAP COMPLETE" (uppercase) to stdout on clean exit;
+            # that line is always captured in the job log stream.
+            assert "BOOTSTRAP COMPLETE" in log, (
+                "Bootstrap did not complete — possible causes: job startup timeout "
+                f"(log length={len(log)} chars), BFS install failure, or app crash. "
                 "Re-run with KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT=900 if timeout suspected."
             )
 
