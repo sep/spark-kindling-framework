@@ -23,7 +23,6 @@ Run:
     poe test-system --test test_file_ingestion_static_values
 """
 
-import io
 import os
 import uuid
 
@@ -78,13 +77,12 @@ def _app_src(
 ) -> str:
     """Generate the test app Python source.
 
-    The app:
-      1. Writes the test CSV to the cloud path via the platform service.
-      2. Defines a target entity.
-      3. Registers a file ingestion entry with static_values.
-      4. Processes the ABFS folder.
-      5. Reads the entity table and validates static columns.
-      6. Prints a PASSED/FAILED marker.
+    The CSV is pre-uploaded by the fixture; the app only needs to:
+      1. Define a target entity.
+      2. Register a file ingestion entry with static_values.
+      3. Process the ABFS folder.
+      4. Read the entity table and validate static columns.
+      5. Print a PASSED/FAILED marker.
     """
     return f"""\
 import logging
@@ -95,18 +93,11 @@ _log = logging.getLogger("file_ingestion_static_test")
 from kindling.data_entities import DataEntities
 from kindling.file_ingestion import FileIngestionEntries
 from kindling.injection import get_kindling_service
-from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_session import get_or_create_spark_session
 
 spark = get_or_create_spark_session()
 
-# ── Step 1: write the test CSV via platform service ───────────────────────────
-platform = get_kindling_service(PlatformServiceProvider).get_service()
-csv_path = "{csv_abfss_folder}/test_static.csv"
-platform.write(csv_path, "row_id,value\\n1,alpha\\n2,beta\\n", overwrite=True)
-_log.warning("Uploaded test CSV to %s", csv_path)
-
-# ── Step 2: define target entity ──────────────────────────────────────────────
+# ── Step 1: define target entity ──────────────────────────────────────────────
 @DataEntities.entity(
     merge_columns=["row_id"],
     tags={{}},
@@ -116,7 +107,7 @@ class TestStaticValuesEntity:
     row_id: str
     value: str
 
-# ── Step 3: register ingestion entry with static_values ───────────────────────
+# ── Step 2: register ingestion entry with static_values ───────────────────────
 FileIngestionEntries.entry(
     entry_id="test_static_values",
     name="test static values ingestion",
@@ -130,13 +121,13 @@ FileIngestionEntries.entry(
     }},
 )
 
-# ── Step 4: process the ABFS folder ──────────────────────────────────────────
+# ── Step 3: process the ABFS folder ──────────────────────────────────────────
 from kindling.file_ingestion import ParallelizingFileIngestionProcessor
 processor = get_kindling_service(ParallelizingFileIngestionProcessor)
 processor.process_path("{csv_abfss_folder}")
 _log.warning("File ingestion complete")
 
-# ── Step 5: validate static columns ──────────────────────────────────────────
+# ── Step 4: validate static columns ──────────────────────────────────────────
 df = spark.read.format("delta").load("{entity_table_path}")
 rows = df.collect()
 
@@ -195,11 +186,22 @@ def blob_client():
 
 @pytest.fixture
 def static_values_test_app(platform_client, blob_client):
-    """Deploy the static_values test app and yield the run context."""
+    """Upload the test CSV and deploy the static_values test app."""
     api_client, _ = platform_client
     suffix = str(uuid.uuid4())[:8]
     app_name = f"systest-fi-static-{suffix}"
     job_name = f"systest-fi-static-job-{suffix}"
+
+    container = os.getenv("AZURE_CONTAINER", "artifacts")
+    base_path = os.getenv("AZURE_BASE_PATH", "").rstrip("/")
+    blob_folder = f"{base_path}/systest-fi/{suffix}" if base_path else f"systest-fi/{suffix}"
+    blob_csv_path = f"{blob_folder}/test_static.csv"
+
+    # Upload the test CSV from the CI runner via BlobServiceClient so the
+    # cloud job can read it over ABFS without needing write permissions.
+    container_client = blob_client.get_container_client(container)
+    container_client.upload_blob(blob_csv_path, _csv_bytes(), overwrite=True)
+    print(f"Uploaded test CSV: {blob_csv_path}")
 
     abfss_base = _test_abfss_path()
     csv_folder = f"{abfss_base}/systest-fi/{suffix}"
@@ -228,6 +230,13 @@ def static_values_test_app(platform_client, blob_client):
     api_client.deploy_app(app_name, app_files)
 
     yield api_client, app_name, job_name, job_config
+
+    # Clean up the uploaded CSV
+    try:
+        container_client.delete_blob(blob_csv_path)
+        print(f"Cleaned up test CSV: {blob_csv_path}")
+    except Exception as exc:
+        print(f"Warning: could not clean up CSV: {exc}")
 
     try:
         api_client.cleanup_app(app_name)
