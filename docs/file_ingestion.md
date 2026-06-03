@@ -1,182 +1,119 @@
 # File Ingestion
 
-The File Ingestion module provides a declarative way to define and process file-based data ingestion into the Kindling Framework's entity system.
+The File Ingestion module provides a declarative way to map file patterns to destination entities. When a file matches an entry's pattern, the processor reads it, enriches it with metadata columns, and appends it to the target entity table.
 
-## Core Concepts
+## Registering an ingestion entry
 
-### Ingestion Entries
-
-File ingestion entries define a mapping between file patterns and destination entities. Each entry specifies:
-
-- Source file patterns to match
-- Destination entity to load data into
-- Schema inference settings
-- Metadata tags
-
-### Processing Flow
-
-1. Files matching specified patterns are discovered
-2. Data is read according to file format
-3. Schemas are validated or inferred
-4. Data is written to the destination entity
-
-## Key Components
-
-### FileIngestionMetadata
-
-Defines the configuration for a file ingestion entry.
+Use `FileIngestionEntries.entry()` to declare a mapping. All parameters must be provided except `infer_schema` (defaults to `True`) and `static_values` (defaults to `None`).
 
 ```python
-@dataclass
-class FileIngestionMetadata:
-    entry_id: str         # Unique identifier for this ingestion entry
-    name: str             # Human-readable name
-    patterns: List[str]   # List of file patterns to match
-    dest_entity_id: str   # ID of destination entity
-    tags: Dict[str, str]  # Metadata tags
-    infer_schema: bool = True  # Whether to infer schema from files
-```
-
-### @FileIngestionEntries.entry Decorator
-
-Decorator to register a file ingestion entry with the framework.
-
-```python
-@FileIngestionEntries.entry(
-    entry_id="sales_ingestion",
-    name="Sales Data Ingestion",
-    patterns=["data/sales/*.csv"],
+FileIngestionEntries.entry(
+    entry_id="sales_daily",
+    name="Daily Sales Files",
+    patterns=[r"sales_(?P<region>\w+)_(?P<date>\d{8})\.csv"],
     dest_entity_id="bronze.sales",
-    tags={"domain": "sales", "frequency": "daily"},
-    infer_schema=True
+    tags={"domain": "sales", "layer": "bronze"},
+    filetype="csv",
 )
 ```
 
-### FileIngestionRegistry
+### Parameters
 
-Registry that stores and manages all file ingestion entries.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `entry_id` | `str` | Yes | Unique identifier for this entry |
+| `name` | `str` | Yes | Human-readable description |
+| `patterns` | `List[str]` | Yes | Regex patterns to match filenames |
+| `dest_entity_id` | `str` | Yes | Entity ID to write matched files into |
+| `tags` | `Dict[str, str]` | Yes | Metadata tags (may be empty) |
+| `filetype` | `str` | Yes | Spark format name: `"csv"`, `"parquet"`, `"json"`, etc. |
+| `infer_schema` | `bool` | No | Infer column types from file content (default `True`) |
+| `static_values` | `Dict[str, Any]` | No | Literal column values added to every matched row |
 
-```python
-class FileIngestionRegistry(ABC):
-    @abstractmethod
-    def register_entry(self, entryId, **decorator_params):
-        pass
-
-    @abstractmethod
-    def get_entry_ids(self):
-        pass
-
-    @abstractmethod
-    def get_entry_definition(self, entryId):
-        pass
-```
-
-### FileIngestionProcessor
-
-Interface for file ingestion processing logic.
+## Processing files
 
 ```python
-class FileIngestionProcessor(ABC):
-    @abstractmethod
-    def process_path(self, path: str):
-        pass
-```
-
-## Usage Examples
-
-### Defining a File Ingestion Entry
-
-```python
-# Register a file ingestion entry
-@FileIngestionEntries.entry(
-    entry_id="customer_ingestion",
-    name="Customer Data Ingestion",
-    patterns=["data/customers/*.csv", "data/customers/*.parquet"],
-    dest_entity_id="bronze.customers",
-    tags={"domain": "customer", "layer": "bronze"}
-)
-```
-
-### Processing a File Ingestion Entry
-
-```python
-# Get the processor
+from kindling.file_ingestion import ParallelizingFileIngestionProcessor
 from kindling.injection import get_kindling_service
-processor = get_kindling_service(FileIngestionProcessor)
 
-# Process a specific ingestion entry
-processor.process_entry("customer_ingestion")
+processor = get_kindling_service(ParallelizingFileIngestionProcessor)
 
-# Or process all entries
-processor.process_all_entries()
+# Ingest all matching files from a path
+processor.process_path("abfss://landing@account.dfs.core.windows.net/sales/")
+
+# Optionally move processed files after a successful write
+processor.process_path(
+    "abfss://landing@account.dfs.core.windows.net/sales/",
+    movepath="abfss://archive@account.dfs.core.windows.net/processed/",
+)
+
+# Apply a transformation before writing
+processor.process_path(path, transform=lambda df: df.withColumn("amount", df.amount.cast("double")))
 ```
 
-## File Format Support
+`process_path` discovers all files in `path`, matches each against registered entry patterns, groups matches by destination entity, and writes each group in a single batched append. Tables for multiple destinations can be written in parallel (controlled by `ingestion.max_parallel_tables` config, default `3`).
 
-The File Ingestion module supports various file formats:
+## Columns added automatically
 
-- CSV
-- Parquet
-- JSON
-- Delta Lake
-- ORC
-- Avro (with appropriate Spark extensions)
+For every matched file the processor appends these columns before writing, regardless of the entry configuration:
 
-## Advanced Configuration
+| Column | Source |
+|--------|--------|
+| Named regex groups | Extracted from the filename via `(?P<name>...)` groups in `patterns` |
+| `ingestion_timestamp` | `current_timestamp()` at the time of processing |
 
-### Custom Schema Definition
-
-When `infer_schema=False`, you need to define the schema for your ingestion entry:
+Named groups from the pattern are also available for interpolation in `dest_entity_id`:
 
 ```python
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
-
-# Define schema
-customer_schema = StructType([
-    StructField("customer_id", StringType(), False),
-    StructField("name", StringType(), True),
-    StructField("age", IntegerType(), True)
-])
-
-# Register with explicit schema
-@FileIngestionEntries.entry(
-    entry_id="customer_ingestion",
-    name="Customer Data Ingestion",
-    patterns=["data/customers/*.csv"],
-    dest_entity_id="bronze.customers",
-    tags={"domain": "customer"},
-    infer_schema=False,
-    schema=customer_schema
+FileIngestionEntries.entry(
+    entry_id="regional_sales",
+    patterns=[r"sales_(?P<region>\w+)_(?P<filetype>csv)\.csv"],
+    dest_entity_id="bronze.sales_{region}",   # resolved per file
+    ...
 )
 ```
 
-### Format-Specific Options
+## Static values
 
-You can provide format-specific options for file reading:
+`static_values` adds literal columns to every row ingested by a matching entry. Use it to tag rows with context that isn't in the file itself — source system, environment, load type, etc.
 
 ```python
-@FileIngestionEntries.entry(
-    entry_id="csv_ingestion",
-    name="CSV Ingestion with Options",
-    patterns=["data/*.csv"],
-    dest_entity_id="bronze.data",
-    tags={},
-    options={
-        "header": "true",
-        "delimiter": "|",
-        "inferSchema": "true"
-    }
+FileIngestionEntries.entry(
+    entry_id="erp_orders",
+    name="ERP Order Files",
+    patterns=[r"orders_(?P<date>\d{8})\.csv"],
+    dest_entity_id="bronze.orders",
+    tags={"source": "erp"},
+    filetype="csv",
+    static_values={
+        "source_system": "erp_prod",
+        "load_type": "full",
+        "environment": "production",
+    },
 )
 ```
 
-## Best Practices
+The static columns are added after regex named-group columns and before `ingestion_timestamp`. Values are coerced to strings by Spark's `lit()` function.
 
-1. **Use specific file patterns**: Avoid overly broad patterns that might match unwanted files.
+## Signals emitted
 
-2. **Consider partitioning**: For large datasets, ensure your file organization aligns with your entity partitioning.
+`ParallelizingFileIngestionProcessor` emits these signals for monitoring and orchestration:
 
-3. **Schema management**: For production workloads, explicitly define schemas rather than relying on inference.
+| Signal | When |
+|--------|------|
+| `file_ingestion.before_process` | Before batch processing starts |
+| `file_ingestion.after_process` | After the batch completes |
+| `file_ingestion.process_failed` | Batch processing fails |
+| `file_ingestion.before_file` | Before each individual file |
+| `file_ingestion.after_file` | After each file is processed |
+| `file_ingestion.file_failed` | A file fails to process |
+| `file_ingestion.file_moved` | A file is moved to `movepath` |
+| `file_ingestion.batch_written` | A destination table group is written |
 
-4. **Error handling**: Configure appropriate error handling for malformed records.
+## Best practices
 
-5. **Metadata enrichment**: Consider adding ingestion metadata like source file and timestamp.
+- **Specific patterns over broad ones** — `orders_\d{8}\.csv` is better than `.*\.csv`.
+- **Use named groups** to capture useful metadata from filenames (date, region, feed type) and have them land as columns automatically.
+- **Use `static_values`** for context that isn't in the filename or file content — source system, environment, ETL run ID.
+- **Keep `infer_schema=True`** for exploratory bronze ingestion; set explicit Delta schemas on the entity for silver and beyond.
+- **Test patterns locally** with `re.match(pattern, filename)` before deploying.
