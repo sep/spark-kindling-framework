@@ -71,18 +71,17 @@ def _csv_bytes() -> bytes:
 
 def _app_src(
     csv_abfss_folder: str,
-    entity_table_path: str,
     expected_source: str,
     expected_env: str,
 ) -> str:
     """Generate the test app Python source.
 
-    The CSV is pre-uploaded by the fixture; the app only needs to:
-      1. Define a target entity.
-      2. Register a file ingestion entry with static_values.
-      3. Process the ABFS folder.
-      4. Read the entity table and validate static columns.
-      5. Print a PASSED/FAILED marker.
+    The CSV is pre-uploaded by the fixture.  The app:
+      1. Registers a target entity with an explicit Pyspark schema.
+      2. Registers a file ingestion entry with static_values.
+      3. Processes the ABFS folder.
+      4. Reads the entity back via EntityProvider and validates static columns.
+      5. Prints STATIC_VALUES_TEST: PASSED / FAILED.
     """
     return f"""\
 import logging
@@ -90,29 +89,32 @@ import sys
 
 _log = logging.getLogger("file_ingestion_static_test")
 
-from kindling.data_entities import DataEntities
-from kindling.file_ingestion import FileIngestionEntries
+from pyspark.sql.types import StringType, StructField, StructType
+
+from kindling.data_entities import DataEntities, DataEntityRegistry, EntityProvider
+from kindling.file_ingestion import FileIngestionEntries, ParallelizingFileIngestionProcessor
 from kindling.injection import get_kindling_service
-from kindling.spark_session import get_or_create_spark_session
 
-spark = get_or_create_spark_session()
+# ── Step 1: register target entity ───────────────────────────────────────────
+_schema = StructType([
+    StructField("row_id", StringType(), False),
+    StructField("value", StringType(), True),
+])
 
-# ── Step 1: define target entity ──────────────────────────────────────────────
-@DataEntities.entity(
+DataEntities.entity(
+    entityid="test_static.entity",
+    name="test_static_entity",
     merge_columns=["row_id"],
     tags={{}},
-    table_path="{entity_table_path}",
+    schema=_schema,
 )
-class TestStaticValuesEntity:
-    row_id: str
-    value: str
 
-# ── Step 2: register ingestion entry with static_values ───────────────────────
+# ── Step 2: register file ingestion entry with static_values ──────────────────
 FileIngestionEntries.entry(
     entry_id="test_static_values",
     name="test static values ingestion",
     patterns=[r"test_static\\.csv"],
-    dest_entity_id="TestStaticValuesEntity",
+    dest_entity_id="test_static.entity",
     tags={{}},
     filetype="csv",
     static_values={{
@@ -122,41 +124,37 @@ FileIngestionEntries.entry(
 )
 
 # ── Step 3: process the ABFS folder ──────────────────────────────────────────
-from kindling.file_ingestion import ParallelizingFileIngestionProcessor
 processor = get_kindling_service(ParallelizingFileIngestionProcessor)
 processor.process_path("{csv_abfss_folder}")
 _log.warning("File ingestion complete")
 
-# ── Step 4: validate static columns ──────────────────────────────────────────
-df = spark.read.format("delta").load("{entity_table_path}")
+# ── Step 4: read back and validate static columns ─────────────────────────────
+der = get_kindling_service(DataEntityRegistry)
+ep = get_kindling_service(EntityProvider)
+entity = der.get_entity_definition("test_static.entity")
+df = ep.read_entity(entity)
 rows = df.collect()
 
 if not rows:
-    _log.warning(MARKER_FAILED := "STATIC_VALUES_TEST: FAILED — no rows written")
+    _log.warning("STATIC_VALUES_TEST: FAILED — no rows written")
     sys.exit(1)
 
 col_names = df.columns
 if "source_system" not in col_names:
-    _log.warning("STATIC_VALUES_TEST: FAILED — 'source_system' column missing")
+    _log.warning("STATIC_VALUES_TEST: FAILED — 'source_system' column missing; got: %s", col_names)
     sys.exit(1)
 if "environment" not in col_names:
-    _log.warning("STATIC_VALUES_TEST: FAILED — 'environment' column missing")
+    _log.warning("STATIC_VALUES_TEST: FAILED — 'environment' column missing; got: %s", col_names)
     sys.exit(1)
 
-bad_source = [r for r in rows if r["source_system"] != "{expected_source}"]
-bad_env    = [r for r in rows if r["environment"] != "{expected_env}"]
+bad_source = [r["source_system"] for r in rows if r["source_system"] != "{expected_source}"]
+bad_env = [r["environment"] for r in rows if r["environment"] != "{expected_env}"]
 
 if bad_source:
-    _log.warning(
-        "STATIC_VALUES_TEST: FAILED — source_system mismatch: %s",
-        [r["source_system"] for r in bad_source],
-    )
+    _log.warning("STATIC_VALUES_TEST: FAILED — source_system mismatch: %s", bad_source)
     sys.exit(1)
 if bad_env:
-    _log.warning(
-        "STATIC_VALUES_TEST: FAILED — environment mismatch: %s",
-        [r["environment"] for r in bad_env],
-    )
+    _log.warning("STATIC_VALUES_TEST: FAILED — environment mismatch: %s", bad_env)
     sys.exit(1)
 
 _log.warning("STATIC_VALUES_TEST: PASSED")
@@ -205,7 +203,6 @@ def static_values_test_app(platform_client, blob_client):
 
     abfss_base = _test_abfss_path()
     csv_folder = f"{abfss_base}/systest-fi/{suffix}"
-    entity_table_path = f"{abfss_base}/systest-fi/{suffix}/entity"
 
     expected_source = "test_erp"
     expected_env = "ci"
@@ -221,7 +218,6 @@ def static_values_test_app(platform_client, blob_client):
     app_files = {
         "app.py": _app_src(
             csv_abfss_folder=csv_folder,
-            entity_table_path=entity_table_path,
             expected_source=expected_source,
             expected_env=expected_env,
         ),
