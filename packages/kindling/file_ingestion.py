@@ -34,6 +34,7 @@ class FileIngestionMetadata:
     tags: Dict[str, str]
     infer_schema: bool = True
     filetype: str = "csv"
+    static_values: Optional[Dict[str, Any]] = None
 
 
 class FileIngestionEntries:
@@ -51,6 +52,8 @@ class FileIngestionEntries:
             if ("infer_schema" in decorator_params.keys())
             else True
         )
+
+        decorator_params.setdefault("static_values", None)
 
         missing_fields = required_fields - decorator_params.keys()
 
@@ -208,6 +211,11 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
                 # Add named groups as columns (still lazy)
                 for group_name, group_value in named_groups.items():
                     df = df.withColumn(group_name, lit(group_value))
+
+                # Add static values defined on the ingestion entry
+                if fe.static_values:
+                    for col_name, col_value in fe.static_values.items():
+                        df = df.withColumn(col_name, lit(col_value))
 
                 # Add ingestion timestamp
                 df = df.withColumn("ingestion_timestamp", current_timestamp())
