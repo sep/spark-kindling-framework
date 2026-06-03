@@ -55,20 +55,22 @@ processor.process_path(path, transform=lambda df: df.withColumn("amount", df.amo
 
 ## Columns added automatically
 
-For every matched file the processor appends these columns before writing, regardless of the entry configuration:
+For every matched file the processor appends extra columns before writing:
 
 | Column | Source |
 |--------|--------|
-| Named regex groups | Extracted from the filename via `(?P<name>...)` groups in `patterns` |
+| One column per named regex group | The group **name** becomes the column name; the captured **value** becomes the column value |
 | `ingestion_timestamp` | `current_timestamp()` at the time of processing |
 
-Named groups from the pattern are also available for interpolation in `dest_entity_id`:
+For example, a pattern `r"sales_(?P<region>\w+)_(?P<date>\d{8})\.csv"` matched against `sales_west_20240601.csv` adds two columns to every row: `region = "west"` and `date = "20240601"`.
+
+Named groups are also available for interpolation in `dest_entity_id`:
 
 ```python
 FileIngestionEntries.entry(
     entry_id="regional_sales",
     patterns=[r"sales_(?P<region>\w+)_(?P<filetype>csv)\.csv"],
-    dest_entity_id="bronze.sales_{region}",   # resolved per file
+    dest_entity_id="bronze.sales_{region}",   # resolves to e.g. "bronze.sales_west"
     ...
 )
 ```
