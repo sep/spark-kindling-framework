@@ -93,8 +93,7 @@ import sys
 _log = logging.getLogger("file_ingestion_static_test")
 
 from kindling.data_entities import DataEntities
-from kindling.entity_provider import EntityProvider
-from kindling.file_ingestion import FileIngestionEntries, FileIngestionManager
+from kindling.file_ingestion import FileIngestionEntries
 from kindling.injection import get_kindling_service
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_session import get_or_create_spark_session
