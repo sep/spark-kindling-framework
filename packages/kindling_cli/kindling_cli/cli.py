@@ -2656,8 +2656,10 @@ def _resolve_source_path(
 def _resolve_by_convention(name: str, root_dir: str, label: str) -> Path:
     """Resolve a name to a local directory using the name-as-convention pattern.
 
-    Normalizes kebab-case to snake_case and looks up <root_dir>/<snake_name>/.
-    Raises ClickException if the directory is not found.
+    Normalizes kebab-case to snake_case and walks up from cwd looking for
+    <root_dir>/<snake_name>/ so commands work when run from inside a subdirectory
+    (e.g. from inside apps/my_pipeline/ rather than the repo root).
+    Raises ClickException if the directory is not found in any ancestor.
     """
     from kindling_cli.scaffold import validate_name
 
@@ -2665,13 +2667,22 @@ def _resolve_by_convention(name: str, root_dir: str, label: str) -> Path:
         snake = validate_name(name)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    resolved = (Path.cwd() / root_dir / snake).resolve()
-    if not resolved.exists():
-        raise click.ClickException(
-            f"{label.capitalize()} '{name}' not found at {root_dir}/{snake}/. "
-            f"Use --local-folder to specify a non-standard location."
-        )
-    return resolved
+
+    search = Path.cwd()
+    while True:
+        candidate = (search / root_dir / snake).resolve()
+        if candidate.is_dir():
+            return candidate
+        parent = search.parent
+        if parent == search:
+            break
+        search = parent
+
+    raise click.ClickException(
+        f"{label.capitalize()} '{name}' not found at {root_dir}/{snake}/ "
+        f"(searched from {Path.cwd()} up to filesystem root). "
+        f"Use --local-folder to specify a non-standard location."
+    )
 
 
 @app_group.command("init")
@@ -5371,7 +5382,7 @@ def _parse_abfss_uri(uri: str) -> Tuple[str, str, str]:
         raise click.ClickException(
             f"Invalid destination URI `{uri}`. Expected abfss://container@account.dfs.core.windows.net/path"
         )
-    rest = uri[len("abfss://"):]
+    rest = uri[len("abfss://") :]
     if "@" not in rest:
         raise click.ClickException(
             f"Invalid abfss URI `{uri}`. Missing '@' separator between container and account."
@@ -5415,9 +5426,12 @@ def _download_github_release_assets(
         try:
             result = subprocess.run(
                 ["git", "remote", "get-url", "origin"],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             )
             import re as _re
+
             m = _re.search(r"github\.com[:/](.+?)(?:\.git)?$", result.stdout.strip())
             repo = m.group(1) if m else None
         except Exception:
@@ -5432,18 +5446,23 @@ def _download_github_release_assets(
     # Check gh CLI availability
     if subprocess.run(["which", "gh"], capture_output=True).returncode != 0:
         raise click.ClickException(
-            "GitHub CLI (gh) is required for github: source. "
-            "Install it: https://cli.github.com/"
+            "GitHub CLI (gh) is required for github: source. " "Install it: https://cli.github.com/"
         )
 
     # Download wheels
     try:
         subprocess.run(
             [
-                "gh", "release", "download", tag,
-                "--pattern", "*.whl",
-                "--repo", repo,
-                "--dir", str(temp_dir),
+                "gh",
+                "release",
+                "download",
+                tag,
+                "--pattern",
+                "*.whl",
+                "--repo",
+                repo,
+                "--dir",
+                str(temp_dir),
             ],
             check=True,
             capture_output=True,
@@ -5459,10 +5478,16 @@ def _download_github_release_assets(
     try:
         subprocess.run(
             [
-                "gh", "release", "download", tag,
-                "--pattern", "kindling_bootstrap.py",
-                "--repo", repo,
-                "--dir", str(temp_dir),
+                "gh",
+                "release",
+                "download",
+                tag,
+                "--pattern",
+                "kindling_bootstrap.py",
+                "--repo",
+                repo,
+                "--dir",
+                str(temp_dir),
             ],
             check=True,
             capture_output=True,
@@ -5479,7 +5504,9 @@ def _resolve_github_version(version: Optional[str]) -> str:
     try:
         result = subprocess.run(
             ["gh", "release", "view", "--json", "tagName", "--jq", ".tagName"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         tag = result.stdout.strip().lstrip("v")
         if not tag:
@@ -5512,7 +5539,7 @@ def _adls_copy_path(
     count = 0
     for blob in blobs:
         # Compute relative path from source prefix
-        rel = blob.name[len(list_prefix):] if blob.name.startswith(list_prefix) else blob.name
+        rel = blob.name[len(list_prefix) :] if blob.name.startswith(list_prefix) else blob.name
         dest_blob_path = f"{dest_prefix}/{rel}" if dest_prefix else rel
 
         # Download
@@ -5522,7 +5549,9 @@ def _adls_copy_path(
         data = blob_client.download_blob().readall()
 
         # Upload
-        _upload_blob(dest_blob_service_client, dest_container, dest_blob_path, data, overwrite=overwrite)
+        _upload_blob(
+            dest_blob_service_client, dest_container, dest_blob_path, data, overwrite=overwrite
+        )
         click.echo(f"  {rel}")
         count += 1
     return count
@@ -5612,7 +5641,7 @@ def runtime_publish(
     # ---- Determine source type --------------------------------------------------
     if source.startswith("github:"):
         # github:VERSION or github:latest
-        embedded_version = source[len("github:"):].strip() or "latest"
+        embedded_version = source[len("github:") :].strip() or "latest"
         resolved_version = version or embedded_version
         resolved_version = _resolve_github_version(resolved_version)
 
@@ -5640,10 +5669,15 @@ def runtime_publish(
                 if bootstrap_in_release.exists():
                     click.echo(f"Scripts → {dest_scripts_path}/")
                     dest_blob_name = f"{dest_scripts_path}/kindling_bootstrap.py"
-                    script_overwrite = overwrite or True  # wheels always overwrite; scripts follow overwrite flag
+                    script_overwrite = (
+                        overwrite or True
+                    )  # wheels always overwrite; scripts follow overwrite flag
                     if _upload_blob(
-                        dest_blob_client, dest_container, dest_blob_name,
-                        bootstrap_in_release.read_bytes(), overwrite=overwrite,
+                        dest_blob_client,
+                        dest_container,
+                        dest_blob_name,
+                        bootstrap_in_release.read_bytes(),
+                        overwrite=overwrite,
                     ):
                         click.echo("  kindling_bootstrap.py")
                     else:
@@ -5655,11 +5689,9 @@ def runtime_publish(
 
     elif source.startswith("local:"):
         # local:PATH
-        local_path_str = source[len("local:"):].strip()
+        local_path_str = source[len("local:") :].strip()
         if not local_path_str:
-            raise click.ClickException(
-                "local: source requires a path, e.g. --source local:./dist"
-            )
+            raise click.ClickException("local: source requires a path, e.g. --source local:./dist")
         local_dir = Path(local_path_str).expanduser().resolve()
         if not local_dir.exists():
             raise click.ClickException(f"Local source directory not found: {local_dir}")
@@ -5693,13 +5725,15 @@ def runtime_publish(
                     break
             if bootstrap_found:
                 if _deploy_bootstrap_script(
-                    dest_blob_client, dest_container, dest_scripts_path, repo_root, overwrite=overwrite
+                    dest_blob_client,
+                    dest_container,
+                    dest_scripts_path,
+                    repo_root,
+                    overwrite=overwrite,
                 ):
                     click.echo()
             else:
-                click.echo(
-                    "  kindling_bootstrap.py not found in runtime/scripts/ — skipping."
-                )
+                click.echo("  kindling_bootstrap.py not found in runtime/scripts/ — skipping.")
                 click.echo()
 
     elif source.startswith("abfss://"):
@@ -5716,8 +5750,12 @@ def runtime_publish(
         # Copy packages
         click.echo(f"Packages → {dest_packages_path}/")
         pkg_count = _adls_copy_path(
-            src_blob_client, src_container, src_packages_prefix,
-            dest_blob_client, dest_container, dest_packages_path,
+            src_blob_client,
+            src_container,
+            src_packages_prefix,
+            dest_blob_client,
+            dest_container,
+            dest_packages_path,
             overwrite=True,  # wheels always overwrite
         )
         if pkg_count == 0:
@@ -5729,8 +5767,12 @@ def runtime_publish(
         if not skip_bootstrap:
             click.echo(f"Scripts → {dest_scripts_path}/")
             script_count = _adls_copy_path(
-                src_blob_client, src_container, src_scripts_prefix,
-                dest_blob_client, dest_container, dest_scripts_path,
+                src_blob_client,
+                src_container,
+                src_scripts_prefix,
+                dest_blob_client,
+                dest_container,
+                dest_scripts_path,
                 overwrite=overwrite,
             )
             if script_count == 0:
