@@ -595,7 +595,9 @@ def test_app_package_creates_kda_archive():
         (app_dir / "lake-reqs.txt").write_text("domain-records==1.2.3\n", encoding="utf-8")
         (app_dir / "nested" / "settings.yaml").write_text("name: demo\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["app", "package", "--local-folder", str(app_dir)])
+        result = runner.invoke(
+            cli, ["app", "package", "demo_app", "--local-folder", str(app_dir)]
+        )
 
         assert result.exit_code == 0, result.output
         package_path = Path("dist/demo_app.kda")
@@ -608,17 +610,19 @@ def test_app_package_creates_kda_archive():
             ]
 
 
-def test_app_package_accepts_positional_path():
+def test_app_package_convention_lookup():
     runner = CliRunner()
     with runner.isolated_filesystem():
-        app_dir = Path("demo_app")
-        app_dir.mkdir()
+        app_dir = Path("apps/demo_app")
+        app_dir.mkdir(parents=True)
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["app", "package", str(app_dir)], catch_exceptions=False)
+        result = runner.invoke(
+            cli, ["app", "package", "demo-app"], catch_exceptions=False
+        )
 
         assert result.exit_code == 0, result.output
-        assert "deprecated" not in result.output.lower()
+        assert Path("dist/demo_app.kda").exists()
 
 
 def test_app_package_json_output_is_machine_readable():
@@ -628,7 +632,9 @@ def test_app_package_json_output_is_machine_readable():
         app_dir.mkdir()
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["app", "package", "--local-folder", str(app_dir), "--json"])
+        result = runner.invoke(
+            cli, ["app", "package", "demo_app", "--local-folder", str(app_dir), "--json"]
+        )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -646,7 +652,15 @@ def test_app_deploy_rejects_unsafe_kda_paths():
 
         result = runner.invoke(
             cli,
-            ["app", "deploy", "--kda-package", str(package_path), "--platform", "fabric"],
+            [
+                "app",
+                "deploy",
+                "demo_app",
+                "--kda-package",
+                str(package_path),
+                "--platform",
+                "fabric",
+            ],
         )
 
         assert result.exit_code != 0
@@ -672,6 +686,7 @@ def test_app_deploy_rejects_both_source_flags(monkeypatch):
             [
                 "app",
                 "deploy",
+                "demo_app",
                 "--local-folder",
                 str(app_dir),
                 "--kda-package",
@@ -685,11 +700,11 @@ def test_app_deploy_rejects_both_source_flags(monkeypatch):
         assert "mutually exclusive" in result.output
 
 
-def test_app_deploy_requires_source_flag():
+def test_app_deploy_requires_app_name():
     runner = CliRunner()
     result = runner.invoke(cli, ["app", "deploy", "--platform", "fabric"])
     assert result.exit_code != 0
-    assert "--local-folder" in result.output or "source" in result.output
+    assert "Missing argument 'APP_NAME'" in result.output
 
 
 def test_app_deploy_fails_fast_when_platform_vars_missing(monkeypatch):
@@ -704,7 +719,15 @@ def test_app_deploy_fails_fast_when_platform_vars_missing(monkeypatch):
 
         result = runner.invoke(
             cli,
-            ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric"],
+            [
+                "app",
+                "deploy",
+                "demo_app",
+                "--local-folder",
+                str(app_dir),
+                "--platform",
+                "fabric",
+            ],
         )
 
     assert result.exit_code != 0
@@ -737,7 +760,8 @@ def test_app_deploy_uses_platform_sdk(monkeypatch):
         (app_dir / "pipelines" / "job.yml").write_text("job_name: demo\n", encoding="utf-8")
 
         result = runner.invoke(
-            cli, ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric"]
+            cli,
+            ["app", "deploy", "demo_app", "--local-folder", str(app_dir), "--platform", "fabric"],
         )
 
         assert result.exit_code == 0, result.output
@@ -768,7 +792,15 @@ def test_app_deploy_rejects_missing_configured_entry_point(monkeypatch):
 
         result = runner.invoke(
             cli,
-            ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric"],
+            [
+                "app",
+                "deploy",
+                "sample_engine",
+                "--local-folder",
+                str(app_dir),
+                "--platform",
+                "fabric",
+            ],
         )
 
         assert result.exit_code != 0
@@ -799,7 +831,8 @@ def test_app_deploy_kda_package_flag(monkeypatch):
             archive.writestr("lake-reqs.txt", "domain-records==1.2.3\n")
 
         result = runner.invoke(
-            cli, ["app", "deploy", "--kda-package", str(kda), "--platform", "fabric"]
+            cli,
+            ["app", "deploy", "demo_app", "--kda-package", str(kda), "--platform", "fabric"],
         )
 
         assert result.exit_code == 0, result.output
@@ -825,7 +858,16 @@ def test_app_deploy_json_output_includes_storage_path(monkeypatch):
 
         result = runner.invoke(
             cli,
-            ["app", "deploy", "--local-folder", str(app_dir), "--platform", "fabric", "--json"],
+            [
+                "app",
+                "deploy",
+                "demo_app",
+                "--local-folder",
+                str(app_dir),
+                "--platform",
+                "fabric",
+                "--json",
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -880,6 +922,7 @@ version = "1.2.3"
             [
                 "package",
                 "deploy",
+                "domain-records",
                 "--local-folder",
                 str(package_dir),
                 "--storage-account",
@@ -945,7 +988,7 @@ def test_app_run_deployed_name_creates_and_runs_job(monkeypatch):
     assert fake_api.submitted == [("orders", None, None)]
 
 
-def test_app_run_with_local_path_deploys_creates_and_runs(monkeypatch):
+def test_app_run_remote_submits_without_deploying(monkeypatch):
     class FakeAPI:
         def __init__(self):
             self.deployed = []
@@ -969,27 +1012,14 @@ def test_app_run_with_local_path_deploys_creates_and_runs(monkeypatch):
     )
 
     runner = CliRunner()
-    with runner.isolated_filesystem():
-        app_dir = Path("orders")
-        app_dir.mkdir()
-        (app_dir / "app.py").write_text("", encoding="utf-8")
-
-        result = runner.invoke(
-            cli,
-            [
-                "app",
-                "run",
-                str(app_dir),
-                "--platform",
-                "fabric",
-                "--no-wait",
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        ["app", "run", "orders", "--platform", "fabric", "--no-wait"],
+    )
 
     assert result.exit_code == 0, result.output
     assert "run-1" in result.output
-    assert fake_api.deployed[0][0] == "orders"
-    assert sorted(fake_api.deployed[0][1]) == ["app.py"]
+    assert len(fake_api.deployed) == 0, "deploy_app must NOT be called for remote runs"
     assert fake_api.submitted[0][0] == "orders"
 
 
@@ -1010,81 +1040,17 @@ def test_app_cleanup_positional_name(monkeypatch):
     assert "orders" in result.output
 
 
-def test_app_cleanup_local_folder_infers_name(monkeypatch):
-    class FakeAPI:
-        def cleanup_app(self, app_name):
-            assert app_name == "orders"
-            return True
-
-    monkeypatch.setattr(
-        "kindling_cli.cli._create_platform_api",
-        lambda platform: (FakeAPI(), platform),
-    )
-
+def test_app_cleanup_rejects_local_folder_flag():
     runner = CliRunner()
     with runner.isolated_filesystem():
         app_dir = Path("orders")
         app_dir.mkdir()
-        (app_dir / "app.py").write_text("", encoding="utf-8")
-
-        result = runner.invoke(
-            cli, ["app", "cleanup", "--local-folder", str(app_dir), "--platform", "fabric"]
-        )
-
-        assert result.exit_code == 0, result.output
-        assert "orders" in result.output
-
-
-def test_app_cleanup_kda_package_infers_name(monkeypatch):
-    class FakeAPI:
-        def cleanup_app(self, app_name):
-            assert app_name == "orders"
-            return True
-
-    monkeypatch.setattr(
-        "kindling_cli.cli._create_platform_api",
-        lambda platform: (FakeAPI(), platform),
-    )
-
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        kda = Path("orders.kda")
-        with zipfile.ZipFile(kda, "w") as archive:
-            archive.writestr("app.py", "")
-
-        result = runner.invoke(
-            cli, ["app", "cleanup", "--kda-package", str(kda), "--platform", "fabric"]
-        )
-
-        assert result.exit_code == 0, result.output
-        assert "orders" in result.output
-
-
-def test_app_cleanup_rejects_both_source_flags(monkeypatch):
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        app_dir = Path("orders")
-        app_dir.mkdir()
-        kda = Path("orders.kda")
-        with zipfile.ZipFile(kda, "w") as archive:
-            archive.writestr("app.py", "")
-
         result = runner.invoke(
             cli,
-            [
-                "app",
-                "cleanup",
-                "--local-folder",
-                str(app_dir),
-                "--kda-package",
-                str(kda),
-                "--platform",
-                "fabric",
-            ],
+            ["app", "cleanup", "orders", "--local-folder", str(app_dir), "--platform", "fabric"],
         )
-
         assert result.exit_code != 0
-        assert "mutually exclusive" in result.output
+        assert "No such option" in result.output or "no such option" in result.output.lower()
 
 
 def test_app_cleanup_requires_identifier():
@@ -1321,7 +1287,9 @@ class TestAppRunCommand:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["app", "run", str(app_dir)])
+        result = runner.invoke(
+            cli, ["app", "run", "myapp", "--local-folder", str(app_dir)]
+        )
 
         assert result.exit_code == 0, result.output
         assert "standalone" in result.output
@@ -1341,7 +1309,9 @@ class TestAppRunCommand:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["app", "run", str(app_dir), "--json"])
+        result = runner.invoke(
+            cli, ["app", "run", "myapp", "--local-folder", str(app_dir), "--json"]
+        )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
@@ -1374,6 +1344,8 @@ class TestAppRunCommand:
             [
                 "app",
                 "run",
+                "myapp",
+                "--local-folder",
                 str(app_dir),
                 "--env",
                 "dev",
@@ -1410,7 +1382,9 @@ class TestAppRunCommand:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
+        result = CliRunner().invoke(
+            cli, ["app", "run", "myapp", "--local-folder", str(app_dir)]
+        )
 
         assert result.exit_code == 0, result.output
         assert "kindling_cli._runner" in captured_cmd
@@ -1432,7 +1406,9 @@ class TestAppRunCommand:
         monkeypatch.setenv("KINDLING_SPARK_ENABLE_DELTA", "false")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
+        result = CliRunner().invoke(
+            cli, ["app", "run", "myapp", "--local-folder", str(app_dir)]
+        )
 
         assert result.exit_code == 0, result.output
         assert captured_env["KINDLING_SPARK_ENABLE_DELTA"] == "false"
@@ -1466,6 +1442,8 @@ class TestAppRunCommand:
             [
                 "app",
                 "run",
+                "myapp",
+                "--local-folder",
                 str(app_dir),
                 "--local-package",
                 str(package_root),
@@ -1504,7 +1482,15 @@ class TestAppRunCommand:
 
         result = CliRunner().invoke(
             cli,
-            ["app", "run", str(app_dir), "--local-package", str(package_dir)],
+            [
+                "app",
+                "run",
+                "myapp",
+                "--local-folder",
+                str(app_dir),
+                "--local-package",
+                str(package_dir),
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -1540,7 +1526,10 @@ class TestAppRunCommand:
         (app_dir / "app.py").write_text("def initialize(env=None):\n    return None\n")
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["app", "run", str(app_dir), "--no-wait"])
+        result = runner.invoke(
+            cli,
+            ["app", "run", "myapp", "--local-folder", str(app_dir), "--no-wait"],
+        )
 
         assert result.exit_code != 0
         assert "remote app runs" in result.output
@@ -1551,19 +1540,15 @@ class TestAppRunCommand:
         mock_api = self._make_mock_api()
         monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
 
-        app_dir = tmp_path / "myapp"
-        app_dir.mkdir()
-        (app_dir / "app.py").write_text("# app")
-
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["app", "run", str(app_dir), "--platform", "synapse", "--no-wait"],
+            ["app", "run", "myapp", "--platform", "synapse", "--no-wait"],
         )
 
         assert result.exit_code == 0, result.output
         assert "run-42" in result.output
-        mock_api.deploy_app.assert_called_once()
+        mock_api.deploy_app.assert_not_called()
         mock_api.get_runner_status.assert_called_once()
         mock_api.submit_app_run.assert_called_once()
 
@@ -1573,21 +1558,17 @@ class TestAppRunCommand:
         mock_api = self._make_mock_api()
         monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
 
-        app_dir = tmp_path / "myapp"
-        app_dir.mkdir()
-        (app_dir / "app.py").write_text("# app")
-
         result = CliRunner().invoke(
             cli,
-            ["app", "run", str(app_dir), "--platform", "fabric", "--no-wait", "--json"],
+            ["app", "run", "myapp", "--platform", "fabric", "--no-wait", "--json"],
         )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
         assert payload["run_id"] == "run-42"
         assert payload["platform"] == "fabric"
-        assert "[1/3]" not in result.stdout
-        assert "[1/3]" in result.stderr
+        assert "[1/2]" not in result.stdout
+        assert "[1/2]" in result.stderr
 
     def test_remote_rejects_standalone_only_options(self, tmp_path, monkeypatch):
         import kindling_cli.cli as cli_mod
@@ -2211,7 +2192,9 @@ def _patch_standalone_run(monkeypatch, tmp_path, execution_result):
 def test_standalone_run_exits_0_on_success(monkeypatch, tmp_path):
     """Exit code 0 when all pipes succeed."""
     app_dir = _patch_standalone_run(monkeypatch, tmp_path, _make_execution_result(True))
-    result = CliRunner().invoke(cli, ["app", "run", str(app_dir)])
+    result = CliRunner().invoke(
+        cli, ["app", "run", "myapp", "--local-folder", str(app_dir)]
+    )
     assert result.exit_code == 0
 
 
@@ -2229,7 +2212,10 @@ def test_standalone_run_exits_0_with_no_fail_on_error_even_when_pipe_fails(monke
     app_dir = _patch_standalone_run(
         monkeypatch, tmp_path, _make_execution_result(False, ["pipe_a"])
     )
-    result = CliRunner().invoke(cli, ["app", "run", "--no-fail-on-error", str(app_dir)])
+    result = CliRunner().invoke(
+        cli,
+        ["app", "run", "--no-fail-on-error", "myapp", "--local-folder", str(app_dir)],
+    )
     assert result.exit_code == 0
 
 

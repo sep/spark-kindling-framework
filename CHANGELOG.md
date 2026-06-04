@@ -4,6 +4,28 @@ All notable changes to spark-kindling are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- `app package <APP_NAME>` — positional is now the app name; kindling discovers `apps/<name>/`
+  by convention (kebab→snake normalized). `--local-folder` overrides for non-standard layouts.
+  **Breaking change** for callers passing a path as the positional; use `--local-folder` instead.
+- `app deploy <APP_NAME>` — positional is now the app name with the same convention lookup.
+  `--local-folder` overrides; `--kda-package` deploys a pre-built archive. Removed the
+  "must supply --local-folder or --kda-package" requirement; passing just the app name is now
+  the normal workflow. `--app-name` renamed to `--remote-name` to avoid naming conflict.
+- `app run <APP_NAME>` — standalone mode now does convention lookup (`apps/<name>/`) instead of
+  requiring a path. `--local-folder` overrides. Remote mode (`--platform`) no longer auto-deploys
+  when a local path is detected — the app must be deployed first with `kindling app deploy`.
+  Added `--local-folder` option (standalone-only; errors if used with `--platform`).
+  **Breaking change** for `app run <path> --platform` workflows; split into separate
+  `app deploy` + `app run` calls.
+- `app cleanup <APP_NAME>` — removed `--local-folder` and `--kda-package` flags; APP_NAME is now
+  required. Pass the app name directly instead of inferring it from a path.
+  **Breaking change** for callers using `--local-folder` or `--kda-package`; pass the name directly.
+- `package deploy <PACKAGE_NAME>` — positional is now the package name; kindling discovers
+  `packages/<name>/` by convention. `--local-folder` overrides.
+  **Breaking change** for callers passing a path as the positional; use `--local-folder` instead.
+
 ## [0.9.30] - 2026-05-26
 
 ### Added
