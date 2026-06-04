@@ -34,7 +34,7 @@ pip install 'spark-kindling[standalone]'
 
 ## Deploy Paths
 
-There are two common deployment flows:
+There are two common deployment flows for the kindling project itself:
 
 ```bash
 # Upload the current runtime artifacts to storage
@@ -47,6 +47,47 @@ kindling workspace deploy --platform synapse --storage-account <account>
 
 The Python deploy helpers now prefer the combined runtime wheel and only fall
 back to legacy `kindling_<platform>-*.whl` artifacts when needed.
+
+## Publishing Runtime to User Environments
+
+Kindling users (not the kindling project team) can publish runtime artifacts to
+their own Azure Data Lake Storage using `kindling runtime publish`. This is the
+recommended path for getting wheels and the bootstrap script into a new
+environment, or promoting between environments.
+
+```bash
+# Install from the latest GitHub release into a storage account
+kindling runtime publish \
+  --source github:latest \
+  --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
+
+# Install a specific version
+kindling runtime publish \
+  --source github:0.10.15 \
+  --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
+
+# Publish from a local build
+kindling runtime publish \
+  --source local:./dist \
+  --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling
+
+# Promote from non-prod to prod (ADLS → ADLS)
+kindling runtime publish \
+  --source abfss://artifacts@staging.dfs.core.windows.net/kindling \
+  --dest abfss://artifacts@prod.dfs.core.windows.net/kindling
+```
+
+The command publishes to the conventional layout under `--dest`:
+
+- `{dest}/packages/` — `spark_kindling-*.whl`
+- `{dest}/scripts/` — `kindling_bootstrap.py`
+
+The `artifacts_storage_path` in `BOOTSTRAP_CONFIG` should point to the `--dest`
+root. Wheels always overwrite; use `--overwrite` to also replace an existing
+bootstrap script. Pass `--skip-bootstrap` to skip the script entirely.
+
+Auth uses `DefaultAzureCredential` — `az login` or service principal env vars
+(`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`) both work.
 
 ## Running Apps and Pipes Locally
 

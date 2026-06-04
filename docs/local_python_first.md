@@ -285,7 +285,29 @@ you want deploy/manage capabilities.
 
 ## Artifact Storage and Workspace Bootstrap
 
-For notebook-backed platforms, the storage bootstrap flow still uses:
+### Publishing runtime artifacts to your lake
+
+Use `kindling runtime publish` to get kindling wheels and the bootstrap script
+into your Azure Data Lake Storage. This is the primary path for initial setup and
+for promoting between environments (e.g. staging → prod):
+
+```bash
+# First-time install from GitHub into your storage account
+kindling runtime publish \
+  --source github:latest \
+  --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
+
+# Promote from staging to prod
+kindling runtime publish \
+  --source abfss://artifacts@staging.dfs.core.windows.net/kindling \
+  --dest abfss://artifacts@prod.dfs.core.windows.net/kindling
+```
+
+The `--dest` root becomes your `artifacts_storage_path` in `BOOTSTRAP_CONFIG`.
+
+### Workspace bootstrap assets and config
+
+To also push `settings.yaml` and optional notebook stubs into the workspace:
 
 ```bash
 kindling workspace deploy --platform synapse --storage-account <account>
