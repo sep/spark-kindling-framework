@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 import click
+import pytest
 import yaml
 from click.testing import CliRunner
 from kindling_cli.cli import (
@@ -15,6 +16,7 @@ from kindling_cli.cli import (
     _generate_bootstrap_notebook,
     _generate_sample_notebook,
     _load_app_module,
+    _parse_abfss_uri,
     _render_environment_bootstrap_source,
     _render_starter_notebook_source,
     _resolve_account_url,
@@ -2415,3 +2417,325 @@ def test_package_add_entity_uses_package_option(tmp_path):
         ["app", "add", "entity", "bronze.orders", "--app", str(package_dir)],
     )
     assert old_result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# runtime publish — _parse_abfss_uri unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseAbfssUri:
+    def test_valid_uri_returns_container_account_path(self):
+        container, account, path = _parse_abfss_uri(
+            "abfss://artifacts@mystorageacct.dfs.core.windows.net/kindling"
+        )
+        assert container == "artifacts"
+        assert account == "mystorageacct"
+        assert path == "kindling"
+
+    def test_valid_uri_no_path(self):
+        container, account, path = _parse_abfss_uri(
+            "abfss://artifacts@mystorageacct.dfs.core.windows.net"
+        )
+        assert container == "artifacts"
+        assert account == "mystorageacct"
+        assert path == ""
+
+    def test_valid_uri_nested_path(self):
+        container, account, path = _parse_abfss_uri(
+            "abfss://artifacts@acct.dfs.core.windows.net/a/b/c"
+        )
+        assert path == "a/b/c"
+
+    def test_strips_leading_slashes_from_path(self):
+        _, _, path = _parse_abfss_uri(
+            "abfss://artifacts@acct.dfs.core.windows.net/kindling"
+        )
+        assert not path.startswith("/")
+
+    def test_missing_abfss_scheme_raises(self):
+        with pytest.raises(click.ClickException, match="Invalid destination URI"):
+            _parse_abfss_uri("https://acct.blob.core.windows.net/container")
+
+    def test_missing_at_separator_raises(self):
+        with pytest.raises(click.ClickException, match="Missing '@' separator"):
+            _parse_abfss_uri("abfss://artifacts.dfs.core.windows.net/path")
+
+    def test_empty_container_raises(self):
+        with pytest.raises(click.ClickException, match="Container name is empty"):
+            _parse_abfss_uri("abfss://@acct.dfs.core.windows.net/path")
+
+    def test_host_without_dot_raises(self):
+        with pytest.raises(click.ClickException, match="does not contain a domain suffix"):
+            _parse_abfss_uri("abfss://container@accountnodot/path")
+
+
+# ---------------------------------------------------------------------------
+# runtime publish — CLI command tests
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_blob_service_client(blobs_by_prefix=None):
+    """Build a minimal fake BlobServiceClient for publish tests."""
+    from unittest.mock import MagicMock
+
+    blobs_by_prefix = blobs_by_prefix or {}
+    uploaded = {}
+
+    def fake_get_container_client(container):
+        cc = MagicMock()
+
+        def list_blobs(name_starts_with=""):
+            result = []
+            for prefix, names in blobs_by_prefix.items():
+                if name_starts_with.rstrip("/") == prefix.rstrip("/") or name_starts_with == "":
+                    for name in names:
+                        b = MagicMock()
+                        b.name = name
+                        result.append(b)
+            return result
+
+        cc.list_blobs.side_effect = list_blobs
+        return cc
+
+    def fake_get_blob_client(container, blob):
+        bc = MagicMock()
+
+        def download():
+            dl = MagicMock()
+            dl.readall.return_value = b"wheel-content"
+            return dl
+
+        bc.download_blob.side_effect = download
+        bc.get_blob_properties.side_effect = Exception("not found")
+
+        def upload(data, overwrite=False):
+            uploaded[blob] = data
+
+        bc.upload_blob.side_effect = upload
+        return bc
+
+    client = MagicMock()
+    client.get_container_client.side_effect = fake_get_container_client
+    client.get_blob_client.side_effect = fake_get_blob_client
+    client._uploaded = uploaded
+    return client
+
+
+class TestRuntimePublish:
+    def test_publish_help_shows_source_and_dest(self):
+        result = CliRunner().invoke(cli, ["runtime", "publish", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--source" in result.output
+        assert "--dest" in result.output
+
+    def test_publish_requires_source(self):
+        result = CliRunner().invoke(
+            cli, ["runtime", "publish", "--dest", "abfss://a@acct.dfs.core.windows.net/k"]
+        )
+        assert result.exit_code != 0
+
+    def test_publish_requires_dest(self):
+        result = CliRunner().invoke(cli, ["runtime", "publish", "--source", "github:latest"])
+        assert result.exit_code != 0
+
+    def test_publish_invalid_dest_uri_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "kindling_cli.cli._get_blob_service_client",
+            lambda account: _make_fake_blob_service_client(),
+        )
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "publish",
+                "--source",
+                "local:" + str(tmp_path),
+                "--dest",
+                "not-an-abfss-uri",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Invalid destination URI" in result.output
+
+    def test_publish_unrecognized_source_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            "kindling_cli.cli._get_blob_service_client",
+            lambda account: _make_fake_blob_service_client(),
+        )
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "publish",
+                "--source",
+                "ftp://someserver/path",
+                "--dest",
+                "abfss://artifacts@acct.dfs.core.windows.net/k",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Unrecognized source specifier" in result.output
+
+    def test_publish_local_source_uploads_wheels(self, tmp_path, monkeypatch):
+        wheel = tmp_path / "spark_kindling-0.9.25-py3-none-any.whl"
+        wheel.write_bytes(b"fake-wheel")
+
+        fake_client = _make_fake_blob_service_client()
+        monkeypatch.setattr(
+            "kindling_cli.cli._get_blob_service_client",
+            lambda account: fake_client,
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "publish",
+                "--source",
+                f"local:{tmp_path}",
+                "--dest",
+                "abfss://artifacts@myacct.dfs.core.windows.net/kindling",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Publish complete." in result.output
+        assert "spark_kindling-0.9.25-py3-none-any.whl" in result.output
+        uploaded_blobs = list(fake_client._uploaded.keys())
+        assert any("packages/" in b for b in uploaded_blobs)
+
+    def test_publish_local_source_missing_dir_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            "kindling_cli.cli._get_blob_service_client",
+            lambda account: _make_fake_blob_service_client(),
+        )
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "publish",
+                "--source",
+                "local:/no/such/dir/at/all",
+                "--dest",
+                "abfss://artifacts@acct.dfs.core.windows.net/k",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    def test_publish_local_source_no_wheels_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "kindling_cli.cli._get_blob_service_client",
+            lambda account: _make_fake_blob_service_client(),
+        )
+        (tmp_path / "README.txt").write_text("no wheels here")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "publish",
+                "--source",
+                f"local:{tmp_path}",
+                "--dest",
+                "abfss://artifacts@acct.dfs.core.windows.net/k",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "No wheel files" in result.output
+
+    def test_publish_adls_source_copies_packages(self, monkeypatch):
+        src_prefix = "staging/packages"
+        blob_name = "staging/packages/spark_kindling-0.9.0-py3-none-any.whl"
+        fake_src = _make_fake_blob_service_client(blobs_by_prefix={src_prefix: [blob_name]})
+        fake_dest = _make_fake_blob_service_client()
+
+        call_order = []
+
+        def fake_get_client(account):
+            call_order.append(account)
+            if account == "staging":
+                return fake_src
+            return fake_dest
+
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", fake_get_client)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "publish",
+                "--source",
+                "abfss://artifacts@staging.dfs.core.windows.net/staging",
+                "--dest",
+                "abfss://artifacts@prod.dfs.core.windows.net/kindling",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Publish complete." in result.output
+
+    def test_publish_github_source_rejects_missing_gh_cli(self, monkeypatch):
+        import subprocess
+
+        monkeypatch.setattr(
+            "kindling_cli.cli._get_blob_service_client",
+            lambda account: _make_fake_blob_service_client(),
+        )
+
+        def fake_run(cmd, **kwargs):
+            # Simulate gh CLI being unavailable — any gh invocation fails
+            if cmd[0] in ("which", "gh"):
+                raise subprocess.CalledProcessError(1, cmd, b"", b"gh: command not found")
+            raise AssertionError(f"Unexpected subprocess call: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "publish",
+                "--source",
+                "github:latest",
+                "--dest",
+                "abfss://artifacts@acct.dfs.core.windows.net/k",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "gh" in result.output
+
+    def test_publish_skip_bootstrap_omits_scripts(self, tmp_path, monkeypatch):
+        wheel = tmp_path / "spark_kindling-0.9.25-py3-none-any.whl"
+        wheel.write_bytes(b"fake-wheel")
+        (tmp_path / "runtime" / "scripts").mkdir(parents=True)
+        (tmp_path / "runtime" / "scripts" / "kindling_bootstrap.py").write_text("# bootstrap")
+
+        fake_client = _make_fake_blob_service_client()
+        monkeypatch.setattr(
+            "kindling_cli.cli._get_blob_service_client",
+            lambda account: fake_client,
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "publish",
+                "--source",
+                f"local:{tmp_path}",
+                "--dest",
+                "abfss://artifacts@myacct.dfs.core.windows.net/kindling",
+                "--skip-bootstrap",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        uploaded_blobs = list(fake_client._uploaded.keys())
+        assert not any("scripts/" in b for b in uploaded_blobs)
+
+    def test_runtime_group_in_help(self):
+        result = CliRunner().invoke(cli, ["--help"])
+        assert result.exit_code == 0
+        assert "runtime" in result.output

@@ -5374,6 +5374,404 @@ def package_deploy(
     )
 
 
+# =============================================================================
+# runtime
+# =============================================================================
+
+
+def _parse_abfss_uri(uri: str) -> Tuple[str, str, str]:
+    """Parse an abfss:// URI into (container, account, path).
+
+    Expected format: abfss://container@account.dfs.core.windows.net/path
+    The storage account name is the part before '.dfs.' in the host.
+
+    Returns (container, storage_account_name, blob_path_prefix).
+    Raises click.ClickException on malformed URIs.
+    """
+    if not uri.startswith("abfss://"):
+        raise click.ClickException(
+            f"Invalid destination URI `{uri}`. Expected abfss://container@account.dfs.core.windows.net/path"
+        )
+    rest = uri[len("abfss://"):]
+    if "@" not in rest:
+        raise click.ClickException(
+            f"Invalid abfss URI `{uri}`. Missing '@' separator between container and account."
+        )
+    container, host_and_path = rest.split("@", 1)
+    if not container:
+        raise click.ClickException(f"Invalid abfss URI `{uri}`. Container name is empty.")
+
+    if "/" in host_and_path:
+        host, path = host_and_path.split("/", 1)
+    else:
+        host = host_and_path
+        path = ""
+
+    # Extract storage account name: part before the first '.'
+    if "." not in host:
+        raise click.ClickException(
+            f"Invalid abfss URI `{uri}`. Host `{host}` does not contain a domain suffix."
+        )
+    account_name = host.split(".", 1)[0]
+    if not account_name:
+        raise click.ClickException(f"Invalid abfss URI `{uri}`. Storage account name is empty.")
+
+    # Normalize path: strip leading slashes
+    blob_path = path.lstrip("/")
+    return container, account_name, blob_path
+
+
+def _download_github_release_assets(
+    version: str, temp_dir: Path, repo: Optional[str] = None
+) -> None:
+    """Download release assets (wheels + bootstrap script) from GitHub using gh CLI.
+
+    Uses ``gh release download`` with a pattern that matches both wheels and the
+    bootstrap script.  Silently skips bootstrap if it isn't attached to the release.
+    """
+    tag = f"v{version}" if not version.startswith("v") else version
+
+    if repo is None:
+        # Auto-detect from git remote
+        try:
+            result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                capture_output=True, text=True, check=True,
+            )
+            import re as _re
+            m = _re.search(r"github\.com[:/](.+?)(?:\.git)?$", result.stdout.strip())
+            repo = m.group(1) if m else None
+        except Exception:
+            repo = None
+
+    if not repo:
+        raise click.ClickException(
+            "Could not detect GitHub repository. "
+            "Set a GitHub remote named 'origin' or pass the repo explicitly."
+        )
+
+    # Check gh CLI availability
+    if subprocess.run(["which", "gh"], capture_output=True).returncode != 0:
+        raise click.ClickException(
+            "GitHub CLI (gh) is required for github: source. "
+            "Install it: https://cli.github.com/"
+        )
+
+    # Download wheels
+    try:
+        subprocess.run(
+            [
+                "gh", "release", "download", tag,
+                "--pattern", "*.whl",
+                "--repo", repo,
+                "--dir", str(temp_dir),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"Failed to download wheels from GitHub release {tag} in {repo}.\n"
+            f"Make sure the release exists and has wheel attachments.\n"
+            f"gh stderr: {exc.stderr.decode(errors='replace') if exc.stderr else ''}"
+        ) from exc
+
+    # Try to download bootstrap script (optional — don't fail if absent)
+    try:
+        subprocess.run(
+            [
+                "gh", "release", "download", tag,
+                "--pattern", "kindling_bootstrap.py",
+                "--repo", repo,
+                "--dir", str(temp_dir),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        pass  # Bootstrap script not in release assets — will be skipped
+
+
+def _resolve_github_version(version: Optional[str]) -> str:
+    """Resolve 'latest' or None to an actual version tag using gh CLI."""
+    if version and version != "latest":
+        return version.lstrip("v")
+
+    try:
+        result = subprocess.run(
+            ["gh", "release", "view", "--json", "tagName", "--jq", ".tagName"],
+            capture_output=True, text=True, check=True,
+        )
+        tag = result.stdout.strip().lstrip("v")
+        if not tag:
+            raise click.ClickException("gh release view returned an empty tag.")
+        return tag
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            "Failed to detect latest GitHub release version. "
+            "Pass --version explicitly or ensure gh is authenticated.\n"
+            f"gh stderr: {exc.stderr or ''}"
+        ) from exc
+
+
+def _adls_copy_path(
+    src_blob_service_client,
+    src_container: str,
+    src_prefix: str,
+    dest_blob_service_client,
+    dest_container: str,
+    dest_prefix: str,
+    overwrite: bool = True,
+) -> int:
+    """Copy blobs from an ADLS source prefix to a dest prefix.
+
+    Returns the count of blobs copied.
+    """
+    src_container_client = src_blob_service_client.get_container_client(src_container)
+    list_prefix = f"{src_prefix}/" if src_prefix and not src_prefix.endswith("/") else src_prefix
+    blobs = list(src_container_client.list_blobs(name_starts_with=list_prefix))
+    count = 0
+    for blob in blobs:
+        # Compute relative path from source prefix
+        rel = blob.name[len(list_prefix):] if blob.name.startswith(list_prefix) else blob.name
+        dest_blob_path = f"{dest_prefix}/{rel}" if dest_prefix else rel
+
+        # Download
+        blob_client = src_blob_service_client.get_blob_client(
+            container=src_container, blob=blob.name
+        )
+        data = blob_client.download_blob().readall()
+
+        # Upload
+        _upload_blob(dest_blob_service_client, dest_container, dest_blob_path, data, overwrite=overwrite)
+        click.echo(f"  {rel}")
+        count += 1
+    return count
+
+
+@cli.group("runtime")
+def runtime_group() -> None:
+    """Manage kindling runtime artifacts."""
+
+
+@runtime_group.command("publish")
+@click.option(
+    "--source",
+    "source",
+    required=True,
+    help=(
+        "Source specifier. One of:\n\n"
+        "  github:VERSION or github:latest — download from GitHub release\n\n"
+        "  local:PATH — read wheels from a local directory\n\n"
+        "  abfss://container@account.dfs.core.windows.net/path — copy from ADLS"
+    ),
+)
+@click.option(
+    "--dest",
+    "dest",
+    required=True,
+    help="Destination abfss:// URI (e.g. abfss://artifacts@myacct.dfs.core.windows.net/kindling).",
+)
+@click.option(
+    "--version",
+    "version",
+    default=None,
+    help="Release version for github source (overrides VERSION in --source github:VERSION).",
+)
+@click.option(
+    "--skip-bootstrap",
+    "skip_bootstrap",
+    is_flag=True,
+    help="Skip publishing the kindling_bootstrap.py script.",
+)
+@click.option(
+    "--overwrite",
+    "overwrite",
+    is_flag=True,
+    default=False,
+    help=(
+        "Overwrite existing blobs. By default wheels always overwrite; "
+        "scripts are skipped if already present."
+    ),
+)
+def runtime_publish(
+    source: str,
+    dest: str,
+    version: Optional[str],
+    skip_bootstrap: bool,
+    overwrite: bool,
+) -> None:
+    """Publish kindling runtime artifacts (wheels + bootstrap script) to Azure Data Lake Storage.
+
+    \b
+    Source types:
+      github:latest            — download from the latest GitHub release
+      github:0.10.15           — download from a specific release
+      local:./dist             — read wheels from a local directory
+      abfss://...              — copy from another ADLS path (e.g. staging → prod)
+
+    \b
+    Destination layout under --dest:
+      {dest}/packages/  — spark_kindling-*.whl wheel files
+      {dest}/scripts/   — kindling_bootstrap.py
+
+    \b
+    Examples:
+      kindling runtime publish --source github:latest --dest abfss://artifacts@myprod.dfs.core.windows.net/kindling
+      kindling runtime publish --source local:./dist --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling
+      kindling runtime publish --source abfss://artifacts@staging.dfs.core.windows.net/k --dest abfss://artifacts@prod.dfs.core.windows.net/k
+    """
+    import tempfile
+
+    # ---- Validate and parse dest ------------------------------------------------
+    dest_container, dest_account, dest_base = _parse_abfss_uri(dest)
+    dest_packages_path = f"{dest_base}/packages" if dest_base else "packages"
+    dest_scripts_path = f"{dest_base}/scripts" if dest_base else "scripts"
+
+    dest_blob_client = _get_blob_service_client(dest_account)
+
+    # ---- Determine source type --------------------------------------------------
+    if source.startswith("github:"):
+        # github:VERSION or github:latest
+        embedded_version = source[len("github:"):].strip() or "latest"
+        resolved_version = version or embedded_version
+        resolved_version = _resolve_github_version(resolved_version)
+
+        click.echo(f"Publishing from GitHub release v{resolved_version} → {dest}")
+        click.echo()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _download_github_release_assets(resolved_version, tmp_path)
+
+            wheels = _find_wheels(tmp_path)
+            if not wheels:
+                raise click.ClickException(
+                    f"No wheel files found in downloaded release v{resolved_version}. "
+                    "Expected spark_kindling-*.whl attachments."
+                )
+
+            click.echo(f"Packages → {dest_packages_path}/")
+            count = _deploy_wheels(dest_blob_client, dest_container, dest_packages_path, wheels)
+            click.echo(f"  ({count} wheel(s) uploaded)")
+            click.echo()
+
+            if not skip_bootstrap:
+                bootstrap_in_release = tmp_path / "kindling_bootstrap.py"
+                if bootstrap_in_release.exists():
+                    click.echo(f"Scripts → {dest_scripts_path}/")
+                    dest_blob_name = f"{dest_scripts_path}/kindling_bootstrap.py"
+                    script_overwrite = overwrite or True  # wheels always overwrite; scripts follow overwrite flag
+                    if _upload_blob(
+                        dest_blob_client, dest_container, dest_blob_name,
+                        bootstrap_in_release.read_bytes(), overwrite=overwrite,
+                    ):
+                        click.echo("  kindling_bootstrap.py")
+                    else:
+                        click.echo("  kindling_bootstrap.py (exists, skipped)")
+                    click.echo()
+                else:
+                    click.echo("  kindling_bootstrap.py not in release assets — skipping.")
+                    click.echo()
+
+    elif source.startswith("local:"):
+        # local:PATH
+        local_path_str = source[len("local:"):].strip()
+        if not local_path_str:
+            raise click.ClickException(
+                "local: source requires a path, e.g. --source local:./dist"
+            )
+        local_dir = Path(local_path_str).expanduser().resolve()
+        if not local_dir.exists():
+            raise click.ClickException(f"Local source directory not found: {local_dir}")
+        if not local_dir.is_dir():
+            raise click.ClickException(f"Local source path is not a directory: {local_dir}")
+
+        click.echo(f"Publishing from local directory {local_dir} → {dest}")
+        click.echo()
+
+        wheels = _find_wheels(local_dir)
+        if not wheels:
+            raise click.ClickException(
+                f"No wheel files found in {local_dir}. "
+                "Expected spark_kindling-*.whl or kindling_<platform>-*.whl."
+            )
+
+        click.echo(f"Packages → {dest_packages_path}/")
+        count = _deploy_wheels(dest_blob_client, dest_container, dest_packages_path, wheels)
+        click.echo(f"  ({count} wheel(s) uploaded)")
+        click.echo()
+
+        if not skip_bootstrap:
+            # Look for bootstrap in runtime/scripts/ relative to local_dir or its parents
+            click.echo(f"Scripts → {dest_scripts_path}/")
+            repo_root = local_dir
+            bootstrap_found = False
+            for candidate in (repo_root, repo_root.parent, repo_root.parent.parent):
+                if (candidate / "runtime" / "scripts" / "kindling_bootstrap.py").exists():
+                    repo_root = candidate
+                    bootstrap_found = True
+                    break
+            if bootstrap_found:
+                if _deploy_bootstrap_script(
+                    dest_blob_client, dest_container, dest_scripts_path, repo_root, overwrite=overwrite
+                ):
+                    click.echo()
+            else:
+                click.echo(
+                    "  kindling_bootstrap.py not found in runtime/scripts/ — skipping."
+                )
+                click.echo()
+
+    elif source.startswith("abfss://"):
+        # ADLS-to-ADLS copy
+        src_container, src_account, src_base = _parse_abfss_uri(source)
+        src_packages_prefix = f"{src_base}/packages" if src_base else "packages"
+        src_scripts_prefix = f"{src_base}/scripts" if src_base else "scripts"
+
+        click.echo(f"Publishing from ADLS {source} → {dest}")
+        click.echo()
+
+        src_blob_client = _get_blob_service_client(src_account)
+
+        # Copy packages
+        click.echo(f"Packages → {dest_packages_path}/")
+        pkg_count = _adls_copy_path(
+            src_blob_client, src_container, src_packages_prefix,
+            dest_blob_client, dest_container, dest_packages_path,
+            overwrite=True,  # wheels always overwrite
+        )
+        if pkg_count == 0:
+            click.echo("  (no wheel blobs found at source packages path)")
+        else:
+            click.echo(f"  ({pkg_count} blob(s) copied)")
+        click.echo()
+
+        if not skip_bootstrap:
+            click.echo(f"Scripts → {dest_scripts_path}/")
+            script_count = _adls_copy_path(
+                src_blob_client, src_container, src_scripts_prefix,
+                dest_blob_client, dest_container, dest_scripts_path,
+                overwrite=overwrite,
+            )
+            if script_count == 0:
+                click.echo("  (no script blobs found at source scripts path)")
+            else:
+                click.echo(f"  ({script_count} blob(s) copied)")
+            click.echo()
+
+    else:
+        raise click.ClickException(
+            f"Unrecognized source specifier: `{source}`.\n"
+            "Expected one of:\n"
+            "  github:VERSION or github:latest\n"
+            "  local:PATH\n"
+            "  abfss://container@account.dfs.core.windows.net/path"
+        )
+
+    click.echo("Publish complete.")
+
+
 def main() -> None:
     """Console script entrypoint."""
     cli()
