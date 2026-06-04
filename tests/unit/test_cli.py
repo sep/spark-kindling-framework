@@ -1182,6 +1182,223 @@ def test_workspace_deploy_fails_when_config_missing_unless_allowed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# workspace init
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceInit:
+    # --- Config deployment path ---
+
+    def test_deploys_config_when_settings_yaml_exists(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+        deployed = []
+        monkeypatch.setattr(
+            "kindling_cli.cli._deploy_config",
+            lambda client, container, base, config, overwrite=False: deployed.append(config),
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("kindling:\n  name: test\n")
+            result = runner.invoke(
+                cli, ["workspace", "init", "--platform", "fabric", "--storage-account", "acct"]
+            )
+        assert result.exit_code == 0, result.output
+        assert len(deployed) == 1
+
+    def test_errors_with_config_init_hint_when_settings_yaml_missing(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                cli, ["workspace", "init", "--platform", "fabric", "--storage-account", "acct"]
+            )
+        assert result.exit_code != 0
+        assert "kindling config init" in result.output
+
+    def test_allow_missing_config_is_not_an_option(self):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "workspace",
+                "init",
+                "--allow-missing-config",
+                "--platform",
+                "fabric",
+                "--storage-account",
+                "acct",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "no such option" in result.output.lower()
+
+    def test_overwrite_passes_to_deploy_config(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+        calls = []
+        monkeypatch.setattr(
+            "kindling_cli.cli._deploy_config",
+            lambda client, container, base, config, overwrite=False: calls.append(overwrite),
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("kindling:\n  name: test\n")
+            runner.invoke(
+                cli,
+                [
+                    "workspace",
+                    "init",
+                    "--platform",
+                    "fabric",
+                    "--storage-account",
+                    "acct",
+                    "--overwrite",
+                ],
+            )
+        assert calls == [True]
+
+    def test_platform_auto_detected_from_env(self, monkeypatch):
+        monkeypatch.setenv("FABRIC_WORKSPACE_ID", "ws-123")
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+        monkeypatch.setattr("kindling_cli.cli._deploy_config", lambda *a, **kw: None)
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("kindling:\n  name: test\n")
+            result = runner.invoke(cli, ["workspace", "init", "--storage-account", "acct"])
+        assert result.exit_code == 0, result.output
+        assert "fabric" in result.output
+
+    # --- --notebook-bootstrap path ---
+
+    def test_notebook_bootstrap_errors_without_workspace_or_env(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+        monkeypatch.setattr("kindling_cli.cli._deploy_config", lambda *a, **kw: None)
+        for var in ("DATABRICKS_HOST", "SYNAPSE_WORKSPACE_NAME", "FABRIC_WORKSPACE_ID"):
+            monkeypatch.delenv(var, raising=False)
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("kindling:\n  name: test\n")
+            result = runner.invoke(
+                cli,
+                [
+                    "workspace",
+                    "init",
+                    "--platform",
+                    "fabric",
+                    "--storage-account",
+                    "acct",
+                    "--notebook-bootstrap",
+                ],
+            )
+        assert result.exit_code != 0
+        assert "DATABRICKS_HOST" in result.output or "SYNAPSE_WORKSPACE_NAME" in result.output
+
+    def test_notebook_bootstrap_auto_detects_workspace_from_env(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+        monkeypatch.setattr("kindling_cli.cli._deploy_config", lambda *a, **kw: None)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://my-db.azuredatabricks.net")
+        imported = []
+        monkeypatch.setattr(
+            "kindling_cli.cli._import_notebook_to_workspace",
+            lambda platform, ws, name, nb: imported.append((ws, name)),
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("kindling:\n  name: test\n")
+            result = runner.invoke(
+                cli,
+                [
+                    "workspace",
+                    "init",
+                    "--platform",
+                    "databricks",
+                    "--storage-account",
+                    "acct",
+                    "--notebook-bootstrap",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert any("https://my-db.azuredatabricks.net" == ws for ws, _ in imported)
+
+    def test_notebook_bootstrap_imports_both_notebooks(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+        monkeypatch.setattr("kindling_cli.cli._deploy_config", lambda *a, **kw: None)
+        imported = []
+        monkeypatch.setattr(
+            "kindling_cli.cli._import_notebook_to_workspace",
+            lambda platform, ws, name, nb: imported.append(name),
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("kindling:\n  name: test\n")
+            result = runner.invoke(
+                cli,
+                [
+                    "workspace",
+                    "init",
+                    "--platform",
+                    "fabric",
+                    "--storage-account",
+                    "acct",
+                    "--notebook-bootstrap",
+                    "--workspace",
+                    "ws-id",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert "environment_bootstrap" in imported
+        assert "kindling_hello_world" in imported
+
+    def test_no_notebook_import_without_flag(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+        monkeypatch.setattr("kindling_cli.cli._deploy_config", lambda *a, **kw: None)
+        imported = []
+        monkeypatch.setattr(
+            "kindling_cli.cli._import_notebook_to_workspace",
+            lambda platform, ws, name, nb: imported.append(name),
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("kindling:\n  name: test\n")
+            result = runner.invoke(
+                cli, ["workspace", "init", "--platform", "fabric", "--storage-account", "acct"]
+            )
+        assert result.exit_code == 0, result.output
+        assert imported == []
+
+    # --- General ---
+
+    def test_missing_storage_account_errors(self, monkeypatch):
+        monkeypatch.delenv("AZURE_STORAGE_ACCOUNT", raising=False)
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["workspace", "init", "--platform", "fabric"])
+        assert result.exit_code != 0
+        assert "AZURE_STORAGE_ACCOUNT" in result.output
+
+    def test_missing_platform_errors(self, monkeypatch):
+        for var in ("FABRIC_WORKSPACE_ID", "SYNAPSE_WORKSPACE_NAME", "DATABRICKS_HOST"):
+            monkeypatch.delenv(var, raising=False)
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["workspace", "init", "--storage-account", "acct"])
+        assert result.exit_code != 0
+        assert "platform" in result.output.lower()
+
+    def test_output_messages(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+        monkeypatch.setattr("kindling_cli.cli._deploy_config", lambda *a, **kw: None)
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("kindling:\n  name: test\n")
+            result = runner.invoke(
+                cli, ["workspace", "init", "--platform", "fabric", "--storage-account", "acct"]
+            )
+        assert result.exit_code == 0, result.output
+        assert "Initializing workspace" in result.output
+        assert "Config →" in result.output
+        assert "Init complete." in result.output
+
+
+# ---------------------------------------------------------------------------
 # env check --local
 # ---------------------------------------------------------------------------
 
