@@ -306,36 +306,46 @@ pipe registration, pipe input/output entity existence, and delta entity
 | `--app PATH` | auto | Path to `app.py` |
 | `--env TEXT` | `KINDLING_ENV` or `local` | Config environment to load |
 
-### `app package [APP_PATH]`
+### `app package <APP_NAME>`
 
-Package an app directory into a `.kda` archive.
+Package an app directory into a `.kda` archive. Looks up `apps/<app_name>/` by convention;
+use `--local-folder` for non-standard layouts.
 
 | Option | Default | Description |
 |---|---|---|
-| `--local-folder PATH` | — | App source directory (alternative to positional arg) |
+| `--local-folder PATH` | — | Override convention lookup with this directory |
 | `--output PATH` | `dist/<app>.kda` | Destination `.kda` file or directory |
 | `--json` | — | Machine-readable JSON output |
 
-### `app deploy`
+### `app deploy <APP_NAME>`
 
-Deploy an app directory or `.kda` package to a remote platform.
+Deploy an app to a remote platform. Looks up `apps/<app_name>/` by convention and packages
+on the fly; use `--local-folder` to override or `--kda-package` for a pre-built archive.
 
 | Option | Default | Description |
 |---|---|---|
-| `--local-folder PATH` | — | App source directory (packaged on the fly) |
-| `--kda-package PATH` | — | Pre-built `.kda` archive |
-| `--app-name TEXT` | path stem | Remote app name |
+| `--local-folder PATH` | — | Override convention lookup. Packaged on the fly. |
+| `--kda-package PATH` | — | Pre-built `.kda` archive. Skips convention lookup. |
+| `--remote-name TEXT` | source dir stem | Remote app name |
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
 | `--json` | — | Machine-readable JSON output |
 
-### `app run <APP>`
+### `app run <APP_NAME>`
 
-Run an app locally (standalone) or remotely on a managed platform.
+Run an app locally (standalone) or submit a run of a deployed app (remote).
+
+**Standalone** (`--platform standalone`, the default): looks up `apps/<app_name>/` by convention
+and runs locally with embedded Spark. Use `--local-folder` to override for non-standard layouts.
+
+**Remote** (`--platform databricks|fabric|synapse`): submits a run of the already-deployed app.
+The app must have been deployed first with `kindling app deploy`. `--local-folder` has no meaning
+for remote runs and will error.
 
 | Option | Default | Description |
 |---|---|---|
 | `--platform standalone\|databricks\|fabric\|synapse` | `standalone` | Execution platform |
-| `--app-name TEXT` | — | App name when APP is a local path |
+| `--local-folder PATH` | — | Override convention lookup (standalone only) |
+| `--app-name TEXT` | — | Remote app name override (remote only) |
 | `--env TEXT` | — | Runtime environment |
 | `--config PATH` | — | Config directory override (standalone only) |
 | `--quiet` / `-q` | — | Suppress INFO logs (standalone only) |
@@ -352,11 +362,15 @@ Run an app locally (standalone) or remotely on a managed platform.
 | `--json` | — | Machine-readable JSON output |
 
 ```bash
-# Local standalone
-kindling app run apps/my_pipeline
-kindling app run apps/my_pipeline --local-package packages/my_pipeline --env local
+# Local standalone — convention lookup
+kindling app run my-pipeline
+kindling app run my-pipeline --local-package packages/my_pipeline --env local
 
-# Remote
+# Local standalone — non-standard layout
+kindling app run my-pipeline --local-folder path/to/app
+
+# Remote — deploy first, then run
+kindling app deploy my-pipeline --platform synapse
 kindling runner ensure --platform synapse
 kindling app run my-pipeline --platform synapse
 ```
@@ -391,14 +405,13 @@ Cancel a remote app run.
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
 | `--json` | — | Machine-readable JSON output |
 
-### `app cleanup [APP_NAME]`
+### `app cleanup <APP_NAME>`
 
-Delete a previously deployed remote application.
+Delete a previously deployed remote application. Pass the app name directly — the same name
+used when deploying.
 
 | Option | Default | Description |
 |---|---|---|
-| `--local-folder PATH` | — | App source directory (infers name from folder) |
-| `--kda-package PATH` | — | Archive (infers name from stem) |
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
 | `--json` | — | Machine-readable JSON output |
 
@@ -588,14 +601,15 @@ Create a Kindling package under an existing multi-package repo at
 | `--repo-root PATH` | `.` | Repo root to receive the new package |
 | `--template-dir PATH` | — | Custom Jinja2 templates |
 
-### `package deploy [PACKAGE_PATH]`
+### `package deploy <PACKAGE_NAME>`
 
 Build a package wheel with Poetry and upload it to artifact storage at
-`{base}/packages/`.
+`{base}/packages/`. Looks up `packages/<package_name>/` by convention; use `--local-folder`
+for non-standard layouts.
 
 | Option | Default | Description |
 |---|---|---|
-| `--local-folder PATH` | — | Package source directory (alternative to positional arg) |
+| `--local-folder PATH` | — | Override convention lookup with this directory |
 | `--dist-dir PATH` | `dist` | Directory where Poetry writes the wheel |
 | `--storage-account TEXT` | `AZURE_STORAGE_ACCOUNT` | Storage account |
 | `--container TEXT` | `AZURE_CONTAINER` or `artifacts` | Container name |

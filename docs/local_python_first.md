@@ -147,20 +147,24 @@ scaffolded packages in the repo.
 ## Running an App Locally
 
 Use `kindling app run` to execute all registered pipes locally with the
-standalone platform:
+standalone platform. The positional argument is the app name; kindling discovers
+`apps/<name>/` by convention (kebab and snake forms both work):
 
 ```bash
-cd apps/my_pipeline
-kindling app run .
-kindling app run . --platform standalone --env local
+# From the repo root — convention lookup finds apps/my_pipeline/
+kindling app run my-pipeline
+kindling app run my-pipeline --env local
+
+# Non-standard layout: override the lookup with --local-folder
+kindling app run my-pipeline --local-folder path/to/app-dir
 ```
 
 When you want the app to import checked-out package code instead of an installed
 or artifact-backed wheel, pass one or more local package roots:
 
 ```bash
-kindling app run . --local-package ../../packages/my_pipeline
-kindling app run . --local-package ../../packages/my_pipeline --local-package ../shared_domain
+kindling app run my-pipeline --local-package packages/my_pipeline
+kindling app run my-pipeline --local-package packages/my_pipeline --local-package packages/shared_domain
 ```
 
 Each `--local-package` path may point at a package root with a `src/` directory
@@ -261,23 +265,31 @@ kindling env check --local --config config/settings.yaml
 
 ## Packaging and Remote Lifecycle
 
-The CLI now covers the basic local-to-remote app lifecycle:
+The CLI covers the full local-to-remote app lifecycle using app names as convention:
 
 ```bash
-# Package an app directory into a .kda archive
-kindling app package path/to/app-dir
+# Package apps/my_pipeline/ into a .kda archive
+kindling app package my-pipeline
 
-# Deploy an app directory or .kda package
-kindling app deploy --local-folder path/to/app-dir --platform fabric --app-name my-app
+# Deploy apps/my_pipeline/ to a remote platform
+kindling app deploy my-pipeline --platform fabric
 
 # Run all registered pipes locally with standalone Spark
-kindling app run path/to/app-dir
+kindling app run my-pipeline
 
-# Run an app remotely from a local directory or from a deployed app name
+# Run an already-deployed app remotely (deploy must come first)
 kindling runner ensure --platform synapse
-kindling app run path/to/app-dir --platform synapse
+kindling app deploy my-pipeline --platform synapse
+kindling app run my-pipeline --platform synapse
 kindling app status <run-id> --platform synapse
 kindling app logs <run-id> --platform synapse
+```
+
+Non-standard layouts can always override convention lookup with `--local-folder`:
+
+```bash
+kindling app deploy my-pipeline --local-folder path/to/app --platform fabric
+kindling package deploy my-package --local-folder path/to/package
 ```
 
 Remote operations use `spark-kindling-sdk`, so install it alongside the CLI when

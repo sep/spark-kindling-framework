@@ -2653,6 +2653,27 @@ def _resolve_source_path(
     )
 
 
+def _resolve_by_convention(name: str, root_dir: str, label: str) -> Path:
+    """Resolve a name to a local directory using the name-as-convention pattern.
+
+    Normalizes kebab-case to snake_case and looks up <root_dir>/<snake_name>/.
+    Raises ClickException if the directory is not found.
+    """
+    from kindling_cli.scaffold import validate_name
+
+    try:
+        snake = validate_name(name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    resolved = (Path.cwd() / root_dir / snake).resolve()
+    if not resolved.exists():
+        raise click.ClickException(
+            f"{label.capitalize()} '{name}' not found at {root_dir}/{snake}/. "
+            f"Use --local-folder to specify a non-standard location."
+        )
+    return resolved
+
+
 @app_group.command("init")
 @click.argument("app_name")
 @click.option(
@@ -2762,18 +2783,13 @@ def app_init(
 
 
 @app_group.command("package")
-@click.argument(
-    "app_path",
-    required=False,
-    default=None,
-    type=click.Path(path_type=Path, exists=True, file_okay=False),
-)
+@click.argument("app_name")
 @click.option(
     "--local-folder",
     "local_folder",
     default=None,
     type=click.Path(path_type=Path, exists=True, file_okay=False),
-    help="Application source directory to package.",
+    help="Override convention lookup. Package this directory instead of apps/<app_name>/.",
 )
 @click.option(
     "--output",
@@ -2784,18 +2800,19 @@ def app_init(
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def app_package(
-    app_path: Optional[Path],
+    app_name: str,
     local_folder: Optional[Path],
     output_path: Optional[Path],
     json_output: bool,
 ) -> None:
     """Package an application directory into a .kda archive.
 
-    Specify the source directory as APP_PATH or with --local-folder.
+    APP_NAME is used to locate apps/<app_name>/. Use --local-folder for non-standard layouts.
     """
-    # [implementer] add --local-folder flag; keep positional for noun-verb ergonomics - ki-36f
-    source = _resolve_source_path(local_folder, None, app_path, "package")
-    resolved_app_path = source.expanduser().resolve()
+    if local_folder:
+        resolved_app_path = local_folder.expanduser().resolve()
+    else:
+        resolved_app_path = _resolve_by_convention(app_name, "apps", "app")
     app_files = _prepare_app_files(resolved_app_path)
 
     if output_path is None:
@@ -2826,21 +2843,27 @@ def app_package(
 
 
 @app_group.command("deploy")
+@click.argument("app_name")
 @click.option(
     "--local-folder",
     "local_folder",
     default=None,
     type=click.Path(path_type=Path, exists=True, file_okay=False),
-    help="App source directory. Packaged on the fly before deploying.",
+    help="Override convention lookup. Package this directory instead of apps/<app_name>/.",
 )
 @click.option(
     "--kda-package",
     "kda_package",
     default=None,
     type=click.Path(path_type=Path, exists=True, dir_okay=False),
-    help="Pre-built .kda archive to deploy.",
+    help="Pre-built .kda archive to deploy. Skips convention lookup.",
 )
-@click.option("--app-name", default=None, help="Remote app name. Defaults to the path stem/name.")
+@click.option(
+    "--remote-name",
+    "remote_app_name",
+    default=None,
+    help="Remote app name. Defaults to the source directory name.",
+)
 @click.option(
     "--platform",
     type=click.Choice(SUPPORTED_PLATFORMS),
@@ -2849,32 +2872,33 @@ def app_package(
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def app_deploy(
+    app_name: str,
     local_folder: Optional[Path],
     kda_package: Optional[Path],
-    app_name: Optional[str],
+    remote_app_name: Optional[str],
     platform: Optional[str],
     json_output: bool,
 ) -> None:
-    """Deploy an app directory or .kda package using the remote platform SDK.
+    """Deploy an app to a remote platform.
 
-    Supply exactly one of --local-folder (packages on the fly) or --kda-package
-    (deploys a pre-built archive).
+    APP_NAME is used to locate apps/<app_name>/ by convention. Use --local-folder to
+    override with a non-standard path, or --kda-package to deploy a pre-built archive.
     """
-    # [implementer] replace positional path with mutually exclusive source flags — ki-36f
     if local_folder and kda_package:
         raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
-    if not local_folder and not kda_package:
-        raise click.ClickException(
-            "Supply a source via --local-folder <dir> or --kda-package <file>."
-        )
 
-    source = local_folder or kda_package  # type: ignore[assignment]
-    resolved_app_path = source.expanduser().resolve()
+    if kda_package:
+        resolved_app_path = kda_package.expanduser().resolve()
+    elif local_folder:
+        resolved_app_path = local_folder.expanduser().resolve()
+    else:
+        resolved_app_path = _resolve_by_convention(app_name, "apps", "app")
+
     app_files = _prepare_app_files(resolved_app_path)
     _validate_app_entry_point(app_files, resolved_app_path)
     resolved_platform = _resolve_remote_platform(platform)
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    resolved_name = (app_name or _default_app_name(resolved_app_path)).strip()
+    resolved_name = (remote_app_name or _default_app_name(resolved_app_path)).strip()
     if not resolved_name:
         raise click.ClickException("App name resolved to an empty string.")
 
@@ -2909,26 +2933,18 @@ def _run_remote_app(
     fail_on_error: bool,
     json_output: bool,
 ) -> None:
-    """Run a deployed app name or package/deploy/run a local app path."""
+    """Submit a run of an already-deployed app on a remote platform."""
     if poll_interval <= 0:
         raise click.ClickException("--poll-interval must be greater than 0.")
     if timeout <= 0:
         raise click.ClickException("--timeout must be greater than 0.")
 
     resolved_platform = _resolve_remote_platform(platform)
-
-    source_path = Path(app_ref).expanduser()
-    has_local_source = source_path.exists()
-    resolved_name = (
-        app_name or _default_app_name(source_path) if has_local_source else app_name or app_ref
-    )
-    resolved_name = resolved_name.strip()
+    resolved_name = (app_name or app_ref).strip()
     if not resolved_name:
         raise click.ClickException("App name resolved to an empty string.")
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    storage_path: Optional[str] = None
-    file_count: Optional[int] = None
     parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else {}
     for raw_param in param_overrides:
         if "=" not in raw_param:
@@ -2939,23 +2955,6 @@ def _run_remote_app(
             raise click.ClickException("--param keys must not be empty.")
         _set_nested_key(parameters, key, _coerce_value(value))
 
-    if has_local_source:
-        resolved_app_path = source_path.resolve()
-        app_files = _prepare_app_files(resolved_app_path)
-        _validate_app_entry_point(app_files, resolved_app_path)
-        file_count = len(app_files)
-        _emit_progress(
-            f"[1/3] Deploying {len(app_files)} file(s) as `{resolved_name}` "
-            f"on {resolved_platform}...",
-            json_output,
-        )
-        storage_path = api_client.deploy_app(resolved_name, app_files)
-    else:
-        _emit_progress(
-            f"[1/2] Using deployed app `{resolved_name}` on {resolved_platform}...",
-            json_output,
-        )
-
     try:
         _account, _container, _base = _resolve_storage_env()
         _packages_path = f"{_base}/packages" if _base else "packages"
@@ -2963,8 +2962,7 @@ def _run_remote_app(
     except Exception:
         pass
 
-    step_prefix = "[2/3]" if has_local_source else "[1/2]"
-    _emit_progress(f"{step_prefix} Verifying runner on {resolved_platform}...", json_output)
+    _emit_progress(f"[1/2] Verifying runner on {resolved_platform}...", json_output)
     try:
         runner_status = api_client.get_runner_status(resolved_platform)
     except NotImplementedError:
@@ -2979,8 +2977,7 @@ def _run_remote_app(
             f"Run 'kindling runner ensure --platform {resolved_platform}' to install it."
         )
 
-    step_prefix = "[3/3]" if has_local_source else "[2/2]"
-    _emit_progress(f"{step_prefix} Submitting app run `{resolved_name}`...", json_output)
+    _emit_progress(f"[2/2] Submitting app run `{resolved_name}`...", json_output)
     try:
         run_id = api_client.submit_app_run(
             resolved_name,
@@ -3000,10 +2997,6 @@ def _run_remote_app(
         "runner_id": runner_id,
         "platform": resolved_platform,
     }
-    if storage_path is not None:
-        payload["storage_path"] = storage_path
-    if file_count is not None:
-        payload["file_count"] = file_count
 
     if no_wait:
         _emit_result(
@@ -3154,8 +3147,15 @@ def _run_standalone_app(
 
 @app_group.command("run")
 @click.argument("app", required=True)
-@click.option("--app-name", default=None, help="App name to use when APP is a local path.")
+@click.option("--app-name", default=None, help="Remote app name override for remote runs.")
 @click.option("--env", default=None, help="Runtime environment to pass to the app run.")
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="Override convention lookup for standalone runs. Has no meaning with --platform.",
+)
 @click.option(
     "--config",
     "config_dir",
@@ -3229,6 +3229,7 @@ def app_run(
     app: str,
     app_name: Optional[str],
     env: Optional[str],
+    local_folder: Optional[Path],
     config_dir: Optional[Path],
     quiet: bool,
     local_packages: Tuple[Path, ...],
@@ -3244,10 +3245,21 @@ def app_run(
     dotenv_paths: Tuple[Path, ...],
     no_dotenv: bool,
 ) -> None:
-    """Run an app locally with standalone or remotely on a managed platform."""
+    """Run an app locally or remotely on a managed platform.
+
+    For standalone runs, APP is the app name and kindling looks up apps/<app>/ by
+    convention. Use --local-folder to override for non-standard layouts.
+
+    For remote runs (--platform), APP is the deployed app name. The app must already
+    be deployed; use 'kindling app deploy APP --platform PLATFORM' first.
+    """
     if platform == "standalone":
         if app_name:
             raise click.ClickException("--app-name is only valid for remote app runs.")
+        if local_folder:
+            resolved_app_ref = str(local_folder.expanduser().resolve())
+        else:
+            resolved_app_ref = str(_resolve_by_convention(app, "apps", "app"))
         resolved_dotenvs: Tuple[Path, ...]
         if no_dotenv:
             resolved_dotenvs = ()
@@ -3256,7 +3268,7 @@ def app_run(
         else:
             resolved_dotenvs = (Path(".env"),)
         _run_standalone_app(
-            app,
+            resolved_app_ref,
             env,
             config_dir,
             quiet,
@@ -3271,6 +3283,8 @@ def app_run(
         )
         return
 
+    if local_folder is not None:
+        raise click.ClickException("--local-folder is only valid for standalone app runs.")
     if config_dir is not None:
         raise click.ClickException("--config is only valid for standalone app runs.")
     if quiet:
@@ -3376,21 +3390,7 @@ def app_cancel(run_id: str, platform: Optional[str], json_output: bool) -> None:
 
 
 @app_group.command("cleanup")
-@click.argument("app_name", required=False, default=None)
-@click.option(
-    "--local-folder",
-    "local_folder",
-    default=None,
-    type=click.Path(path_type=Path, exists=True, file_okay=False),
-    help="App source directory. Infers app name from folder name.",
-)
-@click.option(
-    "--kda-package",
-    "kda_package",
-    default=None,
-    type=click.Path(path_type=Path, exists=True, dir_okay=False),
-    help="Pre-built .kda archive. Infers app name from archive stem.",
-)
+@click.argument("app_name")
 @click.option(
     "--platform",
     type=click.Choice(SUPPORTED_PLATFORMS),
@@ -3399,34 +3399,15 @@ def app_cancel(run_id: str, platform: Optional[str], json_output: bool) -> None:
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def app_cleanup(
-    app_name: Optional[str],
-    local_folder: Optional[Path],
-    kda_package: Optional[Path],
+    app_name: str,
     platform: Optional[str],
     json_output: bool,
 ) -> None:
     """Delete a previously deployed remote application.
 
-    Identify the app by positional APP_NAME, or by --local-folder / --kda-package
-    (the app name is inferred from the folder or archive stem).
+    Identify the app by its APP_NAME (the name used when it was deployed).
     """
-    # [implementer] add --local-folder/--kda-package source flags for name inference — ki-36f
-    if local_folder and kda_package:
-        raise click.ClickException("--local-folder and --kda-package are mutually exclusive.")
-
-    if local_folder or kda_package:
-        cleanup_source = local_folder or kda_package  # type: ignore[assignment]
-        source_path = cleanup_source.expanduser().resolve()
-        inferred_name = _default_app_name(source_path)
-        resolved_app_name = (app_name or inferred_name).strip()
-    elif app_name:
-        resolved_app_name = app_name.strip()
-    else:
-        raise click.ClickException(
-            "Provide APP_NAME, --local-folder <dir>, or --kda-package <file> "
-            "to identify the application to clean up."
-        )
-
+    resolved_app_name = app_name.strip()
     if not resolved_app_name:
         raise click.ClickException("App name resolved to an empty string.")
 
@@ -5283,18 +5264,13 @@ def package_init(
 
 
 @package_group.command("deploy")
-@click.argument(
-    "package_path",
-    required=False,
-    default=None,
-    type=click.Path(path_type=Path, exists=True, file_okay=False),
-)
+@click.argument("package_name")
 @click.option(
     "--local-folder",
     "local_folder",
     default=None,
     type=click.Path(path_type=Path, exists=True, file_okay=False),
-    help="Package source directory containing pyproject.toml.",
+    help="Override convention lookup. Deploy this directory instead of packages/<package_name>/.",
 )
 @click.option(
     "--dist-dir",
@@ -5327,7 +5303,7 @@ def package_init(
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def package_deploy(
-    package_path: Optional[Path],
+    package_name: str,
     local_folder: Optional[Path],
     dist_dir: Path,
     storage_account: Optional[str],
@@ -5338,12 +5314,15 @@ def package_deploy(
     """Build a package wheel and upload it to artifact storage.
 
     \b
+    PACKAGE_NAME is used to locate packages/<package_name>/ by convention.
+    Use --local-folder to override for non-standard layouts.
     The wheel is uploaded to {base}/packages/ so apps can reference it from
     lake-reqs.txt.
     """
-    package_root = (
-        _resolve_source_path(local_folder, None, package_path, "deploy").expanduser().resolve()
-    )
+    if local_folder:
+        package_root = local_folder.expanduser().resolve()
+    else:
+        package_root = _resolve_by_convention(package_name, "packages", "package")
     wheel = _build_package_wheel(package_root, dist_dir)
 
     resolved_account, resolved_container, resolved_base = _resolve_storage_env(
