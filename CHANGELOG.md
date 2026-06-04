@@ -6,6 +6,20 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- `runtime publish` renamed to `runtime deploy`. Same behavior; the new name is consistent with
+  `app deploy`, `package deploy`, and `workspace deploy`. **Breaking change**: update scripts
+  and CI pipelines to use `kindling runtime deploy`.
+- `workspace init` — completely new behavior. Now initializes the platform workspace by deploying
+  `settings.yaml` + overlays to `{base}/config/` in storage. With `--notebook-bootstrap`, also
+  generates and imports notebook bootstrap files into the platform workspace.
+  **Breaking change**: the old local file generation behavior (`--output-dir`, `--force`) is
+  removed. Use `--notebook-bootstrap` with `--workspace` for notebook import.
+- `workspace deploy` — now deploys config only (`settings.yaml` + overlays to `{base}/config/`).
+  Wheel and bootstrap script deployment have been removed; use `kindling runtime deploy` for those.
+  **Breaking change**: `--dist-dir`, `--skip-wheels`, `--skip-bootstrap-script`,
+  `--allow-missing-bootstrap-script`, `--create-notebooks`, and `--workspace` options removed.
+- `workspace check` removed. Use `kindling env check --platform <platform>` instead.
+
 - `app package <APP_NAME>` — positional is now the app name; kindling discovers `apps/<name>/`
   by convention (kebab→snake normalized). `--local-folder` overrides for non-standard layouts.
   **Breaking change** for callers passing a path as the positional; use `--local-folder` instead.

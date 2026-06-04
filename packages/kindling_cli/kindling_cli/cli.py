@@ -1557,85 +1557,141 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
 
 @cli.group("workspace")
 def workspace_group() -> None:
-    """Validate and initialize workspace assets."""
+    """Manage and deploy platform workspace configuration."""
 
 
-@workspace_group.command("check")
-@click.option("--platform", type=click.Choice(SUPPORTED_PLATFORMS), default=None)
+@workspace_group.command("init")
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+@click.option(
+    "--storage-account",
+    "storage_account",
+    default=None,
+    help="Storage account: name, name.domain, or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
+)
+@click.option(
+    "--container",
+    "container",
+    default=None,
+    help="Storage container name (overrides AZURE_CONTAINER env var, default: artifacts).",
+)
+@click.option(
+    "--base-path",
+    "base_path",
+    default=None,
+    help="Base path within container (overrides AZURE_BASE_PATH env var).",
+)
 @click.option(
     "--config",
     "config_path",
     default="settings.yaml",
     show_default=True,
     type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Kindling settings file to deploy.",
 )
-def workspace_check(platform: Optional[str], config_path: Path) -> None:
-    """Check whether workspace configuration is ready for the selected platform."""
-    resolved_config_path = config_path.expanduser()
+@click.option(
+    "--notebook-bootstrap",
+    "notebook_bootstrap",
+    is_flag=True,
+    help="Also generate and import notebook bootstrap files into the platform workspace.",
+)
+@click.option(
+    "--workspace",
+    default=None,
+    help="Platform workspace for notebook import. Required with --notebook-bootstrap.",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Overwrite existing config and notebooks in storage.",
+)
+def workspace_init(
+    platform: Optional[str],
+    storage_account: Optional[str],
+    container: Optional[str],
+    base_path: Optional[str],
+    config_path: Path,
+    notebook_bootstrap: bool,
+    workspace: Optional[str],
+    overwrite: bool,
+) -> None:
+    """Initialize the platform workspace: deploy config to storage.
 
-    if not resolved_config_path.exists():
-        raise click.ClickException(
-            f"Config file `{resolved_config_path}` was not found. Run `kindling config init` first."
-        )
-    _load_yaml_config(resolved_config_path)
+    Deploys settings.yaml and overlay configs to {base}/config/ in storage.
+    With --notebook-bootstrap, also generates and imports notebook bootstrap
+    files into the platform workspace via platform APIs.
 
+    \b
+    Examples:
+      kindling workspace init --platform fabric --storage-account myacct
+      kindling workspace init --platform fabric --storage-account myacct \\
+          --notebook-bootstrap --workspace <workspace-id>
+    """
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+
+    resolved_account, resolved_container, resolved_base = _resolve_storage_env(
+        storage_account, container, base_path
+    )
+
+    click.echo(
+        f"Initializing workspace on {resolved_platform} "
+        f"({resolved_account}/{resolved_container}/)"
+    )
+    click.echo()
+
+    blob_service_client = _get_blob_service_client(resolved_account)
+
+    # -- Config ----------------------------------------------------------------
+    resolved_config = config_path.expanduser()
+    if not resolved_config.exists():
         raise click.ClickException(
-            "Unable to determine platform. Set --platform or one of "
-            "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
+            f"Config file {resolved_config} not found. "
+            "Run `kindling config init` first to generate one."
         )
 
-    required_vars = {
-        "fabric": ["FABRIC_WORKSPACE_ID", "FABRIC_LAKEHOUSE_ID"],
-        "synapse": ["SYNAPSE_WORKSPACE_NAME"],
-        "databricks": ["DATABRICKS_HOST"],
-    }[resolved_platform]
+    config_dest = f"{resolved_base}/config" if resolved_base else "config"
+    click.echo(f"Config → {config_dest}/")
+    _deploy_config(
+        blob_service_client, resolved_container, resolved_base, resolved_config, overwrite=overwrite
+    )
+    click.echo()
 
-    checks = [
-        (f"env:{var}", bool(os.getenv(var)), "set" if os.getenv(var) else "missing")
-        for var in required_vars
-    ]
-    checks.insert(0, ("platform", True, resolved_platform))
+    # -- Notebooks -------------------------------------------------------------
+    if notebook_bootstrap:
+        if not workspace:
+            workspace = (
+                os.getenv("DATABRICKS_HOST")
+                or os.getenv("SYNAPSE_WORKSPACE_NAME")
+                or os.getenv("FABRIC_WORKSPACE_ID")
+            )
+        if not workspace:
+            raise click.ClickException(
+                "--workspace is required for --notebook-bootstrap (or set "
+                "DATABRICKS_HOST / SYNAPSE_WORKSPACE_NAME / FABRIC_WORKSPACE_ID)."
+            )
 
-    if _print_check_results(checks):
-        click.echo("Workspace check passed.")
-        return
+        config_data = _load_yaml_config(resolved_config) if resolved_config.exists() else {}
 
-    raise click.ClickException("Workspace check failed.")
+        click.echo(f"Notebooks → {workspace}")
 
-
-@workspace_group.command("init")
-@click.option(
-    "--output-dir",
-    default=".kindling/workspace",
-    show_default=True,
-    type=click.Path(path_type=Path, file_okay=False),
-)
-@click.option("--platform", type=click.Choice(SUPPORTED_PLATFORMS), default=None)
-@click.option("--force", is_flag=True, help="Overwrite existing files.")
-def workspace_init(output_dir: Path, platform: Optional[str], force: bool) -> None:
-    """Create starter bootstrap and app notebook files for workspace setup."""
-    resolved_platform = platform or _detect_platform_from_environment() or "fabric"
-    output_dir = output_dir.expanduser()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    bootstrap_path = output_dir / "environment_bootstrap.py"
-    starter_path = output_dir / "starter_notebook.py"
-
-    if (bootstrap_path.exists() or starter_path.exists()) and not force:
-        raise click.ClickException(
-            f"Target files already exist in `{output_dir}`. Use --force to overwrite."
+        bootstrap_nb = _generate_bootstrap_notebook(resolved_platform, config_data)
+        _import_notebook_to_workspace(
+            resolved_platform, workspace, "environment_bootstrap", bootstrap_nb
         )
 
-    bootstrap_body = _render_environment_bootstrap_source(resolved_platform)
-    starter_body = _render_starter_notebook_source(resolved_platform)
+        sample_nb = _generate_sample_notebook(resolved_platform)
+        _import_notebook_to_workspace(
+            resolved_platform, workspace, "kindling_hello_world", sample_nb
+        )
+        click.echo()
 
-    bootstrap_path.write_text(bootstrap_body, encoding="utf-8")
-    starter_path.write_text(starter_body, encoding="utf-8")
-
-    click.echo(f"Created `{bootstrap_path}`")
-    click.echo(f"Created `{starter_path}`")
+    click.echo("Init complete.")
 
 
 # =============================================================================
@@ -1749,7 +1805,7 @@ def _warn_if_runtime_outdated(
     if deployed_version < cli_version:
         click.echo(
             f"Warning: deployed runtime is v{deployed_version} but CLI is v{cli_version}. "
-            "Run 'kindling workspace deploy' to update the runtime wheel.",
+            "Run 'kindling runtime deploy' to update the runtime wheel.",
             err=True,
         )
 
@@ -2376,19 +2432,10 @@ def _import_notebook_to_workspace(
     help="Kindling settings file to deploy.",
 )
 @click.option(
-    "--dist-dir",
-    "dist_dir",
-    default="dist",
-    show_default=True,
-    type=click.Path(path_type=Path, file_okay=False, exists=False),
-    help="Directory containing built wheel files.",
-)
-@click.option(
     "--storage-account",
     "storage_account",
     default=None,
-    help="Storage account: name (mystorageacct), name.domain (mystorageacct.blob.core.usgovcloudapi.net), "
-    "or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
+    help="Storage account: name, name.domain, or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
 )
 @click.option(
     "--container",
@@ -2403,39 +2450,14 @@ def _import_notebook_to_workspace(
     help="Base path within container (overrides AZURE_BASE_PATH env var).",
 )
 @click.option(
-    "--skip-wheels",
-    is_flag=True,
-    help="Skip deploying kindling wheel packages.",
-)
-@click.option(
-    "--skip-bootstrap-script",
-    is_flag=True,
-    help="Skip deploying the kindling_bootstrap.py script.",
-)
-@click.option(
     "--skip-config",
     is_flag=True,
     help="Skip deploying settings.yaml and overlay configs.",
 )
 @click.option(
-    "--create-notebooks",
-    is_flag=True,
-    help="Generate and import a bootstrap notebook and sample notebook into the workspace.",
-)
-@click.option(
-    "--workspace",
-    default=None,
-    help="Target workspace for notebook import. Databricks: host URL. Synapse: workspace name. Fabric: workspace ID.",
-)
-@click.option(
     "--overwrite",
     is_flag=True,
-    help="Overwrite existing scripts, config, and notebooks in storage. Without this flag, existing blobs are skipped.",
-)
-@click.option(
-    "--allow-missing-bootstrap-script",
-    is_flag=True,
-    help="Do not fail if runtime/scripts/kindling_bootstrap.py cannot be found.",
+    help="Overwrite existing config in storage.",
 )
 @click.option(
     "--allow-missing-config",
@@ -2445,46 +2467,30 @@ def _import_notebook_to_workspace(
 def workspace_deploy(
     platform: Optional[str],
     config_path: Path,
-    dist_dir: Path,
     storage_account: Optional[str],
     container: Optional[str],
     base_path: Optional[str],
-    skip_wheels: bool,
-    skip_bootstrap_script: bool,
     skip_config: bool,
-    create_notebooks: bool,
-    workspace: Optional[str],
     overwrite: bool,
-    allow_missing_bootstrap_script: bool,
     allow_missing_config: bool,
 ) -> None:
-    """Deploy kindling packages, scripts, and config to Azure Storage.
+    """Re-deploy config to Azure Storage after settings.yaml changes.
 
     \b
-    Deploys the following artifacts to the target storage account:
-
-      - spark_kindling-*.whl (or legacy runtime wheel[s]) → {base}/packages/
-      - kindling_bootstrap.py                            → {base}/scripts/
-      - settings.yaml + overlays                         → {base}/config/
+    Deploys settings.yaml and overlay configs to {base}/config/ in storage.
+    Use this to push config updates after initial workspace setup.
 
     \b
-    With --create-notebooks and --workspace, also imports starter notebooks
-    directly into the target workspace via platform APIs.
+    For first-time setup (including notebook bootstrap), use:
+      kindling workspace init --platform <platform> --storage-account <account>
 
     \b
-    Storage account accepts a plain name (appends .blob.core.windows.net),
-    a name.domain (e.g. myacct.blob.core.usgovcloudapi.net), or a full URL.
-
-    \b
-    Prerequisites:
-      - az login (or AZURE_CLIENT_ID/SECRET/TENANT_ID environment variables)
+    Storage account accepts a plain name, name.domain, or full URL.
 
     \b
     Examples:
       kindling workspace deploy --platform synapse --storage-account mystorageacct
-      kindling workspace deploy --platform synapse --storage-account mystorageaccount.blob.core.usgovcloudapi.net
-      kindling workspace deploy --platform synapse --create-notebooks --workspace mysynapsews
-      kindling workspace deploy --platform databricks --create-notebooks --workspace https://adb-123.4.azuredatabricks.net
+      kindling workspace deploy --platform fabric --storage-account mystorageacct --overwrite
     """
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
@@ -2498,58 +2504,13 @@ def workspace_deploy(
         container,
         base_path,
     )
-    packages_path = f"{resolved_base}/packages" if resolved_base else "packages"
-    scripts_path = f"{resolved_base}/scripts" if resolved_base else "scripts"
-    repo_root = Path.cwd()
-    for candidate in (repo_root, repo_root.parent, repo_root.parent.parent):
-        if (candidate / "runtime" / "scripts" / "kindling_bootstrap.py").exists():
-            repo_root = candidate
-            break
 
     click.echo(
-        f"Deploying to {resolved_account}/{resolved_container}/ (platform: {resolved_platform})"
+        f"Deploying config to {resolved_account}/{resolved_container}/ (platform: {resolved_platform})"
     )
     click.echo()
 
     blob_service_client = _get_blob_service_client(resolved_account)
-
-    # -- Wheels ----------------------------------------------------------------
-    if not skip_wheels:
-        resolved_dist = dist_dir.expanduser().resolve()
-        if not resolved_dist.exists():
-            raise click.ClickException(
-                f"dist directory not found: {resolved_dist}\n"
-                "Build wheels first (poe build-wheels) or use --skip-wheels."
-            )
-        wheels = _find_wheels(resolved_dist, resolved_platform)
-        if not wheels:
-            raise click.ClickException(
-                f"No runtime wheel artifacts were found in {resolved_dist}.\n"
-                "Expected dist/spark_kindling-*.whl or legacy dist/kindling_<platform>-*.whl."
-            )
-        click.echo(f"Packages → {packages_path}/")
-        count = _deploy_wheels(blob_service_client, resolved_container, packages_path, wheels)
-        click.echo(f"  ({count} wheel(s) uploaded)")
-        click.echo()
-    else:
-        _warn_if_runtime_outdated(blob_service_client, resolved_container, packages_path)
-
-    # -- Bootstrap script ------------------------------------------------------
-    if not skip_bootstrap_script:
-        click.echo(f"Scripts → {scripts_path}/")
-        if _deploy_bootstrap_script(
-            blob_service_client, resolved_container, scripts_path, repo_root, overwrite=overwrite
-        ):
-            click.echo()
-        else:
-            message = "kindling_bootstrap.py not found."
-            if allow_missing_bootstrap_script:
-                click.echo(f"  {message} Skipping because --allow-missing-bootstrap-script is set.")
-                click.echo()
-            else:
-                raise click.ClickException(
-                    f"{message} Use --skip-bootstrap-script or --allow-missing-bootstrap-script."
-                )
 
     # -- Config ----------------------------------------------------------------
     if not skip_config:
@@ -2573,37 +2534,6 @@ def workspace_deploy(
                 overwrite=overwrite,
             )
             click.echo()
-
-    # -- Notebooks -------------------------------------------------------------
-    if create_notebooks:
-        if not workspace:
-            # Auto-detect workspace from environment
-            workspace = (
-                os.getenv("DATABRICKS_HOST")
-                or os.getenv("SYNAPSE_WORKSPACE_NAME")
-                or os.getenv("FABRIC_WORKSPACE_ID")
-            )
-        if not workspace:
-            raise click.ClickException(
-                "--workspace is required for --create-notebooks (or set "
-                "DATABRICKS_HOST / SYNAPSE_WORKSPACE_NAME / FABRIC_WORKSPACE_ID)."
-            )
-
-        resolved_config = config_path.expanduser()
-        config_data = _load_yaml_config(resolved_config) if resolved_config.exists() else {}
-
-        click.echo(f"Notebooks → {workspace}")
-
-        bootstrap_nb = _generate_bootstrap_notebook(resolved_platform, config_data)
-        _import_notebook_to_workspace(
-            resolved_platform, workspace, "environment_bootstrap", bootstrap_nb
-        )
-
-        sample_nb = _generate_sample_notebook(resolved_platform)
-        _import_notebook_to_workspace(
-            resolved_platform, workspace, "kindling_hello_world", sample_nb
-        )
-        click.echo()
 
     click.echo("Deploy complete.")
 
@@ -5562,7 +5492,7 @@ def runtime_group() -> None:
     """Manage kindling runtime artifacts."""
 
 
-@runtime_group.command("publish")
+@runtime_group.command("deploy")
 @click.option(
     "--source",
     "source",
@@ -5590,7 +5520,7 @@ def runtime_group() -> None:
     "--skip-bootstrap",
     "skip_bootstrap",
     is_flag=True,
-    help="Skip publishing the kindling_bootstrap.py script.",
+    help="Skip deploying the kindling_bootstrap.py script.",
 )
 @click.option(
     "--overwrite",
@@ -5602,14 +5532,14 @@ def runtime_group() -> None:
         "scripts are skipped if already present."
     ),
 )
-def runtime_publish(
+def runtime_deploy(
     source: str,
     dest: str,
     version: Optional[str],
     skip_bootstrap: bool,
     overwrite: bool,
 ) -> None:
-    """Publish kindling runtime artifacts (wheels + bootstrap script) to Azure Data Lake Storage.
+    """Deploy kindling runtime artifacts (wheels + bootstrap script) to Azure Data Lake Storage.
 
     \b
     Source types:
@@ -5625,9 +5555,9 @@ def runtime_publish(
 
     \b
     Examples:
-      kindling runtime publish --source github:latest --dest abfss://artifacts@myprod.dfs.core.windows.net/kindling
-      kindling runtime publish --source local:./dist --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling
-      kindling runtime publish --source abfss://artifacts@staging.dfs.core.windows.net/k --dest abfss://artifacts@prod.dfs.core.windows.net/k
+      kindling runtime deploy --source github:latest --dest abfss://artifacts@myprod.dfs.core.windows.net/kindling
+      kindling runtime deploy --source local:./dist --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling
+      kindling runtime deploy --source abfss://artifacts@staging.dfs.core.windows.net/k --dest abfss://artifacts@prod.dfs.core.windows.net/k
     """
     import tempfile
 
@@ -5790,7 +5720,7 @@ def runtime_publish(
             "  abfss://container@account.dfs.core.windows.net/path"
         )
 
-    click.echo("Publish complete.")
+    click.echo("Deploy complete.")
 
 
 def main() -> None:
