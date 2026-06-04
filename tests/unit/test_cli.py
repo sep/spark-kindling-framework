@@ -595,9 +595,7 @@ def test_app_package_creates_kda_archive():
         (app_dir / "lake-reqs.txt").write_text("domain-records==1.2.3\n", encoding="utf-8")
         (app_dir / "nested" / "settings.yaml").write_text("name: demo\n", encoding="utf-8")
 
-        result = runner.invoke(
-            cli, ["app", "package", "demo_app", "--local-folder", str(app_dir)]
-        )
+        result = runner.invoke(cli, ["app", "package", "demo_app", "--local-folder", str(app_dir)])
 
         assert result.exit_code == 0, result.output
         package_path = Path("dist/demo_app.kda")
@@ -617,12 +615,29 @@ def test_app_package_convention_lookup():
         app_dir.mkdir(parents=True)
         (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
 
-        result = runner.invoke(
-            cli, ["app", "package", "demo-app"], catch_exceptions=False
-        )
+        result = runner.invoke(cli, ["app", "package", "demo-app"], catch_exceptions=False)
 
         assert result.exit_code == 0, result.output
         assert Path("dist/demo_app.kda").exists()
+
+
+def test_app_package_convention_lookup_from_subdirectory():
+    """Convention lookup walks up from cwd so commands work inside subdirectories."""
+    import os
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("apps/demo_app").resolve()
+        app_dir.mkdir(parents=True)
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+        orig = os.getcwd()
+        os.chdir(app_dir)
+        try:
+            result = runner.invoke(cli, ["app", "package", "demo-app"], catch_exceptions=False)
+            assert result.exit_code == 0, result.output
+        finally:
+            os.chdir(orig)
 
 
 def test_app_package_json_output_is_machine_readable():
@@ -1287,9 +1302,7 @@ class TestAppRunCommand:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["app", "run", "myapp", "--local-folder", str(app_dir)]
-        )
+        result = runner.invoke(cli, ["app", "run", "myapp", "--local-folder", str(app_dir)])
 
         assert result.exit_code == 0, result.output
         assert "standalone" in result.output
@@ -1382,9 +1395,7 @@ class TestAppRunCommand:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        result = CliRunner().invoke(
-            cli, ["app", "run", "myapp", "--local-folder", str(app_dir)]
-        )
+        result = CliRunner().invoke(cli, ["app", "run", "myapp", "--local-folder", str(app_dir)])
 
         assert result.exit_code == 0, result.output
         assert "kindling_cli._runner" in captured_cmd
@@ -1406,9 +1417,7 @@ class TestAppRunCommand:
         monkeypatch.setenv("KINDLING_SPARK_ENABLE_DELTA", "false")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        result = CliRunner().invoke(
-            cli, ["app", "run", "myapp", "--local-folder", str(app_dir)]
-        )
+        result = CliRunner().invoke(cli, ["app", "run", "myapp", "--local-folder", str(app_dir)])
 
         assert result.exit_code == 0, result.output
         assert captured_env["KINDLING_SPARK_ENABLE_DELTA"] == "false"
@@ -2192,9 +2201,7 @@ def _patch_standalone_run(monkeypatch, tmp_path, execution_result):
 def test_standalone_run_exits_0_on_success(monkeypatch, tmp_path):
     """Exit code 0 when all pipes succeed."""
     app_dir = _patch_standalone_run(monkeypatch, tmp_path, _make_execution_result(True))
-    result = CliRunner().invoke(
-        cli, ["app", "run", "myapp", "--local-folder", str(app_dir)]
-    )
+    result = CliRunner().invoke(cli, ["app", "run", "myapp", "--local-folder", str(app_dir)])
     assert result.exit_code == 0
 
 
@@ -2434,9 +2441,7 @@ class TestParseAbfssUri:
         assert path == "a/b/c"
 
     def test_strips_leading_slashes_from_path(self):
-        _, _, path = _parse_abfss_uri(
-            "abfss://artifacts@acct.dfs.core.windows.net/kindling"
-        )
+        _, _, path = _parse_abfss_uri("abfss://artifacts@acct.dfs.core.windows.net/kindling")
         assert not path.startswith("/")
 
     def test_missing_abfss_scheme_raises(self):
