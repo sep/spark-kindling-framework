@@ -1174,37 +1174,11 @@ def test_workspace_deploy_fails_when_config_missing_unless_allowed(monkeypatch):
                 "synapse",
                 "--storage-account",
                 "acct",
-                "--skip-wheels",
-                "--skip-bootstrap-script",
             ],
         )
 
     assert result.exit_code != 0
     assert "Use --skip-config or --allow-missing-config" in result.output
-
-
-def test_workspace_deploy_fails_when_bootstrap_missing_unless_allowed(monkeypatch):
-    monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
-
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        Path("settings.yaml").write_text("kindling: {}\n", encoding="utf-8")
-        result = runner.invoke(
-            cli,
-            [
-                "workspace",
-                "deploy",
-                "--platform",
-                "synapse",
-                "--storage-account",
-                "acct",
-                "--skip-wheels",
-                "--skip-config",
-            ],
-        )
-
-    assert result.exit_code != 0
-    assert "Use --skip-bootstrap-script or --allow-missing-bootstrap-script" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -2513,24 +2487,24 @@ def _make_fake_blob_service_client(blobs_by_prefix=None):
     return client
 
 
-class TestRuntimePublish:
-    def test_publish_help_shows_source_and_dest(self):
-        result = CliRunner().invoke(cli, ["runtime", "publish", "--help"])
+class TestRuntimeDeploy:
+    def test_deploy_help_shows_source_and_dest(self):
+        result = CliRunner().invoke(cli, ["runtime", "deploy", "--help"])
         assert result.exit_code == 0, result.output
         assert "--source" in result.output
         assert "--dest" in result.output
 
-    def test_publish_requires_source(self):
+    def test_deploy_requires_source(self):
         result = CliRunner().invoke(
-            cli, ["runtime", "publish", "--dest", "abfss://a@acct.dfs.core.windows.net/k"]
+            cli, ["runtime", "deploy", "--dest", "abfss://a@acct.dfs.core.windows.net/k"]
         )
         assert result.exit_code != 0
 
-    def test_publish_requires_dest(self):
-        result = CliRunner().invoke(cli, ["runtime", "publish", "--source", "github:latest"])
+    def test_deploy_requires_dest(self):
+        result = CliRunner().invoke(cli, ["runtime", "deploy", "--source", "github:latest"])
         assert result.exit_code != 0
 
-    def test_publish_invalid_dest_uri_fails(self, tmp_path, monkeypatch):
+    def test_deploy_invalid_dest_uri_fails(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "kindling_cli.cli._get_blob_service_client",
             lambda account: _make_fake_blob_service_client(),
@@ -2539,7 +2513,7 @@ class TestRuntimePublish:
             cli,
             [
                 "runtime",
-                "publish",
+                "deploy",
                 "--source",
                 "local:" + str(tmp_path),
                 "--dest",
@@ -2549,7 +2523,7 @@ class TestRuntimePublish:
         assert result.exit_code != 0
         assert "Invalid destination URI" in result.output
 
-    def test_publish_unrecognized_source_fails(self, monkeypatch):
+    def test_deploy_unrecognized_source_fails(self, monkeypatch):
         monkeypatch.setattr(
             "kindling_cli.cli._get_blob_service_client",
             lambda account: _make_fake_blob_service_client(),
@@ -2558,7 +2532,7 @@ class TestRuntimePublish:
             cli,
             [
                 "runtime",
-                "publish",
+                "deploy",
                 "--source",
                 "ftp://someserver/path",
                 "--dest",
@@ -2568,7 +2542,7 @@ class TestRuntimePublish:
         assert result.exit_code != 0
         assert "Unrecognized source specifier" in result.output
 
-    def test_publish_local_source_uploads_wheels(self, tmp_path, monkeypatch):
+    def test_deploy_local_source_uploads_wheels(self, tmp_path, monkeypatch):
         wheel = tmp_path / "spark_kindling-0.9.25-py3-none-any.whl"
         wheel.write_bytes(b"fake-wheel")
 
@@ -2582,7 +2556,7 @@ class TestRuntimePublish:
             cli,
             [
                 "runtime",
-                "publish",
+                "deploy",
                 "--source",
                 f"local:{tmp_path}",
                 "--dest",
@@ -2591,12 +2565,12 @@ class TestRuntimePublish:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Publish complete." in result.output
+        assert "Deploy complete." in result.output
         assert "spark_kindling-0.9.25-py3-none-any.whl" in result.output
         uploaded_blobs = list(fake_client._uploaded.keys())
         assert any("packages/" in b for b in uploaded_blobs)
 
-    def test_publish_local_source_missing_dir_fails(self, monkeypatch):
+    def test_deploy_local_source_missing_dir_fails(self, monkeypatch):
         monkeypatch.setattr(
             "kindling_cli.cli._get_blob_service_client",
             lambda account: _make_fake_blob_service_client(),
@@ -2605,7 +2579,7 @@ class TestRuntimePublish:
             cli,
             [
                 "runtime",
-                "publish",
+                "deploy",
                 "--source",
                 "local:/no/such/dir/at/all",
                 "--dest",
@@ -2615,7 +2589,7 @@ class TestRuntimePublish:
         assert result.exit_code != 0
         assert "not found" in result.output
 
-    def test_publish_local_source_no_wheels_fails(self, tmp_path, monkeypatch):
+    def test_deploy_local_source_no_wheels_fails(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "kindling_cli.cli._get_blob_service_client",
             lambda account: _make_fake_blob_service_client(),
@@ -2625,7 +2599,7 @@ class TestRuntimePublish:
             cli,
             [
                 "runtime",
-                "publish",
+                "deploy",
                 "--source",
                 f"local:{tmp_path}",
                 "--dest",
@@ -2635,7 +2609,7 @@ class TestRuntimePublish:
         assert result.exit_code != 0
         assert "No wheel files" in result.output
 
-    def test_publish_adls_source_copies_packages(self, monkeypatch):
+    def test_deploy_adls_source_copies_packages(self, monkeypatch):
         src_prefix = "staging/packages"
         blob_name = "staging/packages/spark_kindling-0.9.0-py3-none-any.whl"
         fake_src = _make_fake_blob_service_client(blobs_by_prefix={src_prefix: [blob_name]})
@@ -2655,7 +2629,7 @@ class TestRuntimePublish:
             cli,
             [
                 "runtime",
-                "publish",
+                "deploy",
                 "--source",
                 "abfss://artifacts@staging.dfs.core.windows.net/staging",
                 "--dest",
@@ -2664,9 +2638,9 @@ class TestRuntimePublish:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Publish complete." in result.output
+        assert "Deploy complete." in result.output
 
-    def test_publish_github_source_rejects_missing_gh_cli(self, monkeypatch):
+    def test_deploy_github_source_rejects_missing_gh_cli(self, monkeypatch):
         import subprocess
 
         monkeypatch.setattr(
@@ -2686,7 +2660,7 @@ class TestRuntimePublish:
             cli,
             [
                 "runtime",
-                "publish",
+                "deploy",
                 "--source",
                 "github:latest",
                 "--dest",
@@ -2697,7 +2671,7 @@ class TestRuntimePublish:
         assert result.exit_code != 0
         assert "gh" in result.output
 
-    def test_publish_skip_bootstrap_omits_scripts(self, tmp_path, monkeypatch):
+    def test_deploy_skip_bootstrap_omits_scripts(self, tmp_path, monkeypatch):
         wheel = tmp_path / "spark_kindling-0.9.25-py3-none-any.whl"
         wheel.write_bytes(b"fake-wheel")
         (tmp_path / "runtime" / "scripts").mkdir(parents=True)
@@ -2713,7 +2687,7 @@ class TestRuntimePublish:
             cli,
             [
                 "runtime",
-                "publish",
+                "deploy",
                 "--source",
                 f"local:{tmp_path}",
                 "--dest",

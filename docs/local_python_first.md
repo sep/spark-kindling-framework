@@ -297,37 +297,40 @@ you want deploy/manage capabilities.
 
 ## Artifact Storage and Workspace Bootstrap
 
-### Publishing runtime artifacts to your lake
+### Deploying runtime artifacts to your lake
 
-Use `kindling runtime publish` to get kindling wheels and the bootstrap script
+Use `kindling runtime deploy` to get kindling wheels and the bootstrap script
 into your Azure Data Lake Storage. This is the primary path for initial setup and
 for promoting between environments (e.g. staging → prod):
 
 ```bash
 # First-time install from GitHub into your storage account
-kindling runtime publish \
+kindling runtime deploy \
   --source github:latest \
   --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
 
 # Promote from staging to prod
-kindling runtime publish \
+kindling runtime deploy \
   --source abfss://artifacts@staging.dfs.core.windows.net/kindling \
   --dest abfss://artifacts@prod.dfs.core.windows.net/kindling
 ```
 
 The `--dest` root becomes your `artifacts_storage_path` in `BOOTSTRAP_CONFIG`.
 
-### Workspace bootstrap assets and config
+### Workspace initialization and config deploy
 
-To also push `settings.yaml` and optional notebook stubs into the workspace:
+To push `settings.yaml` and optional notebook stubs into the workspace for the
+first time:
+
+```bash
+kindling workspace init --platform synapse --storage-account <account>
+```
+
+To re-deploy config after `settings.yaml` changes:
 
 ```bash
 kindling workspace deploy --platform synapse --storage-account <account>
 ```
 
-`workspace deploy` now prefers the combined runtime wheel:
-
-- `dist/spark_kindling-*.whl`
-- falls back to legacy `dist/kindling_<platform>-*.whl` if needed
-
-It also uploads `runtime/scripts/kindling_bootstrap.py` plus config overlays.
+`workspace deploy` deploys `settings.yaml` + overlay configs to `{base}/config/`
+in storage. For runtime wheels and bootstrap script, use `kindling runtime deploy`.

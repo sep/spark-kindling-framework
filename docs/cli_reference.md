@@ -154,63 +154,53 @@ kindling env check --platform fabric
 
 ## workspace
 
-Validate and initialize workspace assets for notebook-backed platforms.
+Manage and deploy platform workspace configuration.
 
-### `workspace check`
+### `workspace init`
 
-Check whether workspace configuration is ready for the selected platform.
+Initialize the platform workspace: deploy `settings.yaml` and overlay configs to
+`{base}/config/` in storage. With `--notebook-bootstrap`, also generates and
+imports notebook bootstrap files into the platform workspace via platform APIs.
+
+Use this for first-time workspace setup.
 
 | Option | Default | Description |
 |---|---|---|
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
-| `--config PATH` | `settings.yaml` | Kindling settings file |
+| `--storage-account TEXT` | `AZURE_STORAGE_ACCOUNT` | Storage account name, `name.domain`, or full URL |
+| `--container TEXT` | `AZURE_CONTAINER` or `artifacts` | Blob container name |
+| `--base-path TEXT` | `AZURE_BASE_PATH` | Base path prefix within container |
+| `--config PATH` | `settings.yaml` | Settings file to deploy |
+| `--notebook-bootstrap` | — | Generate and import notebook bootstrap files into the platform workspace |
+| `--workspace TEXT` | — | Platform workspace for notebook import (required with `--notebook-bootstrap`) |
+| `--overwrite` | — | Overwrite existing config and notebooks |
 
-### `workspace init`
-
-Create starter bootstrap and app notebook files for workspace setup.
-
-| Option | Default | Description |
-|---|---|---|
-| `--output-dir PATH` | `.kindling/workspace` | Output directory |
-| `--platform databricks\|fabric\|synapse` | auto-detected or `fabric` | Target platform |
-| `--force` | — | Overwrite existing files |
+```bash
+kindling workspace init --platform fabric --storage-account myacct
+kindling workspace init --platform fabric --storage-account myacct \
+    --notebook-bootstrap --workspace <workspace-id>
+```
 
 ### `workspace deploy`
 
-Deploy kindling packages, scripts, and config to Azure Blob Storage. Uploads:
-
-- `spark_kindling-*.whl` → `{base}/packages/`
-- `kindling_bootstrap.py` → `{base}/scripts/`
-- `settings.yaml` + overlays → `{base}/config/`
-
-With `--create-notebooks` + `--workspace`, also imports starter notebooks into
-the platform workspace via platform APIs.
+Re-deploy config to Azure Storage after `settings.yaml` changes. Deploys
+`settings.yaml` + overlays to `{base}/config/` in storage only.
 
 | Option | Default | Description |
 |---|---|---|
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
 | `--config PATH` | `settings.yaml` | Settings file to deploy |
-| `--dist-dir PATH` | `dist` | Directory containing built wheel files |
 | `--storage-account TEXT` | `AZURE_STORAGE_ACCOUNT` | Storage account name, `name.domain`, or full URL |
 | `--container TEXT` | `AZURE_CONTAINER` or `artifacts` | Blob container name |
 | `--base-path TEXT` | `AZURE_BASE_PATH` | Base path prefix within container |
-| `--skip-wheels` | — | Skip wheel upload |
-| `--skip-bootstrap-script` | — | Skip bootstrap script upload |
 | `--skip-config` | — | Skip config upload |
-| `--create-notebooks` | — | Generate and import notebook stubs into the workspace |
-| `--workspace TEXT` | — | Target workspace for notebook import |
-| `--overwrite` | — | Overwrite existing scripts, config, and notebooks |
-| `--allow-missing-bootstrap-script` | — | Don't fail if `kindling_bootstrap.py` is not found |
+| `--overwrite` | — | Overwrite existing config |
 | `--allow-missing-config` | — | Don't fail if settings file is not found |
 
 ```bash
 kindling workspace deploy --platform synapse --storage-account mystorageacct
-kindling workspace deploy --platform databricks --create-notebooks --workspace https://adb-123.4.azuredatabricks.net
+kindling workspace deploy --platform fabric --storage-account mystorageacct --overwrite
 ```
-
-> **Note:** `workspace deploy` is for the kindling project team deploying from a
-> local build. To publish kindling to your own storage account as a user, use
-> [`runtime publish`](#runtime-publish).
 
 ---
 
@@ -218,9 +208,9 @@ kindling workspace deploy --platform databricks --create-notebooks --workspace h
 
 Manage kindling runtime artifacts.
 
-### `runtime publish`
+### `runtime deploy`
 
-Publish kindling runtime artifacts (wheels + bootstrap script) to Azure Data
+Deploy kindling runtime artifacts (wheels + bootstrap script) to Azure Data
 Lake Storage. This is the primary path for installing kindling into a new
 environment or promoting between environments (e.g. staging → prod).
 
@@ -251,22 +241,22 @@ The `--dest` root is your `artifacts_storage_path` in `BOOTSTRAP_CONFIG`.
 
 ```bash
 # Install the latest release into a storage account
-kindling runtime publish \
+kindling runtime deploy \
   --source github:latest \
   --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
 
 # Install a specific version
-kindling runtime publish \
+kindling runtime deploy \
   --source github:0.10.15 \
   --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
 
-# Publish from a local build
-kindling runtime publish \
+# Deploy from a local build
+kindling runtime deploy \
   --source local:./dist \
   --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling
 
 # Promote staging → prod (ADLS to ADLS)
-kindling runtime publish \
+kindling runtime deploy \
   --source abfss://artifacts@staging.dfs.core.windows.net/kindling \
   --dest abfss://artifacts@prod.dfs.core.windows.net/kindling
 ```
@@ -676,7 +666,7 @@ Re-run after pulling a new devcontainer image to pick up updated documentation.
 
 | Variable | Used by | Description |
 |---|---|---|
-| `AZURE_STORAGE_ACCOUNT` | `workspace deploy`, `package deploy`, `runtime publish` | Storage account name |
+| `AZURE_STORAGE_ACCOUNT` | `workspace init`, `workspace deploy`, `package deploy`, `runtime deploy` | Storage account name |
 | `AZURE_CONTAINER` | same | Blob container (default: `artifacts`) |
 | `AZURE_BASE_PATH` | same | Base path prefix within container |
 | `AZURE_TENANT_ID` | all Azure auth | Service principal tenant |

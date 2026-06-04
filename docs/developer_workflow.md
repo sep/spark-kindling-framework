@@ -48,36 +48,36 @@ kindling workspace deploy --platform synapse --storage-account <account>
 The Python deploy helpers now prefer the combined runtime wheel and only fall
 back to legacy `kindling_<platform>-*.whl` artifacts when needed.
 
-## Publishing Runtime to User Environments
+## Deploying Runtime to User Environments
 
-Kindling users (not the kindling project team) can publish runtime artifacts to
-their own Azure Data Lake Storage using `kindling runtime publish`. This is the
+Kindling users (not the kindling project team) can deploy runtime artifacts to
+their own Azure Data Lake Storage using `kindling runtime deploy`. This is the
 recommended path for getting wheels and the bootstrap script into a new
 environment, or promoting between environments.
 
 ```bash
 # Install from the latest GitHub release into a storage account
-kindling runtime publish \
+kindling runtime deploy \
   --source github:latest \
   --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
 
 # Install a specific version
-kindling runtime publish \
+kindling runtime deploy \
   --source github:0.10.15 \
   --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
 
-# Publish from a local build
-kindling runtime publish \
+# Deploy from a local build
+kindling runtime deploy \
   --source local:./dist \
   --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling
 
 # Promote from non-prod to prod (ADLS → ADLS)
-kindling runtime publish \
+kindling runtime deploy \
   --source abfss://artifacts@staging.dfs.core.windows.net/kindling \
   --dest abfss://artifacts@prod.dfs.core.windows.net/kindling
 ```
 
-The command publishes to the conventional layout under `--dest`:
+The command deploys to the conventional layout under `--dest`:
 
 - `{dest}/packages/` — `spark_kindling-*.whl`
 - `{dest}/scripts/` — `kindling_bootstrap.py`
