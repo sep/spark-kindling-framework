@@ -17,34 +17,6 @@ from kindling.spark_log_provider import *
 ROUTING_KEY_METHODS: tuple[str, ...] = ("hash", "concat")
 
 
-# [implementer] add clear initialization error — TASK-20260430-001
-class KindlingNotInitializedError(RuntimeError):
-    """Raised when an entity or pipe decorator fires before initialize() is called."""
-
-
-def _raise_if_not_initialized(decorator_name: str, module_kind: str) -> None:
-    try:
-        from kindling.platform_provider import PlatformServiceProvider
-    except Exception as exc:
-        raise KindlingNotInitializedError(
-            f"A @{decorator_name} decorator fired before initialize() was called. "
-            f"Call initialize() before importing {module_kind} modules. "
-            "See your app.py register_all() for the correct order."
-        ) from exc
-
-    try:
-        platform_service = GlobalInjector.get_injector().get(PlatformServiceProvider).get_service()
-    except Exception:
-        platform_service = None
-
-    if platform_service is None:
-        raise KindlingNotInitializedError(
-            f"A @{decorator_name} decorator fired before initialize() was called. "
-            f"Call initialize() before importing {module_kind} modules. "
-            "See your app.py register_all() for the correct order."
-        )
-
-
 # [implementer] add tag-derived SCD configuration surface — TASK-20260429-001
 @dataclass(frozen=True)
 class SCDConfig:
@@ -57,8 +29,6 @@ class SCDConfig:
     is_current_column: str
     current_entity_id: str
     routing_key_method: str
-    close_on_missing: bool = False
-    optimize_unchanged: bool = False
 
 
 @dataclass
@@ -263,8 +233,6 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
         is_current_column=tags.get("scd.current_col", "__is_current"),
         current_entity_id=tags.get("scd.current_entity_id", f"{entity.entityid}.current"),
         routing_key_method=routing_key_method,
-        close_on_missing=tags.get("scd.close_on_missing", "false").strip().lower() == "true",
-        optimize_unchanged=tags.get("scd.optimize_unchanged", "false").strip().lower() == "true",
     )
 
 
@@ -315,38 +283,9 @@ def _validate_scd_config(entity: EntityMetadata) -> None:
         )
 
 
-class _EntityIds:
-    """Auto-populated namespace of entity ID string constants.
-
-    Each registered entity gets an attribute whose name is the entityid
-    with dots replaced by underscores, and whose value is the entityid string.
-
-    Example::
-
-        @DataEntities.entity(entityid="bronze.orders", ...)
-        class BronzeOrders: ...
-
-        # DataEntities.ids.bronze_orders == "bronze.orders"
-        input_entity_ids=[DataEntities.ids.bronze_orders]
-    """
-
-
 class DataEntities:
 
     deregistry = None
-    ids = _EntityIds()
-
-    @staticmethod
-    def _identity_decorator(obj):
-        """Return decorated classes/functions unchanged after registration."""
-        return obj
-
-    # [implementer] expose public test reset API — TASK-20260430-001
-    @classmethod
-    def reset(cls) -> None:
-        """Reset the entity registry. Use between tests to prevent state pollution."""
-        cls.deregistry = None
-        cls.ids = _EntityIds()
 
     @classmethod
     def sql_entity(
@@ -381,17 +320,7 @@ class DataEntities:
             )
         """
         if cls.deregistry is None:
-            try:
-                _raise_if_not_initialized("DataEntities.sql_entity", "entity")
-                cls.deregistry = GlobalInjector.get(DataEntityRegistry)
-            except Exception as exc:
-                if isinstance(exc, KindlingNotInitializedError):
-                    raise
-                raise KindlingNotInitializedError(
-                    "A @DataEntities.sql_entity decorator fired before initialize() was called. "
-                    "Call initialize() before importing entity modules. "
-                    "See your app.py register_all() for the correct order."
-                ) from exc
+            cls.deregistry = GlobalInjector.get(DataEntityRegistry)
 
         provided = sum(x is not None for x in [sql, sql_source])
         if provided != 1:
@@ -411,23 +340,12 @@ class DataEntities:
             schema=None,
             sql=resolved_sql,
         )
-        setattr(cls.ids, entityid.replace(".", "_"), entityid)
-        return cls._identity_decorator
+        return None
 
     @classmethod
     def entity(cls, **decorator_params):
         if cls.deregistry is None:
-            try:
-                _raise_if_not_initialized("DataEntities.entity", "entity")
-                cls.deregistry = GlobalInjector.get(DataEntityRegistry)
-            except Exception as exc:
-                if isinstance(exc, KindlingNotInitializedError):
-                    raise
-                raise KindlingNotInitializedError(
-                    "A @DataEntities.entity decorator fired before initialize() was called. "
-                    "Call initialize() before importing entity modules. "
-                    "See your app.py register_all() for the correct order."
-                ) from exc
+            cls.deregistry = GlobalInjector.get(DataEntityRegistry)
         # Check all required fields are provided (excluding optional fields with defaults)
         all_fields = {field.name for field in fields(EntityMetadata)}
         optional_fields = {
@@ -446,8 +364,8 @@ class DataEntities:
         del decorator_params["entityid"]
 
         cls.deregistry.register_entity(entityid, **decorator_params)
-        setattr(cls.ids, entityid.replace(".", "_"), entityid)
-        return cls._identity_decorator
+
+        return None
 
 
 class DataEntityRegistry(ABC):

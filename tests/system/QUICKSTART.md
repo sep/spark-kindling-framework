@@ -148,7 +148,7 @@ This way, CI/CD uses service principal (Option B) while developers use `az login
 ## Next Steps
 
 - Read the full [System Tests README](README.md)
-- Review the [Job Deployment Documentation](../../docs/job_deployment.md)
+- Review the [Job Deployment Documentation](../../docs/contributing/job_deployment.md)
 - Check out the [test app source](../data-apps/kda-test-app/main.py)
 
 ## Questions?

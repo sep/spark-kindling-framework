@@ -280,7 +280,7 @@ steps:
 
 - [Quick Start Guide](QUICKSTART.md) - Step-by-step setup
 - [System Tests README](README.md) - Complete testing guide
-- [Job Deployment Docs](../../docs/job_deployment.md) - Feature documentation
+- [Job Deployment Docs](../../docs/contributing/job_deployment.md) - Feature documentation
 
 ## Questions?
 

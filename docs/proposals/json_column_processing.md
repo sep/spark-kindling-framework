@@ -926,8 +926,8 @@ def parse_staging(df):
 - [Delta Lake Schema Evolution](https://docs.delta.io/latest/delta-update.html#automatic-schema-evolution)
 - [JSONL Format](https://jsonlines.org/)
 - [JSONPath Specification](https://goessner.net/articles/JsonPath/)
-- [Entity Provider Architecture](../entity_providers.md)
-- [Data Entities Documentation](../data_entities.md)
+- [Entity Provider Architecture](../contributing/entity_providers.md)
+- [Data Entities Documentation](../guide/data_entities.md)
 
 ## Appendix
 

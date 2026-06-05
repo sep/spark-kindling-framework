@@ -526,7 +526,7 @@ class StreamRestartController:
 
 **Recommendation:**
 - ✅ Establish namespace hierarchy: `{component}.{action}.{phase}`
-- ✅ Document naming conventions in [signal_quick_reference.md](../signal_quick_reference.md)
+- ✅ Document naming conventions in [signal_quick_reference.md](../../contributing/signal_quick_reference.md)
 - ✅ Validate consistency in tests
 
 ### Performance Impact

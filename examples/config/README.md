@@ -124,7 +124,7 @@ Workspace IDs are auto-detected per platform:
 
 ## Complete Documentation
 
-See [docs/platform_workspace_config.md](../../docs/platform_workspace_config.md) for:
+See [docs/platform_workspace_config.md](../../docs/contributing/platform_workspace_config.md) for:
 - Complete configuration reference
 - Usage patterns and scenarios
 - Migration guides

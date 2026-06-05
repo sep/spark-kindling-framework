@@ -21,26 +21,26 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 
 ### Core Features
 - [Introduction](./docs/intro.md) - Framework overview and architecture
-- [Data Entities](./docs/data_entities.md) - Data entity management system
-- [Data Pipes](./docs/data_pipes.md) - Transformation pipeline system
-- [Entity Providers](./docs/entity_providers.md) - Storage abstraction system
-- [Setup Guide](./docs/setup_guide.md) - Installation and configuration
+- [Data Entities](./docs/guide/data_entities.md) - Data entity management system
+- [Data Pipes](./docs/guide/data_pipes.md) - Transformation pipeline system
+- [Entity Providers](./docs/contributing/entity_providers.md) - Storage abstraction system
+- [Setup Guide](./docs/guide/setup_guide.md) - Installation and configuration
 
 ### Advanced Features
-- [Job Deployment](./docs/job_deployment.md) - Deploy apps as Spark jobs
-- [Hierarchical Configuration](./docs/platform_workspace_config.md) - Multi-level YAML config system
-- [Logging & Tracing](./docs/logging_tracing.md) - Observability foundation
-- [Watermarking](./docs/watermarking.md) - Change tracking and incremental processing
-- [File Ingestion](./docs/file_ingestion.md) - Built-in file ingestion capabilities
-- [Stage Processing](./docs/stage_processing.md) - Pipeline stage orchestration
+- [Job Deployment](./docs/contributing/job_deployment.md) - Deploy apps as Spark jobs
+- [Hierarchical Configuration](./docs/contributing/platform_workspace_config.md) - Multi-level YAML config system
+- [Logging & Tracing](./docs/contributing/logging_tracing.md) - Observability foundation
+- [Watermarking](./docs/contributing/watermarking.md) - Change tracking and incremental processing
+- [File Ingestion](./docs/guide/file_ingestion.md) - Built-in file ingestion capabilities
+- [Stage Processing](./docs/contributing/stage_processing.md) - Pipeline stage orchestration
 
 ### Platform & Development
-- [Platform API Architecture](./docs/platform_api_architecture.md) - Multi-platform abstraction
-- [Platform Storage Utils](./docs/platform_storage_utils.md) - Storage operations
-- [Utilities](./docs/utilities.md) - Common utilities and helper functions
-- [Build System](./docs/build_system.md) - Platform-specific wheel building
-- [CI/CD Setup](./docs/ci_cd_setup.md) - Continuous integration and deployment
-- [Testing](./docs/testing.md) - Unit, integration, and system testing
+- [Platform API Architecture](./docs/contributing/platform_api_architecture.md) - Multi-platform abstraction
+- [Platform Storage Utils](./docs/contributing/platform_storage_utils.md) - Storage operations
+- [Utilities](./docs/guide/utilities.md) - Common utilities and helper functions
+- [Build System](./docs/contributing/build_system.md) - Platform-specific wheel building
+- [CI/CD Setup](./docs/contributing/ci_cd_setup.md) - Continuous integration and deployment
+- [Testing](./docs/contributing/testing.md) - Unit, integration, and system testing
 
 ## Core Modules
 
@@ -88,7 +88,7 @@ pip install spark-kindling-cli    # `kindling` CLI for scaffolding and deploy
 pip install spark-kindling-sdk    # Programmatic access to platform APIs
 ```
 
-See [docs/release_process.md](./docs/release_process.md) for install-from-release examples and [docs/developer_workflow.md](./docs/developer_workflow.md) for local development.
+See [docs/release_process.md](./docs/contributing/release_process.md) for install-from-release examples and [docs/developer_workflow.md](./docs/contributing/developer_workflow.md) for local development.
 
 ## CLI Quick Start
 
@@ -106,7 +106,7 @@ kindling app run . --env local
 ```
 
 No Azure credentials needed — the scaffold uses in-memory entity providers by default.
-See [Local Python-First Development](./docs/local_python_first.md) for the full local workflow.
+See [Local Python-First Development](./docs/guide/local_python_first.md) for the full local workflow.
 
 ## Notebook Quick Start
 

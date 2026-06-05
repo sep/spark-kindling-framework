@@ -190,6 +190,6 @@ Remaining DAG feature work:
 
 ## Related Documentation
 
-- [DAG Execution Implementation Plan](../docs/proposals/dag_execution_implementation_plan.md)
-- [Data Pipes Documentation](../docs/data_pipes.md)
+- [DAG Execution Implementation Plan](../proposals/obsolete/dag_execution_implementation_plan.md)
+- [Data Pipes Documentation](../guide/data_pipes.md)
 - [GitHub Issue #22](https://github.com/sep/spark-kindling-framework/issues/22)

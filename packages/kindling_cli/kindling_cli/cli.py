@@ -1017,21 +1017,66 @@ def migrate_group() -> None:
     """Inspect and apply entity schema migrations."""
 
 
-@migrate_group.command("plan")
-def migrate_plan() -> None:
-    """Show pending schema changes for all registered entities.
+_MIGRATE_APP_OPTION = click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted).",
+)
+_MIGRATE_ENV_OPTION = click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local').",
+)
+_MIGRATE_CONFIG_OPTION = click.option(
+    "--config",
+    "config_dir",
+    default=None,
+    type=click.Path(path_type=Path, file_okay=False, exists=False),
+    help="Config directory override, if app.py supports it.",
+)
 
-    Requires a running Spark session (must be called from within a Kindling
-    notebook or pipeline context).
-    """
+
+def _bootstrap_migrate(
+    app_path: Optional[Path],
+    env: Optional[str],
+    config_dir: Optional[Path],
+) -> None:
+    """Load app module so GlobalInjector is populated before migrate commands run."""
     try:
-        from kindling.injection import GlobalInjector
-        from kindling.migration import MigrationService
+        from kindling.injection import GlobalInjector  # noqa: F401
+        from kindling.migration import MigrationService  # noqa: F401
     except ImportError as exc:
         raise click.ClickException(
-            "kindling package is required for migrate commands. "
-            "Run this command from within a Kindling execution context."
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
         ) from exc
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, resolved_env, config_dir)
+
+
+@migrate_group.command("plan")
+@_MIGRATE_APP_OPTION
+@_MIGRATE_ENV_OPTION
+@_MIGRATE_CONFIG_OPTION
+def migrate_plan(
+    app_path: Optional[Path],
+    env: Optional[str],
+    config_dir: Optional[Path],
+) -> None:
+    """Show pending schema changes for all registered entities.
+
+    \b
+    Examples:
+      kindling migrate plan --app apps/my-app/app.py --env local
+      kindling migrate plan --env prod
+    """
+    from kindling.injection import GlobalInjector
+    from kindling.migration import MigrationService
+
+    _bootstrap_migrate(app_path, env, config_dir)
 
     svc = GlobalInjector.get(MigrationService)
     plan = svc.plan()
@@ -1054,6 +1099,9 @@ def migrate_plan() -> None:
 
 
 @migrate_group.command("apply")
+@_MIGRATE_APP_OPTION
+@_MIGRATE_ENV_OPTION
+@_MIGRATE_CONFIG_OPTION
 @click.option(
     "--destructive",
     is_flag=True,
@@ -1066,7 +1114,13 @@ def migrate_plan() -> None:
     show_default=True,
     help="Backup strategy before applying destructive changes.",
 )
-def migrate_apply(destructive: bool, backup: str) -> None:
+def migrate_apply(
+    app_path: Optional[Path],
+    env: Optional[str],
+    config_dir: Optional[Path],
+    destructive: bool,
+    backup: str,
+) -> None:
     """Apply pending schema migrations.
 
     Non-destructive changes (column additions) are always applied.
@@ -1077,12 +1131,16 @@ def migrate_apply(destructive: bool, backup: str) -> None:
 
     For STORAGE mode entities, destructive changes rewrite in place using
     Delta's ACID guarantees. Use --backup snapshot to clone first.
+
+    \b
+    Examples:
+      kindling migrate apply --app apps/my-app/app.py --env local
+      kindling migrate apply --env prod --destructive --backup snapshot
     """
-    try:
-        from kindling.injection import GlobalInjector
-        from kindling.migration import BackupStrategy, MigrationService
-    except ImportError as exc:
-        raise click.ClickException("kindling package is required for migrate commands.") from exc
+    from kindling.injection import GlobalInjector
+    from kindling.migration import BackupStrategy, MigrationService
+
+    _bootstrap_migrate(app_path, env, config_dir)
 
     svc = GlobalInjector.get(MigrationService)
     plan = svc.plan()
@@ -1106,22 +1164,32 @@ def migrate_apply(destructive: bool, backup: str) -> None:
 
 @migrate_group.command("rollback")
 @click.argument("entity_id")
-def migrate_rollback(entity_id: str) -> None:
+@_MIGRATE_APP_OPTION
+@_MIGRATE_ENV_OPTION
+@_MIGRATE_CONFIG_OPTION
+def migrate_rollback(
+    entity_id: str,
+    app_path: Optional[Path],
+    env: Optional[str],
+    config_dir: Optional[Path],
+) -> None:
     """Restore a CATALOG entity to its pre-migration state.
 
     Promotes the blue archive (<name>_migration_blue) back to live.
     Only valid after a blue-green apply that has not yet been cleaned up.
+
+    \b
+    Examples:
+      kindling migrate rollback silver.dim_customer --app apps/my-app/app.py
     """
-    try:
-        from kindling.injection import GlobalInjector
-        from kindling.migration import MigrationService
-    except ImportError as exc:
-        raise click.ClickException("kindling package is required for migrate commands.") from exc
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.injection import GlobalInjector
+    from kindling.migration import MigrationService
+
+    _bootstrap_migrate(app_path, env, config_dir)
 
     svc = GlobalInjector.get(MigrationService)
-    registry = GlobalInjector.get(
-        __import__("kindling.data_entities", fromlist=["DataEntityRegistry"]).DataEntityRegistry
-    )
+    registry = GlobalInjector.get(DataEntityRegistry)
     entity = registry.get_entity_definition(entity_id)
     if entity is None:
         raise click.ClickException(f"Entity '{entity_id}' not found in registry.")
@@ -1137,21 +1205,31 @@ def migrate_rollback(entity_id: str) -> None:
 
 @migrate_group.command("cleanup")
 @click.argument("entity_id")
-def migrate_cleanup(entity_id: str) -> None:
+@_MIGRATE_APP_OPTION
+@_MIGRATE_ENV_OPTION
+@_MIGRATE_CONFIG_OPTION
+def migrate_cleanup(
+    entity_id: str,
+    app_path: Optional[Path],
+    env: Optional[str],
+    config_dir: Optional[Path],
+) -> None:
     """Drop blue-green artifacts after a confirmed successful migration.
 
     Drops <name>_migration_blue and <name>_migration_green if present.
+
+    \b
+    Examples:
+      kindling migrate cleanup silver.dim_customer --app apps/my-app/app.py
     """
-    try:
-        from kindling.injection import GlobalInjector
-        from kindling.migration import MigrationService
-    except ImportError as exc:
-        raise click.ClickException("kindling package is required for migrate commands.") from exc
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.injection import GlobalInjector
+    from kindling.migration import MigrationService
+
+    _bootstrap_migrate(app_path, env, config_dir)
 
     svc = GlobalInjector.get(MigrationService)
-    registry = GlobalInjector.get(
-        __import__("kindling.data_entities", fromlist=["DataEntityRegistry"]).DataEntityRegistry
-    )
+    registry = GlobalInjector.get(DataEntityRegistry)
     entity = registry.get_entity_definition(entity_id)
     if entity is None:
         raise click.ClickException(f"Entity '{entity_id}' not found in registry.")

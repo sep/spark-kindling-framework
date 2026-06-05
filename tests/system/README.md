@@ -331,8 +331,8 @@ jobs:
 
 ## Additional Resources
 
-- [Job Deployment Documentation](../../docs/job_deployment.md)
-- [Testing Documentation](../../docs/testing.md)
+- [Job Deployment Documentation](../../docs/contributing/job_deployment.md)
+- [Testing Documentation](../../docs/contributing/testing.md)
 - [Fabric API Documentation](https://learn.microsoft.com/fabric/)
 - [Databricks Jobs API](https://docs.databricks.com/api/workspace/jobs)
 - [Synapse Spark API](https://learn.microsoft.com/azure/synapse-analytics/)

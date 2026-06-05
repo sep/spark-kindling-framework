@@ -4,7 +4,7 @@
 
 ```bash
 bd prime                          # beads workflow context + active issues
-cat .agent-memory/WORKSPACE.md    # project context (until migrated to bd remember)
+gc prime                          # city status: running sessions, health
 ```
 
 ## Agent system
@@ -18,7 +18,7 @@ Dispatch work: `bd create --assignee=<role>` + `bd assign <id> <role>`
 ## Key rules
 
 - All task tracking in `bd` — no markdown TODO lists, no `.agent-memory/mailboxes/`
-- Follow .agent-memory/CONVENTIONS.md for coding conventions
+- Coding conventions: read AGENTS.md and the project source before writing code
 - Record decisions: `bd note <id> "decision: ..."` (not DECISIONS.md)
 - Persistent knowledge: `bd remember "<insight>"` (not MEMORY.md files)
 
