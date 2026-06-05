@@ -45,8 +45,8 @@
 	"initializeCommand": "echo '⚙️  Initializing devcontainer...'",
 	"mounts": [
 		"source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
-		"source=fawkes-copilot-chat,target=/home/vscode/.vscode-server/data/User/globalStorage/github.copilot-chat,type=volume",
-		"source=fawkes-openai-chatgpt,target=/home/vscode/.vscode-server/data/User/globalStorage/openai.chatgpt,type=volume"
+		"source=kindling-copilot-chat,target=/home/vscode/.vscode-server/data/User/globalStorage/github.copilot-chat,type=volume",
+		"source=kindling-openai-chatgpt,target=/home/vscode/.vscode-server/data/User/globalStorage/openai.chatgpt,type=volume"
 	],
 	"forwardPorts": [
 		4040
