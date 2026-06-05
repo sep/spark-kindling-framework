@@ -2921,3 +2921,136 @@ class TestRuntimeDeploy:
         result = CliRunner().invoke(cli, ["--help"])
         assert result.exit_code == 0
         assert "runtime" in result.output
+
+
+# ---------------------------------------------------------------------------
+# migrate command group
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_migrate_modules(monkeypatch, *, has_changes=False, has_destructive=False):
+    """Wire up fake kindling.migration and kindling.injection for migrate tests."""
+    import types
+
+    fake_plan = types.SimpleNamespace(
+        has_changes=has_changes,
+        has_destructive_changes=has_destructive,
+        errors=[],
+        print_summary=lambda: None,
+    )
+
+    fake_svc = types.SimpleNamespace(
+        plan=lambda: fake_plan,
+        apply=lambda plan, allow_destructive=False, backup=None: None,
+        rollback=lambda entity: None,
+        cleanup=lambda entity: None,
+    )
+
+    fake_entity = types.SimpleNamespace(entityid="silver.dim_customer")
+
+    fake_registry = types.SimpleNamespace(
+        get_entity_definition=lambda eid: fake_entity if eid == "silver.dim_customer" else None
+    )
+
+    class FakeInjector:
+        _map = {}
+
+        @classmethod
+        def get(cls, svc_type):
+            return cls._map.get(svc_type)
+
+    # Use distinct sentinel classes so the two _map entries don't collide.
+    class _FakeMigrationService:
+        pass
+
+    class _FakeDataEntityRegistry:
+        pass
+
+    fake_migration = types.ModuleType("kindling.migration")
+    fake_migration.MigrationService = _FakeMigrationService
+    fake_migration.BackupStrategy = types.SimpleNamespace(NONE="none", SNAPSHOT="snapshot")
+    FakeInjector._map[_FakeMigrationService] = fake_svc
+
+    fake_entities = types.ModuleType("kindling.data_entities")
+    fake_entities.DataEntityRegistry = _FakeDataEntityRegistry
+    FakeInjector._map[_FakeDataEntityRegistry] = fake_registry
+
+    fake_injection = types.ModuleType("kindling.injection")
+    fake_injection.GlobalInjector = FakeInjector
+
+    monkeypatch.setitem(sys.modules, "kindling.migration", fake_migration)
+    monkeypatch.setitem(sys.modules, "kindling.data_entities", fake_entities)
+    monkeypatch.setitem(sys.modules, "kindling.injection", fake_injection)
+    monkeypatch.setattr("kindling_cli.cli._load_app_module", lambda *a, **kw: None)
+    monkeypatch.setattr("kindling_cli.cli._discover_app_py", lambda p: Path(p or "app.py"))
+
+    return fake_svc, fake_plan, fake_entity
+
+
+def test_migrate_plan_reports_up_to_date(tmp_path, monkeypatch):
+    _make_fake_migrate_modules(monkeypatch, has_changes=False)
+    result = CliRunner().invoke(cli, ["migrate", "plan", "--app", "app.py", "--env", "local"])
+    assert result.exit_code == 0, result.output
+    assert "up to date" in result.output
+
+
+def test_migrate_plan_shows_pending_changes(tmp_path, monkeypatch):
+    _make_fake_migrate_modules(monkeypatch, has_changes=True)
+    result = CliRunner().invoke(cli, ["migrate", "plan", "--app", "app.py", "--env", "local"])
+    assert result.exit_code == 0, result.output
+    assert "Pending migrations" in result.output
+
+
+def test_migrate_plan_warns_on_destructive(tmp_path, monkeypatch):
+    _make_fake_migrate_modules(monkeypatch, has_changes=True, has_destructive=True)
+    result = CliRunner().invoke(cli, ["migrate", "plan", "--app", "app.py"])
+    assert result.exit_code == 0, result.output
+    assert "--destructive" in result.output
+
+
+def test_migrate_apply_up_to_date(tmp_path, monkeypatch):
+    _make_fake_migrate_modules(monkeypatch, has_changes=False)
+    result = CliRunner().invoke(cli, ["migrate", "apply", "--app", "app.py"])
+    assert result.exit_code == 0, result.output
+    assert "up to date" in result.output
+
+
+def test_migrate_apply_with_changes(tmp_path, monkeypatch):
+    _make_fake_migrate_modules(monkeypatch, has_changes=True)
+    result = CliRunner().invoke(cli, ["migrate", "apply", "--app", "app.py"])
+    assert result.exit_code == 0, result.output
+    assert "Migration complete" in result.output
+
+
+def test_migrate_rollback_unknown_entity(tmp_path, monkeypatch):
+    _make_fake_migrate_modules(monkeypatch)
+    result = CliRunner().invoke(cli, ["migrate", "rollback", "bronze.unknown", "--app", "app.py"])
+    assert result.exit_code != 0
+    assert "not found" in result.output
+
+
+def test_migrate_rollback_known_entity(tmp_path, monkeypatch):
+    _make_fake_migrate_modules(monkeypatch)
+    result = CliRunner().invoke(
+        cli, ["migrate", "rollback", "silver.dim_customer", "--app", "app.py"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Rolled back" in result.output
+
+
+def test_migrate_cleanup_known_entity(tmp_path, monkeypatch):
+    _make_fake_migrate_modules(monkeypatch)
+    result = CliRunner().invoke(
+        cli, ["migrate", "cleanup", "silver.dim_customer", "--app", "app.py"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Cleanup complete" in result.output
+
+
+def test_migrate_plan_accepts_env_and_config_flags(tmp_path, monkeypatch):
+    _make_fake_migrate_modules(monkeypatch, has_changes=False)
+    result = CliRunner().invoke(
+        cli,
+        ["migrate", "plan", "--app", "app.py", "--env", "prod", "--config", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output

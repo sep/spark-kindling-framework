@@ -88,24 +88,29 @@ RUN mkdir -p /opt/hadoop-jars \
 # Note: vscode user already exists in the base image
 RUN mkdir -p /spark-warehouse && chown -R vscode:vscode /spark-warehouse
 
-# ── Gastown multi-agent tools ─────────────────────────────────────────────────
+# Pre-create .vscode-server subtree so Docker doesn't create intermediate dirs as root
+# when mounting extension volumes (fawkes-copilot-chat, fawkes-openai-chatgpt) into
+# data/User/globalStorage/... — if data/ is root-owned, VS Code can't create data/Machine.
+RUN mkdir -p /home/vscode/.vscode-server/data/Machine /home/vscode/.vscode-server/data/User/globalStorage && chown -R vscode:vscode /home/vscode/.vscode-server
+
+# ── Gas City multi-agent tools ────────────────────────────────────────────────
 # Pinned versions matching .tools/bin/ in the repo.
-# gt (gastown), dolt (work-queue DB), bd (beads issue tracker)
-ENV GT_VERSION=1.0.1 \
-    DOLT_VERSION=1.86.6 \
+# gc (gascity), dolt (work-queue DB), bd (beads issue tracker)
+ENV GC_VERSION=1.2.1 \
+    DOLT_VERSION=2.1.2 \
     BD_VERSION=1.0.3
 
 RUN set -eux; \
-    # gastown (gt)
-    curl -fsSL "https://github.com/gastownhall/gastown/releases/download/v${GT_VERSION}/gastown_${GT_VERSION}_linux_amd64.tar.gz" \
-    | tar -xz -C /usr/local/bin gt; \
+    # gc (gascity)
+    curl -fsSL "https://github.com/gastownhall/gascity/releases/download/v${GC_VERSION}/gascity_${GC_VERSION}_linux_amd64.tar.gz" \
+    | tar -xz -C /usr/local/bin gc; \
     # dolt
     curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" \
     | tar -xz --strip-components=2 -C /usr/local/bin dolt-linux-amd64/bin/dolt; \
     # beads (bd)
     curl -fsSL "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz" \
     | tar -xz -C /usr/local/bin bd; \
-    chmod +x /usr/local/bin/gt /usr/local/bin/dolt /usr/local/bin/bd
+    chmod +x /usr/local/bin/gc /usr/local/bin/dolt /usr/local/bin/bd
 
 # Node.js LTS + Claude Code CLI (agents need the `claude` binary)
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \

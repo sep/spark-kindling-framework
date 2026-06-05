@@ -94,7 +94,7 @@ Exceptions (cross-Lakehouse writes, streaming sink limitations, or platform-spec
 - `provider.table_name`: fully qualified table name (when using `forName`)
 - `provider.path`: explicit storage path (when using `forPath`)
 
-See [examples/config/](../examples/config/) for complete examples of all platform configs.
+See [examples/config/](../../examples/config/) for complete examples of all platform configs.
 
 ### 3. Workspace-Specific Settings (`workspace_{workspace_id}.yaml`)
 
@@ -495,4 +495,4 @@ Move settings to YAML files for better maintainability and version control.
 
 - [Platform API Architecture](./platform_api_architecture.md) - Technical deep dive
 - [Setup Guide](./setup_guide.md) - Initialization and configuration workflow
-- [Example Configs](../examples/config/) - Complete working examples
+- [Example Configs](../../examples/config/) - Complete working examples

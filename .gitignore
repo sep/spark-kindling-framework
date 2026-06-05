@@ -117,7 +117,13 @@ setup_agents.sh
 *.db
 .beads-credential-key
 
-# Gas Town rig infrastructure (lives in ~/gt-hq/kindling/, not here)
+# Gas City machine-local state (never committed)
+.gc/
+.work/
+city/
+city.toml
+
+# Gas City rig infrastructure (managed by gc, not part of the repo)
 mayor/
 polecats/
 refinery/

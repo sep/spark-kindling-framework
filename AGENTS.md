@@ -1,16 +1,16 @@
 # Agent System
 
-Kindling uses Gas Town plus beads (`bd`) for agent workflow and issue tracking.
+Kindling uses Gas City plus beads (`bd`) for agent workflow and issue tracking.
 
-## Gas Town Workflow
+## Gas City Workflow
 
 - Use beads as the source of truth for issues, claims, dependencies, and status.
 - Run `bd prime` for current operational context.
 - Use `bd ready --json` to find unblocked work.
-- Use `bd formula list --json` to inspect available Gas Town formulas.
-- Use Gas Town polecat/refinery/witness flows for multi-agent execution when
+- Use `gc formula list --json` to inspect available formulas.
+- Use Gastown pack polecat/refinery/witness agents for multi-agent execution when
   orchestration is needed.
-- Keep branch and PR state synchronized through the Gas Town harness.
+- Keep branch and PR state synchronized through the Gas City harness.
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:full hash:f65d5d33 -->

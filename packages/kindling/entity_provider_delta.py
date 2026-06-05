@@ -18,10 +18,6 @@ from kindling.features import get_feature_bool, set_runtime_feature
 # Import your existing modules
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
-
-_SCD2_NULL_SENTINEL = "__null__"
-_SCD2_MERGE_KEY_COLUMN = "__merge_key"
-_SCD2_CHANGED_COLUMN = "__scd2_changed"
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 
@@ -34,13 +30,8 @@ from .entity_provider import (
     WritableEntityProvider,
 )
 
-
-class ReadOnlyEntityError(Exception):
-    """Raised when a write is attempted on a read-only entity."""
-
-
-class EntityPathConflictError(Exception):
-    """Raised when catalog registration exists at a different path than expected."""
+_SCD2_NULL_SENTINEL = "__null__"
+_SCD2_MERGE_KEY_COLUMN = "__merge_key"
 
 
 class DeltaMergeStrategy(ABC):
@@ -172,15 +163,6 @@ def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
     return f"sha2(to_json(named_struct({', '.join(named_struct_args)})), 256)"
 
 
-def _hash_tracked_columns(tracked_columns: list[str]):
-    """SHA2-256 hash over sorted tracked columns for change detection.
-
-    Uses to_json(struct(...)) to avoid delimiter-collision issues that arise
-    with concat_ws when column values contain the separator character.
-    """
-    return sha2(to_json(struct(*[col(c) for c in sorted(tracked_columns)])), 256)
-
-
 def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     """Execute an SCD Type 2 staged-updates merge for a Delta table."""
     if _SCD2_MERGE_KEY_COLUMN in df.columns:
@@ -200,76 +182,27 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         for column in df.columns
         if column not in business_keys and column not in temporal_columns
     ]
+    change_condition = _build_null_safe_change_condition("source", "target", tracked_columns)
     current_target = (
         delta_table.toDF().filter(col(cfg.is_current_column) == lit(True)).alias("target")
     )
 
-    # ── Step 1: compute changed_rows ─────────────────────────────────────
-    if cfg.optimize_unchanged and tracked_columns:
-        # Hash-based change detection — single pass instead of N column comparisons.
-        # source_hashed / target_hashed are kept in scope for the close_on_missing
-        # sentinel computation below when both features are active.
-        hash_expr = _hash_tracked_columns(tracked_columns)
-        source_hashed = df.withColumn("__scd2_src_hash", hash_expr)
-        target_hashed = current_target.withColumn("__scd2_tgt_hash", hash_expr)
-        changed_rows = (
-            source_hashed.alias("source")
-            .join(target_hashed, on=business_keys, how="inner")
-            .where(col("__scd2_src_hash") != col("__scd2_tgt_hash"))
-            .select("source.*")
-        )
-    else:
-        source_hashed = None
-        target_hashed = None
-        change_condition = _build_null_safe_change_condition("source", "target", tracked_columns)
-        changed_rows = (
-            df.alias("source")
-            .join(current_target, on=business_keys, how="inner")
-            .where(change_condition)
-            .select("source.*")
-        )
-
+    changed_rows = (
+        df.alias("source")
+        .join(current_target, on=business_keys, how="inner")
+        .where(change_condition)
+        .select("source.*")
+    )
     new_rows = df.join(current_target, on=business_keys, how="left_anti")
     # [integrator] unchanged rows omitted from Group B — closing a row that hasn't changed creates a false history entry — TASK-20260429-001
     rows_to_close_or_insert = changed_rows.unionByName(new_rows, allowMissingColumns=True)
 
-    # ── Step 2: build staged ──────────────────────────────────────────────
     insert_rows = changed_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, lit(None).cast("string"))
     keyed_rows = rows_to_close_or_insert.withColumn(
         _SCD2_MERGE_KEY_COLUMN, _routing_key_column_expr(business_keys, cfg.routing_key_method)
     )
+    staged = insert_rows.unionByName(keyed_rows, allowMissingColumns=True)
 
-    if cfg.close_on_missing:
-        # Add sentinel rows for unchanged-but-present keys so whenNotMatchedBySource
-        # does NOT fire on them — only truly absent keys should be closed.
-        if source_hashed is not None:
-            # Reuse hashed frames from the optimize_unchanged branch above.
-            unchanged_rows = (
-                source_hashed.alias("source")
-                .join(target_hashed, on=business_keys, how="inner")
-                .where(col("__scd2_src_hash") == col("__scd2_tgt_hash"))
-                .select("source.*")
-            )
-        else:
-            unchanged_rows = (
-                df.alias("source")
-                .join(current_target, on=business_keys, how="inner")
-                .where(f"NOT ({change_condition})")
-                .select("source.*")
-            )
-        sentinels = unchanged_rows.withColumn(
-            _SCD2_MERGE_KEY_COLUMN, _routing_key_column_expr(business_keys, cfg.routing_key_method)
-        ).withColumn(_SCD2_CHANGED_COLUMN, lit(False))
-        keyed_rows = keyed_rows.withColumn(_SCD2_CHANGED_COLUMN, lit(True))
-        insert_rows = insert_rows.withColumn(_SCD2_CHANGED_COLUMN, lit(False))
-        staged = insert_rows.unionByName(
-            keyed_rows.unionByName(sentinels, allowMissingColumns=True),
-            allowMissingColumns=True,
-        )
-    else:
-        staged = insert_rows.unionByName(keyed_rows, allowMissingColumns=True)
-
-    # ── Step 3: insert values and merge condition (unchanged) ─────────────
     source_columns = [column for column in df.columns if column not in temporal_columns]
     insert_values = {
         _quote_sql_identifier(column): _quote_sql_identifier(column, "staged")
@@ -283,37 +216,19 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         f"{target_routing_key_sql} = staged.__merge_key "
         f"AND {_quote_sql_identifier(cfg.is_current_column, 'target')} = true"
     )
-    close_set = {
-        _quote_sql_identifier(cfg.effective_to_column): "current_timestamp()",
-        _quote_sql_identifier(cfg.is_current_column): "false",
-    }
 
-    # ── Step 4: execute merge ─────────────────────────────────────────────
-    if cfg.close_on_missing:
-        (
-            delta_table.alias("target")
-            .merge(source=staged.alias("staged"), condition=merge_condition)
-            .whenMatchedUpdate(
-                condition=f"staged.`{_SCD2_CHANGED_COLUMN}` = true",
-                set=close_set,
-            )
-            .whenNotMatchedInsert(values=insert_values)
-            .whenNotMatchedBySourceUpdate(
-                condition=f"{_quote_sql_identifier(cfg.is_current_column, 'target')} = true",
-                set=close_set,
-            )
-            .execute()
+    (
+        delta_table.alias("target")
+        .merge(source=staged.alias("staged"), condition=merge_condition)
+        .whenMatchedUpdate(
+            set={
+                _quote_sql_identifier(cfg.effective_to_column): "current_timestamp()",
+                _quote_sql_identifier(cfg.is_current_column): "false",
+            }
         )
-    else:
-        (
-            delta_table.alias("target")
-            .merge(source=staged.alias("staged"), condition=merge_condition)
-            .whenMatchedUpdate(
-                set=close_set,
-            )
-            .whenNotMatchedInsert(values=insert_values)
-            .execute()
-        )
+        .whenNotMatchedInsert(values=insert_values)
+        .execute()
+    )
 
 
 class DeltaAccessMode:
@@ -923,73 +838,8 @@ class DeltaEntityProvider(
                     self.logger.debug(f"Path check failed: {e2}")
                     return False
 
-    def _is_read_only(self, entity) -> bool:
-        tags = getattr(entity, "tags", {}) or {}
-        return str(tags.get("read_only", "")).lower() == "true"
-
-    def _ensure_external_registration(self, entity, table_ref: DeltaTableReference) -> None:
-        """Register a read-only Delta table in the catalog without creating it."""
-        if not table_ref.table_name:
-            self.logger.debug(
-                f"Skipping external registration for read-only entity '{entity.entityid}': no table_name"
-            )
-            return
-
-        catalog_exists = self._check_catalog_table_exists(table_ref)
-
-        if catalog_exists:
-            registered_path = self._resolve_catalog_table_location(table_ref.table_name)
-            expected_path = table_ref.table_path
-
-            if not expected_path or registered_path == expected_path:
-                self.logger.debug(
-                    f"Read-only entity '{entity.entityid}' already registered at expected path"
-                )
-                return
-
-            tags = getattr(entity, "tags", {}) or {}
-            on_conflict = str(tags.get("read_only.on_path_conflict", "error")).lower()
-
-            if on_conflict == "reregister":
-                self.logger.warning(
-                    f"Read-only entity '{entity.entityid}': catalog path mismatch "
-                    f"(registered={registered_path}, expected={expected_path}). "
-                    "Re-registering per read_only.on_path_conflict=reregister."
-                )
-                quoted = self._quote_table_identifier(table_ref.table_name)
-                self.spark.sql(f"DROP TABLE IF EXISTS {quoted}")
-                escaped_path = expected_path.replace("'", "''")
-                self.spark.sql(
-                    f"CREATE TABLE IF NOT EXISTS {quoted} USING DELTA LOCATION '{escaped_path}'"
-                )
-            else:
-                raise EntityPathConflictError(
-                    f"Read-only entity '{entity.entityid}': catalog registration exists at "
-                    f"'{registered_path}' but expected '{expected_path}'. "
-                    "Set tag read_only.on_path_conflict=reregister to auto-reregister."
-                )
-        else:
-            if not table_ref.table_path:
-                self.logger.warning(
-                    f"Read-only entity '{entity.entityid}': no table_path available for registration"
-                )
-                return
-            quoted = self._quote_table_identifier(table_ref.table_name)
-            escaped_path = table_ref.table_path.replace("'", "''")
-            self.logger.info(
-                f"Registering read-only entity '{entity.entityid}' in catalog at '{table_ref.table_path}'"
-            )
-            self.spark.sql(
-                f"CREATE TABLE IF NOT EXISTS {quoted} USING DELTA LOCATION '{escaped_path}'"
-            )
-
     def _ensure_table_exists(self, entity, table_ref: DeltaTableReference):
         """Ensure table exists, create if needed"""
-
-        if self._is_read_only(entity):
-            if self._is_for_name_mode(table_ref.access_mode):
-                self._ensure_external_registration(entity, table_ref)
-            return
 
         if self._is_for_name_mode(table_ref.access_mode):
             catalog_exists = self._check_catalog_table_exists(table_ref)
@@ -1436,10 +1286,6 @@ class DeltaEntityProvider(
         return self._check_table_exists(table_ref)
 
     def append_as_stream(self, df, entity, checkpointLocation, format=None, options=None):
-        if self._is_read_only(entity):
-            raise ReadOnlyEntityError(
-                f"Entity '{entity.entityid}' is read-only; streaming write operations are not permitted."
-            )
         epl = GlobalInjector.get(EntityPathLocator)
         streamFormat = format or "delta"
 
@@ -1452,10 +1298,6 @@ class DeltaEntityProvider(
 
     def merge_to_entity(self, df: DataFrame, entity):
         """Merge DataFrame to entity table with signal emissions."""
-        if self._is_read_only(entity):
-            raise ReadOnlyEntityError(
-                f"Entity '{entity.entityid}' is read-only; merge operations are not permitted."
-            )
         start_time = time.time()
         table_ref = self._get_table_reference(entity)
 
@@ -1492,10 +1334,6 @@ class DeltaEntityProvider(
 
     def append_to_entity(self, df: DataFrame, entity):
         """Append DataFrame to entity table with signal emissions."""
-        if self._is_read_only(entity):
-            raise ReadOnlyEntityError(
-                f"Entity '{entity.entityid}' is read-only; append operations are not permitted."
-            )
         start_time = time.time()
         table_ref = self._get_table_reference(entity)
 
@@ -1583,10 +1421,6 @@ class DeltaEntityProvider(
 
     def write_to_entity(self, df: DataFrame, entity):
         """Write DataFrame to entity table with signal emissions."""
-        if self._is_read_only(entity):
-            raise ReadOnlyEntityError(
-                f"Entity '{entity.entityid}' is read-only; write operations are not permitted."
-            )
         start_time = time.time()
         table_ref = self._get_table_reference(entity)
 

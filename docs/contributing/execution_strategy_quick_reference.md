@@ -4,9 +4,9 @@
 
 The execution strategy module provides strategy pattern implementations for batch vs streaming execution ordering of data pipelines.
 
-**Module:** `packages/kindling/execution_strategy.py`  
-**Dependencies:** `pipe_graph.py`, `data_pipes.py`  
-**Tests:** 31 unit + 13 integration = 44 total  
+**Module:** `packages/kindling/execution_strategy.py`
+**Dependencies:** `pipe_graph.py`, `data_pipes.py`
+**Tests:** 31 unit + 13 integration = 44 total
 **Coverage:** 94% on `execution_strategy.py` (latest targeted test run)
 
 ## Core Classes
@@ -22,7 +22,7 @@ class CustomStrategy(ExecutionStrategy):
     def plan(self, graph: PipeGraph, pipe_ids: List[str]) -> ExecutionPlan:
         # Custom planning logic
         pass
-    
+
     def get_strategy_name(self) -> str:
         return "custom"
 ```
@@ -228,7 +228,7 @@ for gen in plan.generations:
 pipe_ids = [
     "read_events",
     "write_to_db",
-    "write_to_warehouse", 
+    "write_to_warehouse",
     "write_to_lake"
 ]
 
@@ -432,7 +432,7 @@ pytest tests/integration/test_execution_strategy_integration.py -v
 ## Related Documentation
 
 - [Pipe Graph Quick Reference](pipe_graph_quick_reference.md) - Foundation for execution strategies
-- [docs/graph_based_pipe_execution_plan.md](../docs/graph_based_pipe_execution_plan.md) - Overall design document
+- [docs/graph_based_pipe_execution_plan.md](./graph_based_pipe_execution_plan.md) - Overall design document
 - [GitHub Issue #23](https://github.com/sep/spark-kindling-framework/issues/23) - Execution Strategies feature
 
 ## Summary

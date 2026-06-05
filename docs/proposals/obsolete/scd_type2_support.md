@@ -919,9 +919,9 @@ No changes needed. The registry routes to the appropriate provider, and SCD2 log
 - [Delta Lake SCD Type 2 Documentation](https://docs.delta.io/latest/delta-update.html#slowly-changing-data-scd-type-2-operation)
 - [Signal-Driven Streaming Proposal — SCD Section](signal_dag_streaming_proposal.md)
 - [DAG Execution Plan — Dimension Change Detection](dag_execution_implementation_plan.md)
-- [Entity Providers Documentation](../entity_providers.md)
-- [Data Entities Documentation](../data_entities.md)
-- [Watermarking Documentation](../watermarking.md)
+- [Entity Providers Documentation](../../contributing/entity_providers.md)
+- [Data Entities Documentation](../../guide/data_entities.md)
+- [Watermarking Documentation](../../contributing/watermarking.md)
 - [Config-Based Entity Providers](config_based_entity_providers.md)
 
 ## Appendix

@@ -976,9 +976,9 @@ entity_tags = {
 
 ## References
 
-- [Entity Provider Registry Documentation](../entity_providers.md)
-- [Data Entities Documentation](../data_entities.md)
-- [Watermarking Documentation](../watermarking.md)
+- [Entity Provider Registry Documentation](../contributing/entity_providers.md)
+- [Data Entities Documentation](../guide/data_entities.md)
+- [Watermarking Documentation](../contributing/watermarking.md)
 - [Config-Based Entity Providers Proposal](config_based_entity_providers.md)
 - [Delta Lake Schema Evolution](https://docs.delta.io/latest/delta-update.html#automatic-schema-evolution)
 - [Blue/Green Deployment Pattern](https://martinfowler.com/bliki/BlueGreenDeployment.html)
