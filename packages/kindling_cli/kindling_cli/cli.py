@@ -2990,19 +2990,27 @@ def _run_remote_app(
             "Upgrade spark-kindling-sdk when platform support is available."
         )
     runner_id = runner_status.get("runner_id")
-    if not runner_id:
-        raise click.ClickException(
-            f"No Kindling runner found on {resolved_platform}. "
-            f"Run 'kindling runner ensure --platform {resolved_platform}' to install it."
-        )
 
     _emit_progress(f"[2/2] Submitting app run `{resolved_name}`...", json_output)
     try:
-        run_id = api_client.submit_app_run(
-            resolved_name,
-            environment=env or None,
-            parameters=parameters or None,
-        )
+        if runner_id:
+            run_id = api_client.submit_app_run(
+                resolved_name,
+                environment=env or None,
+                parameters=parameters or None,
+            )
+        else:
+            _emit_progress(
+                f"No runner found — submitting `{resolved_name}` directly via its own job definition.",
+                json_output,
+            )
+            run_params = {}
+            if env:
+                run_params["environment"] = env
+            if parameters:
+                run_params.update(parameters)
+            api_client.ensure_app_job(resolved_name)
+            run_id = api_client.run_job(resolved_name, parameters=run_params or None)
     except NotImplementedError:
         raise click.ClickException(
             f"Runner-aligned app submission is not yet supported on {resolved_platform}. "
