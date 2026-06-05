@@ -89,7 +89,7 @@ RUN mkdir -p /opt/hadoop-jars \
 RUN mkdir -p /spark-warehouse && chown -R vscode:vscode /spark-warehouse
 
 # Pre-create .vscode-server subtree so Docker doesn't create intermediate dirs as root
-# when mounting extension volumes (fawkes-copilot-chat, fawkes-openai-chatgpt) into
+# when mounting extension volumes (kindling-copilot-chat, kindling-openai-chatgpt) into
 # data/User/globalStorage/... — if data/ is root-owned, VS Code can't create data/Machine.
 RUN mkdir -p /home/vscode/.vscode-server/data/Machine /home/vscode/.vscode-server/data/User/globalStorage && chown -R vscode:vscode /home/vscode/.vscode-server
 
