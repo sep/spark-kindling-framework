@@ -5,14 +5,15 @@ from typing import Dict, Optional
 
 from delta.tables import *
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql.functions import current_timestamp, lit, row_number, when
+from pyspark.sql.window import Window
+
 from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_trace import *
-from pyspark.sql.functions import current_timestamp, lit, row_number, when
-from pyspark.sql.window import Window
 
 from .simple_read_persist_strategy import *
 
@@ -90,7 +91,8 @@ class StageProcessor(StageProcessingService, SignalEmitter):
                 details=stage_details,
                 reraise=True,
             ):
-                self.ep.ensure_entity_table(self.wef.get_watermark_entity_for_layer(layer))
+                if any(self.dpr.get_pipe_definition(pid).use_watermark for pid in stage_pipe_ids):
+                    self.ep.ensure_entity_table(self.wef.get_watermark_entity_for_layer(layer))
                 self.dep.run_datapipes(stage_pipe_ids)
 
             duration = time.time() - start_time

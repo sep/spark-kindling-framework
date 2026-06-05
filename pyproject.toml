@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "spark-kindling"
-version = "0.10.16"
+version = "0.10.17"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -118,7 +118,7 @@ upload = { shell = "bash scripts/upload_to_storage.sh" }
 upload-release = { shell = "bash scripts/upload_to_storage.sh --release" }
 
 # Release tasks
-release = { shell = "bash scripts/release.sh" }
+release = { shell = "bash scripts/release.sh ${version}", help = "Tag and release a version. Run 'poe version --bump_type patch' first.", args = [{name = "version", positional = true, help = "Version to release (e.g. 0.9.4)"}] }
 
 # Development environment setup
 init-azure = { shell = "source scripts/init_azure_dev.sh" }
