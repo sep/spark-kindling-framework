@@ -49,7 +49,8 @@ def _get_mssparkutils():
         from notebookutils import mssparkutils
 
         return mssparkutils
-    except ImportError:
+    except Exception as e:
+        print(f"[DEBUG] Failed to import notebookutils.mssparkutils: {type(e).__name__}: {e}")
         pass
 
     # Final fallback - raise error
@@ -74,6 +75,11 @@ class SynapseTokenCredential(TokenCredential):
 
     def __init__(self, expires_on=None):
         mssparkutils = _get_mssparkutils()
+        if not mssparkutils:
+            raise ImportError(
+                "mssparkutils not available in Synapse environment. "
+                "Ensure the Synapse Spark pool has notebookutils installed."
+            )
         # Use simple "Synapse" audience - NOT a URL!
         self.token = mssparkutils.credentials.getToken("Synapse")
         self.expires_on = expires_on or (time.time() + 3600)
