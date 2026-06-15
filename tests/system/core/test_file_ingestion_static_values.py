@@ -102,7 +102,7 @@ _schema = StructType([
 ])
 
 DataEntities.entity(
-    entityid="test_static.entity",
+    entityid="test_static_entity",
     name="test_static_entity",
     merge_columns=["row_id"],
     tags={{}},
@@ -131,7 +131,7 @@ _log.warning("File ingestion complete")
 # ── Step 4: read back and validate static columns ─────────────────────────────
 der = get_kindling_service(DataEntityRegistry)
 ep = get_kindling_service(EntityProvider)
-entity = der.get_entity_definition("test_static.entity")
+entity = der.get_entity_definition("test_static_entity")
 df = ep.read_entity(entity)
 rows = df.collect()
 
