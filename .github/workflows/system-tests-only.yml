@@ -93,7 +93,7 @@ jobs:
           pip install -e .
 
       - name: Download wheel artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           name: platform-wheels
           path: dist/
