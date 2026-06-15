@@ -287,3 +287,7 @@ class TestEventHubProvider:
                     print(f"[CLEANUP] Cleaned up app: {app_name}")
                 except Exception as exc:
                     print(f"[WARN] Failed to cleanup app {app_name}: {exc}")
+
+            from tests.system.test_helpers import cleanup_test_storage
+
+            cleanup_test_storage(platform_name, test_id)

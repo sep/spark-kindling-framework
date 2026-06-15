@@ -373,6 +373,7 @@ jobs:
           echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG=${UC_VOLUME_CATALOG:-kindling}" >> "$GITHUB_ENV"
           echo "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA=${UC_VOLUME_SCHEMA:-kindling}" >> "$GITHUB_ENV"
           echo "KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME=${UC_TEMP_VOLUME:-artifacts}" >> "$GITHUB_ENV"
+          echo "KINDLING_DATABRICKS_RUNTIME_TEMP_SUBDIR=ci-tests" >> "$GITHUB_ENV"
 
       - name: Run Databricks UC preflight
         if: |

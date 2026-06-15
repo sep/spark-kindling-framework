@@ -180,3 +180,7 @@ class TestStreamingPipesOrchestratorAuto:
                 print(f"✅ Cleaned up app: {app_name}")
             except Exception as e:
                 print(f"⚠️  Failed to cleanup app {app_name}: {e}")
+
+            from tests.system.test_helpers import cleanup_test_storage
+
+            cleanup_test_storage(platform_name, test_id)

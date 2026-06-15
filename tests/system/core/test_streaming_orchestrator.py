@@ -269,9 +269,13 @@ class TestStreamingOrchestratorIntegration:
                 print("   ❌ No streaming trace spans found")
 
         finally:
-            self._cleanup_test(api_client, job_id, app_name)
+            self._cleanup_test(
+                api_client, job_id, app_name, platform_name=platform_name, test_id=test_id
+            )
 
-    def _cleanup_test(self, api_client, job_id: str, app_name: str):
+    def _cleanup_test(
+        self, api_client, job_id: str, app_name: str, platform_name: str = None, test_id: str = None
+    ):
         if os.environ.get("SKIP_TEST_CLEANUP", "").lower() == "true":
             print(f"⏸️  Skipping cleanup (SKIP_TEST_CLEANUP=true) - job: {job_id}, app: {app_name}")
             return
@@ -289,3 +293,7 @@ class TestStreamingOrchestratorIntegration:
                 print(f"🗑️  Cleaned up app: {app_name}")
         except Exception as e:
             print(f"⚠️  Error cleaning up app: {e}")
+
+        from tests.system.test_helpers import cleanup_test_storage
+
+        cleanup_test_storage(platform_name, test_id)

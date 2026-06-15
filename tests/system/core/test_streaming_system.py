@@ -226,7 +226,9 @@ class TestStreamingSystemIntegration:
             print(f"   - Found {len(signal_found)}/{len(signal_markers)} signals")
 
         finally:
-            self._cleanup_test(api_client, job_id, app_name)
+            self._cleanup_test(
+                api_client, job_id, app_name, platform_name=platform_name, test_id=test_id
+            )
 
     def test_streaming_health_monitoring(
         self,
@@ -287,7 +289,9 @@ class TestStreamingSystemIntegration:
             print(f"\n✅ Health monitoring validated!")
 
         finally:
-            self._cleanup_test(api_client, job_id, app_name)
+            self._cleanup_test(
+                api_client, job_id, app_name, platform_name=platform_name, test_id=test_id
+            )
 
     def test_streaming_signal_flow(
         self,
@@ -358,9 +362,13 @@ class TestStreamingSystemIntegration:
             print(f"\n✅ Signal flow validated! ({len(found_signals)} signals found)")
 
         finally:
-            self._cleanup_test(api_client, job_id, app_name)
+            self._cleanup_test(
+                api_client, job_id, app_name, platform_name=platform_name, test_id=test_id
+            )
 
-    def _cleanup_test(self, api_client, job_id: str, app_name: str):
+    def _cleanup_test(
+        self, api_client, job_id: str, app_name: str, platform_name: str = None, test_id: str = None
+    ):
         """Clean up job and app files using platform API"""
         if os.environ.get("SKIP_TEST_CLEANUP", "").lower() == "true":
             print(f"⏸️  Skipping cleanup (SKIP_TEST_CLEANUP=true) - job: {job_id}, app: {app_name}")
@@ -381,6 +389,10 @@ class TestStreamingSystemIntegration:
                 print(f"🗑️  Cleaned up app: {app_name}")
         except Exception as e:
             print(f"⚠️  Error cleaning up app: {e}")
+
+        from tests.system.test_helpers import cleanup_test_storage
+
+        cleanup_test_storage(platform_name, test_id)
 
 
 if __name__ == "__main__":

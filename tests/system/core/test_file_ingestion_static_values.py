@@ -248,7 +248,7 @@ class TestFileIngestionStaticValues:
     """Verify that static_values on a file ingestion entry are applied as literal columns."""
 
     def test_static_values_appear_as_columns_after_ingestion(
-        self, static_values_test_app, stdout_validator
+        self, platform_client, static_values_test_app, stdout_validator
     ):
         """
         CSV has two columns (row_id, value).
@@ -256,6 +256,7 @@ class TestFileIngestionStaticValues:
         After ingestion the entity table must have all four columns,
         with every row carrying the expected static values.
         """
+        _, platform_name = platform_client
         api_client, app_name, job_name, job_config = static_values_test_app
 
         result = api_client.create_job(job_name=job_name, job_config=job_config)
@@ -297,3 +298,7 @@ class TestFileIngestionStaticValues:
             except Exception:
                 pass
             api_client.delete_job(job_id=job_id)
+
+            from tests.system.test_helpers import cleanup_test_storage
+
+            cleanup_test_storage(platform_name, job_config["test_id"])
