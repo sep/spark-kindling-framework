@@ -45,3 +45,19 @@ def test_name_mapper_without_config_does_not_require_default_catalog_for_two_par
 
     with patch("kindling.entity_resolution._get_current_namespace", return_value=(None, None)):
         assert mapper.get_table_name(entity) == "event_hub_raw.raw_telemetry_events"
+
+
+def test_name_mapper_without_config_does_not_prefix_spark_catalog_for_two_part_names():
+    mapper = _make_mapper_with_no_config()
+
+    entity = MagicMock()
+    entity.tags = {}
+    entity.entityid = "event_hub_raw.raw_telemetry_events"
+
+    # spark_catalog is the built-in Hive catalog — not a real UC catalog.
+    # Entity IDs must stay as schema.table, not spark_catalog.schema.table.
+    with patch(
+        "kindling.entity_resolution._get_current_namespace",
+        return_value=("spark_catalog", "default"),
+    ):
+        assert mapper.get_table_name(entity) == "event_hub_raw.raw_telemetry_events"

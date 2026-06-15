@@ -1119,7 +1119,10 @@ class DataAppManager(DataAppRunner):
         wheels_dir.mkdir(parents=True, exist_ok=True)
 
         # Fetch the lake package listing once and reuse it throughout the walk.
+        packages_dir = self._get_packages_dir()
+        print(f"[BFS] Listing lake packages dir: {packages_dir}")
         all_available = self._list_available_wheels()
+        print(f"[BFS] Found {len(all_available)} wheel file(s) in packages dir")
         self.logger.info(
             f"Lake packages dir contains {len(all_available)} file(s): {all_available[:10]}"
         )
@@ -1139,6 +1142,7 @@ class DataAppManager(DataAppRunner):
 
             wheel_path = self._find_best_wheel(package_spec, all_available)
             if not wheel_path:
+                print(f"[BFS] Not found in lake: {package_spec}")
                 self.logger.debug(f"Not in lake, skipping: {package_spec}")
                 continue
 
@@ -1146,6 +1150,7 @@ class DataAppManager(DataAppRunner):
             local_wheel_path = wheels_dir / wheel_name
             remote_wheel_path = f"{self.artifacts_path}/packages/{wheel_name}"
 
+            print(f"[BFS] Downloading: {wheel_name}")
             if not local_wheel_path.exists():
                 try:
                     self.logger.debug(f"Downloading: {wheel_name}")
@@ -1155,10 +1160,14 @@ class DataAppManager(DataAppRunner):
                     file_size = local_wheel_path.stat().st_size
                     total_size += file_size
                     downloaded.append(wheel_name)
+                    print(f"[BFS] Downloaded: {wheel_name} ({file_size/1024/1024:.1f}MB)")
                     self.logger.debug(f"Downloaded {wheel_name} ({file_size/1024/1024:.1f}MB)")
                 except Exception as exc:
                     self.logger.error(f"Failed to download {wheel_name}: {exc}")
-                    continue
+                    print(f"[BFS] ERROR: Failed to download {wheel_name}: {exc}")
+                    raise RuntimeError(
+                        f"BFS: Failed to download required wheel {wheel_name}"
+                    ) from exc
 
             # Inspect METADATA and enqueue any deps resolvable from the lake.
             for req_str in self._read_wheel_requires(local_wheel_path):

@@ -167,7 +167,10 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
                 return ".".join(parts)
             if len(parts) == 2:
                 catalog, _schema = _get_current_namespace()
-                if catalog:
+                # spark_catalog is the built-in Hive catalog, not a real UC catalog.
+                # Treat it as absent so entity IDs stay as schema.table (matches
+                # features.py which also excludes spark_catalog from UC detection).
+                if catalog and catalog.lower() != "spark_catalog":
                     return f"{catalog}.{parts[0]}.{parts[1]}"
                 return ".".join(parts)
             # One-part (or weird) names: return as-is to avoid surprising remaps.
