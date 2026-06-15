@@ -193,6 +193,13 @@ def _use_namespace(spark, catalog: str | None, schema: str | None) -> tuple[str 
     return _get_current_namespace(spark)
 
 
+def _is_uc_catalog(catalog: str | None) -> bool:
+    """Return True only for real Unity Catalog catalogs (not the built-in spark_catalog)."""
+    if not catalog:
+        return False
+    return catalog.lower() != "spark_catalog"
+
+
 def _build_entity_case(
     leaf_name: str,
     write_schema: str,
@@ -201,20 +208,21 @@ def _build_entity_case(
     config_catalog: str | None = None,
     config_schema: str | None = None,
 ) -> tuple[str, str]:
+    uc_catalog = catalog if _is_uc_catalog(catalog) else None
     if use_config_namespace:
         entity_id = leaf_name
         if config_catalog and config_schema:
             expected_table_name = f"{config_catalog}.{config_schema}.{leaf_name}"
         elif config_schema:
             expected_table_name = f"{config_schema}.{leaf_name}"
-        elif catalog:
-            expected_table_name = f"{catalog}.{write_schema}.{leaf_name}"
+        elif uc_catalog:
+            expected_table_name = f"{uc_catalog}.{write_schema}.{leaf_name}"
         else:
             expected_table_name = f"{write_schema}.{leaf_name}"
     else:
         entity_id = f"{write_schema}.{leaf_name}"
-        if catalog:
-            expected_table_name = f"{catalog}.{write_schema}.{leaf_name}"
+        if uc_catalog:
+            expected_table_name = f"{uc_catalog}.{write_schema}.{leaf_name}"
         else:
             expected_table_name = f"{write_schema}.{leaf_name}"
 
@@ -242,7 +250,7 @@ def _mapping_matches(
 
 
 def _supports_three_part_names(platform: str, catalog: str | None) -> bool:
-    return platform in {"fabric", "databricks"} and bool(catalog)
+    return platform in {"fabric", "databricks"} and _is_uc_catalog(catalog)
 
 
 def _make_entity(entityid: str, schema: StructType) -> EntityMetadata:

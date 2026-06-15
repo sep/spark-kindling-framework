@@ -29,6 +29,7 @@ import uuid
 import pytest
 
 from tests.system.test_helpers import (
+    apply_env_config_overrides,
     assert_no_fatal_system_test_log_lines,
     create_platform_client,
     get_system_test_poll_interval,
@@ -86,6 +87,7 @@ def _app_src(
     return f"""\
 import logging
 import sys
+import traceback
 
 _log = logging.getLogger("file_ingestion_static_test")
 
@@ -123,42 +125,66 @@ FileIngestionEntries.entry(
     }},
 )
 
-# ── Step 3: process the ABFS folder ──────────────────────────────────────────
-processor = get_kindling_service(ParallelizingFileIngestionProcessor)
-processor.process_path("{csv_abfss_folder}")
-_log.warning("File ingestion complete")
+try:
+    # ── Step 3: process the ABFS folder ──────────────────────────────────────
+    print("STATIC_VALUES_TEST: starting process_path", flush=True)
+    processor = get_kindling_service(ParallelizingFileIngestionProcessor)
+    processor.process_path("{csv_abfss_folder}")
+    _log.warning("File ingestion complete")
+    print("STATIC_VALUES_TEST: process_path complete", flush=True)
 
-# ── Step 4: read back and validate static columns ─────────────────────────────
-der = get_kindling_service(DataEntityRegistry)
-ep = get_kindling_service(EntityProvider)
-entity = der.get_entity_definition("test_static_entity")
-df = ep.read_entity(entity)
-rows = df.collect()
+    # ── Step 4: read back and validate static columns ─────────────────────────
+    der = get_kindling_service(DataEntityRegistry)
+    ep = get_kindling_service(EntityProvider)
+    entity = der.get_entity_definition("test_static_entity")
+    df = ep.read_entity(entity)
+    rows = df.collect()
 
-if not rows:
-    _log.warning("STATIC_VALUES_TEST: FAILED — no rows written")
+    if not rows:
+        msg = "STATIC_VALUES_TEST: FAILED — no rows written"
+        _log.warning(msg)
+        print(msg, flush=True)
+        sys.exit(1)
+
+    col_names = df.columns
+    if "source_system" not in col_names:
+        msg = f"STATIC_VALUES_TEST: FAILED — 'source_system' column missing; got: {{col_names}}"
+        _log.warning(msg)
+        print(msg, flush=True)
+        sys.exit(1)
+    if "environment" not in col_names:
+        msg = f"STATIC_VALUES_TEST: FAILED — 'environment' column missing; got: {{col_names}}"
+        _log.warning(msg)
+        print(msg, flush=True)
+        sys.exit(1)
+
+    bad_source = [r["source_system"] for r in rows if r["source_system"] != "{expected_source}"]
+    bad_env = [r["environment"] for r in rows if r["environment"] != "{expected_env}"]
+
+    if bad_source:
+        msg = f"STATIC_VALUES_TEST: FAILED — source_system mismatch: {{bad_source}}"
+        _log.warning(msg)
+        print(msg, flush=True)
+        sys.exit(1)
+    if bad_env:
+        msg = f"STATIC_VALUES_TEST: FAILED — environment mismatch: {{bad_env}}"
+        _log.warning(msg)
+        print(msg, flush=True)
+        sys.exit(1)
+
+    _log.warning("STATIC_VALUES_TEST: PASSED")
+    print("STATIC_VALUES_TEST: PASSED", flush=True)
+    sys.exit(0)
+
+except SystemExit:
+    raise
+except Exception as _exc:
+    tb = traceback.format_exc()
+    msg = f"STATIC_VALUES_TEST: FAILED — exception: {{_exc}}"
+    _log.exception(msg)
+    print(msg, flush=True)
+    print(tb, flush=True)
     sys.exit(1)
-
-col_names = df.columns
-if "source_system" not in col_names:
-    _log.warning("STATIC_VALUES_TEST: FAILED — 'source_system' column missing; got: %s", col_names)
-    sys.exit(1)
-if "environment" not in col_names:
-    _log.warning("STATIC_VALUES_TEST: FAILED — 'environment' column missing; got: %s", col_names)
-    sys.exit(1)
-
-bad_source = [r["source_system"] for r in rows if r["source_system"] != "{expected_source}"]
-bad_env = [r["environment"] for r in rows if r["environment"] != "{expected_env}"]
-
-if bad_source:
-    _log.warning("STATIC_VALUES_TEST: FAILED — source_system mismatch: %s", bad_source)
-    sys.exit(1)
-if bad_env:
-    _log.warning("STATIC_VALUES_TEST: FAILED — environment mismatch: %s", bad_env)
-    sys.exit(1)
-
-_log.warning("STATIC_VALUES_TEST: PASSED")
-sys.exit(0)
 """
 
 
@@ -185,7 +211,7 @@ def blob_client():
 @pytest.fixture
 def static_values_test_app(platform_client, blob_client):
     """Upload the test CSV and deploy the static_values test app."""
-    api_client, _ = platform_client
+    api_client, platform_name = platform_client
     suffix = str(uuid.uuid4())[:8]
     app_name = f"systest-fi-static-{suffix}"
     job_name = f"systest-fi-static-job-{suffix}"
@@ -214,6 +240,7 @@ def static_values_test_app(platform_client, blob_client):
         "test_id": suffix,
         "config_overrides": {"kindling": {"artifacts_storage_path": abfss_base}},
     }
+    job_config = apply_env_config_overrides(job_config, platform_name)
 
     app_files = {
         "app.py": _app_src(
