@@ -316,6 +316,11 @@ class DataEntities:
     deregistry = None
 
     @classmethod
+    def reset(cls) -> None:
+        """Reset the entity registry. Use between tests to prevent state pollution."""
+        cls.deregistry = None
+
+    @classmethod
     def sql_entity(
         cls,
         entityid: str,
