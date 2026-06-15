@@ -479,6 +479,28 @@ class DatabricksService(PlatformService):
                 files = dbutils.fs.ls(path)
                 result = [f.name for f in files]
                 if result or not path.startswith("abfss://"):
+                    if result and path.startswith("abfss://"):
+                        # Cross-check with ADLS SDK to detect listing discrepancies.
+                        # dbutils.fs.ls() on UC clusters can return stale results for
+                        # recently-uploaded files due to caching or access-layer differences.
+                        try:
+                            account_url, container, remote_path = self._parse_abfss(path)
+                            remote_path = remote_path.rstrip("/")
+                            fs_client = self._adls_fs_client(account_url, container)
+                            sdk_result = [
+                                item.name.split("/")[-1]
+                                for item in fs_client.get_paths(path=remote_path or "/")
+                                if not item.is_directory
+                            ]
+                            if len(sdk_result) != len(result):
+                                self.logger.warning(
+                                    f"[list] dbutils returned {len(result)} file(s) but "
+                                    f"ADLS SDK returned {len(sdk_result)} — using SDK result. "
+                                    f"dbutils: {sorted(result)[:10]}  SDK: {sorted(sdk_result)[:10]}"
+                                )
+                                return sdk_result
+                        except Exception as exc:
+                            self.logger.debug(f"[list] SDK cross-check failed (non-fatal): {exc}")
                     return result
                 # Empty result for ABFS — may be UC access issue; fall through to SDK
             except Exception:
