@@ -1580,6 +1580,17 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             logger.info(f"Loaded {len(workspace_packages)} workspace packages")
         else:
             logger.info("Skipping workspace package loading (load_local=False)")
+            # Pre-seed the notebook cache so any subsequent call to get_all_notebooks()
+            # returns immediately instead of hitting the platform API, which may be
+            # unavailable from the Spark cluster in some environments.
+            try:
+                loader = get_kindling_service(NotebookManager)
+                if loader._notebook_cache is None:
+                    loader._notebook_cache = []
+                    loader._folder_cache = set()
+                    logger.debug("Notebook cache pre-seeded empty (load_local=False)")
+            except Exception as _pre_seed_err:
+                logger.debug(f"Could not pre-seed notebook cache: {_pre_seed_err}")
 
         logger.info("Framework initialization complete")
 
