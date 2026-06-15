@@ -114,7 +114,7 @@ FileIngestionEntries.entry(
     entry_id="test_static_values",
     name="test static values ingestion",
     patterns=[r"test_static\\.csv"],
-    dest_entity_id="test_static.entity",
+    dest_entity_id="test_static_entity",
     tags={{}},
     filetype="csv",
     static_values={{

@@ -265,9 +265,10 @@ class DataAppPackage:
             platform_suffix = (
                 f"-{target_platform}" if target_platform and merge_platform_config else ""
             )
-            output_path = (
-                f"{app_name}{platform_suffix}-v{app_version}{DataAppConstants.KDA_EXTENSION}"
-            )
+            filename = f"{app_name}{platform_suffix}-v{app_version}{DataAppConstants.KDA_EXTENSION}"
+            dist_dir = Path("dist")
+            dist_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(dist_dir / filename)
 
         if logger:
             platform_info = f" for {target_platform}" if target_platform else ""
@@ -586,9 +587,12 @@ class DataAppManager(DataAppRunner):
                 platform_suffix = (
                     f"-{target_platform}" if target_platform and merge_platform_config else ""
                 )
-                output_path = (
+                filename = (
                     f"{app_name}{platform_suffix}-v{app_version}{DataAppConstants.KDA_EXTENSION}"
                 )
+                dist_dir = Path("dist")
+                dist_dir.mkdir(parents=True, exist_ok=True)
+                output_path = str(dist_dir / filename)
 
             platform_info = f" for {target_platform}" if target_platform else ""
             merge_info = (
