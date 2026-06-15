@@ -40,6 +40,7 @@ def emit_result(logger, test_id: str, test_name: str, passed: bool, message: str
 
 
 def main():
+    print("[config-secrets-test-app] main() entered", flush=True)
     logger = get_logger()
     config_service = get_kindling_service(ConfigService)
     test_id = get_test_id(config_service)
