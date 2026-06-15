@@ -272,12 +272,13 @@ def bfs_test_app(platform_client, lake_test_wheels):
 class TestLakeWheelBFS:
     """Verify BFS transitive dep discovery for lake wheel installation."""
 
-    def test_transitive_dep_loaded_from_lake(self, bfs_test_app, stdout_validator):
+    def test_transitive_dep_loaded_from_lake(self, platform_client, bfs_test_app, stdout_validator):
         """
         lake-reqs.txt lists only test-lake-dep-a.
         BFS should discover test-lake-dep-b via pkgA's Requires-Dist and
         download it so Python's import machinery loads it transitively.
         """
+        _, platform_name = platform_client
         api_client, app_name, job_name, job_config = bfs_test_app
 
         result = api_client.create_job(job_name=job_name, job_config=job_config)
@@ -328,3 +329,7 @@ class TestLakeWheelBFS:
             except Exception:
                 pass
             api_client.delete_job(job_id=job_id)
+
+            from tests.system.test_helpers import cleanup_test_storage
+
+            cleanup_test_storage(platform_name, job_config["test_id"])

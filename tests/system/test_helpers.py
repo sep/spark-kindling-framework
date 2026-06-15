@@ -914,3 +914,48 @@ def create_platform_client(platform: str):
         return client, platform_name
     except ValueError as e:
         pytest.skip(str(e))
+
+
+def cleanup_test_storage(platform_name: str, test_id: Optional[str]) -> None:
+    """Delete the cloud storage directory tree created for a system-test run.
+
+    Covers Databricks UC (ADLS-backed volume) and Synapse (ADLS direct) paths.
+    Skips silently when SKIP_TEST_CLEANUP=true, AZURE_STORAGE_ACCOUNT is unset,
+    test_id is empty, or the directory no longer exists.
+    """
+    if os.environ.get("SKIP_TEST_CLEANUP", "").lower() == "true":
+        return
+    if not test_id:
+        return
+
+    storage_account = (os.getenv("AZURE_STORAGE_ACCOUNT") or "").strip()
+    if not storage_account:
+        return
+
+    container = (os.getenv("AZURE_CONTAINER") or "artifacts").strip()
+
+    if platform_name == "databricks":
+        subdir = (os.getenv("KINDLING_DATABRICKS_RUNTIME_TEMP_SUBDIR") or "").strip("/")
+        dir_path = f"{subdir}/{test_id}" if subdir else test_id
+    elif platform_name == "synapse":
+        dir_path = f"kindling_system_tests/{test_id}"
+    else:
+        return
+
+    try:
+        from azure.core.exceptions import ResourceNotFoundError
+        from azure.storage.filedatalake import DataLakeServiceClient
+        from kindling_cli.cli import create_azure_credential
+
+        credential = create_azure_credential(additionally_allowed_tenants=["*"])
+        service_client = DataLakeServiceClient(
+            account_url=f"https://{storage_account}.dfs.core.windows.net",
+            credential=credential,
+        )
+        fs_client = service_client.get_file_system_client(container)
+        fs_client.get_directory_client(dir_path).delete_directory()
+        print(f"Cleaned up test storage: {container}/{dir_path}")
+    except ResourceNotFoundError:
+        pass
+    except Exception as exc:
+        print(f"Warning: could not clean up test storage {container}/{dir_path}: {exc}")

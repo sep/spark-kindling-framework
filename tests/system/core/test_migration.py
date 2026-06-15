@@ -188,9 +188,13 @@ class TestMigrationService:
             )
 
         finally:
-            self._cleanup(api_client, job_id, app_name)
+            self._cleanup(
+                api_client, job_id, app_name, platform_name=platform_name, test_id=test_id
+            )
 
-    def _cleanup(self, api_client, job_id: str, app_name: str) -> None:
+    def _cleanup(
+        self, api_client, job_id: str, app_name: str, platform_name: str = None, test_id: str = None
+    ) -> None:
         import os
 
         if os.environ.get("SKIP_TEST_CLEANUP", "").lower() == "true":
@@ -206,3 +210,7 @@ class TestMigrationService:
             print(f"Cleaned up app: {app_name}")
         except Exception as e:
             print(f"Warning: could not clean up app {app_name}: {e}")
+
+        from tests.system.test_helpers import cleanup_test_storage
+
+        cleanup_test_storage(platform_name, test_id)

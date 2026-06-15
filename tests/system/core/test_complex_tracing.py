@@ -362,6 +362,10 @@ class TestComplexTracing:
         except Exception as e:
             print(f"⚠️  Cleanup warning: {e}")
 
+        from tests.system.test_helpers import cleanup_test_storage
+
+        cleanup_test_storage(platform, test_id)
+
     def test_default_telemetry(self, platform_client, app_packager):
         """Test complex tracing with default Kindling telemetry"""
         self._run_tracing_test(platform_client, app_packager, use_azure_monitor=False)

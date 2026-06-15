@@ -147,11 +147,18 @@ def get_databricks_uc_volume_root() -> str:
 
     This keeps the system test namespace environment-driven so Terraform and
     runtime config can point at the same managed-volume namespace.
+
+    The optional KINDLING_DATABRICKS_RUNTIME_TEMP_SUBDIR env var adds a
+    subdirectory beneath the volume, scoping all test I/O away from the volume
+    root (and therefore away from the ADLS container root when the volume is
+    backed by the top-level artifacts container).
     """
     catalog = (os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG") or "medallion").strip()
     schema = (os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA") or "default").strip()
     volume = (os.getenv("KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME") or "temp").strip()
-    return f"/Volumes/{catalog}/{schema}/{volume}"
+    subdir = (os.getenv("KINDLING_DATABRICKS_RUNTIME_TEMP_SUBDIR") or "").strip("/")
+    root = f"/Volumes/{catalog}/{schema}/{volume}"
+    return f"{root}/{subdir}" if subdir else root
 
 
 def pytest_generate_tests(metafunc):

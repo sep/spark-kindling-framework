@@ -85,7 +85,9 @@ class TestPlatformJobDeployment:
 
         # Cleanup
         print(f"🧹 Cleaning up: {job_id}")
-        self._cleanup_test(api_client, job_id, app_name)
+        self._cleanup_test(
+            api_client, job_id, app_name, platform_name=platform_name, test_id=job_config["test_id"]
+        )
 
     def test_run_and_monitor_job(
         self, platform_client, app_packager, test_app_path, job_config_provider, stdout_validator
@@ -165,7 +167,9 @@ class TestPlatformJobDeployment:
             print("\n✅ All validations passed!")
 
         finally:
-            self._cleanup_test(api_client, job_id, app_name)
+            self._cleanup_test(
+                api_client, job_id, app_name, platform_name=platform_name, test_id=test_id
+            )
 
     def test_job_cancellation(
         self, platform_client, app_packager, test_app_path, job_config_provider
@@ -233,7 +237,13 @@ class TestPlatformJobDeployment:
             print(f"✅ Verified cancellation: {final_status['status']}")
 
         finally:
-            self._cleanup_test(api_client, job_id, app_name)
+            self._cleanup_test(
+                api_client,
+                job_id,
+                app_name,
+                platform_name=platform_name,
+                test_id=job_config["test_id"],
+            )
 
     def test_job_with_invalid_config(self, platform_client, test_app_path):
         """Test that invalid config is rejected - runs on all platforms"""
@@ -319,7 +329,9 @@ class TestPlatformJobDeployment:
         else:
             print(f"   ✅ All expected log entries found!")
 
-    def _cleanup_test(self, api_client, job_id: str, app_name: str):
+    def _cleanup_test(
+        self, api_client, job_id: str, app_name: str, platform_name: str = None, test_id: str = None
+    ):
         """Clean up job and app files using platform API"""
         import os
 
@@ -342,6 +354,10 @@ class TestPlatformJobDeployment:
                 print(f"🗑️  Cleaned up app: {app_name}")
         except Exception as e:
             print(f"⚠️  Error cleaning up app: {e}")
+
+        from tests.system.test_helpers import cleanup_test_storage
+
+        cleanup_test_storage(platform_name, test_id)
 
 
 @pytest.mark.system
