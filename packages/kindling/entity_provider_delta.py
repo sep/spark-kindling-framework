@@ -1226,12 +1226,11 @@ class DeltaEntityProvider(
 
     def _append_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Append DataFrame to existing Delta table"""
-        writer = df.write.format("delta").mode("append")
+        writer = df.write.format("delta").mode("append").option("mergeSchema", "true")
 
         if self._should_partition_files(entity):
             writer = writer.partitionBy(*entity.partition_columns)
 
-        writer.option("mergeSchema", "true")  # Schema evolution
         if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
             self._ensure_configured_table_schema_exists()
             writer.saveAsTable(table_ref.table_name)
