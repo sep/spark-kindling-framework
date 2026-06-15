@@ -32,6 +32,8 @@ from .entity_provider import (
 
 _SCD2_NULL_SENTINEL = "__null__"
 _SCD2_MERGE_KEY_COLUMN = "__merge_key"
+_SCD2_CHANGED_COLUMN = "__scd2_changed"
+_SCD2_SRC_HASH_COLUMN = "__scd2_src_hash"
 
 
 class DeltaMergeStrategy(ABC):
@@ -182,26 +184,70 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         for column in df.columns
         if column not in business_keys and column not in temporal_columns
     ]
-    change_condition = _build_null_safe_change_condition("source", "target", tracked_columns)
     current_target = (
         delta_table.toDF().filter(col(cfg.is_current_column) == lit(True)).alias("target")
     )
+    close_set = {
+        _quote_sql_identifier(cfg.effective_to_column): "current_timestamp()",
+        _quote_sql_identifier(cfg.is_current_column): "false",
+    }
 
-    changed_rows = (
-        df.alias("source")
-        .join(current_target, on=business_keys, how="inner")
-        .where(change_condition)
-        .select("source.*")
-    )
-    new_rows = df.join(current_target, on=business_keys, how="left_anti")
-    # [integrator] unchanged rows omitted from Group B — closing a row that hasn't changed creates a false history entry — TASK-20260429-001
+    if cfg.optimize_unchanged:
+        hash_expr = sha2(to_json(struct(*[col(c) for c in tracked_columns])), 256)
+        source_hashed = df.withColumn(_SCD2_SRC_HASH_COLUMN, hash_expr)
+        tgt_hash_expr = sha2(to_json(struct(*[col(f"target.{c}") for c in tracked_columns])), 256)
+        changed_rows = (
+            source_hashed.alias("source")
+            .join(current_target, on=business_keys, how="inner")
+            .where(f"source.{_SCD2_SRC_HASH_COLUMN} != {tgt_hash_expr}")
+            .select("source.*")
+        )
+        if cfg.close_on_missing:
+            unchanged_rows = (
+                source_hashed.alias("source")
+                .join(current_target, on=business_keys, how="inner")
+                .where(f"source.{_SCD2_SRC_HASH_COLUMN} = {tgt_hash_expr}")
+                .select("source.*")
+            )
+        new_rows = df.join(current_target, on=business_keys, how="left_anti")
+    else:
+        change_condition = _build_null_safe_change_condition("source", "target", tracked_columns)
+        changed_rows = (
+            df.alias("source")
+            .join(current_target, on=business_keys, how="inner")
+            .where(change_condition)
+            .select("source.*")
+        )
+        if cfg.close_on_missing:
+            unchanged_rows = (
+                df.alias("source")
+                .join(current_target, on=business_keys, how="inner")
+                .where(f"NOT ({change_condition})")
+                .select("source.*")
+            )
+        new_rows = df.join(current_target, on=business_keys, how="left_anti")
+
     rows_to_close_or_insert = changed_rows.unionByName(new_rows, allowMissingColumns=True)
+    routing_key_expr = _routing_key_column_expr(business_keys, cfg.routing_key_method)
 
-    insert_rows = changed_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, lit(None).cast("string"))
-    keyed_rows = rows_to_close_or_insert.withColumn(
-        _SCD2_MERGE_KEY_COLUMN, _routing_key_column_expr(business_keys, cfg.routing_key_method)
-    )
-    staged = insert_rows.unionByName(keyed_rows, allowMissingColumns=True)
+    if cfg.close_on_missing:
+        insert_rows = changed_rows.withColumn(
+            _SCD2_MERGE_KEY_COLUMN, lit(None).cast("string")
+        ).withColumn(_SCD2_CHANGED_COLUMN, lit(True))
+        keyed_rows = rows_to_close_or_insert.withColumn(
+            _SCD2_MERGE_KEY_COLUMN, routing_key_expr
+        ).withColumn(_SCD2_CHANGED_COLUMN, lit(True))
+        sentinels = unchanged_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, routing_key_expr).withColumn(
+            _SCD2_CHANGED_COLUMN, lit(False)
+        )
+        staged = insert_rows.unionByName(
+            keyed_rows.unionByName(sentinels, allowMissingColumns=True),
+            allowMissingColumns=True,
+        )
+    else:
+        insert_rows = changed_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, lit(None).cast("string"))
+        keyed_rows = rows_to_close_or_insert.withColumn(_SCD2_MERGE_KEY_COLUMN, routing_key_expr)
+        staged = insert_rows.unionByName(keyed_rows, allowMissingColumns=True)
 
     source_columns = [column for column in df.columns if column not in temporal_columns]
     insert_values = {
@@ -217,18 +263,23 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         f"AND {_quote_sql_identifier(cfg.is_current_column, 'target')} = true"
     )
 
-    (
-        delta_table.alias("target")
-        .merge(source=staged.alias("staged"), condition=merge_condition)
-        .whenMatchedUpdate(
-            set={
-                _quote_sql_identifier(cfg.effective_to_column): "current_timestamp()",
-                _quote_sql_identifier(cfg.is_current_column): "false",
-            }
-        )
-        .whenNotMatchedInsert(values=insert_values)
-        .execute()
+    builder = delta_table.alias("target").merge(
+        source=staged.alias("staged"), condition=merge_condition
     )
+    if cfg.close_on_missing:
+        builder = (
+            builder.whenMatchedUpdate(condition=f"staged.{_SCD2_CHANGED_COLUMN}", set=close_set)
+            .whenNotMatchedInsert(values=insert_values)
+            .whenNotMatchedBySourceUpdate(
+                condition=f"target.{cfg.is_current_column} = true",
+                set=close_set,
+            )
+        )
+    else:
+        builder = builder.whenMatchedUpdate(set=close_set).whenNotMatchedInsert(
+            values=insert_values
+        )
+    builder.execute()
 
 
 class DeltaAccessMode:

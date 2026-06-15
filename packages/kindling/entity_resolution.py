@@ -61,8 +61,6 @@ def _get_current_namespace() -> Tuple[Optional[str], Optional[str]]:
                 except Exception:
                     catalog = getattr(row, "catalog", None)
                     schema = getattr(row, "schema", None)
-            if catalog and catalog.lower() == "spark_catalog":
-                catalog = None
             return catalog, schema
         except Exception:
             pass
