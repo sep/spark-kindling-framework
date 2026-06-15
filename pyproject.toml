@@ -170,6 +170,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+norecursedirs = ["tests/local-project", ".worktrees", ".git", "__pycache__", "*.egg-info"]
 addopts = [
     "--verbose",
     "--cov=kindling",
