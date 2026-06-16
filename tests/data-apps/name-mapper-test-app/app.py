@@ -250,7 +250,7 @@ def _mapping_matches(
 
 
 def _supports_three_part_names(platform: str, catalog: str | None) -> bool:
-    return platform in {"fabric", "databricks"} and _is_uc_catalog(catalog)
+    return platform in {"fabric", "databricks"} and bool(catalog)
 
 
 def _make_entity(entityid: str, schema: StructType) -> EntityMetadata:

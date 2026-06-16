@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from tests.system.test_helpers import (
+    apply_env_config_overrides,
     assert_no_fatal_system_test_log_lines,
     create_platform_client,
     get_system_test_poll_interval,
@@ -234,7 +235,7 @@ def lake_test_wheels(blob_client):
 @pytest.fixture
 def bfs_test_app(platform_client, lake_test_wheels):
     """Deploy the BFS test app and yield (api_client, app_name, job_name, job_config)."""
-    api_client, _ = platform_client
+    api_client, platform_name = platform_client
     suffix = str(uuid.uuid4())[:8]
     app_name = f"systest-lake-bfs-{suffix}"
     job_name = f"systest-lake-bfs-job-{suffix}"
@@ -249,6 +250,11 @@ def bfs_test_app(platform_client, lake_test_wheels):
         # match the path where lake_test_wheels uploads the test wheels.
         "config_overrides": {"kindling": {"artifacts_storage_path": artifacts_path}},
     }
+    # Apply force_reinstall and kindling_version so the cluster installs the
+    # expected wheel from artifacts_storage_path rather than a cached version.
+    # existing_overrides (above) wins in the merge so artifacts_storage_path
+    # is preserved even if an env var would otherwise override it.
+    job_config = apply_env_config_overrides(job_config, platform_name)
 
     app_files = {
         "app.py": _app_py_src(),
