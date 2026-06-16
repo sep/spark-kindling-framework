@@ -857,6 +857,44 @@ class StdoutStreamValidator:
         sys.stdout.flush()
 
 
+def wait_for_job_not_pending(
+    api_client: Any,
+    run_id: str,
+    *,
+    max_wait: float = 1800.0,
+    poll_interval: float = 30.0,
+) -> str:
+    """Poll job status until it leaves NOTSTARTED/PENDING, or return current status on timeout.
+
+    Use this after stream_with_callback when the job might still be queued waiting
+    for pool capacity — the Synapse Spark pool can sit in NOTSTARTED while it warms
+    up or waits for a concurrently-running job to finish.  Rather than treating
+    NOTSTARTED as an immediate failure, this waits up to max_wait seconds for the
+    job to transition to a real terminal state.
+    """
+    _PENDING = {"NOTSTARTED", "NOT_STARTED", "PENDING", "QUEUED"}
+    _TERMINAL = {"TERMINATED", "COMPLETED", "SUCCESS", "FAILED", "ERROR", "CANCELLED", "CANCELED"}
+
+    start = time.time()
+    while True:
+        result = api_client.get_job_status(run_id=run_id)
+        status = str(result.get("status", "UNKNOWN")).upper()
+        if status in _TERMINAL or status not in _PENDING:
+            return status
+        elapsed = int(time.time() - start)
+        if elapsed >= max_wait:
+            _emit_system_test_message(
+                f"⏳ Job still {status} after {elapsed}s — returning as-is (max_wait={int(max_wait)}s)"
+            )
+            return status
+        remaining = int(max_wait - elapsed)
+        _emit_system_test_message(
+            f"⏳ Job is {status} (pool warming up) — polling again in {int(poll_interval)}s "
+            f"({elapsed}s elapsed, {remaining}s remaining)"
+        )
+        time.sleep(poll_interval)
+
+
 def create_stdout_validator(api_client: Any) -> StdoutStreamValidator:
     """
     Factory function to create stdout validator.

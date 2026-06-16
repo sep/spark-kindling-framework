@@ -117,9 +117,9 @@ class TestComplexTracing:
 
         # Wait for completion
         print("⏳ Waiting for job to complete...")
-        # Synapse: 1200s (pool can scale from zero, force_reinstall adds cold-install overhead).
+        # Synapse: 1800s (pool can scale from zero; cold start + reinstall overhead can exceed 1200s).
         # Other platforms: 900s is sufficient.
-        default_timeout = 1200.0 if platform == "synapse" else 900.0
+        default_timeout = 1800.0 if platform == "synapse" else 900.0
         timeout = get_system_test_completion_timeout(default_timeout)
         poll_interval = get_system_test_poll_interval(15.0)
         start_time = time.time()
