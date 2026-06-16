@@ -1120,6 +1120,11 @@ class DeltaEntityProvider(
                 .load(table_ref.get_read_path())
             )
         else:
+            # Use spark.read.table for catalog-managed tables rather than DeltaTable.forName,
+            # which can fail on Databricks UC for unqualified 1-part names due to catalog
+            # resolution inconsistencies between the Delta client and the UC SQL engine.
+            if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+                return self.spark.read.table(table_ref.table_name)
             dt = table_ref.get_delta_table()
             self.logger.debug(f"Reading full table for {table_ref.table_name}")
             return dt.toDF()

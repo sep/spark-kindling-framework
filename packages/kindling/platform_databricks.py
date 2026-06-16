@@ -398,6 +398,12 @@ class DatabricksService(PlatformService):
                 try:
                     filename = source.split("/")[-1]
                     volume_file = f"{str(temp_path).rstrip('/')}/{filename}"
+                    # Ensure the Volume staging directory exists — ci-tests/{test_id}/
+                    # subdirectories are created fresh per run and may not exist yet.
+                    try:
+                        dbutils.fs.mkdirs(str(temp_path).rstrip("/"))
+                    except Exception:
+                        pass
                     dbutils.fs.cp(source, volume_file, overwrite)
                     from pathlib import Path as _Path
 
