@@ -872,14 +872,13 @@ def wait_for_job_not_pending(
     NOTSTARTED as an immediate failure, this waits up to max_wait seconds for the
     job to transition to a real terminal state.
     """
-    _PENDING = {"NOTSTARTED", "NOT_STARTED", "PENDING", "QUEUED"}
     _TERMINAL = {"TERMINATED", "COMPLETED", "SUCCESS", "FAILED", "ERROR", "CANCELLED", "CANCELED"}
 
     start = time.time()
     while True:
         result = api_client.get_job_status(run_id=run_id)
         status = str(result.get("status", "UNKNOWN")).upper()
-        if status in _TERMINAL or status not in _PENDING:
+        if status in _TERMINAL:
             return status
         elapsed = int(time.time() - start)
         if elapsed >= max_wait:
