@@ -150,6 +150,33 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
         # we should interpret entity IDs as already-qualified names.
         return catalog, schema
 
+    def _infer_namespace_from_volume_path(self) -> Tuple[Optional[str], Optional[str]]:
+        """Infer catalog and schema from a /Volumes/{catalog}/{schema}/... table_root.
+
+        Databricks Unity Catalog Volumes use the path structure
+        /Volumes/{catalog}/{schema}/{volume}/...  When table_root points into a
+        Volume, the catalog and schema can be derived from the path.  This lets
+        us qualify unqualified 1-part table names so that saveAsTable and
+        spark.read.table resolve to the same catalog regardless of whatever the
+        SparkSession's active catalog happens to be.
+        """
+        root = None
+        for key in (
+            "kindling.storage.table_root",
+            "kindling.databricks.table_root",
+            "kindling.fabric.table_root",
+            "kindling.synapse.table_root",
+        ):
+            root = self._clean_config_value(self.config.get(key))
+            if root:
+                break
+        if not root:
+            return None, None
+        parts = root.strip("/").split("/")
+        if len(parts) >= 3 and parts[0].lower() == "volumes":
+            return parts[1], parts[2]
+        return None, None
+
     def get_table_name(self, entity):
         entity_tags = getattr(entity, "tags", {}) or {}
         explicit_table_name = entity_tags.get("provider.table_name")
@@ -173,7 +200,17 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
                 if catalog and catalog.lower() != "spark_catalog":
                     return f"{catalog}.{parts[0]}.{parts[1]}"
                 return ".".join(parts)
-            # One-part (or weird) names: return as-is to avoid surprising remaps.
+            # One-part name: qualify with catalog.schema inferred from the Volume
+            # path when table_root is a /Volumes/{catalog}/{schema}/... path.
+            # Databricks UC resolves unqualified names against the session's current
+            # catalog, which can differ between write (saveAsTable) and read
+            # (spark.read.table), causing TABLE_OR_VIEW_NOT_FOUND on reads even
+            # when the write succeeded.  A fully-qualified 3-part name is always
+            # deterministic regardless of the session's active catalog.
+            vol_catalog, vol_schema = self._infer_namespace_from_volume_path()
+            if vol_catalog and vol_schema:
+                leaf = _normalize_table_leaf(raw)
+                return f"{vol_catalog}.{vol_schema}.{leaf}"
             return raw
 
         leaf = _normalize_table_leaf(entity_id)
