@@ -19,6 +19,7 @@ import pytest
 from tests.system.test_helpers import (
     get_system_test_poll_interval,
     get_system_test_stream_max_wait,
+    wait_for_job_not_pending,
 )
 
 
@@ -102,8 +103,7 @@ class TestConfigOverrides:
                 max_wait=get_system_test_stream_max_wait(600.0),
             )
 
-            status = api_client.get_job_status(run_id=run_id)
-            final_status = str(status.get("status", "UNKNOWN")).upper()
+            final_status = wait_for_job_not_pending(api_client, run_id)
             assert final_status in [
                 "TERMINATED",
                 "COMPLETED",
@@ -280,14 +280,14 @@ class TestPlatformSecretProvider:
                 max_wait=get_system_test_stream_max_wait(600.0),
             )
 
-            status = api_client.get_job_status(run_id=run_id)
-            final_status = str(status.get("status", "UNKNOWN")).upper()
+            final_status = wait_for_job_not_pending(api_client, run_id)
             if final_status not in ["TERMINATED", "COMPLETED", "SUCCESS"]:
+                status_info = api_client.get_job_status(run_id=run_id)
                 failure_detail = (
-                    status.get("failureReason")
-                    or status.get("error")
-                    or status.get("message")
-                    or status
+                    status_info.get("failureReason")
+                    or status_info.get("error")
+                    or status_info.get("message")
+                    or final_status
                 )
                 stdout_tail = "\n".join(validator.captured_lines[-80:])
                 pytest.fail(

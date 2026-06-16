@@ -144,7 +144,7 @@ def _resolve_system_test_workers(
 
     if ci:
         default_workers_by_platform = {
-            "synapse": "2",
+            "synapse": "1",
             "fabric": "4",
             "databricks": "4",
         }
