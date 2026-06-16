@@ -74,6 +74,7 @@ def _app_src(
     csv_abfss_folder: str,
     expected_source: str,
     expected_env: str,
+    entity_suffix: str = "",
 ) -> str:
     """Generate the test app Python source.
 
@@ -84,6 +85,7 @@ def _app_src(
       4. Reads the entity back via EntityProvider and validates static columns.
       5. Prints STATIC_VALUES_TEST: PASSED / FAILED.
     """
+    _entity_id = f"test_static_entity_{entity_suffix}" if entity_suffix else "test_static_entity"
     return f"""\
 import logging
 import sys
@@ -103,9 +105,11 @@ _schema = StructType([
     StructField("value", StringType(), True),
 ])
 
+_ENTITY_ID = "{_entity_id}"
+
 DataEntities.entity(
-    entityid="test_static_entity",
-    name="test_static_entity",
+    entityid=_ENTITY_ID,
+    name=_ENTITY_ID,
     merge_columns=["row_id"],
     tags={{}},
     schema=_schema,
@@ -116,7 +120,7 @@ FileIngestionEntries.entry(
     entry_id="test_static_values",
     name="test static values ingestion",
     patterns=[r"test_static\\.csv"],
-    dest_entity_id="test_static_entity",
+    dest_entity_id=_ENTITY_ID,
     tags={{}},
     filetype="csv",
     static_values={{
@@ -136,7 +140,7 @@ try:
     # ── Step 4: read back and validate static columns ─────────────────────────
     der = get_kindling_service(DataEntityRegistry)
     ep = get_kindling_service(EntityProvider)
-    entity = der.get_entity_definition("test_static_entity")
+    entity = der.get_entity_definition(_ENTITY_ID)
     df = ep.read_entity(entity)
     rows = df.collect()
 
@@ -247,6 +251,7 @@ def static_values_test_app(platform_client, blob_client):
             csv_abfss_folder=csv_folder,
             expected_source=expected_source,
             expected_env=expected_env,
+            entity_suffix=suffix,
         ),
     }
 
