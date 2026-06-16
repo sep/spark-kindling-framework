@@ -1076,14 +1076,31 @@ class DatabricksAPI(PlatformAPI):
                         f"✅ Job {status.lower()} (result: {result_state or 'N/A'}) - doing final log read"
                     )
                     sys.stdout.flush()
-                    # Read final logs from diagnostic emitters
-                    new_logs = self._read_log_chunk_databricks(run_id, last_line_count)
-                    if new_logs:
-                        all_logs.extend(new_logs)
-                        last_line_count = len(all_logs)
-                        for log_line in new_logs:
-                            if callback:
-                                callback(log_line)
+                    # After termination, get_run_output becomes available and returns
+                    # isolated job stdout (not shared cluster logs).  Its line count is
+                    # independent of the cluster-log offset accumulated during streaming,
+                    # so always read from offset 0 and emit any lines not yet captured.
+                    final_result = self.get_job_logs(run_id=run_id)
+                    if isinstance(final_result, dict) and "log" in final_result:
+                        final_lines = final_result["log"]
+                        final_source = final_result.get("source", "")
+                        if final_source == "run_output_logs":
+                            # Isolated stdout: different source from cluster logs.
+                            # Emit all lines so the caller gets the authoritative output.
+                            new_logs = final_lines
+                        else:
+                            # Still cluster logs — use offset-based delta.
+                            new_logs = (
+                                final_lines[last_line_count:]
+                                if len(final_lines) > last_line_count
+                                else []
+                            )
+                        if new_logs:
+                            all_logs.extend(new_logs)
+                            last_line_count = len(all_logs)
+                            for log_line in new_logs:
+                                if callback:
+                                    callback(log_line)
                     break
 
                 # If job not started yet, wait
