@@ -137,3 +137,7 @@ CLAUDE.md
 CLAUDE.local.md
 
 job.yaml
+code-quality-reports/
+integration-test-results/
+platform-wheels/
+security-reports/
