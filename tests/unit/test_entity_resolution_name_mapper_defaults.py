@@ -61,3 +61,68 @@ def test_name_mapper_without_config_does_not_prefix_spark_catalog_for_two_part_n
         return_value=("spark_catalog", "default"),
     ):
         assert mapper.get_table_name(entity) == "event_hub_raw.raw_telemetry_events"
+
+
+def _make_mapper_with_volume_root(volume_root: str):
+    config = MagicMock(spec=ConfigService)
+
+    def _cfg_get(key, default=None):
+        if key == "kindling.storage.table_root":
+            return volume_root
+        return None
+
+    config.get.side_effect = _cfg_get
+
+    logger_provider = MagicMock()
+    logger_provider.get_logger.return_value = MagicMock()
+    return ConfigDrivenEntityNameMapper(config, logger_provider)
+
+
+def test_name_mapper_qualifies_one_part_name_when_table_root_is_volume_path():
+    """1-part entity IDs must get a 3-part name when table_root is a Volume path.
+
+    Databricks UC resolves unqualified names against the session's current catalog,
+    which can differ between saveAsTable (write) and spark.read.table (read).
+    A fully-qualified name avoids the mismatch.
+    """
+    mapper = _make_mapper_with_volume_root(
+        "/Volumes/kindling/kindling/artifacts/ci-tests/abc123/tables"
+    )
+
+    entity = MagicMock()
+    entity.tags = {}
+    entity.entityid = "test_static_entity_c6eb1567"
+
+    assert mapper.get_table_name(entity) == "kindling.kindling.test_static_entity_c6eb1567"
+
+
+def test_name_mapper_normalises_hyphens_in_leaf_when_table_root_is_volume_path():
+    mapper = _make_mapper_with_volume_root("/Volumes/mycatalog/myschema/data")
+
+    entity = MagicMock()
+    entity.tags = {}
+    entity.entityid = "my-entity-001"
+
+    assert mapper.get_table_name(entity) == "mycatalog.myschema.my_entity_001"
+
+
+def test_name_mapper_does_not_qualify_one_part_name_when_table_root_is_not_volume():
+    """Non-Volume table_root must leave 1-part names unchanged (backward compat)."""
+    mapper = _make_mapper_with_volume_root("Tables/myschema")
+
+    entity = MagicMock()
+    entity.tags = {}
+    entity.entityid = "plain_entity"
+
+    assert mapper.get_table_name(entity) == "plain_entity"
+
+
+def test_name_mapper_volume_inference_does_not_affect_three_part_names():
+    """Explicit 3-part names must pass through even when table_root is a Volume path."""
+    mapper = _make_mapper_with_volume_root("/Volumes/kindling/kindling/data")
+
+    entity = MagicMock()
+    entity.tags = {}
+    entity.entityid = "other.catalog.my_entity"
+
+    assert mapper.get_table_name(entity) == "other.catalog.my_entity"
