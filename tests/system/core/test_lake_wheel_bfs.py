@@ -307,25 +307,33 @@ class TestLakeWheelBFS:
             log = stdout_validator.get_content()
             assert_no_fatal_system_test_log_lines(log)
 
-            # Synapse Livy only surfaces KindlingBootstrap logger output from the
-            # worker thread — raw print/stderr/app-logger output is not captured.
-            # We verify correctness via the bootstrap's own success/failure log lines:
-            #   - "App execution failed" appears if app.py calls sys.exit(non-zero)
-            #   - "completed successfully" appears only on sys.exit(0)
-            # app.py explicitly calls sys.exit(1) when test_lake_dep_b is missing from
-            # sys.modules, so "App execution failed" would surface if BFS didn't work.
+            # Check job result state — this is the authoritative signal that the app
+            # exited cleanly.  The log-based markers below are secondary; cluster log
+            # capture is inherently racy and the "BOOTSTRAP COMPLETE" print may not
+            # make it into whatever snapshot the log reader captures.
+            status_info = api_client.get_job_status(run_id=run_id)
+            job_result = (status_info.get("result_state") or "").upper()
+            job_status = (status_info.get("status") or "").upper()
+            job_succeeded = job_result == "SUCCESS" or (
+                not job_result and job_status in ("COMPLETED", "SUCCESS")
+            )
+
+            # "App execution failed" is printed by bootstrap when app.py raises or
+            # calls sys.exit(non-zero).  app.py does sys.exit(1) if test_lake_dep_b is
+            # not in sys.modules, so this catches BFS-not-working failures regardless
+            # of whether the full job result_state is available.
             assert "App execution failed" not in log, (
                 "Bootstrap reported app failure — BFS likely did not load test_lake_dep_b "
                 "(lake-reqs.txt only lists test_lake_dep_a; transitive dep must be fetched via BFS)"
             )
-            # On platforms where the job log captures stdout (Fabric, Databricks) the
-            # bootstrap script prints "BOOTSTRAP COMPLETE".  On platforms where only
-            # JVM/log4j stderr is captured (Synapse Livy), bootstrap.py emits
-            # logger.warning("App '...' completed successfully") instead.
-            # Accept either form so the assertion works on all platforms.
-            assert "BOOTSTRAP COMPLETE" in log or "completed successfully" in log, (
-                "Bootstrap did not complete — possible causes: job startup timeout "
-                f"(log length={len(log)} chars), BFS install failure, or app crash. "
+
+            # Prefer log-based completion marker; fall back to job result_state when
+            # log capture is incomplete (shared cluster log race, run_output truncation).
+            log_shows_complete = "BOOTSTRAP COMPLETE" in log or "completed successfully" in log
+            assert log_shows_complete or job_succeeded, (
+                "Bootstrap did not complete — "
+                f"log_length={len(log)} chars, job_status={job_status}, job_result={job_result}. "
+                "Possible causes: BFS install failure, app crash, or log capture race. "
                 "Re-run with KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT=900 if timeout suspected."
             )
 

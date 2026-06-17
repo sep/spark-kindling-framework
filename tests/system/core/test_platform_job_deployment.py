@@ -30,6 +30,7 @@ from tests.system.test_helpers import (
     assert_no_fatal_system_test_log_lines,
     get_system_test_poll_interval,
     get_system_test_stream_max_wait,
+    wait_for_job_not_pending,
 )
 
 
@@ -127,7 +128,10 @@ class TestPlatformJobDeployment:
                     run_id=run_id,
                     print_lines=True,
                     poll_interval=get_system_test_poll_interval(10.0),
-                    max_wait=get_system_test_stream_max_wait(600.0),
+                    # Synapse: 1200s (pool cold-start + force_reinstall can exceed 900s).
+                    max_wait=get_system_test_stream_max_wait(
+                        1200.0 if platform_name == "synapse" else 600.0
+                    ),
                 )
                 print("=" * 80)
             except Exception as e:
@@ -402,7 +406,10 @@ class TestPlatformJobResults:
                     run_id=run_id,
                     print_lines=True,
                     poll_interval=get_system_test_poll_interval(10.0),
-                    max_wait=get_system_test_stream_max_wait(600.0),
+                    # Synapse: 1200s (pool cold-start + force_reinstall can exceed 900s).
+                    max_wait=get_system_test_stream_max_wait(
+                        1200.0 if platform_name == "synapse" else 600.0
+                    ),
                 )
                 print("=" * 80)
             except Exception as e:
@@ -411,8 +418,7 @@ class TestPlatformJobResults:
 
                 traceback.print_exc()
 
-            status = api_client.get_job_status(run_id=run_id)
-            final_status = status["status"].upper()
+            final_status = wait_for_job_not_pending(api_client, run_id)
 
             from tests.system.test_helpers import get_captured_stdout
 
@@ -428,8 +434,8 @@ class TestPlatformJobResults:
                 "COMPLETED",
                 "SUCCESS",
                 "TERMINATED",
-            ], f"Unexpected final status: {status['status']}"
-            print(f"✅ Job completed with status: {status['status']}")
+            ], f"Unexpected final status: {final_status}"
+            print(f"✅ Job completed with status: {final_status}")
 
             # TODO: Add actual file verification when storage access configured
 
