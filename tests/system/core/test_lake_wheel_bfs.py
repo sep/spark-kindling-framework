@@ -314,8 +314,8 @@ class TestLakeWheelBFS:
             status_info = api_client.get_job_status(run_id=run_id)
             job_result = (status_info.get("result_state") or "").upper()
             job_status = (status_info.get("status") or "").upper()
-            job_succeeded = job_result == "SUCCESS" or (
-                not job_result and job_status in ("COMPLETED", "SUCCESS")
+            job_succeeded = job_result in ("SUCCESS", "SUCCEEDED") or (
+                not job_result and job_status in ("COMPLETED", "SUCCESS", "SUCCEEDED")
             )
 
             # "App execution failed" is printed by bootstrap when app.py raises or

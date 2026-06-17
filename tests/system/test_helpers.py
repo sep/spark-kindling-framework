@@ -872,7 +872,16 @@ def wait_for_job_not_pending(
     NOTSTARTED as an immediate failure, this waits up to max_wait seconds for the
     job to transition to a real terminal state.
     """
-    _TERMINAL = {"TERMINATED", "COMPLETED", "SUCCESS", "FAILED", "ERROR", "CANCELLED", "CANCELED"}
+    _TERMINAL = {
+        "TERMINATED",
+        "COMPLETED",
+        "SUCCESS",
+        "SUCCEEDED",
+        "FAILED",
+        "ERROR",
+        "CANCELLED",
+        "CANCELED",
+    }
 
     start = time.time()
     while True:
