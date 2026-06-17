@@ -879,6 +879,8 @@ def wait_for_job_not_pending(
         "SUCCEEDED",
         "FAILED",
         "ERROR",
+        "INTERNAL_ERROR",
+        "SKIPPED",
         "CANCELLED",
         "CANCELED",
     }
