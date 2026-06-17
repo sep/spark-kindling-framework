@@ -83,7 +83,7 @@ def resolve_workers(platform: Optional[str], explicit_workers: Optional[str], ci
 
     if ci:
         default_workers_by_platform = {
-            "synapse": "4",
+            "synapse": "2",
             "fabric": "4",
             "databricks": "4",
         }
