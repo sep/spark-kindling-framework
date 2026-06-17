@@ -654,6 +654,44 @@ class TestDataPipesExecuter:
         # Verify all pipes were retrieved
         assert self.mock_pipes_registry.get_pipe_definition.call_count == 3
 
+    def test_run_datapipes_no_watermark_uses_per_run_pipe_override(self):
+        """no_watermark=True disables watermarking without mutating registry metadata."""
+        executer = DataPipesExecuter(
+            self.mock_logger_provider,
+            self.mock_entity_registry,
+            self.mock_pipes_registry,
+            self.mock_erps,
+            self.mock_trace_provider,
+        )
+
+        mock_df = Mock()
+        registered_pipe = PipeMetadata(
+            pipeid="test_pipe",
+            name="Test Pipe",
+            execute=Mock(return_value=mock_df),
+            tags={},
+            input_entity_ids=["source.entity"],
+            output_entity_id="target.entity",
+            output_type="delta",
+            use_watermark=True,
+        )
+        self.mock_pipes_registry.get_pipe_definition.return_value = registered_pipe
+        self.mock_entity_registry.get_entity_definition.return_value = Mock()
+        mock_reader = Mock(return_value=mock_df)
+        mock_activator = Mock()
+        self.mock_erps.create_pipe_entity_reader.return_value = mock_reader
+        self.mock_erps.create_pipe_persist_activator.return_value = mock_activator
+
+        executer.run_datapipes(["test_pipe"], no_watermark=True)
+
+        effective_pipe = self.mock_erps.create_pipe_entity_reader.call_args.args[0]
+        assert effective_pipe.use_watermark is False
+        assert effective_pipe is not registered_pipe
+        assert registered_pipe.use_watermark is True
+        mock_reader.assert_called_once()
+        assert mock_reader.call_args.args[1] is False
+        self.mock_erps.create_pipe_persist_activator.assert_called_once_with(effective_pipe)
+
     def test_execute_datapipe_with_single_input(self):
         """Test _execute_datapipe with single input entity"""
         executer = DataPipesExecuter(

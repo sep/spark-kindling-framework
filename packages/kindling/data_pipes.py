@@ -211,6 +211,7 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         pipes: List[str],
         use_dag: bool = False,
         dag_strategy: Optional[Any] = None,
+        no_watermark: bool = False,
         **dag_kwargs,
     ):
         """Execute a list of pipes with signal emissions.
@@ -219,6 +220,7 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
             pipes: List of pipe IDs to execute
             use_dag: If True, delegate execution to DAG orchestrator mode
             dag_strategy: Optional DAG execution strategy override
+            no_watermark: If True, disable watermark reads/writes for this run
             **dag_kwargs: Additional DAG execution options
         """
         if use_dag:
@@ -240,6 +242,8 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
             with self.tp.span(component="data_pipes_executer", operation="execute_datapipes"):
                 for index, pipeid in enumerate(pipes):
                     pipe = self.dpr.get_pipe_definition(pipeid)
+                    if no_watermark and pipe.use_watermark:
+                        pipe = dataclasses.replace(pipe, use_watermark=False)
                     pipe_start = time.time()
 
                     # Emit before_pipe signal
