@@ -6,7 +6,11 @@ import pytest
 from kindling.data_entities import EntityMetadata
 
 EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "packages" / "kindling_adx"
-sys.path.insert(0, str(EXTENSION_PACKAGE_ROOT))
+
+
+@pytest.fixture(autouse=True)
+def _extension_package_on_path(monkeypatch):
+    monkeypatch.syspath_prepend(str(EXTENSION_PACKAGE_ROOT))
 
 
 def _entity(tags):
@@ -150,6 +154,7 @@ def test_extra_connector_options_are_passed_through():
             "provider.table": "Orders",
             "provider.option.adjustSchema": "GenerateDynamicCsvMapping",
             "provider.option.clientBatchingLimit": "1024",
+            "provider.option.useManagedIdentity": "true",
         }
     )
 
@@ -157,7 +162,24 @@ def test_extra_connector_options_are_passed_through():
 
     assert writer.options["adjustSchema"] == "GenerateDynamicCsvMapping"
     assert writer.options["clientBatchingLimit"] == "1024"
+    assert writer.options["useManagedIdentity"] == "true"
 
 
 def test_check_entity_exists_defaults_to_true_for_write_only_target():
     assert _provider().check_entity_exists(_entity({})) is True
+
+
+def test_table_is_required():
+    provider = _provider()
+    df = MagicMock()
+    df.write = _Writer()
+    entity = _entity(
+        {
+            "provider.auth": "managed_identity",
+            "provider.cluster": "fawkes.eastus",
+            "provider.database": "Kindling",
+        }
+    )
+
+    with pytest.raises(ValueError, match="provider.table"):
+        provider.append_to_entity(df, entity)

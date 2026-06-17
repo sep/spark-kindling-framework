@@ -85,7 +85,7 @@ class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider):
         self, entity_metadata: EntityMetadata, config: Dict[str, Any]
     ) -> Dict[str, str]:
         database = config.get("database")
-        table = config.get("table") or config.get("table_name") or entity_metadata.name
+        table = config.get("table") or config.get("table_name")
         if not database:
             raise ValueError(f"ADX entity '{entity_metadata.entityid}' requires provider.database")
         if not table:
@@ -118,7 +118,11 @@ class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider):
             options.update(self._auth_options(entity_metadata, config, auth_mode))
 
         options.update(self._extra_connector_options(config))
-        return {key: str(value) for key, value in options.items() if value is not None}
+        return {
+            key: self._stringify_option(value)
+            for key, value in options.items()
+            if value is not None
+        }
 
     def _auth_mode(self, config: Dict[str, Any]) -> str:
         return str(config.get("auth", config.get("auth_mode", "managed_identity"))).lower()
@@ -168,6 +172,11 @@ class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider):
             for key, value in config.items()
             if key.startswith(prefix) and value is not None
         }
+
+    def _stringify_option(self, value: Any) -> str:
+        if isinstance(value, bool):
+            return str(value).lower()
+        return str(value)
 
 
 def register_provider(provider_type: str = "adx") -> None:
