@@ -58,6 +58,7 @@ def test_execute_generates_plan_emits_signal_and_delegates():
         pipe_timeout=10.0,
         streaming_options={"pipe_a": {"checkpoint": "/tmp/checkpoints"}},
         auto_cache=True,
+        no_watermark=False,
     )
 
     signal.send.assert_called_once()

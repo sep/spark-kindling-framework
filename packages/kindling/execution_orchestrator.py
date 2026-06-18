@@ -7,7 +7,6 @@ generation-based execution while preserving existing executor options.
 from typing import Any, List, Optional
 
 from injector import inject
-
 from kindling.execution_strategy import ExecutionPlanGenerator, ExecutionStrategy
 from kindling.generation_executor import (
     ErrorStrategy,
@@ -54,6 +53,7 @@ class ExecutionOrchestrator(SignalEmitter):
         pipe_timeout: Optional[float] = None,
         streaming_options: Optional[dict[str, Any]] = None,
         auto_cache: bool = False,
+        no_watermark: bool = False,
     ) -> ExecutionResult:
         """Generate an execution plan and run it through GenerationExecutor."""
         plan = self.plan_generator.generate_plan(pipe_ids, strategy=strategy)
@@ -81,6 +81,7 @@ class ExecutionOrchestrator(SignalEmitter):
             pipe_timeout=pipe_timeout,
             streaming_options=streaming_options,
             auto_cache=auto_cache,
+            no_watermark=no_watermark,
         )
 
     def execute_batch(
