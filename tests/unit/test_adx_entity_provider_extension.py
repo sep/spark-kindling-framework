@@ -48,6 +48,36 @@ class _Writer:
         self.saved = True
 
 
+class _StreamWriter:
+    def __init__(self):
+        self.format_name = None
+        self.options = {}
+        self.output_mode = None
+        self.query_name = None
+        self.started = False
+        self.query = MagicMock(name="streaming_query")
+
+    def format(self, name):
+        self.format_name = name
+        return self
+
+    def option(self, key, value):
+        self.options[key] = value
+        return self
+
+    def outputMode(self, name):
+        self.output_mode = name
+        return self
+
+    def queryName(self, name):
+        self.query_name = name
+        return self
+
+    def start(self):
+        self.started = True
+        return self.query
+
+
 def _provider():
     from kindling_adx import AdxEntityProvider
 
@@ -164,6 +194,90 @@ def test_extra_connector_options_are_passed_through():
     assert writer.options["adjustSchema"] == "GenerateDynamicCsvMapping"
     assert writer.options["clientBatchingLimit"] == "1024"
     assert writer.options["useManagedIdentity"] == "true"
+
+
+def test_stream_append_starts_query_with_kusto_sink_options():
+    provider = _provider()
+    writer = _StreamWriter()
+    df = MagicMock()
+    df.writeStream = writer
+    entity = _entity(
+        {
+            "provider.auth": "managed_identity",
+            "provider.cluster": "https://fawkes.eastus.kusto.windows.net",
+            "provider.database": "Kindling",
+            "provider.table": "Orders",
+            "provider.query_name": "orders_to_adx",
+            "provider.option.adjustSchema": "GenerateDynamicCsvMapping",
+        }
+    )
+
+    query = provider.append_as_stream(df, entity, "/chk/orders")
+
+    assert query is writer.query
+    assert writer.format_name == "com.microsoft.kusto.spark.datasource"
+    assert writer.output_mode == "append"
+    assert writer.query_name == "orders_to_adx"
+    assert writer.options["checkpointLocation"] == "/chk/orders"
+    assert writer.options["kustoCluster"] == "https://fawkes.eastus.kusto.windows.net"
+    assert writer.options["kustoDatabase"] == "Kindling"
+    assert writer.options["kustoTable"] == "Orders"
+    assert writer.options["managedIdentityAuth"] == "true"
+    assert writer.options["writeMode"] == "Queued"
+    assert writer.options["adjustSchema"] == "GenerateDynamicCsvMapping"
+    assert writer.started is True
+
+
+def test_stream_append_merges_call_options_and_allows_format_override():
+    provider = _provider()
+    writer = _StreamWriter()
+    df = MagicMock()
+    df.writeStream = writer
+    entity = _entity(
+        {
+            "provider.auth": "managed_identity",
+            "provider.cluster": "https://fawkes.eastus.kusto.windows.net",
+            "provider.database": "Kindling",
+            "provider.table": "Orders",
+        }
+    )
+
+    provider.append_as_stream(
+        df,
+        entity,
+        "/chk/orders",
+        format="custom.kusto.format",
+        options={
+            "output_mode": "update",
+            "write_mode": "Transactional",
+            "option.clientBatchingLimit": "1024",
+        },
+    )
+
+    assert writer.format_name == "custom.kusto.format"
+    assert writer.output_mode == "update"
+    assert writer.options["writeMode"] == "Transactional"
+    assert writer.options["clientBatchingLimit"] == "1024"
+
+
+def test_stream_append_uses_synapse_linked_service_format():
+    provider = _provider()
+    writer = _StreamWriter()
+    df = MagicMock()
+    df.writeStream = writer
+    entity = _entity(
+        {
+            "provider.auth": "synapse_linked_service",
+            "provider.linked_service": "fawkes_adx",
+            "provider.database": "Kindling",
+            "provider.table": "Orders",
+        }
+    )
+
+    provider.append_as_stream(df, entity, "/chk/orders")
+
+    assert writer.format_name == "com.microsoft.kusto.spark.synapse.datasource"
+    assert writer.options["spark.synapse.linkedService"] == "fawkes_adx"
 
 
 def test_check_entity_exists_defaults_to_true_for_write_only_target():

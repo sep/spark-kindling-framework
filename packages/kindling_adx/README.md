@@ -108,3 +108,30 @@ Defaults:
 `provider.assume_exists` defaults to `true` because this first extension version
 is a write target. It avoids requiring read/query permissions just to decide
 whether the Kindling persist path should call append or write.
+
+## Streaming Writes
+
+The provider also supports Spark Structured Streaming outputs. Kindling calls
+`append_as_stream()` for streaming pipe outputs and the ADX provider starts the
+Kusto sink with the configured connector options and checkpoint location.
+
+```python
+tags={
+    "provider_type": "adx",
+    "provider.auth": "managed_identity",
+    "provider.cluster": "https://mycluster.region.kusto.windows.net",
+    "provider.database": "MyDatabase",
+    "provider.table": "MyTable",
+    "provider.query_name": "orders_to_adx",
+}
+```
+
+Streaming defaults:
+
+- `provider.output_mode`: `append`
+- `provider.write_mode`: `Queued`
+
+`Queued` mode is the recommended default for most continuous Spark writes. Use
+`provider.write_mode: KustoStreaming` only when the destination table/database is
+configured for ADX streaming ingestion and the lower-latency tradeoff is
+intentional.
