@@ -100,7 +100,9 @@ class TestConfigOverrides:
                 run_id=run_id,
                 print_lines=True,
                 poll_interval=get_system_test_poll_interval(10.0),
-                max_wait=get_system_test_stream_max_wait(600.0),
+                max_wait=get_system_test_stream_max_wait(
+                    1200.0 if platform_name == "synapse" else 600.0
+                ),
             )
 
             final_status = wait_for_job_not_pending(api_client, run_id)
@@ -277,7 +279,9 @@ class TestPlatformSecretProvider:
                 run_id=run_id,
                 print_lines=True,
                 poll_interval=get_system_test_poll_interval(10.0),
-                max_wait=get_system_test_stream_max_wait(600.0),
+                max_wait=get_system_test_stream_max_wait(
+                    1200.0 if platform_name == "synapse" else 600.0
+                ),
             )
 
             final_status = wait_for_job_not_pending(api_client, run_id)
