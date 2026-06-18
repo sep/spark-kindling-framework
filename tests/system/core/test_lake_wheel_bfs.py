@@ -219,9 +219,21 @@ def lake_test_wheels(blob_client):
         container_client.upload_blob(blob_path, data, overwrite=True)
         print(f"Uploaded test wheel: {blob_path}")
 
-    # Brief pause so uploads propagate through blob→OneLake consistency layer
-    # before the cloud job's mssparkutils.fs.ls() call lists the packages dir.
-    time.sleep(5)
+    # Poll until both blobs are readable — a fixed sleep is unreliable because
+    # Azure Blob → OneLake propagation time varies.  With faster job starts
+    # (no Synapse pool queuing) the window is tighter, so we verify rather than guess.
+    deadline = time.time() + 120.0
+    for name in (wheel_a, wheel_b):
+        blob_path = f"{packages_path}/{name}"
+        while True:
+            try:
+                container_client.get_blob_client(blob_path).get_blob_properties()
+                print(f"Blob confirmed readable: {blob_path}")
+                break
+            except Exception:
+                if time.time() >= deadline:
+                    raise RuntimeError(f"Blob not readable after 120s: {blob_path}")
+                time.sleep(5)
 
     yield wheel_a, wheel_b
 
