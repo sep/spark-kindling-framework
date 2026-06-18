@@ -11,7 +11,6 @@ from concurrent.futures import Future
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
-
 from kindling.data_pipes import PipeMetadata
 from kindling.entity_provider import (
     StreamableEntityProvider,
@@ -141,7 +140,7 @@ def executor(
     )
 
 
-def make_pipe(pipe_id, inputs=None, output=None, tags=None):
+def make_pipe(pipe_id, inputs=None, output=None, tags=None, use_watermark=False):
     """Helper to create a PipeMetadata object."""
     return PipeMetadata(
         pipeid=pipe_id,
@@ -151,6 +150,7 @@ def make_pipe(pipe_id, inputs=None, output=None, tags=None):
         input_entity_ids=inputs or [],
         output_entity_id=output or f"entity.{pipe_id}",
         output_type="delta",
+        use_watermark=use_watermark,
     )
 
 
@@ -394,6 +394,40 @@ class TestBatchExecution:
         assert len(result.generation_results) == 1
         persist_strategy.create_pipe_entity_reader.assert_called_once_with(pipe)
         persist_strategy.create_pipe_persist_activator.assert_called_once_with(pipe)
+
+    def test_no_watermark_uses_per_run_pipe_override(
+        self, executor, pipes_registry, persist_strategy, entity_registry
+    ):
+        """DAG batch execution honors no_watermark without mutating registry metadata."""
+        pipe = make_pipe(
+            "pipe1",
+            inputs=["entity.src"],
+            output="entity.dst",
+            use_watermark=True,
+        )
+        pipes_registry.get_pipe_definition.return_value = pipe
+        entity_registry.get_entity_definition.return_value = Mock(entityid="entity.src")
+
+        mock_df = Mock()
+        reader = Mock(return_value=mock_df)
+        persist_strategy.create_pipe_entity_reader.return_value = reader
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        plan = make_plan(
+            ["pipe1"],
+            [Generation(number=0, pipe_ids=["pipe1"], dependencies=[])],
+            strategy="batch",
+        )
+
+        result = executor.execute(plan, no_watermark=True)
+
+        assert result.success_count == 1
+        effective_pipe = persist_strategy.create_pipe_entity_reader.call_args.args[0]
+        assert effective_pipe.use_watermark is False
+        assert effective_pipe is not pipe
+        assert pipe.use_watermark is True
+        reader.assert_called_once()
+        assert reader.call_args.args[1] is False
 
     def test_multi_generation_batch(
         self, executor, pipes_registry, persist_strategy, entity_registry
