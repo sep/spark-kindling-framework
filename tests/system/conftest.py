@@ -300,11 +300,28 @@ def pytest_collection_modifyitems(config, items):
     config._kindling_system_total_items = len(items)
 
 
+def pytest_collection_finish(session):
+    """Set the authoritative total after all collection hooks have run.
+
+    pytest_collection_modifyitems is called once per conftest, so the last
+    call wins. pytest_collection_finish fires once after all of them, giving
+    us the final items list that pytest will actually run.
+    Only set on the controller — xdist workers have workerinput set.
+    """
+    if not hasattr(session.config, "workerinput"):
+        session.config._kindling_system_total_items = len(session.items)
+
+
 @pytest.hookimpl
 def pytest_runtest_logreport(report):
     """Print a simple completed/total progress line for system tests."""
     config = getattr(report, "config", None) or _KINDLING_SYSTEM_CONFIG
     if config is None:
+        return
+
+    # xdist workers report to the controller; skip progress display in workers
+    # so the controller (which has the correct total) is the only one printing.
+    if hasattr(config, "workerinput"):
         return
 
     terminal_reporter = config.pluginmanager.get_plugin("terminalreporter")
