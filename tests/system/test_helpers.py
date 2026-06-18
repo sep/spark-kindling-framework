@@ -500,6 +500,13 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
     if platform_name == "synapse" and "configure_diagnostic_emitters" not in merged_config:
         merged_config["configure_diagnostic_emitters"] = False
 
+    # Default Synapse jobs to 1 executor (driver + 1 node = 2 nodes/job).
+    # The platform default is 2 executors (3 nodes/job), which means a 6-node pool
+    # can only run 2 concurrent jobs — queuing the 3rd worker.  1 executor lets all
+    # 3 CI workers run simultaneously within the 6-node pool.
+    if platform_name == "synapse" and "spark_config" not in merged_config:
+        merged_config["spark_config"] = {"executor_instances": 1}
+
     return merged_config
 
 
