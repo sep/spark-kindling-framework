@@ -85,11 +85,29 @@ def get_system_test_poll_interval(default: float = 10.0) -> float:
     )
 
 
-def get_system_test_stream_max_wait(default: float = 600.0) -> float:
-    """Return max stdout stream wait for system tests."""
-    return float(
-        _get_nonempty_env("KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT", "TEST_TIMEOUT") or str(default)
-    )
+_PLATFORM_STREAM_TIMEOUT_FLOOR: dict = {
+    # Synapse pool cold-start + queue wait with multiple workers can add several
+    # minutes of overhead before the app actually starts. 1200s is the minimum
+    # that avoids spurious timeouts on this platform.
+    "synapse": 1200.0,
+}
+
+
+def get_system_test_stream_max_wait(default: float = 600.0, platform_name: str = None) -> float:
+    """Return max stdout stream wait for system tests.
+
+    If platform_name is provided, a platform-specific floor is applied so
+    callers don't need to repeat the ``1200.0 if platform_name == "synapse"
+    else 600.0`` pattern everywhere.  Env overrides always win.
+    """
+    env_val = _get_nonempty_env("KINDLING_SYSTEM_TEST_STREAM_MAX_WAIT", "TEST_TIMEOUT")
+    if env_val:
+        return float(env_val)
+    if platform_name:
+        floor = _PLATFORM_STREAM_TIMEOUT_FLOOR.get(platform_name)
+        if floor is not None:
+            return max(default, floor)
+    return default
 
 
 def get_system_test_completion_timeout(default: float = 600.0) -> float:
@@ -903,6 +921,32 @@ def wait_for_job_not_pending(
             f"({elapsed}s elapsed, {remaining}s remaining)"
         )
         time.sleep(poll_interval)
+
+
+def wait_for_job_terminal_teardown(
+    api_client: Any,
+    run_id: str,
+    platform_name: str,
+    max_wait: float = 120.0,
+    poll_interval: float = 5.0,
+) -> None:
+    """Wait for a job to reach terminal state before teardown returns.
+
+    Synapse job cancellation is asynchronous — cancel_job() returns before the
+    Spark session releases its pool node.  With N xdist workers, if each worker
+    immediately picks up the next test after cancel_job() returns, there can be
+    N+1 concurrent Synapse jobs, queuing the last one.  Waiting here keeps the
+    worker "busy" until the pool node is actually freed.
+
+    Safe to call for non-Synapse platforms (no-op) and for already-terminal jobs
+    (returns immediately on the first status poll).
+    """
+    if platform_name != "synapse":
+        return
+    try:
+        wait_for_job_not_pending(api_client, run_id, max_wait=max_wait, poll_interval=poll_interval)
+    except Exception:
+        pass
 
 
 def create_stdout_validator(api_client: Any) -> StdoutStreamValidator:

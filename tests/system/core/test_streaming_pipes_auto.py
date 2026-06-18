@@ -18,6 +18,7 @@ import pytest
 from tests.system.test_helpers import (
     get_system_test_poll_interval,
     get_system_test_stream_max_wait,
+    wait_for_job_terminal_teardown,
 )
 
 
@@ -101,6 +102,7 @@ class TestStreamingPipesOrchestratorAuto:
         job_id = result["job_id"]
         print(f"📦 Job created: {job_id}")
 
+        run_id = None
         try:
             print("▶️  Starting streaming pipes auto test job...")
             run_id = api_client.run_job(job_id=job_id, parameters={"test_run": "true"})
@@ -116,7 +118,7 @@ class TestStreamingPipesOrchestratorAuto:
                     run_id=run_id,
                     print_lines=True,
                     poll_interval=get_system_test_poll_interval(10.0),
-                    max_wait=get_system_test_stream_max_wait(600.0),
+                    max_wait=get_system_test_stream_max_wait(600.0, platform_name),
                 )
             except Exception as e:
                 print(f"⚠️  Stdout streaming error: {e}")
@@ -158,17 +160,31 @@ class TestStreamingPipesOrchestratorAuto:
             print(f"\n🎯 Overall Test Result: {completion_result['status']}")
 
             all_passed = all(r["passed"] for r in validation_results.values())
-            assert (
-                all_passed
-            ), f"Some tests failed. Check validation results above. Completion: {completion_result}"
-            assert completion_result[
-                "passed"
-            ], f"Test did not complete successfully: {completion_result}"
+            failed_results = {k: v for k, v in validation_results.items() if not v["passed"]}
+            stdout_tail = stdout_validator.get_content()[-3000:]
+            assert all_passed, (
+                f"Streaming pipes auto tests failed on {platform_name}:\n"
+                + "\n".join(f"  {k}: {v['status']}" for k, v in failed_results.items())
+                + f"\nCompletion: {completion_result}"
+                + f"\nFinal job status: {final_status}"
+                + f"\nStdout tail:\n{stdout_tail}"
+            )
+            assert completion_result["passed"], (
+                f"Test did not complete successfully on {platform_name}: {completion_result}"
+                f"\nFinal job status: {final_status}"
+                f"\nStdout tail:\n{stdout_tail}"
+            )
 
             print("\n✅ All streaming pipes auto-clustering tests PASSED!")
 
         finally:
             print(f"\n🧹 Cleaning up test resources...")
+            try:
+                api_client.cancel_job(run_id=run_id)
+            except Exception:
+                pass
+            if run_id is not None:
+                wait_for_job_terminal_teardown(api_client, run_id, platform_name)
             try:
                 api_client.delete_job(job_id)
                 print(f"✅ Deleted job: {job_id}")

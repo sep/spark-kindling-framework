@@ -34,6 +34,7 @@ from tests.system.test_helpers import (
     create_platform_client,
     get_system_test_poll_interval,
     get_system_test_stream_max_wait,
+    wait_for_job_terminal_teardown,
 )
 
 # ── markers ────────────────────────────────────────────────────────────────────
@@ -295,6 +296,7 @@ class TestFileIngestionStaticValues:
         job_id = result["job_id"]
         print(f"Job created: {job_id}")
 
+        run_id = None
         try:
             run_id = api_client.run_job(job_id=job_id)
             assert run_id is not None
@@ -304,9 +306,7 @@ class TestFileIngestionStaticValues:
                 run_id=run_id,
                 print_lines=True,
                 poll_interval=get_system_test_poll_interval(10.0),
-                max_wait=get_system_test_stream_max_wait(
-                    1200.0 if platform_name == "synapse" else 900.0
-                ),
+                max_wait=get_system_test_stream_max_wait(900.0, platform_name),
             )
 
             log = stdout_validator.get_content()
@@ -331,6 +331,8 @@ class TestFileIngestionStaticValues:
                 api_client.cancel_job(run_id=run_id)
             except Exception:
                 pass
+            if run_id is not None:
+                wait_for_job_terminal_teardown(api_client, run_id, platform_name)
             api_client.delete_job(job_id=job_id)
 
             from tests.system.test_helpers import cleanup_test_storage

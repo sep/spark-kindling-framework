@@ -68,7 +68,7 @@ class TestStreamingOrchestratorIntegration:
                 run_id=run_id,
                 print_lines=True,
                 poll_interval=get_system_test_poll_interval(10.0),
-                max_wait=get_system_test_stream_max_wait(600.0),
+                max_wait=get_system_test_stream_max_wait(600.0, platform_name),
             )
 
             status_result = api_client.get_job_status(run_id=run_id)
