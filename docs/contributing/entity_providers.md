@@ -129,9 +129,8 @@ An enumeration of different ways to access Delta tables.
 ```python
 class DeltaAccessMode(Enum):
     """Defines how Delta tables are accessed"""
-    FOR_NAME = "forName"     # Catalog-managed table names (default convention)
-    FOR_PATH = "forPath"     # Direct path access (override when needed)
-    AUTO = "auto"           # Auto-detect based on environment
+    CATALOG = "catalog"     # Catalog or metastore-managed table names
+    STORAGE = "storage"     # Direct Delta path access
 ```
 
 ## Usage Examples

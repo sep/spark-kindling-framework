@@ -245,12 +245,16 @@ run_tests()
 
 If you encounter issues with Delta table access, configure the appropriate access mode:
 
-```python
-# In your configuration
-'spark_configs': {
-    'delta_table_access_mode': 'forName'  # or 'forPath', 'auto'
-}
+```yaml
+kindling:
+  delta:
+    access_mode: catalog  # or storage
 ```
+
+Use `catalog` when the runtime should address tables by name through Unity
+Catalog or a workspace-local Hive metastore. Use `storage` when the runtime
+should address Delta tables by path; this is the recommended baseline for
+Azure Government Databricks workspaces without Unity Catalog.
 
 ### Schema Evolution
 

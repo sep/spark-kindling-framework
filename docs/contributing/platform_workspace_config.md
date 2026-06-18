@@ -37,7 +37,7 @@ kindling:
     ignored_folders: [".git", "__pycache__", ".vscode"]
 
   delta:
-    tablerefmode: "forName"
+    access_mode: catalog
     optimize_write: true
 
   telemetry:
@@ -82,17 +82,18 @@ kindling:
 
 ## Delta Table Conventions (Fabric / Synapse / Databricks)
 
-Kindling's **default convention is name-based Delta tables** (`forName`).
+Kindling's **default convention is name-based Delta tables** (`catalog` access mode).
 
-- **Databricks:** Use Unity Catalog / metastore-managed table names. Databricks manages the physical table location.
+- **Databricks with Unity Catalog:** Use catalog/schema/table names and UC Volumes for governed runtime paths.
+- **Databricks without Unity Catalog:** Use `storage` mode with direct `abfss://...` roots by default. If the workspace has a usable Hive metastore database and table-name semantics are required, use `catalog` mode with `kindling.storage.table_schema` and no `table_catalog`.
 - **Synapse:** Create your target database with an explicit `LOCATION` so `saveAsTable("schema.table")` creates tables under that storage location by default.
 - **Fabric:** Lakehouse tables are created under the Lakehouse `Tables/` area; `saveAsTable("table")` uses the Lakehouse context.
 
 Exceptions (cross-Lakehouse writes, streaming sink limitations, or platform-specific constraints) should be handled via per-entity overrides:
 
-- `provider.access_mode`: `forName` | `forPath` | `auto`
-- `provider.table_name`: fully qualified table name (when using `forName`)
-- `provider.path`: explicit storage path (when using `forPath`)
+- `provider.access_mode`: `catalog` | `storage`
+- `provider.table_name`: fully qualified table name (when using `catalog`)
+- `provider.path`: explicit storage path (when using `storage`)
 
 See [examples/config/](../../examples/config/) for complete examples of all platform configs.
 
@@ -331,7 +332,7 @@ Your app runs on both Fabric and Databricks with different configurations:
 # settings.yaml - Universal settings
 kindling:
   delta:
-    tablerefmode: "forName"
+    access_mode: catalog
 
 # platform_fabric.yaml - Fabric tuning
 kindling:
