@@ -48,6 +48,13 @@ az account set --subscription <subscription-id>
 
 For Azure US Gov, run `az cloud set --name AzureUSGovernment` before login and set `azure_environment = "usgovernment"` in your `.tfvars`.
 
+Azure Government Databricks workspaces should be modeled as non-Unity-Catalog
+workspaces unless the target environment proves UC is available. Use
+`enable_unity_catalog = false`, set `adls_dfs_domain =
+"dfs.core.usgovcloudapi.net"`, and configure Kindling runtime storage with
+direct `abfss://...dfs.core.usgovcloudapi.net/...` paths. DBFS mounts are only a
+legacy fallback; prefer direct cloud storage paths for new Gov deployments.
+
 For CI/CD, set environment variables:
 ```bash
 export ARM_CLIENT_ID="..."
@@ -99,7 +106,8 @@ and classic/path-based fallback coverage:
     intentionally want DBFS fallback to succeed there
 - `Classic workspace`
   - `enable_unity_catalog = false`
-  - use DBFS mounts and path-based staging
+  - use direct `abfss://...` paths and path-based staging by default
+  - use DBFS mounts only when validating or supporting an existing legacy workspace
   - grant `ANY FILE` as needed for the runtime SP in that workspace only
   - if you want Terraform to populate the Databricks secret used by the mount,
     pass `TF_VAR_mount_sp_secret_value="$AZURE_CLIENT_SECRET"` before `terraform apply`
@@ -114,7 +122,9 @@ shows the intended non-UC/classic workspace shape.
 
 - If your workspace does not yet have a metastore assignment, run `../account` first to create/reuse a metastore and assign it.
 - Set `enable_unity_catalog = false` to skip all Unity Catalog resources and grants when UC APIs are unavailable.
-- When `enable_unity_catalog = false`, use DBFS mounts (`create_artifacts_mount` / `dbfs_mounts`) and avoid UC-only settings such as volume grants or runtime volume names.
+- When `enable_unity_catalog = false`, avoid UC-only settings such as volume grants or runtime volume names. Prefer direct `abfss://...` storage roots for Kindling data/checkpoints; use DBFS mounts (`create_artifacts_mount` / `dbfs_mounts`) only for legacy fallback coverage.
+- For Azure Government Databricks, the recommended Kindling runtime profile is `kindling.features.databricks.uc_enabled=false` with `kindling.delta.access_mode=storage` and Gov-cloud `abfss://...dfs.core.usgovcloudapi.net/...` storage roots.
+- If a non-UC workspace has a usable Hive metastore database, Kindling can use `kindling.delta.access_mode=catalog` with `kindling.storage.table_schema` and `kindling.storage.table_schema_location`; leave `kindling.storage.table_catalog` unset.
 - Set `workspace_role = "platform"` for an internal Kindling platform workspace and `workspace_role = "solution"` for a solution workspace that consumes Kindling.
 - Use `enable_kindling_artifacts`, `enable_kindling_runtime_volumes`, and `enable_kindling_platform_support` to override the role-driven defaults explicitly.
 - Use `cluster_permissions` to grant `CAN_ATTACH_TO` / `CAN_MANAGE` access on Terraform-created clusters. This is required when jobs run as a service principal that did not create the cluster.

@@ -294,7 +294,7 @@ Should seed:
 
 Examples:
 
-- Databricks: prefer `forName` where catalog/schema context is available
+- Databricks: prefer `catalog` where catalog/schema or Hive metastore context is available; prefer `storage` for non-UC Gov/classic workspaces
 - Fabric/Synapse: prefer workspace/lakehouse-friendly table or path conventions already used by Kindling
 
 ### `env_dev.yaml`

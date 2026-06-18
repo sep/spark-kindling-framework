@@ -148,7 +148,7 @@ poe test-system --platform synapse --test name_mapper
 Databricks system tests support two explicit profiles via `KINDLING_DATABRICKS_SYSTEM_TEST_MODE`:
 
 - `uc` (default): UC/Volumes-oriented behavior
-  - `kindling.delta.tablerefmode=forName`
+  - `kindling.delta.access_mode=catalog`
   - `kindling.storage.table_root=/Volumes/...`
   - `kindling.storage.checkpoint_root=/Volumes/...`
   - `kindling.databricks.volume_staging_root=/Volumes/...`
@@ -158,9 +158,11 @@ Databricks system tests support two explicit profiles via `KINDLING_DATABRICKS_S
     - `KINDLING_DATABRICKS_RUNTIME_TEMP_VOLUME`
     - defaults remain `medallion.default.temp`
 - `classic`: reference/path-oriented fallback behavior
-  - `kindling.delta.tablerefmode=forPath`
+  - `kindling.delta.access_mode=storage`
   - `kindling.storage.table_root=dbfs:/tmp/...`
   - `kindling.storage.checkpoint_root=dbfs:/tmp/...`
+  - intended for non-UC coverage, including Azure Government Databricks
+    workspaces where Unity Catalog is unavailable
 
 Examples:
 

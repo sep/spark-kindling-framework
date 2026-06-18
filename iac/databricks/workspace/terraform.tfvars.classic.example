@@ -5,8 +5,9 @@
 # .tfvars files are gitignored — do NOT commit real values.
 #
 # This profile is intended for a separate Databricks workspace used to validate
-# classic/path-based fallback behavior. It is not a substitute for a truly
-# non-UC workspace if the target workspace is still attached to a metastore.
+# classic/path-based fallback behavior, including Azure Government Databricks
+# where Unity Catalog is unavailable. Prefer direct abfss:// runtime paths for
+# new deployments; DBFS mounts are retained here as legacy compatibility knobs.
 # =============================================================================
 
 # -- Azure --------------------------------------------------------------------
@@ -29,7 +30,8 @@ artifacts_container_name         = "artifacts"
 artifacts_external_location_name = "artifacts"
 adls_dfs_domain                  = "dfs.core.windows.net"
 
-# In non-UC mode, the module uses DBFS mounts instead of UC external locations.
+# In non-UC mode, use direct abfss:// paths for Kindling runtime config when
+# possible. DBFS mounts can be created for legacy workspace compatibility.
 create_artifacts_mount = true
 artifacts_mount_name   = "artifacts"
 

@@ -788,7 +788,7 @@ DataEntities.entity(
     tags={
         "provider_type": "delta",
         "provider.path": "abfss://data@mystorageacct.dfs.core.windows.net/bronze/sales",
-        "provider.access_mode": "forPath",
+        "provider.access_mode": "storage",
     },
     schema=[
         StructField("id", IntegerType(), False),
