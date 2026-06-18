@@ -150,7 +150,7 @@ def get_local_spark_session(
         .config(
             "spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog"
         )
-        .config("spark.sql.warehouse.dir", "/spark-warehouse")
+        .config("spark.sql.warehouse.dir", "/tmp/spark-warehouse")
         # Delta Lake optimizations
         .config("spark.databricks.delta.retentionDurationCheck.enabled", "false")
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true")

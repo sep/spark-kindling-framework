@@ -36,7 +36,7 @@ def test_resolve_system_test_workers_local_uses_env_override(monkeypatch):
 def test_resolve_system_test_workers_ci_uses_platform_defaults(monkeypatch):
     monkeypatch.delenv("KINDLING_SYSTEM_TEST_CI_WORKERS", raising=False)
 
-    assert test_runner.resolve_workers("synapse", explicit_workers=None, ci=True) == "2"
+    assert test_runner.resolve_workers("synapse", explicit_workers=None, ci=True) == "3"
     assert test_runner.resolve_workers("fabric", explicit_workers=None, ci=True) == "4"
 
 
