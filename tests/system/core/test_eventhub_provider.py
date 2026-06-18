@@ -23,6 +23,7 @@ from tests.system.eventhub_test_resource import (
     EventHubResourceResolutionError,
     resolve_eventhub_test_resource,
 )
+from tests.system.test_helpers import get_system_test_stream_max_wait
 
 
 @pytest.fixture
@@ -119,7 +120,7 @@ class TestEventHubProvider:
         stdout_validator,
     ):
         api_client, platform_name = platform_client
-        max_wait_s = 1200.0 if platform_name == "synapse" else 900.0
+        max_wait_s = get_system_test_stream_max_wait(900.0, platform_name)
 
         test_id = uuid.uuid4().hex
         unique_suffix = test_id[:8]

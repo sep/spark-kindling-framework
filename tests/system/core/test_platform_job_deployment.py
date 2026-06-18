@@ -128,10 +128,7 @@ class TestPlatformJobDeployment:
                     run_id=run_id,
                     print_lines=True,
                     poll_interval=get_system_test_poll_interval(10.0),
-                    # Synapse: 1200s (pool cold-start + force_reinstall can exceed 900s).
-                    max_wait=get_system_test_stream_max_wait(
-                        1200.0 if platform_name == "synapse" else 600.0
-                    ),
+                    max_wait=get_system_test_stream_max_wait(600.0, platform_name),
                 )
                 print("=" * 80)
             except Exception as e:
@@ -406,10 +403,7 @@ class TestPlatformJobResults:
                     run_id=run_id,
                     print_lines=True,
                     poll_interval=get_system_test_poll_interval(10.0),
-                    # Synapse: 1200s (pool cold-start + force_reinstall can exceed 900s).
-                    max_wait=get_system_test_stream_max_wait(
-                        1200.0 if platform_name == "synapse" else 600.0
-                    ),
+                    max_wait=get_system_test_stream_max_wait(600.0, platform_name),
                 )
                 print("=" * 80)
             except Exception as e:
