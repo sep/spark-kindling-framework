@@ -300,8 +300,11 @@ class TestLakeWheelBFS:
                 run_id=run_id,
                 print_lines=True,
                 poll_interval=get_system_test_poll_interval(10.0),
-                # 900s: Databricks UC cold-start + wheel download can take >10 min
-                max_wait=get_system_test_stream_max_wait(900.0),
+                # 1200s for Synapse (pool cold-start + queue wait with 3 workers)
+                # 900s for Databricks (UC cold-start + wheel download)
+                max_wait=get_system_test_stream_max_wait(
+                    1200.0 if platform_name == "synapse" else 900.0
+                ),
             )
 
             log = stdout_validator.get_content()

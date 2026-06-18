@@ -127,7 +127,9 @@ class TestMigrationService:
                     run_id=run_id,
                     print_lines=True,
                     poll_interval=get_system_test_poll_interval(10.0),
-                    max_wait=get_system_test_stream_max_wait(900.0),
+                    max_wait=get_system_test_stream_max_wait(
+                        1200.0 if platform_name == "synapse" else 900.0
+                    ),
                 )
             except Exception as stream_err:
                 print(f"Stdout streaming error (non-fatal): {stream_err}")
