@@ -303,13 +303,29 @@ def pytest_collection_modifyitems(config, items):
 def pytest_collection_finish(session):
     """Set the authoritative total after all collection hooks have run.
 
-    pytest_collection_modifyitems is called once per conftest, so the last
-    call wins. pytest_collection_finish fires once after all of them, giving
-    us the final items list that pytest will actually run.
-    Only set on the controller — xdist workers have workerinput set.
+    In non-xdist mode this fires after all pytest_collection_modifyitems calls
+    and gives us the definitive item count.  In xdist mode the controller
+    prohibits collection entirely (DSession.pytest_collection returns True),
+    so this hook never fires on the controller — use
+    pytest_xdist_node_collection_finished instead.
     """
     if not hasattr(session.config, "workerinput"):
         session.config._kindling_system_total_items = len(session.items)
+
+
+def pytest_xdist_node_collection_finished(node, ids) -> None:
+    """Set total item count when running under xdist.
+
+    In xdist mode pytest_collection is prohibited on the controller, so
+    pytest_collection_modifyitems and pytest_collection_finish never fire
+    there.  This hook fires on the controller each time a worker finishes
+    collecting — node.config is the controller config.  We grab the total
+    from the first worker; subsequent workers collect the same set so the
+    count is stable.
+    """
+    config = node.config
+    if getattr(config, "_kindling_system_total_items", 0) <= 0 and ids:
+        config._kindling_system_total_items = len(ids)
 
 
 @pytest.hookimpl
