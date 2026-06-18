@@ -7,22 +7,27 @@ or by a later provider feature instead of being implied.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from injector import inject
 from kindling.data_entities import EntityMetadata
-from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
+from kindling.entity_provider import (
+    BaseEntityProvider,
+    StreamWritableEntityProvider,
+    WritableEntityProvider,
+)
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
 from pyspark.sql import DataFrame
+from pyspark.sql.streaming import StreamingQuery
 
 ADX_SPARK_CONNECTOR_MAVEN_COORDINATE = "com.microsoft.azure.kusto:kusto-spark_3.0_2.12:7.0.6"
 GENERIC_FORMAT = "com.microsoft.kusto.spark.datasource"
 SYNAPSE_FORMAT = "com.microsoft.kusto.spark.synapse.datasource"
 
 
-class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider):
+class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider, StreamWritableEntityProvider):
     """Write DataFrames to Azure Data Explorer through the Kusto Spark connector."""
 
     @inject
@@ -56,6 +61,39 @@ class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider):
     def append_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
         """Append DataFrame rows to ADX."""
         self._save(df, entity_metadata, "Append")
+
+    def append_as_stream(
+        self,
+        df: DataFrame,
+        entity_metadata: EntityMetadata,
+        checkpoint_location: str,
+        format: Optional[str] = None,
+        options: Optional[dict] = None,
+    ) -> StreamingQuery:
+        """Append a streaming DataFrame to ADX through the Kusto Spark connector."""
+        config = self._get_provider_config(entity_metadata)
+        if options:
+            config = {**config, **options}
+
+        connector_options = self._build_options(entity_metadata, config)
+        source_format = format or self._source_format(config)
+        output_mode = str(config.get("output_mode", "append"))
+        query_name = config.get("query_name")
+
+        self.logger.info(
+            "Starting streaming write for entity '%s' to ADX table '%s' using %s",
+            entity_metadata.entityid,
+            connector_options.get("kustoTable"),
+            source_format,
+        )
+
+        writer = df.writeStream.format(source_format).outputMode(output_mode)
+        if query_name:
+            writer = writer.queryName(str(query_name))
+        writer = writer.option("checkpointLocation", checkpoint_location)
+        for key, value in connector_options.items():
+            writer = writer.option(key, value)
+        return writer.start()
 
     def _save(self, df: DataFrame, entity_metadata: EntityMetadata, mode: str) -> None:
         config = self._get_provider_config(entity_metadata)
