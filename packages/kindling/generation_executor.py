@@ -21,7 +21,7 @@ Part of: Capability #15 - Unified DAG Orchestrator
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
@@ -226,6 +226,7 @@ class GenerationExecutor(SignalEmitter):
         pipe_timeout: Optional[float] = None,
         streaming_options: Optional[Dict[str, Any]] = None,
         auto_cache: bool = False,
+        no_watermark: bool = False,
     ) -> ExecutionResult:
         """Execute an ExecutionPlan generation by generation.
 
@@ -246,6 +247,7 @@ class GenerationExecutor(SignalEmitter):
                 applied to all pipes.
             auto_cache: If True, call `persist()/cache()` on recommended shared
                 entities when first read in batch mode.
+            no_watermark: If True, disable watermark reads/writes for this run.
 
         Returns:
             ExecutionResult with per-pipe and per-generation results
@@ -292,6 +294,7 @@ class GenerationExecutor(SignalEmitter):
                         error_strategy=error_strategy,
                         pipe_timeout=pipe_timeout,
                         streaming_options=streaming_options,
+                        no_watermark=no_watermark,
                     )
                     result.generation_results.append(gen_result)
 
@@ -519,6 +522,7 @@ class GenerationExecutor(SignalEmitter):
         error_strategy: ErrorStrategy,
         pipe_timeout: Optional[float],
         streaming_options: Optional[Dict[str, Any]],
+        no_watermark: bool = False,
     ) -> GenerationResult:
         """Execute all pipes in a generation."""
         gen_start = time.time()
@@ -541,7 +545,7 @@ class GenerationExecutor(SignalEmitter):
         if parallel and not is_streaming and len(generation.pipe_ids) > 1:
             # Parallel batch execution
             gen_result = self._execute_generation_parallel(
-                generation, run_id, max_workers, error_strategy, pipe_timeout
+                generation, run_id, max_workers, error_strategy, pipe_timeout, no_watermark
             )
         else:
             # Sequential execution (batch or streaming)
@@ -552,6 +556,7 @@ class GenerationExecutor(SignalEmitter):
                     is_streaming=is_streaming,
                     pipe_timeout=pipe_timeout,
                     streaming_options=streaming_options,
+                    no_watermark=no_watermark,
                 )
                 gen_result.pipe_results.append(pipe_result)
 
@@ -589,6 +594,7 @@ class GenerationExecutor(SignalEmitter):
         max_workers: int,
         error_strategy: ErrorStrategy,
         pipe_timeout: Optional[float],
+        no_watermark: bool = False,
     ) -> GenerationResult:
         """Execute pipes within a generation in parallel using ThreadPoolExecutor."""
         gen_result = GenerationResult(generation_number=generation.number)
@@ -608,6 +614,7 @@ class GenerationExecutor(SignalEmitter):
                     is_streaming=False,
                     pipe_timeout=pipe_timeout,
                     streaming_options=None,
+                    no_watermark=no_watermark,
                 ): pipe_id
                 for pipe_id in generation.pipe_ids
             }
@@ -641,6 +648,7 @@ class GenerationExecutor(SignalEmitter):
         is_streaming: bool,
         pipe_timeout: Optional[float],
         streaming_options: Optional[Dict[str, Any]],
+        no_watermark: bool = False,
     ) -> PipeResult:
         """Execute a single pipe (batch or streaming)."""
         pipe_start = time.time()
@@ -658,6 +666,8 @@ class GenerationExecutor(SignalEmitter):
             pipe = self.pipes_registry.get_pipe_definition(pipe_id)
             if pipe is None:
                 raise ValueError(f"Pipe '{pipe_id}' not found in registry")
+            if no_watermark and pipe.use_watermark:
+                pipe = replace(pipe, use_watermark=False)
 
             if is_streaming:
                 result = self._execute_pipe_streaming(pipe, streaming_options)
@@ -725,7 +735,7 @@ class GenerationExecutor(SignalEmitter):
             input_entities[key] = self._read_batch_input_entity(
                 entity_id=entity_id,
                 entity_reader=entity_reader,
-                is_first=is_first,
+                use_watermark=pipe.use_watermark and is_first,
                 run_id=run_id,
             )
 
@@ -747,14 +757,14 @@ class GenerationExecutor(SignalEmitter):
         self,
         entity_id: str,
         entity_reader: Callable[[Any, bool], Any],
-        is_first: bool,
+        use_watermark: bool,
         run_id: str,
     ) -> Any:
         """Read an input entity with shared-entity cache tracking."""
         entity = self.entity_registry.get_entity_definition(entity_id)
 
         if not self._cache_enabled or entity_id not in self._cache_recommendations:
-            return entity_reader(entity, is_first)
+            return entity_reader(entity, use_watermark)
 
         with self._cache_lock:
             if entity_id in self._cached_entities:
@@ -770,7 +780,7 @@ class GenerationExecutor(SignalEmitter):
                 )
                 return self._cached_entities[entity_id]
 
-            frame = entity_reader(entity, is_first)
+            frame = entity_reader(entity, use_watermark)
             self._cached_entities[entity_id] = frame
             self._cache_misses += 1
             self._cache_misses_by_entity[entity_id] = (

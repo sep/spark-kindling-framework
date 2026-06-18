@@ -8,7 +8,6 @@ from typing import Callable, Dict, List
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
-
 from kindling.data_entities import KindlingNotInitializedError
 from kindling.data_pipes import (
     DataPipes,
@@ -872,6 +871,7 @@ class TestDataPipesExecuter:
         executer.run_datapipes_dag.assert_called_once_with(
             ["pipe_a"],
             strategy="batch",
+            no_watermark=False,
             parallel=True,
             max_workers=2,
         )
@@ -897,6 +897,7 @@ class TestDataPipesExecuter:
                 pipe_timeout=12.5,
                 streaming_options={"pipe1": {"checkpoint": "/tmp/checkpoints"}},
                 auto_cache=True,
+                no_watermark=True,
             )
 
         assert result == "ok"
@@ -909,6 +910,7 @@ class TestDataPipesExecuter:
         assert kwargs["pipe_timeout"] == 12.5
         assert kwargs["streaming_options"] == {"pipe1": {"checkpoint": "/tmp/checkpoints"}}
         assert kwargs["auto_cache"] is True
+        assert kwargs["no_watermark"] is True
         assert kwargs["error_strategy"] is not None
 
 
