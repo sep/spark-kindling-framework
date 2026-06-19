@@ -96,6 +96,14 @@ def _install_local_package_version_shim() -> Optional[Callable[[], None]]:
     return _restore
 
 
+def _dist_name_from_spec(spec: str) -> str:
+    """Extract the bare distribution name from a requirement spec (e.g. 'pkg==1.0' → 'pkg')."""
+    for sep in ("~=", ">=", "==", "<=", "!=", ">", "<"):
+        if sep in spec:
+            return spec.split(sep)[0].strip()
+    return spec.strip()
+
+
 def _is_editable_install(dist_name: str) -> bool:
     """Return True if dist_name is installed as an editable (development) install."""
     import importlib.metadata as im
@@ -113,6 +121,22 @@ def _is_editable_install(dist_name: str) -> bool:
     return False
 
 
+def _is_available_in_env(dist_name: str) -> bool:
+    """Return True if the distribution is resolvable in the current environment.
+
+    This covers editable installs, regular pip installs, devcontainer pre-installs,
+    and packages published to a registry and installed — anything importlib.metadata
+    can find, regardless of how it got there.
+    """
+    import importlib.metadata as im
+
+    try:
+        im.distribution(dist_name)
+        return True
+    except im.PackageNotFoundError:
+        return False
+
+
 def _filter_editable_packages(lake_requirements: List[str]) -> List[str]:
     """Return only the lake requirements whose distributions are NOT editable installs.
 
@@ -123,9 +147,7 @@ def _filter_editable_packages(lake_requirements: List[str]) -> List[str]:
     """
     filtered = []
     for spec in lake_requirements:
-        dist_name = (
-            spec.split(">=")[0].split("==")[0].split("<=")[0].split(">")[0].split("<")[0].strip()
-        )
+        dist_name = _dist_name_from_spec(spec)
         if _is_editable_install(dist_name):
             _runner_logger.debug(
                 "Skipping lake install of %r — editable install active (local source takes precedence)",
@@ -148,8 +170,15 @@ def _read_lake_requirements(app_dir: Path) -> List[str]:
     ]
 
 
-def _install_lake_requirements(lake_requirements: List[str], app_name: str) -> None:
-    """Install lake packages listed in lake-reqs.txt, mirroring DataAppManager.run_app() on Synapse."""
+def _install_lake_requirements(
+    lake_requirements: List[str], app_name: str, load_lake: bool = False
+) -> None:
+    """Install lake packages listed in lake-reqs.txt.
+
+    By default (load_lake=False), packages already installed locally are used as-is and
+    the lake is not contacted.  Pass load_lake=True to force downloading from the lake
+    regardless of local install state (mirrors DataAppManager.run_app() on Synapse/Databricks).
+    """
     if not lake_requirements:
         return
 
@@ -160,6 +189,24 @@ def _install_lake_requirements(lake_requirements: List[str], app_name: str) -> N
             "Skipped %d lake package(s) that are active editable installs", skipped
         )
     if not installable:
+        return
+
+    if not load_lake:
+        available = [s for s in installable if _is_available_in_env(_dist_name_from_spec(s))]
+        missing = [s for s in installable if s not in available]
+        if available:
+            _runner_logger.debug(
+                "Using %d locally installed lake package(s): %s",
+                len(available),
+                available,
+            )
+        if missing:
+            _runner_logger.warning(
+                "%d lake package(s) in lake-reqs.txt are not installed locally and will be "
+                "skipped — pass --load-lake to fetch them from the lake: %s",
+                len(missing),
+                missing,
+            )
         return
 
     try:
@@ -188,6 +235,12 @@ def main() -> None:
     parser.add_argument("app_path")
     parser.add_argument("--env", default="local")
     parser.add_argument("--config", action="append", dest="config_files", default=[])
+    parser.add_argument(
+        "--load-lake",
+        action="store_true",
+        default=False,
+        help="Download lake-reqs packages from the lake even if already installed locally.",
+    )
     args = parser.parse_args()
 
     app_path = Path(args.app_path).resolve()
@@ -207,7 +260,7 @@ def main() -> None:
         )
 
         lake_requirements = _read_lake_requirements(app_path.parent)
-        _install_lake_requirements(lake_requirements, app_path.stem)
+        _install_lake_requirements(lake_requirements, app_path.stem, load_lake=args.load_lake)
 
         code = app_path.read_text(encoding="utf-8")
         exec_globals = {

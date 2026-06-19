@@ -46,7 +46,7 @@
       }
     }
   },
-  "postCreateCommand": "poetry update spark-kindling spark-kindling-sdk spark-kindling-cli && poetry install --with dev --sync",
+  "postCreateCommand": "python -c 'import spark_kindling' 2>/dev/null || poetry update spark-kindling spark-kindling-sdk spark-kindling-cli; poetry install --with dev --sync",
   "forwardPorts": [
     4040
   ],
