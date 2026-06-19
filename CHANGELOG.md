@@ -2,6 +2,19 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [0.10.31] - 2026-06-19
+
+### Fixed
+
+- `kindling app run` (standalone) no longer incorrectly fetches lake-reqs packages from the
+  lake by default. Packages already installed in the current Python environment (editable,
+  regular pip, devcontainer pre-install, or published to a registry) are used as-is without
+  contacting the lake. This fixes a regression where `artifacts_storage_path` was required
+  even for purely local runs.
+- Fixed `lake-reqs.txt` spec parsing to correctly handle `~=` and `!=` version operators.
+- Added `--load-lake` flag to `kindling app run` (standalone-only) to explicitly force
+  downloading lake-reqs packages from the lake regardless of local install state.
+
 ## [Unreleased]
 
 ### Changed
