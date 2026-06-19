@@ -3077,6 +3077,7 @@ def _run_standalone_app(
     json_output: bool,
     fail_on_error: bool = True,
     dotenv_paths: Tuple[Path, ...] = (),
+    load_lake: bool = False,
 ) -> None:
     """Run an app locally by executing its entrypoint as a subprocess."""
     if parameters_path or param_overrides:
@@ -3151,6 +3152,7 @@ def _run_standalone_app(
         "--env",
         resolved_env,
         *[arg for cfg in config_files for arg in ("--config", cfg)],
+        *(["--load-lake"] if load_lake else []),
         str(resolved_app),
     ]
     _emit_progress(f"Running app locally: {resolved_app}", json_output)
@@ -3252,6 +3254,16 @@ def _run_standalone_app(
     is_flag=True,
     help="Do not load .env before running the app.",
 )
+@click.option(
+    "--load-lake",
+    "load_lake",
+    is_flag=True,
+    default=False,
+    help=(
+        "For standalone runs: fetch lake-reqs packages from the lake even if already installed "
+        "locally. By default, locally installed packages are used without contacting the lake."
+    ),
+)
 def app_run(
     app: str,
     app_name: Optional[str],
@@ -3271,6 +3283,7 @@ def app_run(
     json_output: bool,
     dotenv_paths: Tuple[Path, ...],
     no_dotenv: bool,
+    load_lake: bool = False,
 ) -> None:
     """Run an app locally or remotely on a managed platform.
 
@@ -3307,6 +3320,7 @@ def app_run(
             json_output,
             fail_on_error=fail_on_error,
             dotenv_paths=resolved_dotenvs,
+            load_lake=load_lake,
         )
         return
 
@@ -3320,6 +3334,8 @@ def app_run(
         raise click.ClickException("--local-package is only valid for standalone app runs.")
     if dotenv_paths or no_dotenv:
         raise click.ClickException("--dotenv/--no-dotenv is only valid for standalone app runs.")
+    if load_lake:
+        raise click.ClickException("--load-lake is only valid for standalone app runs.")
 
     _run_remote_app(
         app,

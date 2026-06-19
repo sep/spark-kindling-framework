@@ -1770,6 +1770,66 @@ class TestAppRunCommand:
         assert "[1/2]" not in result.stdout
         assert "[1/2]" in result.stderr
 
+    def test_standalone_load_lake_passes_flag_to_runner(self, tmp_path, monkeypatch):
+        import subprocess
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
+
+        captured_cmd = []
+
+        def fake_run(cmd, env=None, **kwargs):
+            captured_cmd.extend(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(
+            cli, ["app", "run", "myapp", "--local-folder", str(app_dir), "--load-lake"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "--load-lake" in captured_cmd
+
+    def test_standalone_no_load_lake_by_default(self, tmp_path, monkeypatch):
+        import subprocess
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
+
+        captured_cmd = []
+
+        def fake_run(cmd, env=None, **kwargs):
+            captured_cmd.extend(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(cli, ["app", "run", "myapp", "--local-folder", str(app_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert "--load-lake" not in captured_cmd
+
+    def test_load_lake_rejected_for_remote_runs(self, tmp_path, monkeypatch):
+        import kindling_cli.cli as cli_mod
+
+        mock_api = self._make_mock_api()
+        monkeypatch.setattr(cli_mod, "_create_platform_api", lambda p: (mock_api, p))
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# app")
+
+        result = CliRunner().invoke(
+            cli,
+            ["app", "run", str(app_dir), "--platform", "fabric", "--load-lake"],
+        )
+
+        assert result.exit_code != 0
+        assert "--load-lake is only valid for standalone app runs" in result.output
+
     def test_remote_rejects_standalone_only_options(self, tmp_path, monkeypatch):
         import kindling_cli.cli as cli_mod
 

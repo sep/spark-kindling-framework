@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from kindling_cli import _runner
 
 
@@ -99,6 +100,45 @@ def test_install_local_package_version_shim_discovers_from_pythonpath(monkeypatc
         restore()
 
 
+# --- _dist_name_from_spec ---
+
+
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        ("my-pkg", "my-pkg"),
+        ("my-pkg==1.0.0", "my-pkg"),
+        ("my-pkg>=2.0", "my-pkg"),
+        ("my-pkg<=3.0", "my-pkg"),
+        ("my-pkg>1.0", "my-pkg"),
+        ("my-pkg<2.0", "my-pkg"),
+        ("my-pkg~=1.2", "my-pkg"),
+        ("my-pkg!=1.0", "my-pkg"),
+        ("  my-pkg == 1.0  ", "my-pkg"),
+    ],
+)
+def test_dist_name_from_spec(spec, expected):
+    assert _runner._dist_name_from_spec(spec) == expected
+
+
+# --- _is_available_in_env ---
+
+
+def test_is_available_in_env_returns_true_when_installed():
+    import importlib.metadata as im
+
+    mock_dist = MagicMock()
+    with patch("importlib.metadata.distribution", return_value=mock_dist):
+        assert _runner._is_available_in_env("some-pkg") is True
+
+
+def test_is_available_in_env_returns_false_when_not_installed():
+    import importlib.metadata as im
+
+    with patch("importlib.metadata.distribution", side_effect=im.PackageNotFoundError("nope")):
+        assert _runner._is_available_in_env("missing-pkg") is False
+
+
 # --- lake-reqs.txt tests ---
 
 
@@ -173,25 +213,68 @@ def test_filter_editable_packages_passes_non_editable_through():
     assert result == ["custom-pkg==1.0.0", "other-pkg"]
 
 
-def test_install_lake_requirements_warns_when_no_artifacts_path():
+def test_install_lake_requirements_default_uses_local_install():
+    """Default (no --load-lake): env-available packages are used without lake access."""
+    with (
+        patch("kindling.injection.get_kindling_service") as mock_get,
+        patch.object(_runner, "_is_available_in_env", return_value=True),
+    ):
+        _runner._install_lake_requirements(["domain-records==1.2.3"], "myapp")
+
+    mock_get.assert_not_called()
+
+
+def test_install_lake_requirements_default_warns_when_not_installed_locally():
+    """Default (no --load-lake): packages absent from env get a warning but no lake access."""
+    with (
+        patch("kindling.injection.get_kindling_service") as mock_get,
+        patch.object(_runner, "_is_available_in_env", return_value=False),
+    ):
+        _runner._install_lake_requirements(["my-pkg==1.0.0"], "myapp")
+
+    mock_get.assert_not_called()
+
+
+def test_install_lake_requirements_default_mixed_available_and_missing(caplog):
+    """Default: available packages are skipped silently; missing ones produce a warning."""
+    import logging
+
+    def fake_available(dist_name):
+        return dist_name == "domain-records"
+
+    with (
+        patch("kindling.injection.get_kindling_service") as mock_get,
+        patch.object(_runner, "_is_available_in_env", side_effect=fake_available),
+        caplog.at_level(logging.WARNING, logger="kindling._runner"),
+    ):
+        _runner._install_lake_requirements(["domain-records==1.2.3", "missing-pkg==0.5.0"], "myapp")
+
+    mock_get.assert_not_called()
+    assert "missing-pkg==0.5.0" in caplog.text
+    assert "domain-records" not in caplog.text
+
+
+def test_install_lake_requirements_load_lake_warns_when_no_artifacts_path():
+    """With --load-lake: warn when artifacts_storage_path is not configured."""
     mock_manager = MagicMock()
     mock_manager.artifacts_path = None
 
     with (
-        patch("kindling.data_apps.DataAppManager") as _mock_cls,
+        patch("kindling.data_apps.DataAppManager"),
         patch("kindling.injection.get_kindling_service", return_value=mock_manager),
     ):
-        _runner._install_lake_requirements(["my-pkg==1.0.0"], "myapp")
+        _runner._install_lake_requirements(["my-pkg==1.0.0"], "myapp", load_lake=True)
 
     mock_manager._install_app_dependencies.assert_not_called()
 
 
-def test_install_lake_requirements_calls_manager_when_artifacts_configured():
+def test_install_lake_requirements_load_lake_calls_manager_when_artifacts_configured():
+    """With --load-lake: downloads from lake when artifacts_storage_path is set."""
     mock_manager = MagicMock()
     mock_manager.artifacts_path = "abfss://artifacts@storage.dfs.core.windows.net"
 
     with patch("kindling.injection.get_kindling_service", return_value=mock_manager):
-        _runner._install_lake_requirements(["my-pkg==1.0.0", "other-pkg"], "myapp")
+        _runner._install_lake_requirements(["my-pkg==1.0.0", "other-pkg"], "myapp", load_lake=True)
 
     mock_manager._install_app_dependencies.assert_called_once_with(
         "myapp", [], ["my-pkg==1.0.0", "other-pkg"]
@@ -205,9 +288,10 @@ def test_install_lake_requirements_skips_empty_list():
     mock_get.assert_not_called()
 
 
-def test_install_lake_requirements_warns_on_exception():
+def test_install_lake_requirements_load_lake_warns_on_exception():
+    """With --load-lake: exception is caught and logged as a warning."""
     with patch(
         "kindling.injection.get_kindling_service", side_effect=RuntimeError("injector not ready")
     ):
         # should not raise
-        _runner._install_lake_requirements(["my-pkg==1.0.0"], "myapp")
+        _runner._install_lake_requirements(["my-pkg==1.0.0"], "myapp", load_lake=True)
