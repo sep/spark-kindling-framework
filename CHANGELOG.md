@@ -2,6 +2,15 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [0.10.33] - 2026-06-23
+
+### Changed
+
+- Removed legacy agent workflow references from repository agent instructions and
+  quickstart documentation.
+- Removed legacy agent tooling setup from the devcontainer configuration.
+- Added the app-local settings overlay proposal document.
+
 ## [0.10.31] - 2026-06-19
 
 ### Fixed
