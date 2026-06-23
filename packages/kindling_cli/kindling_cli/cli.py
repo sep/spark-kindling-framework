@@ -35,8 +35,32 @@ try:
     from kindling.app_files import is_deployable_app_file
 except ImportError:  # CLI can be installed without the runtime package.
 
-    def is_deployable_app_file(path: str) -> bool:
+    def is_deployable_app_file(
+        path: str,
+        *,
+        platform: Optional[str] = None,
+        environment: Optional[str] = None,
+    ) -> bool:
         posix_path = PurePosixPath(path.replace("\\", "/"))
+        if posix_path.name in {"settings.local.yaml", "settings.local.yml"}:
+            return False
+        if (
+            posix_path.name.startswith("app.")
+            and posix_path.name != APP_CONFIG_FILE
+            and posix_path.suffix.lower() in {".yaml", ".yml"}
+        ):
+            return False
+        if (
+            posix_path.name not in {"settings.yaml", "settings.local.yaml", "settings.local.yml"}
+            and posix_path.name.startswith("settings.")
+            and posix_path.name.endswith((".yaml", ".yml"))
+        ):
+            return posix_path.name in {
+                f"settings.{platform}.yaml" if platform else "",
+                f"settings.{platform}.yml" if platform else "",
+                f"settings.{environment}.yaml" if environment else "",
+                f"settings.{environment}.yml" if environment else "",
+            }
         return posix_path.name in {"requirements.txt", "lake-reqs.txt"} or (
             posix_path.suffix.lower() in {".py", ".yaml", ".yml"}
         )
@@ -311,7 +335,12 @@ def _normalize_archive_entry_path(entry_name: str) -> str:
     return posix_path.as_posix()
 
 
-def _prepare_app_files(app_path: Path) -> Dict[str, str]:
+def _prepare_app_files(
+    app_path: Path,
+    *,
+    platform: Optional[str] = None,
+    environment: Optional[str] = None,
+) -> Dict[str, str]:
     """Collect app source files from a directory or a .kda archive."""
     resolved_path = app_path.expanduser().resolve()
 
@@ -323,7 +352,11 @@ def _prepare_app_files(app_path: Path) -> Dict[str, str]:
                     if file_info.is_dir():
                         continue
                     rel_path = _normalize_archive_entry_path(file_info.filename)
-                    if not is_deployable_app_file(rel_path):
+                    if not is_deployable_app_file(
+                        rel_path,
+                        platform=platform,
+                        environment=environment,
+                    ):
                         continue
                     app_files[rel_path] = archive.read(file_info.filename).decode("utf-8")
         except Exception as exc:
@@ -344,7 +377,11 @@ def _prepare_app_files(app_path: Path) -> Dict[str, str]:
             if not file_path.is_file():
                 continue
             rel_path = file_path.relative_to(resolved_path).as_posix()
-            if not is_deployable_app_file(rel_path):
+            if not is_deployable_app_file(
+                rel_path,
+                platform=platform,
+                environment=environment,
+            ):
                 continue
             app_files[rel_path] = _read_text_file(file_path)
 
@@ -486,9 +523,9 @@ def _resolve_config_path(
     base_dir = config_dir / "data-apps" / app_name if app_name else config_dir
 
     if level == "platform":
-        return base_dir / f"platform_{platform}.yaml"
+        return base_dir / f"settings.{platform}.yaml"
     if level == "env":
-        return base_dir / f"env_{environment}.yaml"
+        return base_dir / f"settings.{environment}.yaml"
     return base_dir / "settings.yaml"
 
 
@@ -1672,6 +1709,12 @@ def workspace_group() -> None:
     help="Kindling settings file to deploy.",
 )
 @click.option(
+    "--env",
+    "environment",
+    default=None,
+    help="Environment settings overlay to deploy. Defaults to KINDLING_ENV when set.",
+)
+@click.option(
     "--notebook-bootstrap",
     "notebook_bootstrap",
     is_flag=True,
@@ -1693,6 +1736,7 @@ def workspace_init(
     container: Optional[str],
     base_path: Optional[str],
     config_path: Path,
+    environment: Optional[str],
     notebook_bootstrap: bool,
     workspace: Optional[str],
     overwrite: bool,
@@ -1712,6 +1756,7 @@ def workspace_init(
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
         raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+    resolved_environment = environment or os.getenv("KINDLING_ENV")
 
     resolved_account, resolved_container, resolved_base = _resolve_storage_env(
         storage_account, container, base_path
@@ -1736,7 +1781,13 @@ def workspace_init(
     config_dest = f"{resolved_base}/config" if resolved_base else "config"
     click.echo(f"Config → {config_dest}/")
     _deploy_config(
-        blob_service_client, resolved_container, resolved_base, resolved_config, overwrite=overwrite
+        blob_service_client,
+        resolved_container,
+        resolved_base,
+        resolved_config,
+        overwrite=overwrite,
+        platform=resolved_platform,
+        environment=resolved_environment,
     )
     click.echo()
 
@@ -2215,13 +2266,26 @@ def _deploy_config(
     base_path: str,
     config_path: Path,
     overwrite: bool = True,
+    platform: Optional[str] = None,
+    environment: Optional[str] = None,
 ) -> None:
-    """Upload settings.yaml (and any platform_*/env_* companions) to storage."""
+    """Upload settings.yaml and selected dot-style settings overlays to storage."""
     config_dir = config_path.parent
     config_files = [config_path]
-    # Include platform and environment overlays from the same directory
-    config_files.extend(sorted(config_dir.glob("platform_*.yaml")))
-    config_files.extend(sorted(config_dir.glob("env_*.yaml")))
+    if platform:
+        config_files.extend(
+            [
+                config_dir / f"settings.{platform}.yaml",
+                config_dir / f"settings.{platform}.yml",
+            ]
+        )
+    if environment:
+        config_files.extend(
+            [
+                config_dir / f"settings.{environment}.yaml",
+                config_dir / f"settings.{environment}.yml",
+            ]
+        )
     # De-duplicate while preserving order
     seen: set = set()
     unique: List[Path] = []
@@ -2510,6 +2574,12 @@ def _import_notebook_to_workspace(
     help="Kindling settings file to deploy.",
 )
 @click.option(
+    "--env",
+    "environment",
+    default=None,
+    help="Environment settings overlay to deploy. Defaults to KINDLING_ENV when set.",
+)
+@click.option(
     "--storage-account",
     "storage_account",
     default=None,
@@ -2545,6 +2615,7 @@ def _import_notebook_to_workspace(
 def workspace_deploy(
     platform: Optional[str],
     config_path: Path,
+    environment: Optional[str],
     storage_account: Optional[str],
     container: Optional[str],
     base_path: Optional[str],
@@ -2576,6 +2647,7 @@ def workspace_deploy(
             "Unable to determine platform. Set --platform or one of "
             "FABRIC_WORKSPACE_ID, SYNAPSE_WORKSPACE_NAME, DATABRICKS_HOST."
         )
+    resolved_environment = environment or os.getenv("KINDLING_ENV")
 
     resolved_account, resolved_container, resolved_base = _resolve_storage_env(
         storage_account,
@@ -2610,6 +2682,8 @@ def workspace_deploy(
                 resolved_base,
                 resolved_config,
                 overwrite=overwrite,
+                platform=resolved_platform,
+                environment=resolved_environment,
             )
             click.echo()
 
@@ -2817,11 +2891,25 @@ def app_init(
     type=click.Path(path_type=Path),
     help="Destination .kda file or directory. Defaults to dist/<app-dir>.kda.",
 )
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform overlay to include.",
+)
+@click.option(
+    "--env",
+    "environment",
+    default=None,
+    help="Target environment overlay to include.",
+)
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def app_package(
     app_name: str,
     local_folder: Optional[Path],
     output_path: Optional[Path],
+    platform: Optional[str],
+    environment: Optional[str],
     json_output: bool,
 ) -> None:
     """Package an application directory into a .kda archive.
@@ -2832,7 +2920,11 @@ def app_package(
         resolved_app_path = local_folder.expanduser().resolve()
     else:
         resolved_app_path = _resolve_by_convention(app_name, "apps", "app")
-    app_files = _prepare_app_files(resolved_app_path)
+    app_files = _prepare_app_files(
+        resolved_app_path,
+        platform=platform,
+        environment=environment,
+    )
 
     if output_path is None:
         resolved_output = (Path.cwd() / "dist" / f"{resolved_app_path.name}.kda").resolve()
@@ -2851,6 +2943,8 @@ def app_package(
     payload = {
         "app_path": str(resolved_app_path),
         "package_path": str(resolved_output),
+        "platform": platform,
+        "environment": environment,
         "file_count": len(app_files),
         "files": sorted(app_files),
     }
@@ -2889,6 +2983,12 @@ def app_package(
     default=None,
     help="Target platform. Auto-detected from environment if omitted.",
 )
+@click.option(
+    "--env",
+    "environment",
+    default=None,
+    help="Target environment overlay to include.",
+)
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def app_deploy(
     app_name: str,
@@ -2896,6 +2996,7 @@ def app_deploy(
     kda_package: Optional[Path],
     remote_app_name: Optional[str],
     platform: Optional[str],
+    environment: Optional[str],
     json_output: bool,
 ) -> None:
     """Deploy an app to a remote platform.
@@ -2913,9 +3014,14 @@ def app_deploy(
     else:
         resolved_app_path = _resolve_by_convention(app_name, "apps", "app")
 
-    app_files = _prepare_app_files(resolved_app_path)
-    _validate_app_entry_point(app_files, resolved_app_path)
     resolved_platform = _resolve_remote_platform(platform)
+    resolved_environment = environment or os.getenv("KINDLING_ENV")
+    app_files = _prepare_app_files(
+        resolved_app_path,
+        platform=resolved_platform,
+        environment=resolved_environment,
+    )
+    _validate_app_entry_point(app_files, resolved_app_path)
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     resolved_name = (remote_app_name or _default_app_name(resolved_app_path)).strip()
     if not resolved_name:
@@ -2926,6 +3032,7 @@ def app_deploy(
         "app_name": resolved_name,
         "app_path": str(resolved_app_path),
         "platform": resolved_platform,
+        "environment": resolved_environment,
         "storage_path": storage_path,
         "file_count": len(app_files),
         "files": sorted(app_files),
@@ -3068,6 +3175,7 @@ def _run_standalone_app(
     app_ref: str,
     env: Optional[str],
     config_dir: Optional[Path],
+    platform: str,
     quiet: bool,
     local_packages: Tuple[Path, ...],
     parameters_path: Optional[Path],
@@ -3110,6 +3218,15 @@ def _run_standalone_app(
     base_cfg = cfg_root / "settings.yaml"
     if base_cfg.exists():
         config_files.append(str(base_cfg))
+    overlay_platform = (
+        os.getenv("KINDLING_PLATFORM")
+        or os.getenv("KINDLING_PLATFORM_ENVIRONMENT")
+        or (platform if platform != "standalone" else None)
+    )
+    if overlay_platform:
+        platform_cfg = cfg_root / f"settings.{overlay_platform}.yaml"
+        if platform_cfg.exists():
+            config_files.append(str(platform_cfg))
     env_cfg = cfg_root / f"settings.{resolved_env}.yaml"
     if env_cfg.exists():
         config_files.append(str(env_cfg))
@@ -3311,6 +3428,7 @@ def app_run(
             resolved_app_ref,
             env,
             config_dir,
+            platform,
             quiet,
             local_packages,
             parameters_path,
