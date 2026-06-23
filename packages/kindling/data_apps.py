@@ -219,6 +219,7 @@ class DataAppPackage:
         output_path: Optional[str] = None,
         version: Optional[str] = None,
         target_platform: Optional[str] = None,
+        target_environment: Optional[str] = None,
         merge_platform_config: bool = True,
         logger=None,
     ) -> str:
@@ -229,6 +230,7 @@ class DataAppPackage:
             output_path: Output .kda file path (auto-generated if None)
             version: App version (from app.yaml if None)
             target_platform: Target platform (synapse, databricks, fabric)
+            target_environment: Target environment settings overlay to include
             merge_platform_config: If True, merge platform config into base config
             logger: Optional logger
 
@@ -279,6 +281,7 @@ class DataAppPackage:
                         if not is_deployable_app_file(
                             relative_path.as_posix(),
                             platform=target_platform,
+                            environment=target_environment,
                         ):
                             continue
                         kda_file.write(file_path, relative_path)
@@ -562,6 +565,7 @@ class DataAppManager(DataAppRunner):
         output_path: Optional[str] = None,
         version: Optional[str] = None,
         target_platform: Optional[str] = None,
+        target_environment: Optional[str] = None,
         merge_platform_config: bool = True,
     ) -> str:
         """Package a data app directory into a KDA file for a specific platform
@@ -571,6 +575,7 @@ class DataAppManager(DataAppRunner):
             output_path: Output KDA file path (auto-generated if None)
             version: App version (from metadata if None)
             target_platform: Target platform (synapse, databricks, fabric)
+            target_environment: Target environment settings overlay to include
             merge_platform_config: If True, merge platform config into base config.
                                   If False, include all platform configs separately.
         """
@@ -616,6 +621,7 @@ class DataAppManager(DataAppRunner):
                         if not is_deployable_app_file(
                             relative_path.as_posix(),
                             platform=target_platform,
+                            environment=target_environment,
                         ):
                             continue
                         kda_file.write(file_path, relative_path)
@@ -653,25 +659,6 @@ class DataAppManager(DataAppRunner):
             and filename != DataAppConstants.BASE_CONFIG_FILE
             and filename.endswith(".yaml")
         ) or is_settings_overlay(filename)
-
-    def _create_merged_config(self, config: "DataAppConfig") -> str:
-        """Create merged YAML config from DataAppConfig"""
-        try:
-            import yaml
-
-            config_dict = {
-                "name": config.name,
-                "description": config.description,
-                "entry_point": config.entry_point,
-                "environment": config.environment,
-                "dependencies": config.dependencies,
-                "metadata": config.metadata,
-            }
-
-            return yaml.safe_dump(config_dict, indent=2)
-        except ImportError:
-            # Fallback to JSON if yaml not available
-            return json.dumps(asdict(config), indent=2)
 
     def deploy_kda(self, kda_file_path: str, target_environment: Optional[str] = None) -> bool:
         """Deploy a KDA file to the artifacts storage"""
@@ -792,57 +779,6 @@ class DataAppManager(DataAppRunner):
         except Exception as e:
             self.logger.error(f"Failed to load app config from {app_path}: {str(e)}")
             raise
-
-    def _merge_platform_config_at_deploy_time(
-        self, app_path: Path, base_config: DataAppConfig, target_platform: str
-    ) -> DataAppConfig:
-        """Merge platform-specific config into base config at deploy time"""
-        try:
-            # Look for platform-specific config file
-            platform_config_file = app_path / f"app.{target_platform}.yaml"
-
-            if not platform_config_file.exists():
-                self.logger.debug(
-                    f"No platform config found for {target_platform}, using base config"
-                )
-                return base_config
-
-            # Load platform-specific overrides
-            with open(platform_config_file, "r") as f:
-                platform_content = f.read()
-
-            try:
-                platform_data = yaml.safe_load(platform_content)
-            except Exception:
-                platform_data = json.loads(platform_content)
-
-            # Create merged config (platform overrides base)
-            merged_metadata = base_config.metadata.copy()
-            if platform_data.get("metadata"):
-                merged_metadata.update(platform_data["metadata"])
-
-            merged_dependencies = base_config.dependencies.copy()
-            if platform_data.get("dependencies"):
-                # Platform dependencies extend base dependencies
-                for dep in platform_data["dependencies"]:
-                    if dep not in merged_dependencies:
-                        merged_dependencies.append(dep)
-
-            merged_config = DataAppConfig(
-                name=platform_data.get("name", base_config.name),
-                description=platform_data.get("description", base_config.description),
-                entry_point=platform_data.get("entry_point", base_config.entry_point),
-                dependencies=merged_dependencies,
-                environment=platform_data.get("environment", base_config.environment),
-                metadata=merged_metadata,
-            )
-
-            self.logger.debug(f"Merged {target_platform} config into base config")
-            return merged_config
-
-        except Exception as e:
-            self.logger.warning(f"Failed to merge platform config for {target_platform}: {str(e)}")
-            return base_config
 
     def _load_app_config(
         self,

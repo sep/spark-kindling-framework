@@ -19,6 +19,12 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- App runtime configuration now treats `app.yaml` as manifest-only and loads runtime
+  settings from `settings.yaml`, `settings.<platform>.yaml`, then
+  `settings.<env>.yaml`, with environment overlays taking precedence. Legacy
+  `platform_<platform>.yaml`, `env_<env>.yaml`, and app-local `app.<target>.yaml`
+  files remain fallback inputs for compatibility, but new config should use the
+  dot-style `settings.*.yaml` names.
 - `runtime publish` renamed to `runtime deploy`. Same behavior; the new name is consistent with
   `app deploy`, `package deploy`, and `workspace deploy`. **Breaking change**: update scripts
   and CI pipelines to use `kindling runtime deploy`.

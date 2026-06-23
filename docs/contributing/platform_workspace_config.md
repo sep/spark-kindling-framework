@@ -56,11 +56,11 @@ kindling:
 Settings specific to a platform (Fabric, Synapse, or Databricks). These override base settings.
 
 **Platforms:**
-- `platform_fabric.yaml` - Microsoft Fabric settings
+- `settings.fabric.yaml` - Microsoft Fabric settings
 - `platform_synapse.yaml` - Azure Synapse Analytics settings
 - `platform_databricks.yaml` - Databricks settings
 
-**Example:** `platform_fabric.yaml`
+**Example:** `settings.fabric.yaml`
 
 ```yaml
 kindling:
@@ -78,7 +78,7 @@ kindling:
     - kindling-otel-azure>=0.3.0
 ```
 
-**Upload to:** `{artifacts_storage_path}/config/platform_fabric.yaml`
+**Upload to:** `{artifacts_storage_path}/config/settings.fabric.yaml`
 
 ## Delta Table Conventions (Fabric / Synapse / Databricks)
 
@@ -137,7 +137,7 @@ kindling:
 
 Settings specific to an environment (dev, test, staging, prod). **Highest priority** among YAML files.
 
-**Example:** `env_prod.yaml`
+**Example:** `settings.prod.yaml`
 
 ```yaml
 kindling:
@@ -154,7 +154,7 @@ kindling:
     auto_compact: true
 ```
 
-**Upload to:** `{artifacts_storage_path}/config/env_prod.yaml`
+**Upload to:** `{artifacts_storage_path}/config/settings.prod.yaml`
 
 ## Usage Patterns
 
@@ -166,7 +166,7 @@ Minimal setup with just base settings and environment overrides:
 config/
 ├── settings.yaml     # Base settings
 ├── env_dev.yaml      # Development overrides
-└── env_prod.yaml     # Production overrides
+└── settings.prod.yaml     # Production overrides
 ```
 
 ### Pattern 2: Base + Platform + Environment
@@ -176,11 +176,11 @@ Add platform-specific settings for multi-platform deployments:
 ```
 config/
 ├── settings.yaml           # Base settings
-├── platform_fabric.yaml    # Fabric-specific settings
+├── settings.fabric.yaml    # Fabric-specific settings
 ├── platform_synapse.yaml   # Synapse-specific settings
 ├── platform_databricks.yaml # Databricks-specific settings
 ├── env_dev.yaml            # Development overrides
-└── env_prod.yaml           # Production overrides
+└── settings.prod.yaml      # Production overrides
 ```
 
 ### Pattern 3: Full Hierarchy (Most Control)
@@ -190,13 +190,13 @@ Complete hierarchy with workspace-specific settings:
 ```
 config/
 ├── settings.yaml                           # Base settings
-├── platform_fabric.yaml                    # Fabric settings
+├── settings.fabric.yaml                    # Fabric settings
 ├── platform_synapse.yaml                   # Synapse settings
 ├── workspace_abc123.yaml                   # Team A workspace
 ├── workspace_def456.yaml                   # Team B workspace
 ├── env_dev.yaml                            # Development env
 ├── env_staging.yaml                        # Staging env
-└── env_prod.yaml                           # Production env
+└── settings.prod.yaml                      # Production env
 ```
 
 ### Pattern 4: Workspace Per Environment
@@ -206,13 +206,13 @@ Workspaces aligned with environments (common pattern):
 ```
 config/
 ├── settings.yaml                           # Base settings
-├── platform_fabric.yaml                    # Fabric settings
+├── settings.fabric.yaml                    # Fabric settings
 ├── workspace_dev-workspace-id.yaml         # Dev workspace
 ├── workspace_staging-workspace-id.yaml     # Staging workspace
 ├── workspace_prod-workspace-id.yaml        # Prod workspace
 ├── env_dev.yaml                            # Dev env overrides
 ├── env_staging.yaml                        # Staging env overrides
-└── env_prod.yaml                           # Prod env overrides
+└── settings.prod.yaml                      # Prod env overrides
 ```
 
 ## Configuration Detection
@@ -294,7 +294,7 @@ kindling:
     logging:
       level: INFO
 
-# platform_fabric.yaml - Fabric-specific
+# settings.fabric.yaml - Fabric-specific
 kindling:
   platform:
     name: fabric
@@ -315,7 +315,7 @@ kindling:
   DATA:
     bronze: "abfss://bronze-team-b@..."
 
-# env_prod.yaml - Production overrides
+# settings.prod.yaml - Production overrides
 kindling:
   telemetry:
     logging:
@@ -334,7 +334,7 @@ kindling:
   delta:
     access_mode: catalog
 
-# platform_fabric.yaml - Fabric tuning
+# settings.fabric.yaml - Fabric tuning
 kindling:
   TELEMETRY:
     logging:
@@ -377,7 +377,7 @@ kindling:
   LIMITS:
     max_executors: 50
 
-# env_prod.yaml - Production environment overrides
+# settings.prod.yaml - Production environment overrides
 kindling:
   SPARK_CONFIGS:
     spark.executor.memory: "32g"
@@ -407,9 +407,9 @@ Platform: fabric
 Workspace ID: 12345678-1234-1234-1234-123456789abc
 Environment: prod
 ✓ Downloaded: settings.yaml
-✓ Downloaded: platform_fabric.yaml
+✓ Downloaded: settings.fabric.yaml
 ✓ Downloaded: workspace_12345678-1234-1234-1234-123456789abc.yaml
-✓ Downloaded: env_prod.yaml
+✓ Downloaded: settings.prod.yaml
 ```
 
 ### Workspace ID Not Detected
@@ -458,8 +458,8 @@ config/
 ```
 config/
 ├── settings.yaml           # Base settings
-├── platform_fabric.yaml    # Fabric-specific
-└── env_prod.yaml          # Environment-specific
+├── settings.fabric.yaml   # Fabric-specific
+└── settings.prod.yaml     # Environment-specific
 ```
 
 **Migration Steps:**

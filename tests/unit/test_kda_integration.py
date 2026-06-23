@@ -113,6 +113,16 @@ environment_vars:
   fabric.only: "true"
 """
             )
+            (app_dir / "settings.prod.yaml").write_text(
+                """environment_vars:
+  ENVIRONMENT: prod
+"""
+            )
+            (app_dir / "settings.dev.yaml").write_text(
+                """environment_vars:
+  ENVIRONMENT: dev
+"""
+            )
 
             (app_dir / "app.py").write_text("print('test')")
 
@@ -120,6 +130,7 @@ environment_vars:
             kda_path = DataAppPackage.create(
                 app_directory=str(app_dir),
                 target_platform="synapse",
+                target_environment="prod",
                 merge_platform_config=True,
             )
 
@@ -128,8 +139,10 @@ environment_vars:
                 names = set(zf.namelist())
                 assert "app.synapse.yaml" not in names
                 assert "settings.fabric.yaml" not in names
+                assert "settings.dev.yaml" not in names
                 assert "settings.yaml" in names
                 assert "settings.synapse.yaml" in names
+                assert "settings.prod.yaml" in names
 
                 app_yaml_content = zf.read("app.yaml").decode()
                 app_config = yaml.safe_load(app_yaml_content)

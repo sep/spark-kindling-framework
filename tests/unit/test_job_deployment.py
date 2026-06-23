@@ -86,6 +86,40 @@ class TestDataAppDeployer:
             assert "app.yaml" in app_files
             assert storage_path == "data-apps/test-app"
 
+    def test_deploy_app_includes_selected_environment_overlay(self):
+        """DataAppDeployer should pass env selection through app file assembly."""
+        from kindling.job_deployment import (
+            AppPackager,
+            DataAppDeployer,
+            JobConfigValidator,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app_path = Path(tmpdir)
+            (app_path / "app.py").write_text("# Main file")
+            (app_path / "settings.yaml").write_text("base: true")
+            (app_path / "settings.fabric.yaml").write_text("platform: fabric")
+            (app_path / "settings.prod.yaml").write_text("env: prod")
+            (app_path / "settings.dev.yaml").write_text("env: dev")
+
+            mock_platform = Mock()
+            mock_platform.get_platform_name.return_value = "fabric"
+            mock_platform.deploy_app.return_value = "data-apps/test-app"
+
+            deployer = DataAppDeployer.__new__(DataAppDeployer)
+            deployer.platform = mock_platform
+            deployer.logger = Mock()
+            deployer.packager = AppPackager()
+            deployer.validator = JobConfigValidator()
+
+            deployer.deploy_app(str(app_path), "test-app", environment="prod")
+
+            app_files = mock_platform.deploy_app.call_args[0][1]
+            assert "settings.yaml" in app_files
+            assert "settings.fabric.yaml" in app_files
+            assert "settings.prod.yaml" in app_files
+            assert "settings.dev.yaml" not in app_files
+
     def test_create_job_creates_definition(self):
         """Test that create_job calls platform create_job"""
         from kindling.job_deployment import DataAppDeployer, JobConfigValidator

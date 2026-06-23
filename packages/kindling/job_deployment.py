@@ -17,6 +17,7 @@ This module contains:
     - DataAppDeployer: Service orchestrating the full lifecycle (app deploy + job create + run)
 """
 
+import os
 import time
 import uuid
 import zipfile
@@ -237,7 +238,12 @@ class DataAppDeployer(SignalEmitter):
         self.packager = AppPackager()
         self.validator = JobConfigValidator()
 
-    def deploy_app(self, app_path: str, app_name: str) -> str:
+    def deploy_app(
+        self,
+        app_path: str,
+        app_name: str,
+        environment: Optional[str] = None,
+    ) -> str:
         """Deploy app files to platform storage.
 
         This is INDEPENDENT of job creation. Apps are deployed to storage
@@ -246,11 +252,18 @@ class DataAppDeployer(SignalEmitter):
         Args:
             app_path: Path to app directory or .kda file
             app_name: Name for the deployed app (used as storage key)
+            environment: Optional target environment overlay to include
 
         Returns:
             Storage path where app was deployed
         """
         platform_name = self.platform.get_platform_name()
+        environment_name = (
+            environment
+            or os.getenv("KINDLING_ENV")
+            or os.getenv("PROJECT_ENV")
+            or os.getenv("ENVIRONMENT")
+        )
         self.logger.info(f"Deploying app '{app_name}' from: {app_path}")
 
         self.emit(
@@ -258,11 +271,16 @@ class DataAppDeployer(SignalEmitter):
             app_path=app_path,
             app_name=app_name,
             platform=platform_name,
+            environment=environment_name,
         )
 
         try:
             # Prepare app files using utility
-            app_files = self.packager.prepare_app_files(app_path, platform=platform_name)
+            app_files = self.packager.prepare_app_files(
+                app_path,
+                platform=platform_name,
+                environment=environment_name,
+            )
             self.logger.debug(f"Prepared {len(app_files)} app files")
 
             # Upload to platform storage
@@ -275,6 +293,7 @@ class DataAppDeployer(SignalEmitter):
                 app_name=app_name,
                 storage_path=storage_path,
                 platform=platform_name,
+                environment=environment_name,
             )
 
             return storage_path
@@ -365,7 +384,7 @@ class DataAppDeployer(SignalEmitter):
 
         try:
             # Step 1: Deploy app files to storage
-            self.deploy_app(app_path, app_name)
+            self.deploy_app(app_path, app_name, environment=job_config.get("environment"))
 
             # Step 2: Create job definition
             result = self.create_job(job_config)

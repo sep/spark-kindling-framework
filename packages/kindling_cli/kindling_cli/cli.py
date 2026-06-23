@@ -3218,9 +3218,15 @@ def _run_standalone_app(
     base_cfg = cfg_root / "settings.yaml"
     if base_cfg.exists():
         config_files.append(str(base_cfg))
-    platform_cfg = cfg_root / f"settings.{platform}.yaml"
-    if platform_cfg.exists():
-        config_files.append(str(platform_cfg))
+    overlay_platform = (
+        os.getenv("KINDLING_PLATFORM")
+        or os.getenv("KINDLING_PLATFORM_ENVIRONMENT")
+        or (platform if platform != "standalone" else None)
+    )
+    if overlay_platform:
+        platform_cfg = cfg_root / f"settings.{overlay_platform}.yaml"
+        if platform_cfg.exists():
+            config_files.append(str(platform_cfg))
     env_cfg = cfg_root / f"settings.{resolved_env}.yaml"
     if env_cfg.exists():
         config_files.append(str(env_cfg))
