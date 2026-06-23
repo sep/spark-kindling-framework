@@ -15,7 +15,6 @@ from typing import Any, Dict, List
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-
 from kindling.data_apps import (
     DataAppConfig,
     DataAppConstants,
@@ -130,6 +129,50 @@ class TestAppManagerHelpers:
         """Test _get_app_dir helper"""
         result = mock_app_manager._get_app_dir("my_app")
         assert result == "/artifacts/data-apps/my_app/"
+
+    def test_load_config_content_merges_settings_platform_then_env(self):
+        """App-local runtime settings should load base, platform, then env."""
+        import yaml
+
+        files = {
+            "/artifacts/data-apps/demo/app.yaml": "name: demo\nentry_point: app.py\n",
+            "/artifacts/data-apps/demo/settings.yaml": (
+                "kindling:\n  telemetry:\n    logging:\n      level: INFO\n"
+            ),
+            "/artifacts/data-apps/demo/settings.fabric.yaml": (
+                "kindling:\n  telemetry:\n    logging:\n      level: DEBUG\n"
+            ),
+            "/artifacts/data-apps/demo/settings.prod.yaml": (
+                "kindling:\n  telemetry:\n    logging:\n      level: ERROR\n"
+            ),
+        }
+
+        platform_service = Mock()
+
+        def read(path):
+            if path not in files:
+                raise FileNotFoundError(path)
+            return files[path]
+
+        platform_service.read.side_effect = read
+
+        manager = Mock(spec=DataAppManager)
+        manager.artifacts_path = "/artifacts"
+        manager.logger = Mock()
+        manager.config = Mock()
+        manager.config.get.return_value = "data-apps"
+        manager.get_platform_service.return_value = platform_service
+        manager._get_app_dir = DataAppManager._get_app_dir.__get__(manager)
+        manager._parse_config_content = DataAppManager._parse_config_content.__get__(manager)
+        manager._load_config_content = DataAppManager._load_config_content.__get__(manager)
+
+        merged = yaml.safe_load(
+            manager._load_config_content("demo", environment="prod", platform="fabric")
+        )
+
+        assert merged["name"] == "demo"
+        assert merged["entry_point"] == "app.py"
+        assert merged["kindling"]["telemetry"]["logging"]["level"] == "ERROR"
 
     def test_extract_package_name_simple(self, mock_app_manager):
         """Test package name extraction"""

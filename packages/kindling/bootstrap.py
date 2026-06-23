@@ -352,10 +352,12 @@ def download_config_files(
     All files are optional - bootstrap config can provide everything.
     Returns list of local file paths in priority order (lowest to highest):
       1. settings.yaml (base settings)
-      2. platform_{platform}.yaml (platform-specific: fabric, synapse, databricks)
+      2. settings.{platform}.yaml (platform-specific: fabric, synapse, databricks)
       3. workspace_{workspace_id}.yaml (workspace-specific)
-      4. env_{environment}.yaml (environment-specific: dev, prod, etc)
-      5. data-apps/{app_name}/settings.yaml (app-specific - highest priority)
+      4. settings.{environment}.yaml (environment-specific: dev, prod, etc)
+      5. data-apps/{app_name}/settings.yaml (app-specific base)
+      6. data-apps/{app_name}/settings.{platform}.yaml (app-specific platform)
+      7. data-apps/{app_name}/settings.{environment}.yaml (app-specific env)
 
     Args:
         artifacts_storage_path: Base path for artifacts storage
@@ -415,7 +417,7 @@ def download_config_files(
     # Add platform-specific config if platform is known
     if platform:
         files_to_download.append(
-            (f"{base_path}/config/platform_{platform}.yaml", f"platform_{platform}.yaml")
+            (f"{base_path}/config/settings.{platform}.yaml", f"settings.{platform}.yaml")
         )
 
     # Add workspace-specific config if workspace_id is known
@@ -426,14 +428,53 @@ def download_config_files(
 
     # Add environment config
     files_to_download.append(
-        (f"{base_path}/config/env_{environment}.yaml", f"env_{environment}.yaml")
+        (f"{base_path}/config/settings.{environment}.yaml", f"settings.{environment}.yaml")
     )
 
-    # Add app-specific settings (highest priority from files)
-    # Apps deployed with settings.yaml in their directory get those loaded last
+    # Add app-specific settings last so app overlays win over workspace/global config.
+    app_config_prefix = None
     if app_name:
+        safe_app_name = str(app_name).replace("/", "_")
+        app_config_prefix = f"app_{safe_app_name}_"
         files_to_download.append(
-            (f"{base_path}/data-apps/{app_name}/settings.yaml", f"app_{app_name}_settings.yaml")
+            (
+                f"{base_path}/data-apps/{app_name}/settings.yaml",
+                f"{app_config_prefix}settings.yaml",
+            )
+        )
+        if platform:
+            files_to_download.append(
+                (
+                    f"{base_path}/data-apps/{app_name}/settings.{platform}.yaml",
+                    f"{app_config_prefix}settings.{platform}.yaml",
+                )
+            )
+        files_to_download.append(
+            (
+                f"{base_path}/data-apps/{app_name}/settings.{environment}.yaml",
+                f"{app_config_prefix}settings.{environment}.yaml",
+            )
+        )
+
+    legacy_fallbacks = {}
+    if platform:
+        legacy_fallbacks[f"settings.{platform}.yaml"] = (
+            f"{base_path}/config/platform_{platform}.yaml",
+            f"platform_{platform}.yaml",
+        )
+    legacy_fallbacks[f"settings.{environment}.yaml"] = (
+        f"{base_path}/config/env_{environment}.yaml",
+        f"env_{environment}.yaml",
+    )
+    if app_name and app_config_prefix:
+        if platform:
+            legacy_fallbacks[f"{app_config_prefix}settings.{platform}.yaml"] = (
+                f"{base_path}/data-apps/{app_name}/app.{platform}.yaml",
+                f"{app_config_prefix}app.{platform}.yaml",
+            )
+        legacy_fallbacks[f"{app_config_prefix}settings.{environment}.yaml"] = (
+            f"{base_path}/data-apps/{app_name}/app.{environment}.yaml",
+            f"{app_config_prefix}app.{environment}.yaml",
         )
 
     for remote_path, filename in files_to_download:
@@ -466,6 +507,40 @@ def download_config_files(
                 config_files.append(str(local_path))
                 _BOOTSTRAP_LOGGER.info("Downloaded config %s", filename)
         except Exception as e:
+            fallback = legacy_fallbacks.get(filename)
+            if fallback:
+                legacy_remote_path, legacy_filename = fallback
+                try:
+                    if is_databricks:
+                        content = storage_utils.fs.head(legacy_remote_path, 1024 * 1024)
+                        text_content = (
+                            content.decode("utf-8") if isinstance(content, bytes) else content
+                        )
+
+                        if volume_path:
+                            volume_file = _build_run_scoped_staging_path(
+                                volume_path, "config", f"{len(config_files)}_{legacy_filename}"
+                            )
+                            storage_utils.fs.put(volume_file, text_content, overwrite=True)
+                            config_files.append(volume_file)
+                        else:
+                            dbfs_file_path = (
+                                f"{dbfs_temp_path}/{len(config_files)}_{legacy_filename}"
+                            )
+                            storage_utils.fs.put(dbfs_file_path, text_content, overwrite=True)
+                            config_files.append(f"/dbfs{dbfs_file_path}")
+                    else:
+                        local_path = temp_path / f"{len(config_files)}_{legacy_filename}"
+                        storage_utils.fs.cp(legacy_remote_path, f"file://{str(local_path)}")
+                        config_files.append(str(local_path))
+                    _BOOTSTRAP_LOGGER.info(
+                        "Downloaded legacy config %s after %s was not found",
+                        legacy_filename,
+                        filename,
+                    )
+                    continue
+                except Exception:
+                    pass
             # All config files are optional - log error details for debugging
             error_msg = str(e)
             if "FileNotFoundException" in error_msg or "does not exist" in error_msg.lower():

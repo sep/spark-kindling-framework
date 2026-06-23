@@ -141,7 +141,7 @@ After this command the following are in place in your storage container:
 
 ```
 artifacts/kindling/config/settings.yaml
-artifacts/kindling/config/platform_fabric.yaml   (if present)
+artifacts/kindling/config/settings.fabric.yaml   (if present)
 ```
 
 To re-deploy config after later changes to `settings.yaml`:

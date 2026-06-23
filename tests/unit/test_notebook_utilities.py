@@ -272,6 +272,13 @@ entry_point: app.py
   spark.synapse.setting: "true"
 """
             )
+            (app_dir / "settings.yaml").write_text("base: true\n")
+            (app_dir / "settings.synapse.yaml").write_text(
+                """spark_config:
+  spark.synapse.setting: "true"
+"""
+            )
+            (app_dir / "settings.fabric.yaml").write_text("fabric: true\n")
 
             (app_dir / "app.py").write_text("print('test')")
 
@@ -286,7 +293,10 @@ entry_point: app.py
                 names = zf.namelist()
                 # Platform-specific config should NOT be in merged package
                 assert "app.synapse.yaml" not in names
-                # But merged app.yaml should be present
+                assert "settings.fabric.yaml" not in names
+                assert "settings.yaml" in names
+                assert "settings.synapse.yaml" in names
+                # app.yaml remains the manifest
                 assert "app.yaml" in names
 
     def test_extract_kda_package(self):

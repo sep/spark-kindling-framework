@@ -378,7 +378,7 @@ class TestConfigSetLevelRouting:
                 ],
             )
             assert result.exit_code == 0
-            path = Path("platform_fabric.yaml")
+            path = Path("settings.fabric.yaml")
             assert path.exists()
             data = yaml.safe_load(path.read_text())
             assert data["kindling"]["secrets"]["scope"] == "fabric-scope"
@@ -400,7 +400,7 @@ class TestConfigSetLevelRouting:
                 ],
             )
             assert result.exit_code == 0
-            path = Path("env_prod.yaml")
+            path = Path("settings.prod.yaml")
             assert path.exists()
             data = yaml.safe_load(path.read_text())
             assert data["kindling"]["telemetry"]["logging"]["level"] == "ERROR"
@@ -480,7 +480,7 @@ class TestConfigSetAppScope:
                 ],
             )
             assert result.exit_code == 0
-            path = Path("data-apps/ingest-app/platform_databricks.yaml")
+            path = Path("data-apps/ingest-app/settings.databricks.yaml")
             assert path.exists()
             data = yaml.safe_load(path.read_text())
             assert data["kindling"]["secrets"]["scope"] == "db-scope"
@@ -605,6 +605,47 @@ def test_app_package_creates_kda_archive():
                 "app.py",
                 "lake-reqs.txt",
                 "nested/settings.yaml",
+            ]
+
+
+def test_app_package_includes_only_selected_settings_overlays():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        (app_dir / "app.yaml").write_text("name: demo\n", encoding="utf-8")
+        (app_dir / "app.fabric.yaml").write_text("legacy: true\n", encoding="utf-8")
+        (app_dir / "settings.yaml").write_text("name: demo\n", encoding="utf-8")
+        (app_dir / "settings.fabric.yaml").write_text("platform: fabric\n", encoding="utf-8")
+        (app_dir / "settings.synapse.yaml").write_text("platform: synapse\n", encoding="utf-8")
+        (app_dir / "settings.prod.yaml").write_text("env: prod\n", encoding="utf-8")
+        (app_dir / "settings.dev.yaml").write_text("env: dev\n", encoding="utf-8")
+        (app_dir / "settings.local.yaml").write_text("local: true\n", encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "package",
+                "demo_app",
+                "--local-folder",
+                str(app_dir),
+                "--platform",
+                "fabric",
+                "--env",
+                "prod",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        with zipfile.ZipFile(Path("dist/demo_app.kda"), "r") as archive:
+            assert sorted(archive.namelist()) == [
+                "app.py",
+                "app.yaml",
+                "settings.fabric.yaml",
+                "settings.prod.yaml",
+                "settings.yaml",
             ]
 
 
@@ -1194,7 +1235,9 @@ class TestWorkspaceInit:
         deployed = []
         monkeypatch.setattr(
             "kindling_cli.cli._deploy_config",
-            lambda client, container, base, config, overwrite=False: deployed.append(config),
+            lambda client, container, base, config, overwrite=False, **kwargs: deployed.append(
+                config
+            ),
         )
         runner = CliRunner()
         with runner.isolated_filesystem():
@@ -1236,7 +1279,9 @@ class TestWorkspaceInit:
         calls = []
         monkeypatch.setattr(
             "kindling_cli.cli._deploy_config",
-            lambda client, container, base, config, overwrite=False: calls.append(overwrite),
+            lambda client, container, base, config, overwrite=False, **kwargs: calls.append(
+                overwrite
+            ),
         )
         runner = CliRunner()
         with runner.isolated_filesystem():
@@ -1569,6 +1614,51 @@ class TestAppRunCommand:
         assert env["KINDLING_SPARK_ENABLE_DELTA"] == "true"
         assert env["KINDLING_LOG_LEVEL"] == "WARNING"
         assert "KINDLING_CONFIG_DIR" not in env
+
+    def test_standalone_config_args_include_selected_platform_then_env(self, tmp_path, monkeypatch):
+        import subprocess
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
+        (app_dir / "settings.yaml").write_text("base: true\n", encoding="utf-8")
+        (app_dir / "settings.fabric.yaml").write_text("platform: fabric\n", encoding="utf-8")
+        (app_dir / "settings.dev.yaml").write_text("env: dev\n", encoding="utf-8")
+        (app_dir / "settings.standalone.yaml").write_text(
+            "platform: standalone\n", encoding="utf-8"
+        )
+
+        captured_cmd = []
+
+        def fake_run(cmd, env=None, **kwargs):
+            captured_cmd.extend(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setenv("KINDLING_PLATFORM", "fabric")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "app",
+                "run",
+                "myapp",
+                "--local-folder",
+                str(app_dir),
+                "--env",
+                "dev",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        config_args = [
+            captured_cmd[i + 1] for i, arg in enumerate(captured_cmd) if arg == "--config"
+        ]
+        assert config_args == [
+            str(app_dir / "settings.yaml"),
+            str(app_dir / "settings.fabric.yaml"),
+            str(app_dir / "settings.dev.yaml"),
+        ]
 
     def test_standalone_uses_kindling_runner_module(self, tmp_path, monkeypatch):
         import subprocess
@@ -3114,3 +3204,50 @@ def test_migrate_plan_accepts_env_and_config_flags(tmp_path, monkeypatch):
         ["migrate", "plan", "--app", "app.py", "--env", "prod", "--config", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
+
+
+def test_deploy_config_uploads_only_selected_overlays(tmp_path):
+    from unittest.mock import MagicMock
+
+    from kindling_cli.cli import _deploy_config
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    for filename in [
+        "settings.yaml",
+        "settings.fabric.yaml",
+        "settings.synapse.yaml",
+        "settings.prod.yaml",
+        "settings.dev.yaml",
+        "settings.local.yaml",
+    ]:
+        (config_dir / filename).write_text(f"name: {filename}\n", encoding="utf-8")
+
+    uploaded = {}
+
+    def get_blob_client(container, blob):
+        blob_client = MagicMock()
+
+        def upload_blob(data, overwrite=True):
+            uploaded[blob] = data
+
+        blob_client.upload_blob.side_effect = upload_blob
+        return blob_client
+
+    blob_service_client = MagicMock()
+    blob_service_client.get_blob_client.side_effect = get_blob_client
+
+    _deploy_config(
+        blob_service_client,
+        "artifacts",
+        "base",
+        config_dir / "settings.yaml",
+        platform="fabric",
+        environment="prod",
+    )
+
+    assert sorted(uploaded) == [
+        "base/config/settings.fabric.yaml",
+        "base/config/settings.prod.yaml",
+        "base/config/settings.yaml",
+    ]

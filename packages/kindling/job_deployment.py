@@ -17,6 +17,7 @@ This module contains:
     - DataAppDeployer: Service orchestrating the full lifecycle (app deploy + job create + run)
 """
 
+import os
 import time
 import uuid
 import zipfile
@@ -44,11 +45,18 @@ class AppPackager:
     """
 
     @staticmethod
-    def prepare_app_files(app_path: str) -> Dict[str, str]:
+    def prepare_app_files(
+        app_path: str,
+        *,
+        platform: Optional[str] = None,
+        environment: Optional[str] = None,
+    ) -> Dict[str, str]:
         """Prepare app files for deployment
 
         Args:
             app_path: Path to app directory or .kda file
+            platform: Optional target platform overlay to include
+            environment: Optional target environment overlay to include
 
         Returns:
             Dictionary of {filename: file_content}
@@ -56,14 +64,27 @@ class AppPackager:
         path = Path(app_path)
 
         if path.is_file() and path.suffix == ".kda":
-            return AppPackager.extract_kda_files(path)
+            return AppPackager.extract_kda_files(
+                path,
+                platform=platform,
+                environment=environment,
+            )
         elif path.is_dir():
-            return AppPackager.scan_directory_files(path)
+            return AppPackager.scan_directory_files(
+                path,
+                platform=platform,
+                environment=environment,
+            )
         else:
             raise ValueError(f"Invalid app path: {app_path}")
 
     @staticmethod
-    def extract_kda_files(kda_path: Path) -> Dict[str, str]:
+    def extract_kda_files(
+        kda_path: Path,
+        *,
+        platform: Optional[str] = None,
+        environment: Optional[str] = None,
+    ) -> Dict[str, str]:
         """Extract files from KDA package
 
         Args:
@@ -76,14 +97,23 @@ class AppPackager:
 
         with zipfile.ZipFile(kda_path, "r") as zf:
             for file_info in zf.filelist:
-                if is_deployable_app_file(file_info.filename):
+                if is_deployable_app_file(
+                    file_info.filename,
+                    platform=platform,
+                    environment=environment,
+                ):
                     content = zf.read(file_info.filename).decode("utf-8")
                     app_files[file_info.filename] = content
 
         return app_files
 
     @staticmethod
-    def scan_directory_files(dir_path: Path) -> Dict[str, str]:
+    def scan_directory_files(
+        dir_path: Path,
+        *,
+        platform: Optional[str] = None,
+        environment: Optional[str] = None,
+    ) -> Dict[str, str]:
         """Scan directory for Python and config files
 
         Args:
@@ -97,7 +127,11 @@ class AppPackager:
         for file_path in dir_path.rglob("*"):
             if not file_path.is_file():
                 continue
-            if not is_deployable_app_file(file_path.relative_to(dir_path).as_posix()):
+            if not is_deployable_app_file(
+                file_path.relative_to(dir_path).as_posix(),
+                platform=platform,
+                environment=environment,
+            ):
                 continue
             rel_path = file_path.relative_to(dir_path)
             with open(file_path, "r") as f:
@@ -204,7 +238,12 @@ class DataAppDeployer(SignalEmitter):
         self.packager = AppPackager()
         self.validator = JobConfigValidator()
 
-    def deploy_app(self, app_path: str, app_name: str) -> str:
+    def deploy_app(
+        self,
+        app_path: str,
+        app_name: str,
+        environment: Optional[str] = None,
+    ) -> str:
         """Deploy app files to platform storage.
 
         This is INDEPENDENT of job creation. Apps are deployed to storage
@@ -213,11 +252,18 @@ class DataAppDeployer(SignalEmitter):
         Args:
             app_path: Path to app directory or .kda file
             app_name: Name for the deployed app (used as storage key)
+            environment: Optional target environment overlay to include
 
         Returns:
             Storage path where app was deployed
         """
         platform_name = self.platform.get_platform_name()
+        environment_name = (
+            environment
+            or os.getenv("KINDLING_ENV")
+            or os.getenv("PROJECT_ENV")
+            or os.getenv("ENVIRONMENT")
+        )
         self.logger.info(f"Deploying app '{app_name}' from: {app_path}")
 
         self.emit(
@@ -225,11 +271,16 @@ class DataAppDeployer(SignalEmitter):
             app_path=app_path,
             app_name=app_name,
             platform=platform_name,
+            environment=environment_name,
         )
 
         try:
             # Prepare app files using utility
-            app_files = self.packager.prepare_app_files(app_path)
+            app_files = self.packager.prepare_app_files(
+                app_path,
+                platform=platform_name,
+                environment=environment_name,
+            )
             self.logger.debug(f"Prepared {len(app_files)} app files")
 
             # Upload to platform storage
@@ -242,6 +293,7 @@ class DataAppDeployer(SignalEmitter):
                 app_name=app_name,
                 storage_path=storage_path,
                 platform=platform_name,
+                environment=environment_name,
             )
 
             return storage_path
@@ -332,7 +384,7 @@ class DataAppDeployer(SignalEmitter):
 
         try:
             # Step 1: Deploy app files to storage
-            self.deploy_app(app_path, app_name)
+            self.deploy_app(app_path, app_name, environment=job_config.get("environment"))
 
             # Step 2: Create job definition
             result = self.create_job(job_config)

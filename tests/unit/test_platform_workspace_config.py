@@ -24,7 +24,7 @@ class TestPlatformWorkspaceConfig:
             settings_file = config_dir / "settings.yaml"
             settings_file.write_text("kindling:\n  version: '0.2.0'\n")
 
-            dev_file = config_dir / "env_dev.yaml"
+            dev_file = config_dir / "settings.dev.yaml"
             dev_file.write_text("kindling:\n  TELEMETRY:\n    logging:\n      level: DEBUG\n")
 
             # Mock storage utils
@@ -50,10 +50,10 @@ class TestPlatformWorkspaceConfig:
                     workspace_id=None,
                 )
 
-                # Should have downloaded 2 files: settings.yaml and env_dev.yaml
+                # Should have downloaded 2 files: settings.yaml and settings.dev.yaml
                 assert len(config_files) == 2
                 assert "settings.yaml" in config_files[0]
-                assert "env_dev.yaml" in config_files[1]
+                assert "settings.dev.yaml" in config_files[1]
 
     def test_download_config_files_with_platform(self):
         """Test config file download with platform-specific config"""
@@ -67,12 +67,12 @@ class TestPlatformWorkspaceConfig:
             settings_file = config_dir / "settings.yaml"
             settings_file.write_text("kindling:\n  version: '0.2.0'\n")
 
-            platform_file = config_dir / "platform_fabric.yaml"
+            platform_file = config_dir / "settings.fabric.yaml"
             platform_file.write_text(
                 "kindling:\n  platform:\n    name: fabric\n  TELEMETRY:\n    logging:\n      level: DEBUG\n"
             )
 
-            dev_file = config_dir / "env_dev.yaml"
+            dev_file = config_dir / "settings.dev.yaml"
             dev_file.write_text("kindling:\n  TELEMETRY:\n    logging:\n      level: INFO\n")
 
             # Mock storage utils
@@ -100,8 +100,8 @@ class TestPlatformWorkspaceConfig:
                 # Should have 3 files: settings, platform_fabric, env_dev
                 assert len(config_files) == 3
                 assert "settings.yaml" in config_files[0]
-                assert "platform_fabric.yaml" in config_files[1]
-                assert "env_dev.yaml" in config_files[2]
+                assert "settings.fabric.yaml" in config_files[1]
+                assert "settings.dev.yaml" in config_files[2]
 
     def test_download_config_files_with_workspace(self):
         """Test config file download with workspace-specific config"""
@@ -115,13 +115,13 @@ class TestPlatformWorkspaceConfig:
             settings_file = config_dir / "settings.yaml"
             settings_file.write_text("kindling:\n  version: '0.2.0'\n")
 
-            platform_file = config_dir / "platform_fabric.yaml"
+            platform_file = config_dir / "settings.fabric.yaml"
             platform_file.write_text("kindling:\n  platform:\n    name: fabric\n")
 
             workspace_file = config_dir / "workspace_abc123.yaml"
             workspace_file.write_text("kindling:\n  workspace:\n    team: 'team-a'\n")
 
-            dev_file = config_dir / "env_dev.yaml"
+            dev_file = config_dir / "settings.dev.yaml"
             dev_file.write_text("kindling:\n  TELEMETRY:\n    logging:\n      level: INFO\n")
 
             # Mock storage utils
@@ -149,9 +149,57 @@ class TestPlatformWorkspaceConfig:
                 # Should have 4 files: settings, platform_fabric, workspace_abc123, env_dev
                 assert len(config_files) == 4
                 assert "settings.yaml" in config_files[0]
-                assert "platform_fabric.yaml" in config_files[1]
+                assert "settings.fabric.yaml" in config_files[1]
                 assert "workspace_abc123.yaml" in config_files[2]
-                assert "env_dev.yaml" in config_files[3]
+                assert "settings.dev.yaml" in config_files[3]
+
+    def test_download_config_files_with_app_overlays_env_wins_order(self):
+        """App-local settings overlays should load after workspace/global config."""
+        from kindling.bootstrap import download_config_files
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_dir = root / "config"
+            app_dir = root / "data-apps" / "demo"
+            config_dir.mkdir()
+            app_dir.mkdir(parents=True)
+
+            (config_dir / "settings.yaml").write_text("scope: global\n")
+            (config_dir / "settings.fabric.yaml").write_text("scope: global-platform\n")
+            (config_dir / "settings.dev.yaml").write_text("scope: global-env\n")
+            (app_dir / "settings.yaml").write_text("scope: app\n")
+            (app_dir / "settings.fabric.yaml").write_text("scope: app-platform\n")
+            (app_dir / "settings.dev.yaml").write_text("scope: app-env\n")
+
+            mock_storage = MagicMock()
+
+            def mock_cp(remote, local):
+                local_path = local.replace("file://", "")
+                source = Path(remote)
+                if source.exists():
+                    Path(local_path).write_text(source.read_text())
+                else:
+                    raise FileNotFoundError(f"Config file not found: {remote}")
+
+            mock_storage.fs.cp = mock_cp
+
+            with patch("kindling.bootstrap._get_storage_utils", return_value=mock_storage):
+                config_files = download_config_files(
+                    artifacts_storage_path=tmpdir,
+                    environment="dev",
+                    platform="fabric",
+                    workspace_id=None,
+                    app_name="demo",
+                )
+
+        assert [Path(path).name for path in config_files] == [
+            "0_settings.yaml",
+            "1_settings.fabric.yaml",
+            "2_settings.dev.yaml",
+            "3_app_demo_settings.yaml",
+            "4_app_demo_settings.fabric.yaml",
+            "5_app_demo_settings.dev.yaml",
+        ]
 
     def test_download_config_files_missing_optional(self):
         """Test that missing optional config files are handled gracefully"""
