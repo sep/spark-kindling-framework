@@ -15,7 +15,7 @@ All notable changes to spark-kindling are documented here.
 - Added `--load-lake` flag to `kindling app run` (standalone-only) to explicitly force
   downloading lake-reqs packages from the lake regardless of local install state.
 
-## [Unreleased]
+## [0.10.32] - 2026-06-23
 
 ### Changed
 
