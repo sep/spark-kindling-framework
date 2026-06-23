@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -9,6 +10,65 @@ from typing import Any, Dict, List, Optional, Union
 
 # Import the base PlatformService
 from kindling.notebook_framework import *
+
+
+def _configure_abfss_local_auth(spark, config, logger):
+    """Inject Azure CLI token provider for local ABFSS access.
+
+    When the developer has run ``az login``, this configures the Spark session
+    to acquire Azure Storage tokens via the Azure CLI — no service principal or
+    storage key required.
+
+    The injection is skipped silently when:
+    - ``kindling.standalone.abfss_az_cli_auth`` is ``False`` in config, or
+    - the ``az`` binary is not found on PATH.
+
+    This function is a no-op on cloud platforms; it is only called from
+    StandaloneService initialisation.
+    """
+    # Opt-out check
+    if hasattr(config, "get") and callable(config.get):
+        enabled = config.get("kindling.standalone.abfss_az_cli_auth", True)
+    else:
+        enabled = getattr(config, "abfss_az_cli_auth", True)
+    if not enabled:
+        logger.debug(
+            "ABFSS Azure CLI auth disabled by config (kindling.standalone.abfss_az_cli_auth=false)"
+        )
+        return
+
+    # Check for az on PATH
+    if shutil.which("az") is None:
+        logger.debug("az CLI not found on PATH — skipping ABFSS local auth injection")
+        return
+
+    # Locate the kindling-abfss-local-auth JAR alongside the other kindling JARs.
+    # The JAR lives in packages/kindling/jars/ relative to this file.
+    jar_path = Path(__file__).parent / "jars" / "kindling-abfss-local-auth.jar"
+    if not jar_path.exists():
+        logger.warning(
+            f"kindling-abfss-local-auth.jar not found at {jar_path} — "
+            "skipping ABFSS local auth injection"
+        )
+        return
+
+    try:
+        # Set Hadoop-level auth config (account-agnostic: applies to all accounts)
+        spark.conf.set("spark.hadoop.fs.azure.account.auth.type", "Custom")
+        spark.conf.set(
+            "spark.hadoop.fs.azure.account.oauth.provider.type",
+            "io.kindling.abfss.AzureCliTokenProvider",
+        )
+
+        # Add the JAR to the Spark context so the provider class is loadable
+        spark.sparkContext.addJar(str(jar_path))
+
+        logger.info(
+            "ABFSS local auth active: tokens will be acquired via 'az account get-access-token'. "
+            "Ensure 'az login' has been run."
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to configure ABFSS local auth: {exc}")
 
 
 class StandaloneService(PlatformService):
@@ -77,6 +137,8 @@ class StandaloneService(PlatformService):
             if spark:
                 self._spark_available = True
                 self.logger.debug("Spark session detected - Hadoop FileSystem support enabled")
+                # Inject Azure CLI token provider for local ABFSS access (no-op if az absent)
+                _configure_abfss_local_auth(spark, self.config, self.logger)
                 # Hadoop FS will be initialized per-operation as needed
             else:
                 self.logger.debug("No active Spark session - using local filesystem only")

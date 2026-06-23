@@ -4,6 +4,7 @@ FROM mcr.microsoft.com/devcontainers/python:3.11
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends \
     openjdk-21-jdk-headless \
+    maven \
     git \
     curl \
     wget \
