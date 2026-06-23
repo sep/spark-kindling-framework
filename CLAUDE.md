@@ -1,75 +1,48 @@
 # Claude Code Context
 
-## First action every session
+## First Action Every Session
 
 ```bash
-bd prime                          # beads workflow context + active issues
-gc prime                          # city status: running sessions, health
+git status --short --branch
+git worktree list
 ```
 
-## Agent system
+Read `AGENTS.md` and any task-relevant project documentation before writing
+code.
 
-See AGENTS.md. Slash commands: /coordinator /planner /implementer
-/reviewer /integrator /tester /security /prime /escalate
+## Agent System
 
-Agents communicate via **beads issues** (`bd`), not mailbox files.
-Dispatch work: `bd create --assignee=<role>` + `bd assign <id> <role>`
+See `AGENTS.md`. Slash commands: `/coordinator`, `/planner`, `/implementer`,
+`/reviewer`, `/integrator`, `/tester`, `/security`, `/prime`, `/escalate`.
 
-## Key rules
+Use the current branch, repository documentation, and handoff notes as the
+source of truth for active work.
 
-- All task tracking in `bd` — no markdown TODO lists, no `.agent-memory/mailboxes/`
-- Coding conventions: read AGENTS.md and the project source before writing code
-- Record decisions: `bd note <id> "decision: ..."` (not DECISIONS.md)
-- Persistent knowledge: `bd remember "<insight>"` (not MEMORY.md files)
+## Key Rules
 
-## Worktree root
+- Preserve user changes you did not make.
+- Keep task context in the conversation, commits, or handoff notes.
+- Record durable project decisions in the appropriate documentation.
+- Run targeted tests, linters, or builds when code changes.
 
-.worktrees/
+## Worktree Root
 
-
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
-## Beads Issue Tracker
-
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+`.worktrees/`
 
 ## Session Completion
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+When ending a work session:
 
-**MANDATORY WORKFLOW:**
+1. Record any remaining follow-up work.
+2. Run quality gates if code changed.
+3. Commit completed changes when appropriate.
+4. Push committed work to the remote branch:
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd dolt push
    git push
-   git status  # MUST show "up to date with origin"
+   git status
    ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
 
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-<!-- END BEADS INTEGRATION -->
+5. Verify the branch is clean or clearly note any intentional uncommitted work.
+6. Hand off enough context for the next session.

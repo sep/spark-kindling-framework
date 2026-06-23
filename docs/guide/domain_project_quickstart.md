@@ -20,7 +20,7 @@ In VS Code:
 1. Open the repo root.
 2. **Command Palette → "Dev Containers: Reopen in Container"**
 
-Once inside the container the `postCreateCommand` automatically runs `poetry install --with dev --sync`, installs pre-commit hooks, and starts Gas City. You don't need to run any of those manually.
+Once inside the container the `postCreateCommand` automatically runs `poetry install --with dev --sync` and installs pre-commit hooks. You don't need to run those manually.
 
 Verify the environment:
 
