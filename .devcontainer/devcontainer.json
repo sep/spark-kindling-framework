@@ -10,10 +10,7 @@
 				"ms-python.vscode-pylance",
 				"ms-toolsai.jupyter",
 				"redhat.vscode-yaml",
-				"ms-azuretools.vscode-docker",
-				"GitHub.copilot",
-				"openai.chatgpt",
-				"anthropic.claude-code"
+				"ms-azuretools.vscode-docker"
 			],
 			"settings": {
 				"python.defaultInterpreterPath": "/usr/local/bin/python",
@@ -40,13 +37,10 @@
 			}
 		}
 	},
-	"postCreateCommand": "poetry env remove --all 2>/dev/null; poetry install --with dev --sync && poetry run python -c \"import xdist\" && git config --unset-all core.hooksPath; pre-commit install && bash -lc 'grep -q \"# kindling .env auto-load\" ~/.bashrc || { echo \"# kindling .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/kindling/.env ] && set -a && source /workspaces/kindling/.env && set +a\" >> ~/.bashrc; }; CITY=/workspaces/kindling/city/city.toml; if ! grep -q \"^provider\" $CITY; then if command -v claude &>/dev/null; then P=claude; elif command -v codex &>/dev/null; then P=codex; elif command -v gh &>/dev/null && gh extension list 2>/dev/null | grep -q copilot; then P=copilot; fi; [ -n \"$P\" ] && sed -i \"s|# provider = \\\"$P\\\"|provider = \\\"$P\\\"|\" $CITY && echo \"✅ Gas City: provider set to $P\" || echo \"⚠️  Gas City: no provider detected — set provider in city/city.toml before running gc start\"; fi; gc start /workspaces/kindling/city && gc rig add /workspaces/kindling --name kindling 2>/dev/null || true'",
-	"postStartCommand": "bash -c '[ -f \"/workspaces/kindling/.env\" ] && echo \"✅ .env will load in new terminals\" || echo \"⚠️  No .env file found\"; gc start /workspaces/kindling/city 2>/dev/null || true'",
+	"postCreateCommand": "poetry env remove --all 2>/dev/null; poetry install --with dev --sync && poetry run python -c \"import xdist\" && git config --unset-all core.hooksPath; pre-commit install && bash -lc 'grep -q \"# kindling .env auto-load\" ~/.bashrc || { echo \"# kindling .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/kindling/.env ] && set -a && source /workspaces/kindling/.env && set +a\" >> ~/.bashrc; }'",
+	"postStartCommand": "bash -c '[ -f \"/workspaces/kindling/.env\" ] && echo \"✅ .env will load in new terminals\" || echo \"⚠️  No .env file found\"'",
 	"initializeCommand": "echo '⚙️  Initializing devcontainer...'",
-	"mounts": [
-		"source=kindling-copilot-chat,target=/home/vscode/.vscode-server/data/User/globalStorage/github.copilot-chat,type=volume",
-		"source=kindling-openai-chatgpt,target=/home/vscode/.vscode-server/data/User/globalStorage/openai.chatgpt,type=volume"
-	],
+	"mounts": [],
 	"forwardPorts": [
 		4040
 	],
