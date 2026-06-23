@@ -14,14 +14,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
-from packaging.version import InvalidVersion, Version
-
 from kindling.injection import *
 from kindling.platform_provider import *
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
+from packaging.version import InvalidVersion, Version
 
+from .app_files import is_deployable_app_file, is_settings_overlay
 from .notebook_framework import *
 
 
@@ -32,7 +32,8 @@ class DataAppConstants:
     LAKE_REQUIREMENTS_FILE = "lake-reqs.txt"
     LOCAL_SETTINGS_FILE = "settings.local.yaml"
     BASE_CONFIG_FILE = "app.yaml"
-    ENV_CONFIG_TEMPLATE = "app.{environment}.yaml"
+    SETTINGS_FILE = "settings.yaml"
+    ENV_CONFIG_TEMPLATE = "settings.{environment}.yaml"
     DEFAULT_ENTRY_POINT = "app.py"
 
     # KDA package constants
@@ -246,17 +247,6 @@ class DataAppPackage:
         with open(config_file) as f:
             config_data = yaml.safe_load(f)
 
-        # Load and merge platform-specific config if requested
-        if merge_platform_config and target_platform:
-            platform_config_file = app_path / f"app.{target_platform}.yaml"
-            if platform_config_file.exists():
-                with open(platform_config_file) as f:
-                    platform_data = yaml.safe_load(f) or {}
-                # Deep merge platform config into base config
-                config_data = DataAppPackage._deep_merge_dicts(config_data, platform_data)
-                if logger:
-                    logger.debug(f"Merged platform config: {target_platform}")
-
         app_name = config_data.get("name", app_path.name)
         app_version = version or config_data.get("version", "1.0.0")
 
@@ -282,26 +272,25 @@ class DataAppPackage:
         # Create .kda package
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as kda_file:
             if merge_platform_config and target_platform:
-                # Single platform: exclude platform-specific configs, use merged version
+                # Single platform: include manifest and only selected settings overlays.
                 for file_path in app_path.rglob("*"):
                     if file_path.is_file():
-                        # Skip platform config files and base app.yaml
-                        if (
-                            DataAppPackage._is_platform_config_file(file_path)
-                            or file_path.name == "app.yaml"
+                        relative_path = file_path.relative_to(app_path)
+                        if not is_deployable_app_file(
+                            relative_path.as_posix(),
+                            platform=target_platform,
                         ):
                             continue
-                        relative_path = file_path.relative_to(app_path)
                         kda_file.write(file_path, relative_path)
-
-                # Write merged config as app.yaml
-                kda_file.writestr("app.yaml", yaml.safe_dump(config_data, indent=2))
             else:
-                # Multi-platform: include all files
+                # No selected target: keep manifest/base settings and exclude local/legacy overlays.
                 for file_path in app_path.rglob("*"):
-                    if file_path.is_file():
-                        relative_path = file_path.relative_to(app_path)
-                        kda_file.write(file_path, relative_path)
+                    if not file_path.is_file():
+                        continue
+                    relative_path = file_path.relative_to(app_path)
+                    if not is_deployable_app_file(relative_path.as_posix()):
+                        continue
+                    kda_file.write(file_path, relative_path)
 
             # Generate and add manifest
             manifest = KDAManifest(
@@ -392,7 +381,11 @@ class DataAppPackage:
     def _is_platform_config_file(file_path: Path) -> bool:
         """Check if file is a platform-specific config file"""
         filename = file_path.name
-        return filename.startswith("app.") and filename != "app.yaml" and filename.endswith(".yaml")
+        return (
+            filename.startswith("app.")
+            and filename != DataAppConstants.BASE_CONFIG_FILE
+            and filename.endswith(".yaml")
+        ) or is_settings_overlay(filename)
 
     @staticmethod
     def _load_lake_requirements(app_path: Path) -> List[str]:
@@ -519,9 +512,10 @@ class DataAppManager(DataAppRunner):
     def _prepare_app_context(self, app_name: str) -> DataAppContext:
         """Prepare all context needed for app execution"""
         environment = self.config.get("environment")
+        platform = self._get_config_platform_name()
 
         # Load config
-        app_config = self._load_app_config(app_name, environment)
+        app_config = self._load_app_config(app_name, environment, platform)
 
         # Resolve dependencies
         pypi_deps, lake_reqs = self._resolve_app_dependencies(app_name, self.config)
@@ -534,6 +528,20 @@ class DataAppManager(DataAppRunner):
     def _get_env_name(self) -> str:
         """Get current platform environment name"""
         return self.get_platform_service().get_platform_name()
+
+    def _get_config_platform_name(self) -> Optional[str]:
+        """Resolve the selected platform name for app-local settings overlays."""
+        for key in ("platform", "platform_environment"):
+            try:
+                value = self.config.get(key, None)
+            except Exception:
+                value = None
+            if value:
+                return str(value)
+        try:
+            return self._get_env_name()
+        except Exception:
+            return None
 
     def _get_app_dir(self, app_name: str) -> str:
         """Get app directory path"""
@@ -574,11 +582,6 @@ class DataAppManager(DataAppRunner):
             # Load base app config from source directory
             config = self._load_app_config_from_directory(app_path)
 
-            # If merging platform config, merge it at package time
-            if merge_platform_config and target_platform:
-                config = self._merge_platform_config_at_deploy_time(
-                    app_path, config, target_platform
-                )
             app_name = config.name
             app_version = version or config.metadata.get("version", "1.0.0")
 
@@ -605,32 +608,28 @@ class DataAppManager(DataAppRunner):
             # Create KDA package
             with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as kda_file:
                 if merge_platform_config:
-                    # Single platform: exclude platform-specific configs and base app.yaml, use merged version
+                    # Single platform: keep app.yaml manifest-only and include selected settings overlays.
                     for file_path in app_path.rglob("*"):
-                        if (
-                            file_path.is_file()
-                            and not self._is_platform_config_file(file_path)
-                            and file_path.name != "app.yaml"
-                            and file_path.name != DataAppConstants.LOCAL_SETTINGS_FILE
+                        if not file_path.is_file():
+                            continue
+                        relative_path = file_path.relative_to(app_path)
+                        if not is_deployable_app_file(
+                            relative_path.as_posix(),
+                            platform=target_platform,
                         ):
-                            relative_path = file_path.relative_to(app_path)
-                            kda_file.write(file_path, relative_path)
-                            self.logger.debug(f"Added to KDA: {relative_path}")
-
-                    # Add the merged config as app.yaml
-                    merged_config = self._create_merged_config(config)
-                    kda_file.writestr("app.yaml", merged_config)
-                    self.logger.debug("Added merged app.yaml to KDA")
+                            continue
+                        kda_file.write(file_path, relative_path)
+                        self.logger.debug(f"Added to KDA: {relative_path}")
                 else:
-                    # Multi-platform: include all files including platform configs
+                    # No selected target: keep manifest/base settings and exclude local/legacy overlays.
                     for file_path in app_path.rglob("*"):
-                        if (
-                            file_path.is_file()
-                            and file_path.name != DataAppConstants.LOCAL_SETTINGS_FILE
-                        ):
-                            relative_path = file_path.relative_to(app_path)
-                            kda_file.write(file_path, relative_path)
-                            self.logger.debug(f"Added to KDA: {relative_path}")
+                        if not file_path.is_file():
+                            continue
+                        relative_path = file_path.relative_to(app_path)
+                        if not is_deployable_app_file(relative_path.as_posix()):
+                            continue
+                        kda_file.write(file_path, relative_path)
+                        self.logger.debug(f"Added to KDA: {relative_path}")
 
                 # Generate and add manifest
                 manifest = self._create_kda_manifest(
@@ -649,7 +648,11 @@ class DataAppManager(DataAppRunner):
     def _is_platform_config_file(self, file_path: Path) -> bool:
         """Check if file is a platform-specific config file"""
         filename = file_path.name
-        return filename.startswith("app.") and filename != "app.yaml" and filename.endswith(".yaml")
+        return (
+            filename.startswith("app.")
+            and filename != DataAppConstants.BASE_CONFIG_FILE
+            and filename.endswith(".yaml")
+        ) or is_settings_overlay(filename)
 
     def _create_merged_config(self, config: "DataAppConfig") -> str:
         """Create merged YAML config from DataAppConfig"""
@@ -841,12 +844,17 @@ class DataAppManager(DataAppRunner):
             self.logger.warning(f"Failed to merge platform config for {target_platform}: {str(e)}")
             return base_config
 
-    def _load_app_config(self, app_name: str, environment: str = None) -> DataAppConfig:
+    def _load_app_config(
+        self,
+        app_name: str,
+        environment: str = None,
+        platform: Optional[str] = None,
+    ) -> DataAppConfig:
         """Load app configuration with environment override support"""
         self.logger.debug(f"Loading config for {app_name}")
 
         try:
-            config_content = self._load_config_content(app_name, environment)
+            config_content = self._load_config_content(app_name, environment, platform)
             config_data = self._parse_config_content(config_content)
             return self._create_app_config(config_data, app_name, environment)
         except Exception as e:
@@ -864,31 +872,73 @@ class DataAppManager(DataAppRunner):
                 metadata={},
             )
 
-    def _load_config_content(self, app_name: str, environment: str = None) -> str:
-        """Load config file content (with environment override)"""
+    def _load_config_content(
+        self,
+        app_name: str,
+        environment: str = None,
+        platform: Optional[str] = None,
+    ) -> str:
+        """Load app manifest plus settings overlays with environment taking precedence."""
         app_dir = self._get_app_dir(app_name)
+        merged: Dict[str, Any] = {}
 
-        # Try environment-specific config first
+        def read_yaml(filename: str) -> Optional[Dict[str, Any]]:
+            config_path = f"{app_dir}{filename}"
+            self.logger.debug(f"Loading config: {config_path}")
+            content = self.get_platform_service().read(config_path)
+            data = self._parse_config_content(content) or {}
+            return data if isinstance(data, dict) else {}
+
+        try:
+            manifest_data = read_yaml(DataAppConstants.BASE_CONFIG_FILE)
+            merged = DataAppPackage._deep_merge_dicts(merged, manifest_data or {})
+        except Exception:
+            self.logger.debug("App manifest not found, trying settings overlays")
+
+        try:
+            settings_data = read_yaml(DataAppConstants.SETTINGS_FILE)
+            merged = DataAppPackage._deep_merge_dicts(merged, settings_data or {})
+        except Exception as settings_error:
+            if not merged:
+                raise Exception(
+                    f"Failed to load app config for {app_name}: {str(settings_error)}"
+                ) from settings_error
+
+        if platform:
+            try:
+                platform_config_file = f"settings.{platform}.yaml"
+                platform_data = read_yaml(platform_config_file)
+                merged = DataAppPackage._deep_merge_dicts(merged, platform_data or {})
+                self.logger.info(f"Loaded platform config: {platform_config_file}")
+            except Exception:
+                try:
+                    legacy_platform_config_file = f"app.{platform}.yaml"
+                    legacy_platform_data = read_yaml(legacy_platform_config_file)
+                    merged = DataAppPackage._deep_merge_dicts(merged, legacy_platform_data or {})
+                    self.logger.info(
+                        f"Loaded legacy platform config: {legacy_platform_config_file}"
+                    )
+                except Exception:
+                    self.logger.debug("Platform settings overlay not found, using base settings")
+
         if environment:
             try:
-                env_config_file = f"app.{environment}.yaml"
-                env_config_path = f"{app_dir}{env_config_file}"
-                self.logger.debug(f"Loading config: {env_config_path}")
-                content = self.get_platform_service().read(env_config_path)
-                self.logger.info(f"Loaded environment config: {env_config_file}")
-                return content
-            except Exception:
-                self.logger.debug(
-                    f"Environment config {env_config_file} not found, trying base config"
+                env_config_file = DataAppConstants.ENV_CONFIG_TEMPLATE.format(
+                    environment=environment
                 )
+                env_data = read_yaml(env_config_file)
+                merged = DataAppPackage._deep_merge_dicts(merged, env_data or {})
+                self.logger.info(f"Loaded environment config: {env_config_file}")
+            except Exception:
+                try:
+                    legacy_env_config_file = f"app.{environment}.yaml"
+                    legacy_env_data = read_yaml(legacy_env_config_file)
+                    merged = DataAppPackage._deep_merge_dicts(merged, legacy_env_data or {})
+                    self.logger.info(f"Loaded legacy environment config: {legacy_env_config_file}")
+                except Exception:
+                    self.logger.debug("Environment settings overlay not found, using base settings")
 
-        # Fall back to base config
-        try:
-            config_path = f"{app_dir}{DataAppConstants.BASE_CONFIG_FILE}"
-            self.logger.debug(f"Loading config: {config_path}")
-            return self.get_platform_service().read(config_path)
-        except Exception as e:
-            raise Exception(f"Failed to load app config for {app_name}: {str(e)}")
+        return yaml.safe_dump(merged, indent=2)
 
     def _parse_config_content(self, content: str) -> Dict[str, Any]:
         """Parse config content (YAML or JSON fallback)"""

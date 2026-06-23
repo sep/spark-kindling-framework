@@ -67,12 +67,11 @@ entry_point: app.py
                 assert "app.py" in names, "KDA should contain app.py"
                 assert "app.yaml" in names, "KDA should contain app.yaml"
 
-    def test_kda_platform_config_merge(self):
-        """Test that platform-specific configs are merged correctly"""
+    def test_kda_platform_settings_overlay_selection(self):
+        """Test that selected settings overlays are packaged without merging app.yaml"""
         import json
 
         import yaml
-
         from kindling.data_apps import DataAppPackage
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -89,12 +88,29 @@ spark_config:
 """
             )
 
-            # Create Synapse-specific config
+            # Legacy Synapse-specific app config should not be packaged into app.yaml
             (app_dir / "app.synapse.yaml").write_text(
                 """spark_config:
   spark.synapse.linkedService.useDefaultCredential: "true"
 environment_vars:
   PLATFORM: synapse
+"""
+            )
+            (app_dir / "settings.yaml").write_text(
+                """spark_config:
+  base.setting: "true"
+"""
+            )
+            (app_dir / "settings.synapse.yaml").write_text(
+                """spark_config:
+  spark.synapse.linkedService.useDefaultCredential: "true"
+environment_vars:
+  PLATFORM: synapse
+"""
+            )
+            (app_dir / "settings.fabric.yaml").write_text(
+                """spark_config:
+  fabric.only: "true"
 """
             )
 
@@ -107,25 +123,32 @@ environment_vars:
                 merge_platform_config=True,
             )
 
-            # Extract and verify merged config
+            # Extract and verify manifest/settings selection
             with zipfile.ZipFile(kda_path, "r") as zf:
-                # Read app.yaml from KDA
+                names = set(zf.namelist())
+                assert "app.synapse.yaml" not in names
+                assert "settings.fabric.yaml" not in names
+                assert "settings.yaml" in names
+                assert "settings.synapse.yaml" in names
+
                 app_yaml_content = zf.read("app.yaml").decode()
                 app_config = yaml.safe_load(app_yaml_content)
-
-                # Should have base config
                 assert "spark_config" in app_config
                 assert app_config["spark_config"]["spark.sql.shuffle.partitions"] == "10"
-
-                # Should have merged Synapse config
                 assert (
-                    app_config["spark_config"]["spark.synapse.linkedService.useDefaultCredential"]
-                    == "true"
+                    "spark.synapse.linkedService.useDefaultCredential"
+                    not in app_config["spark_config"]
                 )
 
-                # Should have environment vars from Synapse config
-                if "environment_vars" in app_config:
-                    assert app_config["environment_vars"]["PLATFORM"] == "synapse"
+                settings_content = zf.read("settings.synapse.yaml").decode()
+                settings_config = yaml.safe_load(settings_content)
+                assert (
+                    settings_config["spark_config"][
+                        "spark.synapse.linkedService.useDefaultCredential"
+                    ]
+                    == "true"
+                )
+                assert settings_config["environment_vars"]["PLATFORM"] == "synapse"
 
 
 class TestKDAAppStructure:

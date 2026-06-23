@@ -378,7 +378,7 @@ class TestConfigSetLevelRouting:
                 ],
             )
             assert result.exit_code == 0
-            path = Path("platform_fabric.yaml")
+            path = Path("settings.fabric.yaml")
             assert path.exists()
             data = yaml.safe_load(path.read_text())
             assert data["kindling"]["secrets"]["scope"] == "fabric-scope"
@@ -400,7 +400,7 @@ class TestConfigSetLevelRouting:
                 ],
             )
             assert result.exit_code == 0
-            path = Path("env_prod.yaml")
+            path = Path("settings.prod.yaml")
             assert path.exists()
             data = yaml.safe_load(path.read_text())
             assert data["kindling"]["telemetry"]["logging"]["level"] == "ERROR"
@@ -480,7 +480,7 @@ class TestConfigSetAppScope:
                 ],
             )
             assert result.exit_code == 0
-            path = Path("data-apps/ingest-app/platform_databricks.yaml")
+            path = Path("data-apps/ingest-app/settings.databricks.yaml")
             assert path.exists()
             data = yaml.safe_load(path.read_text())
             assert data["kindling"]["secrets"]["scope"] == "db-scope"
@@ -605,6 +605,47 @@ def test_app_package_creates_kda_archive():
                 "app.py",
                 "lake-reqs.txt",
                 "nested/settings.yaml",
+            ]
+
+
+def test_app_package_includes_only_selected_settings_overlays():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        app_dir = Path("demo_app")
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        (app_dir / "app.yaml").write_text("name: demo\n", encoding="utf-8")
+        (app_dir / "app.fabric.yaml").write_text("legacy: true\n", encoding="utf-8")
+        (app_dir / "settings.yaml").write_text("name: demo\n", encoding="utf-8")
+        (app_dir / "settings.fabric.yaml").write_text("platform: fabric\n", encoding="utf-8")
+        (app_dir / "settings.synapse.yaml").write_text("platform: synapse\n", encoding="utf-8")
+        (app_dir / "settings.prod.yaml").write_text("env: prod\n", encoding="utf-8")
+        (app_dir / "settings.dev.yaml").write_text("env: dev\n", encoding="utf-8")
+        (app_dir / "settings.local.yaml").write_text("local: true\n", encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            [
+                "app",
+                "package",
+                "demo_app",
+                "--local-folder",
+                str(app_dir),
+                "--platform",
+                "fabric",
+                "--env",
+                "prod",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        with zipfile.ZipFile(Path("dist/demo_app.kda"), "r") as archive:
+            assert sorted(archive.namelist()) == [
+                "app.py",
+                "app.yaml",
+                "settings.fabric.yaml",
+                "settings.prod.yaml",
+                "settings.yaml",
             ]
 
 
@@ -1194,7 +1235,9 @@ class TestWorkspaceInit:
         deployed = []
         monkeypatch.setattr(
             "kindling_cli.cli._deploy_config",
-            lambda client, container, base, config, overwrite=False: deployed.append(config),
+            lambda client, container, base, config, overwrite=False, **kwargs: deployed.append(
+                config
+            ),
         )
         runner = CliRunner()
         with runner.isolated_filesystem():
@@ -1236,7 +1279,9 @@ class TestWorkspaceInit:
         calls = []
         monkeypatch.setattr(
             "kindling_cli.cli._deploy_config",
-            lambda client, container, base, config, overwrite=False: calls.append(overwrite),
+            lambda client, container, base, config, overwrite=False, **kwargs: calls.append(
+                overwrite
+            ),
         )
         runner = CliRunner()
         with runner.isolated_filesystem():
