@@ -11,9 +11,9 @@ See `docs/config_reference.md` for an exhaustive list of Kindling config keys an
 Configuration files are loaded in the following order (lowest to highest priority):
 
 1. **`settings.yaml`** - Base framework settings (lowest priority)
-2. **`platform_{platform}.yaml`** - Platform-specific settings (fabric, synapse, databricks)
+2. **`settings.{platform}.yaml`** - Platform-specific settings (fabric, synapse, databricks)
 3. **`workspace_{workspace_id}.yaml`** - Workspace-specific settings
-4. **`env_{environment}.yaml`** - Environment-specific settings (dev, prod, etc.)
+4. **`settings.{environment}.yaml`** - Environment-specific settings (dev, prod, etc.)
 5. **SparkConf** - `spark.kindling.*` pool/session settings
 6. **Bootstrap Config** - In-memory overrides from BOOTSTRAP_CONFIG dict (highest priority)
 
@@ -51,14 +51,14 @@ kindling:
 
 **Upload to:** `{artifacts_storage_path}/config/settings.yaml`
 
-### 2. Platform-Specific Settings (`platform_{platform}.yaml`)
+### 2. Platform-Specific Settings (`settings.{platform}.yaml`)
 
 Settings specific to a platform (Fabric, Synapse, or Databricks). These override base settings.
 
 **Platforms:**
 - `settings.fabric.yaml` - Microsoft Fabric settings
-- `platform_synapse.yaml` - Azure Synapse Analytics settings
-- `platform_databricks.yaml` - Databricks settings
+- `settings.synapse.yaml` - Azure Synapse Analytics settings
+- `settings.databricks.yaml` - Databricks settings
 
 **Example:** `settings.fabric.yaml`
 
@@ -133,7 +133,7 @@ kindling:
 
 **Upload to:** `{artifacts_storage_path}/config/workspace_{workspace_id}.yaml`
 
-### 4. Environment-Specific Settings (`env_{environment}.yaml`)
+### 4. Environment-Specific Settings (`settings.{environment}.yaml`)
 
 Settings specific to an environment (dev, test, staging, prod). **Highest priority** among YAML files.
 
@@ -164,9 +164,9 @@ Minimal setup with just base settings and environment overrides:
 
 ```
 config/
-├── settings.yaml     # Base settings
-├── env_dev.yaml      # Development overrides
-└── settings.prod.yaml     # Production overrides
+├── settings.yaml       # Base settings
+├── settings.dev.yaml   # Development overrides
+└── settings.prod.yaml  # Production overrides
 ```
 
 ### Pattern 2: Base + Platform + Environment
@@ -175,12 +175,12 @@ Add platform-specific settings for multi-platform deployments:
 
 ```
 config/
-├── settings.yaml           # Base settings
-├── settings.fabric.yaml    # Fabric-specific settings
-├── platform_synapse.yaml   # Synapse-specific settings
-├── platform_databricks.yaml # Databricks-specific settings
-├── env_dev.yaml            # Development overrides
-└── settings.prod.yaml      # Production overrides
+├── settings.yaml             # Base settings
+├── settings.fabric.yaml      # Fabric-specific settings
+├── settings.synapse.yaml     # Synapse-specific settings
+├── settings.databricks.yaml  # Databricks-specific settings
+├── settings.dev.yaml         # Development overrides
+└── settings.prod.yaml        # Production overrides
 ```
 
 ### Pattern 3: Full Hierarchy (Most Control)
@@ -191,11 +191,11 @@ Complete hierarchy with workspace-specific settings:
 config/
 ├── settings.yaml                           # Base settings
 ├── settings.fabric.yaml                    # Fabric settings
-├── platform_synapse.yaml                   # Synapse settings
+├── settings.synapse.yaml                   # Synapse settings
 ├── workspace_abc123.yaml                   # Team A workspace
 ├── workspace_def456.yaml                   # Team B workspace
-├── env_dev.yaml                            # Development env
-├── env_staging.yaml                        # Staging env
+├── settings.dev.yaml                       # Development env
+├── settings.staging.yaml                   # Staging env
 └── settings.prod.yaml                      # Production env
 ```
 
@@ -210,8 +210,8 @@ config/
 ├── workspace_dev-workspace-id.yaml         # Dev workspace
 ├── workspace_staging-workspace-id.yaml     # Staging workspace
 ├── workspace_prod-workspace-id.yaml        # Prod workspace
-├── env_dev.yaml                            # Dev env overrides
-├── env_staging.yaml                        # Staging env overrides
+├── settings.dev.yaml                       # Dev env overrides
+├── settings.staging.yaml                   # Staging env overrides
 └── settings.prod.yaml                      # Prod env overrides
 ```
 
@@ -340,7 +340,7 @@ kindling:
     logging:
       level: DEBUG  # Need verbose logs for diagnostic emitters
 
-# platform_databricks.yaml - Databricks tuning
+# settings.databricks.yaml - Databricks tuning
 kindling:
   TELEMETRY:
     logging:
@@ -464,8 +464,8 @@ config/
 
 **Migration Steps:**
 1. Keep existing `settings.yaml` as base
-2. Extract platform-specific settings to `platform_{platform}.yaml`
-3. Extract environment-specific settings to `env_{environment}.yaml`
+2. Extract platform-specific settings to `settings.{platform}.yaml`
+3. Extract environment-specific settings to `settings.{environment}.yaml`
 4. Test with each layer to verify behavior
 
 ### From Bootstrap Config Only

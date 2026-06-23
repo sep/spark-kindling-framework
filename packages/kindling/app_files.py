@@ -29,9 +29,7 @@ def is_selected_settings_overlay(
     """Return True when a settings overlay matches the selected runtime target."""
     return filename in {
         f"settings.{platform}.yaml" if platform else "",
-        f"settings.{platform}.yml" if platform else "",
         f"settings.{environment}.yaml" if environment else "",
-        f"settings.{environment}.yml" if environment else "",
     }
 
 

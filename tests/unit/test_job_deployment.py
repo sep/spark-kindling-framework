@@ -100,6 +100,7 @@ class TestDataAppDeployer:
             (app_path / "settings.yaml").write_text("base: true")
             (app_path / "settings.fabric.yaml").write_text("platform: fabric")
             (app_path / "settings.prod.yaml").write_text("env: prod")
+            (app_path / "settings.prod.yml").write_text("env: prod-yml")
             (app_path / "settings.dev.yaml").write_text("env: dev")
 
             mock_platform = Mock()
@@ -118,6 +119,7 @@ class TestDataAppDeployer:
             assert "settings.yaml" in app_files
             assert "settings.fabric.yaml" in app_files
             assert "settings.prod.yaml" in app_files
+            assert "settings.prod.yml" not in app_files
             assert "settings.dev.yaml" not in app_files
 
     def test_create_job_creates_definition(self):

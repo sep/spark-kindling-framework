@@ -210,7 +210,7 @@ class DataAppPackage:
     - ZIP archive with .kda extension
     - Contains app files (Python, YAML, etc.)
     - Includes kda-manifest.json with metadata
-    - May include platform-specific configs (app.<platform>.yaml)
+    - May include selected settings overlays (settings.<platform>.yaml, settings.<env>.yaml)
     """
 
     @staticmethod
@@ -231,7 +231,8 @@ class DataAppPackage:
             version: App version (from app.yaml if None)
             target_platform: Target platform (synapse, databricks, fabric)
             target_environment: Target environment settings overlay to include
-            merge_platform_config: If True, merge platform config into base config
+            merge_platform_config: If True, package only the selected platform/environment
+                                   settings overlays. If False, include all deployable app files.
             logger: Optional logger
 
         Returns:
@@ -576,8 +577,8 @@ class DataAppManager(DataAppRunner):
             version: App version (from metadata if None)
             target_platform: Target platform (synapse, databricks, fabric)
             target_environment: Target environment settings overlay to include
-            merge_platform_config: If True, merge platform config into base config.
-                                  If False, include all platform configs separately.
+            merge_platform_config: If True, package only the selected platform/environment
+                                  settings overlays. If False, include all deployable app files.
         """
         try:
             app_path = Path(app_directory)
