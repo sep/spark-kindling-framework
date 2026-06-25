@@ -58,6 +58,9 @@ After the workflow completes:
    - ✅ `spark_kindling-<version>-py3-none-any.whl` (combined runtime)
    - ✅ `spark_kindling_cli-<version>-py3-none-any.whl`
    - ✅ `spark_kindling_sdk-<version>-py3-none-any.whl`
+   - ✅ `kindling_bootstrap.py`
+   - ✅ `spark_kindling-current-url.txt`
+   - ✅ `spark_kindling-current-install.txt`
    - ✅ Source code (zip)
    - ✅ Source code (tar.gz)
 
