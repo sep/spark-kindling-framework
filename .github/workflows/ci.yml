@@ -9,9 +9,13 @@ name: Kindling CI/CD Pipeline
 # - Wheel builds: Only if source code changes or [build wheels] in commit message
 #
 # ON TAG PUSH (v*) — release flow:
-# - Wheels always built
-# - System tests: All 3 platforms (Databricks, Synapse, Fabric) MUST pass
-# - If all pass: GitHub release is CREATED with wheels attached atomically
+# - Changes since the previous version tag are classified as runtime, CLI, SDK,
+#   or docs/proposal-only.
+# - Runtime releases run full artifact deploy + cloud system tests.
+# - CLI/SDK releases build and publish wheels after unit/integration/security
+#   gates, but skip cloud system tests.
+# - Docs/proposal-only tags publish release notes only.
+# - If required gates pass: GitHub release is CREATED atomically.
 # - Release is never visible to the public until wheels are ready
 #
 # To release: push a v* tag (poe release). CI owns the GitHub release object.
@@ -71,6 +75,160 @@ defaults:
     shell: bash
 
 jobs:
+  classify-changes:
+    name: Classify Changes
+    runs-on: ubuntu-latest
+    outputs:
+      release_kind: ${{ steps.classify.outputs.release_kind }}
+      runtime_changed: ${{ steps.classify.outputs.runtime_changed }}
+      cli_changed: ${{ steps.classify.outputs.cli_changed }}
+      sdk_changed: ${{ steps.classify.outputs.sdk_changed }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      needs_wheels: ${{ steps.classify.outputs.needs_wheels }}
+      needs_system_tests: ${{ steps.classify.outputs.needs_system_tests }}
+      changed_files: ${{ steps.classify.outputs.changed_files }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: classify
+        run: |
+          set -euo pipefail
+
+          is_tag=false
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            is_tag=true
+            current_tag="${{ github.ref_name }}"
+            previous_tag=$(git tag --sort=-v:refname --list 'v[0-9]*' | grep -v "^${current_tag}$" | head -1 || true)
+            if [ -n "$previous_tag" ]; then
+              range="${previous_tag}..HEAD"
+            else
+              range="$(git rev-list --max-parents=0 HEAD)..HEAD"
+            fi
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags origin "${{ github.base_ref }}"
+            range="origin/${{ github.base_ref }}...HEAD"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            range="HEAD~1..HEAD"
+          else
+            before="${{ github.event.before }}"
+            if [[ -n "$before" && "$before" != "0000000000000000000000000000000000000000" ]]; then
+              range="${before}..HEAD"
+            else
+              range="HEAD~1..HEAD"
+            fi
+          fi
+
+          echo "Classifying range: $range"
+          changed_files=$(git diff --name-only "$range" || true)
+          printf '%s\n' "$changed_files"
+
+          runtime_changed=false
+          cli_changed=false
+          sdk_changed=false
+          docs_changed=false
+          other_changed=false
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+
+            case "$file" in
+              CHANGELOG.md)
+                docs_changed=true
+                ;;
+              pyproject.toml|poetry.lock)
+                if [[ "$is_tag" == "true" ]]; then
+                  # Version bumps and lockfile churn are release metadata on tag
+                  # ranges. Source changes in the same range choose the gates.
+                  :
+                else
+                  runtime_changed=true
+                fi
+                ;;
+              packages/kindling_cli/pyproject.toml)
+                if [[ "$is_tag" == "true" ]]; then
+                  :
+                else
+                  cli_changed=true
+                fi
+                ;;
+              packages/kindling_sdk/pyproject.toml)
+                if [[ "$is_tag" == "true" ]]; then
+                  :
+                else
+                  sdk_changed=true
+                fi
+                ;;
+              packages/kindling/*|runtime/*|scripts/build.py|scripts/build_platform_wheels.sh|scripts/deploy.py|build-configs/*|tests/system/*)
+                runtime_changed=true
+                ;;
+              packages/kindling_cli/*)
+                cli_changed=true
+                ;;
+              packages/kindling_sdk/*)
+                sdk_changed=true
+                ;;
+              docs/*|README.md|AGENTS.md|CLAUDE.md|.github/instructions/*|.github/kindling-agent-reference.md)
+                docs_changed=true
+                ;;
+              .github/workflows/*|.github/Dockerfile.*|scripts/release.sh)
+                runtime_changed=true
+                ;;
+              *)
+                other_changed=true
+                ;;
+            esac
+          done <<< "$changed_files"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            runtime_changed=true
+          fi
+
+          needs_wheels=false
+          needs_system_tests=false
+          release_kind="docs"
+
+          if [[ "$runtime_changed" == "true" || "$other_changed" == "true" ]]; then
+            release_kind="runtime"
+            needs_wheels=true
+            needs_system_tests=true
+          elif [[ "$cli_changed" == "true" && "$sdk_changed" == "true" ]]; then
+            release_kind="cli-sdk"
+            needs_wheels=true
+          elif [[ "$cli_changed" == "true" ]]; then
+            release_kind="cli"
+            needs_wheels=true
+          elif [[ "$sdk_changed" == "true" ]]; then
+            release_kind="sdk"
+            needs_wheels=true
+          fi
+
+          docs_only=false
+          if [[ "$needs_wheels" == "false" && "$docs_changed" == "true" ]]; then
+            docs_only=true
+          fi
+
+          {
+            echo "release_kind=$release_kind"
+            echo "runtime_changed=$runtime_changed"
+            echo "cli_changed=$cli_changed"
+            echo "sdk_changed=$sdk_changed"
+            echo "docs_only=$docs_only"
+            echo "needs_wheels=$needs_wheels"
+            echo "needs_system_tests=$needs_system_tests"
+            echo "changed_files<<EOF"
+            printf '%s\n' "$changed_files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Release kind: $release_kind"
+          echo "Needs wheels: $needs_wheels"
+          echo "Needs system tests: $needs_system_tests"
+
   build-ci-image:
     name: Build CI Image
     runs-on: ubuntu-latest
@@ -260,13 +418,15 @@ jobs:
   deploy-system-test-artifacts:
     name: Deploy System Test Artifacts
     runs-on: ubuntu-latest
-    needs: [build-ci-image, build-wheels]
+    needs: [classify-changes, build-ci-image, build-wheels]
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: |
+      needs.classify-changes.outputs.needs_system_tests == 'true' &&
+      (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
     environment: testing
     outputs:
       azure_base_path: ${{ steps.base-path.outputs.azure_base_path }}
@@ -320,14 +480,22 @@ jobs:
     name: System Tests (${{ matrix.label }})
     runs-on: ubuntu-latest
     needs:
-      [build-ci-image, integration-tests, kda-packaging-tests, deploy-system-test-artifacts]
+      [
+        classify-changes,
+        build-ci-image,
+        integration-tests,
+        kda-packaging-tests,
+        deploy-system-test-artifacts,
+      ]
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     # Run system tests for tag pushes (releases) OR manual workflow dispatch
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: |
+      needs.classify-changes.outputs.needs_system_tests == 'true' &&
+      (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
     environment: testing
 
     strategy:
@@ -483,41 +651,18 @@ jobs:
   build-wheels:
     name: Build Platform Wheels
     runs-on: ubuntu-latest
-    needs: [build-ci-image, unit-tests, lint-and-format]
+    needs: [classify-changes, build-ci-image, unit-tests, lint-and-format]
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # Build wheels on tag push (release), when explicitly requested with commit message,
-    # or when source code that affects wheel content changes
+    # Build wheels for classified runtime/CLI/SDK releases, workflow dispatch,
+    # explicit [build wheels] commits, or source changes on ordinary pushes.
     if: |
-      startsWith(github.ref, 'refs/tags/v') ||
+      needs.classify-changes.outputs.needs_wheels == 'true' ||
       github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, '[build wheels]') ||
-      (github.event_name == 'push' && (
-        contains(github.event.commits.*.modified, 'packages/kindling/') ||
-        contains(github.event.commits.*.added, 'packages/kindling/') ||
-        contains(github.event.commits.*.removed, 'packages/kindling/') ||
-        contains(github.event.commits.*.modified, 'packages/kindling_sdk/') ||
-        contains(github.event.commits.*.added, 'packages/kindling_sdk/') ||
-        contains(github.event.commits.*.removed, 'packages/kindling_sdk/') ||
-        contains(github.event.commits.*.modified, 'packages/kindling_cli/') ||
-        contains(github.event.commits.*.added, 'packages/kindling_cli/') ||
-        contains(github.event.commits.*.removed, 'packages/kindling_cli/') ||
-        contains(github.event.commits.*.modified, 'build-configs/') ||
-        contains(github.event.commits.*.added, 'build-configs/') ||
-        contains(github.event.commits.*.removed, 'build-configs/') ||
-        contains(github.event.commits.*.modified, 'scripts/build_platform_wheels.sh') ||
-        contains(github.event.commits.*.added, 'scripts/build_platform_wheels.sh') ||
-        contains(github.event.commits.*.removed, 'scripts/build_platform_wheels.sh') ||
-        contains(github.event.commits.*.modified, 'scripts/build.py') ||
-        contains(github.event.commits.*.added, 'scripts/build.py') ||
-        contains(github.event.commits.*.removed, 'scripts/build.py') ||
-        contains(github.event.commits.*.modified, 'pyproject.toml') ||
-        contains(github.event.commits.*.added, 'pyproject.toml') ||
-        contains(github.event.commits.*.removed, 'pyproject.toml')
-      ))
+      contains(github.event.head_commit.message, '[build wheels]')
 
     steps:
       - name: Checkout code
@@ -531,8 +676,14 @@ jobs:
           echo "Checking for changes that affect wheel content..."
 
           # Get list of changed files (comparing with previous commit)
-          if [[ "${{ github.ref }}" == refs/tags/v* ]] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Tag push or workflow_dispatch — always build wheels"
+          if [[ "${{ needs.classify-changes.outputs.needs_wheels }}" == "true" ]]; then
+            echo "Classifier requires wheel build for ${{ needs.classify-changes.outputs.release_kind }} release"
+            echo "needs_rebuild=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "workflow_dispatch — build wheels"
             echo "needs_rebuild=true" >> $GITHUB_OUTPUT
             exit 0
           fi
@@ -619,19 +770,44 @@ jobs:
   publish-release:
     name: Publish Release
     runs-on: ubuntu-latest
-    needs: [build-wheels, unit-tests, integration-tests, system-tests]
-    if: startsWith(github.ref, 'refs/tags/v') && needs.build-wheels.result == 'success' && needs.unit-tests.result == 'success' && needs.integration-tests.result == 'success' && needs.system-tests.result == 'success'
+    needs:
+      [
+        classify-changes,
+        build-wheels,
+        unit-tests,
+        lint-and-format,
+        integration-tests,
+        security-scan,
+        system-tests,
+      ]
+    if: |
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.unit-tests.result == 'success' &&
+      needs.lint-and-format.result == 'success' &&
+      needs.integration-tests.result == 'success' &&
+      needs.security-scan.result == 'success' &&
+      (
+        (needs.classify-changes.outputs.needs_wheels == 'true' && needs.build-wheels.result == 'success') ||
+        (needs.classify-changes.outputs.needs_wheels == 'false' && needs.build-wheels.result == 'skipped')
+      ) &&
+      (
+        (needs.classify-changes.outputs.needs_system_tests == 'true' && needs.system-tests.result == 'success') ||
+        (needs.classify-changes.outputs.needs_system_tests == 'false' && needs.system-tests.result == 'skipped')
+      )
     permissions:
       contents: write
 
     steps:
       - name: Download wheel artifacts
+        if: needs.classify-changes.outputs.needs_wheels == 'true'
         uses: actions/download-artifact@v4
         with:
           name: platform-wheels
           path: dist/
 
       - name: Create stable release alias assets
+        if: needs.classify-changes.outputs.needs_wheels == 'true'
         run: |
           set -euo pipefail
           RUNTIME_WHEEL=$(ls dist/spark_kindling-*.whl 2>/dev/null | head -1)
@@ -653,6 +829,7 @@ jobs:
             > dist/spark_kindling-current-install.txt
 
       - name: Create release and attach wheels
+        if: needs.classify-changes.outputs.needs_wheels == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -665,28 +842,48 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Create release notes only
+        if: needs.classify-changes.outputs.needs_wheels == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create release summary
         run: |
           echo "# 📦 Release ${{ github.ref_name }} Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The following wheels are attached to the release:" >> $GITHUB_STEP_SUMMARY
+          echo "Release kind: \`${{ needs.classify-changes.outputs.release_kind }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Package | File |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|------|" >> $GITHUB_STEP_SUMMARY
-          for asset in dist/*; do
-            filename=$(basename "$asset")
-            size=$(du -h "$asset" | cut -f1)
-            echo "| ${filename%.*} | $filename ($size) |" >> $GITHUB_STEP_SUMMARY
-          done
+          if [ "${{ needs.classify-changes.outputs.needs_wheels }}" = "true" ]; then
+            echo "The following assets are attached to the release:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | File |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|------|" >> $GITHUB_STEP_SUMMARY
+            for asset in dist/*; do
+              filename=$(basename "$asset")
+              size=$(du -h "$asset" | cut -f1)
+              echo "| ${filename%.*} | $filename ($size) |" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "No wheel assets were attached for this docs-only release." >> $GITHUB_STEP_SUMMARY
+          fi
 
   build-devcontainer-image:
     name: Build & Publish Devcontainer Image
     runs-on: ubuntu-latest
-    needs: [publish-release]
-    # Publish on version tags (after release), or when manually triggered with publish_devcontainer=true.
+    needs: [classify-changes, publish-release]
+    # Publish on runtime version tags (after release), or when manually triggered with publish_devcontainer=true.
     if: |
       always() && (
-        (startsWith(github.ref, 'refs/tags/v') && needs.publish-release.result == 'success') ||
+        (
+          startsWith(github.ref, 'refs/tags/v') &&
+          needs.publish-release.result == 'success' &&
+          needs.classify-changes.outputs.release_kind == 'runtime'
+        ) ||
         (github.event_name == 'workflow_dispatch' && inputs.publish_devcontainer == true)
       )
     permissions:

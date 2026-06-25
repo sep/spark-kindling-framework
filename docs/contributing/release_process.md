@@ -4,13 +4,16 @@ This guide explains how to create releases for the Kindling framework and how wh
 
 ## 📦 What Happens on Release
 
-When you publish a GitHub Release:
+When you push a `v*` tag with `poe release`, GitHub Actions classifies the files
+changed since the previous version tag and chooses the required release lane:
 
-1. ✅ **All tests run** (unit, integration, KDA, system, security)
-2. ✅ **The combined `spark-kindling` runtime wheel is built**, plus the design-time `spark-kindling-cli` and `spark-kindling-sdk` wheels
-3. ✅ **Release-candidate wheels and bootstrap scripts are staged** to storage for system-test validation
-4. ✅ **System tests run against those exact staged artifacts** on every supported platform (synapse, databricks, fabric)
-5. ✅ **Wheels are automatically attached** to the release as downloadable assets after system tests pass
+- **Runtime release**: builds wheels, stages release-candidate artifacts, runs Synapse/Fabric/Databricks system tests, then publishes the GitHub release.
+- **CLI release**: builds and smoke-tests wheels, then publishes after unit, integration, quality, and security gates pass.
+- **SDK release**: builds and smoke-tests wheels, then publishes after unit, integration, quality, and security gates pass.
+- **Docs/proposal-only release**: publishes release notes without wheel assets.
+
+Workflow, build-system, runtime package, build-config, and system-test changes
+take the runtime lane. Unknown paths also take the runtime lane.
 
 ## 🚀 Creating a Release
 
@@ -35,42 +38,12 @@ git push origin main
 
 ### Step 2: Create the Release on GitHub
 
-#### Option A: Via GitHub UI (Recommended for first time)
-
-1. **Go to Releases Page**
-   ```
-   https://github.com/sep/spark-kindling-framework/releases
-   ```
-
-2. **Click "Draft a new release"**
-
-3. **Fill in Release Details**
-   - **Choose a tag**: `v<version>` (create new tag)
-   - **Target**: `main` branch
-   - **Release title**: `v<version> - Brief description`
-   - **Description**: Add release notes (or click "Generate release notes")
-
-4. **Publish Release**
-   - Click "Publish release"
-   - GitHub Actions automatically triggers
-   - Wheels are built and attached within ~5 minutes
-
-#### Option B: Via GitHub CLI
-
 ```bash
-# Install gh CLI if needed
-# https://cli.github.com/
-
-# Create release with auto-generated notes
-gh release create v<version> \
-  --title "v<version> - Brief description" \
-  --generate-notes
-
-# Or with custom notes
-gh release create v<version> \
-  --title "v<version> - Brief description" \
-  --notes-file docs/releases/<version>.md
+poetry run poe release <version>
 ```
+
+The Poe task creates and pushes the release tag. CI owns the GitHub release
+object and creates it only after the required validation lane passes.
 
 ### Step 3: Verify Release Assets
 
@@ -81,12 +54,15 @@ After the workflow completes:
    https://github.com/sep/spark-kindling-framework/releases/tag/v<version>
    ```
 
-2. **Verify Assets Section shows:**
+2. **For runtime, CLI, or SDK releases, verify Assets shows:**
    - ✅ `spark_kindling-<version>-py3-none-any.whl` (combined runtime)
    - ✅ `spark_kindling_cli-<version>-py3-none-any.whl`
    - ✅ `spark_kindling_sdk-<version>-py3-none-any.whl`
    - ✅ Source code (zip)
    - ✅ Source code (tar.gz)
+
+Docs/proposal-only releases are expected to have generated release notes and
+source archives only.
 
 ## 📥 Installing from Release
 
