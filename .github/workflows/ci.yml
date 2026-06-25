@@ -810,6 +810,8 @@ jobs:
         if: needs.classify-changes.outputs.needs_wheels == 'true'
         run: |
           set -euo pipefail
+          cp runtime/scripts/kindling_bootstrap.py dist/kindling_bootstrap.py
+
           RUNTIME_WHEEL=$(ls dist/spark_kindling-*.whl 2>/dev/null | head -1)
           if [ -z "$RUNTIME_WHEEL" ]; then
             echo "❌ Could not find runtime wheel in dist/"
@@ -837,6 +839,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*.whl
+            dist/kindling_bootstrap.py
             dist/spark_kindling-current-url.txt
             dist/spark_kindling-current-install.txt
         env:
