@@ -3007,20 +3007,45 @@ class TestRuntimeDeploy:
         assert result.exit_code == 0, result.output
         assert "Deploy complete." in result.output
 
-    def test_deploy_github_source_rejects_missing_gh_cli(self, monkeypatch):
+    def test_deploy_github_source_uses_public_kindling_release_without_gh(self, monkeypatch):
         import subprocess
+
+        requested_api_paths = []
+        downloaded_urls = []
 
         monkeypatch.setattr(
             "kindling_cli.cli._get_blob_service_client",
             lambda account: _make_fake_blob_service_client(),
         )
 
+        def fake_github_api_json(path):
+            requested_api_paths.append(path)
+            if path == "/repos/sep/spark-kindling-framework/releases/latest":
+                return {"tag_name": "v0.10.33"}
+            if path == "/repos/sep/spark-kindling-framework/releases/tags/v0.10.33":
+                return {
+                    "assets": [
+                        {
+                            "name": "spark_kindling-0.10.33-py3-none-any.whl",
+                            "browser_download_url": "https://example.test/runtime.whl",
+                        },
+                        {
+                            "name": "kindling_bootstrap.py",
+                            "browser_download_url": "https://example.test/bootstrap.py",
+                        },
+                    ]
+                }
+            raise AssertionError(f"Unexpected GitHub API path: {path}")
+
+        def fake_download_url(url, dest):
+            downloaded_urls.append(url)
+            dest.write_bytes(b"fake asset")
+
         def fake_run(cmd, **kwargs):
-            # Simulate gh CLI being unavailable — any gh invocation fails
-            if cmd[0] in ("which", "gh"):
-                raise subprocess.CalledProcessError(1, cmd, b"", b"gh: command not found")
             raise AssertionError(f"Unexpected subprocess call: {cmd}")
 
+        monkeypatch.setattr("kindling_cli.cli._github_api_json", fake_github_api_json)
+        monkeypatch.setattr("kindling_cli.cli._download_url", fake_download_url)
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         result = CliRunner().invoke(
@@ -3035,8 +3060,17 @@ class TestRuntimeDeploy:
             ],
         )
 
-        assert result.exit_code != 0
-        assert "gh" in result.output
+        assert result.exit_code == 0, result.output
+        assert requested_api_paths == [
+            "/repos/sep/spark-kindling-framework/releases/latest",
+            "/repos/sep/spark-kindling-framework/releases/tags/v0.10.33",
+        ]
+        assert downloaded_urls == [
+            "https://example.test/runtime.whl",
+            "https://example.test/bootstrap.py",
+        ]
+        assert "Publishing from GitHub release v0.10.33" in result.output
+        assert "Deploy complete." in result.output
 
     def test_deploy_skip_bootstrap_omits_scripts(self, tmp_path, monkeypatch):
         wheel = tmp_path / "spark_kindling-0.9.25-py3-none-any.whl"

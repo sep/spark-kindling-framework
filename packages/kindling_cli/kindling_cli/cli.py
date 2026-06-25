@@ -13,7 +13,9 @@ import time
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 import click
 import yaml
@@ -30,6 +32,8 @@ APP_RUN_PLATFORMS = ("standalone", *SUPPORTED_PLATFORMS)
 APP_EXECUTOR_PATTERNS = ("batch", "structured-streaming", "file-ingestion")
 APP_CONFIG_FILE = "app.yaml"
 DEFAULT_APP_ENTRY_POINT = "app.py"
+KINDLING_GITHUB_REPO = "sep/spark-kindling-framework"
+GITHUB_API_BASE = "https://api.github.com"
 
 try:
     from kindling.app_files import is_deployable_app_file
@@ -5561,113 +5565,96 @@ def _parse_abfss_uri(uri: str) -> Tuple[str, str, str]:
     return container, account_name, blob_path
 
 
-def _download_github_release_assets(
-    version: str, temp_dir: Path, repo: Optional[str] = None
-) -> None:
-    """Download release assets (wheels + bootstrap script) from GitHub using gh CLI.
+def _github_api_json(path: str) -> Dict[str, Any]:
+    """Fetch JSON from the GitHub API.
 
-    Uses ``gh release download`` with a pattern that matches both wheels and the
-    bootstrap script.  Silently skips bootstrap if it isn't attached to the release.
+    The Kindling repository is public, so this does not require GitHub CLI or a
+    checked-out repository. If a token is present, include it to avoid low
+    unauthenticated rate limits in CI.
+    """
+    url = f"{GITHUB_API_BASE}{path}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "spark-kindling-cli",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        with urlopen(Request(url, headers=headers)) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise click.ClickException(
+            f"GitHub API request failed for {url}: HTTP {exc.code} {exc.reason}\n{body}"
+        ) from exc
+    except (URLError, OSError, json.JSONDecodeError) as exc:
+        raise click.ClickException(f"GitHub API request failed for {url}: {exc}") from exc
+
+
+def _download_url(url: str, dest: Path) -> None:
+    headers = {"User-Agent": "spark-kindling-cli"}
+    try:
+        with urlopen(Request(url, headers=headers)) as response:
+            dest.write_bytes(response.read())
+    except (HTTPError, URLError, OSError) as exc:
+        raise click.ClickException(f"Failed to download {url}: {exc}") from exc
+
+
+def _github_release_for_tag(tag: str, repo: str = KINDLING_GITHUB_REPO) -> Dict[str, Any]:
+    return _github_api_json(f"/repos/{repo}/releases/tags/{tag}")
+
+
+def _download_github_release_assets(
+    version: str, temp_dir: Path, repo: str = KINDLING_GITHUB_REPO
+) -> None:
+    """Download release assets (wheels + bootstrap script) from GitHub.
+
+    The source is always the Kindling GitHub release by default, independent of
+    the caller's current working directory. Public releases do not require
+    GitHub CLI or authentication.
     """
     tag = f"v{version}" if not version.startswith("v") else version
+    release = _github_release_for_tag(tag, repo=repo)
+    assets = release.get("assets", [])
+    if not isinstance(assets, list):
+        raise click.ClickException(f"GitHub release {tag} in {repo} returned malformed assets.")
 
-    if repo is None:
-        # Auto-detect from git remote
-        try:
-            result = subprocess.run(
-                ["git", "remote", "get-url", "origin"],
-                capture_output=True,
-                text=True,
-                check=True,
+    wanted = [
+        asset
+        for asset in assets
+        if isinstance(asset, dict)
+        and isinstance(asset.get("name"), str)
+        and (asset["name"].endswith(".whl") or asset["name"] == "kindling_bootstrap.py")
+    ]
+    wheels = [asset for asset in wanted if asset["name"].endswith(".whl")]
+    if not wheels:
+        raise click.ClickException(
+            f"No wheel assets found in GitHub release {tag} in {repo}. "
+            "Expected spark_kindling-*.whl attachments."
+        )
+
+    for asset in wanted:
+        download_url = asset.get("browser_download_url")
+        if not isinstance(download_url, str) or not download_url:
+            raise click.ClickException(
+                f"Release asset {asset['name']} in {tag} does not include a download URL."
             )
-            import re as _re
-
-            m = _re.search(r"github\.com[:/](.+?)(?:\.git)?$", result.stdout.strip())
-            repo = m.group(1) if m else None
-        except Exception:
-            repo = None
-
-    if not repo:
-        raise click.ClickException(
-            "Could not detect GitHub repository. "
-            "Set a GitHub remote named 'origin' or pass the repo explicitly."
-        )
-
-    # Check gh CLI availability
-    if subprocess.run(["which", "gh"], capture_output=True).returncode != 0:
-        raise click.ClickException(
-            "GitHub CLI (gh) is required for github: source. " "Install it: https://cli.github.com/"
-        )
-
-    # Download wheels
-    try:
-        subprocess.run(
-            [
-                "gh",
-                "release",
-                "download",
-                tag,
-                "--pattern",
-                "*.whl",
-                "--repo",
-                repo,
-                "--dir",
-                str(temp_dir),
-            ],
-            check=True,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise click.ClickException(
-            f"Failed to download wheels from GitHub release {tag} in {repo}.\n"
-            f"Make sure the release exists and has wheel attachments.\n"
-            f"gh stderr: {exc.stderr.decode(errors='replace') if exc.stderr else ''}"
-        ) from exc
-
-    # Try to download bootstrap script (optional — don't fail if absent)
-    try:
-        subprocess.run(
-            [
-                "gh",
-                "release",
-                "download",
-                tag,
-                "--pattern",
-                "kindling_bootstrap.py",
-                "--repo",
-                repo,
-                "--dir",
-                str(temp_dir),
-            ],
-            check=True,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError:
-        pass  # Bootstrap script not in release assets — will be skipped
+        _download_url(download_url, temp_dir / asset["name"])
 
 
-def _resolve_github_version(version: Optional[str]) -> str:
-    """Resolve 'latest' or None to an actual version tag using gh CLI."""
+def _resolve_github_version(version: Optional[str], repo: str = KINDLING_GITHUB_REPO) -> str:
+    """Resolve 'latest' or None to an actual Kindling release tag."""
     if version and version != "latest":
         return version.lstrip("v")
 
-    try:
-        result = subprocess.run(
-            ["gh", "release", "view", "--json", "tagName", "--jq", ".tagName"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        tag = result.stdout.strip().lstrip("v")
-        if not tag:
-            raise click.ClickException("gh release view returned an empty tag.")
-        return tag
-    except subprocess.CalledProcessError as exc:
-        raise click.ClickException(
-            "Failed to detect latest GitHub release version. "
-            "Pass --version explicitly or ensure gh is authenticated.\n"
-            f"gh stderr: {exc.stderr or ''}"
-        ) from exc
+    release = _github_api_json(f"/repos/{repo}/releases/latest")
+    tag = release.get("tag_name")
+    if not isinstance(tag, str) or not tag:
+        raise click.ClickException(f"GitHub latest release for {repo} returned an empty tag.")
+    return tag.lstrip("v")
 
 
 def _adls_copy_path(
