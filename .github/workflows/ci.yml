@@ -949,6 +949,8 @@ jobs:
     steps:
       - name: Download all test results
         uses: actions/download-artifact@v4
+        with:
+          path: ci-artifacts/
 
       - name: Generate test summary
         run: |
