@@ -137,7 +137,7 @@ test-system = { shell = "kindling test run --suite system --path tests/system/co
 test-system-ci = { shell = "kindling test run --suite system --path tests/system/core --ci --preflight system ${platform:+--platform \"$platform\"} ${test:+--test \"$test\"} ${workers:+--workers \"$workers\"}", help = "Run system tests with CI reporting. Use --platform and/or --test to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}, {name = "test", default = "", positional = false, help = "Specific test name or pattern to run. If not specified, runs all tests"}, {name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count override for CI runs"}] }
 test-extension = { shell = "kindling test run --suite extension --path tests/system/extensions/$extension ${platform:+--platform \"$platform\"}", help = "Run extension tests", args = [{name = "extension", default = "azure-monitor", positional = false, help = "Extension name to test (e.g., azure-monitor)"}, {name = "platform", default = "", positional = false, help = "Platform to test (fabric, synapse, databricks). If not specified, runs all platforms"}] }
 test-quick = "kindling test run --suite all --path tests/unit --path tests/integration"
-test-coverage = "kindling test run --suite all --path tests --coverage kindling --pytest-arg=--cov-report=html --pytest-arg=--cov-report=term"
+test-coverage = "kindling test run --suite all --path tests --coverage kindling --pytest-arg=--cov-report=html:test-results/htmlcov --pytest-arg=--cov-report=term"
 cleanup = { shell = "if [ -n \"$platform\" ]; then kindling test cleanup --platform \"$platform\" $(if [ \"$skip_packages\" = \"true\" ] || [ \"$skip_packages\" = \"True\" ]; then printf '%s' --skip-packages; fi); else kindling test cleanup --all $(if [ \"$skip_packages\" = \"true\" ] || [ \"$skip_packages\" = \"True\" ]; then printf '%s' --skip-packages; fi); fi", help = "Clean up test resources. Use --platform to filter", args = [{name = "platform", default = "", positional = false, help = "Platform to clean (fabric, synapse, databricks). If not specified, cleans all platforms"}, {name = "skip-packages", type = "boolean", default = false, positional = false, help = "Skip cleanup of old packages"}] }
 
 # Code quality tasks
@@ -175,7 +175,7 @@ addopts = [
     "--verbose",
     "--cov=kindling",
     "--cov-report=term-missing",
-    "--cov-report=html:htmlcov",
+    "--cov-report=html:test-results/htmlcov",
 ]
 markers = [
     "integration: Integration tests requiring Spark session but no cloud infrastructure",
