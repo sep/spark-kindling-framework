@@ -218,7 +218,7 @@ environment or promoting between environments (e.g. staging → prod).
 
 | Source | Example | Description |
 |---|---|---|
-| `github:VERSION` | `github:latest`, `github:0.10.15` | Download from a GitHub release via `gh` CLI |
+| `github:VERSION` | `github:latest`, `github:0.10.15` | Download from the public Kindling GitHub release |
 | `local:PATH` | `local:./dist` | Read wheels from a local directory |
 | `abfss://…` | `abfss://artifacts@staging.dfs.core.windows.net/k` | Copy from another ADLS path |
 
@@ -261,8 +261,9 @@ kindling runtime deploy \
   --dest abfss://artifacts@prod.dfs.core.windows.net/kindling
 ```
 
-Auth uses `DefaultAzureCredential` — `az login` or
+Azure auth uses `DefaultAzureCredential` — `az login` or
 `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` both work.
+GitHub auth is not required for public Kindling releases.
 
 ---
 
