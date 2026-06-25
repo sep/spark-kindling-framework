@@ -1,14 +1,16 @@
 """Integration tests — reads and writes against real ABFSS storage.
 
-Requires env vars:
-  AZURE_STORAGE_ACCOUNT    storage account name
-  AZURE_TENANT_ID           AAD tenant ID
-  AZURE_CLIENT_ID           service principal app ID
-  AZURE_CLIENT_SECRET       service principal secret
-  ABFSS_BRONZE_ORDERS_PATH  abfss:// path for bronze.orders table
-  ABFSS_SILVER_ORDERS_PATH  abfss:// path for silver.orders table
+Two auth paths are covered:
 
-Skipped automatically when Azure SP creds are not set.
+  SP OAuth (requires_azure)    — CI path; uses service principal creds.
+    AZURE_STORAGE_ACCOUNT, AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+    ABFSS_BRONZE_ORDERS_PATH, ABFSS_SILVER_ORDERS_PATH
+
+  Azure CLI (requires_az_login) — local dev path; uses az login session.
+    AZURE_STORAGE_ACCOUNT
+    ABFSS_BRONZE_ORDERS_PATH, ABFSS_SILVER_ORDERS_PATH
+
+Each class is skipped automatically when its prerequisites are absent.
 """
 
 import os
@@ -115,6 +117,93 @@ class TestABFSSWriteRead:
         assert rows["ORD-004"].total_value == pytest.approx(50.00)
 
 
+@pytest.fixture
+def sample_orders_az_cli(spark_abfss_az_cli):
+    """Same representative DataFrame as sample_orders, for the az CLI session."""
+    schema = StructType(
+        [
+            StructField("order_id", StringType(), False),
+            StructField("customer_id", StringType(), True),
+            StructField("product_id", StringType(), True),
+            StructField("quantity", IntegerType(), True),
+            StructField("unit_price", DoubleType(), True),
+            StructField("order_date", StringType(), True),
+            StructField("status", StringType(), True),
+        ]
+    )
+    data = [
+        ("ORD-001", "CUST-A", "PROD-X", 3, 12.50, "2024-01-15", "confirmed"),
+        ("ORD-002", "CUST-B", "PROD-Y", 1, 8.00, "2024-01-15", "pending"),
+        ("ORD-003", None, "PROD-Z", 2, 5.00, "2024-01-16", "confirmed"),
+        ("ORD-004", "CUST-D", "PROD-X", 4, 12.50, "2024-01-16", "confirmed"),
+    ]
+    return spark_abfss_az_cli.createDataFrame(data, schema)
+
+
+@pytest.mark.integration
+@pytest.mark.requires_az_login
+class TestABFSSWriteReadAzCli:
+    """Same write/read/transform coverage as TestABFSSWriteRead, using az CLI auth.
+
+    Run locally after `az login`. No service principal credentials required.
+    """
+
+    def test_write_and_read_bronze_orders(self, spark_abfss_az_cli, sample_orders_az_cli):
+        """Write sample orders to ABFSS and read them back via az CLI auth."""
+        bronze_path = _abfss_path("ABFSS_BRONZE_ORDERS_PATH")
+
+        (
+            sample_orders_az_cli.write.format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .save(bronze_path)
+        )
+
+        read_back = spark_abfss_az_cli.read.format("delta").load(bronze_path)
+        assert read_back.count() == sample_orders_az_cli.count()
+
+    def test_clean_orders_written_to_silver(self, spark_abfss_az_cli, sample_orders_az_cli):
+        """Apply clean_orders transform and write result to silver ABFSS path."""
+        from sales_ops.transforms.quality import clean_orders
+
+        bronze_path = _abfss_path("ABFSS_BRONZE_ORDERS_PATH")
+        silver_path = _abfss_path("ABFSS_SILVER_ORDERS_PATH")
+
+        (
+            sample_orders_az_cli.write.format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .save(bronze_path)
+        )
+
+        bronze_df = spark_abfss_az_cli.read.format("delta").load(bronze_path)
+        silver_df = clean_orders(bronze_df)
+
+        (
+            silver_df.write.format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .save(silver_path)
+        )
+
+        result = spark_abfss_az_cli.read.format("delta").load(silver_path)
+
+        assert result.count() == 3
+        assert "total_value" in result.columns
+        assert "ingested_at" in result.columns
+
+    def test_total_values_are_correct(self, spark_abfss_az_cli, sample_orders_az_cli):
+        """Assert computed total_value matches quantity * unit_price."""
+        from sales_ops.transforms.quality import clean_orders
+
+        silver_df = clean_orders(sample_orders_az_cli)
+        rows = {r.order_id: r for r in silver_df.collect()}
+
+        assert rows["ORD-001"].total_value == pytest.approx(37.50)
+        assert rows["ORD-002"].total_value == pytest.approx(8.00)
+        assert rows["ORD-004"].total_value == pytest.approx(50.00)
+
+
 @pytest.mark.integration
 @pytest.mark.requires_azure
 class TestPipelineViaKindling:
@@ -139,7 +228,6 @@ class TestPipelineViaKindling:
     def test_entity_paths_resolved_from_env(self):
         """After framework init, entity tags contain the ABFSS paths from env vars."""
         from app import initialize
-
         from kindling.data_entities import DataEntityRegistry
         from kindling.injection import GlobalInjector
 

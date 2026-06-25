@@ -1,14 +1,19 @@
 """Shared fixtures for the sales-ops local project tests.
 
 Fixture scope:
-  spark_local    — plain local SparkSession, no Delta catalog, no Azure (unit/component)
-  spark_abfss    — Delta-enabled SparkSession with Azure SP OAuth config (integration)
+  spark_local        — plain local SparkSession, no Delta catalog, no Azure (unit/component)
+  spark_abfss        — Delta-enabled SparkSession with Azure SP OAuth (CI integration)
+  spark_abfss_az_cli — Delta-enabled SparkSession with Azure CLI auth (local dev integration)
 
-Integration tests are skipped automatically when AZURE_STORAGE_ACCOUNT,
-AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET are not all set.
+  spark_abfss        skipped when AZURE_STORAGE_ACCOUNT / AZURE_TENANT_ID /
+                     AZURE_CLIENT_ID / AZURE_CLIENT_SECRET are not all set.
+  spark_abfss_az_cli skipped when `az` is not on PATH or `az login` has not been run.
+                     Requires only AZURE_STORAGE_ACCOUNT.
 """
 
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +26,18 @@ _KINDLING_ROOT = _PROJECT_ROOT.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "apps" / "sales_ops"))
 sys.path.insert(0, str(_PROJECT_ROOT / "src"))
 sys.path.insert(0, str(_KINDLING_ROOT / "packages"))
+
+_HADOOP_JAR_DIR = "/tmp/hadoop-jars"
+_HADOOP_AZURE_JARS = [
+    f"{_HADOOP_JAR_DIR}/hadoop-azure-3.3.4.jar",
+    f"{_HADOOP_JAR_DIR}/hadoop-azure-datalake-3.3.4.jar",
+    f"{_HADOOP_JAR_DIR}/azure-storage-8.6.6.jar",
+    f"{_HADOOP_JAR_DIR}/wildfly-openssl-1.1.3.Final.jar",
+    f"{_HADOOP_JAR_DIR}/jetty-util-ajax-9.4.51.v20230217.jar",
+]
+_ABFSS_LOCAL_AUTH_JAR = str(
+    _KINDLING_ROOT / "packages" / "kindling" / "jars" / "kindling-abfss-local-auth.jar"
+)
 
 
 def _abfss_creds_available() -> bool:
@@ -36,6 +53,14 @@ def _abfss_creds_available() -> bool:
     )
 
 
+def _az_cli_auth_available() -> bool:
+    """True when az is on PATH and the user is logged in."""
+    if shutil.which("az") is None:
+        return False
+    result = subprocess.run(["az", "account", "show"], capture_output=True)
+    return result.returncode == 0
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "unit: local Spark tests, no Azure or ABFSS")
     config.addinivalue_line("markers", "component: DI wiring tests, no ABFSS")
@@ -45,12 +70,20 @@ def pytest_configure(config):
         "requires_azure: skipped when AZURE_STORAGE_ACCOUNT / AZURE_TENANT_ID / "
         "AZURE_CLIENT_ID / AZURE_CLIENT_SECRET are not all set",
     )
+    config.addinivalue_line(
+        "markers",
+        "requires_az_login: skipped when az CLI is not on PATH or az login has not been run",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
     for item in items:
         if "requires_azure" in item.keywords and not _abfss_creds_available():
             item.add_marker(pytest.mark.skip(reason="Azure SP creds not set — skipping Azure test"))
+        if "requires_az_login" in item.keywords and not _az_cli_auth_available():
+            item.add_marker(
+                pytest.mark.skip(reason="az CLI not found or not logged in — run 'az login'")
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -111,16 +144,7 @@ def spark_abfss():
 
     # hadoop-azure JARs are not on the classpath by default and Maven resolution
     # is unreliable inside this devcontainer, so we reference pre-downloaded JARs.
-    jar_dir = "/tmp/hadoop-jars"
-    extra_jars = ",".join(
-        [
-            f"{jar_dir}/hadoop-azure-3.3.4.jar",
-            f"{jar_dir}/hadoop-azure-datalake-3.3.4.jar",
-            f"{jar_dir}/azure-storage-8.6.6.jar",
-            f"{jar_dir}/wildfly-openssl-1.1.3.Final.jar",
-            f"{jar_dir}/jetty-util-ajax-9.4.51.v20230217.jar",
-        ]
-    )
+    extra_jars = ",".join(_HADOOP_AZURE_JARS)
 
     builder = (
         SparkSession.builder.appName("SalesOpsABFSSTests")
@@ -139,6 +163,59 @@ def spark_abfss():
         .config(f"fs.azure.account.oauth2.client.id.{endpoint}", client_id)
         .config(f"fs.azure.account.oauth2.client.secret.{endpoint}", client_secret)
         .config(f"fs.azure.account.oauth2.client.endpoint.{endpoint}", token_endpoint)
+        .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.default.parallelism", "2")
+        .config("spark.ui.enabled", "false")
+    )
+
+    spark = configure_spark_with_delta_pip(builder).getOrCreate()
+    spark.sparkContext.setLogLevel("ERROR")
+    yield spark
+    spark.stop()
+
+
+@pytest.fixture(scope="session")
+def spark_abfss_az_cli():
+    """Delta-enabled SparkSession authenticated via Azure CLI (az login).
+
+    Uses configure_spark_with_delta_pip() and adds the kindling-abfss-local-auth
+    JAR alongside the hadoop-azure JARs so the custom token provider class is on
+    the driver classpath at session start (not added later via addJar).
+
+    Auth config is account-agnostic — applies to all storage accounts in the
+    session. No service principal credentials required; uses the developer's
+    existing az login session.
+
+    Required env vars:
+      AZURE_STORAGE_ACCOUNT   storage account name (for path construction)
+
+    Prerequisite:
+      az login
+    """
+    if not _az_cli_auth_available():
+        pytest.skip("az CLI not found or not logged in — run 'az login'")
+    if not os.environ.get("AZURE_STORAGE_ACCOUNT"):
+        pytest.skip("AZURE_STORAGE_ACCOUNT not set")
+
+    from delta import configure_spark_with_delta_pip
+    from pyspark.sql import SparkSession
+
+    extra_jars = ",".join(_HADOOP_AZURE_JARS + [_ABFSS_LOCAL_AUTH_JAR])
+
+    builder = (
+        SparkSession.builder.appName("SalesOpsABFSSAzCliTests")
+        .master("local[2]")
+        .config("spark.jars", extra_jars)
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config(
+            "spark.sql.catalog.spark_catalog",
+            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        )
+        .config("spark.hadoop.fs.azure.account.auth.type", "Custom")
+        .config(
+            "spark.hadoop.fs.azure.account.oauth.provider.type",
+            "io.kindling.abfss.AzureCliTokenProvider",
+        )
         .config("spark.sql.shuffle.partitions", "2")
         .config("spark.default.parallelism", "2")
         .config("spark.ui.enabled", "false")
@@ -179,7 +256,6 @@ def reset_kindling_for_integration():
 
     def _reset():
         from injector import singleton
-
         from kindling.spark_config import ConfigService, DynaconfConfig
 
         GlobalInjector.reset()
