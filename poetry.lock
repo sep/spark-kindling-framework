@@ -1096,26 +1096,26 @@ tests = ["pytest", "pytest-cov", "pytest-xdist"]
 
 [[package]]
 name = "databricks-sdk"
-version = "0.68.0"
+version = "0.110.0"
 description = "Databricks SDK for Python (Beta)"
 optional = false
-python-versions = ">=3.7"
+python-versions = ">=3.10"
 groups = ["main", "dev"]
 files = [
-    {file = "databricks_sdk-0.68.0-py3-none-any.whl", hash = "sha256:03ff2a234868de6d9028dabd545937ae36ce204c753d7b760598d47bfec4742b"},
-    {file = "databricks_sdk-0.68.0.tar.gz", hash = "sha256:d24df291430404313f2efd3770216edd47269c7aa0446f1eca67f16b6e175475"},
+    {file = "databricks_sdk-0.110.0-py3-none-any.whl", hash = "sha256:8a23db05be7a304bea43b4fa78b437051ed0f3755b19594429c649ee4159b546"},
+    {file = "databricks_sdk-0.110.0.tar.gz", hash = "sha256:b62d806982b37f8160f700d657c37b3bd586c649eb5c8c4c1216090d888c5820"},
 ]
 markers = {main = "extra == \"all\" or extra == \"databricks\""}
 
 [package.dependencies]
 google-auth = ">=2.0,<3.0"
-protobuf = ">=4.21.0,<7.0"
+protobuf = ">=4.25.8,<5.26.dev0 || >5.29.0,<5.29.1 || >5.29.1,<5.29.2 || >5.29.2,<5.29.3 || >5.29.3,<5.29.4 || >5.29.4,<6.30.0 || >6.30.0,<6.30.1 || >6.30.1,<6.31.0 || >6.31.0,<7.0"
 requests = ">=2.28.1,<3"
 
 [package.extras]
-dev = ["autoflake", "black", "build", "databricks-connect", "httpx", "ipython", "ipywidgets", "isort", "langchain-openai ; python_version > \"3.7\"", "openai", "pycodestyle", "pyfakefs", "pytest", "pytest-cov", "pytest-mock", "pytest-rerunfailures", "pytest-xdist (>=3.6.1,<4.0)", "requests-mock", "wheel"]
+dev = ["autoflake (==2.3.1)", "black (==24.8.0)", "build", "check-manifest", "databricks-connect", "httpx", "ipython", "ipywidgets", "isort (==5.13.2)", "langchain-openai", "openai", "pycodestyle", "pyfakefs", "pytest", "pytest-cov", "pytest-mock", "pytest-rerunfailures", "pytest-xdist (>=3.6.1,<4.0)", "requests-mock", "wheel"]
 notebook = ["ipython (>=8,<10)", "ipywidgets (>=8,<9)"]
-openai = ["httpx", "langchain-openai ; python_version > \"3.7\"", "openai"]
+openai = ["httpx", "langchain-openai", "openai"]
 
 [[package]]
 name = "debugpy"
