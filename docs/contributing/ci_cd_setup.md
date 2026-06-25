@@ -10,7 +10,7 @@ It runs on:
 
 - push to `main` and `develop`
 - pull requests targeting `main`
-- published releases
+- release tags (`v*`)
 - manual `workflow_dispatch`
 
 ## What Runs When
@@ -25,17 +25,27 @@ These lanes run as part of normal CI:
 - KDA packaging tests
 - summary reporting
 
-### On Release / Manual Dispatch
+### On Release Tags
 
-These additional lanes run only for release publishing or manual dispatch:
+Release tags are classified from the files changed since the previous version
+tag. CI uses that classification to choose the slowest required validation lane:
 
-- build wheel artifacts for release/system-test use
-- deploy candidate artifacts to Azure storage
-- system tests for Synapse, Fabric, and Databricks
-- attach wheels to the GitHub release, but only if all system tests pass
+- runtime releases build wheels, stage candidate artifacts, run Synapse/Fabric/Databricks system tests, then publish the release
+- CLI releases build and publish wheels after unit, integration, quality, and security gates, but skip cloud system tests
+- SDK releases build and publish wheels after unit, integration, quality, and security gates, but skip cloud system tests
+- docs/proposal-only tags publish release notes without wheel assets
+
+Workflow, build-script, runtime package, build-config, and system-test changes
+are treated as runtime releases. Unknown paths also take the runtime path.
 
 That means pushes to `main` do **not** automatically run full system tests in
-current CI. System tests are reserved for `release` and `workflow_dispatch`.
+current CI. System tests are reserved for runtime release tags and
+`workflow_dispatch`.
+
+### On Manual Dispatch
+
+Manual `workflow_dispatch` always takes the runtime path so it can be used for
+ad hoc end-to-end validation without cutting a release.
 
 ## Authentication Model
 
@@ -70,13 +80,17 @@ The repo now builds and deploys a combined runtime wheel:
 - `spark_kindling_cli-<version>-py3-none-any.whl`
 - `spark_kindling_sdk-<version>-py3-none-any.whl`
 
-For release/manual system-test runs, CI:
+For runtime release/manual system-test runs, CI:
 
 1. builds wheel artifacts
 2. downloads them into `dist/`
 3. deploys them to Azure storage with `poetry run poe deploy`
 4. passes the resolved `AZURE_BASE_PATH` into system tests
 5. attaches wheels to the GitHub release only after all platform lanes succeed
+
+For CLI- or SDK-only release tags, CI still builds and smoke-tests the wheel
+artifacts, then attaches them after unit, integration, quality, and security
+gates pass.
 
 ## Local Parity Commands
 

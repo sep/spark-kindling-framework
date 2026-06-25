@@ -2,67 +2,41 @@
 
 ## Mandatory — every session
 
-This project uses the Gas Town harness and beads (`bd`) for workflow.
+Work from the current repository state, project documentation, and git branch.
 
-Start by loading the current beads context:
+Start each session by checking the branch state:
 
 ```bash
-bd prime
-bd ready --json
+git status --short --branch
 ```
-
-# Beads Issue Tracking
-
-This project uses [Beads (bd)](https://github.com/steveyegge/beads) for issue tracking.
 
 ## Core Rules
 
-- Track ALL work in bd (never use markdown TODOs or comment-based task lists)
-- Use `bd ready` to find available work
-- Use `bd create` to track new issues/tasks/bugs
-- Use `bd dolt push` at end of session to sync with remote
-- Run `bd prime` for complete workflow context (SSOT for operational commands)
+- Read relevant source and documentation before editing.
+- Preserve user changes you did not make.
+- Keep changes scoped to the task.
+- Run targeted tests, linters, or builds when code changes.
+- Document follow-up work in the appropriate docs or handoff notes.
+- Commit and push completed changes when appropriate.
 
 ## Quick Reference
 
 ```bash
-bd prime                              # Load complete workflow context (SSOT)
-bd ready                              # Show issues ready to work (no blockers)
-bd list --status=open                 # List all open issues
-bd create "title" -t task -p 2        # Create new issue
-bd update <id> --claim                # Claim work atomically
-bd close <id>                         # Mark complete
-bd dep add <issue> <depends-on>       # Add dependency
-bd dolt push                          # Sync with remote
+git status --short --branch
+git diff
+git pull --rebase
+git push
 ```
 
 ## Workflow
 
-1. Check for ready work: `bd ready`
-2. Claim an issue atomically: `bd update <id> --claim`
-3. Do the work
-4. Mark complete: `bd close <id>`
-5. Push changes: `bd dolt push`
-
-## Issue Types
-
-- `bug` - Something broken
-- `feature` - New functionality
-- `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature with subtasks
-- `chore` - Maintenance (dependencies, tooling)
-
-## Priorities
-
-- `0` - Critical (security, data loss, broken builds)
-- `1` - High (major features, important bugs)
-- `2` - Medium (default, nice-to-have)
-- `3` - Low (polish, optimization)
-- `4` - Backlog (future ideas)
+1. Inspect current branch state.
+2. Read the relevant source and documentation.
+3. Make the focused change.
+4. Run targeted verification.
+5. Commit and push completed work.
 
 ## Context Loading
 
-Run `bd prime` to get complete workflow documentation in AI-optimized format.
-`bd prime` is the single source of truth for operational commands and session workflow.
-
-For detailed docs: see AGENTS.md, QUICKSTART.md, or run `bd --help`
+Use `AGENTS.md` and the repository docs as the source of truth for current
+workflow guidance.
