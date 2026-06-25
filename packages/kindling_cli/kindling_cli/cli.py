@@ -13,9 +13,7 @@ import time
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
-from urllib.request import Request, urlopen
 
 import click
 import yaml
@@ -5583,23 +5581,40 @@ def _github_api_json(path: str) -> Dict[str, Any]:
         headers["Authorization"] = f"Bearer {token}"
 
     try:
-        with urlopen(Request(url, headers=headers)) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
+        import requests
+    except ImportError as exc:
         raise click.ClickException(
-            f"GitHub API request failed for {url}: HTTP {exc.code} {exc.reason}\n{body}"
+            "The requests package is required for github: runtime sources. "
+            "Install the CLI deploy extra: pip install 'spark-kindling-cli[deploy]'"
         ) from exc
-    except (URLError, OSError, json.JSONDecodeError) as exc:
+
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except (requests.RequestException, ValueError) as exc:
         raise click.ClickException(f"GitHub API request failed for {url}: {exc}") from exc
 
 
 def _download_url(url: str, dest: Path) -> None:
+    parsed_url = urlparse(url)
+    if parsed_url.scheme != "https":
+        raise click.ClickException(f"Refusing to download non-HTTPS release asset URL: {url}")
+
     headers = {"User-Agent": "spark-kindling-cli"}
     try:
-        with urlopen(Request(url, headers=headers)) as response:
-            dest.write_bytes(response.read())
-    except (HTTPError, URLError, OSError) as exc:
+        import requests
+    except ImportError as exc:
+        raise click.ClickException(
+            "The requests package is required for github: runtime sources. "
+            "Install the CLI deploy extra: pip install 'spark-kindling-cli[deploy]'"
+        ) from exc
+
+    try:
+        response = requests.get(url, headers=headers, timeout=60)
+        response.raise_for_status()
+        dest.write_bytes(response.content)
+    except requests.RequestException as exc:
         raise click.ClickException(f"Failed to download {url}: {exc}") from exc
 
 
