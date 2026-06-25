@@ -117,23 +117,7 @@ setup_agents.sh
 *.db
 .beads-credential-key
 
-# Gas City machine-local state (never committed)
-.gc/
-.work/
-city/
-city.toml
-
-# Gas City rig infrastructure (managed by gc, not part of the repo)
-mayor/
-polecats/
-refinery/
-settings/
-witness/
-.runtime/
-.claude/
-.logs/
-state.json
-CLAUDE.md
+# Local Claude overrides (machine-specific, not committed)
 CLAUDE.local.md
 
 job.yaml
