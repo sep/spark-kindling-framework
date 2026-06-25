@@ -42,13 +42,14 @@ def _configure_abfss_local_auth(spark, config, logger):
         logger.debug("az CLI not found on PATH — skipping ABFSS local auth injection")
         return
 
-    # Locate the kindling-abfss-local-auth JAR alongside the other kindling JARs.
-    # The JAR lives in packages/kindling/jars/ relative to this file.
-    jar_path = Path(__file__).parent / "jars" / "kindling-abfss-local-auth.jar"
+    # The JAR is distributed via GitHub Releases and pre-downloaded into the
+    # same directory as the other hadoop-azure JARs during devcontainer build.
+    jar_path = Path("/tmp/hadoop-jars/kindling-abfss-local-auth.jar")
     if not jar_path.exists():
         logger.warning(
-            f"kindling-abfss-local-auth.jar not found at {jar_path} — "
-            "skipping ABFSS local auth injection"
+            "kindling-abfss-local-auth.jar not found in /tmp/hadoop-jars — "
+            "skipping ABFSS local auth injection. "
+            "Rebuild the devcontainer or download the JAR manually."
         )
         return
 

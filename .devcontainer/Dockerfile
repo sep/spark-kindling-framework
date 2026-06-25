@@ -81,6 +81,8 @@ RUN mkdir -p /opt/hadoop-jars \
     https://repo1.maven.org/maven2/org/wildfly/openssl/wildfly-openssl/1.1.3.Final/wildfly-openssl-1.1.3.Final.jar \
     && curl -fsSL -o /opt/hadoop-jars/jetty-util-ajax-9.4.51.v20230217.jar \
     https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar \
+    && curl -fsSL -o /opt/hadoop-jars/kindling-abfss-local-auth.jar \
+    https://github.com/sep/spark-kindling-framework/releases/download/abfss-local-auth-1.0.0/kindling-abfss-local-auth.jar \
     && ln -s /opt/hadoop-jars /tmp/hadoop-jars
 
 # Set up workspace directory for Spark

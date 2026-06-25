@@ -35,9 +35,7 @@ _HADOOP_AZURE_JARS = [
     f"{_HADOOP_JAR_DIR}/wildfly-openssl-1.1.3.Final.jar",
     f"{_HADOOP_JAR_DIR}/jetty-util-ajax-9.4.51.v20230217.jar",
 ]
-_ABFSS_LOCAL_AUTH_JAR = str(
-    _KINDLING_ROOT / "packages" / "kindling" / "jars" / "kindling-abfss-local-auth.jar"
-)
+_ABFSS_LOCAL_AUTH_JAR = f"{_HADOOP_JAR_DIR}/kindling-abfss-local-auth.jar"
 
 
 def _abfss_creds_available() -> bool:
