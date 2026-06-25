@@ -10,6 +10,7 @@ See: GitHub Issue #24 - Generation Executor
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
 from kindling.data_pipes import DataPipesManager, PipeMetadata
 from kindling.entity_provider import StreamableEntityProvider
 from kindling.execution_strategy import (

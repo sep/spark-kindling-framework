@@ -17,8 +17,7 @@ def _run_fresh_python(code: str) -> subprocess.CompletedProcess[str]:
 
 @pytest.mark.requires_spark
 def test_standalone_di_constructs_data_pipe_execution_with_simple_watermark_finder() -> None:
-    result = _run_fresh_python(
-        """
+    result = _run_fresh_python("""
         from kindling.bootstrap import initialize_framework
         from kindling.data_entities import DataEntityRegistry
         from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
@@ -35,16 +34,14 @@ def test_standalone_di_constructs_data_pipe_execution_with_simple_watermark_find
         finder = GlobalInjector.get(WatermarkEntityFinder)
         assert isinstance(finder, SimpleWatermarkEntityFinder)
         assert finder.get_watermark_entity_for_entity("bronze.orders").entityid == "system.watermarks"
-        """
-    )
+        """)
 
     assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.requires_spark
 def test_standalone_di_preserves_custom_watermark_finder_binding() -> None:
-    result = _run_fresh_python(
-        """
+    result = _run_fresh_python("""
         from kindling.bootstrap import initialize_framework
         from kindling.injection import GlobalInjector
         from kindling.watermarking import WatermarkEntityFinder
@@ -62,7 +59,6 @@ def test_standalone_di_preserves_custom_watermark_finder_binding() -> None:
         finder = GlobalInjector.get(WatermarkEntityFinder)
         assert isinstance(finder, CustomWatermarkEntityFinder)
         assert finder.get_watermark_entity_for_entity("bronze.orders") == "entity:bronze.orders"
-        """
-    )
+        """)
 
     assert result.returncode == 0, result.stdout + result.stderr

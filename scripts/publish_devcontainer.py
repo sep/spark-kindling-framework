@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build and publish the Kindling devcontainer image to GHCR.
 
-    poe publish-devcontainer                  # build + push current version
-    poe publish-devcontainer --no-push        # build only (local smoke-test)
-    poe publish-devcontainer --version 0.9.33 # override version tag
+poe publish-devcontainer                  # build + push current version
+poe publish-devcontainer --no-push        # build only (local smoke-test)
+poe publish-devcontainer --version 0.9.33 # override version tag
 """
 
 import base64

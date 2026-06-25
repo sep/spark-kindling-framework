@@ -7,6 +7,7 @@ Tests CSV reading, configuration handling, and error cases.
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_csv import CSVEntityProvider
 

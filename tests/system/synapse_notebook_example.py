@@ -178,8 +178,7 @@ print("=" * 60)
 
 # Cell 8: Production Usage Example
 print("\\n💡 PRODUCTION USAGE EXAMPLE:")
-print(
-    """
+print("""
 # Real production code in Synapse notebook:
 
 from kindling.platform_synapse import SynapseAppDeploymentService, SynapseService
@@ -208,5 +207,4 @@ job_config = deployment_service.create_job_config(
 # Execute on Synapse compute
 result = deployment_service.submit_spark_job(job_config)
 print(f"Production job submitted: {result['job_id']}")
-"""
-)
+""")

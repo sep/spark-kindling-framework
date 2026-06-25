@@ -2,9 +2,11 @@
 """
 Manage Unity Catalog Volumes for Databricks cluster logs
 """
+
 import sys
 
 from databricks.sdk import WorkspaceClient
+
 from kindling.injection import get_kindling_service
 from kindling.platform_databricks import DatabricksAPI
 

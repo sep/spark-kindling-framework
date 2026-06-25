@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from injector import inject
+
 from kindling.spark_log_provider import PythonLoggerProvider
 
 from .registry import VisualizationMetadata

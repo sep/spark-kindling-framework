@@ -6,8 +6,9 @@ import uuid
 from datetime import datetime
 from unittest.mock import MagicMock, Mock, call, patch
 
-import kindling.spark_trace as spark_trace_module
 import pytest
+
+import kindling.spark_trace as spark_trace_module
 from kindling.spark_trace import (
     AzureEventEmitter,
     CustomEventEmitter,

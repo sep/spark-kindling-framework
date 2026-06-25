@@ -14,12 +14,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
+from packaging.version import InvalidVersion, Version
+
 from kindling.injection import *
 from kindling.platform_provider import *
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
-from packaging.version import InvalidVersion, Version
 
 from .app_files import is_deployable_app_file, is_settings_overlay
 from .notebook_framework import *

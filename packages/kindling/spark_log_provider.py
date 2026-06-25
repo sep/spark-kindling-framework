@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 
 from injector import Binder, Injector, inject, singleton
+
 from kindling.injection import *
 
 from .spark_log import *

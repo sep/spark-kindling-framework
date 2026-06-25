@@ -8,11 +8,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
-from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized

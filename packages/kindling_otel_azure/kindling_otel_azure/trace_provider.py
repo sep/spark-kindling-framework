@@ -5,11 +5,12 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from injector import inject
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+
 from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
 from kindling.spark_trace import SparkSpan, SparkTraceProvider
-from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
 
 from .config import AzureMonitorConfig
 

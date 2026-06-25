@@ -8,16 +8,19 @@ These tests codify the expected runtime behavior:
 4. Kindling registers its custom secret loader during config setup.
 """
 
+import importlib
 import os
 import tempfile
-import importlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from dynaconf import Dynaconf
 
-from kindling.config_loaders import load_secrets_from_provider, register_kindling_loaders
+from kindling.config_loaders import (
+    load_secrets_from_provider,
+    register_kindling_loaders,
+)
 from kindling.injection import GlobalInjector
 
 
@@ -233,8 +236,9 @@ class TestSecretProviderContractMethods:
         assert provider.list_secrets() == []
 
     def test_standalone_secret_exists_with_env_var(self, monkeypatch):
-        from kindling.platform_standalone import StandaloneService
         from unittest.mock import MagicMock
+
+        from kindling.platform_standalone import StandaloneService
 
         monkeypatch.setenv("KINDLING_SECRET_MY_TOKEN", "secret-value")
 
@@ -246,8 +250,9 @@ class TestSecretProviderContractMethods:
         assert svc.secret_exists("nonexistent-secret-xyz") is False
 
     def test_standalone_list_secrets_returns_prefixed_env_vars(self, monkeypatch):
-        from kindling.platform_standalone import StandaloneService
         from unittest.mock import MagicMock
+
+        from kindling.platform_standalone import StandaloneService
 
         for key in ["KINDLING_SECRET_DB_PASS", "KINDLING_SECRET_API_KEY"]:
             monkeypatch.setenv(key, "value")

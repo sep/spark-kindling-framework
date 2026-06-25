@@ -9,12 +9,13 @@ No write operations are supported; attempting them raises ``NotImplementedError`
 """
 
 from injector import inject
+from pyspark.sql import DataFrame
+
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider import BaseEntityProvider, DestinationEnsuringProvider
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
-from pyspark.sql import DataFrame
 
 
 @GlobalInjector.singleton_autobind()

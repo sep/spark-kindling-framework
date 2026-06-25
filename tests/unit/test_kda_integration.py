@@ -32,18 +32,14 @@ class TestKDAIntegration:
             app_dir.mkdir()
 
             # Create app.yaml
-            (app_dir / "app.yaml").write_text(
-                """name: test-app
+            (app_dir / "app.yaml").write_text("""name: test-app
 version: "1.0.0"
 entry_point: app.py
-"""
-            )
+""")
 
             # Create app.py
-            (app_dir / "app.py").write_text(
-                """print("Hello from test app")
-"""
-            )
+            (app_dir / "app.py").write_text("""print("Hello from test app")
+""")
 
             # Package as KDA using the new utility
             kda_path = DataAppPackage.create(
@@ -72,6 +68,7 @@ entry_point: app.py
         import json
 
         import yaml
+
         from kindling.data_apps import DataAppPackage
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -79,50 +76,36 @@ entry_point: app.py
             app_dir.mkdir()
 
             # Create base config
-            (app_dir / "app.yaml").write_text(
-                """name: test-app
+            (app_dir / "app.yaml").write_text("""name: test-app
 version: "1.0.0"
 entry_point: app.py
 spark_config:
   spark.sql.shuffle.partitions: "10"
-"""
-            )
+""")
 
             # Legacy Synapse-specific app config should not be packaged into app.yaml
-            (app_dir / "app.synapse.yaml").write_text(
-                """spark_config:
+            (app_dir / "app.synapse.yaml").write_text("""spark_config:
   spark.synapse.linkedService.useDefaultCredential: "true"
 environment_vars:
   PLATFORM: synapse
-"""
-            )
-            (app_dir / "settings.yaml").write_text(
-                """spark_config:
+""")
+            (app_dir / "settings.yaml").write_text("""spark_config:
   base.setting: "true"
-"""
-            )
-            (app_dir / "settings.synapse.yaml").write_text(
-                """spark_config:
+""")
+            (app_dir / "settings.synapse.yaml").write_text("""spark_config:
   spark.synapse.linkedService.useDefaultCredential: "true"
 environment_vars:
   PLATFORM: synapse
-"""
-            )
-            (app_dir / "settings.fabric.yaml").write_text(
-                """spark_config:
+""")
+            (app_dir / "settings.fabric.yaml").write_text("""spark_config:
   fabric.only: "true"
-"""
-            )
-            (app_dir / "settings.prod.yaml").write_text(
-                """environment_vars:
+""")
+            (app_dir / "settings.prod.yaml").write_text("""environment_vars:
   ENVIRONMENT: prod
-"""
-            )
-            (app_dir / "settings.dev.yaml").write_text(
-                """environment_vars:
+""")
+            (app_dir / "settings.dev.yaml").write_text("""environment_vars:
   ENVIRONMENT: dev
-"""
-            )
+""")
 
             (app_dir / "app.py").write_text("print('test')")
 

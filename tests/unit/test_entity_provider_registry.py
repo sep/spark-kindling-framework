@@ -7,6 +7,7 @@ Tests provider registration, retrieval, and DI integration.
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider import BaseEntityProvider
 from kindling.entity_provider_registry import EntityProviderRegistry

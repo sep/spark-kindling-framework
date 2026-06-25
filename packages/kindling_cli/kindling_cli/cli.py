@@ -3805,9 +3805,7 @@ for module_name in REGISTRATION_MODULES:
 '''
 
     if pattern == "file-ingestion":
-        return (
-            common_header
-            + """
+        return common_header + """
 from kindling.file_ingestion import FileIngestionProcessor
 
 
@@ -3821,12 +3819,9 @@ processor = get_kindling_service(FileIngestionProcessor)
 result = processor.process_path(source_path)
 _logger().info("Kindling file-ingestion executor processed path: %s", source_path)
 """
-        )
 
     if pattern == "structured-streaming":
-        return (
-            common_header
-            + """
+        return common_header + """
 from kindling.data_pipes import DataPipesRegistry
 from kindling.execution_orchestrator import ExecutionOrchestrator
 
@@ -3854,11 +3849,8 @@ _logger().info(
     ", ".join(pipe_ids),
 )
 """
-        )
 
-    return (
-        common_header
-        + """
+    return common_header + """
 from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
 
 
@@ -3878,7 +3870,6 @@ _logger().info(
     ", ".join(pipe_ids),
 )
 """
-    )
 
 
 @app_add_group.command("executor", deprecated=True)

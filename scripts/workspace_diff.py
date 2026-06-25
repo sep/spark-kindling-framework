@@ -3,6 +3,7 @@
 Databricks Workspace Diff Tool
 Compares two workspaces to capture all configuration differences.
 """
+
 import json
 import os
 import subprocess

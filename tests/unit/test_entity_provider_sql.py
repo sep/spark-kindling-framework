@@ -5,6 +5,7 @@ Unit tests for SqlEntityProvider.
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_sql import SqlEntityProvider
 

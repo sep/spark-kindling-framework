@@ -42,11 +42,12 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 from injector import inject
+from pyspark.sql.streaming import StreamingQueryListener
+
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_trace import SparkTraceProvider
-from pyspark.sql.streaming import StreamingQueryListener
 
 # =============================================================================
 # Event Data Structures

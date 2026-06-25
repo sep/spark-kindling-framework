@@ -9,11 +9,12 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
 from injector import Binder, Injector, inject, singleton
+from py4j.java_gateway import JavaObject
+from py4j.protocol import Py4JError
+
 from kindling.injection import *
 from kindling.spark_config import *
 from kindling.spark_session import *
-from py4j.java_gateway import JavaObject
-from py4j.protocol import Py4JError
 
 from .spark_log_provider import *
 

@@ -1069,13 +1069,11 @@ class DeltaEntityProvider(
             self.logger.info(f"Attempting to register table {table_ref.table_name} in catalog")
 
             # Try to register using SQL
-            self.spark.sql(
-                f"""
+            self.spark.sql(f"""
                 CREATE TABLE IF NOT EXISTS {table_ref.table_name}
                 USING DELTA
                 LOCATION '{table_ref.table_path}'
-            """
-            )
+            """)
 
             self.logger.info(f"Successfully registered {table_ref.table_name} in catalog")
 
@@ -1162,13 +1160,11 @@ class DeltaEntityProvider(
             and table_ref.table_name
             and not wrote_managed_by_name
         ):
-            self.spark.sql(
-                f"""
+            self.spark.sql(f"""
                 CREATE TABLE IF NOT EXISTS {table_ref.table_name}
                 USING DELTA
                 LOCATION '{table_ref.table_path}'
-            """
-            )
+            """)
 
     def _ensure_destination_for_write(self, entity, table_ref: DeltaTableReference) -> None:
         """Best-effort ensure before batch writes so entity metadata can prepare the table."""

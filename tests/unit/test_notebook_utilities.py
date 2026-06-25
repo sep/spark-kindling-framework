@@ -227,13 +227,11 @@ class TestDataAppPackage:
             app_dir = Path(temp_dir) / "test-app"
             app_dir.mkdir()
 
-            (app_dir / "app.yaml").write_text(
-                """name: test-app
+            (app_dir / "app.yaml").write_text("""name: test-app
 version: 1.0.0
 entry_point: app.py
 description: Test application
-"""
-            )
+""")
 
             (app_dir / "app.py").write_text("print('Hello from test app')")
 
@@ -260,24 +258,18 @@ description: Test application
             app_dir = Path(temp_dir) / "test-app"
             app_dir.mkdir()
 
-            (app_dir / "app.yaml").write_text(
-                """name: test-app
+            (app_dir / "app.yaml").write_text("""name: test-app
 version: 1.0.0
 entry_point: app.py
-"""
-            )
+""")
 
-            (app_dir / "app.synapse.yaml").write_text(
-                """spark_config:
+            (app_dir / "app.synapse.yaml").write_text("""spark_config:
   spark.synapse.setting: "true"
-"""
-            )
+""")
             (app_dir / "settings.yaml").write_text("base: true\n")
-            (app_dir / "settings.synapse.yaml").write_text(
-                """spark_config:
+            (app_dir / "settings.synapse.yaml").write_text("""spark_config:
   spark.synapse.setting: "true"
-"""
-            )
+""")
             (app_dir / "settings.fabric.yaml").write_text("fabric: true\n")
 
             (app_dir / "app.py").write_text("print('test')")
@@ -308,12 +300,10 @@ entry_point: app.py
             app_dir = Path(temp_dir) / "test-app"
             app_dir.mkdir()
 
-            (app_dir / "app.yaml").write_text(
-                """name: test-app
+            (app_dir / "app.yaml").write_text("""name: test-app
 version: 1.0.0
 entry_point: app.py
-"""
-            )
+""")
 
             (app_dir / "app.py").write_text("print('Hello')")
 

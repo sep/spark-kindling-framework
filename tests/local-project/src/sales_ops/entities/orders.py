@@ -1,4 +1,3 @@
-from kindling.data_entities import DataEntities
 from pyspark.sql.types import (
     DoubleType,
     IntegerType,
@@ -6,6 +5,8 @@ from pyspark.sql.types import (
     StructField,
     StructType,
 )
+
+from kindling.data_entities import DataEntities
 
 orders_schema = StructType(
     [

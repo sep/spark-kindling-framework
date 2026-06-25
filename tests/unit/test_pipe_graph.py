@@ -4,6 +4,7 @@ from collections import defaultdict
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
 from kindling.data_pipes import PipeMetadata
 from kindling.pipe_graph import (
     GraphCycleError,

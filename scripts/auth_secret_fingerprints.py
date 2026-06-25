@@ -9,7 +9,6 @@ import os
 import sys
 from typing import Iterable
 
-
 DEFAULT_KEYS = ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
 
 

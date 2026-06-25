@@ -1,8 +1,9 @@
 """Unit tests for signaling module."""
 
 # Import to ensure decorator runs
-import kindling.signaling  # noqa: F401
 import pytest
+
+import kindling.signaling  # noqa: F401
 from kindling.injection import GlobalInjector
 from kindling.signaling import (
     BlinkerSignalProvider,

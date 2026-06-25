@@ -13,6 +13,7 @@ import time
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+
 from kindling.streaming_listener import (
     KindlingStreamingListener,
     StreamingEvent,
