@@ -2,6 +2,14 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [0.10.35] - 2026-06-25
+
+### Fixed
+
+- Updated public GitHub release downloads to use `requests` with HTTPS-only
+  release asset URLs so the runtime deploy fix passes the release security
+  scan. This supersedes the failed `v0.10.34` tag.
+
 ## [0.10.34] - 2026-06-25
 
 ### Fixed
