@@ -28,12 +28,11 @@ env.bak/
 venv.bak/
 test_env/
 
-# Caches
+# Caches (all consolidated under .cache/)
 .cache/
-.mypy_cache/
 
 # Testing
-.pytest_cache/
+
 .coverage
 .coverage.*
 htmlcov/
@@ -101,7 +100,6 @@ tfplan
 iac/databricks/workspace/tfplan
 iac/databricks/account/tfplan
 .claude/*
-.kindling/
 .env*
 !.env.template
 .codex
@@ -112,10 +110,6 @@ setup_agents.sh
 ../kindling-worktrees/
 .tools/
 
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key
 
 # Local Claude overrides (machine-specific, not committed)
 CLAUDE.local.md
