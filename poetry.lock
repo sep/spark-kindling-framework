@@ -299,21 +299,22 @@ aio = ["azure-core[aio] (>=1.30.0)"]
 
 [[package]]
 name = "azure-synapse-artifacts"
-version = "0.17.0"
+version = "0.20.0"
 description = "Microsoft Azure Synapse Artifacts Client Library for Python"
 optional = false
 python-versions = ">=3.7"
 groups = ["main", "dev"]
 files = [
-    {file = "azure-synapse-artifacts-0.17.0.zip", hash = "sha256:e7c93c17f694041349c060623d9a23912cc45d9dca77ab84c2bd1c65b15a33d9"},
-    {file = "azure_synapse_artifacts-0.17.0-py3-none-any.whl", hash = "sha256:0fd9d1f99c28aff0cfd0c2ea5b5677178f3b77e9d78b9c24abf87bfeeb5ea0f5"},
+    {file = "azure_synapse_artifacts-0.20.0-py3-none-any.whl", hash = "sha256:291bf5b55a321276057a4f9fa46cad6d63a220876a403d0209a5f5f014f86626"},
+    {file = "azure_synapse_artifacts-0.20.0.tar.gz", hash = "sha256:3ed6c142faf62d3191a943b3222547f7730d4cbc10355d17d64fa77e0421644a"},
 ]
 markers = {main = "extra == \"all\" or extra == \"synapse\""}
 
 [package.dependencies]
-azure-common = ">=1.1,<2.0"
-azure-mgmt-core = ">=1.3.2,<2.0.0"
-isodate = ">=0.6.1,<1.0.0"
+azure-common = ">=1.1"
+azure-mgmt-core = ">=1.3.2"
+isodate = ">=0.6.1"
+typing-extensions = ">=4.6.0"
 
 [[package]]
 name = "babel"
