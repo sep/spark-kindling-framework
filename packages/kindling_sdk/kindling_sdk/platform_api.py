@@ -1,6 +1,6 @@
 """Design-time platform API factory for CI, tests, and local tooling."""
 
-from .platform_provider import create_platform_api_from_env, PlatformAPIRegistry
+from .platform_provider import PlatformAPIRegistry, create_platform_api_from_env
 
 
 def list_supported_platforms():

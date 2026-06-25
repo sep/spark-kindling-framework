@@ -7,6 +7,7 @@ generation-based execution while preserving existing executor options.
 from typing import Any, List, Optional
 
 from injector import inject
+
 from kindling.execution_strategy import ExecutionPlanGenerator, ExecutionStrategy
 from kindling.generation_executor import (
     ErrorStrategy,

@@ -9,8 +9,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from kindling.cache_optimizer import CacheOptimizer
 from injector import inject
+
+from kindling.cache_optimizer import CacheOptimizer
 from kindling.data_pipes import DataPipesRegistry
 from kindling.pipe_graph import PipeGraph, PipeGraphBuilder
 from kindling.spark_log_provider import PythonLoggerProvider

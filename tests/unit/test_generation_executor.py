@@ -11,6 +11,7 @@ from concurrent.futures import Future
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+
 from kindling.data_pipes import PipeMetadata
 from kindling.entity_provider import (
     StreamableEntityProvider,

@@ -3,6 +3,7 @@
 from unittest.mock import Mock
 
 import pytest
+
 from kindling.data_pipes import DataPipesManager, PipeMetadata
 from kindling.execution_strategy import (
     BatchExecutionStrategy,

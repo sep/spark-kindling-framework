@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from injector import inject
+
 from kindling.injection import GlobalInjector
 
 

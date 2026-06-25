@@ -7,6 +7,7 @@ Tests retrieval-time tag merging where config-based tags override base entity ta
 from unittest.mock import MagicMock
 
 import pytest
+
 from kindling.data_entities import DataEntityManager, EntityMetadata
 
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from injector import inject
+
 from kindling.data_pipes import DataPipesRegistry, PipeMetadata
 from kindling.spark_log_provider import PythonLoggerProvider
 

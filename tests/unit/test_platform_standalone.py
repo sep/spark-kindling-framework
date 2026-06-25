@@ -8,6 +8,7 @@ notebook management, and Spark integration for local development.
 from pathlib import Path
 
 import pytest
+
 from kindling.platform_standalone import StandaloneService
 
 

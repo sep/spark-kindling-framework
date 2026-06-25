@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, call
 
 import pytest
+
 from kindling.streaming_health_monitor import (
     QueryHealthState,
     QueryHealthStatus,

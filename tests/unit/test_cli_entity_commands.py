@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from click.testing import CliRunner
-from kindling.data_entities import DataEntityRegistry
 from kindling_cli.cli import (
     _fixture_csv_path,
     _format_table,
@@ -14,6 +13,8 @@ from kindling_cli.cli import (
     _resolve_entity_info,
     cli,
 )
+
+from kindling.data_entities import DataEntityRegistry
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -14,7 +14,6 @@ from azure.identity import ClientSecretCredential
 from azure.storage.filedatalake import DataLakeServiceClient
 from databricks.sdk import WorkspaceClient
 
-
 REMOTE_SCRIPT_TEMPLATE = r"""
 import json
 import sys
@@ -196,7 +195,9 @@ def _delete_remote_script(script_path: str) -> None:
         pass
 
 
-def _submit_run(client: WorkspaceClient, cluster_id: str, python_file: str, parameters: list[str]) -> int:
+def _submit_run(
+    client: WorkspaceClient, cluster_id: str, python_file: str, parameters: list[str]
+) -> int:
     payload = {
         "run_name": "kindling-databricks-uc-preflight",
         "tasks": [
@@ -234,7 +235,9 @@ def _wait_for_run(client: WorkspaceClient, run_id: int, timeout_seconds: int = 9
 def _get_task_run_output(client: WorkspaceClient, run: dict, default_run_id: int) -> dict:
     tasks = run.get("tasks") or []
     task_run_id = tasks[0].get("run_id") if tasks else default_run_id
-    return client.api_client.do("GET", "/api/2.1/jobs/runs/get-output", query={"run_id": task_run_id})
+    return client.api_client.do(
+        "GET", "/api/2.1/jobs/runs/get-output", query={"run_id": task_run_id}
+    )
 
 
 def main() -> int:
@@ -256,7 +259,9 @@ def main() -> int:
     )
 
     try:
-        run_id = _submit_run(client, cluster_id, remote_script, [catalog, schema, volume, volume_path])
+        run_id = _submit_run(
+            client, cluster_id, remote_script, [catalog, schema, volume, volume_path]
+        )
         print(f"Submitted Databricks UC preflight run: {run_id}")
         run = _wait_for_run(client, run_id)
         state = run.get("state", {})

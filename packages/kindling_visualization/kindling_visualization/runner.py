@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 
 from injector import inject
+
 from kindling.data_entities import DataEntityRegistry
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.spark_log_provider import PythonLoggerProvider

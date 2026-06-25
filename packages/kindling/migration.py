@@ -39,6 +39,7 @@ from enum import Enum
 from typing import Dict, List, Optional
 
 from injector import inject
+
 from kindling.data_entities import DataEntityRegistry, EntityMetadata
 from kindling.entity_provider_delta import DeltaEntityProvider, DeltaTableReference
 from kindling.injection import GlobalInjector

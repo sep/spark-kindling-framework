@@ -14,6 +14,7 @@ Tests cover:
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+
 from kindling.data_entities import EntityMetadata, SqlSource
 from kindling.migration import (
     BackupStrategy,

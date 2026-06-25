@@ -8,6 +8,7 @@ from typing import Callable, Dict, List
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+
 from kindling.data_entities import KindlingNotInitializedError
 from kindling.data_pipes import (
     DataPipes,

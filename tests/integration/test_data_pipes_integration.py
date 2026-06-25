@@ -10,6 +10,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
 from kindling.data_entities import (
     DataEntities,
     DataEntityManager,
@@ -23,8 +26,6 @@ from kindling.data_pipes import (
     EntityReadPersistStrategy,
     PipeMetadata,
 )
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 
 @pytest.fixture(scope="module")

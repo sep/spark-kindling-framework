@@ -4,11 +4,12 @@ import logging
 from typing import Optional
 
 from injector import inject
+from opentelemetry import trace
+
 from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
-from opentelemetry import trace
 
 from .config import AzureMonitorConfig
 

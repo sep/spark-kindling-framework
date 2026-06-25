@@ -27,6 +27,7 @@ from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
 
 from injector import inject
+
 from kindling.cache_optimizer import CacheOptimizer
 from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import (

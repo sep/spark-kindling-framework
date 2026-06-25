@@ -5,6 +5,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+
 from kindling.spark_log import SparkLogger
 
 

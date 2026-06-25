@@ -6,6 +6,7 @@ configuration lifecycle with actual Spark initialization.
 """
 
 import pytest
+
 from kindling.injection import GlobalInjector, get_kindling_service
 from kindling.spark_config import (
     ConfigService,

@@ -47,6 +47,7 @@ from enum import Enum
 from typing import Dict, Optional
 
 from injector import inject
+
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import SparkLoggerProvider

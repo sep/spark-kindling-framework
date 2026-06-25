@@ -10,12 +10,13 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from injector import inject
+from pyspark.sql import DataFrame
+
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
-from pyspark.sql import DataFrame
 
 ADX_SPARK_CONNECTOR_MAVEN_COORDINATE = "com.microsoft.azure.kusto:kusto-spark_3.0_2.12:7.0.6"
 GENERIC_FORMAT = "com.microsoft.kusto.spark.datasource"

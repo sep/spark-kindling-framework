@@ -1,5 +1,6 @@
-from kindling.data_pipes import DataPipes
 from sales_ops.transforms.quality import clean_orders
+
+from kindling.data_pipes import DataPipes
 
 
 @DataPipes.pipe(

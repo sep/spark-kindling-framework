@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.injection import GlobalInjector, get_kindling_service
 
 

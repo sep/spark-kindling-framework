@@ -12,7 +12,7 @@ repos:
       - id: detect-private-key
 
   - repo: https://github.com/psf/black
-    rev: 24.10.0
+    rev: 26.5.1
     hooks:
       - id: black
         language_version: python3.11
@@ -20,7 +20,7 @@ repos:
         exclude: "^(fabric/|htmlcov/)"
 
   - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
+    rev: 8.0.1
     hooks:
       - id: isort
         args: ["--profile=black"]

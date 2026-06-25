@@ -26,6 +26,7 @@ __version__ = "0.1.0"
 def _register_services():
     """Register visualization services with the Kindling DI container."""
     from injector import singleton
+
     from kindling.injection import GlobalInjector
 
     injector = GlobalInjector.get_injector()

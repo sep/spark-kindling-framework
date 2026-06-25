@@ -12,11 +12,12 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from pyspark.sql import SparkSession
+
 from kindling.data_entities import DataEntityManager, EntityMetadata
 from kindling.entity_provider_csv import CSVEntityProvider
 from kindling.injection import GlobalInjector
 from kindling.spark_config import DynaconfConfig
-from pyspark.sql import SparkSession
 
 
 class TestCSVEntityProviderIntegration:

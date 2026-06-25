@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from injector import inject
+
 from kindling.execution_strategy import ExecutionPlan
 from kindling.generation_executor import (
     ErrorStrategy,

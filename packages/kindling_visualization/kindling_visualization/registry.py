@@ -5,6 +5,7 @@ from dataclasses import MISSING, dataclass, field, fields
 from typing import Any, Callable, Dict, List, Optional
 
 from injector import inject
+
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
 

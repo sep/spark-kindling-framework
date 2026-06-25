@@ -19,6 +19,7 @@ import time
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+
 from kindling.signaling import SignalProvider
 from kindling.spark_log_provider import SparkLoggerProvider
 from kindling.streaming_query_manager import StreamingQueryManager
