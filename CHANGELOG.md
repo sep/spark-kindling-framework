@@ -2,6 +2,19 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [0.10.34] - 2026-06-25
+
+### Fixed
+
+- `kindling runtime deploy --source github:*` now downloads public Kindling
+  release assets directly from `sep/spark-kindling-framework`, without
+  requiring the GitHub CLI or inspecting the caller's current git repository.
+
+### Added
+
+- Added implementation proposals for ABFSS local auth via Azure CLI, CSV
+  provider writes, and renaming `load_local` to `load_workspace_packages`.
+
 ## [0.10.33] - 2026-06-23
 
 ### Changed
