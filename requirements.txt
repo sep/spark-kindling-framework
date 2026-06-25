@@ -25,4 +25,4 @@ flake8>=6.0.0
 
 # Optional: For development
 notebook>=6.5.0
-jupyterlab>=4.0.0
+jupyterlab>=4.5.7
