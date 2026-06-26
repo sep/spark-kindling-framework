@@ -1846,7 +1846,7 @@ class TestAppRunCommand:
         payload = json.loads(result.stdout)
         assert payload["run_id"] == "run-42"
         assert payload["platform"] == "fabric"
-        assert "run-42" not in result.stdout or payload["run_id"] == "run-42"
+        assert "Submitting" not in result.stdout, "progress text must not appear in --json stdout"
         assert "Submitting" in result.stderr
 
     def test_standalone_load_lake_passes_flag_to_runner(self, tmp_path, monkeypatch):

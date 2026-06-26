@@ -349,16 +349,16 @@ class FabricAPI(PlatformAPI):
 
         result = self.create_job(adhoc_name, job_config)
         job_id = result["job_id"]
+        run_id = self.run_job(job_id)
 
-        try:
-            run_id = self.run_job(job_id)
-            print(f"🚀 Submitted Fabric ephemeral job: app={app_name} run_id={run_id}")
-        finally:
-            try:
-                self.delete_job(job_id)
-                print(f"🗑️  Deleted ephemeral Fabric job definition: {adhoc_name}")
-            except Exception as del_exc:
-                print(f"⚠️  Failed to delete ephemeral job definition '{adhoc_name}': {del_exc}")
+        # Store run→job mapping so status/log/cancel endpoints can resolve the
+        # Fabric item ID. Not deleted immediately — Fabric scopes run endpoints
+        # under the job item ID, so deleting before the run completes would make
+        # status/cancel/log calls fail with 404. Clean up kindling-adhoc-* definitions
+        # manually after runs complete.
+        if not hasattr(self, "_run_to_job_map"):
+            self._run_to_job_map = {}
+        self._run_to_job_map[run_id] = job_id
 
         return run_id
 

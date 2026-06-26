@@ -409,7 +409,7 @@ class DatabricksAPI(PlatformAPI):
             "app_name": app_name,
             "config_overrides": config_overrides or {},
         }
-        result = self.create_job(f"kindling-{app_name}", job_config)
+        result = self.create_job(app_name, job_config)
         return {**result, "platform": "databricks"}
 
     def _build_job_spec(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -550,7 +550,10 @@ class DatabricksAPI(PlatformAPI):
             tasks=[task],
         )
         run_id = str(run_response.run_id)
-        print(f"🚀 Submitted Databricks one-time run: app={app_name} run_id={run_id}")
+        print(
+            f"🚀 Submitted Databricks one-time run: app={app_name} run_id={run_id}",
+            file=__import__("sys").stderr,
+        )
         return run_id
 
     def create_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:

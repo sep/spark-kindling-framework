@@ -491,7 +491,10 @@ class SynapseAPI(PlatformAPI):
                 f"Livy batch submit did not return a batch ID for app '{app_name}'. "
                 f"Response: {result}"
             )
-        print(f"🚀 Submitted Synapse Livy batch: app={app_name} batch_id={batch_id}")
+        print(
+            f"🚀 Submitted Synapse Livy batch: app={app_name} batch_id={batch_id}",
+            file=__import__("sys").stderr,
+        )
         return str(batch_id)
 
     def _get_access_token(self) -> str:
