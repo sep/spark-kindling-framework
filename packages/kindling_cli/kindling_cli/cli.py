@@ -2873,8 +2873,10 @@ def app_init(
     click.echo("Next steps:")
     click.echo(f"  cd apps/{cfg.snake_name}")
     click.echo("  kindling app run .                       # run the app locally")
-    click.echo("  kindling runner ensure --platform <platform>  # install remote runner")
     click.echo("  kindling app run . --platform <platform>      # run remotely")
+    click.echo(
+        "  kindling runner register --app <name> --platform <platform>  # register for pipeline/workflow use"
+    )
 
 
 @app_group.command("package")
