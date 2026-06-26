@@ -383,37 +383,53 @@ class DatabricksAPI(PlatformAPI):
         """Get the Databricks SDK client"""
         return self._client
 
-    def create_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a Spark job definition in Databricks using SDK
+    def submit_app_run(
+        self,
+        app_name: str,
+        environment: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Submit a one-time app run via runs.submit() — no persistent job definition."""
+        config_overrides: Dict[str, Any] = dict(parameters or {})
+        if environment:
+            config_overrides["environment"] = environment
+        job_config: Dict[str, Any] = {
+            "app_name": app_name,
+            "config_overrides": config_overrides,
+        }
+        return self._submit_one_time_run(app_name, job_config)
 
-        Args:
-            job_name: Name for the job
-            job_config: Job configuration containing:
-                - app_name: Application name for Kindling bootstrap
-                - main_file: Entry point file path (default: kindling_bootstrap.py)
-                - cluster_logs_path: ABFSS path for cluster logs (optional)
-                - spark_config: Spark configuration (optional)
-                - environment: Environment variables (optional)
+    def register_app_job(
+        self,
+        app_name: str,
+        config_overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create or update a named Databricks Job for use in Databricks Workflows."""
+        job_config: Dict[str, Any] = {
+            "app_name": app_name,
+            "config_overrides": config_overrides or {},
+        }
+        result = self.create_job(app_name, job_config)
+        return {**result, "platform": "databricks"}
 
-        Returns:
-            Dictionary with job_id and metadata
+    def _build_job_spec(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Build the task specification shared by create_job() and _submit_one_time_run().
+
+        Returns a dict with: python_file, all_args, cluster_spec,
+        existing_cluster_id, libraries.
         """
         try:
             from databricks.sdk.service.compute import (
                 ClusterLogConf,
                 ClusterSpec,
                 DataSecurityMode,
-                Library,
             )
-            from databricks.sdk.service.jobs import SparkPythonTask, Task
         except ImportError:
             raise ImportError("Databricks SDK service modules not available")
 
         app_name = job_config.get("app_name", job_name)
         main_file = job_config.get("main_file", "kindling_bootstrap.py")
         system_test_mode = self._resolve_system_test_mode(job_config)
-
-        # Build bootstrap parameters similar to Fabric/Synapse
         artifacts_storage_path = self._resolve_artifacts_storage_path(job_config, system_test_mode)
 
         bootstrap_params = {
@@ -422,15 +438,12 @@ class DatabricksAPI(PlatformAPI):
             "platform": "databricks",
             "use_lake_packages": "True",
             "load_local_packages": "False",
-            # Pass workspace URL so DatabricksService can initialize
             "workspace_id": self.workspace_url,
         }
 
-        # Add test_id if provided (for test tracking)
         if "test_id" in job_config:
             bootstrap_params["test_id"] = job_config["test_id"]
 
-        # Config overrides are expected to be resolved by the caller/test harness.
         overrides = job_config.get("config_overrides", {})
         if overrides:
 
@@ -443,7 +456,6 @@ class DatabricksAPI(PlatformAPI):
                     return "null"
                 return str(value)
 
-            # Flatten nested dict to dot notation
             def flatten_dict(d, parent_key=""):
                 items = []
                 for k, v in d.items():
@@ -454,10 +466,8 @@ class DatabricksAPI(PlatformAPI):
                         items.append((new_key, serialize_config_value(v)))
                 return dict(items)
 
-            flattened = flatten_dict(overrides)
-            bootstrap_params.update(flattened)
+            bootstrap_params.update(flatten_dict(overrides))
 
-        # Build command line args using config:key=value convention
         config_args = [f"config:{k}={v}" for k, v in bootstrap_params.items()]
         additional_args = (
             job_config.get("command_line_args", "").split()
@@ -474,7 +484,6 @@ class DatabricksAPI(PlatformAPI):
 
             log_path = f"{uc_volume_path}/cluster-logs/kindling-jobs/{job_name}"
             cluster_log_conf = ClusterLogConf(volumes=VolumesStorageInfo(destination=log_path))
-            # spark.databricks.cluster.profile is incompatible with SINGLE_USER
             spark_conf.pop("spark.databricks.cluster.profile", None)
             data_security_mode = DataSecurityMode.SINGLE_USER
         else:
@@ -490,51 +499,98 @@ class DatabricksAPI(PlatformAPI):
             spark_conf=spark_conf if spark_conf else None,
         )
 
-        # Build Python task using SDK objects
         python_file = self._resolve_python_file(
             main_file=main_file,
             job_config=job_config,
             mode=system_test_mode,
             artifacts_storage_path=artifacts_storage_path,
         )
-        python_task = SparkPythonTask(python_file=python_file, parameters=all_args)
 
-        # Build libraries list for the task
-        # No wheel library - kindling is expected to be pre-installed or available in the environment
-        libraries = []
-
-        # Build task using SDK Task object with new_cluster or existing_cluster_id
-        # Check if existing cluster ID is provided in config
-        # Support both 'cluster_id' and 'existing_cluster_id' for backward compatibility
         existing_cluster_id = (
             job_config.get("existing_cluster_id")
             or job_config.get("cluster_id")
             or self.default_cluster_id
         )
 
-        if existing_cluster_id:
-            # Use existing cluster instead of creating new one
-            # NOTE: When using existing cluster, the cluster's own log configuration takes precedence.
-            # Make sure the cluster is configured to write logs to the desired location
-            # (e.g., /Volumes/medallion/default/logs/cluster-logs in the cluster's settings)
-            task = Task(
+        return {
+            "python_file": python_file,
+            "all_args": all_args,
+            "cluster_spec": cluster_spec,
+            "existing_cluster_id": existing_cluster_id,
+            "libraries": [],
+        }
+
+    def _submit_one_time_run(self, app_name: str, job_config: Dict[str, Any]) -> str:
+        """Submit a one-time Databricks run via runs.submit() — no persistent job created."""
+        try:
+            from databricks.sdk.service.jobs import SparkPythonTask, SubmitTask
+        except ImportError:
+            raise ImportError("Databricks SDK service modules not available")
+
+        spec = self._build_job_spec(app_name, job_config)
+        python_task = SparkPythonTask(python_file=spec["python_file"], parameters=spec["all_args"])
+
+        if spec["existing_cluster_id"]:
+            task = SubmitTask(
                 task_key="main",
                 spark_python_task=python_task,
-                existing_cluster_id=existing_cluster_id,
-                libraries=libraries if libraries else None,
-                max_retries=0,  # Disable auto-retry to prevent duplicate executions
+                existing_cluster_id=spec["existing_cluster_id"],
+                libraries=spec["libraries"] or None,
             )
         else:
-            # Create new cluster for this job
+            task = SubmitTask(
+                task_key="main",
+                spark_python_task=python_task,
+                new_cluster=spec["cluster_spec"],
+                libraries=spec["libraries"] or None,
+            )
+
+        run_response = self.client.jobs.runs.submit(
+            run_name=f"kindling-adhoc-{app_name}",
+            tasks=[task],
+        )
+        run_id = str(run_response.run_id)
+        print(
+            f"🚀 Submitted Databricks one-time run: app={app_name} run_id={run_id}",
+            file=__import__("sys").stderr,
+        )
+        return run_id
+
+    def create_job(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a persistent Spark job definition in Databricks.
+
+        Args:
+            job_name: Name for the job
+            job_config: Job configuration — see _build_job_spec for full schema.
+
+        Returns:
+            Dictionary with job_id and metadata
+        """
+        try:
+            from databricks.sdk.service.jobs import SparkPythonTask, Task
+        except ImportError:
+            raise ImportError("Databricks SDK service modules not available")
+
+        spec = self._build_job_spec(job_name, job_config)
+        python_task = SparkPythonTask(python_file=spec["python_file"], parameters=spec["all_args"])
+
+        if spec["existing_cluster_id"]:
             task = Task(
                 task_key="main",
                 spark_python_task=python_task,
-                new_cluster=cluster_spec,
-                libraries=libraries if libraries else None,
-                max_retries=0,  # Disable auto-retry to prevent duplicate executions
+                existing_cluster_id=spec["existing_cluster_id"],
+                libraries=spec["libraries"] or None,
+                max_retries=0,
+            )
+        else:
+            task = Task(
+                task_key="main",
+                spark_python_task=python_task,
+                new_cluster=spec["cluster_spec"],
+                libraries=spec["libraries"] or None,
+                max_retries=0,
             )
 
-        # Create the job via SDK using proper SDK objects
         job_response = self.client.jobs.create(
             name=job_name,
             tasks=[task],
@@ -544,8 +600,6 @@ class DatabricksAPI(PlatformAPI):
         )
 
         job_id = job_response.job_id
-
-        # Store job mapping
         self._job_mapping[job_name] = job_id
 
         return {

@@ -2873,8 +2873,10 @@ def app_init(
     click.echo("Next steps:")
     click.echo(f"  cd apps/{cfg.snake_name}")
     click.echo("  kindling app run .                       # run the app locally")
-    click.echo("  kindling runner ensure --platform <platform>  # install remote runner")
     click.echo("  kindling app run . --platform <platform>      # run remotely")
+    click.echo(
+        "  kindling runner register --app <name> --platform <platform>  # register for pipeline/workflow use"
+    )
 
 
 @app_group.command("package")
@@ -3090,39 +3092,16 @@ def _run_remote_app(
     except Exception:
         pass
 
-    _emit_progress(f"[1/2] Verifying runner on {resolved_platform}...", json_output)
+    _emit_progress(f"Submitting app run `{resolved_name}` on {resolved_platform}...", json_output)
     try:
-        runner_status = api_client.get_runner_status(resolved_platform)
-    except NotImplementedError:
-        raise click.ClickException(
-            f"Runner management is not yet supported on {resolved_platform}. "
-            "Upgrade spark-kindling-sdk when platform support is available."
+        run_id = api_client.submit_app_run(
+            resolved_name,
+            environment=env or None,
+            parameters=parameters or None,
         )
-    runner_id = runner_status.get("runner_id")
-
-    _emit_progress(f"[2/2] Submitting app run `{resolved_name}`...", json_output)
-    try:
-        if runner_id:
-            run_id = api_client.submit_app_run(
-                resolved_name,
-                environment=env or None,
-                parameters=parameters or None,
-            )
-        else:
-            _emit_progress(
-                f"No runner found — submitting `{resolved_name}` directly via its own job definition.",
-                json_output,
-            )
-            run_params = {}
-            if env:
-                run_params["environment"] = env
-            if parameters:
-                run_params.update(parameters)
-            api_client.ensure_app_job(resolved_name)
-            run_id = api_client.run_job(resolved_name, parameters=run_params or None)
     except NotImplementedError:
         raise click.ClickException(
-            f"Runner-aligned app submission is not yet supported on {resolved_platform}. "
+            f"Direct app submission is not yet supported on {resolved_platform}. "
             "Upgrade spark-kindling-sdk when platform support is available."
         )
     _emit_progress(f"Run ID: {run_id}", json_output)
@@ -3130,7 +3109,6 @@ def _run_remote_app(
     payload: Dict[str, Any] = {
         "app_name": resolved_name,
         "run_id": run_id,
-        "runner_id": runner_id,
         "platform": resolved_platform,
     }
 
@@ -4770,174 +4748,159 @@ def app_inspect(
 
 @cli.group("runner")
 def runner_group() -> None:
-    """Manage per-app job definitions for remote execution.
+    """Register and manage per-app job definitions for pipeline/workflow integration.
 
-    Each app gets its own durable job definition on the platform.
-    ``runner ensure`` creates those definitions so that
-    ``kindling app run --platform <platform>`` can submit runs against them.
+    ``kindling app run`` submits one-time runs directly — no job definition needed.
+    Use ``runner register`` only when you want to expose an app as a named job definition
+    that an external orchestrator (Synapse Pipeline, Databricks Workflow, Fabric Pipeline)
+    can trigger by name.
 
-    Most users only need ``runner ensure`` (install/update) and
-    ``runner status`` (health check).  The other subcommands are admin or
-    debug operations.
+    Most users only need ``runner register`` and ``runner status``.
     """
 
 
-@runner_group.command("ensure")
+@runner_group.command("register")
+@click.option(
+    "--app",
+    "app_name",
+    required=True,
+    help="App name to register as a job definition.",
+)
+@click.option(
+    "--config",
+    "config_overrides",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help="Config override baked into the job definition (repeatable).",
+)
 @click.option(
     "--platform",
     type=click.Choice(SUPPORTED_PLATFORMS),
     default=None,
     help="Target platform.  Auto-detected from environment if omitted.",
 )
-@click.option(
-    "--app",
-    "app_name",
-    default=None,
-    help="App name to ensure.  If omitted, ensures job definitions for all discovered apps.",
-)
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def runner_ensure(platform: Optional[str], app_name: Optional[str], json_output: bool) -> None:
-    """Create job definitions for one app or all discovered apps.
+def runner_register(
+    app_name: str,
+    config_overrides: tuple,
+    platform: Optional[str],
+    json_output: bool,
+) -> None:
+    """Register an app as a named job definition for pipeline/workflow integration.
 
-    Idempotent: existing definitions are left unchanged.  Without ``--app``
-    the command scans the current directory for apps and ensures each one.
+    Creates (or updates) a persistent job definition on the platform so that an
+    external orchestrator can trigger it by name:
+
+    \b
+    - Synapse: SparkJobDefinition used by Pipeline "Execute Spark Job Definition" activity
+    - Databricks: Job used by Databricks Workflows / external orchestrators
+    - Fabric: SparkJobDefinition used by Fabric Pipeline activity
+
+    Config overrides supplied here are baked into the definition as config:k=v
+    bootstrap args. Re-running ``register`` updates the definition in place (idempotent).
 
     Examples::
 
-        kindling runner ensure --platform fabric
-        kindling runner ensure --platform synapse --app my-app
+        kindling runner register --app my-app --platform synapse
+        kindling runner register --app my-app --config env=prod --config region=eastus
     """
     resolved_platform = _resolve_remote_platform(platform)
     api_client, resolved_platform = _create_platform_api(resolved_platform)
 
-    if app_name:
-        app_names = [app_name]
-    else:
-        discovered = _discover_local_app_names()
-        if not discovered:
-            raise click.ClickException(
-                "No apps found in the current directory. "
-                "Use --app <name> to specify an app explicitly."
-            )
-        app_names = [name for name, _ in discovered]
+    overrides: Dict[str, Any] = {}
+    for raw in config_overrides:
+        if "=" not in raw:
+            raise click.ClickException("--config values must use KEY=VALUE syntax.")
+        k, v = raw.split("=", 1)
+        k = k.strip()
+        if not k:
+            raise click.ClickException("--config keys must not be empty.")
+        _set_nested_key(overrides, k, _coerce_value(v))
 
-    results = []
-    for name in app_names:
-        try:
-            result = api_client.ensure_app_job(name)
-        except (AttributeError, NotImplementedError):
-            raise click.ClickException(
-                f"App job management is not yet supported on {resolved_platform}. "
-                "Upgrade spark-kindling-sdk when platform support is available."
-            )
-        results.append(result)
+    try:
+        result = api_client.register_app_job(app_name, config_overrides=overrides or None)
+    except (AttributeError, NotImplementedError):
+        raise click.ClickException(
+            f"Job definition registration is not yet supported on {resolved_platform}. "
+            "Upgrade spark-kindling-sdk when platform support is available."
+        )
 
-    if json_output:
-        _emit_json({"platform": resolved_platform, "apps": results})
-    else:
-        for r in results:
-            click.echo(
-                f"App job ensured: {r['app_name']} (id={r.get('job_id', 'unknown')}) "
-                f"on {resolved_platform}."
-            )
+    _emit_result(
+        {"platform": resolved_platform, **result},
+        json_output,
+        f"Registered job definition for '{app_name}' on {resolved_platform} "
+        f"(id={result.get('job_id', 'unknown')}).",
+    )
 
 
 @runner_group.command("status")
+@click.option(
+    "--app",
+    "app_name",
+    default=None,
+    help="Check whether a specific app has a registered job definition.",
+)
 @click.option(
     "--platform",
     type=click.Choice(SUPPORTED_PLATFORMS),
     default=None,
     help="Target platform.  Auto-detected from environment if omitted.",
 )
-@click.option(
-    "--verbose",
-    is_flag=True,
-    help="Show full runner configuration in addition to the summary.",
-)
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def runner_status(platform: Optional[str], verbose: bool, json_output: bool) -> None:
-    """Show runner installation state, platform job ID, version, and health.
+def runner_status(app_name: Optional[str], platform: Optional[str], json_output: bool) -> None:
+    """Show which apps have registered job definitions on the platform.
 
-    Without ``--verbose`` a concise one-line summary is printed.  With
-    ``--verbose`` the full runner configuration is included.
+    Use ``--app <name>`` to check a specific app.  Without ``--app`` the command
+    scans the current directory for apps and reports their registration state.
 
     Examples::
 
         kindling runner status
-        kindling runner status --verbose
-        kindling runner status --platform databricks --json
+        kindling runner status --app my-app --platform synapse --json
     """
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
         raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    try:
-        result = api_client.get_runner_status(resolved_platform)
-    except (AttributeError, NotImplementedError):
-        raise click.ClickException(
-            f"Runner management is not yet supported on {resolved_platform}. "
-            "Upgrade spark-kindling-sdk when platform support is available."
-        )
 
-    if not json_output and not verbose:
-        runner_id = result.get("runner_id", "unknown")
-        state = result.get("state", "unknown")
-        version = result.get("version", "unknown")
-        click.echo(
-            f"Runner {runner_id}  state={state}  version={version}  platform={resolved_platform}"
+    if app_name:
+        names_to_check = [app_name]
+    else:
+        discovered = _discover_local_app_names()
+        names_to_check = [name for name, _ in discovered] if discovered else []
+
+    results = []
+    for name in names_to_check:
+        job_id = api_client.find_job_by_name(name)
+        results.append(
+            {
+                "app_name": name,
+                "job_id": job_id,
+                "registered": job_id is not None,
+                "platform": resolved_platform,
+            }
         )
-        return
 
     if json_output:
-        payload = {"platform": resolved_platform, **result}
-        if not verbose:
-            payload.pop("config", None)
-        _emit_json(payload)
+        _emit_json({"platform": resolved_platform, "apps": results})
     else:
-        # verbose human-readable
-        _emit_json({"platform": resolved_platform, **result})
-
-
-@runner_group.command("repair")
-@click.option(
-    "--platform",
-    type=click.Choice(SUPPORTED_PLATFORMS),
-    default=None,
-    help="Target platform.  Auto-detected from environment if omitted.",
-)
-@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def runner_repair(platform: Optional[str], json_output: bool) -> None:
-    """Recreate or update the runner job and its bootstrap/config references.
-
-    Use this command after credential or configuration changes to ensure the
-    runner picks up the updated settings.  The command updates the job
-    definition and refreshes any supporting references (bootstrap notebooks,
-    linked services, config paths) without requiring a full delete-and-reinstall.
-
-    Examples::
-
-        kindling runner repair
-        kindling runner repair --platform synapse
-    """
-    resolved_platform = _resolve_remote_platform(platform)
-
-    api_client, resolved_platform = _create_platform_api(resolved_platform)
-    try:
-        result = api_client.repair_runner(resolved_platform)
-    except (AttributeError, NotImplementedError):
-        raise click.ClickException(
-            f"Runner management is not yet supported on {resolved_platform}. "
-            "Upgrade spark-kindling-sdk when platform support is available."
-        )
-    _emit_result(
-        {"platform": resolved_platform, **result},
-        json_output,
-        f"Runner repaired on {resolved_platform} (id={result.get('runner_id', 'unknown')}).",
-    )
+        if not results:
+            click.echo(f"No apps found to check on {resolved_platform}.")
+            return
+        for r in results:
+            state = "registered" if r["registered"] else "not registered"
+            jid = f" (id={r['job_id']})" if r["job_id"] else ""
+            click.echo(f"{r['app_name']}: {state}{jid}  platform={resolved_platform}")
 
 
 @runner_group.command("delete")
+@click.option(
+    "--app",
+    "app_name",
+    required=True,
+    help="App name whose job definition should be deleted.",
+)
 @click.option(
     "--platform",
     type=click.Choice(SUPPORTED_PLATFORMS),
@@ -4951,19 +4914,15 @@ def runner_repair(platform: Optional[str], json_output: bool) -> None:
     help="Skip interactive confirmation prompt (for use in scripts).",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
-def runner_delete(platform: Optional[str], yes: bool, json_output: bool) -> None:
-    """Delete the runner job definition from the platform workspace.
-
-    This is an admin operation.  Deleting the runner prevents remote
-    ``kindling app run --platform <platform>`` commands from submitting new work
-    until the runner is reinstalled with ``kindling runner ensure``.
+def runner_delete(app_name: str, platform: Optional[str], yes: bool, json_output: bool) -> None:
+    """Delete a registered job definition from the platform workspace.
 
     You will be prompted for confirmation unless ``--yes`` is supplied.
 
     Examples::
 
-        kindling runner delete --platform fabric --yes
-        kindling runner delete  # prompts for confirmation
+        kindling runner delete --app my-app --platform fabric --yes
+        kindling runner delete --app my-app  # prompts for confirmation
     """
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
@@ -4971,8 +4930,7 @@ def runner_delete(platform: Optional[str], yes: bool, json_output: bool) -> None
 
     if not yes:
         confirmed = click.confirm(
-            f"Delete the Kindling runner on {resolved_platform}? "
-            "This will prevent remote app runs until the runner is reinstalled.",
+            f"Delete job definition for '{app_name}' on {resolved_platform}?",
             default=False,
         )
         if not confirmed:
@@ -4980,19 +4938,20 @@ def runner_delete(platform: Optional[str], yes: bool, json_output: bool) -> None
             return
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    try:
-        deleted = api_client.delete_runner(resolved_platform)
-    except (AttributeError, NotImplementedError):
+    job_id = api_client.find_job_by_name(app_name)
+    if job_id is None:
         raise click.ClickException(
-            f"Runner management is not yet supported on {resolved_platform}. "
-            "Upgrade spark-kindling-sdk when platform support is available."
+            f"No registered job definition found for '{app_name}' on {resolved_platform}."
         )
+    deleted = api_client.delete_job(job_id)
     if not deleted:
-        raise click.ClickException(f"Failed to delete runner on {resolved_platform}.")
+        raise click.ClickException(
+            f"Failed to delete job definition for '{app_name}' on {resolved_platform}."
+        )
     _emit_result(
-        {"platform": resolved_platform, "deleted": True},
+        {"platform": resolved_platform, "app_name": app_name, "deleted": True},
         json_output,
-        f"Deleted runner on {resolved_platform}.",
+        f"Deleted job definition for '{app_name}' on {resolved_platform}.",
     )
 
 
@@ -5052,28 +5011,24 @@ def runner_invoke(
     parameters = _load_mapping_file(params_path, "runner parameters")
     api_client, resolved_platform = _create_platform_api(resolved_platform)
 
-    # Delegate to run_job using the runner's job ID resolved from parameters or
-    # by querying the runner status.  The raw parameters file is forwarded as-is.
-    runner_job_id = str(parameters.pop("runner_job_id", "")).strip() or None
-    if not runner_job_id:
-        try:
-            status = api_client.get_runner_status(resolved_platform)
-        except AttributeError:
+    # job_id must be present in the parameters file or resolved via find_job_by_name.
+    job_id = (
+        str(parameters.pop("job_id", "") or parameters.pop("runner_job_id", "")).strip() or None
+    )
+    if not job_id:
+        app = str(parameters.pop("app_name", "")).strip() or None
+        if app:
+            job_id = api_client.find_job_by_name(app)
+        if not job_id:
             raise click.ClickException(
-                f"Runner management is not yet supported on {resolved_platform}. "
-                "Upgrade spark-kindling-sdk when platform support is available."
+                "Could not determine job ID. "
+                "Include `job_id` or `app_name` in your parameters file, "
+                "or register the app first with `kindling runner register --app <name>`."
             )
-        runner_job_id = str(status.get("runner_id", "")).strip() or None
-    if not runner_job_id:
-        raise click.ClickException(
-            "Could not determine runner job ID. "
-            "Ensure the runner is installed (`kindling runner ensure`) or "
-            "include `runner_job_id` in your parameters file."
-        )
 
-    run_id = api_client.run_job(runner_job_id, parameters=parameters or None)
+    run_id = api_client.run_job(job_id, parameters=parameters or None)
     payload: Dict[str, Any] = {
-        "runner_job_id": runner_job_id,
+        "job_id": job_id,
         "run_id": run_id,
         "platform": resolved_platform,
         "waited": wait_for_completion,

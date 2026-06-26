@@ -80,8 +80,6 @@ def azure_cloud_config() -> Dict[str, str]:
 class PlatformAPI(ABC):
     """Abstract interface for remote platform API operations."""
 
-    RUNNER_JOB_NAME: str = "kindling-runner"
-
     @abstractmethod
     def get_platform_name(self) -> str:
         pass
@@ -161,73 +159,37 @@ class PlatformAPI(ABC):
         result["deployment_path"] = deployment_path
         return result
 
-    # --- App job lifecycle ---
-    # All implemented here using the abstract job primitives + find_job_by_name,
-    # so every platform adapter gets full app job support for free.
-
-    def ensure_app_job(self, app_name: str) -> Dict[str, Any]:
-        """Ensure a job definition exists for the given app, creating it if absent."""
-        job_id = self.find_job_by_name(app_name)
-        if job_id is None:
-            result = self.create_job(app_name, {"app_name": app_name})
-            job_id = str(result.get("job_id", app_name))
-        return {"job_id": job_id, "app_name": app_name, "state": "installed"}
-
-    # --- Runner lifecycle (deprecated) ---
-
-    def ensure_runner(self, platform: str) -> Dict[str, Any]:
-        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
-        if runner_id is None:
-            result = self.create_job(self.RUNNER_JOB_NAME, {"app_name": self.RUNNER_JOB_NAME})
-            runner_id = str(result.get("job_id", self.RUNNER_JOB_NAME))
-        return {"runner_id": runner_id, "state": "installed"}
-
-    def get_runner_status(self, platform: str) -> Dict[str, Any]:
-        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
-        if runner_id is None:
-            return {"runner_id": None, "state": "not_installed"}
-        return {"runner_id": runner_id, "state": "installed"}
-
-    def repair_runner(self, platform: str) -> Dict[str, Any]:
-        existing_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
-        if existing_id is not None:
-            self.delete_job(existing_id)
-        result = self.create_job(self.RUNNER_JOB_NAME, {"app_name": self.RUNNER_JOB_NAME})
-        runner_id = str(result.get("job_id", self.RUNNER_JOB_NAME))
-        return {"runner_id": runner_id, "state": "installed"}
-
-    def delete_runner(self, platform: str) -> bool:
-        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
-        if runner_id is None:
-            return True
-        return self.delete_job(runner_id)
-
-    # --- Runner-aligned app submission ---
-    # These delegate directly to the existing abstract job primitives so every
-    # platform adapter gets them for free once run_job/get_job_status/etc. work.
-
+    @abstractmethod
     def submit_app_run(
         self,
         app_name: str,
         environment: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
     ) -> str:
-        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME)
-        if runner_id is None:
-            raise RuntimeError(
-                f"Kindling runner '{self.RUNNER_JOB_NAME}' not found. "
-                "Run 'kindling runner ensure' before submitting app runs."
-            )
-        run_params: Dict[str, Any] = {"app_name": app_name}
-        if environment:
-            run_params["environment"] = environment
-        if parameters:
-            run_params.update(parameters)
-        return self.run_job(runner_id, parameters=run_params)
+        """Submit a one-time app run directly on the platform.
+
+        No persistent job definition is required (except Fabric, which uses an
+        ephemeral definition that is deleted after the run is submitted).
+        Config overrides flow through as config:k=v bootstrap args.
+        """
+
+    @abstractmethod
+    def register_app_job(
+        self,
+        app_name: str,
+        config_overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create or update a named job definition for pipeline/workflow integration.
+
+        The resulting definition can be triggered by name from the platform's
+        orchestration layer (Synapse Pipeline, Databricks Workflow, Fabric Pipeline).
+        Idempotent: calling again updates the definition in place.
+
+        Returns a dict with at minimum: job_id, job_name, platform.
+        """
 
     def get_app_run_status(self, run_id: str) -> Dict[str, Any]:
-        status = self.get_job_status(run_id)
-        return {**status, "runner_id": self.RUNNER_JOB_NAME}
+        return self.get_job_status(run_id)
 
     def get_app_run_logs(self, run_id: str, from_line: int = 0, size: int = 1000) -> Dict[str, Any]:
         return self.get_job_logs(run_id, from_line=from_line, size=size)
@@ -239,9 +201,8 @@ class PlatformAPI(ABC):
         poll_interval: float = 5.0,
         max_wait: float = 300.0,
     ) -> List[str]:
-        runner_id = self.find_job_by_name(self.RUNNER_JOB_NAME) or self.RUNNER_JOB_NAME
         return self.stream_stdout_logs(
-            job_id=runner_id,
+            job_id=run_id,
             run_id=run_id,
             callback=callback,
             poll_interval=poll_interval,
