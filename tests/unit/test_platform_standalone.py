@@ -367,6 +367,63 @@ class TestStandaloneServiceEdgeCases:
         service.delete("nonexistent.txt")
 
 
+class TestAbfssLocalAuth:
+    """Tests for _configure_abfss_local_auth() injection logic."""
+
+    def _make_spark(self):
+        from unittest.mock import Mock
+
+        spark = Mock()
+        spark.sparkContext = Mock()
+        return spark
+
+    def test_auth_injected_when_az_available(self, monkeypatch, tmp_path, mock_logger):
+        jar = tmp_path / "kindling-abfss-local-auth.jar"
+        jar.write_bytes(b"")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/az")
+        monkeypatch.setattr(
+            "kindling.platform_standalone.Path",
+            lambda _: jar,
+        )
+
+        from kindling.platform_standalone import _configure_abfss_local_auth
+
+        spark = self._make_spark()
+        _configure_abfss_local_auth(spark, {}, mock_logger)
+
+        spark.conf.set.assert_any_call("spark.hadoop.fs.azure.account.auth.type", "Custom")
+        spark.conf.set.assert_any_call(
+            "spark.hadoop.fs.azure.account.oauth.provider.type",
+            "io.kindling.abfss.AzureCliTokenProvider",
+        )
+        spark.sparkContext.addJar.assert_called_once_with(str(jar))
+        mock_logger.info.assert_called_once()
+
+    def test_auth_skipped_when_az_missing(self, monkeypatch, mock_logger):
+        monkeypatch.setattr("shutil.which", lambda _: None)
+
+        from kindling.platform_standalone import _configure_abfss_local_auth
+
+        spark = self._make_spark()
+        _configure_abfss_local_auth(spark, {}, mock_logger)
+
+        spark.conf.set.assert_not_called()
+        spark.sparkContext.addJar.assert_not_called()
+
+    def test_auth_skipped_when_opted_out(self, monkeypatch, mock_logger):
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/az")
+
+        from kindling.platform_standalone import _configure_abfss_local_auth
+
+        spark = self._make_spark()
+        _configure_abfss_local_auth(
+            spark, {"kindling.standalone.abfss_az_cli_auth": False}, mock_logger
+        )
+
+        spark.conf.set.assert_not_called()
+        spark.sparkContext.addJar.assert_not_called()
+
+
 if __name__ == "__main__":
     # Allow running tests directly
     pytest.main([__file__, "-v"])
