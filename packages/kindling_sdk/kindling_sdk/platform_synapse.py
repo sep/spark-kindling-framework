@@ -300,22 +300,199 @@ class SynapseAPI(PlatformAPI):
         environment: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Submit an app run via an idempotent per-app SparkJobDefinition.
-
-        Each app gets its own definition (named after the app) built directly from
-        this client's storage/pool settings — no shared runner definition involved.
-        PUT is idempotent so re-running the same app just refreshes its definition.
-        """
+        """Submit a one-time app run via the Livy batch API (no stored definition)."""
         config_overrides: Dict[str, Any] = dict(parameters or {})
         if environment:
             config_overrides["environment"] = environment
-
         job_config: Dict[str, Any] = {
             "app_name": app_name,
             "config_overrides": config_overrides,
         }
-        self.create_job(app_name, job_config)
-        return self.run_job(app_name)
+        return self._submit_livy_batch(app_name, job_config)
+
+    def register_app_job(
+        self,
+        app_name: str,
+        config_overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create or update a named SparkJobDefinition for use in Synapse Pipelines."""
+        job_config: Dict[str, Any] = {
+            "app_name": app_name,
+            "config_overrides": config_overrides or {},
+        }
+        result = self.create_job(app_name, job_config)
+        return {**result, "platform": "synapse"}
+
+    def _build_job_properties(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Build the Livy/SparkJobDefinition jobProperties payload from a job config.
+
+        Returns a dict with keys: file, args, conf, driverMemory, driverCores,
+        executorMemory, executorCores, numExecutors.
+        """
+        app_name = job_config.get("app_name", job_name)
+
+        main_file = self._resolve_default_main_file(job_config)
+        if not main_file.startswith("abfss://"):
+            if self.storage_account and self.container:
+                main_file = azure_abfss_uri(self.container, self.storage_account, main_file)
+            else:
+                raise ValueError(
+                    "main_file must be an ABFSS path, or storage_account and container "
+                    "must be configured so the default path can be resolved."
+                )
+
+        if self.storage_account and self.container:
+            artifacts_subpath = self.base_path.strip("/") if self.base_path else ""
+            if artifacts_subpath == self.container:
+                artifacts_storage_path = f"{azure_abfss_uri(self.container, self.storage_account)}/"
+            elif artifacts_subpath:
+                artifacts_storage_path = azure_abfss_uri(
+                    self.container, self.storage_account, artifacts_subpath
+                )
+            else:
+                artifacts_storage_path = f"{azure_abfss_uri(self.container, self.storage_account)}/"
+        else:
+            artifacts_storage_path = job_config.get("artifacts_path", "artifacts")
+
+        bootstrap_params: Dict[str, str] = {
+            "app_name": app_name,
+            "artifacts_storage_path": artifacts_storage_path,
+            "platform": "synapse",
+            "use_lake_packages": "True",
+            "load_local_packages": "False",
+        }
+        if "test_id" in job_config:
+            bootstrap_params["test_id"] = job_config["test_id"]
+
+        overrides = job_config.get("config_overrides", {})
+        if overrides:
+
+            def _serialize_config_value(value: Any) -> str:
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value)
+                if isinstance(value, bool):
+                    return "true" if value else "false"
+                if value is None:
+                    return "null"
+                return str(value)
+
+            def _flatten_dict(d: Dict[str, Any], parent_key: str = "") -> Dict[str, str]:
+                items: list = []
+                for k, v in d.items():
+                    new_key = f"{parent_key}.{k}" if parent_key else k
+                    if isinstance(v, dict):
+                        items.extend(_flatten_dict(v, new_key).items())
+                    else:
+                        items.append((new_key, _serialize_config_value(v)))
+                return dict(items)
+
+            bootstrap_params.update(_flatten_dict(overrides))
+
+        config_args = [f"config:{k}={v}" for k, v in bootstrap_params.items()]
+        raw_args = job_config.get("command_line_args") or ""
+        if isinstance(raw_args, list):
+            additional_args = raw_args
+        else:
+            import shlex
+
+            additional_args = shlex.split(str(raw_args))
+        all_args = config_args + additional_args
+
+        spark_conf = job_config.get("spark_config", {})
+        executor_instances = int(spark_conf.get("executor_instances", 2))
+        executor_cores = int(spark_conf.get("executor_cores", 4))
+        executor_memory = spark_conf.get("executor_memory", "28g")
+        driver_cores = int(spark_conf.get("driver_cores", 4))
+        driver_memory = spark_conf.get("driver_memory", "28g")
+
+        conf_dict: Dict[str, str] = {
+            "spark.executor.instances": str(executor_instances),
+            "spark.executor.cores": str(executor_cores),
+            "spark.executor.memory": executor_memory,
+            "spark.driver.cores": str(driver_cores),
+            "spark.driver.memory": driver_memory,
+        }
+
+        if (
+            job_config.get("configure_diagnostic_emitters", False)
+            and self.storage_account
+            and self.container
+        ):
+            log_uri = (
+                f"{azure_storage_account_url(self.storage_account, service='blob')}"
+                f"/{self.container}/logs"
+            )
+            conf_dict.update(
+                {
+                    "spark.synapse.diagnostic.emitters": "AzureStorageEmitter",
+                    "spark.synapse.diagnostic.emitter.AzureStorageEmitter.type": "AzureStorage",
+                    "spark.synapse.diagnostic.emitter.AzureStorageEmitter.categories": "Log,EventLog,Metrics",
+                    "spark.synapse.diagnostic.emitter.AzureStorageEmitter.uri": log_uri,
+                }
+            )
+            storage_key = job_config.get("storage_access_key") or self._try_get_storage_access_key()
+            if storage_key:
+                if not job_config.get("storage_access_key"):
+                    print(
+                        "🔑 Using Storage Account AccessKey for Synapse diagnostic emitters "
+                        "(derived via ARM using current login)."
+                    )
+                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = "AccessKey"
+                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.secret"] = (
+                    storage_key
+                )
+            else:
+                print(
+                    "ℹ️  No storage_access_key available; configuring Synapse diagnostic emitters "
+                    "with ManagedIdentity (stdout streaming may be unavailable if MI lacks storage access)."
+                )
+                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = (
+                    "ManagedIdentity"
+                )
+
+        return {
+            "file": main_file,
+            "args": all_args,
+            "conf": conf_dict,
+            "driverMemory": driver_memory,
+            "driverCores": driver_cores,
+            "executorMemory": executor_memory,
+            "executorCores": executor_cores,
+            "numExecutors": executor_instances,
+        }
+
+    def _submit_livy_batch(self, app_name: str, job_config: Dict[str, Any]) -> str:
+        """Submit a one-time Spark job via the Livy batch API.
+
+        POST /livyApi/versions/2019-11-01-preview/sparkPools/{pool}/batches
+        No SparkJobDefinition is created or required.
+        """
+        props = self._build_job_properties(app_name, job_config)
+        url = (
+            f"{self.base_url}/livyApi/versions/2019-11-01-preview"
+            f"/sparkPools/{self.spark_pool_name}/batches"
+        )
+        body = {
+            "name": f"kindling-adhoc-{app_name}",
+            "file": props["file"],
+            "args": props["args"],
+            "conf": props["conf"],
+            "driverMemory": props["driverMemory"],
+            "driverCores": props["driverCores"],
+            "executorMemory": props["executorMemory"],
+            "executorCores": props["executorCores"],
+            "numExecutors": props["numExecutors"],
+        }
+        response = self._make_request("POST", url, json=body)
+        result = response.json()
+        batch_id = result.get("id")
+        if batch_id is None:
+            raise RuntimeError(
+                f"Livy batch submit did not return a batch ID for app '{app_name}'. "
+                f"Response: {result}"
+            )
+        print(f"🚀 Submitted Synapse Livy batch: app={app_name} batch_id={batch_id}")
+        return str(batch_id)
 
     def _get_access_token(self) -> str:
         """Get Azure access token for Synapse API"""
@@ -386,154 +563,18 @@ class SynapseAPI(PlatformAPI):
 
         Args:
             job_name: Name for the job definition (unique per workspace).
-            job_config: Job configuration containing:
-                - main_file: Entry point ABFSS path (required unless storage_account
-                  and container are configured for default resolution)
-                - command_line_args: Extra CLI arguments (optional)
-                - spark_config: Spark executor/driver settings (optional)
-                - app_name: Display name (optional, defaults to job_name)
-                - config_overrides: Nested dict of kindling config overrides (optional)
-                - configure_diagnostic_emitters: bool (optional, default False)
-                - test_id: Test tracking ID injected into bootstrap args (optional)
+            job_config: Job configuration — see _build_job_properties for full schema.
 
         Returns:
             Dictionary with job_id, job_name, workspace_name.
         """
-        job_id = job_name
-        app_name = job_config.get("app_name", job_id)
-
-        # Resolve main file
-        main_file = self._resolve_default_main_file(job_config)
-        if not main_file.startswith("abfss://"):
-            if self.storage_account and self.container:
-                main_file = azure_abfss_uri(self.container, self.storage_account, main_file)
-            else:
-                raise ValueError(
-                    "main_file must be an ABFSS path, or storage_account and container "
-                    "must be configured so the default path can be resolved."
-                )
-
-        # Build artifacts storage path (passed to bootstrap as config arg)
-        if self.storage_account and self.container:
-            artifacts_subpath = self.base_path.strip("/") if self.base_path else ""
-            if artifacts_subpath == self.container:
-                artifacts_storage_path = f"{azure_abfss_uri(self.container, self.storage_account)}/"
-            elif artifacts_subpath:
-                artifacts_storage_path = azure_abfss_uri(
-                    self.container, self.storage_account, artifacts_subpath
-                )
-            else:
-                artifacts_storage_path = f"{azure_abfss_uri(self.container, self.storage_account)}/"
-        else:
-            artifacts_storage_path = job_config.get("artifacts_path", "artifacts")
-
-        # Bootstrap params passed as positional args to the entry-point script
-        bootstrap_params: Dict[str, str] = {
-            "app_name": app_name,
-            "artifacts_storage_path": artifacts_storage_path,
-            "platform": "synapse",
-            "use_lake_packages": "True",
-            "load_local_packages": "False",
-        }
-        if "test_id" in job_config:
-            bootstrap_params["test_id"] = job_config["test_id"]
-
-        overrides = job_config.get("config_overrides", {})
-        if overrides:
-
-            def _serialize_config_value(value: Any) -> str:
-                if isinstance(value, (dict, list)):
-                    return json.dumps(value)
-                if isinstance(value, bool):
-                    return "true" if value else "false"
-                if value is None:
-                    return "null"
-                return str(value)
-
-            def _flatten_dict(d: Dict[str, Any], parent_key: str = "") -> Dict[str, str]:
-                items: list = []
-                for k, v in d.items():
-                    new_key = f"{parent_key}.{k}" if parent_key else k
-                    if isinstance(v, dict):
-                        items.extend(_flatten_dict(v, new_key).items())
-                    else:
-                        items.append((new_key, _serialize_config_value(v)))
-                return dict(items)
-
-            bootstrap_params.update(_flatten_dict(overrides))
-
-        config_args = [f"config:{k}={v}" for k, v in bootstrap_params.items()]
-        raw_args = job_config.get("command_line_args") or ""
-        if isinstance(raw_args, list):
-            additional_args = raw_args
-        else:
-            import shlex
-
-            additional_args = shlex.split(str(raw_args))
-        all_args = config_args + additional_args
-
-        # Spark configuration
-        spark_conf = job_config.get("spark_config", {})
-        executor_instances = int(spark_conf.get("executor_instances", 2))
-        executor_cores = int(spark_conf.get("executor_cores", 4))
-        executor_memory = spark_conf.get("executor_memory", "28g")
-        driver_cores = int(spark_conf.get("driver_cores", 4))
-        driver_memory = spark_conf.get("driver_memory", "28g")
-
-        conf_dict: Dict[str, str] = {
-            "spark.executor.instances": str(executor_instances),
-            "spark.executor.cores": str(executor_cores),
-            "spark.executor.memory": executor_memory,
-            "spark.driver.cores": str(driver_cores),
-            "spark.driver.memory": driver_memory,
-        }
-
-        if (
-            job_config.get("configure_diagnostic_emitters", False)
-            and self.storage_account
-            and self.container
-        ):
-            log_uri = (
-                f"{azure_storage_account_url(self.storage_account, service='blob')}"
-                f"/{self.container}/logs"
-            )
-            conf_dict.update(
-                {
-                    "spark.synapse.diagnostic.emitters": "AzureStorageEmitter",
-                    "spark.synapse.diagnostic.emitter.AzureStorageEmitter.type": "AzureStorage",
-                    "spark.synapse.diagnostic.emitter.AzureStorageEmitter.categories": "Log,EventLog,Metrics",
-                    "spark.synapse.diagnostic.emitter.AzureStorageEmitter.uri": log_uri,
-                }
-            )
-            storage_key = job_config.get("storage_access_key") or self._try_get_storage_access_key()
-            if storage_key:
-                if job_config.get("storage_access_key"):
-                    pass
-                else:
-                    print(
-                        "🔑 Using Storage Account AccessKey for Synapse diagnostic emitters "
-                        "(derived via ARM using current login)."
-                    )
-                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = "AccessKey"
-                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.secret"] = (
-                    storage_key
-                )
-            else:
-                print(
-                    "ℹ️  No storage_access_key available; configuring Synapse diagnostic emitters "
-                    "with ManagedIdentity (stdout streaming may be unavailable if MI lacks storage access)."
-                )
-                conf_dict["spark.synapse.diagnostic.emitter.AzureStorageEmitter.auth"] = (
-                    "ManagedIdentity"
-                )
-
         env_vars = job_config.get("environment", {})
         if env_vars:
             print("⚠️  Environment variables are not supported in Synapse SparkJobDefinition.")
             print("   Pass them via spark_config or command_line_args instead.")
 
-        # Build SparkJobDefinition request body
-        # Reference: https://learn.microsoft.com/en-us/rest/api/synapse/data-plane/spark-job-definition
+        props = self._build_job_properties(job_name, job_config)
+
         job_def_body = {
             "name": job_name,
             "properties": {
@@ -545,18 +586,18 @@ class SynapseAPI(PlatformAPI):
                 "language": "PySpark",
                 "jobProperties": {
                     "name": job_name,
-                    "file": main_file,
+                    "file": props["file"],
                     "className": "",
-                    "args": all_args,
+                    "args": props["args"],
                     "jars": [],
                     "files": [],
                     "archives": [],
-                    "conf": conf_dict,
-                    "driverMemory": driver_memory,
-                    "driverCores": driver_cores,
-                    "executorMemory": executor_memory,
-                    "executorCores": executor_cores,
-                    "numExecutors": executor_instances,
+                    "conf": props["conf"],
+                    "driverMemory": props["driverMemory"],
+                    "driverCores": props["driverCores"],
+                    "executorMemory": props["executorMemory"],
+                    "executorCores": props["executorCores"],
+                    "numExecutors": props["numExecutors"],
                 },
             },
         }
@@ -568,16 +609,14 @@ class SynapseAPI(PlatformAPI):
         self._make_request("PUT", url, json=job_def_body)
         print(f"✅ Created Synapse SparkJobDefinition: {job_name}")
 
-        # Cache the job payload. The /execute endpoint is tried first per run_job();
-        # Livy batch is used as a fallback when /execute returns 404.
-        self._job_mapping[job_id] = {
-            "file": main_file,
-            "args": all_args,
-            "conf": conf_dict,
+        self._job_mapping[job_name] = {
+            "file": props["file"],
+            "args": props["args"],
+            "conf": props["conf"],
         }
 
         return {
-            "job_id": job_id,
+            "job_id": job_name,
             "job_name": job_name,
             "workspace_name": self.workspace_name,
         }

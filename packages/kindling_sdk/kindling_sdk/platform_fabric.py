@@ -323,6 +323,58 @@ class FabricAPI(PlatformAPI):
         """
         return super().deploy_spark_job(app_files, job_config)
 
+    def submit_app_run(
+        self,
+        app_name: str,
+        environment: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Submit a one-time app run via an ephemeral SparkJobDefinition.
+
+        Creates a transient definition named kindling-adhoc-<timestamp>, submits it,
+        then immediately deletes the definition. The run continues independently.
+        Fabric has no one-time run API, so this ephemeral pattern is required.
+        """
+        import time as _time
+
+        config_overrides: Dict[str, Any] = dict(parameters or {})
+        if environment:
+            config_overrides["environment"] = environment
+
+        adhoc_name = f"kindling-adhoc-{app_name}-{int(_time.time())}"
+        job_config: Dict[str, Any] = {
+            "app_name": app_name,
+            "config_overrides": config_overrides,
+        }
+
+        result = self.create_job(adhoc_name, job_config)
+        job_id = result["job_id"]
+
+        try:
+            run_id = self.run_job(job_id)
+            print(f"🚀 Submitted Fabric ephemeral job: app={app_name} run_id={run_id}")
+        finally:
+            try:
+                self.delete_job(job_id)
+                print(f"🗑️  Deleted ephemeral Fabric job definition: {adhoc_name}")
+            except Exception as del_exc:
+                print(f"⚠️  Failed to delete ephemeral job definition '{adhoc_name}': {del_exc}")
+
+        return run_id
+
+    def register_app_job(
+        self,
+        app_name: str,
+        config_overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create or update a named SparkJobDefinition for use in Fabric Pipelines."""
+        job_config: Dict[str, Any] = {
+            "app_name": app_name,
+            "config_overrides": config_overrides or {},
+        }
+        result = self.create_job(app_name, job_config)
+        return {**result, "platform": "fabric"}
+
     def _get_token(self, scope: str = "fabric") -> str:
         """Get access token for Fabric or OneLake API
 
