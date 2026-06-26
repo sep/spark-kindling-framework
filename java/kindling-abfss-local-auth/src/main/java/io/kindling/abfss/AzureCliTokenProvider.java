@@ -58,9 +58,6 @@ public class AzureCliTokenProvider implements CustomTokenProviderAdaptee {
     private static final Pattern TOKEN_EXPIRY_PATTERN =
             Pattern.compile("\"tokenExpiry\"\\s*:\\s*\"([^\"]+)\"");
 
-    // Date format used by older az CLI versions
-    private static final String DATETIME_MICROS_FORMAT = "yyyy-MM-dd HH:mm:ss.SSSSSS";
-
     @Override
     public synchronized void initialize(Configuration conf, String accountName) throws IOException {
         this.accountName = accountName;
@@ -246,9 +243,9 @@ public class AzureCliTokenProvider implements CustomTokenProviderAdaptee {
         // Try ISO-8601 (newer az CLI: "2025-06-23T14:30:00Z" or with offset)
         // java.util.Date doesn't support ISO-8601 directly in Java 8; handle common variants.
         try {
-            // Strip trailing 'Z' and replace 'T' separator
+            // Normalize trailing Z and colon-form offsets (+HH:MM → +HHMM) for SimpleDateFormat
             String iso = raw.replace("Z", "+0000").replace("z", "+0000");
-            // Try with timezone offset
+            iso = iso.replaceAll("([+-])(\\d{2}):(\\d{2})$", "$1$2$3");
             SimpleDateFormat isoFmt = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ");
             return isoFmt.parse(iso);
         } catch (ParseException e) {

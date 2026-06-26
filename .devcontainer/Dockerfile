@@ -83,6 +83,7 @@ RUN mkdir -p /opt/hadoop-jars \
     https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar \
     && curl -fsSL -o /opt/hadoop-jars/kindling-abfss-local-auth.jar \
     https://github.com/sep/spark-kindling-framework/releases/download/abfss-local-auth-1.0.0/kindling-abfss-local-auth.jar \
+    && echo "feb6236b362f717c79a11eecd05da0b16260799b255a19f5f3575eb3184f67cc  /opt/hadoop-jars/kindling-abfss-local-auth.jar" | sha256sum --check \
     && ln -s /opt/hadoop-jars /tmp/hadoop-jars
 
 # Set up workspace directory for Spark

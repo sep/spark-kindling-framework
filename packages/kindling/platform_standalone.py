@@ -28,7 +28,10 @@ def _configure_abfss_local_auth(spark, config, logger):
     """
     # Opt-out check
     if hasattr(config, "get") and callable(config.get):
-        enabled = config.get("kindling.standalone.abfss_az_cli_auth", True)
+        enabled = config.get(
+            "kindling.standalone.abfss_az_cli_auth",
+            config.get("abfss_az_cli_auth", True),
+        )
     else:
         enabled = getattr(config, "abfss_az_cli_auth", True)
     if not enabled:

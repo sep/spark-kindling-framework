@@ -51,12 +51,23 @@ def _abfss_creds_available() -> bool:
     )
 
 
+_AZ_CLI_AUTH_CACHE: bool | None = None
+
+
 def _az_cli_auth_available() -> bool:
-    """True when az is on PATH and the user is logged in."""
+    """True when az is on PATH and the user is logged in. Result is cached."""
+    global _AZ_CLI_AUTH_CACHE
+    if _AZ_CLI_AUTH_CACHE is not None:
+        return _AZ_CLI_AUTH_CACHE
     if shutil.which("az") is None:
+        _AZ_CLI_AUTH_CACHE = False
         return False
-    result = subprocess.run(["az", "account", "show"], capture_output=True)
-    return result.returncode == 0
+    try:
+        result = subprocess.run(["az", "account", "show"], capture_output=True, timeout=10)
+        _AZ_CLI_AUTH_CACHE = result.returncode == 0
+    except subprocess.TimeoutExpired:
+        _AZ_CLI_AUTH_CACHE = False
+    return _AZ_CLI_AUTH_CACHE
 
 
 def pytest_configure(config):
@@ -192,13 +203,15 @@ def spark_abfss_az_cli():
     """
     if not _az_cli_auth_available():
         pytest.skip("az CLI not found or not logged in — run 'az login'")
-    if not os.environ.get("AZURE_STORAGE_ACCOUNT"):
+    account = os.environ.get("AZURE_STORAGE_ACCOUNT")
+    if not account:
         pytest.skip("AZURE_STORAGE_ACCOUNT not set")
 
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
 
     extra_jars = ",".join(_HADOOP_AZURE_JARS + [_ABFSS_LOCAL_AUTH_JAR])
+    account_suffix = f"{account}.dfs.core.windows.net"
 
     builder = (
         SparkSession.builder.appName("SalesOpsABFSSAzCliTests")
@@ -209,9 +222,9 @@ def spark_abfss_az_cli():
             "spark.sql.catalog.spark_catalog",
             "org.apache.spark.sql.delta.catalog.DeltaCatalog",
         )
-        .config("spark.hadoop.fs.azure.account.auth.type", "Custom")
+        .config(f"spark.hadoop.fs.azure.account.auth.type.{account_suffix}", "Custom")
         .config(
-            "spark.hadoop.fs.azure.account.oauth.provider.type",
+            f"spark.hadoop.fs.azure.account.oauth.provider.type.{account_suffix}",
             "io.kindling.abfss.AzureCliTokenProvider",
         )
         .config("spark.sql.shuffle.partitions", "2")

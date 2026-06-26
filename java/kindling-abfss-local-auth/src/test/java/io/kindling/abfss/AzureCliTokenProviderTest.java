@@ -36,7 +36,7 @@ public class AzureCliTokenProviderTest {
         void fetchToken() throws IOException {
             fetchCount++;
             // Simulate what the real fetchToken sets via reflection-accessible fields.
-            // Because the fields are package-private we set them directly from the same package.
+            // Fields are private so we use setAccessible(true) to inject test values.
             try {
                 java.lang.reflect.Field tf = AzureCliTokenProvider.class.getDeclaredField("cachedToken");
                 tf.setAccessible(true);
