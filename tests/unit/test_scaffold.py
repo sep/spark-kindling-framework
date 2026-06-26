@@ -473,8 +473,8 @@ class TestScaffoldCommands:
         assert "Next steps" in result.output
         assert "cd apps/my_proj" in result.output
         assert "kindling app run ." in result.output
-        assert "kindling runner ensure --platform <platform>" in result.output
         assert "kindling app run . --platform <platform>" in result.output
+        assert "kindling runner register" in result.output
 
     def test_app_init_minimal_layers_prints_run_step(self, tmp_path):
         repo_root = tmp_path / "repo"
