@@ -760,12 +760,16 @@ jobs:
           echo "⏭️  Skipping wheel build - no relevant changes detected"
           echo "To force a rebuild, include [build wheels] in commit message"
 
+      - name: Stage bootstrap script
+        if: steps.check-changes.outputs.needs_rebuild == 'true'
+        run: cp runtime/scripts/kindling_bootstrap.py dist/kindling_bootstrap.py
+
       - name: Upload wheel artifacts
         if: steps.check-changes.outputs.needs_rebuild == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: platform-wheels
-          path: dist/*.whl
+          path: dist/
 
   publish-release:
     name: Publish Release
@@ -810,8 +814,6 @@ jobs:
         if: needs.classify-changes.outputs.needs_wheels == 'true'
         run: |
           set -euo pipefail
-          cp runtime/scripts/kindling_bootstrap.py dist/kindling_bootstrap.py
-
           RUNTIME_WHEEL=$(ls dist/spark_kindling-*.whl 2>/dev/null | head -1)
           if [ -z "$RUNTIME_WHEEL" ]; then
             echo "❌ Could not find runtime wheel in dist/"
