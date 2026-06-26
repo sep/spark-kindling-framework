@@ -1024,9 +1024,6 @@ def test_app_run_deployed_name_creates_and_runs_job(monkeypatch):
         def __init__(self):
             self.submitted = []
 
-        def get_runner_status(self, platform):
-            return {"runner_id": "kindling-runner", "state": "installed"}
-
         def submit_app_run(self, app_name, environment=None, parameters=None):
             self.submitted.append((app_name, environment, parameters))
             return "run-1"
@@ -1053,9 +1050,6 @@ def test_app_run_remote_submits_without_deploying(monkeypatch):
         def deploy_app(self, app_name, app_files):
             self.deployed.append((app_name, app_files))
             return "abfss://artifacts@acct.dfs.core.windows.net/dev/data-apps/orders"
-
-        def get_runner_status(self, platform):
-            return {"runner_id": "kindling-runner", "state": "installed"}
 
         def submit_app_run(self, app_name, environment=None, parameters=None):
             self.submitted.append((app_name, environment, parameters))
@@ -2408,6 +2402,41 @@ def test_runner_delete_requires_platform_or_env():
     )
     assert result.exit_code != 0
     assert "Unable to determine platform" in result.output
+
+
+def test_runner_delete_app_not_found(monkeypatch):
+    class FakeAPINoJob:
+        def find_job_by_name(self, name):
+            return None
+
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (FakeAPINoJob(), p))
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["runner", "delete", "--app", "missing-app", "--platform", "synapse", "--yes"]
+    )
+    assert result.exit_code != 0
+    assert "missing-app" in result.output
+
+
+def test_runner_register_requires_platform_or_env():
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["runner", "register", "--app", "my-app"], env=dict(_BLANK_PLATFORM_DETECT_VARS)
+    )
+    assert result.exit_code != 0
+    assert "Unable to determine platform" in result.output
+
+
+def test_runner_invoke_missing_job_id_and_app_name(monkeypatch, tmp_path):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text("some_other_key: value\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["runner", "invoke", "--params", str(params_file), "--platform", "synapse"]
+    )
+    assert result.exit_code != 0
+    assert "job_id" in result.output or "app_name" in result.output
 
 
 def test_runner_invoke_runs_job(monkeypatch, tmp_path):
