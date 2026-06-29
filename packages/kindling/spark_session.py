@@ -58,6 +58,12 @@ def _apply_abfss_jars(builder: "SparkSession.Builder") -> "SparkSession.Builder"
         existing = builder._options.get("spark.jars", "")
         jars = ",".join([*filter(None, [existing]), *available_jars])
         builder = builder.config("spark.jars", jars)
+    if _abfss_az_cli_jar():
+        builder = builder.config("spark.hadoop.fs.azure.account.auth.type", "Custom")
+        builder = builder.config(
+            "spark.hadoop.fs.azure.account.oauth.provider.type",
+            "io.kindling.abfss.AzureCliTokenProvider",
+        )
     return builder
 
 

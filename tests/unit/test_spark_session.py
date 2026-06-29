@@ -11,6 +11,7 @@ def test_create_session_uses_plain_builder_by_default(monkeypatch):
     builder.getOrCreate.return_value = "plain-spark"
     monkeypatch.setattr(spark_session, "SparkSession", MagicMock(builder=builder))
     monkeypatch.setattr(spark_session, "_available_abfss_jars", lambda: [])
+    monkeypatch.setattr(spark_session, "_abfss_az_cli_jar", lambda: None)
     monkeypatch.delenv("KINDLING_SPARK_ENABLE_DELTA", raising=False)
 
     result = spark_session.create_session()
@@ -33,9 +34,9 @@ def test_create_session_adds_available_abfss_jars(monkeypatch):
         lambda: [
             "/tmp/hadoop-jars/hadoop-azure-3.3.4.jar",
             "/tmp/hadoop-jars/hadoop-azure-datalake-3.3.4.jar",
-            "/tmp/hadoop-jars/kindling-abfss-local-auth.jar",
         ],
     )
+    monkeypatch.setattr(spark_session, "_abfss_az_cli_jar", lambda: None)
     monkeypatch.delenv("KINDLING_SPARK_ENABLE_DELTA", raising=False)
 
     result = spark_session.create_session()
@@ -44,8 +45,34 @@ def test_create_session_adds_available_abfss_jars(monkeypatch):
     builder.config.assert_any_call(
         "spark.jars",
         "/tmp/hadoop-jars/hadoop-azure-3.3.4.jar,"
-        "/tmp/hadoop-jars/hadoop-azure-datalake-3.3.4.jar,"
-        "/tmp/hadoop-jars/kindling-abfss-local-auth.jar",
+        "/tmp/hadoop-jars/hadoop-azure-datalake-3.3.4.jar",
+    )
+
+
+def test_create_session_sets_auth_config_at_builder_time(monkeypatch):
+    import kindling.spark_session as spark_session
+
+    builder = MagicMock()
+    builder._options = {}
+    builder.config.return_value = builder
+    builder.getOrCreate.return_value = "plain-spark"
+    monkeypatch.setattr(spark_session, "SparkSession", MagicMock(builder=builder))
+    monkeypatch.setattr(
+        spark_session,
+        "_available_abfss_jars",
+        lambda: ["/tmp/hadoop-jars/kindling-abfss-local-auth.jar"],
+    )
+    monkeypatch.setattr(
+        spark_session, "_abfss_az_cli_jar", lambda: "/tmp/hadoop-jars/kindling-abfss-local-auth.jar"
+    )
+    monkeypatch.delenv("KINDLING_SPARK_ENABLE_DELTA", raising=False)
+
+    spark_session.create_session()
+
+    builder.config.assert_any_call("spark.hadoop.fs.azure.account.auth.type", "Custom")
+    builder.config.assert_any_call(
+        "spark.hadoop.fs.azure.account.oauth.provider.type",
+        "io.kindling.abfss.AzureCliTokenProvider",
     )
 
 
@@ -62,6 +89,7 @@ def test_create_session_preserves_existing_spark_jars(monkeypatch):
         "_available_abfss_jars",
         lambda: ["/tmp/hadoop-jars/hadoop-azure-3.3.4.jar"],
     )
+    monkeypatch.setattr(spark_session, "_abfss_az_cli_jar", lambda: None)
     monkeypatch.delenv("KINDLING_SPARK_ENABLE_DELTA", raising=False)
 
     spark_session.create_session()
@@ -86,6 +114,7 @@ def test_create_session_configures_delta_when_requested(monkeypatch):
     monkeypatch.setitem(sys.modules, "delta", delta_module)
     monkeypatch.setattr(spark_session, "SparkSession", MagicMock(builder=builder))
     monkeypatch.setattr(spark_session, "_available_abfss_jars", lambda: [])
+    monkeypatch.setattr(spark_session, "_abfss_az_cli_jar", lambda: None)
     monkeypatch.setenv("KINDLING_SPARK_ENABLE_DELTA", "true")
 
     result = spark_session.create_session()
