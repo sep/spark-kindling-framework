@@ -30,6 +30,19 @@ kindling env check --local
 
 This validates Python version, PySpark, delta-spark, and the Hadoop/Azure JARs. Fix any reported issues before continuing.
 
+To pick up a newer Kindling release inside an existing devcontainer without
+rebuilding the container, run this from a package directory:
+
+```bash
+kindling env update
+```
+
+Generated packages also expose the same workflow as:
+
+```bash
+poetry run poe update-kindling
+```
+
 ---
 
 ## 2. Create Your `.env` File

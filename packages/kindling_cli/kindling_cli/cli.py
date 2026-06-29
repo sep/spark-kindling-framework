@@ -2,13 +2,17 @@
 
 import ast
 import csv
+import hashlib
 import importlib.metadata
 import io
 import json
 import logging
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -1406,7 +1410,7 @@ def config_set(
 
 @cli.group("env")
 def env_group() -> None:
-    """Validate local environment prerequisites."""
+    """Validate and maintain local environment prerequisites."""
 
 
 _HADOOP_AZURE_JARS = [
@@ -1545,6 +1549,127 @@ def _check_hadoop_jars() -> Tuple[bool, str]:
         False,
         f"{len(missing)} jar(s) missing from {_HADOOP_JAR_DIR} — run: kindling env ensure",
     )
+
+
+_KINDLING_ENV_PACKAGES = ("spark-kindling", "spark-kindling-sdk", "spark-kindling-cli")
+
+
+def _can_write_path(path: Path) -> bool:
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return os.access(probe, os.W_OK)
+
+
+def _run_checked(cmd: List[str], *, cwd: Optional[Path] = None) -> None:
+    try:
+        subprocess.run(cmd, cwd=cwd, check=True)
+    except FileNotFoundError as exc:
+        raise click.ClickException(f"Command not found: {cmd[0]}") from exc
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(f"Command failed ({exc.returncode}): {' '.join(cmd)}") from exc
+
+
+def _copy_with_optional_sudo(src: Path, dest: Path, *, use_sudo: bool) -> None:
+    if _can_write_path(dest.parent):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        return
+
+    if not use_sudo:
+        raise click.ClickException(
+            f"{dest.parent} is not writable. Re-run without --no-sudo or choose --package-dir."
+        )
+
+    _run_checked(["sudo", "mkdir", "-p", str(dest.parent)])
+    _run_checked(["sudo", "cp", str(src), str(dest)])
+
+
+def _write_simple_index(packages_dir: Path) -> int:
+    wheels_dir = packages_dir / "wheels"
+    simple_dir = packages_dir / "simple"
+    simple_dir.mkdir(parents=True, exist_ok=True)
+
+    packages: Dict[str, List[Path]] = {}
+    for whl in sorted(wheels_dir.glob("*.whl")):
+        raw_name = whl.name.split("-")[0]
+        normalized_name = re.sub(r"[-_.]+", "-", raw_name).lower()
+        packages.setdefault(normalized_name, []).append(whl)
+
+    links = "\n".join(f'<a href="{name}/">{name}</a>' for name in sorted(packages))
+    (simple_dir / "index.html").write_text(
+        f"<!DOCTYPE html><html><body>\n{links}\n</body></html>\n",
+        encoding="utf-8",
+    )
+
+    for package_name, wheels in packages.items():
+        package_dir = simple_dir / package_name
+        package_dir.mkdir(exist_ok=True)
+        entries = []
+        for whl in wheels:
+            digest = hashlib.sha256(whl.read_bytes()).hexdigest()
+            entries.append(f'<a href="file://{whl.resolve()}#sha256={digest}">{whl.name}</a>')
+        body = "\n".join(entries)
+        (package_dir / "index.html").write_text(
+            f"<!DOCTYPE html><html><body>\n{body}\n</body></html>\n",
+            encoding="utf-8",
+        )
+
+    return len(packages)
+
+
+def _refresh_simple_index(packages_dir: Path, *, use_sudo: bool) -> int:
+    simple_dir = packages_dir / "simple"
+    if _can_write_path(simple_dir):
+        return _write_simple_index(packages_dir)
+
+    if not use_sudo:
+        raise click.ClickException(
+            f"{simple_dir} is not writable. Re-run without --no-sudo or choose --package-dir."
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_root = Path(tmp) / "kindling-packages"
+        temp_wheels = temp_root / "wheels"
+        temp_wheels.mkdir(parents=True)
+        for whl in sorted((packages_dir / "wheels").glob("*.whl")):
+            shutil.copy2(whl, temp_wheels / whl.name)
+        package_count = _write_simple_index(temp_root)
+        _run_checked(["sudo", "rm", "-rf", str(simple_dir)])
+        _run_checked(["sudo", "mkdir", "-p", str(packages_dir)])
+        _run_checked(["sudo", "cp", "-R", str(temp_root / "simple"), str(simple_dir)])
+        return package_count
+
+
+def _update_kindling_project(project_path: Path, *, sync: bool) -> None:
+    if not (project_path / "pyproject.toml").exists():
+        click.echo(f"Skipping Poetry update; no pyproject.toml found at {project_path}.")
+        return
+
+    command = ["poetry", "update", *_KINDLING_ENV_PACKAGES]
+    _run_checked(command, cwd=project_path)
+    install_command = ["poetry", "install", "--with", "dev"]
+    if sync:
+        install_command.append("--sync")
+    _run_checked(install_command, cwd=project_path)
+
+
+def _install_global_wheels(wheels: List[Path], *, use_sudo: bool) -> None:
+    specs = [
+        f"{wheel}[standalone]" if wheel.name.startswith("spark_kindling-") else str(wheel)
+        for wheel in wheels
+    ]
+    command = [sys.executable, "-m", "pip", "install", "--upgrade", *specs]
+    try:
+        subprocess.run(command, check=True)
+    except FileNotFoundError as exc:
+        raise click.ClickException(f"Command not found: {sys.executable}") from exc
+    except subprocess.CalledProcessError as exc:
+        if not use_sudo:
+            raise click.ClickException(
+                "Global Kindling install failed. Re-run without --no-sudo or pass --no-global."
+            ) from exc
+        _run_checked(["sudo", *command])
 
 
 @env_group.command("check")
@@ -1720,6 +1845,110 @@ def env_ensure() -> None:
         click.echo(f"\nAll JARs present in {_HADOOP_JAR_DIR}")
     else:
         raise click.ClickException("One or more JARs could not be downloaded.")
+
+
+@env_group.command("update")
+@click.option(
+    "--version",
+    default="latest",
+    show_default=True,
+    help="Kindling release version or tag to install.",
+)
+@click.option(
+    "--repo",
+    default=KINDLING_GITHUB_REPO,
+    show_default=True,
+    help="GitHub repository containing Kindling release wheel assets.",
+)
+@click.option(
+    "--package-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=Path("/opt/kindling-packages"),
+    show_default=True,
+    help="Local wheel cache used by generated pyproject.toml files.",
+)
+@click.option(
+    "--project",
+    "project_path",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=Path("."),
+    show_default=True,
+    help="Poetry project to update after refreshing the local wheel cache.",
+)
+@click.option(
+    "--no-project",
+    is_flag=True,
+    help="Refresh the devcontainer cache only; skip Poetry update/install.",
+)
+@click.option(
+    "--no-global",
+    is_flag=True,
+    help="Skip reinstalling Kindling into the current Python environment.",
+)
+@click.option(
+    "--no-sync",
+    is_flag=True,
+    help="Run poetry install without --sync.",
+)
+@click.option(
+    "--no-sudo",
+    is_flag=True,
+    help="Do not use sudo when /opt/kindling-packages is not writable.",
+)
+def env_update(
+    version: str,
+    repo: str,
+    package_dir: Path,
+    project_path: Path,
+    no_project: bool,
+    no_global: bool,
+    no_sync: bool,
+    no_sudo: bool,
+) -> None:
+    """Update Kindling packages in a domain devcontainer without rebuilding it.
+
+    \b
+    This refreshes the local wheel cache used by generated pyproject.toml files:
+
+      /opt/kindling-packages/wheels/
+      /opt/kindling-packages/simple/
+
+    Then it optionally reinstalls the current Python environment's Kindling
+    packages and updates the current Poetry project against that refreshed
+    local index.
+    """
+    resolved_version = _resolve_github_version(version, repo=repo)
+    package_dir = package_dir.expanduser().resolve()
+    project_path = project_path.expanduser().resolve()
+    use_sudo = not no_sudo
+
+    click.echo(f"Updating Kindling devcontainer packages to {resolved_version} from {repo}")
+    with tempfile.TemporaryDirectory() as tmp:
+        download_dir = Path(tmp)
+        _download_github_release_assets(resolved_version, download_dir, repo=repo)
+        wheels = sorted(download_dir.glob("*.whl"))
+        if not wheels:
+            raise click.ClickException(
+                f"No wheel assets downloaded for Kindling {resolved_version}."
+            )
+
+        wheels_dir = package_dir / "wheels"
+        for wheel in wheels:
+            _copy_with_optional_sudo(wheel, wheels_dir / wheel.name, use_sudo=use_sudo)
+            click.echo(f"  cached {wheel.name}")
+
+        package_count = _refresh_simple_index(package_dir, use_sudo=use_sudo)
+        click.echo(f"  refreshed {package_dir / 'simple'} ({package_count} package(s))")
+
+        if not no_global:
+            _install_global_wheels(wheels, use_sudo=use_sudo)
+            click.echo("  updated current Python environment")
+
+    if not no_project:
+        _update_kindling_project(project_path, sync=not no_sync)
+        click.echo(f"  updated Poetry project at {project_path}")
+
+    click.echo(f"\nKindling devcontainer packages are up to date at {resolved_version}.")
 
 
 @cli.group("workspace")

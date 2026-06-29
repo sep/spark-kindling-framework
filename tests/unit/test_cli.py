@@ -15,6 +15,7 @@ from kindling_cli.cli import (
     _find_wheels,
     _generate_bootstrap_notebook,
     _generate_sample_notebook,
+    _install_global_wheels,
     _load_app_module,
     _parse_abfss_uri,
     _render_environment_bootstrap_source,
@@ -114,6 +115,98 @@ def test_env_check_passes_for_generated_settings_file():
 
         assert result.exit_code == 0
         assert "Environment check passed." in result.output
+
+
+def test_env_update_refreshes_local_kindling_index(monkeypatch, tmp_path):
+    package_dir = tmp_path / "kindling-packages"
+
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+
+    def fake_download(version, temp_dir, repo):
+        assert version == "1.2.3"
+        (temp_dir / "spark_kindling-1.2.3-py3-none-any.whl").write_bytes(b"runtime")
+        (temp_dir / "spark_kindling_cli-1.2.3-py3-none-any.whl").write_bytes(b"cli")
+        (temp_dir / "spark_kindling_sdk-1.2.3-py3-none-any.whl").write_bytes(b"sdk")
+
+    monkeypatch.setattr("kindling_cli.cli._download_github_release_assets", fake_download)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "env",
+            "update",
+            "--version",
+            "1.2.3",
+            "--package-dir",
+            str(package_dir),
+            "--no-global",
+            "--no-project",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (package_dir / "wheels" / "spark_kindling-1.2.3-py3-none-any.whl").exists()
+    root_index = (package_dir / "simple" / "index.html").read_text(encoding="utf-8")
+    assert "spark-kindling" in root_index
+    package_index = (package_dir / "simple" / "spark-kindling-cli" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "spark_kindling_cli-1.2.3-py3-none-any.whl" in package_index
+
+
+def test_env_update_can_update_current_poetry_project(monkeypatch, tmp_path):
+    package_dir = tmp_path / "kindling-packages"
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "pyproject.toml").write_text("[tool.poetry]\nname = 'demo'\n", encoding="utf-8")
+    calls = {}
+
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr("kindling_cli.cli._install_global_wheels", lambda wheels, use_sudo: None)
+
+    def fake_download(version, temp_dir, repo):
+        (temp_dir / "spark_kindling-1.2.3-py3-none-any.whl").write_bytes(b"runtime")
+
+    def fake_project_update(path, sync):
+        calls["path"] = path
+        calls["sync"] = sync
+
+    monkeypatch.setattr("kindling_cli.cli._download_github_release_assets", fake_download)
+    monkeypatch.setattr("kindling_cli.cli._update_kindling_project", fake_project_update)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "env",
+            "update",
+            "--package-dir",
+            str(package_dir),
+            "--project",
+            str(project_dir),
+            "--no-sync",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == {"path": project_dir.resolve(), "sync": False}
+
+
+def test_env_update_global_install_preserves_standalone_extra(monkeypatch, tmp_path):
+    wheel = tmp_path / "spark_kindling-1.2.3-py3-none-any.whl"
+    wheel.write_bytes(b"runtime")
+    cli_wheel = tmp_path / "spark_kindling_cli-1.2.3-py3-none-any.whl"
+    cli_wheel.write_bytes(b"cli")
+    commands = []
+
+    def fake_run(command, check):
+        commands.append(command)
+
+    monkeypatch.setattr("kindling_cli.cli.subprocess.run", fake_run)
+
+    _install_global_wheels([wheel, cli_wheel], use_sudo=False)
+
+    assert f"{wheel}[standalone]" in commands[0]
+    assert str(cli_wheel) in commands[0]
 
 
 # ---------------------------------------------------------------------------

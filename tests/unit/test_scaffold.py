@@ -285,6 +285,7 @@ def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path
     assert 'test-component = "pytest tests/component -v"' in pyproject
     assert 'test-integration = "pytest tests/integration -v"' in pyproject
     assert 'build = "poetry build"' in pyproject
+    assert 'update-kindling = "kindling env update"' in pyproject
 
 
 def test_env_example_medallion_has_bronze_and_silver_paths(tmp_path):
