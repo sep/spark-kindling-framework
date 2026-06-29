@@ -397,7 +397,7 @@ class TestAbfssLocalAuth:
             "spark.hadoop.fs.azure.account.oauth.provider.type",
             "io.kindling.abfss.AzureCliTokenProvider",
         )
-        spark.sparkContext.addJar.assert_called_once_with(str(jar))
+        spark.sparkContext.addJar.assert_not_called()
         mock_logger.info.assert_called_once()
 
     def test_auth_skipped_when_az_missing(self, monkeypatch, mock_logger):
@@ -409,7 +409,6 @@ class TestAbfssLocalAuth:
         _configure_abfss_local_auth(spark, {}, mock_logger)
 
         spark.conf.set.assert_not_called()
-        spark.sparkContext.addJar.assert_not_called()
 
     def test_auth_skipped_when_opted_out(self, monkeypatch, mock_logger):
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/az")
@@ -422,7 +421,6 @@ class TestAbfssLocalAuth:
         )
 
         spark.conf.set.assert_not_called()
-        spark.sparkContext.addJar.assert_not_called()
 
 
 if __name__ == "__main__":

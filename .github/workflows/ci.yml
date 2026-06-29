@@ -20,6 +20,7 @@ name: Kindling CI/CD Pipeline
 #
 # To release: push a v* tag (poe release). CI owns the GitHub release object.
 # To force wheel rebuild on any commit, include [build wheels] in commit message
+# To skip cloud system tests for a standalone-only fix, include [skip system tests] in commit message
 
 on:
   push:
@@ -205,6 +206,14 @@ jobs:
           elif [[ "$sdk_changed" == "true" ]]; then
             release_kind="sdk"
             needs_wheels=true
+          fi
+
+          # [skip system tests] in the commit message bypasses cloud platform
+          # tests for runtime changes that only affect the standalone/local path.
+          commit_msg="${{ github.event.head_commit.message }}"
+          if [[ "$needs_system_tests" == "true" && "$commit_msg" == *"[skip system tests]"* ]]; then
+            needs_system_tests=false
+            echo "Commit message contains [skip system tests] - skipping cloud system tests"
           fi
 
           docs_only=false

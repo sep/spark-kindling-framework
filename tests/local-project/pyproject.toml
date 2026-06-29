@@ -24,6 +24,7 @@ poethepoet = ">=0.24.0"
 test-unit = "pytest tests/unit -v"
 test-component = "pytest tests/component -v"
 test-integration = "pytest tests/integration -v"
+test-integration-az = "pytest tests/integration -v -m requires_az_login"
 test-all = { sequence = ["test-unit", "test-component", "test-integration"] }
 test = { sequence = ["test-unit", "test-component"] }
 build = "poetry build"
@@ -38,4 +39,5 @@ markers = [
     "component: DI wiring, no ABFSS",
     "integration: requires Spark and ABFSS credentials",
     "requires_azure: skipped when required AZURE_* environment variables are not set",
+    "requires_az_login: skipped when az CLI is not on PATH or not logged in",
 ]
