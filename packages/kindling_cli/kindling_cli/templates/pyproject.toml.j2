@@ -38,6 +38,7 @@ test-all = { sequence = ["test-unit", "test-component", "test-integration"] }
 {% endif %}
 test = { sequence = ["test-unit", "test-component"] }
 build = "poetry build"
+update-kindling = "kindling env update"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

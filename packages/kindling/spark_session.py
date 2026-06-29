@@ -11,7 +11,15 @@ _logger = logging.getLogger(__name__)
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _DELTA_EXTENSION = "io.delta.sql.DeltaSparkSessionExtension"
 _DELTA_CATALOG = "org.apache.spark.sql.delta.catalog.DeltaCatalog"
-_ABFSS_LOCAL_AUTH_JAR = Path("/tmp/hadoop-jars/kindling-abfss-local-auth.jar")
+_HADOOP_JAR_DIR = Path("/tmp/hadoop-jars")
+_ABFSS_SUPPORT_JARS = [
+    _HADOOP_JAR_DIR / "hadoop-azure-3.3.4.jar",
+    _HADOOP_JAR_DIR / "hadoop-azure-datalake-3.3.4.jar",
+    _HADOOP_JAR_DIR / "azure-storage-8.6.6.jar",
+    _HADOOP_JAR_DIR / "wildfly-openssl-1.1.3.Final.jar",
+    _HADOOP_JAR_DIR / "jetty-util-ajax-9.4.51.v20230217.jar",
+]
+_ABFSS_LOCAL_AUTH_JAR = _HADOOP_JAR_DIR / "kindling-abfss-local-auth.jar"
 
 
 def safe_get_global(var_name: str, default=None):
@@ -34,12 +42,21 @@ def _abfss_az_cli_jar() -> str | None:
     return None
 
 
-def _apply_abfss_jar(builder: "SparkSession.Builder") -> "SparkSession.Builder":
-    """Add the ABFSS local auth JAR to the builder if az is available."""
-    jar = _abfss_az_cli_jar()
-    if jar:
+def _available_abfss_jars() -> list[str]:
+    """Return local ABFSS connector/auth JARs that should be on Spark's classpath."""
+    jars = [str(jar) for jar in _ABFSS_SUPPORT_JARS if jar.exists()]
+    auth_jar = _abfss_az_cli_jar()
+    if auth_jar:
+        jars.append(auth_jar)
+    return jars
+
+
+def _apply_abfss_jars(builder: "SparkSession.Builder") -> "SparkSession.Builder":
+    """Add local ABFSS support JARs to the builder when they are available."""
+    available_jars = _available_abfss_jars()
+    if available_jars:
         existing = builder._options.get("spark.jars", "")
-        jars = ",".join(filter(None, [existing, jar]))
+        jars = ",".join([*filter(None, [existing]), *available_jars])
         builder = builder.config("spark.jars", jars)
     return builder
 
@@ -59,7 +76,7 @@ def _create_delta_enabled_session():
         .config("spark.sql.catalog.spark_catalog", _DELTA_CATALOG)
         .config("spark.ui.enabled", os.getenv("KINDLING_SPARK_UI_ENABLED", "false"))
     )
-    builder = _apply_abfss_jar(builder)
+    builder = _apply_abfss_jars(builder)
     return configure_spark_with_delta_pip(builder).getOrCreate()
 
 
@@ -71,7 +88,7 @@ def create_session():
     if _env_flag_enabled("KINDLING_SPARK_ENABLE_DELTA"):
         spark_session = _create_delta_enabled_session()
     else:
-        builder = _apply_abfss_jar(SparkSession.builder)
+        builder = _apply_abfss_jars(SparkSession.builder)
         spark_session = builder.getOrCreate()
 
     # Store in __main__ so other code can find it

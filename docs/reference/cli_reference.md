@@ -125,7 +125,7 @@ kindling config set kindling.secrets.secret_scope my-scope --level env --env pro
 
 ## env
 
-Validate local environment prerequisites.
+Validate and maintain local environment prerequisites.
 
 ### `env check`
 
@@ -148,6 +148,40 @@ Platform credential vars checked:
 ```bash
 kindling env check --local
 kindling env check --platform fabric
+```
+
+### `env ensure`
+
+Download local Spark + ABFSS support JARs into `/tmp/hadoop-jars/`.
+Safe to re-run; existing JARs are skipped.
+
+```bash
+kindling env ensure
+```
+
+### `env update`
+
+Update Kindling packages inside a domain devcontainer without rebuilding the
+container. This downloads wheel assets from the public Kindling GitHub release,
+refreshes `/opt/kindling-packages/wheels/` and the local PEP 503 index at
+`/opt/kindling-packages/simple/`, reinstalls Kindling into the current Python
+environment, then runs `poetry update` and `poetry install` for the current
+project.
+
+| Option | Default | Description |
+|---|---|---|
+| `--version TEXT` | `latest` | Kindling release version or tag |
+| `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
+| `--package-dir PATH` | `/opt/kindling-packages` | Local wheel cache used by generated projects |
+| `--project PATH` | `.` | Poetry project to update |
+| `--no-project` | — | Refresh the devcontainer cache only |
+| `--no-global` | — | Skip reinstalling Kindling into the current Python environment |
+| `--no-sync` | — | Run `poetry install` without `--sync` |
+| `--no-sudo` | — | Do not use `sudo` for image-owned cache paths |
+
+```bash
+kindling env update
+kindling env update --version 0.10.35
 ```
 
 ---

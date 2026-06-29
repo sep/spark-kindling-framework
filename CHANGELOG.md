@@ -2,6 +2,23 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Added
+
+- Added `kindling env update` to refresh Kindling wheels and the local
+  devcontainer package index in place, so domain projects can update Kindling
+  packages without rebuilding the whole devcontainer.
+- Generated packages now include a `poe update-kindling` task that runs the new
+  update workflow.
+
+### Fixed
+
+- Standalone/local Spark sessions created by Kindling now add the available
+  Hadoop Azure support JARs from `/tmp/hadoop-jars` to `spark.jars`, not only
+  the custom Azure CLI auth provider JAR. This lets local `abfss://` access load
+  the Azure Blob FileSystem classes during `kindling app run`.
+
 ## [0.10.35] - 2026-06-25
 
 ### Fixed
