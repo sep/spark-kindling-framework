@@ -1702,7 +1702,7 @@ def env_ensure() -> None:
             continue
         click.echo(f"  download {jar_name} ...", nl=False)
         try:
-            urllib.request.urlretrieve(url, dest)  # noqa: S310
+            urllib.request.urlretrieve(url, dest)  # nosec B310
             if expected_sha256:
                 actual = hashlib.sha256(dest.read_bytes()).hexdigest()
                 if actual != expected_sha256:
