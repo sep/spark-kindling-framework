@@ -9,6 +9,7 @@ def test_create_session_uses_plain_builder_by_default(monkeypatch):
     builder = MagicMock()
     builder.getOrCreate.return_value = "plain-spark"
     monkeypatch.setattr(spark_session, "SparkSession", MagicMock(builder=builder))
+    monkeypatch.setattr(spark_session, "_abfss_az_cli_jar", lambda: None)
     monkeypatch.delenv("KINDLING_SPARK_ENABLE_DELTA", raising=False)
 
     result = spark_session.create_session()
@@ -29,6 +30,7 @@ def test_create_session_configures_delta_when_requested(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "delta", delta_module)
     monkeypatch.setattr(spark_session, "SparkSession", MagicMock(builder=builder))
+    monkeypatch.setattr(spark_session, "_abfss_az_cli_jar", lambda: None)
     monkeypatch.setenv("KINDLING_SPARK_ENABLE_DELTA", "true")
 
     result = spark_session.create_session()

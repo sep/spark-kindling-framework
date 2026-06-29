@@ -1427,6 +1427,10 @@ _HADOOP_JAR_URLS = (
     "https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-util-ajax/9.4.51.v20230217/jetty-util-ajax-9.4.51.v20230217.jar",
 )
 
+_ABFSS_LOCAL_AUTH_JAR = "kindling-abfss-local-auth.jar"
+_ABFSS_LOCAL_AUTH_JAR_URL = "https://github.com/sep/spark-kindling-framework/releases/download/abfss-local-auth-1.0.0/kindling-abfss-local-auth.jar"
+_ABFSS_LOCAL_AUTH_JAR_SHA256 = "feb6236b362f717c79a11eecd05da0b16260799b255a19f5f3575eb3184f67cc"
+
 
 _PLATFORM_BASE_VARS: Dict[str, List[str]] = {
     "databricks": ["DATABRICKS_HOST", "DATABRICKS_TOKEN"],
@@ -1533,12 +1537,13 @@ def _check_module(module: str) -> Tuple[bool, str]:
 
 
 def _check_hadoop_jars() -> Tuple[bool, str]:
-    missing = [j for j in _HADOOP_AZURE_JARS if not (_HADOOP_JAR_DIR / j).exists()]
+    all_jars = _HADOOP_AZURE_JARS + [_ABFSS_LOCAL_AUTH_JAR]
+    missing = [j for j in all_jars if not (_HADOOP_JAR_DIR / j).exists()]
     if not missing:
         return True, str(_HADOOP_JAR_DIR)
     return (
         False,
-        f"{len(missing)} jar(s) missing from {_HADOOP_JAR_DIR}\n  Run scripts/setup-local-dev.sh to download required JARs",
+        f"{len(missing)} jar(s) missing from {_HADOOP_JAR_DIR} — run: kindling env ensure",
     )
 
 
@@ -1594,11 +1599,8 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
                              AZURE_TENANT_ID, AZURE_CLIENT_ID
 
     \b
-    To download the hadoop-azure JARs run:
-      mkdir -p /tmp/hadoop-jars
-      curl -L -o /tmp/hadoop-jars/hadoop-azure-3.3.4.jar \\
-        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar
-      # (and the four other JARs — see docs/local_python_first.md)
+    To download all required JARs run:
+      kindling env ensure
     """
     if config_path is None:
         config_path = Path("settings.yaml")
@@ -1670,6 +1672,54 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
         return
 
     raise click.ClickException("Environment check failed.")
+
+
+@env_group.command("ensure")
+def env_ensure() -> None:
+    """Download all JARs required for local standalone ABFSS development.
+
+    \b
+    Downloads into /tmp/hadoop-jars/:
+      - hadoop-azure and related JARs (from Maven Central)
+      - kindling-abfss-local-auth.jar (from GitHub Releases)
+
+    Safe to re-run — already-present JARs are skipped.
+    """
+    import hashlib
+    import urllib.request
+
+    _HADOOP_JAR_DIR.mkdir(parents=True, exist_ok=True)
+
+    jar_specs: List[Tuple[str, str, Optional[str]]] = [
+        (url.split("/")[-1], url, None) for url in _HADOOP_JAR_URLS
+    ] + [(_ABFSS_LOCAL_AUTH_JAR, _ABFSS_LOCAL_AUTH_JAR_URL, _ABFSS_LOCAL_AUTH_JAR_SHA256)]
+
+    all_ok = True
+    for jar_name, url, expected_sha256 in jar_specs:
+        dest = _HADOOP_JAR_DIR / jar_name
+        if dest.exists():
+            click.echo(f"  ok       {jar_name}")
+            continue
+        click.echo(f"  download {jar_name} ...", nl=False)
+        try:
+            urllib.request.urlretrieve(url, dest)  # noqa: S310
+            if expected_sha256:
+                actual = hashlib.sha256(dest.read_bytes()).hexdigest()
+                if actual != expected_sha256:
+                    dest.unlink(missing_ok=True)
+                    click.echo(f" CHECKSUM MISMATCH — removed")
+                    all_ok = False
+                    continue
+            click.echo(" done")
+        except Exception as exc:
+            dest.unlink(missing_ok=True)
+            click.echo(f" FAILED: {exc}")
+            all_ok = False
+
+    if all_ok:
+        click.echo(f"\nAll JARs present in {_HADOOP_JAR_DIR}")
+    else:
+        raise click.ClickException("One or more JARs could not be downloaded.")
 
 
 @cli.group("workspace")
