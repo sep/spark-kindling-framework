@@ -45,27 +45,27 @@ def _configure_abfss_local_auth(spark, config, logger):
         logger.debug("az CLI not found on PATH — skipping ABFSS local auth injection")
         return
 
-    # The JAR is distributed via GitHub Releases and pre-downloaded into the
-    # same directory as the other hadoop-azure JARs during devcontainer build.
+    # The JAR must be on the Spark classpath at session start (via spark.jars in
+    # the builder). spark_session.py injects it automatically when az is on PATH.
+    # If the session was created externally without the JAR, auth will fail at
+    # first ABFSS access with a ClassNotFoundException.
     jar_path = Path("/tmp/hadoop-jars/kindling-abfss-local-auth.jar")
     if not jar_path.exists():
         logger.warning(
             "kindling-abfss-local-auth.jar not found in /tmp/hadoop-jars — "
-            "skipping ABFSS local auth injection. "
-            "Rebuild the devcontainer or download the JAR manually."
+            "skipping ABFSS local auth. Download the JAR and ensure it is "
+            "present before the Spark session is created."
         )
         return
 
     try:
-        # Set Hadoop-level auth config (account-agnostic: applies to all accounts)
+        # Set Hadoop-level auth config (account-agnostic: applies to all accounts).
+        # The JAR must already be on the classpath via spark.jars at session start.
         spark.conf.set("spark.hadoop.fs.azure.account.auth.type", "Custom")
         spark.conf.set(
             "spark.hadoop.fs.azure.account.oauth.provider.type",
             "io.kindling.abfss.AzureCliTokenProvider",
         )
-
-        # Add the JAR to the Spark context so the provider class is loadable
-        spark.sparkContext.addJar(str(jar_path))
 
         logger.info(
             "ABFSS local auth active: tokens will be acquired via 'az account get-access-token'. "
