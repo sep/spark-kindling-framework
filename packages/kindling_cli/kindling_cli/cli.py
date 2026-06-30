@@ -1799,25 +1799,64 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
     raise click.ClickException("Environment check failed.")
 
 
+_CLOUD_AZURE = "azure"
+_SUPPORTED_CLOUDS = [_CLOUD_AZURE]
+
+
+def _detect_cloud() -> Optional[str]:
+    """Return the detected cloud provider based on available CLI tools, or None."""
+    if shutil.which("az"):
+        return _CLOUD_AZURE
+    return None
+
+
+def _azure_jar_specs() -> List[Tuple[str, str, Optional[str]]]:
+    return [(url.split("/")[-1], url, None) for url in _HADOOP_JAR_URLS] + [
+        (_ABFSS_LOCAL_AUTH_JAR, _ABFSS_LOCAL_AUTH_JAR_URL, _ABFSS_LOCAL_AUTH_JAR_SHA256)
+    ]
+
+
 @env_group.command("ensure")
-def env_ensure() -> None:
-    """Download all JARs required for local standalone ABFSS development.
+@click.option(
+    "--cloud",
+    type=click.Choice(_SUPPORTED_CLOUDS, case_sensitive=False),
+    default=None,
+    help=(
+        "Cloud provider to download JARs for. "
+        "If omitted, auto-detected from available CLI tools (az → azure)."
+    ),
+)
+def env_ensure(cloud: Optional[str]) -> None:
+    """Download JARs required for local standalone cloud storage development.
 
     \b
-    Downloads into /tmp/hadoop-jars/:
-      - hadoop-azure and related JARs (from Maven Central)
-      - kindling-abfss-local-auth.jar (from GitHub Releases)
+    Without --cloud, the cloud provider is inferred from available CLI tools:
+      az  → azure  (downloads hadoop-azure JARs + kindling-abfss-local-auth.jar)
 
-    Safe to re-run — already-present JARs are skipped.
+    Downloads into /tmp/hadoop-jars/. Safe to re-run — existing JARs are skipped.
     """
     import hashlib
     import urllib.request
 
-    _HADOOP_JAR_DIR.mkdir(parents=True, exist_ok=True)
+    resolved_cloud = cloud or _detect_cloud()
 
-    jar_specs: List[Tuple[str, str, Optional[str]]] = [
-        (url.split("/")[-1], url, None) for url in _HADOOP_JAR_URLS
-    ] + [(_ABFSS_LOCAL_AUTH_JAR, _ABFSS_LOCAL_AUTH_JAR_URL, _ABFSS_LOCAL_AUTH_JAR_SHA256)]
+    if resolved_cloud is None:
+        click.echo(
+            "No cloud provider detected.\n"
+            "Install a cloud CLI (e.g. 'az' for Azure) or pass --cloud explicitly.\n"
+            f"Supported clouds: {', '.join(_SUPPORTED_CLOUDS)}"
+        )
+        return
+
+    if cloud is None:
+        click.echo(f"Detected cloud: {resolved_cloud}")
+
+    if resolved_cloud == _CLOUD_AZURE:
+        jar_specs = _azure_jar_specs()
+    else:
+        raise click.ClickException(f"No JAR spec defined for cloud '{resolved_cloud}'.")
+
+    _HADOOP_JAR_DIR.mkdir(parents=True, exist_ok=True)
 
     all_ok = True
     for jar_name, url, expected_sha256 in jar_specs:
@@ -1832,7 +1871,7 @@ def env_ensure() -> None:
                 actual = hashlib.sha256(dest.read_bytes()).hexdigest()
                 if actual != expected_sha256:
                     dest.unlink(missing_ok=True)
-                    click.echo(f" CHECKSUM MISMATCH — removed")
+                    click.echo(" CHECKSUM MISMATCH — removed")
                     all_ok = False
                     continue
             click.echo(" done")
