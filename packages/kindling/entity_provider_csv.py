@@ -13,7 +13,7 @@ from injector import inject
 from pyspark.sql import DataFrame
 
 from .data_entities import EntityMetadata
-from .entity_provider import BaseEntityProvider
+from .entity_provider import BaseEntityProvider, WritableEntityProvider
 from .injection import GlobalInjector
 from .spark_config import get_or_create_spark_session
 from .spark_log_provider import PythonLoggerProvider
@@ -128,12 +128,13 @@ class FixtureCSVEntityProvider(BaseEntityProvider):
 
 
 @GlobalInjector.singleton_autobind()
-class CSVEntityProvider(BaseEntityProvider):
+class CSVEntityProvider(BaseEntityProvider, WritableEntityProvider):
     """
-    CSV file entity provider (read-only batch operations).
+    CSV file entity provider (batch read and write operations).
 
-    Implements only BaseEntityProvider interface for reading CSV files.
-    Does not support write operations (CSV is typically used for reference/lookup data).
+    Implements BaseEntityProvider and WritableEntityProvider for reading and
+    writing CSV files. Write operations use Spark's CSV writer; existing files
+    are overwritten in full-write mode and appended in append mode.
 
     Provider configuration options (via entity tags with 'provider.' prefix):
     - provider.path: CSV file path (required)
@@ -260,6 +261,50 @@ class CSVEntityProvider(BaseEntityProvider):
                 include_traceback=True,
             )
             raise
+
+    def _write_csv(self, df: DataFrame, entity_metadata: EntityMetadata, mode: str) -> None:
+        config = self._get_provider_config(entity_metadata)
+        path = config.get("path")
+        if not path:
+            raise ValueError(
+                f"CSV provider requires 'path' in tags (provider.path) for entity "
+                f"'{entity_metadata.entityid}'"
+            )
+        header = config.get("header", True)
+        delimiter = config.get("delimiter", ",")
+        encoding = config.get("encoding", "UTF-8")
+        quote = config.get("quote", '"')
+        escape = config.get("escape", "\\")
+
+        self.logger.info(
+            f"Writing CSV entity '{entity_metadata.entityid}' to path: {path} (mode={mode})"
+        )
+        try:
+            (
+                df.write.format("csv")
+                .mode(mode)
+                .option("header", header)
+                .option("delimiter", delimiter)
+                .option("encoding", encoding)
+                .option("quote", quote)
+                .option("escape", escape)
+                .save(path)
+            )
+            self.logger.info(f"Successfully wrote CSV entity '{entity_metadata.entityid}'")
+        except Exception as e:
+            self.logger.error(
+                f"Failed to write CSV entity '{entity_metadata.entityid}' to {path}: {e}",
+                include_traceback=True,
+            )
+            raise
+
+    def write_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
+        """Write DataFrame to CSV (overwrite mode)."""
+        self._write_csv(df, entity_metadata, "overwrite")
+
+    def append_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
+        """Append DataFrame to CSV (append mode)."""
+        self._write_csv(df, entity_metadata, "append")
 
     def check_entity_exists(self, entity_metadata: EntityMetadata) -> bool:
         """

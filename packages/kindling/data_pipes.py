@@ -85,6 +85,106 @@ class DataPipes:
         cls.ids = _PipeIds()
 
     @classmethod
+    def view(
+        cls,
+        *,
+        pipeid: str,
+        name: str = None,
+        input_entity_ids: List[str],
+        output_entity_id: str,
+        sql: str = None,
+        sql_file: str = None,
+        tags: Dict[str, str] = None,
+    ):
+        """Register a SQL-driven view pipe backed by the memory entity provider.
+
+        Pure SQL form (no decorator needed):
+            DataPipes.view(
+                pipeid="view.enriched",
+                input_entity_ids=["bronze.orders", "bronze.customers"],
+                output_entity_id="view.enriched",
+                sql_file="views/enriched.sql",
+            )
+
+        With post-processing (decorator form):
+            @DataPipes.view(
+                pipeid="view.enriched",
+                input_entity_ids=["bronze.orders"],
+                output_entity_id="view.enriched",
+                sql_file="views/enriched.sql",
+            )
+            def enriched(df):
+                return df.filter(df.amount > 0)
+
+        Input entities are registered as Spark temp views named by replacing dots
+        with underscores (e.g. ``bronze.orders`` → ``bronze_orders``). The SQL
+        (from ``sql_file`` or ``sql=``) references those view names. ``sql_file``
+        is resolved relative to the calling module's directory.
+        """
+        import inspect
+        from pathlib import Path as _Path
+
+        if sql is None and sql_file is None:
+            raise ValueError("DataPipes.view() requires either 'sql' or 'sql_file'")
+
+        sql_file_abs = None
+        if sql_file is not None:
+            caller_file = inspect.stack()[1][1]
+            sql_file_abs = str(_Path(caller_file).parent / sql_file)
+
+        resolved_name = name or pipeid
+        resolved_tags = {"pipe_type": "view", "provider_type": "memory", **(tags or {})}
+
+        def _build_execute(post_fn=None):
+            _sql = sql
+            _sf = sql_file_abs
+            _ids = list(input_entity_ids)
+
+            def execute(**entity_dfs):
+                from kindling.spark_config import get_or_create_spark_session
+
+                spark = get_or_create_spark_session()
+                for eid, df in zip(_ids, entity_dfs.values()):
+                    df.createOrReplaceTempView(eid.replace(".", "_"))
+                query = _Path(_sf).read_text() if _sf else _sql
+                result = spark.sql(query)
+                return post_fn(result) if post_fn is not None else result
+
+            return execute
+
+        def _do_register(execute_fn):
+            if cls.dpregistry is None:
+                try:
+                    _raise_if_not_initialized("DataPipes.view", "view")
+                    cls.dpregistry = GlobalInjector.get(DataPipesRegistry)
+                except Exception as exc:
+                    if isinstance(exc, KindlingNotInitializedError):
+                        raise
+                    raise KindlingNotInitializedError(
+                        "A DataPipes.view() call fired before initialize() was called. "
+                        "Call initialize() before importing view modules. "
+                        "See your app.py register_all() for the correct order."
+                    ) from exc
+            cls.dpregistry.register_pipe(
+                pipeid,
+                name=resolved_name,
+                input_entity_ids=input_entity_ids,
+                output_entity_id=output_entity_id,
+                output_type="memory",
+                tags=resolved_tags,
+                execute=execute_fn,
+            )
+            setattr(cls.ids, pipeid.replace(".", "_").replace("-", "_"), pipeid)
+
+        _do_register(_build_execute())
+
+        def decorator(func):
+            _do_register(_build_execute(post_fn=func))
+            return func
+
+        return decorator
+
+    @classmethod
     def pipe(cls, **decorator_params):
         def decorator(func):
             if cls.dpregistry is None:

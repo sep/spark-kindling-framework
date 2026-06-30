@@ -131,6 +131,37 @@ def test_create_session_configures_delta_when_requested(monkeypatch):
     configured_builder.getOrCreate.assert_called_once_with()
 
 
+def test_create_session_respects_abfss_auth_opt_out(monkeypatch):
+    import kindling.spark_session as spark_session
+
+    builder = MagicMock()
+    builder._options = {}
+    builder.config.return_value = builder
+    builder.getOrCreate.return_value = "plain-spark"
+    monkeypatch.setattr(spark_session, "SparkSession", MagicMock(builder=builder))
+    monkeypatch.setattr(
+        spark_session,
+        "_available_abfss_jars",
+        lambda: ["/tmp/hadoop-jars/kindling-abfss-local-auth.jar"],
+    )
+    monkeypatch.setattr(
+        spark_session, "_abfss_az_cli_jar", lambda: "/tmp/hadoop-jars/kindling-abfss-local-auth.jar"
+    )
+    monkeypatch.delenv("KINDLING_SPARK_ENABLE_DELTA", raising=False)
+    monkeypatch.setenv("KINDLING_ABFSS_AZ_CLI_AUTH", "false")
+
+    spark_session.create_session()
+
+    # JARs are still injected — only auth config is suppressed
+    builder.config.assert_any_call("spark.jars", "/tmp/hadoop-jars/kindling-abfss-local-auth.jar")
+    auth_calls = [
+        c
+        for c in builder.config.call_args_list
+        if c.args and "fs.azure.account.auth.type" in str(c.args[0])
+    ]
+    assert auth_calls == [], "Auth config should not be set when opt-out env var is false"
+
+
 def test_create_session_delta_request_explains_missing_dependency(monkeypatch):
     import kindling.spark_session as spark_session
 

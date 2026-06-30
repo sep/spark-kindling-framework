@@ -1153,3 +1153,146 @@ class TestDataPipesIntegration:
 
             # Should be registered
             mock_registry.register_pipe.assert_called_once()
+
+
+class TestDataPipesView:
+    """Tests for DataPipes.view()"""
+
+    def setup_method(self):
+        DataPipes.reset()
+
+    def _mock_registry(self):
+        mock_registry = MagicMock()
+        return mock_registry
+
+    def test_view_registers_pipe_with_memory_output_type(self):
+        DataPipes.dpregistry = None
+        mock_registry = self._mock_registry()
+
+        with (
+            patch("kindling.data_pipes._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry),
+        ):
+            DataPipes.view(
+                pipeid="view.orders",
+                input_entity_ids=["bronze.orders"],
+                output_entity_id="view.orders",
+                sql="SELECT * FROM bronze_orders",
+            )
+
+        mock_registry.register_pipe.assert_called_once()
+        call_kwargs = mock_registry.register_pipe.call_args
+        assert call_kwargs.args[0] == "view.orders"
+        assert call_kwargs.kwargs["output_type"] == "memory"
+
+    def test_view_tags_include_pipe_type_and_provider_type(self):
+        DataPipes.dpregistry = None
+        mock_registry = self._mock_registry()
+
+        with (
+            patch("kindling.data_pipes._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry),
+        ):
+            DataPipes.view(
+                pipeid="view.orders",
+                input_entity_ids=["bronze.orders"],
+                output_entity_id="view.orders",
+                sql="SELECT * FROM bronze_orders",
+            )
+
+        tags = mock_registry.register_pipe.call_args.kwargs["tags"]
+        assert tags["pipe_type"] == "view"
+        assert tags["provider_type"] == "memory"
+
+    def test_view_requires_sql_or_sql_file(self):
+        DataPipes.dpregistry = None
+        mock_registry = self._mock_registry()
+
+        with (
+            patch("kindling.data_pipes._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry),
+        ):
+            with pytest.raises(ValueError, match="sql.*sql_file"):
+                DataPipes.view(
+                    pipeid="view.orders",
+                    input_entity_ids=["bronze.orders"],
+                    output_entity_id="view.orders",
+                )
+
+    def test_view_execute_registers_temp_views_and_runs_sql(self):
+        DataPipes.dpregistry = None
+        mock_registry = self._mock_registry()
+
+        with (
+            patch("kindling.data_pipes._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry),
+        ):
+            DataPipes.view(
+                pipeid="view.orders",
+                input_entity_ids=["bronze.orders", "bronze.customers"],
+                output_entity_id="view.orders",
+                sql="SELECT * FROM bronze_orders",
+            )
+
+        execute_fn = mock_registry.register_pipe.call_args.kwargs["execute"]
+
+        mock_df1 = MagicMock()
+        mock_df2 = MagicMock()
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value = MagicMock()
+
+        with patch("kindling.spark_config.get_or_create_spark_session", return_value=mock_spark):
+            result = execute_fn(bronze_orders=mock_df1, bronze_customers=mock_df2)
+
+        mock_df1.createOrReplaceTempView.assert_called_once_with("bronze_orders")
+        mock_df2.createOrReplaceTempView.assert_called_once_with("bronze_customers")
+        mock_spark.sql.assert_called_once_with("SELECT * FROM bronze_orders")
+        assert result == mock_spark.sql.return_value
+
+    def test_view_decorator_form_applies_post_fn(self):
+        DataPipes.dpregistry = None
+        mock_registry = self._mock_registry()
+
+        with (
+            patch("kindling.data_pipes._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry),
+        ):
+
+            @DataPipes.view(
+                pipeid="view.filtered",
+                input_entity_ids=["bronze.orders"],
+                output_entity_id="view.filtered",
+                sql="SELECT * FROM bronze_orders",
+            )
+            def filtered_orders(df):
+                return "post_processed_" + str(df)
+
+        # Decorator form registers twice (plain + with post_fn); last call has post_fn
+        last_call = mock_registry.register_pipe.call_args
+        execute_fn = last_call.kwargs["execute"]
+
+        mock_df = MagicMock()
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value = "sql_result"
+
+        with patch("kindling.spark_config.get_or_create_spark_session", return_value=mock_spark):
+            result = execute_fn(bronze_orders=mock_df)
+
+        assert result == "post_processed_sql_result"
+
+    def test_view_sets_pipeid_in_ids_namespace(self):
+        DataPipes.dpregistry = None
+        mock_registry = self._mock_registry()
+
+        with (
+            patch("kindling.data_pipes._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry),
+        ):
+            DataPipes.view(
+                pipeid="view.enriched_orders",
+                input_entity_ids=["bronze.orders"],
+                output_entity_id="view.enriched_orders",
+                sql="SELECT * FROM bronze_orders",
+            )
+
+        assert DataPipes.ids.view_enriched_orders == "view.enriched_orders"

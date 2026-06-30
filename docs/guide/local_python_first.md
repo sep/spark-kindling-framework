@@ -241,6 +241,58 @@ credentials or ABFSS paths required.
 To switch to real Azure storage, uncomment the ABFSS block in `settings.local.yaml`
 and set the required env vars in your `.env` file.
 
+## Inline Seed Rows for Memory Entities
+
+Memory entities support inline seed data via `provider.seed.rows` in the entity tags. This is
+useful for unit and component tests where you want a small, deterministic dataset without a CSV
+file or a fixture setup function.
+
+Seed rows are a list of dicts (one per row) defined directly in the entity declaration:
+
+```python
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
+@DataEntities.entity(
+    entityid="ref.statuses",
+    name="statuses",
+    merge_columns=["id"],
+    partition_columns=[],
+    schema=StructType([
+        StructField("id", IntegerType(), False),
+        StructField("label", StringType(), True),
+    ]),
+    tags={
+        "provider_type": "memory",
+        "provider.seed.rows": [
+            {"id": 1, "label": "active"},
+            {"id": 2, "label": "inactive"},
+            {"id": 3, "label": "pending"},
+        ],
+    },
+)
+```
+
+When a pipe reads `ref.statuses`, the provider materializes those rows on first access and caches
+them in the in-memory store for subsequent reads. The entity schema is required — the provider
+validates that all keys in each row dict are declared schema fields and raises a clear error if not.
+
+Seed rows are local-only. The `provider_type: memory` tag means this entity is never read from or
+written to remote storage. Use them in `settings.local.yaml` overlays to swap real entities for
+in-memory fixtures during local development:
+
+```yaml
+# settings.local.yaml
+entities:
+  - entityid: ref.statuses
+    tags:
+      provider_type: memory
+      provider.seed.rows:
+        - id: 1
+          label: active
+        - id: 2
+          label: inactive
+```
+
 ## KindlingNotInitializedError
 
 If you see `KindlingNotInitializedError` it means a `@DataPipes.pipe` or
