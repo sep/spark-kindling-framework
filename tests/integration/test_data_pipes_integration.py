@@ -815,3 +815,187 @@ class TestEntityKeyTransformation:
         # Verify output
         result_df = strategy.written_data["silver.joined"]
         assert result_df.count() == 2
+
+
+class TestDataPipesViewIntegration:
+    """Integration tests for DataPipes.view() with real Spark sessions."""
+
+    @pytest.fixture(autouse=True)
+    def reset_datapipes(self):
+        DataPipes.reset()
+        yield
+        DataPipes.reset()
+
+    @pytest.fixture(autouse=True)
+    def set_main_spark(self, spark):
+        """Expose the test session as __main__.spark so get_or_create_spark_session()
+        returns it instead of creating a new session inside view execute functions."""
+        import __main__
+
+        _prev = getattr(__main__, "spark", None)
+        __main__.spark = spark
+        yield
+        if _prev is None:
+            if hasattr(__main__, "spark"):
+                del __main__.spark
+        else:
+            __main__.spark = _prev
+
+    @pytest.fixture
+    def mock_trace_provider(self):
+        tp = Mock()
+        tp.span.return_value.__enter__ = Mock()
+        tp.span.return_value.__exit__ = Mock(return_value=False)
+        return tp
+
+    def _make_executor(
+        self, mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
+    ):
+        return DataPipesExecuter(
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
+        )
+
+    def test_view_inline_sql_filters_rows(
+        self, spark, entity_registry, pipes_registry, mock_logger_provider, mock_trace_provider
+    ):
+        """DataPipes.view() with sql= registers a pipe that runs SQL against input temp views."""
+        sales_data = spark.createDataFrame(
+            [
+                (1, "Widget", 50, "2024-01-01"),
+                (2, "Gadget", 200, "2024-01-02"),
+                (3, "Widget", 150, "2024-01-02"),
+            ],
+            ["id", "product", "amount", "date"],
+        )
+        data_store = {"bronze.sales": sales_data}
+        strategy = MockEntityReadPersistStrategy(spark, data_store)
+
+        DataPipes.dpregistry = pipes_registry
+        DataPipes.view(
+            pipeid="view.pricey",
+            input_entity_ids=["bronze.sales"],
+            output_entity_id="view.pricey",
+            sql="SELECT id, product FROM bronze_sales WHERE amount > 100",
+        )
+
+        executor = self._make_executor(
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
+        )
+        executor.run_datapipes(["view.pricey"])
+
+        result_df = strategy.written_data["view.pricey"]
+        rows = sorted(result_df.collect(), key=lambda r: r["id"])
+        assert len(rows) == 2
+        assert rows[0]["product"] == "Gadget"
+        assert rows[1]["product"] == "Widget"
+
+    def test_view_decorator_applies_post_fn(
+        self, spark, entity_registry, pipes_registry, mock_logger_provider, mock_trace_provider
+    ):
+        """Decorator form of DataPipes.view() wraps SQL result with the decorated function."""
+        sales_data = spark.createDataFrame(
+            [(1, "Widget", 50, "2024-01-01"), (2, "Gadget", 200, "2024-01-02")],
+            ["id", "product", "amount", "date"],
+        )
+        data_store = {"bronze.sales": sales_data}
+        strategy = MockEntityReadPersistStrategy(spark, data_store)
+
+        DataPipes.dpregistry = pipes_registry
+
+        @DataPipes.view(
+            pipeid="view.upper",
+            input_entity_ids=["bronze.sales"],
+            output_entity_id="view.upper",
+            sql="SELECT id, product FROM bronze_sales",
+        )
+        def upper_product(df):
+            from pyspark.sql import functions as F
+
+            return df.withColumn("product", F.upper(F.col("product")))
+
+        executor = self._make_executor(
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
+        )
+        executor.run_datapipes(["view.upper"])
+
+        result_df = strategy.written_data["view.upper"]
+        rows = sorted(result_df.collect(), key=lambda r: r["id"])
+        assert rows[0]["product"] == "WIDGET"
+        assert rows[1]["product"] == "GADGET"
+
+    def test_view_sql_file_reads_from_disk(
+        self,
+        spark,
+        tmp_path,
+        entity_registry,
+        pipes_registry,
+        mock_logger_provider,
+        mock_trace_provider,
+    ):
+        """DataPipes.view() with sql_file= reads SQL from the given file path."""
+        sql_path = tmp_path / "filter.sql"
+        sql_path.write_text("SELECT id, product FROM bronze_sales WHERE amount > 100")
+
+        sales_data = spark.createDataFrame(
+            [(1, "Widget", 50, "2024-01-01"), (2, "Gadget", 200, "2024-01-02")],
+            ["id", "product", "amount", "date"],
+        )
+        data_store = {"bronze.sales": sales_data}
+        strategy = MockEntityReadPersistStrategy(spark, data_store)
+
+        DataPipes.dpregistry = pipes_registry
+        # Absolute sql_file path resolves directly (Path(caller).parent / abs_path == abs_path)
+        DataPipes.view(
+            pipeid="view.from_file",
+            input_entity_ids=["bronze.sales"],
+            output_entity_id="view.from_file",
+            sql_file=str(sql_path),
+        )
+
+        executor = self._make_executor(
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
+        )
+        executor.run_datapipes(["view.from_file"])
+
+        result_df = strategy.written_data["view.from_file"]
+        assert result_df.count() == 1
+        assert result_df.collect()[0]["product"] == "Gadget"
+
+    def test_view_multi_input_join(
+        self, spark, entity_registry, pipes_registry, mock_logger_provider, mock_trace_provider
+    ):
+        """A view with multiple input_entity_ids joins them via SQL temp views."""
+        sales_data = spark.createDataFrame(
+            [(1, 101, 100), (2, 102, 200)],
+            ["sale_id", "customer_id", "amount"],
+        )
+        customers_data = spark.createDataFrame(
+            [(101, "Alice"), (102, "Bob")],
+            ["customer_id", "name"],
+        )
+        data_store = {"bronze.sales": sales_data, "bronze.customers": customers_data}
+        strategy = MockEntityReadPersistStrategy(spark, data_store)
+
+        DataPipes.dpregistry = pipes_registry
+        DataPipes.view(
+            pipeid="view.joined",
+            input_entity_ids=["bronze.sales", "bronze.customers"],
+            output_entity_id="view.joined",
+            sql=(
+                "SELECT s.sale_id, c.name, s.amount "
+                "FROM bronze_sales s JOIN bronze_customers c "
+                "ON s.customer_id = c.customer_id"
+            ),
+        )
+
+        executor = self._make_executor(
+            mock_logger_provider, entity_registry, pipes_registry, strategy, mock_trace_provider
+        )
+        executor.run_datapipes(["view.joined"])
+
+        result_df = strategy.written_data["view.joined"]
+        rows = sorted(result_df.collect(), key=lambda r: r["sale_id"])
+        assert len(rows) == 2
+        assert rows[0]["name"] == "Alice"
+        assert rows[0]["amount"] == 100
+        assert rows[1]["name"] == "Bob"

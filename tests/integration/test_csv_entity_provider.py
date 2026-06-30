@@ -286,3 +286,104 @@ class TestCSVEntityProviderIntegration:
         assert "amount" in df.columns
         assert "active" in df.columns
         assert "timestamp" in df.columns
+
+
+class TestCSVEntityProviderWriteIntegration:
+    """Integration tests for CSVEntityProvider.write_to_entity() and append_to_entity()."""
+
+    @pytest.fixture(scope="class")
+    def spark(self):
+        try:
+            existing = SparkSession.getActiveSession()
+            if existing:
+                existing.stop()
+        except Exception:
+            pass
+        session = (
+            SparkSession.builder.master("local[1]")
+            .appName("csv-write-integration-test")
+            .getOrCreate()
+        )
+        yield session
+        session.stop()
+
+    def _make_entity(self, path: str) -> "EntityMetadata":
+        from kindling.data_entities import EntityMetadata
+
+        return EntityMetadata(
+            entityid="test.output",
+            name="Test Output",
+            merge_columns=[],
+            tags={"provider.path": path, "provider.header": "true"},
+            schema=None,
+        )
+
+    def test_write_to_entity_creates_readable_csv(self, spark, tmp_path, mock_logger_provider):
+        """write_to_entity() writes a DataFrame to CSV that Spark can read back."""
+        provider = CSVEntityProvider(mock_logger_provider)
+        df = spark.createDataFrame([(1, "alpha"), (2, "beta")], ["id", "value"])
+        out_path = str(tmp_path / "write_output")
+        entity = self._make_entity(out_path)
+
+        provider.write_to_entity(df, entity)
+
+        read_back = spark.read.option("header", "true").csv(out_path)
+        assert read_back.count() == 2
+        values = {r["value"] for r in read_back.collect()}
+        assert values == {"alpha", "beta"}
+
+    def test_write_to_entity_overwrites_existing_data(self, spark, tmp_path, mock_logger_provider):
+        """A second write_to_entity() call overwrites the existing CSV."""
+        provider = CSVEntityProvider(mock_logger_provider)
+        out_path = str(tmp_path / "overwrite_output")
+        entity = self._make_entity(out_path)
+
+        df1 = spark.createDataFrame([(1, "first")], ["id", "value"])
+        provider.write_to_entity(df1, entity)
+
+        df2 = spark.createDataFrame([(2, "second"), (3, "third")], ["id", "value"])
+        provider.write_to_entity(df2, entity)
+
+        read_back = spark.read.option("header", "true").csv(out_path)
+        rows = read_back.collect()
+        assert len(rows) == 2
+        values = {r["value"] for r in rows}
+        assert values == {"second", "third"}
+
+    def test_append_to_entity_adds_rows(self, spark, tmp_path, mock_logger_provider):
+        """append_to_entity() adds rows to the existing CSV rather than overwriting."""
+        provider = CSVEntityProvider(mock_logger_provider)
+        out_path = str(tmp_path / "append_output")
+        entity = self._make_entity(out_path)
+
+        df1 = spark.createDataFrame([(1, "alpha")], ["id", "value"])
+        provider.write_to_entity(df1, entity)
+
+        df2 = spark.createDataFrame([(2, "beta")], ["id", "value"])
+        provider.append_to_entity(df2, entity)
+
+        read_back = spark.read.option("header", "true").csv(out_path)
+        assert read_back.count() == 2
+        values = {r["value"] for r in read_back.collect()}
+        assert values == {"alpha", "beta"}
+
+    def test_write_respects_delimiter_tag(self, spark, tmp_path, mock_logger_provider):
+        """write_to_entity() uses the provider.delimiter tag when writing."""
+        from kindling.data_entities import EntityMetadata
+
+        provider = CSVEntityProvider(mock_logger_provider)
+        out_path = str(tmp_path / "pipe_output")
+        entity = EntityMetadata(
+            entityid="test.pipe",
+            name="Pipe Delimited",
+            merge_columns=[],
+            tags={"provider.path": out_path, "provider.header": "true", "provider.delimiter": "|"},
+            schema=None,
+        )
+        df = spark.createDataFrame([(1, "alpha"), (2, "beta")], ["id", "value"])
+        provider.write_to_entity(df, entity)
+
+        read_back = spark.read.option("header", "true").option("delimiter", "|").csv(out_path)
+        assert read_back.count() == 2
+        values = {r["value"] for r in read_back.collect()}
+        assert values == {"alpha", "beta"}
