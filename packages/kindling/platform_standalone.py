@@ -97,10 +97,25 @@ class StandaloneService(PlatformService):
     """
 
     def __init__(self, config, logger):
+        # Read auth setting from the raw config BEFORE any conversion so dotted
+        # dict keys (e.g. "kindling.standalone.abfss_az_cli_auth") remain accessible.
+        if isinstance(config, dict):
+            _auth_enabled = config.get(
+                "kindling.standalone.abfss_az_cli_auth",
+                config.get("abfss_az_cli_auth", True),
+            )
+        elif hasattr(config, "get") and callable(config.get):
+            _auth_enabled = config.get(
+                "kindling.standalone.abfss_az_cli_auth",
+                config.get("abfss_az_cli_auth", True),
+            )
+        else:
+            _auth_enabled = getattr(config, "abfss_az_cli_auth", True)
+
         if isinstance(config, types.SimpleNamespace):
             self.config = config
         elif isinstance(config, dict):
-            self.config = types.SimpleNamespace(**config)
+            self.config = types.SimpleNamespace(**{k: v for k, v in config.items() if "." not in k})
         else:
             # ConfigService or similar object passed from initialize_platform_services.
             # Keep it directly; get_config() delegates to .get() when available.
@@ -109,13 +124,6 @@ class StandaloneService(PlatformService):
 
         # Propagate opt-out flag to env var read by spark_session._apply_abfss_jars().
         # Must be set before any Spark session is created so builder-time injection respects it.
-        if hasattr(self.config, "get") and callable(self.config.get):
-            _auth_enabled = self.config.get(
-                "kindling.standalone.abfss_az_cli_auth",
-                self.config.get("abfss_az_cli_auth", True),
-            )
-        else:
-            _auth_enabled = getattr(self.config, "abfss_az_cli_auth", True)
         if not _auth_enabled:
             os.environ["KINDLING_ABFSS_AZ_CLI_AUTH"] = "false"
 

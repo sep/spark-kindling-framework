@@ -66,6 +66,7 @@ def test_create_session_sets_auth_config_at_builder_time(monkeypatch):
         spark_session, "_abfss_az_cli_jar", lambda: "/tmp/hadoop-jars/kindling-abfss-local-auth.jar"
     )
     monkeypatch.delenv("KINDLING_SPARK_ENABLE_DELTA", raising=False)
+    monkeypatch.delenv("KINDLING_ABFSS_AZ_CLI_AUTH", raising=False)
 
     spark_session.create_session()
 
@@ -129,6 +130,27 @@ def test_create_session_configures_delta_when_requested(monkeypatch):
     )
     configure_spark.assert_called_once_with(builder)
     configured_builder.getOrCreate.assert_called_once_with()
+
+
+def test_abfss_auth_enabled_returns_true_by_default(monkeypatch):
+    import kindling.spark_session as spark_session
+
+    monkeypatch.delenv("KINDLING_ABFSS_AZ_CLI_AUTH", raising=False)
+    assert spark_session._abfss_auth_enabled() is True
+
+
+def test_abfss_auth_enabled_returns_false_when_env_var_is_false(monkeypatch):
+    import kindling.spark_session as spark_session
+
+    monkeypatch.setenv("KINDLING_ABFSS_AZ_CLI_AUTH", "false")
+    assert spark_session._abfss_auth_enabled() is False
+
+
+def test_abfss_auth_enabled_returns_true_when_env_var_is_true(monkeypatch):
+    import kindling.spark_session as spark_session
+
+    monkeypatch.setenv("KINDLING_ABFSS_AZ_CLI_AUTH", "true")
+    assert spark_session._abfss_auth_enabled() is True
 
 
 def test_create_session_respects_abfss_auth_opt_out(monkeypatch):

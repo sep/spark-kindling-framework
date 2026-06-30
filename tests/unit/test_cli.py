@@ -3384,3 +3384,82 @@ def test_deploy_config_uploads_only_selected_overlays(tmp_path):
         "base/config/settings.prod.yaml",
         "base/config/settings.yaml",
     ]
+
+
+# env ensure + _detect_cloud
+class TestEnvEnsure:
+    """Tests for env ensure command and cloud auto-detection."""
+
+    def test_detect_cloud_returns_azure_when_az_on_path(self, monkeypatch):
+        import kindling_cli.cli as cli_module
+        from kindling_cli.cli import _detect_cloud
+
+        monkeypatch.setattr(
+            cli_module.shutil, "which", lambda cmd: "/usr/bin/az" if cmd == "az" else None
+        )
+        assert _detect_cloud() == "azure"
+
+    def test_detect_cloud_returns_none_when_no_cli_found(self, monkeypatch):
+        import kindling_cli.cli as cli_module
+        from kindling_cli.cli import _detect_cloud
+
+        monkeypatch.setattr(cli_module.shutil, "which", lambda _: None)
+        assert _detect_cloud() is None
+
+    def _fake_jar_specs(self):
+        return [("fake.jar", "http://example.com/fake.jar", None)]
+
+    def test_env_ensure_explicit_cloud_azure_prints_help_text(self, monkeypatch, tmp_path):
+        import urllib.request
+
+        import kindling_cli.cli as cli_module
+
+        monkeypatch.setattr(cli_module.shutil, "which", lambda _: None)  # no az on PATH
+        monkeypatch.setattr(cli_module, "_HADOOP_JAR_DIR", tmp_path / "hadoop-jars")
+        monkeypatch.setattr(cli_module, "_azure_jar_specs", self._fake_jar_specs)
+
+        def fake_urlretrieve(url, dest):
+            Path(dest).write_bytes(b"fake-jar")
+
+        monkeypatch.setattr(urllib.request, "urlretrieve", fake_urlretrieve)
+
+        result = CliRunner().invoke(cli, ["env", "ensure", "--cloud", "azure"])
+
+        assert result.exit_code == 0
+        assert "All JARs present" in result.output
+
+    def test_env_ensure_no_cloud_detected_exits_zero_with_message(self, monkeypatch):
+        import kindling_cli.cli as cli_module
+
+        monkeypatch.setattr(cli_module.shutil, "which", lambda _: None)
+        result = CliRunner().invoke(cli, ["env", "ensure"])
+
+        assert result.exit_code == 0
+        assert "No cloud provider detected" in result.output
+
+    def test_env_ensure_auto_detects_azure_when_az_on_path(self, monkeypatch, tmp_path):
+        import urllib.request
+
+        import kindling_cli.cli as cli_module
+
+        monkeypatch.setattr(
+            cli_module.shutil, "which", lambda cmd: "/usr/bin/az" if cmd == "az" else None
+        )
+        monkeypatch.setattr(cli_module, "_HADOOP_JAR_DIR", tmp_path / "hadoop-jars")
+        monkeypatch.setattr(cli_module, "_azure_jar_specs", self._fake_jar_specs)
+
+        def fake_urlretrieve(url, dest):
+            Path(dest).write_bytes(b"fake-jar")
+
+        monkeypatch.setattr(urllib.request, "urlretrieve", fake_urlretrieve)
+
+        result = CliRunner().invoke(cli, ["env", "ensure"])
+
+        assert result.exit_code == 0
+        assert "Detected cloud: azure" in result.output
+        assert "All JARs present" in result.output
+
+    def test_env_ensure_help_mentions_cloud_flag(self):
+        result = CliRunner().invoke(cli, ["env", "ensure", "--help"])
+        assert result.exit_code == 0
+        assert "--cloud" in result.output
