@@ -381,3 +381,16 @@ class TestCSVEntityProviderWrites:
 
         option_calls = {c.args[0]: c.args[1] for c in writer.option.call_args_list}
         assert option_calls.get("delimiter") == "\t"
+
+
+def test_csv_entity_provider_implements_writable_entity_provider():
+    from unittest.mock import MagicMock
+
+    from kindling.entity_provider import WritableEntityProvider
+    from kindling.entity_provider_csv import CSVEntityProvider
+
+    logger_provider = MagicMock()
+    logger_provider.get_logger.return_value = MagicMock()
+    provider = CSVEntityProvider(logger_provider)
+
+    assert isinstance(provider, WritableEntityProvider)

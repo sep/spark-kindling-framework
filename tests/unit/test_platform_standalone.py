@@ -368,6 +368,46 @@ class TestStandaloneServiceEdgeCases:
         service.delete("nonexistent.txt")
 
 
+class TestAbfssAuthEnvVarPropagation:
+    """Test that StandaloneService.__init__ propagates abfss_az_cli_auth config to os.environ."""
+
+    def test_sets_env_var_false_when_config_disables_auth(self, monkeypatch, tmp_path, mock_logger):
+        # setenv + delenv ensures monkeypatch registers cleanup even when the key
+        # is absent before the test (delenv alone is a no-op when key is missing).
+        monkeypatch.setenv("KINDLING_ABFSS_AZ_CLI_AUTH", "__sentinel__")
+        monkeypatch.delenv("KINDLING_ABFSS_AZ_CLI_AUTH")
+        config = {"local_workspace_path": str(tmp_path), "abfss_az_cli_auth": False}
+        StandaloneService(config, mock_logger)
+        import os
+
+        assert os.environ.get("KINDLING_ABFSS_AZ_CLI_AUTH") == "false"
+
+    def test_sets_env_var_false_when_dotted_key_disables_auth(
+        self, monkeypatch, tmp_path, mock_logger
+    ):
+        monkeypatch.setenv("KINDLING_ABFSS_AZ_CLI_AUTH", "__sentinel__")
+        monkeypatch.delenv("KINDLING_ABFSS_AZ_CLI_AUTH")
+        config = {
+            "local_workspace_path": str(tmp_path),
+            "kindling.standalone.abfss_az_cli_auth": False,
+        }
+        StandaloneService(config, mock_logger)
+        import os
+
+        assert os.environ.get("KINDLING_ABFSS_AZ_CLI_AUTH") == "false"
+
+    def test_does_not_set_env_var_when_auth_enabled_by_default(
+        self, monkeypatch, tmp_path, mock_logger
+    ):
+        monkeypatch.setenv("KINDLING_ABFSS_AZ_CLI_AUTH", "__sentinel__")
+        monkeypatch.delenv("KINDLING_ABFSS_AZ_CLI_AUTH")
+        config = {"local_workspace_path": str(tmp_path)}
+        StandaloneService(config, mock_logger)
+        import os
+
+        assert "KINDLING_ABFSS_AZ_CLI_AUTH" not in os.environ
+
+
 class TestAbfssLocalAuth:
     """Tests for _configure_abfss_local_auth() injection logic."""
 

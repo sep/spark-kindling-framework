@@ -1296,3 +1296,51 @@ class TestDataPipesView:
             )
 
         assert DataPipes.ids.view_enriched_orders == "view.enriched_orders"
+
+    def test_view_sql_file_resolved_relative_to_caller(self, tmp_path):
+        DataPipes.dpregistry = None
+        mock_registry = self._mock_registry()
+
+        sql_file = tmp_path / "query.sql"
+        sql_file.write_text("SELECT * FROM bronze_orders WHERE amount > 0")
+
+        with (
+            patch("kindling.data_pipes._raise_if_not_initialized"),
+            patch.object(GlobalInjector, "get", return_value=mock_registry),
+            patch("inspect.stack") as mock_stack,
+        ):
+            mock_stack.return_value = [None, [None, str(tmp_path / "my_views.py")]]
+            DataPipes.view(
+                pipeid="view.filtered",
+                input_entity_ids=["bronze.orders"],
+                output_entity_id="view.filtered",
+                sql_file="query.sql",
+            )
+
+        execute_fn = mock_registry.register_pipe.call_args.kwargs["execute"]
+
+        mock_df = MagicMock()
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value = MagicMock()
+
+        with patch("kindling.spark_config.get_or_create_spark_session", return_value=mock_spark):
+            execute_fn(bronze_orders=mock_df)
+
+        mock_spark.sql.assert_called_once_with("SELECT * FROM bronze_orders WHERE amount > 0")
+
+    def test_view_raises_kindling_not_initialized_error_before_init(self):
+        DataPipes.reset()
+
+        with (
+            patch(
+                "kindling.data_pipes._raise_if_not_initialized",
+                side_effect=KindlingNotInitializedError("not init"),
+            ),
+        ):
+            with pytest.raises(KindlingNotInitializedError):
+                DataPipes.view(
+                    pipeid="view.orders",
+                    input_entity_ids=["bronze.orders"],
+                    output_entity_id="view.orders",
+                    sql="SELECT * FROM bronze_orders",
+                )

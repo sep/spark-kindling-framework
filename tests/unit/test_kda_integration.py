@@ -164,3 +164,21 @@ class TestKDAAppStructure:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_is_deployable_app_file_includes_sql():
+    from kindling.app_files import is_deployable_app_file
+
+    assert is_deployable_app_file("queries/enrich_orders.sql") is True
+
+
+def test_is_deployable_app_file_includes_sql_case_insensitive():
+    from kindling.app_files import is_deployable_app_file
+
+    assert is_deployable_app_file("queries/ENRICH.SQL") is True
+
+
+def test_sql_suffix_in_app_text_file_suffixes():
+    from kindling.app_files import APP_TEXT_FILE_SUFFIXES
+
+    assert ".sql" in APP_TEXT_FILE_SUFFIXES
