@@ -107,6 +107,18 @@ class StandaloneService(PlatformService):
             self.config = config
         self.logger = logger
 
+        # Propagate opt-out flag to env var read by spark_session._apply_abfss_jars().
+        # Must be set before any Spark session is created so builder-time injection respects it.
+        if hasattr(self.config, "get") and callable(self.config.get):
+            _auth_enabled = self.config.get(
+                "kindling.standalone.abfss_az_cli_auth",
+                self.config.get("abfss_az_cli_auth", True),
+            )
+        else:
+            _auth_enabled = getattr(self.config, "abfss_az_cli_auth", True)
+        if not _auth_enabled:
+            os.environ["KINDLING_ABFSS_AZ_CLI_AUTH"] = "false"
+
         # Standalone platform attributes
         self.workspace_id = None
         self.workspace_url = "http://localhost"

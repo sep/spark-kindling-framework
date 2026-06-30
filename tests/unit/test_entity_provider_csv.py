@@ -285,3 +285,99 @@ class TestCSVProviderConfiguration:
         # Verify multiLine option was set
         calls = [str(call) for call in mock_reader.option.call_args_list]
         assert any("multiLine" in call for call in calls)
+
+
+class TestCSVEntityProviderWrites:
+    """Tests for CSVEntityProvider write operations."""
+
+    @pytest.fixture
+    def provider(self):
+        logger_provider = MagicMock()
+        logger_provider.get_logger.return_value = MagicMock()
+        return CSVEntityProvider(logger_provider)
+
+    @pytest.fixture
+    def entity(self):
+        return EntityMetadata(
+            entityid="output.results",
+            name="results",
+            partition_columns=[],
+            merge_columns=[],
+            tags={
+                "provider_type": "csv",
+                "provider.path": "Files/output/results.csv",
+            },
+            schema=None,
+        )
+
+    def _mock_writer(self):
+        writer = MagicMock()
+        writer.format.return_value = writer
+        writer.mode.return_value = writer
+        writer.option.return_value = writer
+        writer.save.return_value = None
+        return writer
+
+    def test_write_to_entity_uses_overwrite_mode(self, provider, entity):
+        df = MagicMock()
+        writer = self._mock_writer()
+        df.write = writer
+
+        provider.write_to_entity(df, entity)
+
+        writer.mode.assert_called_once_with("overwrite")
+        writer.save.assert_called_once_with("Files/output/results.csv")
+
+    def test_append_to_entity_uses_append_mode(self, provider, entity):
+        df = MagicMock()
+        writer = self._mock_writer()
+        df.write = writer
+
+        provider.append_to_entity(df, entity)
+
+        writer.mode.assert_called_once_with("append")
+        writer.save.assert_called_once_with("Files/output/results.csv")
+
+    def test_write_to_entity_missing_path_raises(self, provider):
+        df = MagicMock()
+        entity = EntityMetadata(
+            entityid="output.results",
+            name="results",
+            partition_columns=[],
+            merge_columns=[],
+            tags={"provider_type": "csv"},
+            schema=None,
+        )
+        with pytest.raises(ValueError, match="CSV provider requires 'path'"):
+            provider.write_to_entity(df, entity)
+
+    def test_write_to_entity_uses_csv_format(self, provider, entity):
+        df = MagicMock()
+        writer = self._mock_writer()
+        df.write = writer
+
+        provider.write_to_entity(df, entity)
+
+        writer.format.assert_called_once_with("csv")
+
+    def test_write_to_entity_passes_custom_delimiter(self, provider):
+        df = MagicMock()
+        writer = self._mock_writer()
+        df.write = writer
+        entity = EntityMetadata(
+            entityid="output.tsv",
+            name="tsv",
+            partition_columns=[],
+            merge_columns=[],
+            tags={
+                "provider_type": "csv",
+                "provider.path": "Files/output.tsv",
+                "provider.delimiter": "\t",
+            },
+            schema=None,
+        )
+
+        provider.write_to_entity(df, entity)
+
+        option_calls = {c.args[0]: c.args[1] for c in writer.option.call_args_list}
+        assert option_calls.get("delimiter") == "\t"

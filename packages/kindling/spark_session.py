@@ -51,6 +51,11 @@ def _available_abfss_jars() -> list[str]:
     return jars
 
 
+def _abfss_auth_enabled() -> bool:
+    """Return False when the opt-out env var has been set by StandaloneService."""
+    return os.getenv("KINDLING_ABFSS_AZ_CLI_AUTH", "true").strip().lower() != "false"
+
+
 def _apply_abfss_jars(builder: "SparkSession.Builder") -> "SparkSession.Builder":
     """Add local ABFSS support JARs to the builder when they are available."""
     available_jars = _available_abfss_jars()
@@ -58,7 +63,7 @@ def _apply_abfss_jars(builder: "SparkSession.Builder") -> "SparkSession.Builder"
         existing = builder._options.get("spark.jars", "")
         jars = ",".join([*filter(None, [existing]), *available_jars])
         builder = builder.config("spark.jars", jars)
-    if _abfss_az_cli_jar():
+    if _abfss_az_cli_jar() and _abfss_auth_enabled():
         builder = builder.config("spark.hadoop.fs.azure.account.auth.type", "Custom")
         builder = builder.config(
             "spark.hadoop.fs.azure.account.oauth.provider.type",

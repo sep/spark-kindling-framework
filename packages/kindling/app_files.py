@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 from typing import Optional
 
 APP_TEXT_FILE_NAMES = {"requirements.txt", "lake-reqs.txt"}
-APP_TEXT_FILE_SUFFIXES = {".py", ".yaml", ".yml"}
+APP_TEXT_FILE_SUFFIXES = {".py", ".yaml", ".yml", ".sql"}
 APP_MANIFEST_FILE = "app.yaml"
 APP_SETTINGS_FILE = "settings.yaml"
 LOCAL_SETTINGS_FILE = "settings.local.yaml"
