@@ -27,8 +27,8 @@ Adopt a consistent config model where:
 
 ### 1) Canonical naming + compatibility policy
 
-- [ ] Define canonical naming as `settings.<name>.yaml`.
-- [ ] Decide whether to retain fallback reads of legacy `platform_<x>.yaml` / `env_<x>.yaml`.
+- [x] Define canonical naming as `settings.<name>.yaml`.
+- [x] Decide whether to retain fallback reads of legacy `platform_<x>.yaml` / `env_<x>.yaml` — **retained** (see Legacy Fallback Behavior below).
 
 Files:
 
@@ -43,9 +43,9 @@ Test impact:
 
 ### 2) `config set --level` file routing
 
-- [ ] Route `--level platform` to `settings.<platform>.yaml`.
-- [ ] Route `--level env` to `settings.<env>.yaml`.
-- [ ] Apply same naming for app-scoped config writes.
+- [x] Route `--level platform` to `settings.<platform>.yaml`.
+- [x] Route `--level env` to `settings.<env>.yaml`.
+- [x] Apply same naming for app-scoped config writes.
 
 Files:
 
@@ -60,10 +60,10 @@ Test impact:
 
 ### 3) Selective app artifact assembly (package/deploy)
 
-- [ ] Filter app artifact config files to selected target only:
+- [x] Filter app artifact config files to selected target only:
   - include: `app.yaml`, `settings.yaml`, selected `settings.<platform>.yaml`, selected `settings.<env>.yaml`
   - exclude: unrelated overlays and local-only settings
-- [ ] Add/confirm CLI options needed for filtering (`--env`, `--platform`).
+- [x] Add/confirm CLI options needed for filtering (`--env`, `--platform`).
 
 Files:
 
@@ -79,7 +79,7 @@ Test impact:
 
 ### 4) Standalone app run overlay resolution
 
-- [ ] Ensure standalone run loads app-local settings in order:
+- [x] Ensure standalone run loads app-local settings in order:
   - `settings.yaml`
   - `settings.<platform>.yaml` (if applicable)
   - `settings.<env>.yaml`
@@ -94,8 +94,8 @@ Test impact:
 
 ### 5) Bootstrap remote config loading order
 
-- [ ] Update remote bootstrap download/load order to reflect canonical overlay precedence.
-- [ ] If compatibility retained, prefer dot-style names and fall back to legacy names.
+- [x] Update remote bootstrap download/load order to reflect canonical overlay precedence.
+- [x] If compatibility retained, prefer dot-style names and fall back to legacy names.
 
 Files:
 
@@ -113,6 +113,12 @@ Test impact:
 - [ ] Stop using `app.<env|platform>.yaml` for runtime settings resolution.
 - [ ] Keep `app.yaml` manifest-only.
 
+  **Status:** Partially done. `_load_config_content` in `data_apps.py` now reads `settings.yaml` and
+  `settings.<platform|env>.yaml` as the primary sources, but it still reads `app.yaml` as the base
+  manifest layer and falls back to `app.<platform>.yaml` / `app.<env>.yaml` when the canonical
+  `settings.*` files are absent (see Legacy Fallback Behavior below). The fallback path has not yet
+  been removed.
+
 Files:
 
 - `packages/kindling/data_apps.py` (`_load_config_content`, `_merge_platform_config_at_deploy_time`, constants/usages)
@@ -125,8 +131,11 @@ Test impact:
 
 ### 7) KDA packaging semantics alignment
 
-- [ ] Ensure package creation does not repurpose `app.yaml` for merged runtime settings.
-- [ ] Keep runtime overlay files explicit and selected.
+- [x] Ensure package creation does not repurpose `app.yaml` for merged runtime settings.
+- [x] Keep runtime overlay files explicit and selected.
+
+  `DataAppPackage.create` uses `is_deployable_app_file` (from `app_files.py`) to filter KDA contents,
+  which excludes `app.<x>.yaml` legacy files and unselected overlays.
 
 Files:
 
@@ -140,8 +149,11 @@ Test impact:
 
 ### 8) Workspace deploy filtering
 
-- [ ] Replace wildcard overlay upload behavior with selected platform/env overlay upload.
-- [ ] Add `--env` option where needed for workspace flows.
+- [x] Replace wildcard overlay upload behavior with selected platform/env overlay upload.
+- [x] Add `--env` option where needed for workspace flows.
+
+  `_deploy_config` now uploads only `settings.yaml` plus whichever `settings.<platform>.yaml` /
+  `settings.<env>.yaml` overlays are explicitly selected. No wildcard upload occurs.
 
 Files:
 
@@ -153,7 +165,10 @@ Test impact:
 
 ### 9) Scaffold alignment
 
-- [ ] Ensure generated app structure and comments match manifest-only `app.yaml` + settings overlay model.
+- [x] Ensure generated app structure and comments match manifest-only `app.yaml` + settings overlay model.
+
+  `app.yaml.j2` contains only manifest fields (`name`, `entry_point`). `settings.yaml.j2` holds
+  runtime Kindling configuration. The separation is correct.
 
 Files:
 
@@ -193,6 +208,79 @@ Likely files:
 Files:
 
 - `CHANGELOG.md`
+
+---
+
+## Legacy Fallback Behavior
+
+Two code paths implement a silent fallback from the new dot-style canonical names to the old
+naming conventions. Both are active as of the current implementation and should be explicitly
+retained or removed as a follow-up decision.
+
+### `download_config_files` in `packages/kindling/bootstrap.py`
+
+When a canonical overlay file is not found in remote storage, the download function tries the
+corresponding legacy path before skipping the file:
+
+| Canonical name (tried first) | Legacy fallback (tried second) |
+|---|---|
+| `config/settings.<platform>.yaml` | `config/platform_<platform>.yaml` |
+| `config/settings.<env>.yaml` | `config/env_<env>.yaml` |
+| `data-apps/<app>/settings.<platform>.yaml` | `data-apps/<app>/app.<platform>.yaml` |
+| `data-apps/<app>/settings.<env>.yaml` | `data-apps/<app>/app.<env>.yaml` |
+
+The fallback path is logged at INFO level (`”Downloaded legacy config … after … was not found”`).
+Files are not found silently at DEBUG level when neither path exists.
+
+### `_load_config_content` in `packages/kindling/data_apps.py`
+
+When loading app config for a deployed or staged app, the method:
+
+1. Reads `app.yaml` as the base manifest layer (if present).
+2. Merges `settings.yaml` on top (required if `app.yaml` is absent).
+3. If `platform` is given: tries `settings.<platform>.yaml`; on failure falls back to `app.<platform>.yaml`.
+4. If `environment` is given: tries `settings.<env>.yaml`; on failure falls back to `app.<env>.yaml`.
+
+This means apps that have not yet migrated to the new overlay naming will continue to load
+correctly. The fallback for item 6 above is the remaining work to remove these legacy reads.
+
+---
+
+## Migration Notes
+
+### Renaming existing overlay files
+
+If your project uses the old `platform_<name>.yaml` / `env_<name>.yaml` convention at the workspace
+config level, rename the files to `settings.<name>.yaml` before re-deploying:
+
+```
+config/platform_fabric.yaml  →  config/settings.fabric.yaml
+config/env_prod.yaml         →  config/settings.prod.yaml
+```
+
+If your app directory uses `app.<platform>.yaml` or `app.<env>.yaml` as runtime overlay files,
+rename them to `settings.<platform>.yaml` / `settings.<env>.yaml`:
+
+```
+app.fabric.yaml  →  settings.fabric.yaml
+app.prod.yaml    →  settings.prod.yaml
+```
+
+Legacy filenames will continue to work as fallbacks during the transition (see Legacy Fallback
+Behavior above), but they are not guaranteed to be retained in future releases.
+
+### `kindling config set --level`
+
+The `--level platform` and `--level env` flags now write to `settings.<platform>.yaml` and
+`settings.<env>.yaml` respectively. If you have automation that expects the old filenames, update
+it to use the new names.
+
+### App packages (`.kda`)
+
+KDA artifacts built with `kindling app package` or `kindling app deploy` now include only the
+selected platform/environment overlay (`--platform`, `--env`). Legacy `app.<x>.yaml` files inside
+an app directory are excluded from packaged artifacts. Remove them or rename them to
+`settings.<x>.yaml` to have them included.
 
 ## Acceptance Criteria
 

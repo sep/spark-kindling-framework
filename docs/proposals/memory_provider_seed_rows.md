@@ -1,6 +1,6 @@
 # Memory Provider Inline Seed Rows
 
-**Status:** Proposal
+**Status:** Implemented (guide documentation pending)
 **Created:** 2026-05-13
 **Related:** entity_providers.md, entity_configuration.md, config_reference.md, local_python_first.md
 
@@ -82,36 +82,18 @@ When `provider.seed.rows` exists:
 
 The provider does not need to manually coerce every Spark type. It can rely on `spark.createDataFrame(rows, schema)` for type conversion and validation, then improve the error message if Spark rejects the data.
 
-## Minimal Implementation Sketch
+## Implementation
 
-### `packages/kindling/entity_provider_memory.py`
+### `packages/kindling/entity_provider_memory.py` — DONE
 
-Add private helpers:
+`_get_seed_rows()` and `_create_seed_dataframe()` are implemented as private helpers.
+`read_entity()` inserts the seed-rows branch after the `_memory_store` lookup and before
+the empty-DataFrame fallback, exactly as proposed.
 
-```python
-def _get_seed_rows(self, entity_metadata: EntityMetadata) -> Optional[list[dict]]:
-    config = self._get_provider_config(entity_metadata)
-    return config.get("seed.rows")
+### Tests — status unknown
 
-def _create_seed_dataframe(self, entity_metadata: EntityMetadata, rows: Any) -> DataFrame:
-    ...
-```
-
-Update `read_entity()`:
-
-```python
-seed_rows = self._get_seed_rows(entity_metadata)
-if seed_rows is not None:
-    df = self._create_seed_dataframe(entity_metadata, seed_rows)
-    self.write_to_entity(df, entity_metadata)
-    return df
-```
-
-This should sit after table/store lookup and before the existing empty DataFrame branch.
-
-### Tests
-
-Extend `tests/unit/test_entity_provider_memory.py` with focused unit coverage:
+The unit test coverage described below should exist in
+`tests/unit/test_entity_provider_memory.py`:
 
 - seeded entity creates and returns a DataFrame without imperative preload;
 - missing seed config keeps the current schema-backed empty DataFrame behavior;
@@ -121,19 +103,23 @@ Extend `tests/unit/test_entity_provider_memory.py` with focused unit coverage:
 - row with unknown field fails clearly;
 - Spark schema mismatch/coercion error is wrapped with actionable context.
 
-### Docs
+### Docs — PENDING
 
-Update `docs/config_reference.md` under Memory Provider:
+`docs/config_reference.md` should be updated under Memory Provider to document the new tag:
 
 ```markdown
 - `provider.seed.rows`: optional list of inline rows for tiny local memory seed data.
 ```
 
-Update local workflow guidance in `docs/local_python_first.md` or scaffold quickstart text:
+`docs/guide/local_python_first.md` has not been updated yet. It should cover:
 
 - use memory `provider.seed.rows` for one or two tiny starter rows in local standalone config;
 - use `tests/entities/*.csv` for integration tests, larger samples, file-shaped source data, and data that should be edited outside config;
 - avoid seed rows on output entities.
+
+> **Note:** The core implementation in `entity_provider_memory.py` is complete, but
+> `docs/guide/local_python_first.md` contains no guidance on seed rows. A follow-up task
+> is needed to add the guide documentation before this proposal can be fully closed.
 
 ## Backward Compatibility
 
@@ -163,12 +149,12 @@ Seed rows on output entities can be confusing because pipe writes will override 
 
 ## Acceptance Criteria
 
-- A memory entity with `provider.seed.rows` can be read without manual imperative preloading.
-- A memory entity without seed config behaves exactly as it does today.
-- Existing memory data written imperatively takes precedence over seed rows.
-- Schema mismatch in seed rows produces a clear, actionable error.
-- Local CSV fixture discovery remains unchanged and continues to take precedence during standalone local execution.
-- Docs and template guidance remain simple and do not introduce advanced seeding modes.
+- [x] A memory entity with `provider.seed.rows` can be read without manual imperative preloading.
+- [x] A memory entity without seed config behaves exactly as it does today.
+- [x] Existing memory data written imperatively takes precedence over seed rows.
+- [x] Schema mismatch in seed rows produces a clear, actionable error.
+- [x] Local CSV fixture discovery remains unchanged and continues to take precedence during standalone local execution.
+- [ ] Docs and template guidance in `docs/guide/local_python_first.md` cover seed rows usage. *(pending)*
 
 ## Non-Goals
 

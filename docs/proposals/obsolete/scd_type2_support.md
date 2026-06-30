@@ -1,15 +1,15 @@
 # SCD Type 2 Support for Kindling
 
-**Status:** Implemented — Phases 1–3 + `read_entity_as_of` shipped (PRs #77, #82, 2026-04-30). Remaining Phase 4 items deferred (see #83, #84).
+**Status:** Implemented — Phases 1–3 + all Phase 4 behavioral items shipped (PRs #77, #82, 2026-04-30).
 **Author:** System Analysis
 **Created:** 2026-02-26
-**Updated:** 2026-04-30
+**Updated:** 2026-06-30
 **Related:** obsolete/signal_dag_streaming_proposal.md, obsolete/dag_execution_implementation_plan.md, obsolete/config_based_entity_providers.md
 
-> **Archived.** This proposal has been implemented. See `packages/kindling/entity_provider_delta.py` (`DeltaMergeStrategies`, `SCD1MergeStrategy`, `SCD2MergeStrategy`, `_execute_scd2_merge`, `read_entity_as_of`), `packages/kindling/data_entities.py` (`SCDConfig`, `scd_config_from_tags`, `_validate_scd_config`), and `packages/kindling/entity_provider_current_view.py` (`CurrentViewEntityProvider`).
+> **Archived.** This proposal has been fully implemented. See `packages/kindling/entity_provider_delta.py` (`DeltaMergeStrategies`, `SCD1MergeStrategy`, `SCD2MergeStrategy`, `_execute_scd2_merge`, `read_entity_as_of`), `packages/kindling/data_entities.py` (`SCDConfig`, `scd_config_from_tags`, `_validate_scd_config`), and `packages/kindling/entity_provider_current_view.py` (`CurrentViewEntityProvider`).
 >
-> Shipped from Phase 4: `read_entity_as_of()` (PR #77).
-> Deferred Phase 4 items: `scd.close_on_missing` (#83), `scd.optimize_unchanged` (#84), Z-ORDER recommendation, migration path helper.
+> Shipped from Phase 4: `read_entity_as_of()` (PR #77), `scd.close_on_missing` (closes current rows for keys absent from a full-snapshot source batch, via `whenNotMatchedBySourceUpdate`), `scd.optimize_unchanged` (hash-based pre-filter to skip unchanged rows before the staged merge).
+> Still deferred: Z-ORDER recommendation via signals, migration path helper (`backfill_scd2_columns`).
 
 ## Revision Summary
 
@@ -207,7 +207,7 @@ No changes to `EntityMetadata`. SCD configuration lives entirely in the existing
 | `scd.current_entity_id` | no | `{entityid}.current` | Override the auto-registered companion entity's id. |
 | `scd.routing_key` | no | `hash` | How the staging-only `__merge_key` routing column is computed. `hash` uses `sha2(to_json(struct(*merge_columns)), 256)` — safe for any value type (strings with delimiters, nulls, mixed types) and composite keys. `concat` uses `concat_ws("\|\|", ...)` — cheaper and debuggable, but silently collides when a key value contains `\|\|`. Default `hash` is the right call for a framework that doesn't know the shape of consumers' business keys; `concat` is an opt-in for teams whose keys are controlled types (int ids, UUIDs, short codes) where debuggability matters more than the ~0.5–2% merge-time overhead of a hash. |
 | `scd.close_on_missing` | no | `false` | When `"true"`, the SCD2 merge also closes any current row in the target whose business key is absent from the source batch — treating the source as a full snapshot where absence means "deleted upstream." Default `false` is safer for incremental feeds, where absence means "nothing new to report." |
-| `scd.optimize_unchanged` | no | `false` | (Phase 4) When `"true"`, the merge pre-filters unchanged rows via hash-based change detection instead of closing and re-inserting them. Opt-in because the extra scan isn't worth it for dimensions under ~1M rows; set to `"true"` for very large dimensions where no-op row churn matters. |
+| `scd.optimize_unchanged` | no | `false` | When `"true"`, the merge pre-filters unchanged rows via hash-based change detection instead of closing and re-inserting them. Opt-in because the extra scan isn't worth it for dimensions under ~1M rows; set to `"true"` for very large dimensions where no-op row churn matters. |
 
 Because tags are `Dict[str, str]`, list values use a simple comma-separator convention (already used elsewhere in the framework for tag-scoped lists). A helper `scd_config_from_tags(entity) -> SCDConfig` extracts and validates at registration time; callers never read tags directly.
 

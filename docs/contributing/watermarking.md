@@ -31,22 +31,36 @@ Interface that determines which entity stores watermarks for a given entity or l
 ```python
 class WatermarkEntityFinder(ABC):
     @abstractmethod
-    def get_watermark_entity_for_entity(self, context:str):
-        """Returns the entity ID that stores watermarks for the specified entity"""
+    def get_watermark_entity_for_entity(self, context: str) -> Any:
+        """Returns the entity that stores watermarks for the specified entity"""
         pass
 
     @abstractmethod
-    def get_watermark_entity_for_layer(self, layer:str):
-        """Returns the entity ID that stores watermarks for the specified layer"""
+    def get_watermark_entity_for_layer(self, layer: str) -> Any:
+        """Returns the entity that stores watermarks for the specified layer"""
         pass
 ```
 
+The default autobind implementation is `SimpleWatermarkEntityFinder`, which stores all watermarks in a single `system.watermarks` Delta table.
+
 ### WatermarkService
 
-Interface defining the core watermarking operations.
+Abstract base class defining the core watermarking operations. Implementations must also extend `SignalEmitter` and emit the signals listed in `WatermarkService.EMITS`.
 
 ```python
 class WatermarkService(ABC):
+    EMITS = [
+        "watermark.before_get",
+        "watermark.watermark_found",
+        "watermark.watermark_missing",
+        "watermark.before_save",
+        "watermark.after_save",
+        "watermark.save_failed",
+        "watermark.before_read_changes",
+        "watermark.after_read_changes",
+        "watermark.no_new_data",
+    ]
+
     @abstractmethod
     def get_watermark(self, source_entity_id: str, reader_id: str) -> Optional[int]:
         """Get the watermark for a specific source-reader pair"""
@@ -66,7 +80,23 @@ class WatermarkService(ABC):
 
 ### WatermarkManager
 
-Default implementation of the WatermarkService that uses Delta Lake's version history capabilities.
+Default implementation of `WatermarkService`. Also extends `SignalEmitter` and is registered as a singleton via `@GlobalInjector.singleton_autobind()`.
+
+```python
+@GlobalInjector.singleton_autobind()
+class WatermarkManager(WatermarkService, SignalEmitter):
+    @inject
+    def __init__(
+        self,
+        ep: EntityProvider,
+        wef: WatermarkEntityFinder,
+        lp: PythonLoggerProvider,
+        signal_provider: Optional[SignalProvider] = None,
+    ):
+        ...
+```
+
+`read_current_entity_changes` accepts entity and pipe objects (not string IDs). It returns `None` when there is no new data, and a `DataFrame` of changes otherwise.
 
 ## Usage Examples
 
@@ -77,14 +107,14 @@ Default implementation of the WatermarkService that uses Delta Lake's version hi
 watermark_service = GlobalInjector.get(WatermarkService)
 
 # Read only changes since the last time this pipe processed the entity
-changes_df = watermark_service.read_current_entity_changes("bronze.source_data", "silver.transform_pipe")
+changes_df = watermark_service.read_current_entity_changes(entity, pipe)
 ```
 
 ### Saving Watermarks After Processing
 
 ```python
-# Get current version of the source entity
-current_version = entity_provider.get_entity_version("bronze.source_data")
+# Get current version of the source entity (pass the entity object, not a string)
+current_version = entity_provider.get_entity_version(entity)
 
 # After processing, save the watermark
 watermark_service.save_watermark(
@@ -102,10 +132,10 @@ You can customize where watermarks are stored by implementing your own `Watermar
 ```python
 @GlobalInjector.singleton_autobind()
 class CustomWatermarkEntityFinder(WatermarkEntityFinder):
-    def get_watermark_entity_for_entity(self, entity_id:str):
+    def get_watermark_entity_for_entity(self, context: str):
         return "system.watermarks"
 
-    def get_watermark_entity_for_layer(self, layer:str):
+    def get_watermark_entity_for_layer(self, layer: str):
         return "system.watermarks"
 ```
 

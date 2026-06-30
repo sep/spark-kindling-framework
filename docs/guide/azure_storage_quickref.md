@@ -190,7 +190,7 @@ az account show
 ```bash
 # Solution: For long-running sessions, refresh token
 # Tokens expire after ~1 hour
-# See docs/azure_storage_configuration.md for auto-refresh helper
+# See docs/guide/azure_storage_configuration.md for auto-refresh helper
 ```
 
 ### "azure-identity not installed"
@@ -202,8 +202,7 @@ pip install azure-identity
 
 ## 📚 More Information
 
-- Full Guide: `docs/azure_storage_configuration.md`
-- Example Tests: `tests/integration/test_azure_storage_example.py`
+- Full Guide: `docs/guide/azure_storage_configuration.md`
 - Test Helper: `tests/spark_test_helper.py`
 
 ---

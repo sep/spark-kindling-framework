@@ -63,33 +63,18 @@ The `poe test-system` command uses pytest's `-k` filtering under the hood:
 
 Examples:
 ```bash
-# Run all tests on all platforms (26 tests = ~13 tests × 2 platforms)
+# Run all tests on all platforms
 poe test-system
 
-# Run only Fabric tests (13 tests)
+# Run only Fabric tests
 poe test-system --platform fabric
 
 # Run only deployment tests on all platforms
 poe test-system --test deploy_app_as_job
 
-# Run specific test on specific platform (1 test)
+# Run specific test on specific platform
 poe test-system --platform fabric --test deploy_app_as_job
 ```
-
-### Current Test Status
-
-**Unit Tests**
-- 24 of 25 tests passing
-- Coverage: 26% overall, 57% on platform_local.py
-
-**Integration Tests**
-- 10 data_pipes integration tests - all passing ✅
-- Coverage: 91% on data_pipes.py with integration tests
-
-**System Tests**
-- Unified tests that run on all platforms via parametrization
-- Tests located in `tests/system/core/`
-- Each test runs on fabric, synapse, and databricks platforms
 
 ---
 
@@ -99,20 +84,38 @@ poe test-system --platform fabric --test deploy_app_as_job
 tests/
 ├── conftest.py                          # Root fixtures
 ├── spark_test_helper.py                 # Spark session utilities
+├── azure_token_provider.py              # Azure token helper for tests
+├── test_infrastructure_proposal.md      # Proposed test utilities
 ├── unit/                                # Unit tests (isolated components)
-│   ├── conftest.py
-│   ├── test_platform_local.py          # 25 tests for LocalService
+│   ├── test_app_framework.py
+│   ├── test_bootstrap_*.py              # Bootstrap-related tests
+│   ├── test_cli*.py                     # CLI tests
 │   ├── test_data_entities.py
 │   ├── test_data_pipes.py
-│   └── ...
-├── integration/                         # Integration tests (end-to-end)
-│   ├── conftest.py
+│   ├── test_execution_*.py              # Execution strategy/orchestrator tests
+│   ├── test_platform_*.py              # Per-platform unit tests
+│   ├── test_scd*.py                     # SCD (slowly-changing dimension) tests
+│   ├── test_streaming_*.py             # Streaming pipeline tests
+│   └── ...                             # Many more component-level tests
+├── integration/                         # Integration tests (real Spark, no cloud)
 │   ├── README.md                        # Integration test philosophy
 │   ├── run_tests.md                     # How to run integration tests
 │   ├── spark_java_compatibility.md      # Java/Spark compatibility guide
-│   ├── test_data_pipes_integration.py   # 10 tests, all passing
-│   └── ...
-└── test_infrastructure_proposal.md      # Proposed test utilities
+│   ├── test_config_integration.py
+│   ├── test_csv_entity_provider.py
+│   ├── test_data_pipes_integration.py
+│   ├── test_deployment_service.py
+│   ├── test_entity_config_overrides_simple.py
+│   ├── test_execution_strategy_integration.py
+│   ├── test_generation_executor_integration.py
+│   ├── test_kda_deployment.py
+│   ├── test_kda_packaging.py
+│   ├── test_kda_storage.py
+│   └── test_pipe_graph_integration.py
+├── system/                              # System tests (require cloud infrastructure)
+│   └── core/                           # Core system tests, parametrized by platform
+├── local-project/                       # Local-project smoke tests
+└── data-apps/                           # Sample data apps used by tests
 ```
 
 ---
@@ -130,6 +133,12 @@ tests/
 - **Dependencies**: Real Spark sessions, in-memory data stores
 - **Speed**: Slower (a few seconds per test)
 - **Purpose**: Verify end-to-end workflows and component interaction
+
+### System Tests
+- **Scope**: Full end-to-end on live cloud platforms
+- **Dependencies**: Cloud credentials (Fabric, Synapse, Databricks)
+- **Speed**: Minutes per test
+- **Purpose**: Validate real deployments and cloud-specific behavior
 
 ---
 
@@ -295,54 +304,6 @@ class TestEntityReadPersistStrategy:
 
 ---
 
-## Test Coverage Goals
-
-### Priority 1: Core Components (Target: 80%+)
-- ✅ `data_pipes.py` - 91% with integration tests
-- ✅ `platform_local.py` - 57% with unit tests
-- 🔄 `data_entities.py` - In progress
-- 🔄 `injection.py` - Planned
-
-### Priority 2: Data Layer (Target: 70%+)
-- 🔄 `delta_entity_provider.py`
-- 🔄 `watermarking.py`
-- 🔄 `simple_read_persist_strategy.py`
-
-### Priority 3: Processing & Observability (Target: 60%+)
-- 🔄 `simple_stage_processor.py`
-- 🔄 `file_ingestion.py`
-- 🔄 `spark_log.py`
-- 🔄 `spark_trace.py`
-
----
-
-## Testing Best Practices
-
-### DO ✅
-- Use `poe test-*` commands for standard test runs
-- Use fixtures for common setup/teardown
-- Test one thing per test function
-- Use descriptive test names (`test_<what>_<when>_<expected>`)
-- Clean up resources in teardown
-- Use temporary directories for file operations
-- Test both success and failure paths
-- Mock external dependencies in unit tests
-- Use real Spark in integration tests for realistic behavior
-- Isolate tests (no shared state)
-- Run `poe test-quick` before committing code
-
-### DON'T ❌
-- Test external services (cloud APIs) in unit tests
-- Leave test data behind
-- Write tests that depend on execution order
-- Hard-code paths or credentials
-- Test implementation details
-- Skip cleanup in teardown
-- Use real file I/O when in-memory works
-- Commit temporary test files
-
----
-
 ## Test Commands Reference
 
 ```bash
@@ -351,7 +312,7 @@ poe test              # Run all tests (unit + integration + system)
 poe test-unit         # Run unit tests only
 poe test-integration  # Run integration tests only
 poe test-quick        # Run unit + integration (skip system tests)
-poe test-coverage     # Run tests with HTML coverage report
+poe test-coverage     # Run tests with HTML coverage report (output: test-results/htmlcov/)
 
 # System tests (require cloud credentials) - flexible filtering
 poe test-system                                    # All tests on all platforms
@@ -367,10 +328,10 @@ pytest tests/unit/ -v               # Unit tests
 pytest tests/integration/ -v        # Integration tests
 
 # Run with coverage report
-pytest tests/ --cov=packages/kindling --cov-report=html --cov-report=term-missing
+pytest tests/ --cov=kindling --cov-report=html:test-results/htmlcov --cov-report=term-missing
 
 # Run specific test class
-pytest tests/unit/test_platform_local.py::TestLocalServiceFileOperations -v
+pytest tests/unit/test_data_pipes.py::TestDataPipesRegistration -v
 
 # Run specific test method
 pytest tests/integration/test_data_pipes_integration.py::TestDataPipesRegistrationAndExecution::test_register_and_execute_simple_pipe -v
@@ -404,8 +365,8 @@ pip install -e ".[dev]"
 
 ### Java/Spark Compatibility
 
-- **Current**: Java 21 + PySpark 3.5.5 ✅
-- **Previous issue**: Java 21 + PySpark 3.4.3 ❌ (incompatible)
+- **Current**: Java 21 + PySpark 3.5.5 (verified compatible)
+- **Previous issue**: Java 21 + PySpark 3.4.3 (incompatible)
 - See: `tests/integration/spark_java_compatibility.md`
 
 ---
@@ -433,13 +394,30 @@ pip install -e ".[dev]"
 
 ---
 
-## Next Steps
+## Testing Best Practices
 
-1. **Expand unit test coverage** for core components
-2. **Add integration tests** for watermarking and Delta operations
-3. **Create test utilities module** (see `test_infrastructure_proposal.md`)
-4. **Set up CI/CD** with automated test runs
-5. **Document test patterns** specific to each component type
+### DO
+- Use `poe test-*` commands for standard test runs
+- Use fixtures for common setup/teardown
+- Test one thing per test function
+- Use descriptive test names (`test_<what>_<when>_<expected>`)
+- Clean up resources in teardown
+- Use temporary directories for file operations
+- Test both success and failure paths
+- Mock external dependencies in unit tests
+- Use real Spark in integration tests for realistic behavior
+- Isolate tests (no shared state)
+- Run `poe test-quick` before committing code
+
+### DON'T
+- Test external services (cloud APIs) in unit tests
+- Leave test data behind
+- Write tests that depend on execution order
+- Hard-code paths or credentials
+- Test implementation details
+- Skip cleanup in teardown
+- Use real file I/O when in-memory works
+- Commit temporary test files
 
 ---
 

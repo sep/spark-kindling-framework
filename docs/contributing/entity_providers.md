@@ -4,103 +4,183 @@ Entity Providers are a core component of the Kindling Framework, responsible for
 
 ## Core Concepts
 
-### Entity Provider
+### Interface Composition
 
-An Entity Provider is responsible for:
+The framework uses **interface composition** rather than a single monolithic abstract base class. Providers declare only the capabilities they support by implementing one or more of the following interfaces defined in `entity_provider.py`:
 
-- Creating and managing entity tables
-- Reading entity data
-- Writing and updating entity data
-- Handling merge operations
-- Managing entity versions
+| Interface | Required? | Capability |
+|---|---|---|
+| `BaseEntityProvider` | Yes (all providers) | Batch read + existence check |
+| `WritableEntityProvider` | Optional | Batch write and append |
+| `StreamableEntityProvider` | Optional | Streaming read |
+| `StreamWritableEntityProvider` | Optional | Streaming write |
+| `DestinationEnsuringProvider` | Optional | Pre-create the write destination |
+
+This means a read-only CSV provider only implements `BaseEntityProvider`, while a full-featured Delta provider implements all five.
+
+Capability helpers are provided for runtime checks:
+
+```python
+from kindling.entity_provider import is_streamable, is_writable, is_stream_writable, can_ensure_destination
+
+if is_writable(provider):
+    provider.write_to_entity(df, entity)
+```
 
 ### Provider Abstraction
 
-The framework uses an abstract interface (`EntityProvider`) to enable multiple provider implementations for different storage systems (e.g., Delta Lake, Parquet, Hive tables).
+Each interface is an ABC. Consumers accept `BaseEntityProvider` and narrow to optional interfaces only when needed. The dependency injection system resolves the concrete implementation at runtime.
 
 ### Delta Lake Integration
 
-The primary implementation, `DeltaEntityProvider`, provides seamless integration with Delta Lake, leveraging features like:
+The primary implementation, `DeltaEntityProvider`, implements all five interfaces, providing seamless integration with Delta Lake features:
 
 - ACID transactions
 - Schema evolution
 - Time travel
-- Merge operations
-- Partitioning
+- Merge operations (SCD1 and SCD2)
+- Partitioning and liquid clustering
+- Change Data Feed
 
 ## Key Components
 
-### EntityProvider Interface
+### BaseEntityProvider
 
-The abstract interface defining all operations that entity providers must implement.
+The required base interface all providers must implement.
 
 ```python
-class EntityProvider(ABC):
+class BaseEntityProvider(ABC):
     @abstractmethod
-    def ensure_entity_table(self, entity):
-        """Ensure the entity table exists, create if necessary"""
-        pass
+    def read_entity(self, entity_metadata: EntityMetadata) -> DataFrame:
+        """Read entity as a batch DataFrame."""
 
     @abstractmethod
-    def check_entity_exists(self, entity):
-        """Check if entity table exists"""
-        pass
+    def check_entity_exists(self, entity_metadata: EntityMetadata) -> bool:
+        """Check if the entity exists."""
+```
+
+`BaseEntityProvider` also provides concrete helper methods available to all subclasses:
+
+- `_get_provider_config(entity_metadata)` — extracts and type-converts entity tags, stripping the `provider.` prefix from provider-specific keys
+- `_convert_tag_type(value)` — converts string tag values to bool or int where appropriate
+
+### WritableEntityProvider
+
+Optional interface for providers that support batch writes.
+
+```python
+class WritableEntityProvider(ABC):
+    @abstractmethod
+    def write_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
+        """Write DataFrame to entity (overwrites existing data)."""
 
     @abstractmethod
-    def merge_to_entity(self, df, entity):
-        """Merge DataFrame into entity using merge columns"""
-        pass
+    def append_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
+        """Append DataFrame to entity (preserves existing data)."""
+```
 
-    @abstractmethod
-    def append_to_entity(self, df, entity):
-        """Append DataFrame to entity"""
-        pass
+### StreamableEntityProvider
 
-    @abstractmethod
-    def read_entity(self, entity):
-        """Read entire entity as DataFrame"""
-        pass
+Optional interface for providers that support streaming reads.
 
+```python
+class StreamableEntityProvider(ABC):
     @abstractmethod
-    def read_entity_since_version(self, entity, since_version):
-        """Read entity changes since specific version"""
-        pass
+    def read_entity_as_stream(
+        self,
+        entity_metadata: EntityMetadata,
+        format: Optional[str] = None,
+        options: Optional[dict] = None,
+    ) -> DataFrame:
+        """Read entity as a streaming DataFrame."""
+```
 
-    @abstractmethod
-    def write_to_entity(self, df, entity):
-        """Write DataFrame to entity (overwrite)"""
-        pass
+### StreamWritableEntityProvider
 
+Optional interface for providers that support streaming writes.
+
+```python
+class StreamWritableEntityProvider(ABC):
     @abstractmethod
-    def get_entity_version(self, entity):
-        """Get current version of entity"""
-        pass
+    def append_as_stream(
+        self,
+        df: DataFrame,
+        entity_metadata: EntityMetadata,
+        checkpoint_location: str,
+        format: Optional[str] = None,
+        options: Optional[dict] = None,
+    ) -> StreamingQuery:
+        """Append streaming DataFrame to entity."""
+```
+
+### DestinationEnsuringProvider
+
+Optional interface for providers that can pre-create a write destination.
+
+```python
+class DestinationEnsuringProvider(ABC):
+    @abstractmethod
+    def ensure_destination(self, entity_metadata: EntityMetadata) -> None:
+        """Ensure the destination exists (provider-specific semantics)."""
 ```
 
 ### DeltaEntityProvider
 
-The default implementation for Delta Lake storage.
+The default implementation for Delta Lake storage. It implements all five interfaces.
 
 ```python
 @GlobalInjector.singleton_autobind()
-class DeltaEntityProvider(EntityProvider):
+class DeltaEntityProvider(
+    EntityProvider,
+    BaseEntityProvider,
+    DestinationEnsuringProvider,
+    StreamableEntityProvider,
+    WritableEntityProvider,
+    StreamWritableEntityProvider,
+    SignalEmitter,
+):
     @inject
-    def __init__(self, entity_name_mapper: EntityNameMapper,
-                 path_locator: EntityPathLocator):
-        # Initialize provider with required dependencies
-        pass
-
-    # Implementation of all EntityProvider methods
-    def ensure_entity_table(self, entity):
-        # Create the table if it doesn't exist
-        pass
-
-    def merge_to_entity(self, df, entity):
-        # Perform a Delta merge operation
-        pass
-
-    # Additional methods...
+    def __init__(
+        self,
+        config: ConfigService,
+        entity_name_mapper: EntityNameMapper,
+        path_locator: EntityPathLocator,
+        tp: PythonLoggerProvider,
+        signal_provider: SignalProvider = None,
+    ):
+        ...
 ```
+
+**Injected dependencies:**
+
+| Parameter | Type | Purpose |
+|---|---|---|
+| `config` | `ConfigService` | Runtime config (access mode, feature flags) |
+| `entity_name_mapper` | `EntityNameMapper` | Resolve catalog table names from entity metadata |
+| `path_locator` | `EntityPathLocator` | Resolve physical storage paths from entity metadata |
+| `tp` | `PythonLoggerProvider` | Logger factory |
+| `signal_provider` | `SignalProvider` | Optional observability signal bus |
+
+**Tag-based overrides** (set via entity tags with the `provider.` prefix) take precedence over the injected services:
+
+- `provider.path` — override the physical table path
+- `provider.table_name` — override the catalog table name
+- `provider.access_mode` — override the access mode (`catalog` or `storage`)
+
+**Methods implemented:**
+
+- `read_entity(entity)` — batch read with signal emissions
+- `check_entity_exists(entity)` — checks catalog and/or physical path
+- `write_to_entity(df, entity)` — full overwrite with signal emissions
+- `append_to_entity(df, entity)` — append with signal emissions
+- `merge_to_entity(df, entity)` — SCD1 or SCD2 merge with signal emissions
+- `read_entity_as_stream(entity, format=None, options=None)` — streaming read
+- `append_as_stream(df, entity, checkpointLocation, format=None, options=None)` — streaming write
+- `read_entity_since_version(entity, since_version)` — change feed read
+- `read_entity_as_of(entity, point_in_time)` — point-in-time read
+- `get_entity_version(entity)` — current Delta table version
+- `ensure_entity_table(entity)` — create table if it does not exist
+- `ensure_destination(entity_metadata)` — `DestinationEnsuringProvider` entry point (delegates to `ensure_entity_table`)
 
 ### DeltaTableReference
 
@@ -109,28 +189,27 @@ A utility class for handling different ways of accessing Delta tables.
 ```python
 class DeltaTableReference:
     """Encapsulates how to reference a Delta table"""
-    def __init__(self, table_name: str, table_path: str, access_mode: DeltaAccessMode):
-        # Initialize with both name and path
-        pass
+    def __init__(self, table_name: str, table_path: Optional[str], access_mode: DeltaAccessMode):
+        ...
 
     def get_delta_table(self) -> DeltaTable:
-        """Get DeltaTable instance using appropriate method"""
-        pass
+        """Get DeltaTable instance using the appropriate method."""
 
     def get_read_path(self) -> str:
-        """Get path for spark.read operations"""
-        pass
+        """Get path or name for spark.read operations."""
+
+    def get_spark_read_stream(self, spark, options=None):
+        """Build a readStream for this reference."""
 ```
 
 ### DeltaAccessMode
 
-An enumeration of different ways to access Delta tables.
+A class (not an `Enum`) with two string constants defining how Delta tables are accessed.
 
 ```python
-class DeltaAccessMode(Enum):
-    """Defines how Delta tables are accessed"""
-    CATALOG = "catalog"     # Catalog or metastore-managed table names
-    STORAGE = "storage"     # Direct Delta path access
+class DeltaAccessMode:
+    CATALOG = "catalog"   # Catalog or metastore-managed table names
+    STORAGE = "storage"   # Direct Delta path access
 ```
 
 ## Usage Examples
@@ -138,29 +217,38 @@ class DeltaAccessMode(Enum):
 ### Basic CRUD Operations
 
 ```python
-# Get entity provider
 from kindling.injection import get_kindling_service
-entity_provider = get_kindling_service(EntityProvider)
+from kindling.entity_provider import BaseEntityProvider
+
+entity_provider = get_kindling_service(BaseEntityProvider)
 
 # Get entity definition
 entity = data_entity_registry.get_entity_definition("sales.transactions")
 
 # Read entity
 df = entity_provider.read_entity(entity)
+```
 
-# Write to entity (overwrite)
-entity_provider.write_to_entity(transformed_df, entity)
+For write operations, narrow to `WritableEntityProvider`:
 
-# Append to entity
-entity_provider.append_to_entity(new_records_df, entity)
+```python
+from kindling.entity_provider import WritableEntityProvider, is_writable
+
+if is_writable(entity_provider):
+    # Write to entity (overwrite)
+    entity_provider.write_to_entity(transformed_df, entity)
+
+    # Append to entity
+    entity_provider.append_to_entity(new_records_df, entity)
 ```
 
 ### Merge Operations
 
 ```python
-# Get entity provider
+from kindling.entity_provider import BaseEntityProvider
 from kindling.injection import get_kindling_service
-entity_provider = get_kindling_service(EntityProvider)
+
+entity_provider = get_kindling_service(BaseEntityProvider)
 
 # Define entity with merge columns
 @DataEntities.entity(
@@ -193,40 +281,30 @@ changes_df = entity_provider.read_entity_since_version(entity, last_processed_ve
 
 ### Table Creation
 
-The `ensure_entity_table` method creates tables with appropriate configuration:
+`ensure_entity_table` (and `ensure_destination`) creates tables with appropriate configuration. The strategy differs by access mode:
 
-```python
-def ensure_entity_table(self, entity):
-    # Create empty DataFrame with entity schema
-    empty_df = self.spark.createDataFrame([], entity.schema)
+- **catalog mode** — creates a managed table via `saveAsTable` or `DeltaTable.createIfNotExists(...).tableName(...)`
+- **storage mode** — creates physical Delta files via `DeltaTable.createIfNotExists(...).location(...)` or an empty DataFrame write
 
-    # Write with appropriate options
-    empty_df.write \
-        .format("delta") \
-        .partitionBy(*entity.partition_columns) \
-        .save(table_path)
-```
+The method applies schema, clustering, and partitioning based on entity metadata. It emits `entity.before_ensure_table` and `entity.after_ensure_table` signals.
 
 ### Merge Operations
 
-The `merge_to_entity` method implements Delta Lake's merge capabilities:
+`merge_to_entity` dispatches to a registered `DeltaMergeStrategy`:
+
+- **`scd1`** (default) — update-all / insert-all merge
+- **`scd2`** — staged-updates SCD Type 2 merge (activated when `tags={"scd.type": "2"}`)
 
 ```python
-def merge_to_entity(self, df, entity):
-    # Get Delta table reference
-    delta_table = self._get_table_reference(entity).get_delta_table()
-
-    # Build merge condition from entity's merge columns
-    merge_condition = " AND ".join([f"source.{col} = target.{col}"
-                                   for col in entity.merge_columns])
-
-    # Perform merge operation
-    delta_table.alias("target") \
-        .merge(df.alias("source"), merge_condition) \
-        .whenMatchedUpdateAll() \
-        .whenNotMatchedInsertAll() \
-        .execute()
+def merge_to_entity(self, df: DataFrame, entity):
+    table_ref = self._get_table_reference(entity)
+    if self._check_table_exists(table_ref):
+        self._merge_to_delta_table(df, entity, table_ref)
+    else:
+        self.write_to_entity(df, entity)
 ```
+
+The merge condition is built from `entity.merge_columns`.
 
 ## Advanced Features
 
@@ -234,9 +312,9 @@ def merge_to_entity(self, df, entity):
 
 When an entity carries `tags={"scd.type": "2"}`, `merge_to_entity` automatically applies the **staged-updates** SCD2 pattern instead of a simple overwrite-in-place merge. For each incoming row:
 
-- If the row matches a current target row **and** tracked columns have changed → the existing row is closed (`__effective_to = now`, `__is_current = false`) and a new version is inserted.
-- If the row has no match in the target → it is inserted as a new current row.
-- If the row matches but tracked columns are unchanged → no action (no false history entries).
+- If the row matches a current target row **and** tracked columns have changed — the existing row is closed (`__effective_to = now`, `__is_current = false`) and a new version is inserted.
+- If the row has no match in the target — it is inserted as a new current row.
+- If the row matches but tracked columns are unchanged — no action (no false history entries).
 
 This is handled entirely by `DeltaMergeStrategies` — no pipe-level changes are needed.
 
@@ -247,7 +325,7 @@ For SCD2 entities, `read_entity_as_of` returns the entity state as it appeared a
 ```python
 from datetime import datetime
 
-provider = get_kindling_service(EntityProvider)
+provider = get_kindling_service(BaseEntityProvider)
 
 # Returns rows where effective_from <= point_in_time < effective_to (or is_current=true)
 snapshot_df = provider.read_entity_as_of(entity, datetime(2024, 6, 1))
@@ -269,39 +347,11 @@ spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
 # During merge operations, new columns will be added automatically
 ```
 
-### Z-Ordering
+### Liquid Clustering
 
-Optimize table read performance with Z-ordering:
+Set `cluster_columns` on the entity definition instead of (or instead of `partition_columns`) to enable Delta liquid clustering. Use `cluster_columns=["auto"]` to request automatic clustering (requires the `kindling.features.delta.auto_clustering` feature flag).
 
-```python
-def optimize_entity(self, entity, z_order_cols=None):
-    # Get table reference
-    table_ref = self._get_table_reference(entity)
-
-    # Build optimize command
-    optimize_cmd = f"OPTIMIZE {table_ref.get_read_path()}"
-
-    # Add Z-ORDER if columns specified
-    if z_order_cols:
-        z_order_cols_str = ", ".join(z_order_cols)
-        optimize_cmd += f" ZORDER BY ({z_order_cols_str})"
-
-    # Execute command
-    self.spark.sql(optimize_cmd)
-```
-
-### Vacuum Operations
-
-Control data retention through vacuum operations:
-
-```python
-def vacuum_entity(self, entity, retention_hours=168):  # Default 7 days
-    # Get table reference
-    table_ref = self._get_table_reference(entity)
-
-    # Execute vacuum command
-    self.spark.sql(f"VACUUM {table_ref.get_read_path()} RETAIN {retention_hours} HOURS")
-```
+When both `partition_columns` and `cluster_columns` are provided, `cluster_columns` takes precedence and a warning is logged.
 
 ## Best Practices
 
@@ -315,28 +365,39 @@ def vacuum_entity(self, entity, retention_hours=168):  # Default 7 days
 
 5. **Version Management**: Use versioning for incremental processing and auditing.
 
-6. **Performance Optimization**: Consider Z-ordering for frequently filtered columns.
+6. **Performance Optimization**: Consider liquid clustering (`cluster_columns`) for frequently filtered columns.
 
-7. **Data Retention**: Plan vacuum operations according to your retention requirements.
+7. **Data Retention**: Delta's VACUUM and OPTIMIZE commands can be run directly via `spark.sql` or the Databricks UI; they are not exposed as provider methods.
 
 ## Custom Entity Providers
 
-To implement a custom entity provider:
-
-1. Create a class that implements the EntityProvider interface
-2. Register it with the dependency injection system
-3. Ensure all method contracts are properly fulfilled
-
-Example:
+To implement a custom entity provider, extend `BaseEntityProvider` plus whichever optional interfaces match your provider's capabilities, then register it with the dependency injection system.
 
 ```python
+from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
+from kindling.injection import GlobalInjector, inject
+
 @GlobalInjector.singleton_autobind()
-class CustomEntityProvider(EntityProvider):
-    # Implement all required methods
+class CustomEntityProvider(BaseEntityProvider, WritableEntityProvider):
+    @inject
+    def __init__(self, config: ConfigService):
+        self.config = config
 
-    def ensure_entity_table(self, entity):
-        # Custom implementation
-        pass
+    def read_entity(self, entity_metadata):
+        # Custom read implementation
+        ...
 
-    # ... other methods
+    def check_entity_exists(self, entity_metadata) -> bool:
+        # Custom existence check
+        ...
+
+    def write_to_entity(self, df, entity_metadata) -> None:
+        # Custom write implementation
+        ...
+
+    def append_to_entity(self, df, entity_metadata) -> None:
+        # Custom append implementation
+        ...
 ```
+
+A read-only provider (e.g. CSV, EventHub source) only needs to implement `BaseEntityProvider`.

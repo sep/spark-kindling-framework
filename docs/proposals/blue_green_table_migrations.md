@@ -5,6 +5,50 @@
 **Created**: 2026-02-13
 **Updated**: 2026-02-13
 
+---
+
+## Implementation Status
+
+**The proposed architecture described below was not implemented.**
+
+The `MigrationAwareEntityProvider`, dual-write coordination, and entity-tag-based slot routing were never built. The blue/green slot-switching pattern (reading active slot from `migration.active_slot` tags, writing to both blue and green simultaneously) does not exist in the codebase.
+
+### What Was Actually Built
+
+A plan/apply/rollback/cleanup migration system was implemented instead. The entry point is `MigrationService` in `packages/kindling/migration.py`, exposed through the `kindling migrate` CLI command group.
+
+**Core classes:**
+
+- `MigrationPlanner` - Compares the registered entity definitions against live Delta table state and produces a `MigrationPlan`. It detects: missing tables, column additions, column removals, type changes, partition changes, and cluster column changes. For SQL entities (permanent catalog views), it compares a hash of the SQL stored in `TBLPROPERTIES`.
+- `MigrationApplier` - Applies a `MigrationPlan`. Safe changes (add columns, cluster changes, table creation, view creates/updates) are applied in place via `ALTER TABLE` or `CREATE OR REPLACE VIEW`. Destructive changes (column removals, type changes, partition changes) require `allow_destructive=True`. An optional `BackupStrategy.SNAPSHOT` creates a Delta `CLONE` before any destructive change.
+- `MigrationManager` - Provides `rollback()` and `cleanup()` for blue-green artifacts left after a destructive apply.
+- `MigrationService` - Facade delegating to the three classes above. Typical usage: `svc.plan()`, `svc.apply(plan)`, `svc.rollback(entity)`, `svc.cleanup(entity)`.
+
+**Destructive change strategies:**
+
+- CATALOG mode (table accessed by name): blue-green rewrite. The existing table is written to a `<name>_migration_green` table, validated by row count, then the original is renamed to `<name>_migration_blue` and the green table is renamed to the original name. The blue archive is retained until `cleanup()` is called, and can be restored via `rollback()`.
+- STORAGE mode (table accessed by path): in-place overwrite with `overwriteSchema=true`, using Delta ACID atomicity. An optional `CLONE` snapshot can be taken first.
+
+**CLI commands** (all under `kindling migrate`):
+
+- `kindling migrate plan` - Print a summary of pending changes.
+- `kindling migrate apply [--destructive] [--backup snapshot]` - Apply the plan.
+- `kindling migrate rollback <entity_id>` - Restore the blue archive to live (CATALOG mode only).
+- `kindling migrate cleanup <entity_id>` - Drop the `_migration_blue` and `_migration_green` artifacts.
+
+**Not implemented from this proposal:**
+
+- `MigrationAwareEntityProvider` and transparent read/write routing
+- Dual-write mode during migration
+- Entity tag schema for blue/green slot configuration (`migration.enabled`, `migration.active_slot`, etc.)
+- `TableMigrationManager` orchestration service with `initiate_migration`, `backfill`, `enable_dual_write`, `validate_target_slot`, `cutover`
+- `WatermarkMigrationSupport`
+- `StreamingCheckpointMigration`
+- `EntityProviderRegistry` wrapping with migration support
+- Migration state machine (`PREPARING`, `BACKFILLING`, `MIGRATING`, `CUTOVER`, `ROLLING_BACK`)
+
+---
+
 ## Executive Summary
 
 This proposal introduces automatic/dynamic table migration capabilities to the Kindling framework using a blue/green deployment pattern. The solution leverages Kindling's existing entity registry and provider architecture to enable zero-downtime schema changes, data transformations, and table refactoring with atomic cutover and rollback capabilities.

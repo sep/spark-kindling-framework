@@ -162,6 +162,6 @@ Both paths end up in the same singleton. Use `DataEntities.entity()` (the public
 |---|---|
 | Pipe executes with wrong `table` or `pk` at runtime | Use a factory function (`make_staging_execute(pk, kwarg)`) to freeze loop values — see Step 3 |
 | Kwarg name doesn't match input entity ID | Entity ID `"raw.customer"` → kwarg `raw_customer` (`.` → `_`). Must match exactly. |
-| `DataEntities.deregistry` is `None` at call time | The framework must be initialized (`get_or_create_spark_session` or `initialize_framework`) before calling `DataEntities.entity()` |
+| `KindlingNotInitializedError` raised when calling `DataEntities.entity()` | Call `initialize_framework(config)` before calling `DataEntities.entity()` or importing any module that registers entities or pipes. `get_or_create_spark_session` only creates a Spark session — it does not initialize the Kindling framework. |
 | Registering the same `entityid` or `pipeid` twice | The manager silently overwrites. Make sure loop values produce unique IDs. |
 | Reading the definition table after pipes start running | Read definition data before any `run_datapipes` call, at notebook init time. |

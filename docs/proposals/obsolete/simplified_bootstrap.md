@@ -4,6 +4,8 @@
 **Date:** 2026-02-16
 **Author:** AI-assisted analysis
 
+> **Audit note (2026-06-30):** Open Question 1's "Resolved" annotation is inaccurate — see inline correction below. Additional inaccuracy: the proposal states "up to 5 config files" are downloaded; the actual implementation downloads up to 7.
+
 ## Problem Statement
 
 Kindling's current bootstrapping process is complex, with multiple overlapping paths that have accumulated workarounds and platform-specific hacks. The process involves:
@@ -52,7 +54,9 @@ This is necessary because of stale module caching, but it's extremely slow and f
 `__init__.py` imports all 33+ modules at package load time. This means even `import kindling` triggers loading of every entity provider, every platform utility, etc., regardless of what's needed.
 
 #### 5. Config Loading Complexity
-`initialize_framework()` downloads up to 5 config files from lake storage, with environment-specific merging, Dynaconf initialization, bidirectional key translation (flat-to-nested and nested-to-flat), and Spark config overlay. This interleaves with pip operations and platform detection.
+`initialize_framework()` downloads up to 7 config files from lake storage (base, platform, workspace, environment, app base, app platform, app environment — see `download_config_files()` in `bootstrap.py`), with environment-specific merging, Dynaconf initialization, bidirectional key translation (flat-to-nested and nested-to-flat), and Spark config overlay. This interleaves with pip operations and platform detection.
+
+> **Audit note (2026-06-30):** The original text said "up to 5 config files"; the actual implementation supports up to 7 when an `app_name` is provided and a platform is detected.
 
 #### 6. Debug Noise
 Both runtime scripts and `bootstrap.py` contain extensive debug print statements with emoji, execution IDs, timestamps, and PIDs. While useful during development, this makes the logs hard to read in production.
@@ -479,7 +483,15 @@ BOOTSTRAP_CONFIG = {
 
 ## Open Questions
 
-1. **`use_lake_packages` behavior**: Resolved for runtime bootstrap. Default behavior is now **install if missing** (skip reinstall when already available), with `force_reinstall=True` as explicit override.
+1. **`use_lake_packages` behavior**: ~~Resolved for runtime bootstrap. Default behavior is now **install if missing** (skip reinstall when already available), with `force_reinstall=True` as explicit override.~~
+
+   **Correction (2026-06-30):** This resolution is wrong in two ways.
+
+   First, `use_lake_packages` in `initialize_framework()` has nothing to do with kindling wheel installation. It controls whether `initialize_framework` downloads YAML config files and extension wheels from the lake. Kindling wheel installation lives entirely in the runtime bootstrap script (`kindling_bootstrap.py`), not in `bootstrap.py`. The `force_reinstall` key is not referenced anywhere in `bootstrap.py`.
+
+   Second, the default for `use_lake_packages` in the actual code (`initialize_framework`, line 1424) is `True` for all non-standalone platforms — not "install if missing". Standalone platforms default to `False`. There is no "skip reinstall when already available" logic in `initialize_framework` itself; that guard (if it exists) would be in the runtime script.
+
+   The open question about smarter install-skip behavior for the kindling wheel remains unresolved in `bootstrap.py`.
 
 2. **Version pinning**: When kindling is pre-installed at version X but the lake has version Y, what should happen? Options:
    - Always use the installed version (fast, but may be stale)

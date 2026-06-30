@@ -15,7 +15,7 @@ Abstract interface for obtaining loggers.
 ```python
 class PythonLoggerProvider(ABC):
     @abstractmethod
-    def get_logger(self, name: str):
+    def get_logger(self, name: str, session=None):
         """Get a logger instance with the specified name"""
         pass
 ```
@@ -27,9 +27,11 @@ Default implementation of PythonLoggerProvider that creates SparkLogger instance
 ```python
 @GlobalInjector.singleton_autobind()
 class SparkLoggerProvider(PythonLoggerProvider):
-    def get_logger(self, name: str):
-        return SparkLogger(name)
+    def get_logger(self, name: str, session=None):
+        return SparkLogger(name, config=self.config, session=session)
 ```
+
+The optional `session` parameter accepts a SparkSession instance. When omitted, the provider uses the active Spark session from `get_or_create_spark_session()`.
 
 #### SparkLogger
 
@@ -42,24 +44,28 @@ A wrapper around Spark's Log4j logger with additional functionality:
 
 ```python
 class SparkLogger:
-    def __init__(self, name: str, baselogger = None):
+    def __init__(self, name: str, baselogger=None, session=None, config=None):
         # Initialize logger with name
         pass
 
-    def debug(self, msg: str):
+    def debug(self, msg: str, include_traceback: bool = False):
         # Log at debug level
         pass
 
-    def info(self, msg: str):
+    def info(self, msg: str, include_traceback: bool = False):
         # Log at info level
         pass
 
-    def warn(self, msg: str):
+    def warn(self, msg: str, include_traceback: bool = False):
         # Log at warning level
         pass
 
-    def error(self, msg: str):
+    def error(self, msg: str, include_traceback: bool = False):
         # Log at error level
+        pass
+
+    def exception(self, msg: str):
+        # Log at error level, always including the current traceback
         pass
 
     def with_pattern(self, pattern: str):
@@ -82,6 +88,13 @@ self.logger.debug("Detailed diagnostic information")
 self.logger.info("Normal operational information")
 self.logger.warn("Warning condition")
 self.logger.error("Error condition")
+```
+
+#### Logging with an explicit SparkSession
+
+```python
+# Pass a specific session when the default session is not yet active
+logger = lp.get_logger("my_component", session=spark)
 ```
 
 #### Custom Log Patterns
@@ -128,19 +141,69 @@ class AzureEventEmitter(CustomEventEmitter):
 
 #### SparkTraceProvider
 
-Provider for creating and managing trace spans.
+Abstract provider for creating and managing trace spans.
 
 ```python
 class SparkTraceProvider(ABC):
     @abstractmethod
-    def span(self, component: str, operation: str, details: Optional[Dict] = None, reraise: bool = False):
-        """Create a new trace span"""
+    def span(
+        self,
+        operation: str = None,
+        component: str = None,
+        details: dict = None,
+        reraise: bool = False,
+    ):
+        """Create a new trace span as a context manager"""
         pass
 
     @abstractmethod
-    def get_current_trace_id(self) -> Optional[str]:
-        """Get the current trace ID"""
+    def start_span(
+        self,
+        operation: str,
+        component: str,
+        details: dict = None,
+    ) -> "SparkSpan":
+        """Start a span manually. Returns the span for later add_event/end_span calls."""
         pass
+
+    @abstractmethod
+    def add_event(
+        self,
+        span: "SparkSpan",
+        name: str,
+        attributes: dict = None,
+    ) -> None:
+        """Add a timestamped event marker to an active span."""
+        pass
+
+    @abstractmethod
+    def end_span(
+        self,
+        span: "SparkSpan",
+        error: Optional[str] = None,
+    ) -> None:
+        """End a manually started span. Optionally record an error."""
+        pass
+```
+
+#### EventBasedSparkTrace
+
+Default concrete implementation of `SparkTraceProvider`. Registered as a singleton via `GlobalInjector` and wired to `AzureEventEmitter`. Each call to `span()` emits `_START`, `_END`, and (on exception) `_ERROR` events through the underlying `CustomEventEmitter`. An internal activity counter is used as the span ID, and a UUID is generated as the trace ID for root-level spans and inherited by nested spans.
+
+```python
+@GlobalInjector.singleton_autobind()
+class EventBasedSparkTrace(SparkTraceProvider):
+    @inject
+    def __init__(self, emitter: CustomEventEmitter):
+        self.emitter = emitter
+        self.current_span = None
+        self.activity_counter = 1
+```
+
+Obtain an instance through the injector rather than constructing it directly:
+
+```python
+trace_provider = GlobalInjector.get(SparkTraceProvider)
 ```
 
 #### SparkSpan
@@ -150,14 +213,14 @@ Represents a single operation within a trace.
 ```python
 @dataclass
 class SparkSpan:
+    id: str
     component: str
     operation: str
-    details: Dict = field(default_factory=dict)
-    parent_id: Optional[str] = None
-    span_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    start_time: datetime = field(default_factory=datetime.now)
-    end_time: Optional[datetime] = None
-    error: Optional[Exception] = None
+    attributes: Dict[str, str]
+    traceId: uuid
+    reraise: bool
+    start_time: datetime = None
+    end_time: datetime = None
 ```
 
 ### Usage Examples
@@ -173,7 +236,7 @@ with trace_provider.span(
     component="DataTransformation",
     operation="ValidateCustomerData",
     details={"source": "CRM", "records": 1000}
-) as span:
+):
     # Your operation code here
     # Span automatically captures timing and errors
     pass
@@ -182,16 +245,38 @@ with trace_provider.span(
 #### Nested Spans
 
 ```python
-with trace_provider.span(component="Pipeline", operation="ProcessData") as outer_span:
+with trace_provider.span(component="Pipeline", operation="ProcessData"):
     # Do some initial work
 
-    with trace_provider.span(component="Validation", operation="ValidateSchema") as inner_span:
+    with trace_provider.span(component="Validation", operation="ValidateSchema"):
         # Validation logic
         pass
 
-    with trace_provider.span(component="Transformation", operation="CleanData") as inner_span:
+    with trace_provider.span(component="Transformation", operation="CleanData"):
         # Transformation logic
         pass
+```
+
+#### Manual Span Management
+
+Use `start_span` / `add_event` / `end_span` when you need explicit control over span boundaries (e.g. spanning across callbacks or async boundaries).
+
+```python
+span = trace_provider.start_span(
+    component="DataLoader",
+    operation="LoadCustomers",
+    details={"source": "CRM"},
+)
+
+# ... do work ...
+
+trace_provider.add_event(span, "RecordsRead", attributes={"count": 1000})
+
+# ... do more work ...
+
+trace_provider.end_span(span)
+# or, on failure:
+# trace_provider.end_span(span, error=traceback.format_exc())
 ```
 
 #### MDC Context

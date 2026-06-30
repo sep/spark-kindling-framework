@@ -65,7 +65,55 @@ class EntityMetadata:
 - Must be called at module level for proper registration
 - Schema can be a Spark StructType or string representation
 
-### 3. EntityPathLocator (Abstract)
+### 3. @DataEntities.sql_entity() Decorator
+
+```python
+@DataEntities.sql_entity(
+    entityid="reporting.recent_sales",
+    name="Recent Sales",
+    tags={"layer": "reporting"},
+    sql="SELECT * FROM sales.transactions WHERE event_date >= current_date() - 30",
+)
+```
+
+Or via a bundled package resource:
+
+```python
+@DataEntities.sql_entity(
+    entityid="reporting.recent_sales",
+    name="Recent Sales",
+    sql_source=SqlSource(resource="my_app:sql/recent_sales.sql"),
+)
+```
+
+**Purpose**: Registers a SQL-defined (permanent catalog view) entity. The entity is read-only; the migration layer materializes it with `CREATE OR REPLACE VIEW`.
+
+**Parameters**:
+- `entityid`: Unique identifier for the entity
+- `name`: Human-readable name
+- `tags`: Optional key-value metadata (the `provider_type: "view"` tag is added automatically)
+- `sql`: A literal SQL string (mutually exclusive with `sql_source`)
+- `sql_source`: A `SqlSource` object pointing to an inline string, a package resource (`"package:path/to/file.sql"`), or a filesystem path (mutually exclusive with `sql`)
+
+**`SqlSource` helper**:
+
+```python
+@dataclass
+class SqlSource:
+    inline:   Optional[str] = None   # literal SQL string
+    resource: Optional[str] = None   # "package:path/to/file.sql" via importlib.resources
+    file:     Optional[str] = None   # filesystem path (local dev only)
+```
+
+Exactly one of `inline`, `resource`, or `file` must be provided.
+
+**Usage Notes**:
+- SQL entities have no `merge_columns`, `partition_columns`, or `schema` — they are fully defined by their SQL body.
+- Writing to a SQL entity raises `NotImplementedError`.
+- Raises `KindlingNotInitializedError` if called before `initialize()`.
+- Must be called at module level for proper registration.
+
+### 4. EntityPathLocator (Abstract)
 
 ```python
 class EntityPathLocator(ABC):
@@ -81,7 +129,7 @@ class EntityPathLocator(ABC):
 
 **Usage**: Typically implemented to support different storage backends or path conventions.
 
-### 4. EntityNameMapper (Abstract)
+### 5. EntityNameMapper (Abstract)
 
 ```python
 class EntityNameMapper(ABC):
@@ -97,62 +145,122 @@ class EntityNameMapper(ABC):
 
 **Usage**: Enables flexible naming strategies (e.g., environment prefixes, schema organization).
 
-### 5. EntityProvider (Abstract)
+### 6. Entity Provider Interfaces (Composed)
+
+The provider system uses interface composition. Providers implement only the capabilities they support; the runtime checks capability at call sites via `isinstance`.
+
+#### 6a. BaseEntityProvider (required)
 
 ```python
-class EntityProvider(ABC):
+class BaseEntityProvider(ABC):
     @abstractmethod
-    def ensure_entity_table(self, entity):
-        """Ensure the entity table exists, create if necessary"""
+    def read_entity(self, entity_metadata: EntityMetadata) -> DataFrame:
+        """Read entity as a batch DataFrame."""
         pass
 
     @abstractmethod
-    def check_entity_exists(self, entity):
-        """Check if entity table exists"""
-        pass
-
-    @abstractmethod
-    def merge_to_entity(self, df, entity):
-        """Merge DataFrame into entity using merge columns"""
-        pass
-
-    @abstractmethod
-    def append_to_entity(self, df, entity):
-        """Append DataFrame to entity"""
-        pass
-
-    @abstractmethod
-    def read_entity(self, entity):
-        """Read entire entity as DataFrame"""
-        pass
-
-    @abstractmethod
-    def read_entity_since_version(self, entity, since_version):
-        """Read entity changes since specific version"""
-        pass
-
-    @abstractmethod
-    def write_to_entity(self, df, entity):
-        """Write DataFrame to entity (overwrite)"""
-        pass
-
-    @abstractmethod
-    def get_entity_version(self, entity):
-        """Get current version of entity"""
+    def check_entity_exists(self, entity_metadata: EntityMetadata) -> bool:
+        """Return True if the entity exists."""
         pass
 ```
 
-**Purpose**: Abstract interface defining all data operations for entities.
+**Purpose**: Core interface that every provider must implement. Covers batch read and existence checks.
 
-**Implementation Required**: Concrete implementation for your storage backend (typically Delta Lake).
+#### 6b. WritableEntityProvider (optional)
+
+```python
+class WritableEntityProvider(ABC):
+    @abstractmethod
+    def write_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
+        """Write DataFrame to entity (overwrites existing data)."""
+        pass
+
+    @abstractmethod
+    def append_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
+        """Append DataFrame to entity (preserves existing data)."""
+        pass
+```
+
+**Purpose**: Opt-in batch write capability.
+
+#### 6c. StreamableEntityProvider (optional)
+
+```python
+class StreamableEntityProvider(ABC):
+    @abstractmethod
+    def read_entity_as_stream(
+        self,
+        entity_metadata: EntityMetadata,
+        format: Optional[str] = None,
+        options: Optional[dict] = None,
+    ) -> DataFrame:
+        """Read entity as a streaming DataFrame."""
+        pass
+```
+
+**Purpose**: Opt-in streaming read capability.
+
+#### 6d. StreamWritableEntityProvider (optional)
+
+```python
+class StreamWritableEntityProvider(ABC):
+    @abstractmethod
+    def append_as_stream(
+        self,
+        df: DataFrame,
+        entity_metadata: EntityMetadata,
+        checkpoint_location: str,
+        format: Optional[str] = None,
+        options: Optional[dict] = None,
+    ) -> StreamingQuery:
+        """Append a streaming DataFrame to the entity."""
+        pass
+```
+
+**Purpose**: Opt-in streaming write capability.
+
+#### 6e. DestinationEnsuringProvider (optional)
+
+```python
+class DestinationEnsuringProvider(ABC):
+    @abstractmethod
+    def ensure_destination(self, entity_metadata: EntityMetadata) -> None:
+        """Ensure the write destination exists (provider-specific semantics)."""
+        pass
+```
+
+**Purpose**: Pre-creation of write destinations. Intentionally separated so providers that do not need DDL (e.g., most event-streaming sinks) are not forced to implement it.
+
+#### Capability check helpers
+
+```python
+from kindling.entity_provider import is_streamable, is_writable, is_stream_writable, can_ensure_destination
+
+if is_writable(provider):
+    provider.write_to_entity(df, entity)
+```
+
+#### Interface composition by provider type
+
+| Provider | BaseEntityProvider | WritableEntityProvider | StreamableEntityProvider | StreamWritableEntityProvider | DestinationEnsuringProvider |
+|----------|:-----------------:|:---------------------:|:------------------------:|:---------------------------:|:---------------------------:|
+| Delta (full) | yes | yes | yes | yes | yes |
+| CSV (read-only) | yes | | | | |
+| EventHub | yes | | yes | | |
+| Memory (testing) | yes | yes | yes | yes | yes |
+
+#### Legacy EntityProvider ABC
+
+`EntityProvider` (in `data_entities.py`) is a legacy monolithic ABC kept for backward compatibility. New providers should implement the composed interfaces from `entity_provider.py` instead. `DeltaEntityProvider` implements both.
 
 **Key Operations**:
-- **CRUD Operations**: Create, read, update, delete functionality
-- **Merge Operations**: Upsert capabilities using defined merge columns
-- **Version Management**: Support for time travel and incremental processing
-- **Schema Management**: Automatic table creation and schema evolution
+- **Batch reads/writes**: via `BaseEntityProvider` + `WritableEntityProvider`
+- **Streaming**: via `StreamableEntityProvider` + `StreamWritableEntityProvider`
+- **Destination setup**: via `DestinationEnsuringProvider`
+- **Version Management**: `read_entity_since_version` / `get_entity_version` on `EntityProvider`
+- **Schema Management**: Automatic table creation and schema evolution via `ensure_entity_table`
 
-### 6. DataEntityRegistry (Abstract)
+### 7. DataEntityRegistry (Abstract)
 
 ```python
 class DataEntityRegistry(ABC):
@@ -176,7 +284,7 @@ class DataEntityRegistry(ABC):
 
 **Default Implementation**: `DataEntityManager` provides the concrete implementation.
 
-### 7. DataEntityManager
+### 8. DataEntityManager
 
 ```python
 @GlobalInjector.singleton_autobind()
@@ -311,43 +419,56 @@ incremental_df = entity_provider.read_entity_since_version(entity_def, version -
 
 To use this framework, you must implement:
 
-1. **EntityProvider**: Core data operations for your storage backend
-2. **EntityPathLocator**: Path resolution for your storage system
-3. **EntityNameMapper**: Table naming conventions
-4. **Schema Definitions**: Spark StructType schemas for all entities
+1. **`BaseEntityProvider`** (required): batch read and existence check for your storage backend
+2. **`WritableEntityProvider`** (if writable): batch write and append operations
+3. **`StreamableEntityProvider`** (if streaming reads needed): streaming read operations
+4. **`StreamWritableEntityProvider`** (if streaming writes needed): streaming append operations
+5. **`DestinationEnsuringProvider`** (if DDL needed): pre-creation of write destinations
+6. **EntityPathLocator**: Path resolution for your storage system
+7. **EntityNameMapper**: Table naming conventions
+8. **Schema Definitions**: Spark StructType schemas for all entities
 
 ## Common Implementation Patterns
 
-### Delta Lake EntityProvider Example
+### Custom EntityProvider Example (composed interfaces)
 
 ```python
 @GlobalInjector.singleton_autobind()
-class DeltaEntityProvider(EntityProvider):
+class MyDeltaEntityProvider(
+    BaseEntityProvider,
+    WritableEntityProvider,
+    DestinationEnsuringProvider,
+):
     @inject
     def __init__(self, path_locator: EntityPathLocator, name_mapper: EntityNameMapper):
         self.path_locator = path_locator
         self.name_mapper = name_mapper
 
-    def ensure_entity_table(self, entity):
+    def check_entity_exists(self, entity):
+        path = self.path_locator.get_table_path(entity)
+        try:
+            spark.read.format("delta").load(path)
+            return True
+        except Exception:
+            return False
+
+    def read_entity(self, entity):
+        path = self.path_locator.get_table_path(entity)
+        return spark.read.format("delta").load(path)
+
+    def ensure_destination(self, entity):
         if not self.check_entity_exists(entity):
             path = self.path_locator.get_table_path(entity)
             empty_df = spark.createDataFrame([], entity.schema)
             empty_df.write.format("delta").save(path)
 
-    def merge_to_entity(self, df, entity):
+    def write_to_entity(self, df, entity):
         path = self.path_locator.get_table_path(entity)
-        delta_table = DeltaTable.forPath(spark, path)
+        df.write.format("delta").mode("overwrite").save(path)
 
-        merge_condition = " AND ".join([
-            f"target.{col} = source.{col}"
-            for col in entity.merge_columns
-        ])
-
-        delta_table.alias("target") \
-            .merge(df.alias("source"), merge_condition) \
-            .whenMatchedUpdateAll() \
-            .whenNotMatchedInsertAll() \
-            .execute()
+    def append_to_entity(self, df, entity):
+        path = self.path_locator.get_table_path(entity)
+        df.write.format("delta").mode("append").save(path)
 ```
 
 ### Path Locator Example
@@ -472,6 +593,8 @@ Writing to a companion entity raises `NotImplementedError`.
 | `scd.current_col` | `__is_current` | Temporal column name override |
 | `scd.current_entity_id` | `{entityid}.current` | Override companion entity id |
 | `scd.routing_key` | `hash` | `hash` (safe for all types) or `concat` (cheaper, readable) |
+| `scd.close_on_missing` | `false` | Set to `"true"` to close (expire) rows whose business key is absent from the incoming batch — acts as a soft-delete for keys that disappear from the source |
+| `scd.optimize_unchanged` | `false` | Set to `"true"` to skip re-inserting rows whose tracked columns are unchanged; uses a hash comparison to detect changes and avoids writing no-op history records |
 
 ## Best Practices
 
@@ -488,6 +611,7 @@ Writing to a companion entity raises `NotImplementedError`.
 - **Registry Access**: Automatic initialization of registry through dependency injection
 - **Schema Validation**: Depends on EntityProvider implementation
 - **Storage Errors**: Handled by concrete EntityProvider implementations
+- **`KindlingNotInitializedError`**: Raised by `@DataEntities.entity()`, `@DataEntities.sql_entity()`, and `@DataPipes.pipe()` decorators when they fire before `initialize()` has been called. This typically means an entity or pipe module was imported before `app.py`'s `register_all()` completed. Fix: ensure `initialize()` runs before any entity or pipe module is imported.
 
 ## Data Governance Features
 

@@ -7,7 +7,7 @@ Kindling uses two platform layers with different responsibilities.
 1. Runtime platform services (`kindling` package)
 - Used inside Spark execution environments.
 - Backed by runtime utilities and DI wiring.
-- Primary files: `packages/kindling/platform_fabric.py`, `packages/kindling/platform_synapse.py`, `packages/kindling/platform_databricks.py`.
+- Primary files: `packages/kindling/platform_fabric.py`, `packages/kindling/platform_synapse.py`, `packages/kindling/platform_databricks.py`, `packages/kindling/platform_standalone.py`.
 
 2. Design-time remote API clients (`kindling_sdk` package)
 - Used from local dev, CI/CD, and system tests.
@@ -35,6 +35,17 @@ status = api.get_job_status(run_id)
 ```
 
 ## Implementations
+
+### Runtime platform services (`kindling` package)
+
+- `FabricService` (`platform_fabric.py`)
+- `SynapseService` (`platform_synapse.py`)
+- `DatabricksService` (`platform_databricks.py`)
+- `StandaloneService` (`platform_standalone.py`) — generic OSS/vanilla Spark; supports local, standalone, YARN, Kubernetes, and CI/CD environments. Provides hybrid filesystem access (local + Hadoop FS for HDFS/S3/ABFS) and resolves secrets from environment variables.
+
+Each runtime service is registered via `PlatformServices.register()` and resolved by name (e.g. `"standalone"`, `"databricks"`).
+
+### Design-time remote API clients (`kindling_sdk` package)
 
 - `FabricAPI` (`platform_fabric.py`)
 - `SynapseAPI` (`platform_synapse.py`)

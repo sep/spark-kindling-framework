@@ -29,6 +29,7 @@ class PipeMetadata:
     input_entity_ids: List[str]
     output_entity_id: str
     output_type: str
+    use_watermark: bool = False
 ```
 
 **Purpose**: Defines metadata for a data pipe.
@@ -41,6 +42,7 @@ class PipeMetadata:
 - `input_entity_ids`: List of input entity identifiers
 - `output_entity_id`: Identifier for the output entity
 - `output_type`: Type of the output (e.g., "table", "view")
+- `use_watermark`: Whether to apply watermark-based incremental reads (default `False`)
 
 ### 2. @DataPipes.pipe() Decorator
 
@@ -73,7 +75,7 @@ def my_transformation_function(input_entity1, input_entity2):
 ```python
 class EntityReadPersistStrategy(ABC):
     @abstractmethod
-    def create_pipe_entity_reader(self, pipe: str):
+    def create_pipe_entity_reader(self, pipe: PipeMetadata):
         """Create a reader function for pipe entities"""
         pass
 
@@ -245,7 +247,7 @@ result = orchestrator.execute_batch(pipes_to_run, parallel=True)
 result = orchestrator.execute_streaming(pipes_to_run)
 
 # Inspect result
-print(f"Succeeded: {result.succeeded}, Failed: {result.failed}")
+print(f"Succeeded: {result.success_count}, Failed: {result.failed_count}")
 ```
 
 `ExecutionOrchestrator` emits an `orchestrator.plan_generated` signal before
