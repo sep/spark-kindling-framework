@@ -13,33 +13,34 @@ so that I get a working project structure without reading docs first.
 kindling app init orders --package orders --repo-root .
 ```
 
-**As a developer, I want to configure environment-specific settings for my app**
-so that dev and prod environments point at the right platforms, storage paths, and entity providers without changing code.
+This creates `apps/orders/` containing `app.py`, `app.yaml`, `lake-reqs.txt`, `settings.yaml`, `settings.local.yaml`, and `QUICKSTART.md`.
+
+**As a developer, I want to generate an initial config file for my app**
+so that I have a `settings.yaml` stub to fill in with storage account, platform, and environment details.
 
 ```bash
-kindling env init --app ./myproject
+kindling config init
 ```
 
-Expected behavior: generates a `kindling.yaml` stub with `dev` and `prod` environment blocks, including ABFSS storage path placeholders and entity provider defaults for each environment. The developer fills in storage account, container, and platform details.
+Expected behavior: generates a `settings.yaml` with Kindling telemetry, bootstrap, and extension stubs. The developer fills in storage account, container, secrets, and platform-specific settings.
 
 Example output structure:
 ```yaml
-app: myproject
-environments:
-  dev:
-    platform: synapse
-    storage:
-      account: myaccount
-      container: dev
-    entities:
-      default_provider: delta
-  prod:
-    platform: synapse
-    storage:
-      account: myaccount
-      container: prod
-    entities:
-      default_provider: delta
+name: myproject
+version: "0.1.0"
+description: "Kindling data app"
+
+kindling:
+  telemetry:
+    logging:
+      level: INFO
+      print: true
+  bootstrap:
+    load_lake: true
+    load_local: false
+  spark_configs: {}
+  required_packages: []
+  extensions: []
 ```
 
 **As a developer, I want to check whether my local environment is configured correctly**
@@ -49,18 +50,27 @@ so that I know if I can run pipelines locally before writing any code.
 kindling env check
 ```
 
-**As a developer, I want to check whether my platform connection is configured correctly**
+**As a developer, I want to check whether my local Spark stack is ready**
+so that I can confirm Java, PySpark, delta-spark, and the hadoop-azure JARs are all present.
+
+```bash
+kindling env check --local
+```
+
+**As a developer, I want to check whether my platform credentials are configured correctly**
 so that I can confirm credentials and workspace settings before attempting a remote run.
 
 ```bash
 kindling env check --platform synapse
+kindling env check --platform fabric
+kindling env check --platform databricks
 ```
 
-**As a developer, I want to see what platforms are available and which one is active**
-so that I understand where commands will run by default.
+**As a developer, I want to download all JARs required for local ABFSS development**
+so that I can run pipelines locally against Azure Data Lake Storage.
 
 ```bash
-kindling env list
+kindling env ensure
 ```
 
 ---
@@ -74,26 +84,25 @@ so that I can iterate quickly without deploying to a remote platform.
 kindling pipeline run bronze.ingest_orders --env dev
 ```
 
-**As a developer, I want to run a pipe locally with a specific config file**
+**As a developer, I want to run a pipe locally with a specific config directory**
 so that I can test different parameter sets without changing my defaults.
 
 ```bash
-kindling pipeline run bronze.ingest_orders --config ./local-test-config.yaml
+kindling pipeline run bronze.ingest_orders --config ./local-test-config/
 ```
 
-**As a developer, I want to see what apps and pipes are registered in my project**
+**As a developer, I want to see what pipes are registered in my app**
 so that I can verify the registration wiring is correct before running anything.
 
 ```bash
-kindling app list
-kindling pipeline list --app orders
+kindling pipeline list --app apps/orders/app.py
 ```
 
 **As a developer, I want to run a single layer using an already-populated upstream entity as input**
 so that I can iterate on silver or gold transforms without re-running bronze every time.
 
 ```bash
-kindling pipeline run silver.stage_myproject --app myproject --env dev
+kindling pipeline run silver.stage_myproject --env dev
 ```
 
 The silver pipe reads from the `bronze.myproject` Delta entity that already exists in dev storage. No bronze re-execution needed. This is the primary iteration loop when developing mid-pipeline stages — the upstream entity is already there; only the downstream transform changes.
@@ -105,6 +114,13 @@ so that I can do a full backfill during development without resetting watermark 
 kindling pipeline run bronze.ingest_orders --no-watermark
 ```
 
+**As a developer, I want to validate my app's entity and pipe registrations without starting Spark**
+so that I can catch wiring errors before running anything that touches data.
+
+```bash
+kindling app validate
+```
+
 ---
 
 ## 3. Testing
@@ -112,7 +128,7 @@ kindling pipeline run bronze.ingest_orders --no-watermark
 The test suites map to two execution environments:
 
 - **Local execution** (unit, component, integration) — Spark runs on the dev machine or CI runner. No platform credentials required for unit and component. Integration may use `tests/entities/` CSVs (local, no credentials) or cloud storage (credentials required).
-- **Remote execution** (system) — code runs inside the platform Spark pool. Requires runner, platform credentials, and real environment config. This is `kindling app run` with assertions.
+- **Remote execution** (system) — code runs inside the platform Spark pool. Requires platform credentials and real environment config. This is `kindling app run` with assertions.
 
 **As a developer, I want to run unit tests for my app**
 so that I can verify transform logic in isolation without the Kindling runtime or storage.
@@ -151,7 +167,7 @@ This uses the same local Spark execution but entity providers resolve to cloud s
 **As a developer, I want to run system tests against a real platform Spark pool**
 so that I can verify the full remote execution path before promoting to production.
 
-System tests submit to the platform runner and execute remotely — the same path as `kindling app run`. Requires runner to be installed and platform credentials configured.
+System tests submit to the platform and execute remotely — the same path as `kindling app run`. Requires platform credentials configured.
 
 ```bash
 kindling test run --suite system --platform synapse
@@ -161,13 +177,13 @@ kindling test run --suite system --platform fabric
 **As a developer, I want to write an end-to-end medallion integration test that seeds one CSV and asserts on gold output**
 so that a single test covers the full bronze → silver → gold chain with controlled data.
 
-The integration test seeds a CSV into `tests/entities/bronze/myproject_raw/`, runs the full pipeline locally, and asserts on the gold entity output. `kindling app add pipe` scaffolds the per-layer tests, but this story is about the cross-layer test that validates the chain as a whole.
+The integration test seeds a CSV into `tests/entities/bronze/myproject_raw/`, runs the full pipeline locally, and asserts on the gold entity output. `kindling package add pipe` scaffolds the per-layer tests, but this story is about the cross-layer test that validates the chain as a whole.
 
 ```bash
 kindling test run --suite integration --test test_myproject_medallion
 ```
 
-The scaffolded skeleton for this test is generated by `kindling app add pipe gold.curate_myproject --chain`, which produces an additional `tests/integration/test_myproject_chain.py` covering the full flow end to end.
+The scaffolded skeleton for this test is generated by `kindling package add pipe gold.curate_myproject`, which produces an additional `tests/integration/test_curate_myproject.py` covering the full flow end to end.
 
 **As a developer, I want to run preflight checks before integration or system tests**
 so that I get a clear error on missing credentials or config rather than a cryptic failure mid-run.
@@ -186,101 +202,40 @@ kindling test cleanup
 
 ---
 
-## 4. Notebook Import
+## 4. Scaffolding
 
-These stories cover converting notebook-based development work into Kindling app packages. Kindling uses a folder convention for notebook packages: a folder is recognized as a package when it contains an `{name}_init` notebook, and notebooks within it use `notebook_import("package.module")` to reference each other.
+These commands add new building blocks to an existing package and generate the corresponding test scaffolding so that the new code has a place to be tested immediately.
 
-**As a developer, I want to import a whole notebook folder that follows the Kindling convention into a new app package**
-so that I can take notebook-based work and turn it into a deployable Kindling app without manually converting each notebook.
-
-```bash
-kindling notebook import --folder ./orders
-```
-
-Expected behavior: scans `./orders` for the `orders_init` notebook, resolves `notebook_import()` dependencies, converts each notebook to a `.py` module, and emits a structured app package ready for `kindling app package`.
-
-**As a developer, I want to import a whole notebook folder into an existing app package**
-so that I can merge a new set of notebooks into a package I am already maintaining without creating a new package from scratch.
-
-```bash
-kindling notebook import --folder ./bronze_transforms --into ./orders
-```
-
-Expected behavior: converts each notebook in `./bronze_transforms` to a module and adds it under the target package, resolving `notebook_import()` calls relative to the merged package. Warns on name collisions rather than silently overwriting.
-
-**As a developer, I want to import a single notebook as a module into an existing package**
-so that I can add one new notebook to an existing package without re-importing the whole folder.
-
-```bash
-kindling notebook import --notebook ./bronze_transforms/ingest_orders --into ./orders
-```
-
-Expected behavior: converts `ingest_orders` to `orders/ingest_orders.py`, rewrites any `notebook_import()` calls to standard Python imports, and leaves the rest of the package untouched.
-
-**As a developer, I want to preview what a notebook import would produce before writing any files**
-so that I can verify the conversion before committing it to the package.
-
-```bash
-kindling notebook import --folder ./orders --dry-run
-```
-
-**As a developer, I want to see which notebooks in a folder Kindling recognizes as a package**
-so that I can confirm the `_init` convention is set up correctly before importing.
-
-```bash
-kindling notebook scan ./orders
-```
-
-Expected output: lists discovered package name, init notebook, member notebooks, and resolved `notebook_import()` dependency graph.
-
----
-
-## 5. Scaffolding
-
-These commands add new building blocks to an existing app and generate the corresponding test scaffolding so that the new code has a place to be tested immediately.
-
-**As a developer, I want to add a new module to an existing app**
-so that I have a correctly structured file and matching unit test skeleton without writing boilerplate.
-
-```bash
-kindling app add module bronze --app ./orders
-```
-
-Generated:
-```
-orders/bronze/__init__.py
-orders/bronze/bronze.py            # module skeleton with imports
-tests/unit/test_bronze.py          # unit test skeleton
-```
-
-**As a developer, I want to add a new entity to a module**
+**As a developer, I want to add a new entity to a package**
 so that the entity is registered and a sample CSV fixture is created for use in unit and integration tests.
 
 ```bash
-kindling app add entity bronze.orders --app ./orders
+kindling package add entity bronze.orders --package packages/orders/src/orders
 ```
 
 Generated:
 ```
-orders/bronze/entities.py          # entity definition appended or created
-tests/entities/bronze/orders.csv   # empty CSV with header row matching entity schema
+packages/orders/src/orders/entities.py     # entity definition appended or created
+tests/entities/bronze/orders.csv           # empty CSV with header row matching entity schema
 ```
 
 The generated CSV is a stub — column headers only — so unit and integration tests have a file to populate rather than having to create it from scratch.
 
-**As a developer, I want to add a new data pipe to a module**
+**As a developer, I want to add a new data pipe to a package**
 so that the pipe is registered, a transform function skeleton exists, and all three test tiers have scaffolding.
 
 ```bash
-kindling app add pipe bronze.ingest_orders --app ./orders
+kindling package add pipe bronze.ingest_orders \
+    --inputs bronze.raw_orders \
+    --package packages/orders/src/orders
 ```
 
 Generated:
 ```
-orders/bronze/ingest_orders.py             # pipe + transform function skeleton
-tests/unit/test_ingest_orders.py           # unit test: calls transform directly with sample data
-tests/integration/test_ingest_orders.py    # integration test: runs full pipeline, asserts on output entity
-tests/entities/bronze/orders.csv          # fixture stub if not already present for input entities
+packages/orders/src/orders/bronze/ingest_orders.py    # pipe + transform function skeleton
+tests/unit/test_ingest_orders.py                       # unit test: calls transform directly with sample data
+tests/integration/test_ingest_orders.py                # integration test: runs full pipeline, asserts on output entity
+tests/entities/bronze/raw_orders.csv                  # fixture stub if not already present for input entities
 ```
 
 The unit test skeleton reads from `tests/entities/` directly and calls the transform function. The integration test skeleton runs the full pipeline via the Kindling runtime and reads the output entity to assert on.
@@ -295,7 +250,7 @@ Scaffolded tests are generated as `pytest.mark.skip` stubs, not empty `pass` bod
 def test_ingest_orders_transform():
     ...
 
-@pytest.mark.skip(reason="scaffolded — populate tests/entities/bronze/orders.csv before running")
+@pytest.mark.skip(reason="scaffolded — populate tests/entities/bronze/raw_orders.csv before running")
 def test_ingest_orders_pipeline():
     ...
 ```
@@ -307,26 +262,26 @@ so that I have the correct ingestion scaffolding for a bronze CSV source without
 
 ```bash
 # Option A: provide a full filename regex (named groups become columns automatically)
-kindling app add ingestion bronze.myproject_raw \
+kindling package add ingestion bronze.myproject_raw \
   --source-pattern 'myproject_(?P<test_name>[^_]+)_(?P<frequency>\d+)hz\.csv' \
-  --app ./myproject
+  --package packages/myproject/src/myproject
 
 # Option B: let --filename-metadata generate a default single-group pattern
-kindling app add ingestion bronze.myproject_raw \
+kindling package add ingestion bronze.myproject_raw \
   --filename-metadata frequency \
-  --app ./myproject
+  --package packages/myproject/src/myproject
 ```
 
-The base storage path (ABFSS URL) is set in `kindling.yaml` per environment and passed to
+The base storage path (ABFSS URL) is set in `settings.yaml` per environment and passed to
 `process_path()` at runtime — it is not part of the filename pattern.
 
 Generated:
 ```
-myproject/bronze/myproject_raw_ingestion.py     # FileIngestionEntries entry with filename regex
-myproject/bronze/entities.py                 # bronze.myproject_raw entity definition with CSV provider
-tests/unit/test_myproject_raw_ingestion.py   # unit test: filename pattern matching, metadata extraction
-tests/integration/test_myproject_raw_ingestion.py  # integration test: reads from tests/entities/bronze/myproject_raw/
-tests/entities/bronze/myproject_raw/         # folder for sample CSV files matching the ingestion pattern
+packages/myproject/src/myproject/bronze/myproject_raw_ingestion.py    # FileIngestionEntries entry with filename regex
+packages/myproject/src/myproject/entities.py                          # bronze.myproject_raw entity definition with CSV provider
+tests/unit/test_myproject_raw_ingestion.py                            # unit test: filename pattern matching, metadata extraction
+tests/integration/test_myproject_raw_ingestion.py                     # integration test: reads from tests/entities/bronze/myproject_raw/
+tests/entities/bronze/myproject_raw/                                  # folder for sample CSV files matching the ingestion pattern
 ```
 
 The unit test covers filename parsing and metadata extraction (e.g. deriving `frequency` from the filename) independently of storage. The integration test places sample CSVs in the fixture folder and verifies they land in the bronze Delta entity correctly.
@@ -335,7 +290,9 @@ The unit test covers filename parsing and metadata extraction (e.g. deriving `fr
 so that fixture stubs are generated for all of them.
 
 ```bash
-kindling app add pipe silver.clean_orders --inputs bronze.orders,bronze.products --app ./orders
+kindling package add pipe silver.clean_orders \
+    --inputs bronze.orders,bronze.products \
+    --package packages/orders/src/orders
 ```
 
 Generated fixture stubs:
@@ -348,27 +305,32 @@ tests/integration/test_clean_orders.py
 
 ---
 
-## 6. Entity and Data Source Configuration
+## 5. Entity and Data Source Configuration
 
 These stories cover wiring entities to their data sources — distinguishing between CSV files on cloud storage, Delta tables, and local test fixtures.
 
 **As a developer, I want to configure a bronze entity to read from CSV files on ABFSS storage**
 so that my ingestion pipe reads raw source files rather than a Delta table.
 
-The entity provider is set in `kindling.yaml` per environment:
+Entity provider settings are configured in `settings.yaml` (and environment-specific overlays such as `settings.dev.yaml`):
 
 ```yaml
-environments:
-  dev:
-    entities:
-      bronze.myproject_raw:
-        provider: csv
-        path: "abfss://raw@{account}.dfs.core.windows.net/myproject/"
-  prod:
-    entities:
-      bronze.myproject_raw:
-        provider: csv
-        path: "abfss://raw@{account}.dfs.core.windows.net/myproject/"
+# settings.dev.yaml
+kindling:
+  spark_configs:
+    spark.hadoop.fs.azure.account.auth.type: OAuth
+```
+
+The entity provider type is set via entity tags in the Python registration code:
+```python
+DataEntities.entity(
+    entityid="bronze.myproject_raw",
+    tags={
+        "provider_type": "csv",
+        "provider.path": "abfss://raw@myaccount.dfs.core.windows.net/myproject/",
+    },
+    ...
+)
 ```
 
 The `tests/entities/` convention takes over automatically when running without `--env` or with `--env local`, so the same entity uses local CSV fixtures during unit and integration tests without any config change.
@@ -383,53 +345,57 @@ kindling app inspect myproject --entities --env prod
 
 Expected output: table of entity ID, provider type, resolved storage path, and whether a `tests/entities/` fixture override is active.
 
-**As a developer, I want to configure silver and gold entities to write to Delta tables on ABFSS**
-so that each layer persists its output to the correct storage location.
+**As a developer, I want to inspect the current contents of an intermediate entity**
+so that I can verify what bronze or silver produced before running the next layer.
 
-```yaml
-environments:
-  dev:
-    entities:
-      silver.myproject:
-        provider: delta
-        path: "abfss://silver@{account}.dfs.core.windows.net/myproject/"
-      gold.myproject:
-        provider: delta
-        path: "abfss://gold@{account}.dfs.core.windows.net/myproject/"
+```bash
+kindling entity show bronze.myproject_raw --env dev --limit 20
+kindling entity show silver.myproject --env dev --count
 ```
+
+Expected behavior: reads the entity from its configured provider for the given env and prints a sample of rows or a row count. Useful for confirming an upstream layer produced expected output before running a downstream transform.
+
+**As a developer, I want to check data quality after a pipeline run**
+so that I can detect zero-row output, schema drift, or failed unit conversions without reading raw logs.
+
+```bash
+kindling entity validate gold.myproject --env dev
+```
+
+Expected checks: row count > 0, no unexpected nulls in key columns, schema matches registered entity definition. Reports violations as warnings or errors depending on severity.
 
 ---
 
-## 7. Packaging and Deployment
+## 6. Packaging and Deployment
 
 **As a developer, I want to package my app into a `.kda` archive**
 so that I have a versioned artifact I can deploy or share.
 
 ```bash
-kindling app package --local-folder ./orders
-kindling app package --local-folder ./orders --output dist/orders.kda
+kindling app package orders
+kindling app package orders --output dist/orders.kda
 ```
 
 **As a developer, I want to deploy my local app directory to a remote platform**
-so that the runner has access to the latest app code and config.
+so that the platform has access to the latest app code and config.
 
 ```bash
-kindling app deploy --local-folder ./orders --platform synapse
-kindling app deploy --local-folder ./orders --platform fabric --env prod
+kindling app deploy orders --platform synapse
+kindling app deploy orders --platform fabric --env prod
 ```
 
 **As a developer, I want to deploy a pre-built `.kda` archive to a remote platform**
 so that I can promote a pinned artifact without re-packaging from source.
 
 ```bash
-kindling app deploy --kda-package dist/orders.kda --platform synapse --env prod
+kindling app deploy orders --kda-package dist/orders.kda --platform synapse --env prod
 ```
 
-**As a developer, I want to see what app version is currently deployed**
-so that I know whether my local changes are reflected in the remote environment.
+**As a developer, I want to see what entities and their storage paths are registered for my app**
+so that I can confirm the data layer is pointing at the right locations before running.
 
 ```bash
-kindling app inspect orders --env dev
+kindling app inspect orders --entities
 ```
 
 **As a developer, I want to clean up deployed app artifacts for an old app version**
@@ -441,7 +407,7 @@ kindling app cleanup orders
 
 ---
 
-## 8. Remote Execution
+## 7. Remote Execution
 
 **As a developer, I want to run a deployed app on a remote platform and stream its logs**
 so that I can observe the run without separate log polling.
@@ -453,22 +419,24 @@ kindling app run orders --platform synapse --env dev
 **As a developer, I want to deploy my local app and run it in one command**
 so that I do not have to run `deploy` and `run` separately during rapid iteration.
 
+For standalone (local) runs, the app is run directly without a separate deploy step:
+
 ```bash
-kindling app run ./orders --platform synapse
+kindling app run orders --platform standalone
 ```
 
-**As a developer, I want to run a specific pipeline within an app**
-so that I can execute a single stage without triggering the full app.
+For remote platforms, deploy first then run:
 
 ```bash
-kindling pipeline run bronze.ingest_orders --app orders --env dev
+kindling app deploy orders --platform synapse
+kindling app run orders --platform synapse
 ```
 
 **As a developer, I want to run all pipelines in dependency order in a single command**
 so that I can execute the full medallion chain (bronze → silver → gold) without manually sequencing each layer.
 
 ```bash
-kindling app run ./myproject --platform standalone --env dev
+kindling app run orders --platform standalone --env dev
 ```
 
 When no `--pipeline` is specified, `app run` executes all registered pipes in topological order based on their declared input/output entity dependencies. Bronze ingestion runs first, its output feeds silver staging, silver output feeds gold curation.
@@ -511,45 +479,48 @@ kindling app cancel <run-id>
 
 ---
 
-## 9. Runner Management
+## 8. Runner Registration
 
-**As a developer setting up a new workspace, I want to install the Kindling runner**
-so that remote app execution is available for my team.
+The `runner` group manages persistent job definitions that external orchestrators (Synapse Pipeline, Databricks Workflows, Fabric Pipeline) can trigger by name. Most developers only need `runner register` and `runner status`. For ad-hoc runs, use `kindling app run` directly — no job definition is needed.
+
+**As a developer, I want to register my app as a named job definition**
+so that an external orchestrator can trigger it by name without needing the Kindling CLI.
 
 ```bash
-kindling runner ensure --platform synapse
+kindling runner register --app orders --platform synapse
 ```
 
-**As a developer, I want to check the status of the runner**
-so that I can confirm it is installed, healthy, and at the expected version before running jobs.
+**As a developer, I want to check the status of registered job definitions**
+so that I can confirm which apps have definitions registered on the platform.
 
 ```bash
 kindling runner status
+kindling runner status --app orders --platform synapse
 ```
 
-**As a developer, I want to repair the runner after a config or credential change**
-so that the runner picks up new settings without requiring a full reinstall.
+**As a developer, I want to delete a registered job definition**
+so that I can clean up a deprecated environment.
 
 ```bash
-kindling runner repair
+kindling runner delete --app orders --platform synapse --yes
 ```
 
-**As an admin, I want to delete the runner from a workspace**
-so that I can tear down a deprecated environment cleanly.
+**As a developer, I want to invoke the runner with a raw parameters file**
+so that I can reproduce a failure using the exact parameters a CI job used.
 
 ```bash
-kindling runner delete
+kindling runner invoke --params params.yaml
 ```
 
 ---
 
-## 10. CI/CD Integration
+## 9. CI/CD Integration
 
 **As a CI pipeline, I want to deploy an app and run it non-interactively, capturing structured output**
 so that I can parse run results and fail the build on error.
 
 ```bash
-kindling app run dist/orders.kda --platform synapse --no-wait --json > run.json
+kindling app run orders --platform synapse --no-wait --json > run.json
 RUN_ID=$(jq -r '.run_id' run.json)
 kindling app status $RUN_ID --platform synapse
 ```
@@ -558,29 +529,31 @@ kindling app status $RUN_ID --platform synapse
 so that CI job configuration stays simple.
 
 ```bash
-kindling app run dist/orders.kda --fail-on-error --platform synapse
+kindling app run orders --fail-on-error --platform synapse
 ```
 
 **As a CI pipeline, I want to run unit and component tests and produce a report**
 so that PR checks include test results without requiring platform credentials.
 
 ```bash
-kindling test run --suite unit --suite component --report junit
+kindling test run --suite unit --ci
+kindling test run --suite component --ci
 ```
 
 **As a CI pipeline, I want to run system tests only on release, not on every push**
 so that expensive platform tests are gated appropriately.
 
 ```bash
-kindling test run --suite system --platform synapse --platform fabric
+kindling test run --suite system --platform synapse
+kindling test run --suite system --platform fabric
 ```
 
 **As a CI pipeline, I want to package the app and upload the artifact to storage for downstream jobs**
 so that deploy and run steps can reference a pinned artifact rather than re-packaging.
 
 ```bash
-kindling app package --local-folder ./orders --output dist/orders.kda
-kindling app deploy --kda-package dist/orders.kda --platform synapse
+kindling app package orders --output dist/orders.kda
+kindling app deploy orders --kda-package dist/orders.kda --platform synapse
 ```
 
 **As a CI pipeline, I want to clean up deployed app artifacts after a test run**
@@ -590,17 +563,9 @@ so that CI does not leave stale data in shared dev storage.
 kindling app cleanup orders --platform synapse
 ```
 
-**As a CI pipeline, I want to ensure the runner is installed before running jobs**
-so that a missing runner does not cause an obscure failure inside `app run`.
-
-```bash
-kindling runner ensure --platform synapse
-kindling app run orders --platform synapse --no-wait --json
-```
-
 ---
 
-## 11. Debugging and Observability
+## 10. Debugging and Observability
 
 **As a developer, I want to fetch the logs for a completed run**
 so that I can diagnose why a run failed after the fact.
@@ -609,18 +574,18 @@ so that I can diagnose why a run failed after the fact.
 kindling app logs <run-id>
 ```
 
-**As a developer, I want to inspect the full runner state, including version and config path**
-so that I can tell whether an old runner definition is causing unexpected behavior.
+**As a developer, I want to inspect the full runner registration state**
+so that I can tell whether a job definition is registered and at what id.
 
 ```bash
-kindling runner status --verbose
+kindling runner status --app orders --platform synapse
 ```
 
-**As a developer, I want to invoke the runner with a raw parameters file**
-so that I can reproduce a failure using the exact parameters a CI job used.
+**As a developer, I want to check what entities and their storage paths are registered for my app**
+so that I can confirm the data layer is pointing at the right locations before running.
 
 ```bash
-kindling runner invoke --params params.yaml
+kindling app inspect orders --entities
 ```
 
 **As a developer, I want to inspect the current contents of an intermediate entity**
@@ -631,8 +596,6 @@ kindling entity show bronze.myproject_raw --env dev --limit 20
 kindling entity show silver.myproject --env dev --count
 ```
 
-Expected behavior: reads the entity from its configured provider for the given env and prints a sample of rows or a row count. Useful for confirming an upstream layer produced expected output before running a downstream transform.
-
 **As a developer, I want to check data quality after a pipeline run**
 so that I can detect zero-row output, schema drift, or failed unit conversions without reading raw logs.
 
@@ -640,36 +603,20 @@ so that I can detect zero-row output, schema drift, or failed unit conversions w
 kindling entity validate gold.myproject --env dev
 ```
 
-Expected checks: row count > 0, no unexpected nulls in key columns, schema matches registered entity definition. Reports violations as warnings or errors depending on severity.
-
-**As a developer, I want to check what entities and their storage paths are registered for my app**
-so that I can confirm the data layer is pointing at the right locations before running.
-
-```bash
-kindling app inspect orders --entities
-```
-
 ---
 
-## 12. App Lifecycle and Versioning
-
-**As a developer, I want to see a history of recent runs for an app**
-so that I can compare results across runs and spot regressions.
-
-```bash
-kindling app history orders
-```
+## 11. App Lifecycle and Versioning
 
 **As a developer, I want to promote an app artifact from a dev environment to prod**
 so that I do not have to re-package from source for a production deploy.
 
 ```bash
-kindling app deploy --kda-package dist/orders.kda --platform synapse --env prod
+kindling app deploy orders --kda-package dist/orders.kda --platform synapse --env prod
 ```
 
-**As a developer, I want to know what the last successfully deployed version of an app is**
-so that I can roll back to it if the current version is broken.
+**As a developer, I want to know what entities are registered for a deployed app and what version of config it uses**
+so that I can verify the deployment before running it in production.
 
 ```bash
-kindling app inspect orders --env prod
+kindling app inspect orders --entities --env prod
 ```

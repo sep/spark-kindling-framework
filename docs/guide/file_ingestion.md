@@ -26,9 +26,30 @@ FileIngestionEntries.entry(
 | `patterns` | `List[str]` | Yes | Regex patterns to match filenames |
 | `dest_entity_id` | `str` | Yes | Entity ID to write matched files into |
 | `tags` | `Dict[str, str]` | Yes | Metadata tags (may be empty) |
-| `filetype` | `str` | Yes | Spark format name: `"csv"`, `"parquet"`, `"json"`, etc. |
-| `infer_schema` | `bool` | No | Infer column types from file content (default `True`) |
+| `filetype` | `str` | Yes | Accepted by the API but **not currently used** — see note below |
+| `infer_schema` | `bool` | No | Accepted by the API but **not currently effective** — see note below |
 | `static_values` | `Dict[str, Any]` | No | Literal column values added to every matched row |
+
+> **`filetype` is not read by the processor.** The Spark format is driven entirely by the `filetype` named regex group in the matched pattern (e.g. `(?P<filetype>csv)`), falling back to `"csv"` when that group is absent. The `filetype` parameter stored on the entry is never consulted.
+
+> **`infer_schema` is not effective.** Schema inference is always disabled (`inferSchema=false` is hardcoded in `_build_df_plan`). The parameter is stored on the entry but never passed to the Spark reader.
+
+## Controlling the read format
+
+Because the format comes from the regex match, embed a `filetype` named group in the pattern when you need to read non-CSV files:
+
+```python
+FileIngestionEntries.entry(
+    entry_id="sales_daily",
+    name="Daily Sales Files",
+    patterns=[r"sales_(?P<region>\w+)_(?P<date>\d{8})\.(?P<filetype>parquet)"],
+    dest_entity_id="bronze.sales",
+    tags={"domain": "sales", "layer": "bronze"},
+    filetype="parquet",  # stored but ignored at runtime; document for human readers only
+)
+```
+
+If no `filetype` named group is present in the pattern, the reader defaults to `"csv"`.
 
 ## Processing files
 
@@ -116,6 +137,7 @@ The static columns are added after regex named-group columns and before `ingesti
 
 - **Specific patterns over broad ones** — `orders_\d{8}\.csv` is better than `.*\.csv`.
 - **Use named groups** to capture useful metadata from filenames (date, region, feed type) and have them land as columns automatically.
+- **Use a `filetype` named group** when ingesting non-CSV files, since the entry-level `filetype` parameter is not currently read by the processor.
 - **Use `static_values`** for context that isn't in the filename or file content — source system, environment, ETL run ID.
-- **Keep `infer_schema=True`** for exploratory bronze ingestion; set explicit Delta schemas on the entity for silver and beyond.
+- **Cast types explicitly** with a `transform` function — schema inference is always disabled; every column arrives as a string.
 - **Test patterns locally** with `re.match(pattern, filename)` before deploying.

@@ -274,22 +274,41 @@ Building on in-memory views, add a `DataPipes.view()` decorator that defines a p
 
 #### Proposed API
 
+The primary form references a `.sql` file, resolved relative to the calling module's directory. This gives full editor support — syntax highlighting, formatting, linting — and keeps Python registration separate from SQL authoring:
+
 ```python
-@DataPipes.view(
+# views/enriched_orders.sql
+DataPipes.view(
     pipeid="view.enriched_orders",
     name="enriched_orders",
     input_entity_ids=["bronze.orders", "bronze.customers"],
-    output_entity_id="view.enriched_orders",   # memory entity
-    output_type="memory",
-    sql="""
-        SELECT o.*, c.name AS customer_name, c.segment
-        FROM bronze_orders o
-        JOIN bronze_customers c ON o.customer_id = c.id
-        WHERE o.status = 'completed'
-    """,
+    output_entity_id="view.enriched_orders",
+    sql_file="views/enriched_orders.sql",
 )
-def enriched_orders():
-    pass  # no-op — SQL does the work
+```
+
+An inline `sql=` parameter is available as an escape hatch for trivial one-liners and tests:
+
+```python
+DataPipes.view(
+    pipeid="view.filtered_orders",
+    input_entity_ids=["bronze.orders"],
+    output_entity_id="view.filtered_orders",
+    sql="SELECT * FROM bronze_orders WHERE status = 'completed'",
+)
+```
+
+When SQL alone is not sufficient, the decorator form accepts a post-processing function that receives the SQL result as a DataFrame:
+
+```python
+@DataPipes.view(
+    pipeid="view.enriched_orders",
+    input_entity_ids=["bronze.orders", "bronze.customers"],
+    output_entity_id="view.enriched_orders",
+    sql_file="views/enriched_orders.sql",
+)
+def enriched_orders(df):
+    return df.filter(df.amount > 0)  # further refine the SQL result
 ```
 
 Downstream pipes consume the view as a regular input entity:
@@ -305,17 +324,6 @@ Downstream pipes consume the view as a regular input entity:
 )
 def revenue_by_segment(view_enriched_orders):
     return view_enriched_orders.groupBy("segment").agg(sum("amount").alias("total"))
-
-@DataPipes.pipe(
-    pipeid="gold.top_customers",
-    name="top_customers",
-    input_entity_ids=["view.enriched_orders"],
-    output_entity_id="gold.top_customers",
-    output_type="delta",
-    tags={},
-)
-def top_customers(view_enriched_orders):
-    return view_enriched_orders.groupBy("customer_name").agg(sum("amount").alias("total")).orderBy(desc("total"))
 ```
 
 #### How It Would Work Internally
@@ -323,14 +331,16 @@ def top_customers(view_enriched_orders):
 1. `DataPipes.view()` registers a pipe whose `execute` function is auto-generated:
    - For each `input_entity_id`, the corresponding DataFrame is registered as a Spark temp view using `df.createOrReplaceTempView(entity_id.replace(".", "_"))`
    - `spark.sql(sql)` runs the provided query
-   - The result is returned as the pipe output
-2. The output entity uses `provider_type="memory"`, so it lands in `MemoryEntityProvider._memory_store`
+   - If a post-processing function was provided (decorator form), the SQL result is passed to it
+   - The final DataFrame is returned as the pipe output
+2. The output entity always uses `provider_type="memory"`, so it lands in `MemoryEntityProvider._memory_store`
 3. Downstream pipes read the view via normal entity reads — no re-computation
 4. If no `sql` is provided, a passthrough view is created (single input entity aliased as the output entity — useful for caching)
 
 #### Design Considerations
 
 - **No new abstractions**: `view()` is syntactic sugar that registers a normal `PipeMetadata` with an auto-generated `execute` function — the execution engine sees no difference
+- **No placeholder functions**: pure SQL views are registered via a direct method call; the decorator form is only used when a post-processing step is needed, making the decorator semantically honest
+- **SQL in files, not strings**: `sql_file` is the primary path; `sql=` is the escape hatch for trivial cases and tests. File path is resolved relative to the calling module's directory (`Path(__file__).parent / sql_file`)
 - **SQL validation**: optionally validate the SQL at registration time by parsing it (e.g., via `spark.sessionState.sqlParser`) to catch typos early
-- **Hybrid pipes**: allow an optional `post_process` callable on `view()` for cases where SQL gets 90% of the way but a final PySpark transform is needed
 - **Tags**: auto-tag view pipes with `{"pipe_type": "view", "provider_type": "memory"}` so execution strategies and logging can distinguish them

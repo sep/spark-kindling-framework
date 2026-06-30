@@ -142,8 +142,8 @@ Platform credential vars checked:
 | Platform | Required vars |
 |---|---|
 | `databricks` | `DATABRICKS_HOST`, `DATABRICKS_TOKEN` |
-| `fabric` | `FABRIC_WORKSPACE_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` |
-| `synapse` | `SYNAPSE_WORKSPACE_NAME`, `SYNAPSE_SPARK_POOL_NAME`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` |
+| `fabric` | `FABRIC_WORKSPACE_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |
+| `synapse` | `SYNAPSE_WORKSPACE_NAME`, `SYNAPSE_SPARK_POOL_NAME`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |
 
 ```bash
 kindling env check --local
@@ -396,7 +396,6 @@ kindling app run my-pipeline --local-folder path/to/app
 
 # Remote — deploy first, then run
 kindling app deploy my-pipeline --platform synapse
-kindling runner ensure --platform synapse
 kindling app run my-pipeline --platform synapse
 ```
 
@@ -484,56 +483,72 @@ from entity schema). Exits 0 on pass or warnings; exits 1 on any ERROR.
 
 ## runner
 
-Manage per-app job definitions for remote execution. `runner ensure` creates
-durable job definitions so that `kindling app run --platform <platform>` can
-submit runs against them.
+Register and manage per-app job definitions for pipeline/workflow integration.
 
-### `runner ensure`
+`kindling app run` submits one-time runs directly — no job definition is
+needed for that. Use `runner register` only when you want to expose an app as
+a named job definition that an external orchestrator (Synapse Pipeline,
+Databricks Workflow, Fabric Pipeline) can trigger by name.
 
-Create job definitions for one app or all discovered apps. Idempotent —
-existing definitions are left unchanged.
+### `runner register`
+
+Register an app as a named job definition on the platform. Creates or updates
+the definition in place (idempotent). Config overrides supplied with
+`--config` are baked into the job definition as bootstrap args.
 
 | Option | Default | Description |
 |---|---|---|
+| `--app TEXT` | required | App name to register as a job definition |
+| `--config KEY=VALUE` | — | Config override baked into the job definition (repeatable) |
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
-| `--app TEXT` | all | App name to ensure; omit to scan and ensure all discovered apps |
 | `--json` | — | Machine-readable JSON output |
+
+```bash
+kindling runner register --app my-app --platform synapse
+kindling runner register --app my-app --config env=prod --config region=eastus
+```
 
 ### `runner status`
 
-Show runner installation state, platform job ID, version, and health.
+Show which apps have registered job definitions on the platform. Without
+`--app` the command scans the current directory for apps and reports their
+registration state.
 
 | Option | Default | Description |
 |---|---|---|
-| `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
-| `--verbose` | — | Include full runner configuration |
-| `--json` | — | Machine-readable JSON output |
-
-### `runner repair`
-
-Recreate or update the runner job and its bootstrap/config references. Use
-after credential or configuration changes.
-
-| Option | Default | Description |
-|---|---|---|
+| `--app TEXT` | all discovered | App name to check |
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
 | `--json` | — | Machine-readable JSON output |
+
+```bash
+kindling runner status
+kindling runner status --app my-app --platform synapse --json
+```
 
 ### `runner delete`
 
-Delete the runner job definition from the platform workspace. Prevents remote
-`kindling app run` until reinstalled with `runner ensure`.
+Delete a registered job definition from the platform workspace. Prompts for
+confirmation unless `--yes` is supplied.
 
 | Option | Default | Description |
 |---|---|---|
+| `--app TEXT` | required | App name whose job definition should be deleted |
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
-| `--yes` | — | Skip confirmation prompt |
+| `--yes` | — | Skip interactive confirmation prompt |
 | `--json` | — | Machine-readable JSON output |
+
+```bash
+kindling runner delete --app my-app --platform fabric --yes
+kindling runner delete --app my-app  # prompts for confirmation
+```
 
 ### `runner invoke`
 
-Invoke the runner with a raw parameters YAML file. Advanced/debug use only —
-normal execution should use `kindling app run`.
+Invoke a registered job directly with a raw parameters YAML/JSON file.
+Advanced/debug use only — normal execution should use `kindling app run`.
+
+The parameters file is passed directly to the platform job run API. Include
+`job_id` or `app_name` in the file to identify the target job.
 
 | Option | Default | Description |
 |---|---|---|
@@ -543,6 +558,11 @@ normal execution should use `kindling app run`.
 | `--poll-interval FLOAT` | `10.0` | Poll interval in seconds |
 | `--timeout FLOAT` | `3600.0` | Timeout in seconds |
 | `--json` | — | Machine-readable JSON output |
+
+```bash
+kindling runner invoke --params params.yaml
+kindling runner invoke --params params.yaml --wait --platform fabric
+```
 
 ---
 

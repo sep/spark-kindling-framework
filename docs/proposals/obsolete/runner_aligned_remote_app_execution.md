@@ -1,3 +1,5 @@
+> **Superseded:** This proposal was not implemented as described. The durable-runner model (runner ensure/repair commands, runner-submitted app runs) was abandoned in favor of per-app job definitions defined directly in configuration. The runner ensure/repair commands were removed. See commit `5314c15` and [synapse_direct_job_execution.md](synapse_direct_job_execution.md) for what was actually implemented instead.
+
 # Runner-Aligned Remote App Execution Proposal
 
 **Date:** 2026-05-07

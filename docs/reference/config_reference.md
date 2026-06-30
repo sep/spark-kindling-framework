@@ -16,13 +16,16 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 
 - `app_name`: Data app name to auto-run after framework initialization.
 - `artifacts_storage_path`: Artifacts root used to download config and wheels (enables hot reload and lake package loading).
-- `platform`: Platform selector (`fabric`, `synapse`, `databricks`); used to choose the platform module.
+- `platform`: Platform selector (`fabric`, `synapse`, `databricks`, `standalone`); used to choose the platform module.
 - `platform_environment`: Alias for `platform` used by platform runner internals.
 - `environment`: Environment name used for config layering (for example `development`, `prod`).
 - `workspace_id`: Workspace identifier used for workspace-specific config selection.
-- `use_lake_packages`: If true, load Kindling and extensions from artifacts storage (instead of local environment).
+- `use_lake_packages`: If true, load Kindling and extensions from artifacts storage (instead of local environment). Defaults to `false` when `platform` is `standalone`, `true` otherwise.
 - `load_local_packages`: If true, load local workspace packages (notebooks) after platform init.
 - `temp_path`: Temporary file path root used during wheel/extension install; `kindling.temp_path` is the YAML equivalent.
+- `config_files`: Explicit list of local YAML config file paths (or a single path string) to load in addition to any files downloaded from artifacts storage. Useful for standalone/local runs where no artifacts storage is configured. Files are loaded after downloaded files so they take precedence.
+- `install_bootstrap_dependencies`: Boolean; controls whether `install_bootstrap_dependencies()` runs to install `kindling.required_packages` and `kindling.extensions` at startup. Defaults to `true` for cloud platforms and `false` for `standalone`.
+- `allow_standalone_fallback`: Boolean; when `true`, platform detection falls back to `standalone` if no cloud platform (Databricks, Fabric, Synapse) is detected. Default `false`.
 - `job_name`: Optional job name (mostly used by system test harness).
 - `spark_app_name`: Optional Spark application name.
 
@@ -137,7 +140,7 @@ Backward-compatible fallbacks that are still read if the generic keys are not se
 
 - `kindling.databricks.catalog`, `kindling.databricks.schema`, `kindling.databricks.table_root`
 - `kindling.synapse.schema`, `kindling.synapse.table_root`
-- `kindling.fabric.schema`, `kindling.fabric.table_root`
+- `kindling.fabric.catalog`, `kindling.fabric.schema`, `kindling.fabric.table_root`
 
 ### Telemetry
 
@@ -164,6 +167,12 @@ Legacy/compat keys (translated into flat keys):
 - `kindling.secrets.key_vault_url`: Azure Key Vault URL used by Fabric/Synapse secret resolution.
 - `kindling.secrets.linked_service`: Fabric/Synapse linked service name (alternative to `key_vault_url`).
 - `kindling.secrets.secret_scope`: Databricks secret scope name used with `dbutils.secrets`.
+
+### Standalone Platform
+
+These keys are only meaningful when `platform` is `standalone` (local/OSS Spark deployments).
+
+- `kindling.standalone.abfss_az_cli_auth`: Boolean (default `true`). When `true` and `az` is present on PATH, configures the Spark session to acquire Azure Storage tokens via `az account get-access-token` so that `abfss://` paths work without a service principal or storage key. Set to `false` to opt out of this injection (for example when using a different credential mechanism or when `az` is on PATH but you do not want automatic auth configuration).
 
 ## Entity Tag Overrides (`entity_tags`)
 

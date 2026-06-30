@@ -1,283 +1,298 @@
 # Setup Guide
 
-This guide explains how to install, configure, and start using the Spark Kindling Framework across Microsoft Fabric, Azure Synapse Analytics, and Databricks environments.
-
-## Local Development (No Cloud Required)
-
-For local development, scaffold a project with the CLI and run it without cloud credentials:
-
-```bash
-pip install 'spark-kindling[standalone]' spark-kindling-cli
-
-kindling repo init my-app --output-dir ./my_app
-cd my_app
-kindling package init my-app
-kindling app init my-app --package my-app
-cd apps/my_app
-kindling app run . --env local
-```
-
-The scaffold uses in-memory entity providers by default — no Azure storage account needed.
-Projects scaffolded with `spark-kindling-cli` include local Spark fixtures and tests so
-entities, pipes, and notebooks can be developed before connecting to Fabric, Synapse, or
-Databricks. See [Local Python-First Development](./local_python_first.md) for the full guide.
+This guide explains how to install, configure, and start using the Spark Kindling Framework for local development and cloud deployment across Microsoft Fabric, Azure Synapse Analytics, and Databricks.
 
 ## Prerequisites
 
 ### Required
-- One of the following platforms:
-  - **Microsoft Fabric** (with Spark runtime)
-  - **Azure Synapse Analytics** (with Spark pools)
-  - **Databricks** (Azure, AWS, or GCP)
+
 - **Python 3.10+**
-- **Apache Spark 3.4+**
-- **Delta Lake 2.0+**
+- **Java 11+** — required by PySpark for local development
+- **Azure CLI** (`az`) — for authenticating to Azure storage and platform workspaces
 
 ### Optional
-- Azure Storage Account (for artifacts storage)
-- Azure Monitor workspace (for telemetry extension)
 
-## Installation Options
+- **Azure storage account** — for deploying configs and packages to ABFSS; not required for purely local runs using in-memory entity providers
+- A target cloud platform workspace (Microsoft Fabric, Azure Synapse Analytics, or Databricks) — for remote deployment
 
-### Option 1: Deploy Pre-built Wheels (Recommended)
+## Installation
 
-The framework is distributed as platform-specific wheels:
+Kindling is distributed as three pip packages:
 
-1. **Upload wheels to artifacts storage:**
-   ```bash
-   # From releases or build output
-   az storage blob upload \
-     --account-name <storage-account> \
-     --container artifacts \
-     --name packages/kindling_fabric-0.2.0-py3-none-any.whl \
-     --file dist/kindling_fabric-0.2.0-py3-none-any.whl
-   ```
+| Package | Purpose |
+|---|---|
+| `spark-kindling` | Runtime framework (entities, pipes, bootstrap) |
+| `spark-kindling-cli` | CLI tooling (`kindling` command) |
+| `spark-kindling-sdk` | Platform API clients (deploy, status, logs) |
 
-2. **Install in notebook:**
-   ```python
-   BOOTSTRAP_CONFIG = {
-       "artifacts_storage_path": "abfss://artifacts@<storage>.dfs.core.windows.net/",
-       "environment": "dev",
-       "use_lake_packages": True,  # Install from artifacts
-   }
+For local development (includes PySpark and Delta Lake):
 
-   %run /path/to/kindling_bootstrap.py
-   ```
-
-### Option 2: Install from Artifacts Storage
-
-If wheels are already deployed to your artifacts storage:
-
-```python
-# In your notebook
-BOOTSTRAP_CONFIG = {
-    "artifacts_storage_path": "Files/artifacts",  # Or full abfss:// path
-    "environment": "production",
-    "use_lake_packages": True,
-}
-
-## Configuration
-
-### Hierarchical Configuration System
-
-Kindling uses a layered configuration approach with YAML files:
-
-**Priority (lowest → highest):**
-1. `settings.yaml` - Base framework settings
-2. `platform_{platform}.yaml` - Platform-specific (fabric/synapse/databricks)
-3. `workspace_{workspace_id}.yaml` - Workspace-specific
-4. `env_{environment}.yaml` - Environment-specific (dev/prod/etc)
-5. `spark.kindling.*` - Spark pool/session config overrides
-6. `BOOTSTRAP_CONFIG` - Runtime overrides (highest)
-
-See [Hierarchical Configuration Guide](./platform_workspace_config.md) for complete details.
-
-### Bootstrap Configuration
-
-Minimal bootstrap example:
-
-```python
-BOOTSTRAP_CONFIG = {
-    # Required
-    'artifacts_storage_path': "abfss://artifacts@<storage>.dfs.core.windows.net/",
-    'environment': 'dev',  # Loads env_dev.yaml if exists
-
-    # Package loading
-    'use_lake_packages': True,   # Install from artifacts storage
-    'load_local_packages': True,  # Load workspace notebooks as packages
-
-    # Optional overrides
-    'log_level': 'INFO',  # Override YAML log level
-    'platform': 'fabric',  # Force platform (auto-detected if omitted)
-
-    # Extensions (can also be in YAML)
-    'extensions': ['kindling-otel-azure>=0.3.0'],
-
-    # Spark configs
-    'spark_configs': {
-        'spark.sql.adaptive.enabled': 'true'
-    }
-}
-    }
-}
-
-%run environment_bootstrap
+```bash
+pip install 'spark-kindling[standalone]' spark-kindling-cli
 ```
 
-### Pool Configuration via SparkConf
+For CI or cloud environments where PySpark is already provided by the platform:
 
-You can set startup config in pool/session Spark config using `spark.kindling.*`:
-
-```text
-spark.kindling.bootstrap.artifacts_storage_path=abfss://artifacts@<storage>.dfs.core.windows.net/
-spark.kindling.bootstrap.environment=dev
-spark.kindling.bootstrap.use_lake_packages=true
-spark.kindling.bootstrap.load_local=false
-spark.kindling.extensions=["kindling-otel-azure>=0.3.0"]
+```bash
+pip install spark-kindling spark-kindling-cli
 ```
 
-Mapping rules:
-- `spark.kindling.bootstrap.<key>` -> bootstrap key `<key>` (with `load_lake`/`load_local` compatibility aliases)
-- `spark.kindling.<key>` -> `kindling.<key>` config key
+To also deploy and manage remote platform workspaces:
 
-`BOOTSTRAP_CONFIG` still wins over SparkConf when both are present.
-
-## Required Dependencies
-
-The framework requires these Python packages:
-
-- **injector**: For dependency injection
-- **delta-spark**: For Delta Lake functionality
-- **dynaconf**: For configuration management
-- **pytest**: For testing (optional for production)
-
-## Provider Configuration
-
-### 1. Entity Path Locator
-
-Implement a custom `EntityPathLocator` for your environment:
-
-```python
-@GlobalInjector.singleton_autobind()
-class MyEntityPathLocator(EntityPathLocator):
-    def get_table_path(self, entity):
-        # Example: Map entity IDs to cloud storage paths
-        return f"abfss://data@storage.dfs.core.windows.net/tables/{entity.entityid}"
+```bash
+pip install spark-kindling spark-kindling-cli spark-kindling-sdk
 ```
 
-### 2. Entity Name Mapper
+### Devcontainer (recommended)
 
-Implement a custom `EntityNameMapper` for your naming convention:
+The supplied devcontainer ships with Python 3.11, Java 11, PySpark 3.4, Delta Lake, Azure CLI, and all tooling pre-installed. Open the repo in VS Code and choose **Dev Containers: Reopen in Container**. The `postCreateCommand` automatically runs `poetry install --with dev --sync`.
 
-```python
-@GlobalInjector.singleton_autobind()
-class MyEntityNameMapper(EntityNameMapper):
-    def get_table_name(self, entity):
-        # Example: Convert entity IDs to table names
-        return entity.entityid.replace(".", "_")
+To pick up a newer Kindling release inside an existing devcontainer without rebuilding:
+
+```bash
+kindling env update
 ```
 
-### 3. Watermark Entity Finder
+---
 
-Implement a custom `WatermarkEntityFinder` for watermark storage:
+## 1. Verify the Local Environment
 
-```python
-@GlobalInjector.singleton_autobind()
-class MyWatermarkEntityFinder(WatermarkEntityFinder):
-    def get_watermark_entity_for_entity(self, context):
-        return "system.watermarks"
+After installation, confirm all local prerequisites are satisfied:
 
-    def get_watermark_entity_for_layer(self, layer):
-        return "system.watermarks"
+```bash
+kindling env check --local
 ```
 
-## Directory Structure
+This checks Python version, PySpark, delta-spark, and the Hadoop/Azure JARs needed for ABFSS access. Fix any reported issues before continuing.
 
-TODO: Rewrite this hallucination
-For optimal organization, structure your notebooks following this pattern:
+To also check platform credentials (run one of):
 
-```
-/workspace
-  /project
-    /bronze
-      # Bronze layer transformation notebooks
-    /silver
-      # Silver layer transformation notebooks
-    /gold
-      # Gold layer transformation notebooks
-    /common
-      # Shared utility notebooks and entity definitions
-    /orchestration
-      # Pipeline orchestration notebooks
+```bash
+kindling env check --platform fabric
+kindling env check --platform synapse
+kindling env check --platform databricks
 ```
 
-## Entity and Pipe Naming Conventions
+---
 
-For better organization and discoverability:
+## 2. Initialize Project Configuration
 
-- Entity IDs: `<domain>.<entity_name>` (e.g., `sales.transactions`)
-- Pipe IDs: `<stage>.<domain>.<operation>` (e.g., `validate.sales.check_amounts`)
+If you are starting a new project without an existing `settings.yaml`, generate one:
 
-## Testing Setup
-
-To enable testing:
-
-1. Create test notebooks for each component
-2. Configure test data paths
-3. Import the test framework:
-
-```python
-notebook_import("kindling.test_framework")
-
-# Define a test case
-@test_case("My test case")
-def test_my_pipe():
-    # Test implementation
-    assert result == expected
-
-# Run tests
-run_tests()
+```bash
+kindling config init --name my-project
 ```
 
-## Common Issues and Solutions
-
-### Delta Table Access Mode
-
-If you encounter issues with Delta table access, configure the appropriate access mode:
+This writes a `settings.yaml` in the current directory. The generated file looks like:
 
 ```yaml
+name: my-project
+version: "0.1.0"
+description: "Kindling data app"
+
 kindling:
-  delta:
-    access_mode: catalog  # or storage
+  telemetry:
+    logging:
+      level: INFO
+      print: true
+    tracing:
+      print: false
+
+  bootstrap:
+    load_lake: true
+    load_local: false
+
+  spark_configs: {}
+  required_packages: []
+  extensions: []
 ```
 
-Use `catalog` when the runtime should address tables by name through Unity
-Catalog or a workspace-local Hive metastore. Use `storage` when the runtime
-should address Delta tables by path; this is the recommended baseline for
-Azure Government Databricks workspaces without Unity Catalog.
+Use `--output` to write to a different path, or `--force` to overwrite an existing file.
 
-### Schema Evolution
+A `settings.local.yaml` (gitignored) is the right place for local-only overrides — ABFSS paths, debug log levels, and anything else you do not want committed:
 
-To enable schema evolution for Delta tables:
+```yaml
+# settings.local.yaml — NOT committed
+kindling:
+  telemetry:
+    logging:
+      level: DEBUG
+  bootstrap:
+    load_lake: false
+    load_local: true
+```
+
+You can also set individual config values from the CLI:
+
+```bash
+kindling config set kindling.telemetry.logging.level DEBUG
+kindling config set kindling.bootstrap.load_lake false --level platform --platform fabric
+```
+
+---
+
+## 3. Scaffold an App
+
+Create a new app under `apps/`:
+
+```bash
+# Batch medallion app (bronze/silver/gold layers)
+kindling app init my-domain-app --pattern batch --layers medallion --repo-root .
+
+# Streaming app
+kindling app init my-stream-app --pattern streaming --repo-root .
+
+# File ingestion app
+kindling app init my-ingest-app --pattern file-ingestion --repo-root .
+```
+
+This creates:
+
+```
+apps/my-domain-app/
+  app.yaml                  # App metadata and entry point declaration
+  app.py                    # Framework entrypoint — import modules here
+  settings.yaml             # App-level base config
+  settings.local.yaml       # Local overrides (gitignored)
+  lake-reqs.txt             # Remote package requirements
+  src/
+    my_domain_app/
+      entities/             # Entity definitions
+      pipes/                # Pipe definitions
+  tests/
+    entities/               # CSV fixtures for local testing
+    unit/                   # Unit tests
+    component/              # Component (DI wiring) tests
+    integration/            # Integration tests (requires Spark + ABFSS)
+```
+
+`app.py` is where you import your domain modules so their entities and pipes are registered with the framework:
 
 ```python
-'spark_configs': {
-    'spark.databricks.delta.schema.autoMerge.enabled': 'true'
-}
+def initialize(env: str = None, config_dir: Path = None):
+    import my_domain_app.entities.records   # noqa: F401
+    import my_domain_app.pipes.bronze       # noqa: F401
 ```
 
-### Dependency Injection Issues
+---
 
-If you encounter dependency injection issues, check:
+## 4. First Run
 
-1. Provider implementation and binding
-2. Import order in notebooks
-3. Provider scope (singleton vs. transient)
+Run the app locally with the in-memory entity provider (no Azure credentials needed):
 
-## Getting Help
+```bash
+cd apps/my-domain-app
+kindling app run . --env local
+```
 
-For additional assistance:
+Or from the repo root:
 
-- Check the framework documentation
-- Review the test notebooks for examples
-- Open an issue in the GitHub repository
+```bash
+kindling app run my-domain-app --env local --local-folder apps/my-domain-app
+```
+
+Pass runtime parameters:
+
+```bash
+kindling app run . --env local --param report_date=2024-01-15
+# or from a file
+kindling app run . --env local --parameters params.yaml
+```
+
+Before running the full app, you can validate entity and pipe registrations without starting Spark:
+
+```bash
+kindling app validate --env local
+```
+
+And smoke-test individual pipes:
+
+```bash
+# List registered pipes
+kindling pipeline list --app apps/my-domain-app/app.py --env local
+
+# Run a single pipe
+kindling pipeline run bronze_to_silver_orders \
+    --app apps/my-domain-app/app.py \
+    --env local
+```
+
+---
+
+## 5. Environment Setup for Local ABFSS Access
+
+Local runs use the in-memory entity provider by default — no Azure credentials needed. To run against real ABFSS storage, you need the Hadoop Azure JARs and Azure credentials.
+
+### Download Required JARs
+
+```bash
+kindling env ensure
+```
+
+This downloads into `/tmp/hadoop-jars/`:
+
+- `hadoop-azure` and related JARs from Maven Central
+- `kindling-abfss-local-auth.jar` from GitHub Releases (enables Azure CLI token auth)
+
+Safe to re-run — already-present JARs are skipped.
+
+Verify JARs are in place:
+
+```bash
+kindling env check --local
+```
+
+### Authenticate with Azure
+
+```bash
+az login
+```
+
+The `kindling-abfss-local-auth.jar` enables Azure CLI token-based authentication to ABFSS, so service principal credentials are not required for local development.
+
+### Configure ABFSS Paths
+
+Set your storage credentials and paths in `.env` (gitignored):
+
+```bash
+export AZURE_STORAGE_ACCOUNT=<your-storage-account>
+export AZURE_CONTAINER=artifacts
+export AZURE_BASE_PATH=kindling
+```
+
+Then update `settings.local.yaml` to point entity providers at real ABFSS paths instead of memory:
+
+```yaml
+# settings.local.yaml
+entity_tags:
+  bronze.orders:
+    provider_type: "delta"
+    provider.path: "abfss://artifacts@<storage>.dfs.core.windows.net/tables/bronze/orders"
+```
+
+Verify the full local stack (Python, PySpark, JARs, Azure auth) is ready:
+
+```bash
+kindling env check --local --platform fabric
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| `kindling env check` reports missing JARs | Run `kindling env ensure` |
+| Spark session fails to start | Java 11 must be on PATH: `java -version`; set `JAVA_HOME` if wrong |
+| ABFSS access denied locally | Run `az login`; confirm `kindling-abfss-local-auth.jar` is in `/tmp/hadoop-jars/` |
+| `entity not found` at runtime | Ensure the module defining the entity is imported in `app.py::initialize()` |
+| Merge fails with schema mismatch | Run `kindling migrate plan` to inspect pending schema changes |
+| Remote deploy fails with auth error | Re-run `az login`; check `kindling env check --platform <platform>` |
+
+---
+
+## Next Steps
+
+- [Domain Project Quickstart](./domain_project_quickstart.md) — full end-to-end guide: entities, pipes, testing, deployment
+- [Local Python-First Development](./local_python_first.md) — developing without cloud credentials
+- [Hierarchical Configuration Guide](./platform_workspace_config.md) — platform and environment config overlays

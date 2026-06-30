@@ -45,7 +45,7 @@ The explicit scaffold flow creates:
 - package-local source at `packages/<pkg>/src/<pkg>/...`
 - package-local tests at `packages/<pkg>/tests/`
 - package-local `pyproject.toml` with `poethepoet` tasks
-- app-local entrypoint and config at `apps/<app>/app.py` and `apps/<app>/config/`
+- app-local entrypoint and config at `apps/<app>/app.py`, `apps/<app>/settings.yaml`, and `apps/<app>/settings.local.yaml`
 
 Run the commands as separate steps so repos, packages, and apps can evolve independently:
 
@@ -233,12 +233,12 @@ Spark context.
 
 ## Local Memory Providers (No Azure Needed)
 
-The generated `env.local.yaml` now scaffolds entity tags with
+The generated `settings.local.yaml` now scaffolds entity tags with
 `provider_type: memory` by default. This means `kindling app run`,
 `kindling pipeline run`, and unit/component tests work out of the box - no Azure
 credentials or ABFSS paths required.
 
-To switch to real Azure storage, uncomment the ABFSS block in `env.local.yaml`
+To switch to real Azure storage, uncomment the ABFSS block in `settings.local.yaml`
 and set the required env vars in your `.env` file.
 
 ## KindlingNotInitializedError
@@ -278,7 +278,6 @@ kindling app deploy my-pipeline --platform fabric
 kindling app run my-pipeline
 
 # Run an already-deployed app remotely (deploy must come first)
-kindling runner ensure --platform synapse
 kindling app deploy my-pipeline --platform synapse
 kindling app run my-pipeline --platform synapse
 kindling app status <run-id> --platform synapse

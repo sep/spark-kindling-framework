@@ -52,7 +52,11 @@ entity_tags:
 
 3. **Retrieval-Time Merging**: When you get the entity, tags are merged automatically:
    ```python
-   entity = data_entity_manager.get_entity_definition("bronze.orders")
+   from kindling.injection import get_kindling_service
+   from kindling.data_entities import DataEntityRegistry
+
+   registry = get_kindling_service(DataEntityRegistry)
+   entity = registry.get_entity_definition("bronze.orders")
    # entity.tags will contain:
    # {
    #   "provider.type": "delta",       # From code (base)
@@ -100,10 +104,10 @@ entity_tags:
 Entity tag configuration is loaded automatically through the standard Kindling configuration system:
 
 ```python
-bootstrap_framework(
-    config_files=["settings.yaml", "production.yaml"],
-    environment="production"
-)
+bootstrap_framework({
+    "config_files": ["settings.yaml", "production.yaml"],
+    "environment": "production",
+})
 ```
 
 The framework will merge entity tags from all config files, with later files overriding earlier ones.

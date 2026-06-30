@@ -6,7 +6,7 @@ The execution strategy module provides strategy pattern implementations for batc
 
 **Module:** `packages/kindling/execution_strategy.py`
 **Dependencies:** `pipe_graph.py`, `data_pipes.py`
-**Tests:** 31 unit + 13 integration = 44 total
+**Tests:** 39 unit + 18 integration = 57 total (counts reflect last known run; check test files for current counts)
 **Coverage:** 94% on `execution_strategy.py` (latest targeted test run)
 
 ## Core Classes
@@ -115,6 +115,57 @@ len(gen)           # → 2
 list(gen)          # → ["pipe1", "pipe2"]
 ```
 
+### ConfigBasedExecutionStrategy
+
+Auto-detects batch vs streaming mode from pipe metadata tags, then delegates to the appropriate strategy.
+
+```python
+from kindling.execution_strategy import ConfigBasedExecutionStrategy
+
+strategy = ConfigBasedExecutionStrategy(logger_provider)
+plan = strategy.plan(graph, pipe_ids)
+
+# Result: batch order if no pipes are tagged streaming,
+#         streaming order if any pipe has {"processing_mode": "streaming"}
+```
+
+**How mode detection works:**
+
+The strategy reads the `"processing_mode"` tag from each pipe's metadata. If any pipe in the run is tagged `"streaming"`, the entire plan uses reverse topological order (sinks first). Otherwise batch (forward) order is used. Untagged pipes default to batch.
+
+```python
+# Pipe tagged for streaming
+pipe.metadata.tags = {"processing_mode": "streaming"}
+
+# Pipe tagged explicitly for batch (same as untagged)
+pipe.metadata.tags = {"processing_mode": "batch"}
+```
+
+**Plan metadata added:**
+
+| Key | Value |
+|-----|-------|
+| `detected_mode` | `"batch"` or `"streaming"` |
+| `description` | `"Config-based batch execution"` / `"Config-based streaming execution"` |
+| `mode_source` | `"pipe_tags"` |
+
+**Use Cases:**
+- Mixed pipelines where mode is declared on pipes rather than chosen at call site
+- Notebooks or apps that should respect pipe-level annotations automatically
+- Eliminating manual strategy selection for simple use cases
+
+**`generate_config_based_plan()` on `ExecutionPlanGenerator`:**
+
+```python
+generator = ExecutionPlanGenerator(pipes_manager, graph_builder, logger_provider)
+
+# Delegates to ConfigBasedExecutionStrategy
+plan = generator.generate_config_based_plan(pipe_ids)
+
+# plan.strategy == "config_based"
+# plan.metadata["detected_mode"] in ("batch", "streaming")
+```
+
 ### ExecutionPlanGenerator (Facade)
 
 High-level facade with dependency injection.
@@ -133,6 +184,9 @@ batch_plan = generator.generate_batch_plan(pipe_ids)
 
 # Generate streaming plan
 streaming_plan = generator.generate_streaming_plan(pipe_ids)
+
+# Generate config-based plan (mode from pipe tags)
+config_plan = generator.generate_config_based_plan(pipe_ids)
 
 # Generate with custom strategy
 custom_plan = generator.generate_plan(pipe_ids, custom_strategy)
@@ -300,7 +354,47 @@ print(viz)
 
 ## Integration with Execution
 
-Execution strategies are currently integrated with `ExecutionPlanGenerator` and `GenerationExecutor`:
+### ExecutionOrchestrator
+
+`ExecutionOrchestrator` (`packages/kindling/execution_orchestrator.py`) is the top-level facade that combines plan generation and generation-based execution in a single call. It is DI-registered as a singleton via `@GlobalInjector.singleton_autobind()`.
+
+```python
+from kindling.execution_orchestrator import ExecutionOrchestrator
+from kindling.generation_executor import ErrorStrategy
+
+orchestrator = ExecutionOrchestrator(...)  # injected automatically in notebooks
+
+# Run with default (batch) strategy
+result = orchestrator.execute(pipe_ids)
+
+# Run with explicit strategy
+from kindling.execution_strategy import StreamingExecutionStrategy
+result = orchestrator.execute(pipe_ids, strategy=streaming_strategy)
+
+# Convenience wrappers
+result = orchestrator.execute_batch(pipe_ids, parallel=True, max_workers=4, auto_cache=True)
+result = orchestrator.execute_streaming(pipe_ids, streaming_options={...})
+```
+
+**`execute()` parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `pipe_ids` | `List[str]` | required | Pipes to execute |
+| `strategy` | `ExecutionStrategy` | `None` (batch) | Strategy override |
+| `parallel` | `bool` | `False` | Run generations in parallel |
+| `max_workers` | `int` | `4` | Thread pool size when parallel |
+| `error_strategy` | `ErrorStrategy` | `FAIL_FAST` | Error handling mode |
+| `pipe_timeout` | `float` | `None` | Per-pipe timeout in seconds |
+| `streaming_options` | `dict` | `None` | Passed to GenerationExecutor |
+| `auto_cache` | `bool` | `False` | Enable automatic cache |
+| `no_watermark` | `bool` | `False` | Skip watermark writes |
+
+`ExecutionOrchestrator` emits the `"orchestrator.plan_generated"` signal after planning and before execution, carrying strategy, pipe count, generation count, and max parallelism.
+
+### Using GenerationExecutor directly
+
+Lower-level callers can still work directly with `ExecutionPlanGenerator` and `GenerationExecutor`:
 
 ```python
 from kindling.execution_strategy import ExecutionPlanGenerator
@@ -312,7 +406,7 @@ plan = generator.generate_batch_plan(pipe_ids)
 
 # Execute by generation (sequential or parallel per generation)
 executor = GenerationExecutor(...)
-result = executor.execute_batch(plan, parallel=True, max_workers=4)
+result = executor.execute(plan, parallel=True, max_workers=4)
 ```
 
 ## Performance Characteristics
@@ -340,7 +434,6 @@ result = executor.execute_batch(plan, parallel=True, max_workers=4)
 pytest tests/unit/test_execution_strategy.py -v
 
 # Coverage: 94% on execution_strategy.py
-# Tests: 31 passing
 ```
 
 **Test Coverage:**
@@ -348,7 +441,8 @@ pytest tests/unit/test_execution_strategy.py -v
 - ExecutionPlan validation (batch and streaming)
 - BatchExecutionStrategy planning
 - StreamingExecutionStrategy planning
-- ExecutionPlanGenerator facade
+- ConfigBasedExecutionStrategy (mode detection, delegation, metadata)
+- ExecutionPlanGenerator facade (including generate_config_based_plan)
 - Complex graph patterns
 
 ### Integration Tests
@@ -356,8 +450,6 @@ pytest tests/unit/test_execution_strategy.py -v
 ```bash
 # Run execution strategy integration tests
 pytest tests/integration/test_execution_strategy_integration.py -v
-
-# Tests: 13 passing
 ```
 
 **Test Scenarios:**
@@ -423,11 +515,7 @@ pytest tests/integration/test_execution_strategy_integration.py -v
 
 - Cost/size-aware cache heuristics (beyond shared-input detection)
 - More granular cache levels per entity type/platform
-
-**Additional DAG capability closure work**
-- `ExecutionOrchestrator` facade wiring
 - Optional `DataPipesExecuter` DAG entrypoint compatibility helpers
-- Project/issue status cleanup for capability `#15`
 
 ## Related Documentation
 
@@ -441,5 +529,6 @@ The execution strategy module provides clean separation between:
 1. **What to execute** (PipeGraph - dependency structure)
 2. **When to execute** (ExecutionStrategy - ordering logic)
 3. **How to execute** (GenerationExecutor - sequential/parallel generation execution)
+4. **Coordinating all of the above** (ExecutionOrchestrator - single-call facade)
 
-Use `BatchExecutionStrategy` for traditional ETL and `StreamingExecutionStrategy` for real-time processing.
+Use `BatchExecutionStrategy` for traditional ETL, `StreamingExecutionStrategy` for real-time processing, and `ConfigBasedExecutionStrategy` when execution mode is declared on individual pipes via tags. Use `ExecutionOrchestrator.execute()` when you want plan generation and execution in one call.

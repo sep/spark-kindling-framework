@@ -2,7 +2,12 @@
 
 ## Executive Summary
 
-Replace the current sequential pipe execution mechanism with a graph-based approach using NetworkX. This enables:
+This document describes the graph-based pipe execution system implemented in kindling.
+The system replaces manual sequential pipe ordering with automatic dependency resolution using
+a custom DAG built on Python's standard library (`collections`, `graphlib`). No third-party
+graph library (e.g., NetworkX) is required or used.
+
+Key capabilities:
 1. **Automatic dependency resolution** - No need for manual ordering
 2. **Parallel execution** - Identify independent pipes that can run concurrently
 3. **Cycle detection** - Detect circular dependencies before execution
@@ -10,7 +15,8 @@ Replace the current sequential pipe execution mechanism with a graph-based appro
 
 ## Current State Analysis
 
-### Current Execution Model (Sequential)
+### Legacy Execution Model (Sequential)
+
 ```python
 # DataPipesExecuter.run_datapipes(pipes)
 for pipeid in pipes:
@@ -22,9 +28,10 @@ for pipeid in pipes:
 - User must manually specify correct execution order
 - No parallelization of independent pipes
 - No validation of dependency satisfaction
-- Can't detect circular dependencies until runtime failure
+- Cannot detect circular dependencies until runtime failure
 
-### Current Metadata Structure
+### Pipe Metadata Structure
+
 ```python
 @dataclass
 class PipeMetadata:
@@ -34,45 +41,77 @@ class PipeMetadata:
     # ... other fields
 ```
 
-**Good News:** All dependency information is already captured! We just need to use it.
+All dependency information is already captured in pipe metadata. The graph layer uses it
+to build a DAG and derive execution order automatically.
 
-## Proposed Architecture
+## Implemented Architecture
 
-### Output Format: Execution Plan
+### Core Modules
+
+| Module | Class / Type | Role |
+|--------|-------------|------|
+| `pipe_graph.py` | `PipeNode` | A pipe vertex in the graph |
+| `pipe_graph.py` | `PipeEdge` | A directed dependency edge between two pipes |
+| `pipe_graph.py` | `PipeGraph` | The complete dependency DAG |
+| `pipe_graph.py` | `PipeGraphBuilder` | Builds, validates, and analyses `PipeGraph` |
+| `pipe_graph.py` | `GraphCycleError` | Raised when a cycle is detected |
+| `pipe_graph.py` | `GraphValidationError` | Raised when validation fails |
+| `execution_strategy.py` | `ExecutionPlan` | Immutable plan: ordered `Generation` list + graph |
+| `execution_strategy.py` | `Generation` | One parallel tier (a list of pipe IDs) |
+| `execution_strategy.py` | `BatchExecutionStrategy` | Forward topological sort (sources first) |
+| `execution_strategy.py` | `StreamingExecutionStrategy` | Reverse topological sort (sinks first) |
+| `execution_strategy.py` | `ConfigBasedExecutionStrategy` | Auto-detects mode from pipe tags |
+| `execution_strategy.py` | `ExecutionPlanGenerator` | Facade: build graph then call a strategy |
+| `generation_executor.py` | `GenerationExecutor` | Runs an `ExecutionPlan` generation-by-generation |
+| `generation_executor.py` | `ExecutionResult` | Aggregated outcome of an entire run |
+| `execution_orchestrator.py` | `ExecutionOrchestrator` | High-level facade: plan + execute in one call |
+
+### Output Format: ExecutionPlan
 
 ```python
-ExecutionPlan = List[List[str]]  # List of generations, each containing parallelizable pipes
+# execution_strategy.py
+@dataclass
+class Generation:
+    number: int
+    pipe_ids: List[str]     # Pipes that can run in parallel
+    dependencies: List[str] # Pipe IDs that must finish first
 
-# Example for BATCH execution (forward topo sort):
-# [
-#   ["pipe_a", "pipe_b"],      # Generation 0: Run A and B in parallel (no dependencies)
-#   ["pipe_c"],                 # Generation 1: Run C (depends on A or B)
-#   ["pipe_d", "pipe_e"]        # Generation 2: Run D and E in parallel (depend on C)
-# ]
+@dataclass
+class ExecutionPlan:
+    pipe_ids: List[str]
+    generations: List[Generation]
+    graph: PipeGraph        # The underlying DAG (no NetworkX)
+    strategy: str           # "batch", "streaming", or "config_based"
+    metadata: Dict[str, any]
+```
 
-# Example for STREAMING execution (reverse topo sort):
-# [
-#   ["pipe_d", "pipe_e"],      # Generation 0: Start D and E first (consumers ready)
-#   ["pipe_c"],                 # Generation 1: Start C (producer for D/E)
-#   ["pipe_a", "pipe_b"]        # Generation 2: Start A and B last (root producers)
-# ]
+Example for batch execution (forward topo sort):
+```
+Generation 0: ["pipe_a", "pipe_b"]   # No dependencies — run in parallel
+Generation 1: ["pipe_c"]              # Depends on pipe_a or pipe_b
+Generation 2: ["pipe_d", "pipe_e"]   # Depend on pipe_c — run in parallel
+```
+
+Example for streaming execution (reverse topo sort):
+```
+Generation 0: ["pipe_d", "pipe_e"]   # Sinks start first (consumers ready)
+Generation 1: ["pipe_c"]              # Middle layer
+Generation 2: ["pipe_a", "pipe_b"]   # Sources start last (producers)
 ```
 
 ### Execution Modes
 
-**Batch Mode (Forward Topological Sort):**
+**Batch Mode (`BatchExecutionStrategy` — forward topological sort):**
 - Dependencies execute BEFORE consumers
 - Data flows downstream as each generation completes
 - Standard ETL pipeline pattern
-- Use case: Traditional data transformation pipelines
 
-**Streaming Mode (Reverse Topological Sort):**
+**Streaming Mode (`StreamingExecutionStrategy` — reverse topological sort):**
 - Consumers start BEFORE producers
 - Downstream pipes are ready and listening when upstream starts emitting
 - Prevents data loss and backpressure issues
-- Use case: Structured streaming pipelines, real-time processing
 
-**Why Reverse for Streaming?**
+**Why reverse for streaming?**
 ```
 Forward (batch):  Start ingester → it produces data → THEN start aggregator
                   Problem: aggregator not ready, data might be lost or buffered
@@ -81,20 +120,30 @@ Reverse (stream): Start aggregator first (listening) → THEN start ingester
                   Benefit: aggregator ready to consume as soon as ingester emits
 ```
 
-### Graph Construction
+**Config-Based Mode (`ConfigBasedExecutionStrategy`):**
+- Reads the `processing_mode` tag from pipe metadata
+- If any pipe is tagged `processing_mode: streaming`, uses streaming order
+- Otherwise defaults to batch order
 
-**Node Types:**
-1. **Pipe nodes** - Represent pipe operations
-2. **Entity nodes** - Represent data entities (intermediate representation)
+### Graph Construction (`PipeGraphBuilder`)
 
-**Edge Types:**
-- **Pipe → Entity**: Pipe produces entity (output_entity_id)
-- **Entity → Pipe**: Pipe consumes entity (input_entity_ids)
+The graph is a Directed Acyclic Graph (DAG) built from `PipeNode` and `PipeEdge` objects
+stored inside a `PipeGraph` dataclass. No third-party library is used.
 
-**Graph Type:** Directed Acyclic Graph (DAG)
+**Node:** Each pipe becomes a `PipeNode` tracking `input_entities` and `output_entity`.
 
+**Edge:** An edge `A → B` (a `PipeEdge`) means pipe A produces an entity consumed by pipe B,
+so B depends on A.
+
+```python
+# pipe_graph.py
+builder = PipeGraphBuilder(registry, logger_provider)
+graph = builder.build_graph(pipe_ids)       # Returns PipeGraph
+generations = builder.get_generations(graph) # Returns List[List[str]]
 ```
-Example:
+
+Example graph:
+```
     pipe_clean_raw
          |
          v
@@ -104,736 +153,253 @@ Example:
     pipe_aggregate
 ```
 
-### Key Algorithm: `topological_generations()`
+### Key Algorithms in `PipeGraphBuilder`
 
-**NetworkX Function:** `networkx.algorithms.dag.topological_generations(G)`
+| Method | Description |
+|--------|-------------|
+| `build_graph(pipe_ids)` | Creates nodes and edges, validates, and runs cycle detection |
+| `detect_cycles(graph)` | DFS-based cycle detection; returns list of cycles |
+| `topological_sort(graph)` | Kahn's algorithm; returns pipes in dependency order |
+| `get_generations(graph)` | Groups pipes into parallel tiers (forward order) |
+| `get_reverse_generations(graph)` | Same as above but reversed (for streaming) |
+| `reverse_topological_sort(graph)` | Sinks first, sources last |
+| `visualize_mermaid(graph)` | Returns a Mermaid diagram string for debugging |
+| `get_graph_stats(graph)` | Returns a dict of graph statistics |
 
-**What it does:**
-- Stratifies DAG into generations (layers)
-- Each generation contains nodes with no dependencies within that layer
-- Guarantees all dependencies are in previous generations
-- Returns iterator of sets (we'll convert to list of lists)
+Cycle detection raises `GraphCycleError`; missing pipes raise `GraphValidationError`.
 
-**Example:**
-```python
-import networkx as nx
+## Entry Points
 
-# Build graph
-G = nx.DiGraph()
-G.add_edges_from([
-    ("pipe_a", "entity_x"),
-    ("pipe_b", "entity_y"),
-    ("entity_x", "pipe_c"),
-    ("entity_y", "pipe_c"),
-])
-
-# Get generations
-generations = [list(gen) for gen in nx.topological_generations(G)]
-# Result: [['pipe_a', 'pipe_b'], ['entity_x', 'entity_y'], ['pipe_c']]
-
-# Filter to only pipe nodes
-pipe_generations = [
-    [node for node in gen if node.startswith('pipe_')]
-    for gen in generations
-]
-# Result: [['pipe_a', 'pipe_b'], ['pipe_c']]
-```
-
-## Implementation Plan
-
-### Phase 1: Core Graph Engine (New Module)
-
-**Create:** `packages/kindling/pipe_graph.py`
+### Option 1: `DataPipesExecuter.run_datapipes` (legacy + DAG facade)
 
 ```python
-"""
-Graph-based pipe execution planner using NetworkX.
-Provides automatic dependency resolution and parallel execution planning.
-"""
+# Sequential execution (original behavior)
+executer.run_datapipes(["pipe_a", "pipe_b"])
 
-import logging
-from typing import List, Dict, Set, Optional, Tuple
-from dataclasses import dataclass
+# DAG-based execution (delegates to ExecutionOrchestrator)
+executer.run_datapipes(["pipe_a", "pipe_b"], use_dag=True)
 
-try:
-    import networkx as nx
-    NETWORKX_AVAILABLE = True
-except ImportError:
-    NETWORKX_AVAILABLE = False
-    # Fallback to graphlib for basic topological sort
-    from graphlib import TopologicalSorter
+# DAG with explicit strategy
+from kindling.execution_strategy import BatchExecutionStrategy, StreamingExecutionStrategy
 
-
-@dataclass
-class PipeExecutionPlan:
-    """Execution plan with parallelization support"""
-    generations: List[List[str]]  # List of pipe ID arrays (parallel within, sequential between)
-    total_pipes: int
-    max_parallelism: int  # Maximum pipes that can run concurrently
-    execution_mode: str  # "batch" or "streaming"
-    dependency_graph: Optional[object] = None  # NetworkX graph for visualization/debugging
-
-
-class PipeGraphBuilder:
-    """Builds dependency graph from pipe metadata"""
-
-    def __init__(self, logger: logging.Logger):
-        self.logger = logger
-
-    def build_graph(self, pipes: Dict[str, 'PipeMetadata']) -> 'nx.DiGraph':
-        """
-        Build a directed graph representing pipe dependencies.
-
-        Nodes: pipe IDs
-        Edges: A -> B means pipe A must run before pipe B
-
-        Args:
-            pipes: Dictionary of pipe_id -> PipeMetadata
-
-        Returns:
-            NetworkX DiGraph
-
-        Raises:
-            ValueError: If circular dependencies detected
-        """
-        if not NETWORKX_AVAILABLE:
-            raise ImportError("NetworkX is required for graph-based execution. "
-                            "Install with: pip install networkx")
-
-        G = nx.DiGraph()
-
-        # Add all pipes as nodes
-        for pipe_id in pipes.keys():
-            G.add_node(pipe_id)
-
-        # Build entity-to-producer mapping
-        entity_producers = {}  # entity_id -> pipe_id that produces it
-        for pipe_id, pipe in pipes.items():
-            entity_producers[pipe.output_entity_id] = pipe_id
-
-        # Add edges based on input dependencies
-        for pipe_id, pipe in pipes.items():
-            for input_entity in pipe.input_entity_ids:
-                if input_entity in entity_producers:
-                    # This pipe depends on the pipe that produces the input entity
-                    producer_pipe = entity_producers[input_entity]
-                    G.add_edge(producer_pipe, pipe_id)
-                    self.logger.debug(f"Dependency: {producer_pipe} -> {pipe_id} (via {input_entity})")
-
-        # Validate: Check for cycles
-        if not nx.is_directed_acyclic_graph(G):
-            cycles = list(nx.simple_cycles(G))
-            raise ValueError(f"Circular dependencies detected: {cycles}")
-
-        return G
-
-    def create_execution_plan(
-        self,
-        pipes: Dict[str, 'PipeMetadata'],
-        mode: str = "batch"
-    ) -> PipeExecutionPlan:
-        """
-        Create execution plan with parallel generations.
-
-        Args:
-            pipes: Dictionary of pipe_id -> PipeMetadata
-            mode: "batch" (forward topo sort) or "streaming" (reverse topo sort)
-
-        Returns:
-            PipeExecutionPlan with generations for parallel execution
-
-        Raises:
-            ValueError: If mode is not "batch" or "streaming"
-        """
-        if mode not in ("batch", "streaming"):
-            raise ValueError(f"Invalid execution mode: {mode}. Must be 'batch' or 'streaming'")
-
-        if not pipes:
-            return PipeExecutionPlan(
-                generations=[],
-                total_pipes=0,
-                max_parallelism=0,
-                execution_mode=mode
-            )
-
-        G = self.build_graph(pipes)
-
-        # Use topological_generations to get parallel layers
-        generations = [list(gen) for gen in nx.topological_generations(G)]
-
-        # For streaming mode, reverse the generations
-        # Start consumers first (end of graph), then producers (start of graph)
-        if mode == "streaming":
-            generations = list(reversed(generations))
-            self.logger.info("Reversed generations for streaming mode (consumers before producers)")
-
-        # Calculate statistics
-        total_pipes = len(pipes)
-        max_parallelism = max(len(gen) for gen in generations) if generations else 0
-
-        self.logger.info(f"Execution plan created: {len(generations)} generations, "
-                        f"{total_pipes} total pipes, max parallelism {max_parallelism}, "
-                        f"mode={mode}")
-
-        for i, gen in enumerate(generations):
-            self.logger.debug(f"Generation {i}: {gen}")
-
-        return PipeExecutionPlan(
-            generations=generations,
-            total_pipes=total_pipes,
-            max_parallelism=max_parallelism,
-            execution_mode=mode,
-            dependency_graph=G
-        )
-
-
-class PipeGraphPlanner:
-    """
-    High-level planner for pipe execution using graph analysis.
-    Handles both full pipeline planning and subset planning.
-    """
-
-    def __init__(self, logger: logging.Logger):
-        self.logger = logger
-        self.graph_builder = PipeGraphBuilder(logger)
-
-    def plan_execution(
-        self,
-        all_pipes: Dict[str, 'PipeMetadata'],
-        requested_pipes: Optional[List[str]] = None,
-        mode: str = "batch"
-    ) -> PipeExecutionPlan:
-        """
-        Create execution plan for requested pipes and their dependencies.
-
-        Args:
-            all_pipes: All registered pipes
-            requested_pipes: Specific pipes to execute (None = all pipes)
-            mode: "batch" (forward) or "streaming" (reverse) execution order
-
-        Returns:
-            PipeExecutionPlan
-        """
-        if requested_pipes is None:
-            # Execute all registered pipes
-            return self.graph_builder.create_execution_plan(all_pipes, mode=mode)
-
-        # Filter to requested pipes and their dependencies
-        required_pipes = self._find_required_pipes(all_pipes, requested_pipes)
-        return self.graph_builder.create_execution_plan(required_pipes, mode=mode)
-
-    def _find_required_pipes(
-        self,
-        all_pipes: Dict[str, 'PipeMetadata'],
-        requested_pipes: List[str]
-    ) -> Dict[str, 'PipeMetadata']:
-        """
-        Find all pipes needed to execute the requested pipes.
-        Includes requested pipes and all their transitive dependencies.
-        """
-        # Build full graph to find dependencies
-        full_graph = self.graph_builder.build_graph(all_pipes)
-
-        required_pipe_ids = set()
-        for pipe_id in requested_pipes:
-            if pipe_id not in all_pipes:
-                raise ValueError(f"Unknown pipe: {pipe_id}")
-            # Add this pipe and all its ancestors (dependencies)
-            required_pipe_ids.add(pipe_id)
-            required_pipe_ids.update(nx.ancestors(full_graph, pipe_id))
-
-        return {pid: all_pipes[pid] for pid in required_pipe_ids}
-
-
-class PipeGraphFallback:
-    """
-    Fallback implementation using Python's graphlib.
-    Provides basic topological sort without parallel generations.
-    Used when NetworkX is not available (e.g., Databricks without manual install).
-    """
-
-    def __init__(self, logger: logging.Logger):
-        self.logger = logger
-
-    def create_execution_plan(
-        self,
-        pipes: Dict[str, 'PipeMetadata'],
-        mode: str = "batch"
-    ) -> PipeExecutionPlan:
-        """
-        Create sequential execution plan using graphlib.
-        All pipes run sequentially (no parallelization).
-
-        Args:
-            pipes: Dictionary of pipe_id -> PipeMetadata
-            mode: "batch" (forward) or "streaming" (reverse) - streaming not supported in fallback
-        """
-        self.logger.warning("NetworkX not available - using sequential fallback mode")
-
-        if mode == "streaming":
-            self.logger.warning("Streaming mode not supported in fallback - using batch mode")
-            mode = "batch"
-
-        # Build dependency mapping for graphlib
-        entity_producers = {}
-        for pipe_id, pipe in pipes.items():
-            entity_producers[pipe.output_entity_id] = pipe_id
-
-        dependencies = {}
-        for pipe_id, pipe in pipes.items():
-            deps = []
-            for input_entity in pipe.input_entity_ids:
-                if input_entity in entity_producers:
-                    deps.append(entity_producers[input_entity])
-            dependencies[pipe_id] = deps
-
-        # Topological sort
-        sorter = TopologicalSorter(dependencies)
-        ordered_pipes = list(sorter.static_order())
-
-        # Return as single-pipe generations (fully sequential)
-        generations = [[pipe_id] for pipe_id in ordered_pipes]
-
-        return PipeExecutionPlan(
-            generations=generations,
-            total_pipes=len(pipes),
-            max_parallelism=1,  # No parallelism in fallback mode
-            execution_mode=mode
-        )
+executer.run_datapipes(
+    ["pipe_a", "pipe_b"],
+    use_dag=True,
+    dag_strategy=BatchExecutionStrategy(logger_provider),
+    parallel=True,
+    max_workers=4,
+)
 ```
 
-### Phase 2: Update DataPipesExecuter
+`run_datapipes_dag` is the underlying method; it delegates to `ExecutionOrchestrator`.
 
-**Modify:** `packages/kindling/data_pipes.py`
-
-**Changes:**
-1. Add PipeGraphPlanner as dependency
-2. Replace sequential loop with generation-based execution
-3. Add parallel execution support (initially sequential, Phase 3 adds true parallelism)
-4. Maintain backward compatibility with explicit pipe ordering
+### Option 2: `ExecutionOrchestrator.execute` (preferred for new code)
 
 ```python
-@GlobalInjector.singleton_autobind()
-class DataPipesExecuter(DataPipesExecution):
-    @inject
-    def __init__(
-        self,
-        lp: PythonLoggerProvider,
-        dpe: DataEntityRegistry,
-        dpr: DataPipesRegistry,
-        erps: EntityReadPersistStrategy,
-        tp: SparkTraceProvider,
-    ):
-        self.erps = erps
-        self.dpr = dpr
-        self.dpe = dpe
-        self.logger = lp.get_logger("data_pipes_executer")
-        self.tp = tp
+from kindling.execution_orchestrator import ExecutionOrchestrator
+from kindling.execution_strategy import BatchExecutionStrategy, StreamingExecutionStrategy
+from kindling.generation_executor import ErrorStrategy
+from kindling.injection import GlobalInjector
 
-        # Initialize graph planner
-        from kindling.pipe_graph import PipeGraphPlanner, NETWORKX_AVAILABLE
-        if NETWORKX_AVAILABLE:
-            self.graph_planner = PipeGraphPlanner(self.logger)
-            self.logger.info("Graph-based execution enabled (NetworkX available)")
-        else:
-            from kindling.pipe_graph import PipeGraphFallback
-            self.graph_planner = PipeGraphFallback(self.logger)
-            self.logger.warning("Graph-based execution using fallback mode")
+orchestrator = GlobalInjector.get(ExecutionOrchestrator)
 
-    def run_datapipes(self, pipes, use_graph=True, mode="batch"):
-        """
-        Execute pipes with optional graph-based ordering.
+# Batch execution (default — BatchExecutionStrategy if strategy=None)
+result = orchestrator.execute(
+    pipe_ids=["pipe_a", "pipe_b", "pipe_c"],
+)
 
-        Args:
-            pipes: List of pipe IDs to execute, or None for all registered pipes
-            use_graph: If True, use graph-based execution planning.
-                      If False, execute in provided order (legacy mode)
-            mode: "batch" (forward topo sort) or "streaming" (reverse topo sort)
-                 Only applies when use_graph=True
-        """
-        if use_graph:
-            self._run_datapipes_graph_mode(pipes, mode=mode)
-        else:
-            self._run_datapipes_legacy_mode(pipes)
+# Parallel batch execution
+result = orchestrator.execute(
+    pipe_ids=["pipe_a", "pipe_b", "pipe_c"],
+    parallel=True,
+    max_workers=4,
+    error_strategy=ErrorStrategy.CONTINUE,
+)
 
-    def _run_datapipes_graph_mode(self, requested_pipes, mode="batch"):
-        """Execute pipes using graph-based dependency resolution"""
-        pipe_entity_reader = self.erps.create_pipe_entity_reader
-        pipe_activator = self.erps.create_pipe_persist_activator
+# Streaming execution (sinks start first)
+result = orchestrator.execute(
+    pipe_ids=["stream_ingest_raw", "stream_clean", "stream_aggregate"],
+    strategy=StreamingExecutionStrategy(logger_provider),
+)
 
-        # Get all registered pipes
-        all_pipe_ids = list(self.dpr.get_pipe_ids())
-        all_pipes = {pid: self.dpr.get_pipe_definition(pid) for pid in all_pipe_ids}
-
-        # Create execution plan with specified mode
-        plan = self.graph_planner.plan_execution(all_pipes, requested_pipes, mode=mode)
-
-        self.logger.info(f"Executing {plan.total_pipes} pipes in {len(plan.generations)} "
-                        f"generations (mode={plan.execution_mode})")
-
-        with self.tp.span(component="data_pipes_executer", operation="execute_datapipes"):
-            for gen_idx, generation in enumerate(plan.generations):
-                self.logger.debug(f"Starting generation {gen_idx} with {len(generation)} pipes")
-
-                # Execute all pipes in this generation
-                # Phase 2: Sequential within generation
-                # Phase 3: Parallel within generation
-                for pipeid in generation:
-                    pipe = self.dpr.get_pipe_definition(pipeid)
-                    with self.tp.span(
-                        operation="execute_datapipe",
-                        component=f"pipe-{pipeid}",
-                        details=pipe.tags
-                    ):
-                        self._execute_datapipe(
-                            pipe_entity_reader(pipe),
-                            pipe_activator(pipe),
-                            pipe
-                        )
-
-                self.logger.debug(f"Completed generation {gen_idx}")
-
-    def _run_datapipes_legacy_mode(self, pipes):
-        """Execute pipes in provided order (backward compatibility)"""
-        pipe_entity_reader = self.erps.create_pipe_entity_reader
-        pipe_activator = self.erps.create_pipe_persist_activator
-
-        self.logger.info(f"Executing {len(pipes)} pipes in legacy mode (provided order)")
-
-        with self.tp.span(component="data_pipes_executer", operation="execute_datapipes"):
-            for pipeid in pipes:
-                pipe = self.dpr.get_pipe_definition(pipeid)
-                with self.tp.span(
-                    operation="execute_datapipe", component=f"pipe-{pipeid}", details=pipe.tags
-                ):
-                    self._execute_datapipe(pipe_entity_reader(pipe), pipe_activator(pipe), pipe)
-
-    # _execute_datapipe and _populate_source_dict remain unchanged
+# Convenience methods
+result = orchestrator.execute_batch(pipe_ids=[...])
+result = orchestrator.execute_streaming(pipe_ids=[...])
 ```
 
-### Phase 3: Parallel Execution Within Generations
-
-**Add ThreadPool-based parallel execution:**
+### Option 3: `ExecutionPlanGenerator` + `GenerationExecutor` (direct)
 
 ```python
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
+from kindling.execution_strategy import ExecutionPlanGenerator, BatchExecutionStrategy
+from kindling.generation_executor import GenerationExecutor, ErrorStrategy
+from kindling.injection import GlobalInjector
 
-class DataPipesExecuter(DataPipesExecution):
-    # ... existing code ...
+generator = GlobalInjector.get(ExecutionPlanGenerator)
+executor  = GlobalInjector.get(GenerationExecutor)
 
-    def __init__(self, ...):
-        # ... existing init ...
+plan = generator.generate_batch_plan(["pipe_a", "pipe_b"])
+# or: generator.generate_streaming_plan([...])
+# or: generator.generate_config_based_plan([...])
 
-        # Configure parallel execution
-        # Default: min(4, cpu_count) to avoid overwhelming Spark driver
-        self.max_workers = int(os.environ.get("KINDLING_MAX_PIPE_WORKERS",
-                                               min(4, os.cpu_count() or 1)))
-        self.logger.info(f"Parallel execution configured: max_workers={self.max_workers}")
-
-    def _run_datapipes_graph_mode(self, requested_pipes, mode="batch"):
-        """Execute pipes using graph-based dependency resolution with parallelism"""
-        # ... setup code ...
-
-        plan = self.graph_planner.plan_execution(all_pipes, requested_pipes, mode=mode)
-
-        with self.tp.span(component="data_pipes_executer", operation="execute_datapipes"):
-            for gen_idx, generation in enumerate(plan.generations):
-                self.logger.info(f"Generation {gen_idx}: executing {len(generation)} pipes "
-                               f"(mode={plan.execution_mode})")
-
-                if len(generation) == 1:
-                    # Single pipe - execute directly
-                    self._execute_single_pipe(generation[0], pipe_entity_reader, pipe_activator)
-                else:
-                    # Multiple pipes - execute in parallel
-                    self._execute_pipes_parallel(generation, pipe_entity_reader, pipe_activator)
-
-                self.logger.info(f"Generation {gen_idx}: completed")
-
-    def _execute_single_pipe(self, pipeid, pipe_entity_reader, pipe_activator):
-        """Execute a single pipe"""
-        pipe = self.dpr.get_pipe_definition(pipeid)
-        with self.tp.span(
-            operation="execute_datapipe",
-            component=f"pipe-{pipeid}",
-            details=pipe.tags
-        ):
-            self._execute_datapipe(
-                pipe_entity_reader(pipe),
-                pipe_activator(pipe),
-                pipe
-            )
-
-    def _execute_pipes_parallel(self, pipeids, pipe_entity_reader, pipe_activator):
-        """Execute multiple pipes in parallel using ThreadPool"""
-        # Use min of configured workers and number of pipes
-        workers = min(self.max_workers, len(pipeids))
-
-        self.logger.debug(f"Executing {len(pipeids)} pipes with {workers} workers")
-
-        def execute_pipe_worker(pipeid):
-            """Worker function for parallel execution"""
-            try:
-                self._execute_single_pipe(pipeid, pipe_entity_reader, pipe_activator)
-                return (pipeid, True, None)
-            except Exception as e:
-                self.logger.error(f"Pipe {pipeid} failed: {str(e)}")
-                return (pipeid, False, e)
-
-        # Execute pipes in parallel
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(execute_pipe_worker, pid): pid for pid in pipeids}
-
-            results = []
-            for future in as_completed(futures):
-                pipeid = futures[future]
-                try:
-                    result = future.result()
-                    results.append(result)
-                    if result[1]:  # Success
-                        self.logger.debug(f"Pipe {result[0]} completed successfully")
-                    else:  # Failure
-                        self.logger.error(f"Pipe {result[0]} failed: {result[2]}")
-                except Exception as e:
-                    self.logger.error(f"Unexpected error executing pipe {pipeid}: {str(e)}")
-                    results.append((pipeid, False, e))
-
-        # Check for failures
-        failures = [(pid, err) for pid, success, err in results if not success]
-        if failures:
-            error_msg = f"{len(failures)} pipes failed: {[pid for pid, _ in failures]}"
-            raise RuntimeError(error_msg)
+result = executor.execute(
+    plan=plan,
+    parallel=False,
+    error_strategy=ErrorStrategy.FAIL_FAST,
+)
+print(result.get_summary())
 ```
 
-### Phase 4: Add NetworkX Dependency
+## GenerationExecutor Options
 
-**Modify:** `pyproject.toml`
-
-```toml
-[tool.poetry.dependencies]
-python = "^3.10"
-# ... existing dependencies ...
-networkx = ">=3.0"  # Add NetworkX for graph-based execution
-```
-
-**Note on Platform Support:**
-- ✅ **Fabric**: NetworkX pre-installed in runtime
-- ✅ **Synapse**: NetworkX pre-installed in runtime
-- ⚠️ **Databricks**: Not pre-installed, but will be added as framework dependency
-
-### Phase 5: Update Stage Processing & Streaming
-
-**Modify:** `packages/kindling/simple_stage_processor.py`
-
-Stage processing already delegates to `DataPipesExecuter`, so minimal changes needed:
+`GenerationExecutor.execute()` signature:
 
 ```python
-@GlobalInjector.singleton_autobind()
-class StageProcessor(StageProcessingService):
-    # ... existing code ...
-
-    def execute(self, stage: str, stage_description: str, stage_details: Dict, layer: str):
-        with self.tp.span(...):
-            self.ep.ensure_entity_table(self.wef.get_watermark_entity_for_layer(layer))
-            pipe_ids = self.dpr.get_pipe_ids()
-            stage_pipe_ids = [pipe_id for pipe_id in pipe_ids if pipe_id.startswith(stage)]
-
-            # Graph-based batch execution (forward topo sort)
-            self.dep.run_datapipes(stage_pipe_ids, use_graph=True, mode="batch")
+def execute(
+    self,
+    plan: ExecutionPlan,
+    parallel: bool = False,         # Run pipes within a generation concurrently
+    max_workers: int = 4,           # Thread pool size (only if parallel=True)
+    error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
+    pipe_timeout: Optional[float] = None,   # Per-pipe timeout in seconds
+    streaming_options: Optional[Dict[str, Any]] = None,
+    auto_cache: bool = False,       # Auto-persist shared input entities
+    no_watermark: bool = False,
+) -> ExecutionResult:
 ```
 
-**Modify:** `packages/kindling/pipe_streaming.py`
+Convenience methods:
+- `execute_batch(plan, ...)` - Shorthand for batch plans
+- `execute_streaming(plan, ...)` - Shorthand for streaming plans (sequential start)
 
-Update `SimplePipeStreamStarter` to use graph-based streaming execution:
+## ExecutionResult
 
 ```python
-@GlobalInjector.singleton_autobind()
-class SimplePipeStreamStarter(PipeStreamStarter):
-    @inject
-    def __init__(
-        self,
-        cs: ConfigService,
-        dpr: DataPipesRegistry,
-        ep: EntityProvider,
-        der: DataEntityRegistry,
-        epl: EntityPathLocator,
-        plp: PythonLoggerProvider,
-        dep: DataPipesExecution,  # Add executer for graph-based planning
-    ):
-        self.dpr = dpr
-        self.ep = ep
-        self.der = der
-        self.epl = epl
-        self.dep = dep
-        self.logger = plp.get_logger("SimplePipeStreamStarter")
-        self.cs = cs
+result.all_succeeded       # bool
+result.success_count       # int
+result.failed_count        # int
+result.skipped_count       # int
+result.failed_pipes        # List[str]
+result.streaming_queries   # Dict[pipe_id, query] — streaming mode only
+result.cache_metrics       # Dict with cache hit/miss info
+result.duration_seconds    # float
+result.get_summary()       # Dict summary
+```
 
-    def start_pipes_as_streams(self, pipe_ids: List[str], options: Dict = None):
-        """
-        Start multiple streaming pipes with graph-based dependency ordering.
-        Uses REVERSE topological sort to start consumers before producers.
+## Stage Processing Integration
 
-        Args:
-            pipe_ids: List of pipe IDs to start as streams
-            options: Optional configuration for streaming
-        """
-        if options is None:
-            options = {}
+Stage processing (via `StageProcessor` / `DataPipesExecuter`) continues to delegate to
+the same execution path. Stages can opt into DAG execution by passing `use_dag=True`:
 
-        # Use graph planner to determine reverse execution order
-        # This ensures downstream consumers are ready before upstream producers start
-        plan = self.dep.graph_planner.plan_execution(
-            all_pipes={pid: self.dpr.get_pipe_definition(pid) for pid in pipe_ids},
-            requested_pipes=pipe_ids,
-            mode="streaming"  # REVERSE topological sort
-        )
+```python
+# Stage-level batch execution
+dep.run_datapipes(stage_pipe_ids)
 
-        self.logger.info(f"Starting {plan.total_pipes} streaming pipes in "
-                        f"{len(plan.generations)} generations (consumers first)")
+# Stage-level DAG execution
+dep.run_datapipes(stage_pipe_ids, use_dag=True)
+```
 
-        stream_handles = []
-        for gen_idx, generation in enumerate(plan.generations):
-            self.logger.info(f"Starting generation {gen_idx}: {generation}")
+## Streaming Pipeline Example
 
-            for pipeid in generation:
-                handle = self.start_pipe_stream(pipeid, options)
-                stream_handles.append((pipeid, handle))
+```python
+# Define streaming pipes
+@DataPipes.pipe(
+    pipeid="stream_ingest_raw",
+    name="Ingest Raw Events",
+    input_entity_ids=[],
+    output_entity_id="stream.raw_events",
+    output_type="stream",
+    tags={"processing_mode": "streaming"},
+)
+def ingest_raw_events():
+    return spark.readStream.format("kafka").load(...)
 
-        return stream_handles
+@DataPipes.pipe(
+    pipeid="stream_clean",
+    name="Clean Events",
+    input_entity_ids=["stream.raw_events"],
+    output_entity_id="stream.clean_events",
+    output_type="stream",
+    tags={"processing_mode": "streaming"},
+)
+def clean_events(stream_raw_events):
+    return stream_raw_events.filter(...).select(...)
+
+@DataPipes.pipe(
+    pipeid="stream_aggregate",
+    name="Aggregate Events",
+    input_entity_ids=["stream.clean_events"],
+    output_entity_id="stream.aggregated",
+    output_type="stream",
+    tags={"processing_mode": "streaming"},
+)
+def aggregate_events(stream_clean_events):
+    return stream_clean_events.groupBy(...).agg(...)
+
+# Start streaming pipes — use ConfigBasedExecutionStrategy to auto-detect mode
+# or pass StreamingExecutionStrategy explicitly
+orchestrator = GlobalInjector.get(ExecutionOrchestrator)
+result = orchestrator.execute(
+    pipe_ids=["stream_ingest_raw", "stream_clean", "stream_aggregate"],
+    strategy=StreamingExecutionStrategy(logger_provider),
+)
+
+# Execution order (REVERSE topological sort):
+# Generation 0: stream_aggregate  (consumer ready first)
+# Generation 1: stream_clean      (middle layer ready)
+# Generation 2: stream_ingest_raw (producer starts last)
+#
+# Result: No data loss, consumers ready when data arrives
 ```
 
 ## Testing Strategy
 
 ### Unit Tests
 
-**Create:** `tests/unit/test_pipe_graph.py`
+**Location:** `tests/unit/test_pipe_graph.py`
 
 ```python
 import pytest
-from kindling.pipe_graph import PipeGraphBuilder, PipeGraphPlanner
+from kindling.pipe_graph import PipeGraphBuilder, GraphCycleError
 from kindling.data_pipes import PipeMetadata
 
-def test_simple_linear_dependency():
+def test_simple_linear_dependency(builder, mock_registry):
     """Test A -> B -> C linear dependency"""
-    pipes = {
-        "pipe_a": PipeMetadata(
-            pipeid="pipe_a",
-            input_entity_ids=[],
-            output_entity_id="entity_x",
-            # ... other fields
-        ),
-        "pipe_b": PipeMetadata(
-            pipeid="pipe_b",
-            input_entity_ids=["entity_x"],
-            output_entity_id="entity_y",
-        ),
-        "pipe_c": PipeMetadata(
-            pipeid="pipe_c",
-            input_entity_ids=["entity_y"],
-            output_entity_id="entity_z",
-        ),
-    }
+    # pipe_a produces entity_x, pipe_b consumes entity_x and produces entity_y, etc.
+    graph = builder.build_graph(["pipe_a", "pipe_b", "pipe_c"])
+    generations = builder.get_generations(graph)
 
-    # Test batch mode (forward)
-    plan_batch = builder.create_execution_plan(pipes, mode="batch")
-    assert plan_batch.total_pipes == 4
-    assert len(plan_batch.generations) == 3
-    assert plan_batch.generations[0] == ["pipe_a"]
-    assert set(plan_batch.generations[1]) == {"pipe_b", "pipe_c"}  # Parallel
-    assert plan_batch.generations[2] == ["pipe_d"]
+    assert len(generations) == 3
+    assert generations[0] == ["pipe_a"]
+    assert generations[1] == ["pipe_b"]
+    assert generations[2] == ["pipe_c"]
 
-    # Test streaming mode (reverse)
-    plan_stream = builder.create_execution_plan(pipes, mode="streaming")
-    assert plan_stream.total_pipes == 4
-    assert len(plan_stream.generations) == 3
-    assert plan_stream.generations[0] == ["pipe_d"]  # Start consumer first
-    assert set(plan_stream.generations[1]) == {"pipe_b", "pipe_c"}  # Then middle
-    assert plan_stream.generations[2] == ["pipe_a"]  # Finally producer
-    assert plan.generations[1] == ["pipe_b"]
-    assert plan.generations[2] == ["pipe_c"]
-
-def test_parallel_independent_pipes():
+def test_parallel_independent_pipes(builder, mock_registry):
     """Test two independent pipes can run in parallel"""
-    pipes = {
-        "pipe_a": PipeMetadata(
-            pipeid="pipe_a",
-            input_entity_ids=[],
-            output_entity_id="entity_x",
-        ),
-        "pipe_b": PipeMetadata(
-            pipeid="pipe_b",
-            input_entity_ids=[],
-            output_entity_id="entity_y",
-        ),
-    }
+    graph = builder.build_graph(["pipe_a", "pipe_b"])
+    generations = builder.get_generations(graph)
 
-    builder = PipeGraphBuilder(logger)
-    plan = builder.create_execution_plan(pipes)
+    assert len(generations) == 1
+    assert set(generations[0]) == {"pipe_a", "pipe_b"}
 
-    assert plan.total_pipes == 2
-    assert len(plan.generations) == 1
-    assert set(plan.generations[0]) == {"pipe_a", "pipe_b"}
-    assert plan.max_parallelism == 2
-
-def test_diamond_dependency():
+def test_diamond_dependency(builder, mock_registry):
     """Test diamond: A -> B,C -> D"""
-    pipes = {
-        "pipe_a": PipeMetadata(
-            pipeid="pipe_a",
-            input_entity_ids=[],
-            output_entity_id="entity_x",
-        ),
-        "pipe_b": PipeMetadata(
-            pipeid="pipe_b",
-            input_entity_ids=["entity_x"],
-            output_entity_id="entity_y",
-        ),
-        "pipe_c": PipeMetadata(
-            pipeid="pipe_c",
-            input_entity_ids=["entity_x"],
-            output_entity_id="entity_z",
-        ),
-        "pipe_d": PipeMetadata(
-            pipeid="pipe_d",
-            input_entity_ids=["entity_y", "entity_z"],
-            output_entity_id="entity_final",
-        ),
-    }
+    graph = builder.build_graph(["pipe_a", "pipe_b", "pipe_c", "pipe_d"])
+    generations = builder.get_generations(graph)
 
-    builder = PipeGraphBuilder(logger)
-    plan = builder.create_execution_plan(pipes)
+    assert len(generations) == 3
+    assert generations[0] == ["pipe_a"]
+    assert set(generations[1]) == {"pipe_b", "pipe_c"}
+    assert generations[2] == ["pipe_d"]
 
-    assert plan.total_pipes == 4
-    assert len(plan.generations) == 3
-    assert plan.generations[0] == ["pipe_a"]
-    assert set(plan.generations[1]) == {"pipe_b", "pipe_c"}  # Parallel
-    assert plan.generations[2] == ["pipe_d"]
-
-def test_circular_dependency_detected():
+def test_circular_dependency_detected(builder, mock_registry):
     """Test that circular dependencies are caught"""
-    pipes = {
-        "pipe_a": PipeMetadata(
-            pipeid="pipe_a",
-            input_entity_ids=["entity_y"],
-            output_entity_id="entity_x",
-        ),
-        "pipe_b": PipeMetadata(
-            pipeid="pipe_b",
-            input_entity_ids=["entity_x"],
-            output_entity_id="entity_y",
-        ),
-    }
-
-    builder = PipeGraphBuilder(logger)
-
-    with pytest.raises(ValueError, match="Circular dependencies"):
-        builder.create_execution_plan(pipes)
+    with pytest.raises(GraphCycleError):
+        builder.build_graph(["pipe_a", "pipe_b"])  # pipe_a -> pipe_b -> pipe_a
 ```
 
 ### Integration Tests
 
-**Create:** `tests/integration/test_graph_execution.py`
+**Location:** `tests/integration/test_graph_execution.py`
 
 - Test graph execution with real Spark DataFrames
 - Verify parallel execution completes successfully
@@ -847,279 +413,135 @@ Add graph execution tests to existing system test suites:
 - Synapse: `tests/system/test_synapse_job_deployment.py`
 - Databricks: `tests/system/test_databricks_job_deployment.py`
 
-## Migration Strategy
+## Configuration and Environment Variables
 
-### Phase 2 (Current Implementation): Opt-In
+### Implemented
 
-```python
-# Batch execution with graph mode
-executer.run_datapipes(["pipe_a", "pipe_b"], use_graph=True, mode="batch")
+No environment variables are currently implemented for graph execution control.
+All configuration is passed explicitly as parameters to `execute()` / `run_datapipes()`.
 
-# Streaming execution with graph mode
-executer.run_datapipes(["pipe_a", "pipe_b"], use_graph=True, mode="streaming")
+### Not Implemented (Proposed Only)
 
-# Or keep legacy mode (no graph planning)
-executer.run_datapipes(["pipe_a", "pipe_b"], use_graph=False)
-```
+The following env vars were mentioned during design but have NOT been implemented:
 
-### Phase 3: Default On with Opt-Out
+| Variable | Status | Alternative |
+|----------|--------|-------------|
+| `KINDLING_USE_GRAPH_EXECUTION` | Not implemented | Pass `use_dag=True` explicitly |
+| `KINDLING_MAX_PIPE_WORKERS` | Not implemented | Pass `max_workers=N` to `execute()` |
+| `KINDLING_EXPORT_PIPE_GRAPH` | Not implemented | Call `builder.visualize_mermaid(graph)` |
+| `KINDLING_GRAPH_EXPORT_PATH` | Not implemented | Write the mermaid string yourself |
+| `KINDLING_EXECUTION_MODE` | Not implemented | Pass an explicit strategy object |
 
-```python
-# Graph mode becomes default, explicit mode parameter
-executer.run_datapipes(["pipe_a", "pipe_b"], mode="batch")  # use_graph=True by default
+### Execution Mode is Always Explicit
 
-# Streaming mode explicit
-executer.run_datapipes(["pipe_a", "pipe_b"], mode="streaming")
-
-# Can still opt-out for compatibility
-executer.run_datapipes(["pipe_a", "pipe_b"], use_graph=False)
-```
-
-### Phase 4: Remove Legacy Mode
+The `strategy` parameter must be an `ExecutionStrategy` instance (or `None` for the
+default `BatchExecutionStrategy`). It is never read from an environment variable.
 
 ```python
-# Only graph-based execution, mode is always explicit
-executer.run_datapipes(["pipe_a", "pipe_b"], mode="batch")     # Default for batch
-executer.run_datapipes(["pipe_a", "pipe_b"], mode="streaming")  # For streaming
-```
-Execution mode: "batch" or "streaming"
-KINDLING_EXECUTION_MODE=batch  # Default: batch (forward topo sort)
+# Batch mode - explicit strategy (or omit for default)
+orchestrator.execute(pipe_ids, strategy=BatchExecutionStrategy(lp))
 
-#
-## Configuration Options
+# Streaming mode - explicit strategy
+orchestrator.execute(pipe_ids, strategy=StreamingExecutionStrategy(lp))
 
-Add environment variables for performance tuning:
-
-```bash
-# Enable/disable graph execution (Phase 2 migration only)
-KINDLING_USE_GRAPH_EXECUTION=true
-
-# Parallel execution workers (Phase 3)
-KINDLING_MAX_PIPE_WORKERS=4  # Default: min(4, cpu_count)
-
-# Graph visualization export (debugging)
-KINDLING_EXPORT_PIPE_GRAPH=true
-KINDLING_GRAPH_EXPORT_PATH=/tmp/pipe_graph.dot
-```
-
-**Important: Execution Mode is NOT an Environment Variable**
-
-The `mode` parameter (`"batch"` or `"streaming"`) must be **explicitly specified** at the call site:
-
-```python
-# Batch mode - explicit parameter
-executer.run_datapipes(pipes, mode="batch")
-
-# Streaming mode - explicit parameter
-orchestrator.start_pipes_as_streams(pipes)  # Uses mode="streaming" internally
+# Auto-detect from pipe tags
+orchestrator.execute(pipe_ids, strategy=ConfigBasedExecutionStrategy(lp))
 ```
 
 **Rationale:**
 - Execution mode is an architectural decision, not a deployment configuration
 - Different parts of the same application may need different modes
 - Explicit parameters make intent clear and visible in code
-- Type-safe: IDEs and linters can validate mode values
 
-## Documentation Updates
+## Dependencies
 
-### Update Existing Docs
+### Not Required: NetworkX
 
-1. **`docs/data_pipes.md`**
-   - Add section on "Automatic Dependency Resolution"
-   - Explain execution generations
-   - Show parallelism benefits
-   - Migration guide
+The design originally considered using [NetworkX](https://networkx.org/) for graph
+operations. NetworkX was **never added as a dependency** and is not used anywhere in
+the codebase. The implementation uses only Python standard-library primitives:
 
-2. **`docs/stage_processing.md`**
-   - Explain how stages now auto-resolve dependencies
-   - Update examples
+- `collections.defaultdict`, `collections.deque` — adjacency lists and BFS/Kahn's queue
+- `graphlib.TopologicalSorter` — available in Python 3.9+ (not used directly; Kahn's
+  algorithm is implemented manually in `PipeGraphBuilder`)
+- `dataclasses` — `PipeNode`, `PipeEdge`, `PipeGraph`, `ExecutionPlan`, `Generation`
+- `concurrent.futures.ThreadPoolExecutor` — parallel generation execution
 
-3. **`docs/intro.md`**
-   - Add graph-based execution to key features
+Do not add NetworkX. The current implementation covers all required operations.
 
-### Create New Docs
+## Platform Compatibility
 
-4. **`docs/graph_execution.md`** (new)
-   - Deep dive on graph algorithm
-   - Performance tuning
-   - Debugging with graph visualization
-   - Common patterns (diamond, fan-out, fan-in)
+| Platform | Notes |
+|----------|-------|
+| Fabric | Full support — standard library only |
+| Synapse | Full support — standard library only |
+| Databricks | Full support — standard library only |
+| Local Dev | Full support — standard library only |
 
 ## Performance Considerations
 
 ### Benefits
 
-1. **Parallelism**: Independent pipes run concurrently
-   - Example: 10 independent bronze layer ingestion pipes = 10x speedup (up to worker limit)
-
-2. **Optimal Ordering**: Always executes in correct dependency order
-   - No manual trial-and-error to find correct sequence
-
-3. **Early Failure Detection**: Circular dependencies caught before execution
+1. **Parallelism**: Independent pipes run concurrently (pass `parallel=True`)
+   - Example: 10 independent bronze-layer ingestion pipes can overlap up to `max_workers`
+2. **Optimal Ordering**: Always executes in correct dependency order automatically
+3. **Early Failure Detection**: Cycles caught during graph construction, before any pipe runs
 
 ### Overhead
 
-1. **Graph Construction**: O(P + E) where P=pipes, E=dependencies
-   - Negligible for typical pipelines (< 1000 pipes)
+1. **Graph Construction**: O(P + E) where P = number of pipes, E = edges
+   - Negligible for typical pipelines (< 1 000 pipes)
+2. **Memory**: Graph held in memory during execution (~1 KB per pipe)
+3. **ThreadPool**: Created only when `parallel=True` and a generation has > 1 pipe
 
-2. **Memory**: Graph stored in memory during execution
-   - ~1KB per pipe, 1MB for 1000 pipes
-
-3. **ThreadPool**: Overhead for thread creation/management
-   - Only used when parallelism beneficial (generation size > 1)
-
-### Tuning Guidelines
+### Tuning
 
 ```python
-# For large pipelines with many independent pipes
-KINDLING_MAX_PIPE_WORKERS=8  # Increase parallelism
+# Increase parallelism for large pipelines with many independent pipes
+orchestrator.execute(pipe_ids, parallel=True, max_workers=8)
 
-# For small pipelines or memory-constrained environments
-KINDLING_MAX_PIPE_WORKERS=1  # Sequential execution
+# Force sequential (useful for debugging or memory-constrained environments)
+orchestrator.execute(pipe_ids, parallel=False)
 
-# For batch ETL pipelines
-executer.run_datapipes(pipes, mode="batch")  # Dependencies execute first
-
-# For streaming pipelines
-executer.run_datapipes(pipes, mode="streaming")  # Consumers start first
-
-# For debugging
-use_graph=False  # Fallback to legacy mode
+# Continue on error instead of stopping at first failure
+orchestrator.execute(pipe_ids, error_strategy=ErrorStrategy.CONTINUE)
 ```
 
-## Risk Mitigation
+## Signals Emitted
 
-### Backward Compatibility
+`GenerationExecutor` emits the following signals (see `SignalEmitter`):
 
-- ✅ **Phase 2**: Opt-in, default is legacy mode
-- ✅ **`use_graph` parameter**: Explicit control
-- ✅ **Fallback mode**: Works without NetworkX (graphlib)
-- ✅ **Legacy API preserved**: Existing code continues to work
+| Signal | When |
+|--------|------|
+| `orchestrator.execution_started` | Before any generation runs |
+| `orchestrator.execution_completed` | After all generations succeed |
+| `orchestrator.execution_failed` | If execution raises |
+| `orchestrator.generation_started` | Before each generation |
+| `orchestrator.generation_completed` | After each generation |
+| `orchestrator.pipe_started` | Before each pipe |
+| `orchestrator.pipe_completed` | After each pipe succeeds |
+| `orchestrator.pipe_failed` | When a pipe raises |
+| `orchestrator.pipe_skipped` | When a pipe is skipped (no data) |
+| `orchestrator.cache_recommended` | When a shared entity is identified |
+| `orchestrator.cache_hit` | When a shared entity is served from cache |
+| `orchestrator.cache_miss` | When a shared entity is first read |
 
-### Platform Compatibility
-
-| Platform | NetworkX Available | Fallback Mode | Notes |
-|----------|-------------------|---------------|-------|
-| Fabric | ✅ Pre-installed | N/A | Full graph support |
-| Synapse | ✅ Pre-installed | N/A | Full graph support |
-| Databricks | ⚠️ Manual install | ✅ graphlib | Add to requirements |
-| Local Dev | ⚠️ Varies | ✅ graphlib | Add to requirements |
-
-### Error Handling
-
-1. **Circular Dependencies**: Caught during graph construction
-2. **Missing Pipes**: Validation before execution
-3. **Parallel Execution Failures**: Aggregate errors, fail-fast option
-4. **NetworkX Import Failure**: Automatic fallback to graphlib
-
-## Success Criteria
-
-### Functional
-
-- ✅ All existing tests pass with graph mode enabled
-- ✅ Circular dependency detection works
-- ✅ Parallel execution produces same results as sequential
-- ✅ Backward compatibility maintained
-
-### Performance
-
-- ✅ Graph construction overhead < 5% of total execution time
-- ✅ Parallel execution shows measurable speedup for independent pipes
-- ✅ No performance regression in legacy mode
-
-### Quality
-
-- ✅ Test coverage > 85% for new graph code
-- ✅ Documentation complete and reviewed
-- ✅ System tests passing on all 3 platforms
-
-## Timeline Estimate
-
-| Phase | Description | Effort | Dependencies |
-|-------|-------------|--------|--------------|
-| 1 | Core graph engine module | 2-3 days | None |
-| 2 | Update DataPipesExecuter | 1-2 days | Phase 1 |
-| 3 | Add parallel execution | 1-2 days | Phase 2 |
-| 4 | Add NetworkX dependency | 1 hour | Phase 1-3 |
-| 5 | Update stage processing | 1 hour | Phase 2 |
-| Testing | Unit + integration tests | 2-3 days | Phases 1-3 |
-| Docs | Documentation updates | 1-2 days | All phases |
-| **Total** | **End-to-end** | **~10-15 days** | - |
-
-## Next Steps
-
-1. ✅ **Review this plan** - Get team feedback
-2. **Approve approach** - Confirm architecture decisions
-3. **Create feature branch** - `feature/graph-based-execution`
-4. **Phase 1 implementation** - Build core graph engine
-5. **Incremental review** - PR per phase for easier review
-6. **Integration testing** - Test on all 3 platforms
-7. Streaming Pipeline Example
-
-**Use Case:** Real-time data processing pipeline
-
-```python
-# Define streaming pipes
-@DataPipes.pipe(
-    pipeid="stream_ingest_raw",
-    name="Ingest Raw Events",
-    input_entity_ids=[],  # Reads from Kafka/EventHub
-    output_entity_id="stream.raw_events",
-    output_type="stream"
-)
-def ingest_raw_events():
-    return spark.readStream.format("kafka").load(...)
-
-@DataPipes.pipe(
-    pipeid="stream_clean",
-    name="Clean Events",
-    input_entity_ids=["stream.raw_events"],
-    output_entity_id="stream.clean_events",
-    output_type="stream"
-)
-def clean_events(stream_raw_events):
-    return stream_raw_events.filter(...).select(...)
-
-@DataPipes.pipe(
-    pipeid="stream_aggregate",
-    name="Aggregate Events",
-    input_entity_ids=["stream.clean_events"],
-    output_entity_id="stream.aggregated",
-    output_type="stream"
-)
-def aggregate_events(stream_clean_events):
-    return stream_clean_events.groupBy(...).agg(...)
-
-# Start streaming pipes with graph-based ordering
-orchestrator = GlobalInjector.get(SimplePipeStreamStarter)
-stream_handles = orchestrator.start_pipes_as_streams([
-    "stream_ingest_raw",
-    "stream_clean",
-    "stream_aggregate"
-])
-
-# Execution order (REVERSE topological sort):
-# 1. Start stream_aggregate (consumer ready, listening)
-# 2. Start stream_clean (middle layer ready, listening)
-# 3. Start stream_ingest_raw (producer starts emitting)
-#
-# Result: No data loss, consumers ready when data arrives
-```
+`ExecutionOrchestrator` also emits `orchestrator.plan_generated` after plan generation.
 
 ## Open Questions
 
-1. **Should we support custom schedulers?** (e.g., Airflow, Prefect integration)
-2. **Should we add graph visualization export?** (e.g., GraphViz DOT format)
-3. **Should we support pipe priorities/weights?** (for scheduling decisions)
-4. **Should parallel execution be opt-out instead of opt-in?** (more aggressive default)
-5. **Should we add cost-based optimization?** (e.g., prefer pipes with cached inputs)
-6. **Should streaming mode support startup delays?** (e.g., wait N seconds between generation
-3. **Should we support pipe priorities/weights?** (for scheduling decisions)
-4. **Should parallel execution be opt-out instead of opt-in?** (more aggressive default)
-5. **Should we add cost-based optimization?** (e.g., prefer pipes with cached inputs)
+1. Should we support custom schedulers? (e.g., Airflow, Prefect integration)
+2. Should pipe graph visualization export (Mermaid → file) be wired into a config option?
+3. Should we support pipe priorities or weights for scheduling decisions?
+4. Should `parallel=True` become the default once battle-tested?
+5. Should we add cost-based optimization? (e.g., prefer pipes with cached inputs)
+6. Should streaming mode support startup delays between generations?
 
 ---
 
-**Document Version:** 1.0
-**Date:** January 21, 2026
-**Author:** GitHub Copilot (Claude Sonnet 4.5)
+**Document Version:** 2.0
+**Date:** June 2026
+**Updated by:** Audit pass — corrected class names, removed NetworkX references,
+aligned all API examples with actual implementation in `pipe_graph.py`,
+`execution_strategy.py`, `generation_executor.py`, `execution_orchestrator.py`,
+and `data_pipes.py`.
