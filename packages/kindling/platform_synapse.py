@@ -299,12 +299,17 @@ class SynapseService(PlatformService):
 
     @staticmethod
     def _is_not_found_error(exc: Exception) -> bool:
+        """Return True only for definitive file-not-found errors, not transient auth failures.
+
+        Deliberately avoids the generic phrase "not found" because Synapse token-refresh
+        exceptions can include "token not found in cache", which would incorrectly suppress
+        the retry that is needed to let the token refresh complete.
+        """
         msg = str(exc).lower()
         return (
             "does not exist" in msg
-            or "not found" in msg
-            or "404" in msg
             or "filenotfoundexception" in msg
+            or ", 404," in msg  # ABFS error format: "Operation failed: ..., 404, HEAD, ..."
         )
 
     def read(self, path: str, encoding: str = "utf-8") -> Union[str, bytes]:
