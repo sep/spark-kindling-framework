@@ -297,24 +297,43 @@ class SynapseService(PlatformService):
             account_url=account_url, credential=self._adls_credential()
         ).get_file_system_client(container)
 
+    @staticmethod
+    def _is_not_found_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "does not exist" in msg
+            or "not found" in msg
+            or "404" in msg
+            or "filenotfoundexception" in msg
+        )
+
     def read(self, path: str, encoding: str = "utf-8") -> Union[str, bytes]:
         """Read file content, with retry + ADLS SDK fallback when mssparkutils token fails.
 
         Synapse TokenLibrary emits 'CacheException: Cache miss' during token
-        refresh; retrying handles transient fetch failures.
+        refresh; retrying handles transient fetch failures. Not-found errors
+        (404) are not retried — they are definitive.
         """
         if path.startswith("abfss://") or path.startswith("wasbs://"):
             mssparkutils = _get_mssparkutils()
             if mssparkutils:
+                # When mssparkutils is available it has full Synapse token access;
+                # the ADLS SDK fallback below cannot authenticate on Synapse, so
+                # we raise on failure rather than falling through.
+                last_exc: Optional[Exception] = None
                 for attempt in range(3):
                     try:
                         content = mssparkutils.fs.head(path, 10000000)  # Read up to ~10MB
                         return content if encoding else content.encode(encoding or "utf-8")
-                    except Exception:
+                    except Exception as e:
+                        last_exc = e
+                        if self._is_not_found_error(e):
+                            break  # Definitive not-found — skip retries
                         if attempt < 2:
                             time.sleep(3 * (attempt + 1))
-                # all retries exhausted — fall through to ADLS SDK
+                raise FileNotFoundError(f"File not found: {path}") from last_exc
 
+            # mssparkutils unavailable — attempt ADLS SDK with ambient credentials
             if path.startswith("abfss://"):
                 try:
                     account_url, container, remote_path = self._parse_abfss(path)
@@ -354,8 +373,9 @@ class SynapseService(PlatformService):
                     if result or not path.startswith("abfss://"):
                         return result
                     # Empty on ABFS — might be token failure; retry
-                except Exception:
-                    pass
+                except Exception as e:
+                    if self._is_not_found_error(e):
+                        break  # Definitive not-found — skip retries
                 if attempt < 2:
                     time.sleep(3 * (attempt + 1))
 

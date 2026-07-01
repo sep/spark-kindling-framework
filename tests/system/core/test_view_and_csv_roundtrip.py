@@ -4,18 +4,18 @@ System test: DataPipes.view() execution and CSV write/read roundtrip on cloud pl
 Verifies that:
   1. DataPipes.view() can be registered with inline SQL and executed against a
      Spark DataFrame on the target cloud platform.
-  2. The view output can be written to a local CSV path via CSVEntityProvider
-     and read back correctly.
+  2. The view output can be written to CSV via CSVEntityProvider and read back correctly.
+  3. append_to_entity adds rows to the existing CSV.
 
-This test does not require ABFS/cloud object storage — it writes to the cluster's
-local filesystem.  What it validates is that kindling's view and CSV write code
-paths work correctly in the platform's Spark environment, where Spark version,
-serialization, and JVM configuration can differ from local development.
+Writes to ABFS (cloud object storage) so the path is accessible by all Spark executors
+in a multi-node cluster.  Pass an abfss:// base path via AZURE_STORAGE_ACCOUNT,
+AZURE_CONTAINER, and AZURE_BASE_PATH env vars (same vars used by other system tests).
 
 Run:
     poe test-system --test test_view_and_csv_roundtrip
 """
 
+import os
 import uuid
 
 import pytest
@@ -33,21 +33,38 @@ MARKER_PASSED = "VIEW_CSV_TEST: PASSED"
 MARKER_FAILED = "VIEW_CSV_TEST: FAILED"
 
 
-def _app_src() -> str:
+def _test_abfss_path() -> str:
+    storage_account = os.getenv("AZURE_STORAGE_ACCOUNT", "")
+    container = os.getenv("AZURE_CONTAINER", "artifacts")
+    base_path = os.getenv("AZURE_BASE_PATH", "").rstrip("/")
+    cloud = (os.getenv("AZURE_CLOUD") or "").strip().lower().replace("-", "").replace("_", "")
+    if cloud in {"azureusgovernment", "azuregovernment", "government", "gov", "usgov"}:
+        suffix = "core.usgovcloudapi.net"
+    elif cloud in {"azurechinacloud", "china"}:
+        suffix = "core.chinacloudapi.cn"
+    else:
+        suffix = "core.windows.net"
+    path = f"abfss://{container}@{storage_account}.dfs.{suffix}"
+    if base_path:
+        path = f"{path}/{base_path}"
+    return path
+
+
+def _app_src(csv_base_path: str) -> str:
     """Generate the self-contained test app that exercises view() and CSV write."""
-    return """\
+    _csv_path = f"{csv_base_path}/view_output"
+    return f'_CSV_PATH = "{_csv_path}"\n' + """\
 import logging
 import sys
-import tempfile
 import traceback
-from pathlib import Path
 
 _log = logging.getLogger("view_csv_roundtrip_test")
 
 
-class _LogProvider:
+class _LP:
     def get_logger(self, name=""):
-        return logging.getLogger(f"kindling.{name}")
+        from kindling.spark_log import SparkLogger
+        return SparkLogger(name=f"kindling.{name}")
 
 
 try:
@@ -73,7 +90,7 @@ try:
     print("VIEW_CSV_TEST: input DataFrame created", flush=True)
 
     # ── Step 2: register DataPipes.view() with inline SQL ─────────────────────
-    logger_provider = _LogProvider()
+    logger_provider = _LP()
     registry = DataPipesManager(logger_provider)
     DataPipes.reset()
     DataPipes.dpregistry = registry
@@ -108,8 +125,7 @@ try:
     print("VIEW_CSV_TEST: view output validated", flush=True)
 
     # ── Step 4: write view output to CSV ──────────────────────────────────────
-    tmp_dir = Path(tempfile.mkdtemp())
-    csv_path = str(tmp_dir / "view_output")
+    csv_path = _CSV_PATH
 
     csv_provider = CSVEntityProvider(logger_provider)
     entity_meta = EntityMetadata(
@@ -187,7 +203,9 @@ def view_csv_test_app(platform_client):
     }
     job_config = apply_env_config_overrides(job_config, platform_name)
 
-    app_files = {"app.py": _app_src()}
+    abfss_base = _test_abfss_path()
+    csv_base_path = f"{abfss_base}/systest-view-csv/{suffix}"
+    app_files = {"app.py": _app_src(csv_base_path=csv_base_path)}
     api_client.deploy_app(app_name, app_files)
 
     yield api_client, app_name, job_name, job_config
