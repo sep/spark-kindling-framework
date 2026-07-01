@@ -13,10 +13,14 @@ Setup (handled by fixtures):
       2. Registers a file ingestion entry with static_values
       3. Processes the ABFS path containing the uploaded CSV
       4. Queries the resulting Delta table and checks for the static columns
+      5. Registers a DataPipes.view() over the ingested entity, executes it,
+         writes the result to a local CSV, and reads it back to verify
 
 Verification:
   - The app prints STATIC_VALUES_TEST: PASSED if both static columns exist
     and have the expected values in every row.
+  - The app prints VIEW_STEP: PASSED if the view executes correctly and the
+    CSV round-trip produces the expected row count.
   - BOOTSTRAP COMPLETE / "completed successfully" confirms clean exit.
 
 Run:
@@ -40,6 +44,8 @@ from tests.system.test_helpers import (
 # ── markers ────────────────────────────────────────────────────────────────────
 MARKER_PASSED = "STATIC_VALUES_TEST: PASSED"
 MARKER_FAILED = "STATIC_VALUES_TEST: FAILED"
+VIEW_STEP_PASSED = "VIEW_STEP: PASSED"
+VIEW_STEP_FAILED = "VIEW_STEP: FAILED"
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -76,6 +82,7 @@ def _app_src(
     expected_source: str,
     expected_env: str,
     entity_suffix: str = "",
+    view_csv_path: str = "",
 ) -> str:
     """Generate the test app Python source.
 
@@ -84,9 +91,12 @@ def _app_src(
       2. Registers a file ingestion entry with static_values.
       3. Processes the ABFS folder.
       4. Reads the entity back via EntityProvider and validates static columns.
-      5. Prints STATIC_VALUES_TEST: PASSED / FAILED.
+      5. Registers a DataPipes.view(), executes it, writes to CSV, reads back.
+      6. Prints STATIC_VALUES_TEST: PASSED then VIEW_STEP: PASSED on success.
     """
     _entity_id = f"test_static_entity_{entity_suffix}" if entity_suffix else "test_static_entity"
+    _table_name = _entity_id.replace(".", "_")
+    _view_csv_path = view_csv_path or f"/tmp/kindling_view_out_{entity_suffix}"
     return f"""\
 import logging
 import sys
@@ -94,11 +104,21 @@ import traceback
 
 _log = logging.getLogger("file_ingestion_static_test")
 
+from pyspark.sql import SparkSession
 from pyspark.sql.types import StringType, StructField, StructType
 
-from kindling.data_entities import DataEntities, DataEntityRegistry, EntityProvider
+from kindling.data_entities import DataEntities, DataEntityRegistry, EntityMetadata, EntityProvider
+from kindling.data_pipes import DataPipes, DataPipesManager
+from kindling.entity_provider_csv import CSVEntityProvider
 from kindling.file_ingestion import FileIngestionEntries, ParallelizingFileIngestionProcessor
 from kindling.injection import get_kindling_service
+
+
+class _LP:
+    def get_logger(self, name=""):
+        from kindling.spark_log import SparkLogger
+        return SparkLogger(name=f"kindling.{{name}}")
+
 
 # ── Step 1: register target entity ───────────────────────────────────────────
 _schema = StructType([
@@ -179,6 +199,54 @@ try:
 
     _log.warning("STATIC_VALUES_TEST: PASSED")
     print("STATIC_VALUES_TEST: PASSED", flush=True)
+
+    # ── Step 5: DataPipes.view() on ingested data, write result to CSV ────────
+    registry = DataPipesManager(_LP())
+    DataPipes.reset()
+    DataPipes.dpregistry = registry
+
+    DataPipes.view(
+        pipeid="view.ingested",
+        input_entity_ids=[_ENTITY_ID],
+        output_entity_id="view.ingested",
+        sql="SELECT row_id, value FROM {_table_name} WHERE value IS NOT NULL",
+    )
+
+    pipe = registry.get_pipe_definition("view.ingested")
+    view_df = pipe.execute(**{{_ENTITY_ID: df}})
+    view_rows = view_df.collect()
+    print(f"VIEW_STEP: view returned {{len(view_rows)}} rows", flush=True)
+
+    if len(view_rows) != 2:
+        msg = f"VIEW_STEP: FAILED — view returned {{len(view_rows)}} rows, expected 2"
+        _log.warning(msg)
+        print(msg, flush=True)
+        sys.exit(1)
+
+    csv_path = "{_view_csv_path}"
+    view_entity_meta = EntityMetadata(
+        entityid="view.ingested",
+        name="View Ingested",
+        merge_columns=[],
+        tags={{"provider.path": csv_path, "provider.header": "true"}},
+        schema=None,
+    )
+    csv_provider = CSVEntityProvider(_LP())
+    csv_provider.write_to_entity(view_df, view_entity_meta)
+
+    _spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
+    read_back = _spark.read.option("header", "true").csv(csv_path)
+    read_count = read_back.count()
+    print(f"VIEW_STEP: CSV has {{read_count}} rows", flush=True)
+
+    if read_count != 2:
+        msg = f"VIEW_STEP: FAILED — CSV has {{read_count}} rows, expected 2"
+        _log.warning(msg)
+        print(msg, flush=True)
+        sys.exit(1)
+
+    _log.warning("VIEW_STEP: PASSED")
+    print("VIEW_STEP: PASSED", flush=True)
     sys.exit(0)
 
 except SystemExit:
@@ -234,6 +302,7 @@ def static_values_test_app(platform_client, blob_client):
 
     abfss_base = _test_abfss_path()
     csv_folder = f"{abfss_base}/systest-fi/{suffix}"
+    view_csv_path = f"{abfss_base}/systest-fi-view/{suffix}/view_output"
 
     expected_source = "test_erp"
     expected_env = "ci"
@@ -253,6 +322,7 @@ def static_values_test_app(platform_client, blob_client):
             expected_source=expected_source,
             expected_env=expected_env,
             entity_suffix=suffix,
+            view_csv_path=view_csv_path,
         ),
     }
 
@@ -286,8 +356,12 @@ class TestFileIngestionStaticValues:
         """
         CSV has two columns (row_id, value).
         Ingestion entry adds static_values: source_system, environment.
-        After ingestion the entity table must have all four columns,
-        with every row carrying the expected static values.
+        After ingestion the entity table must have all four columns with
+        every row carrying the expected static values.  A DataPipes.view()
+        is then registered against the ingested entity, executed, and its
+        output written to a local CSV; the row count is read back and
+        validated to confirm both DataPipes.view() and CSVEntityProvider
+        work correctly in the platform's Spark environment.
         """
         _, platform_name = platform_client
         api_client, app_name, job_name, job_config = static_values_test_app
@@ -313,16 +387,19 @@ class TestFileIngestionStaticValues:
             assert_no_fatal_system_test_log_lines(log)
 
             assert MARKER_FAILED not in log, (
-                "App reported a validation failure — static columns missing or wrong value. "
-                f"Log tail: {log[-500:]}"
+                "App reported a static-values validation failure. " f"Log tail: {log[-500:]}"
+            )
+
+            assert VIEW_STEP_FAILED not in log, (
+                "App reported a view/CSV step failure. " f"Log tail: {log[-500:]}"
             )
 
             assert (
-                MARKER_PASSED in log
+                VIEW_STEP_PASSED in log
                 or "completed successfully" in log
                 or "BOOTSTRAP COMPLETE" in log
             ), (
-                "App did not complete — possible timeout or crash. "
+                "App did not complete the view/CSV roundtrip step — possible timeout or crash. "
                 f"(log length={len(log)} chars)"
             )
 
