@@ -210,8 +210,8 @@ jobs:
 
           # [skip system tests] in the commit message bypasses cloud platform
           # tests for runtime changes that only affect the standalone/local path.
-          # Read via git log rather than ${{ github.event.head_commit.message }} to
-          # avoid shell-injection when the commit body contains double quotes.
+          # Use git log instead of a GitHub Actions expression to avoid shell-injection
+          # when the commit body contains double quotes or other special characters.
           commit_msg=$(git log -1 --format="%B" HEAD)
           if [[ "$needs_system_tests" == "true" && "$commit_msg" == *"[skip system tests]"* ]]; then
             needs_system_tests=false
