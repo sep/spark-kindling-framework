@@ -1,6 +1,10 @@
 # Read-Only Entity Registration
 
-**Status:** Proposal
+**Status:** Implemented (2026-07-01). See `packages/kindling/entity_provider_delta.py` —
+`ReadOnlyEntityError`, `EntityPathConflictError`, `_is_read_only`, `_ensure_external_registration`,
+and guards on `write_to_entity`/`merge_to_entity`/`append_to_entity`/`append_as_stream`. Tests in
+`tests/unit/test_delta_entity_provider_read_only.py`. Implemented exactly as designed below,
+including the `read_only.on_path_conflict` tag and its `error`/`reregister` policies.
 **Created:** 2026-04-07
 **Related:** entity_providers.md, entity_configuration.md, data_entities.md
 

@@ -546,7 +546,7 @@ class FabricAPI(PlatformAPI):
             "artifacts_storage_path": artifacts_storage_path,
             "platform": "fabric",  # Explicitly set platform to avoid detection issues
             "use_lake_packages": "True",
-            "load_local_packages": "False",
+            "load_workspace_packages": "False",
             # Set Spark app name for test ID extraction
             "spark_app_name": f"kindling-app-{app_name}",
         }

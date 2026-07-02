@@ -21,7 +21,8 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 - `environment`: Environment name used for config layering (for example `development`, `prod`).
 - `workspace_id`: Workspace identifier used for workspace-specific config selection.
 - `use_lake_packages`: If true, load Kindling and extensions from artifacts storage (instead of local environment). Defaults to `false` when `platform` is `standalone`, `true` otherwise.
-- `load_local_packages`: If true, load local workspace packages (notebooks) after platform init.
+- `load_workspace_packages`: If true, load workspace packages (notebooks) after platform init.
+  (`load_local_packages` still accepted as a deprecated alias.)
 - `temp_path`: Temporary file path root used during wheel/extension install; `kindling.temp_path` is the YAML equivalent.
 - `config_files`: Explicit list of local YAML config file paths (or a single path string) to load in addition to any files downloaded from artifacts storage. Useful for standalone/local runs where no artifacts storage is configured. Files are loaded after downloaded files so they take precedence.
 - `install_bootstrap_dependencies`: Boolean; controls whether `install_bootstrap_dependencies()` runs to install `kindling.required_packages` and `kindling.extensions` at startup. Defaults to `true` for cloud platforms and `false` for `standalone`.
@@ -56,14 +57,16 @@ Job-deployment (system-test / deployment API) keys:
 ### Bootstrap Behavior
 
 - `kindling.bootstrap.load_lake`: Same intent as bootstrap `use_lake_packages`.
-- `kindling.bootstrap.load_local`: Same intent as bootstrap `load_local_packages`.
+- `kindling.bootstrap.load_workspace_packages`: Same intent as bootstrap `load_workspace_packages`.
 - `kindling.bootstrap.ignored_folders`: Folder names ignored when loading workspace packages/notebooks.
 - `kindling.required_packages`: List of PyPI packages to `pip install` at startup.
 - `kindling.extensions`: List of Kindling extension wheels to load from artifacts storage.
 
-Legacy/compat keys (still accepted by config translation):
+Legacy/compat keys (still accepted by config translation, logged as deprecated):
 
-- `kindling.BOOTSTRAP.load_lake`, `kindling.BOOTSTRAP.load_local`
+- `kindling.bootstrap.load_local` / `kindling.BOOTSTRAP.load_local` (use
+  `kindling.bootstrap.load_workspace_packages`)
+- `kindling.BOOTSTRAP.load_lake`
 - `kindling.REQUIRED_PACKAGES`
 - `kindling.EXTENSIONS` or `kindling.extensions`
 - `kindling.IGNORED_FOLDERS`
@@ -211,6 +214,12 @@ Common tags:
 - `provider.quote`: string (default `"`).
 - `provider.escape`: string (default `\\`).
 - `provider.multiLine`: boolean (default false).
+- `provider.compression`: write codec — one of `none`, `gzip`, `bzip2`, `lz4`, `snappy`,
+  `deflate` (default `none`, write only).
+
+CSV supports both `write_to_entity` (overwrite) and `append_to_entity` (append) via Spark's
+CSV writer. Like any Spark file write, output is a directory of part-files at `provider.path`,
+not a single `.csv` file — merge them downstream if a single file is required.
 
 ### EventHub Provider (`provider_type: eventhub`)
 

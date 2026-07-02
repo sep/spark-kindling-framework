@@ -145,6 +145,8 @@ class CSVEntityProvider(BaseEntityProvider, WritableEntityProvider):
     - provider.quote: Quote character (default: '"')
     - provider.escape: Escape character (default: '\\')
     - provider.multiLine: Support multi-line records (default: "false")
+    - provider.compression: Write compression codec — one of none, gzip, bzip2, lz4,
+      snappy, deflate (default: "none", write only)
 
     Example entity definition:
     ```python
@@ -275,9 +277,11 @@ class CSVEntityProvider(BaseEntityProvider, WritableEntityProvider):
         encoding = config.get("encoding", "UTF-8")
         quote = config.get("quote", '"')
         escape = config.get("escape", "\\")
+        compression = config.get("compression", "none")
 
         self.logger.info(
-            f"Writing CSV entity '{entity_metadata.entityid}' to path: {path} (mode={mode})"
+            f"Writing CSV entity '{entity_metadata.entityid}' to path: {path} "
+            f"(mode={mode}, compression={compression})"
         )
         try:
             (
@@ -288,6 +292,7 @@ class CSVEntityProvider(BaseEntityProvider, WritableEntityProvider):
                 .option("encoding", encoding)
                 .option("quote", quote)
                 .option("escape", escape)
+                .option("compression", compression)
                 .save(path)
             )
             self.logger.info(f"Successfully wrote CSV entity '{entity_metadata.entityid}'")

@@ -14,4 +14,4 @@ kindling:
 
   bootstrap:
     load_lake: true
-    load_local: false
+    load_workspace_packages: false

@@ -282,6 +282,29 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     builder.execute()
 
 
+class ReadOnlyEntityError(Exception):
+    """Raised when a write is attempted on an entity tagged read_only."""
+
+    def __init__(self, entityid: str):
+        super().__init__(
+            f"Entity '{entityid}' is tagged read_only — writes are not permitted. "
+            "Remove the 'read_only' tag if this entity should be writable."
+        )
+
+
+class EntityPathConflictError(Exception):
+    """Raised when a read_only entity's catalog registration points at a different
+    path than its configured provider.path."""
+
+    def __init__(self, entityid: str, registered_path: str, expected_path: str):
+        super().__init__(
+            f"Entity '{entityid}' is registered in the catalog at '{registered_path}', "
+            f"which differs from the configured path '{expected_path}'. "
+            "Set tag 'read_only.on_path_conflict: reregister' to re-point the catalog "
+            "entry, or resolve the mismatch manually."
+        )
+
+
 class DeltaAccessMode:
     """Defines how Delta tables are accessed"""
 
@@ -400,6 +423,16 @@ class DeltaEntityProvider(
 
     def _is_for_path_mode(self, access_mode: str) -> bool:
         return str(access_mode or "").lower() == "storage"
+
+    def _is_read_only(self, entity) -> bool:
+        """True when the entity is tagged read_only: writes are blocked and
+        ensure only registers the table (never creates or owns the data)."""
+        return str((entity.tags or {}).get("read_only", "")).strip().lower() == "true"
+
+    def _read_only_on_path_conflict(self, entity) -> str:
+        """Conflict policy for a read_only entity's catalog registration:
+        'error' (default) or 'reregister'."""
+        return str((entity.tags or {}).get("read_only.on_path_conflict", "error")).strip().lower()
 
     def _get_cluster_columns(self, entity) -> list[str]:
         cols = getattr(entity, "cluster_columns", None)
@@ -892,6 +925,10 @@ class DeltaEntityProvider(
     def _ensure_table_exists(self, entity, table_ref: DeltaTableReference):
         """Ensure table exists, create if needed"""
 
+        if self._is_read_only(entity):
+            self._ensure_external_registration(entity, table_ref)
+            return
+
         if self._is_for_name_mode(table_ref.access_mode):
             catalog_exists = self._check_catalog_table_exists(table_ref)
 
@@ -1102,6 +1139,62 @@ class DeltaEntityProvider(
                 self.logger.warning(
                     f"FOR_NAME mode requested but catalog registration failed. Table will work via path access only."
                 )
+
+    def _ensure_external_registration(self, entity, table_ref: DeltaTableReference) -> None:
+        """Register (never create) a read_only entity's table so it can be read by name.
+
+        Storage-mode entities have no catalog to register in — read freely, block writes.
+        Catalog-mode entities are registered as external tables pointing at provider.path
+        without Kindling ever taking ownership of the underlying data.
+        """
+        if self._is_for_path_mode(table_ref.access_mode):
+            self.logger.debug(
+                f"Skipping catalog registration for read_only entity '{entity.entityid}' in storage mode"
+            )
+            return
+
+        if not table_ref.table_name:
+            return
+
+        if self._check_catalog_table_exists(table_ref):
+            if not table_ref.table_path:
+                return
+
+            registered_path = self._resolve_catalog_table_location(table_ref.table_name)
+            expected_path = table_ref.table_path.rstrip("/")
+            if registered_path and registered_path.rstrip("/") != expected_path:
+                if self._read_only_on_path_conflict(entity) == "reregister":
+                    self.logger.warning(
+                        f"Re-registering read_only entity '{entity.entityid}': catalog path "
+                        f"'{registered_path}' differs from configured path '{table_ref.table_path}'"
+                    )
+                    self.spark.sql(f"DROP TABLE IF EXISTS {table_ref.table_name}")
+                    self.spark.sql(f"""
+                        CREATE TABLE IF NOT EXISTS {table_ref.table_name}
+                        USING DELTA
+                        LOCATION '{table_ref.table_path}'
+                    """)
+                else:
+                    raise EntityPathConflictError(
+                        entity.entityid, registered_path, table_ref.table_path
+                    )
+            return
+
+        if not table_ref.table_path:
+            self.logger.debug(
+                f"Skipping external registration for read_only entity '{entity.entityid}': path unavailable"
+            )
+            return
+
+        self.logger.info(
+            f"Registering read_only entity '{entity.entityid}' as external table "
+            f"{table_ref.table_name} at {table_ref.table_path}"
+        )
+        self.spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS {table_ref.table_name}
+            USING DELTA
+            LOCATION '{table_ref.table_path}'
+        """)
 
     def _read_delta_table(
         self, table_ref: DeltaTableReference, since_version: Optional[int] = None
@@ -1337,6 +1430,9 @@ class DeltaEntityProvider(
         return self._check_table_exists(table_ref)
 
     def append_as_stream(self, df, entity, checkpointLocation, format=None, options=None):
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(entity.entityid)
+
         epl = GlobalInjector.get(EntityPathLocator)
         streamFormat = format or "delta"
 
@@ -1349,6 +1445,9 @@ class DeltaEntityProvider(
 
     def merge_to_entity(self, df: DataFrame, entity):
         """Merge DataFrame to entity table with signal emissions."""
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(entity.entityid)
+
         start_time = time.time()
         table_ref = self._get_table_reference(entity)
 
@@ -1385,6 +1484,9 @@ class DeltaEntityProvider(
 
     def append_to_entity(self, df: DataFrame, entity):
         """Append DataFrame to entity table with signal emissions."""
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(entity.entityid)
+
         start_time = time.time()
         table_ref = self._get_table_reference(entity)
 
@@ -1472,6 +1574,9 @@ class DeltaEntityProvider(
 
     def write_to_entity(self, df: DataFrame, entity):
         """Write DataFrame to entity table with signal emissions."""
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(entity.entityid)
+
         start_time = time.time()
         table_ref = self._get_table_reference(entity)
 

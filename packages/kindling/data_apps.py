@@ -976,7 +976,15 @@ class DataAppManager(DataAppRunner):
         self, dependencies: List[str], config: Dict[str, Any]
     ) -> List[str]:
         """Filter out dependencies available in workspace"""
-        if not config.get("load_local_packages", False):
+        load_workspace_packages = config.get("load_workspace_packages")
+        if load_workspace_packages is None:
+            load_workspace_packages = config.get("load_local_packages", False)
+            if load_workspace_packages:
+                self.logger.warning(
+                    "Config key 'load_local_packages' is deprecated; use "
+                    "'load_workspace_packages' instead."
+                )
+        if not load_workspace_packages:
             return dependencies
 
         try:

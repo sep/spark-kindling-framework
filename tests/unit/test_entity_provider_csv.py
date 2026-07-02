@@ -382,6 +382,38 @@ class TestCSVEntityProviderWrites:
         option_calls = {c.args[0]: c.args[1] for c in writer.option.call_args_list}
         assert option_calls.get("delimiter") == "\t"
 
+    def test_write_to_entity_defaults_compression_to_none(self, provider, entity):
+        df = MagicMock()
+        writer = self._mock_writer()
+        df.write = writer
+
+        provider.write_to_entity(df, entity)
+
+        option_calls = {c.args[0]: c.args[1] for c in writer.option.call_args_list}
+        assert option_calls.get("compression") == "none"
+
+    def test_write_to_entity_passes_custom_compression(self, provider):
+        df = MagicMock()
+        writer = self._mock_writer()
+        df.write = writer
+        entity = EntityMetadata(
+            entityid="output.results_gz",
+            name="results_gz",
+            partition_columns=[],
+            merge_columns=[],
+            tags={
+                "provider_type": "csv",
+                "provider.path": "Files/output/results.csv",
+                "provider.compression": "gzip",
+            },
+            schema=None,
+        )
+
+        provider.write_to_entity(df, entity)
+
+        option_calls = {c.args[0]: c.args[1] for c in writer.option.call_args_list}
+        assert option_calls.get("compression") == "gzip"
+
 
 def test_csv_entity_provider_implements_writable_entity_provider():
     from unittest.mock import MagicMock

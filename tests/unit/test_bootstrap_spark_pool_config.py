@@ -18,11 +18,27 @@ def test_get_spark_kindling_config_maps_bootstrap_and_kindling_keys():
         result = _get_spark_kindling_config()
 
     assert result["use_lake_packages"] is False
-    assert result["load_local_packages"] is True
+    assert result["load_workspace_packages"] is True
     assert result["artifacts_storage_path"] == "abfss://artifacts@acct/path"
     assert result["kindling.extensions"] == ["kindling-otel-azure>=0.3.0"]
     assert result["kindling.telemetry.logging.level"] == "DEBUG"
     assert "spark.executor.memory" not in result
+
+
+def test_get_spark_kindling_config_maps_canonical_load_workspace_packages_key():
+    """The new spark.kindling.bootstrap.load_workspace_packages key passes through unaliased."""
+    from kindling.bootstrap import _get_spark_kindling_config
+
+    mock_spark = MagicMock()
+    mock_spark.conf.getAll.return_value = [
+        ("spark.kindling.bootstrap.load_workspace_packages", "true"),
+    ]
+
+    with patch("kindling.bootstrap.get_or_create_spark_session", return_value=mock_spark):
+        result = _get_spark_kindling_config()
+
+    assert result["load_workspace_packages"] is True
+    assert "load_local_packages" not in result
 
 
 def test_merge_with_spark_kindling_config_explicit_values_win():

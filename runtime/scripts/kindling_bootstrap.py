@@ -91,7 +91,7 @@ def _get_spark_kindling_config() -> Dict[str, Any]:
     bootstrap_prefix = "bootstrap."
     bootstrap_aliases = {
         "load_lake": "use_lake_packages",
-        "load_local": "load_local_packages",
+        "load_local": "load_workspace_packages",  # deprecated; canonical is load_workspace_packages
     }
 
     for item in iterator:

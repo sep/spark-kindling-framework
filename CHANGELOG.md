@@ -4,6 +4,14 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Changed
+
+- Renamed the bootstrap config key `load_local` (YAML) / `load_local_packages` (flat) to
+  `load_workspace_packages`, since it controls whether packages are loaded from the platform
+  workspace, not "local" packages. The old names still work as deprecated aliases and log a
+  warning when used; update `settings.yaml` / `settings.local.yaml` to the new name at your
+  convenience.
+
 ### Added
 
 - Added `kindling env update` to refresh Kindling wheels and the local

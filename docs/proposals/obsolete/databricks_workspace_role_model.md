@@ -1,5 +1,20 @@
 # Databricks Workspace Role Model
 
+**Status:** Implemented. `workspace_role` and the three `enable_kindling_*` toggles described
+below are live in `iac/databricks/workspace/variables.tf` and `unity_catalog.tf`, gating the
+Kindling catalog/schema/volume resources exactly as proposed.
+**Updated:** 2026-07-01
+
+> **Archived.** `workspace_role` (default `"solution"`, validated to `platform|solution`) and
+> `enable_kindling_artifacts` / `enable_kindling_runtime_volumes` / `enable_kindling_platform_support`
+> all exist in `iac/databricks/workspace/variables.tf`, with role-driven defaults computed via
+> `coalesce(var.enable_x, var.workspace_role == "platform")` in `unity_catalog.tf`. Resources are
+> gated via `count`/`for_each` on the effective flags as designed in "Mapping Existing Resources"
+> below. One gap remains: `enable_kindling_platform_support` is wired through variables/outputs but
+> doesn't yet gate any concrete resources — there is no system-test/CI-only compute or namespace in
+> this module for it to gate (see Phase 4/"platform-only scaffolding" below). File a follow-up if
+> that scaffolding is needed.
+
 ## Problem
 
 The current Databricks workspace Terraform module mixes two different use cases:
