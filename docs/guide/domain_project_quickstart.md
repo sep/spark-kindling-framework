@@ -108,7 +108,7 @@ kindling:
       print: true
   bootstrap:
     load_lake: true
-    load_local: false
+    load_workspace_packages: false
 ```
 
 A matching `settings.local.yaml` (gitignored) is the right place for local-only overrides — storage paths, credentials, and log verbosity you do not want committed:
@@ -121,7 +121,7 @@ kindling:
       level: DEBUG
   bootstrap:
     load_lake: false
-    load_local: true
+    load_workspace_packages: true
 ```
 
 ---

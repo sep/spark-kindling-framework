@@ -163,7 +163,8 @@ class DynaconfConfig(ConfigService):
             "kindling.TELEMETRY.logging.print": "print_logging",
             "kindling.TELEMETRY.tracing.print": "print_trace",
             "kindling.DELTA.access_mode": "DELTA_ACCESS_MODE",
-            "kindling.BOOTSTRAP.load_local": "load_local_packages",
+            "kindling.BOOTSTRAP.load_local": "load_local_packages",  # deprecated alias
+            "kindling.BOOTSTRAP.load_workspace_packages": "load_workspace_packages",
             "kindling.BOOTSTRAP.load_lake": "use_lake_packages",
             "kindling.REQUIRED_PACKAGES": "required_packages",
             "kindling.extensions": "extensions",  # lowercase - matches YAML
@@ -220,7 +221,8 @@ class DynaconfConfig(ConfigService):
             "print_logging": "TELEMETRY.logging.print",
             "print_trace": "TELEMETRY.tracing.print",
             "DELTA_ACCESS_MODE": "DELTA.access_mode",
-            "load_local_packages": "BOOTSTRAP.load_local",
+            "load_local_packages": "BOOTSTRAP.load_local",  # deprecated alias
+            "load_workspace_packages": "BOOTSTRAP.load_workspace_packages",
             "use_lake_packages": "BOOTSTRAP.load_lake",
             "required_packages": "REQUIRED_PACKAGES",
             "extensions": "EXTENSIONS",

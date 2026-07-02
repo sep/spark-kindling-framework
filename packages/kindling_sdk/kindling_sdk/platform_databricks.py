@@ -437,7 +437,7 @@ class DatabricksAPI(PlatformAPI):
             "artifacts_storage_path": artifacts_storage_path,
             "platform": "databricks",
             "use_lake_packages": "True",
-            "load_local_packages": "False",
+            "load_workspace_packages": "False",
             "workspace_id": self.workspace_url,
         }
 

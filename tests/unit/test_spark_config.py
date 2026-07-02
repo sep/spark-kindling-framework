@@ -141,7 +141,11 @@ class TestDynaconfConfigInitialization:
         mock_dynaconf = MagicMock()
         mock_dynaconf_class.return_value = mock_dynaconf
 
-        initial_config = {"log_level": "DEBUG", "print_logging": True, "load_local_packages": True}
+        initial_config = {
+            "log_level": "DEBUG",
+            "print_logging": True,
+            "load_workspace_packages": True,
+        }
 
         config = DynaconfConfig()
         config.initialize(initial_config=initial_config)
@@ -504,6 +508,44 @@ class TestConfigTranslation:
         assert any(
             "TELEMETRY" in str(call) for call in set_calls
         ), "Should translate log_level to TELEMETRY.logging.level"
+
+    @patch("kindling.spark_config.get_or_create_spark_session")
+    @patch("kindling.spark_config.Dynaconf")
+    def test_translate_yaml_to_flat_maps_canonical_load_workspace_packages(
+        self, mock_dynaconf_class, mock_spark_fn
+    ):
+        """kindling.BOOTSTRAP.load_workspace_packages (dotted) should mirror to the flat key."""
+        mock_spark = MagicMock()
+        mock_spark_fn.return_value = mock_spark
+        mock_dynaconf = MagicMock()
+        mock_dynaconf_class.return_value = mock_dynaconf
+        mock_dynaconf.get.side_effect = lambda k: {
+            "kindling.BOOTSTRAP.load_workspace_packages": True,
+        }.get(k)
+
+        config = DynaconfConfig()
+        config.initialize()
+
+        set_calls = [call[0] for call in mock_dynaconf.set.call_args_list]
+        assert ("load_workspace_packages", True) in set_calls
+
+    @patch("kindling.spark_config.get_or_create_spark_session")
+    @patch("kindling.spark_config.Dynaconf")
+    def test_translate_bootstrap_to_nested_maps_canonical_load_workspace_packages(
+        self, mock_dynaconf_class, mock_spark_fn
+    ):
+        """Flat load_workspace_packages should translate to nested BOOTSTRAP.load_workspace_packages."""
+        mock_spark = MagicMock()
+        mock_spark_fn.return_value = mock_spark
+        mock_dynaconf = MagicMock()
+        mock_dynaconf_class.return_value = mock_dynaconf
+        mock_dynaconf.get.return_value = None
+
+        config = DynaconfConfig()
+        config.initialize(initial_config={"load_workspace_packages": True})
+
+        set_calls = [call[0] for call in mock_dynaconf.set.call_args_list]
+        assert ("BOOTSTRAP.load_workspace_packages", True) in set_calls
 
     @patch("kindling.spark_config.get_or_create_spark_session")
     @patch("kindling.spark_config.Dynaconf")

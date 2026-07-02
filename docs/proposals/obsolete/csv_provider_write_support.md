@@ -1,5 +1,14 @@
 # Proposal: CSV Provider Write Support
 
+**Status:** Implemented. Batch write (`write_to_entity`/`append_to_entity`, including
+`compression`) and docs are done. Streaming write remains deferred per this proposal's own
+guidance — no identified use case.
+**Updated:** 2026-07-01
+
+> **Archived.** See `packages/kindling/entity_provider_csv.py` (`CSVEntityProvider`,
+> `_write_csv`) and `docs/reference/config_reference.md` (CSV Provider section). Streaming write
+> (`StreamWritableEntityProvider`) intentionally not implemented — no use case identified.
+
 ## Goal
 
 Extend `CSVEntityProvider` to implement `WritableEntityProvider` (and optionally
@@ -71,47 +80,48 @@ closest full-featured reference for implementing all write interfaces.
 
 ### 1) Implement `WritableEntityProvider`
 
-- [ ] Add `WritableEntityProvider` to the class signature in `entity_provider_csv.py`.
-- [ ] Implement `write_to_entity(df, entity_metadata)` — resolve path and write options from
+- [x] Add `WritableEntityProvider` to the class signature in `entity_provider_csv.py`.
+- [x] Implement `write_to_entity(df, entity_metadata)` — resolve path and write options from
   provider config, call `df.write.mode("overwrite").options(...).csv(path)`.
-- [ ] Implement `append_to_entity(df, entity_metadata)` — same as above with
+- [x] Implement `append_to_entity(df, entity_metadata)` — same as above with
   `mode("append")`.
-- [ ] Extract a shared `_build_write_options(entity_metadata)` helper to avoid duplication
-  between the two methods (and future streaming write).
-- [ ] Update class docstring.
+- [x] Extract a shared `_write_csv(df, entity_metadata, mode)` helper to avoid duplication
+  between the two methods.
+- [x] Update class docstring.
+- [x] `provider.compression` option (2026-07-01).
 
 Files: `packages/kindling/entity_provider_csv.py`
 
 ### 2) Unit tests
 
-- [ ] `test_csv_write_to_entity_overwrites` — verify existing files are replaced.
-- [ ] `test_csv_append_to_entity_preserves_existing` — verify rows accumulate.
-- [ ] `test_csv_write_respects_options` — delimiter, header, compression round-trip.
-- [ ] `test_csv_is_writable` — assert `is_writable(provider)` returns `True`.
+- [x] `test_write_to_entity_uses_overwrite_mode` — verify overwrite mode is used.
+- [x] `test_append_to_entity_uses_append_mode` — verify append mode is used.
+- [x] `test_write_to_entity_passes_custom_delimiter` / `test_write_to_entity_passes_custom_compression`
+  — write option round-trip.
+- [x] `test_csv_entity_provider_implements_writable_entity_provider`.
 
-Files: `tests/unit/test_csv_entity_provider.py` (create if absent)
+Files: `tests/unit/test_entity_provider_csv.py`
 
 ### 3) Streaming write (follow-up)
 
-- [ ] Evaluate use cases before implementing.
-- [ ] If pursued: add `StreamWritableEntityProvider`, implement `append_as_stream()` using
-  `df.writeStream.format("csv").option("path", ...).option("checkpointLocation", ...).start()`.
-- [ ] Add streaming write tests.
+- [ ] Evaluate use cases before implementing. **Deferred — no identified use case.**
+  CSV streaming sinks produce many small part-files; revisit only if a concrete need arises.
 
-Files: `packages/kindling/entity_provider_csv.py`, `tests/unit/test_csv_entity_provider.py`
+Files: `packages/kindling/entity_provider_csv.py`, `tests/unit/test_entity_provider_csv.py`
 
 ### 4) Docs update
 
-- [ ] Add write usage example to provider reference docs.
-- [ ] Note `compression` option and part-file output behavior (Spark writes a directory of
+- [x] Add write usage example to provider reference docs — `docs/reference/config_reference.md`
+  (CSV Provider section).
+- [x] Note `compression` option and part-file output behavior (Spark writes a directory of
   part-files, not a single `.csv`).
 
-Files: `docs/reference/` (whichever file covers entity providers)
+Files: `docs/reference/config_reference.md`
 
 ### 5) Regression tests
 
-- [ ] `pytest -q tests/unit/test_csv_entity_provider.py`
-- [ ] `pytest -q tests/unit/` (full unit suite — confirm no provider registry regressions)
+- [x] `pytest -q tests/unit/test_entity_provider_csv.py` — 19/19 passing.
+- [x] `pytest -q tests/unit/` — 1537/1537 passing, no provider registry regressions (2026-07-01).
 
 ## Acceptance Criteria
 

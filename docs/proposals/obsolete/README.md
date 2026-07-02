@@ -5,13 +5,17 @@ Proposals in this folder are archived because the work they specified has since 
 | Proposal | Status | What satisfies it today |
 |---|---|---|
 | [blinker_events_implementation_plan.md](./blinker_events_implementation_plan.md) | Implemented | [packages/kindling/signaling.py](../../../packages/kindling/signaling.py) — `SignalPayload`, `BlinkerSignalProvider` |
+| [blue_green_table_migrations.md](./blue_green_table_migrations.md) | Superseded | [packages/kindling/migration.py](../../../packages/kindling/migration.py) — `MigrationService` plan/apply/rollback/cleanup shipped instead of the dual-write/active-slot design |
 | [config_based_entity_providers.md](./config_based_entity_providers.md) | Implemented | [packages/kindling/entity_resolution.py](../../../packages/kindling/entity_resolution.py) — `ConfigDrivenEntityNameMapper`, `ConfigDrivenEntityPathLocator` |
+| [csv_provider_write_support.md](./csv_provider_write_support.md) | Implemented | [packages/kindling/entity_provider_csv.py](../../../packages/kindling/entity_provider_csv.py) — `CSVEntityProvider.write_to_entity`/`append_to_entity`. Streaming write deferred: no use case identified |
 | [dag_execution_implementation_plan.md](./dag_execution_implementation_plan.md) | Implemented | [pipe_graph.py](../../../packages/kindling/pipe_graph.py), [execution_strategy.py](../../../packages/kindling/execution_strategy.py), [generation_executor.py](../../../packages/kindling/generation_executor.py) |
 | [databricks_uc_vs_classic_capability_plan.md](./databricks_uc_vs_classic_capability_plan.md) | Implemented | [packages/kindling/features.py](../../../packages/kindling/features.py) — `databricks.uc_enabled`, `databricks.volumes_enabled` feature flags |
+| [databricks_workspace_role_model.md](./databricks_workspace_role_model.md) | Implemented | [iac/databricks/workspace/variables.tf](../../../iac/databricks/workspace/variables.tf), [unity_catalog.tf](../../../iac/databricks/workspace/unity_catalog.tf) — `workspace_role` + `enable_kindling_*` toggles. `enable_kindling_platform_support` gates no resources yet |
 | [domain_package_development.md](./domain_package_development.md) | Implemented | `kindling new` CLI (PR #57, shipped v0.9.0) |
 | [local_bootstrap_plan.md](./local_bootstrap_plan.md) | Implemented | Standalone as first-class platform in [bootstrap.py](../../../packages/kindling/bootstrap.py) |
 | [local_code_first_development.md](./local_code_first_development.md) | Implemented | `kindling new` scaffold templates + unit/component/integration test tiers |
 | [pre_post_transform_analysis.md](./pre_post_transform_analysis.md) | Superseded | Signals framework provides the hook points; document itself notes "FULLY CONGRUENT" with signal_dag_streaming |
+| [read_only_entities.md](./read_only_entities.md) | Implemented | [packages/kindling/entity_provider_delta.py](../../../packages/kindling/entity_provider_delta.py) — `ReadOnlyEntityError`, `EntityPathConflictError`, `_ensure_external_registration`, write guards |
 | [secret_provider_service.md](./secret_provider_service.md) | Implemented | [platform_provider.py](../../../packages/kindling/platform_provider.py) — `SecretProvider`, `PlatformServiceSecretProvider` |
 | [signal_dag_streaming_evaluation.md](./signal_dag_streaming_evaluation.md) | Historical | Evaluation doc for the proposal below; both superseded by shipped code |
 | [signal_dag_streaming_meta_evaluation.md](./signal_dag_streaming_meta_evaluation.md) | Historical | Meta-review of the evaluation above; no ongoing value |

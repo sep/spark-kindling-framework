@@ -359,7 +359,7 @@ class SynapseAPI(PlatformAPI):
             "artifacts_storage_path": artifacts_storage_path,
             "platform": "synapse",
             "use_lake_packages": "True",
-            "load_local_packages": "False",
+            "load_workspace_packages": "False",
         }
         if "test_id" in job_config:
             bootstrap_params["test_id"] = job_config["test_id"]

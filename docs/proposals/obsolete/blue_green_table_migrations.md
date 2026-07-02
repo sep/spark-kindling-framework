@@ -1,9 +1,18 @@
 # Blue/Green Table Migrations for Kindling
 
-**Status**: Draft
+**Status**: Superseded — the dual-write/active-slot design below was never built; a
+plan/apply/rollback/cleanup system was shipped instead and fully satisfies the underlying need.
 **Author**: System Analysis
 **Created**: 2026-02-13
-**Updated**: 2026-02-13
+**Updated**: 2026-07-01
+
+> **Archived.** Kindling's actual usage pattern is batch/scheduled Spark jobs, not live
+> low-latency serving, so a brief write-unavailability window during `apply` is acceptable and
+> the CI/CD-gated schema-evolution model in `packages/kindling/migration.py` (`MigrationService`,
+> `kindling migrate plan|apply|rollback|cleanup`) is the more valuable primitive. See
+> "Implementation Status" below for the full breakdown of what was built vs. proposed. No further
+> slice of the original zero-downtime design (dual-write, active-slot read routing, gradual
+> traffic cutover) has an identified use case in this codebase.
 
 ---
 

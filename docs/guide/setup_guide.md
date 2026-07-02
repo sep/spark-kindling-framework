@@ -100,7 +100,7 @@ kindling:
 
   bootstrap:
     load_lake: true
-    load_local: false
+    load_workspace_packages: false
 
   spark_configs: {}
   required_packages: []
@@ -119,7 +119,7 @@ kindling:
       level: DEBUG
   bootstrap:
     load_lake: false
-    load_local: true
+    load_workspace_packages: true
 ```
 
 You can also set individual config values from the CLI:

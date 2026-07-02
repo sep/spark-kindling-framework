@@ -31,7 +31,7 @@ kindling:
 
   bootstrap:
     load_lake: true
-    load_local: true
+    load_workspace_packages: true
     required_packages: []
     extensions: []
     ignored_folders: [".git", "__pycache__", ".vscode"]

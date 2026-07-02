@@ -1,5 +1,10 @@
 # Proposal: App-Local Settings Overlay Model (Manifest-Only `app.yaml`)
 
+**Status:** Mostly implemented. All items done except #6 (removing the legacy
+`app.<platform>.yaml` / `app.<env>.yaml` fallback), which is intentionally retained as a
+compatibility shim — see Legacy Fallback Behavior below. Revisit #6 only when ready to force
+a breaking config migration.
+
 ## Goal
 
 Adopt a consistent config model where:
@@ -183,10 +188,14 @@ Test impact:
 
 ### 10) Docs update
 
-- [ ] Update naming and precedence examples.
-- [ ] Update package/deploy descriptions to “selected overlays only.”
+- [x] Update naming and precedence examples.
+- [x] Update package/deploy descriptions to “selected overlays only.”
 
-Likely files:
+  Verified no lingering `platform_<x>.yaml` / `env_<x>.yaml` / `app.<platform>.yaml` /
+  `app.<env>.yaml` references in `cli_reference.md`, `setup_guide.md`,
+  `domain_project_quickstart.md`, or `local_python_first.md`.
+
+Files:
 
 - `docs/reference/cli_reference.md`
 - `docs/guide/setup_guide.md`
@@ -195,15 +204,20 @@ Likely files:
 
 ### 11) Regression test execution
 
-- [ ] Run and fix:
+- [x] Run and fix:
   - `pytest -q tests/unit/test_cli.py`
   - `pytest -q tests/unit/test_platform_workspace_config.py`
   - `pytest -q tests/unit/test_kda_integration.py tests/unit/test_notebook_utilities.py`
   - `pytest -q tests/unit/test_scaffold.py`
 
+  277/277 passing as of 2026-07-01.
+
 ### 12) Migration notes
 
-- [ ] Add migration notes and compatibility guidance.
+- [x] Add migration notes and compatibility guidance.
+
+  See `CHANGELOG.md` [0.10.32] and [0.10.33] entries below, plus the Migration Notes
+  section of this document.
 
 Files:
 

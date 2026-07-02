@@ -87,7 +87,7 @@ kindling:
 
   bootstrap:
     load_lake: true
-    load_local: false
+    load_workspace_packages: false
 
   spark_configs: {{}}
   required_packages: []
@@ -2465,7 +2465,7 @@ def normalize_bootstrap_config(config):
     normalized.setdefault("platform", normalized["platform_environment"])
     normalized.setdefault("environment", "dev")
     normalized.setdefault("use_lake_packages", True)
-    normalized.setdefault("load_local_packages", False)
+    normalized.setdefault("load_workspace_packages", False)
     normalized.setdefault("kindling_version", "latest")
 
     workspace_endpoint = normalized.get("workspace_endpoint")
@@ -2565,7 +2565,7 @@ BOOTSTRAP_CONFIG = {{
     "environment": "dev",
     "platform": "{platform}",
     "use_lake_packages": True,
-    "load_local_packages": False,
+    "load_workspace_packages": False,
     # "extensions": ["kindling-otel-azure>=0.3.0"],
 }}
 
@@ -2694,7 +2694,7 @@ def _generate_sample_notebook(platform: str) -> Dict[str, Any]:
         f'    "environment": "dev",\n'
         f'    "platform": "{platform}",\n'
         f'    "use_lake_packages": True,\n'
-        f'    "load_local_packages": False,\n'
+        f'    "load_workspace_packages": False,\n'
         f"}}"
     )
 

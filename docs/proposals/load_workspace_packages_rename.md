@@ -1,5 +1,16 @@
 # Proposal: Rename `load_local` → `load_workspace_packages`
 
+**Status:** Implemented (2026-07-01), with one scope correction from the original proposal:
+`_runner.py::_load_local_package_modules()` and `packages/kindling/bootstrap.py`'s
+`_load_local_package_module_roots()` / `_import_local_package_registrations()` /
+`KINDLING_LOCAL_PACKAGE_MODULES` are a **different, unrelated feature** (discovering
+already-locally-installed Python packages for a dev/editable-install version shim and
+registration import) that happens to share the word "local." They were **not** renamed and
+`tests/unit/test_runner_local_packages.py` was **not** touched — renaming them would have
+made that feature's naming worse, not better, since it really is about the local filesystem/
+environment, not the platform workspace. Actual scope ended up being ~24 files, not the ~10
+originally listed, once the correct set was identified.
+
 ## Goal
 
 Replace the ambiguous `load_local` config key (and its internal alias `load_local_packages`) with
@@ -40,82 +51,98 @@ concept is workspace-scoped.
 - `runtime/scripts/kindling_bootstrap.py` — alias map (line 94)
 
 **CLI:**
-- `packages/kindling_cli/kindling_cli/cli.py` — default YAML templates (lines 84, 2148, 2248)
-- `packages/kindling_cli/kindling_cli/_runner.py` — `_load_local_package_modules()` (lines 52–72)
+- `packages/kindling_cli/kindling_cli/cli.py` — default YAML templates and generated flat
+  bootstrap-config dicts (several call sites)
+- `packages/kindling_cli/kindling_cli/templates/settings.yaml.j2`
+
+**SDK (ad-hoc run generated config):**
+- `packages/kindling_sdk/kindling_sdk/platform_fabric.py`,
+  `packages/kindling_sdk/kindling_sdk/platform_synapse.py`,
+  `packages/kindling_sdk/kindling_sdk/platform_databricks.py`
 
 **Test fixtures:**
-- `tests/local-project/apps/sales_ops/settings.yaml` (line 14)
-- `tests/data-apps/migration-test-app/settings.yaml` (line 17)
+- `tests/local-project/apps/sales_ops/settings.yaml`
+- `tests/data-apps/migration-test-app/settings.yaml`
+
+**Unit tests:**
+- `tests/unit/test_bootstrap_spark_pool_config.py`, `tests/unit/test_bootstrap_standalone.py`,
+  `tests/unit/test_spark_config.py`
 
 **Docs:**
-- `docs/contributing/platform_workspace_config.md` (line 34)
-- `docs/guide/domain_project_quickstart.md` (lines 98, 111)
+- `docs/contributing/platform_workspace_config.md`
+- `docs/guide/domain_project_quickstart.md`, `docs/guide/setup_guide.md`, `docs/guide/devstories.md`
+- `docs/reference/config_reference.md`
+
+**Explicitly NOT in scope** (different feature, see Status above):
+- `packages/kindling_cli/kindling_cli/_runner.py` — `_load_local_package_modules()`
+- `packages/kindling/bootstrap.py` — `_load_local_package_module_roots()`,
+  `_import_local_package_registrations()`, `_LOCAL_PACKAGE_MODULES_ENV`
+- `tests/unit/test_runner_local_packages.py`
 
 ## Implementation Checklist
 
 ### 1) Bootstrap alias + canonical key
 
-- [ ] In `bootstrap.py`, change the canonical flat key from `load_local_packages` →
-  `load_workspace_packages`.
-- [ ] Retain a read-alias so `load_local` and `load_local_packages` both map to
-  `load_workspace_packages` (backward compatibility).
-- [ ] Emit a deprecation warning when either legacy key is read.
+- [x] In `bootstrap.py`, canonical dotted key is now `kindling.bootstrap.load_workspace_packages`;
+  canonical flat key (via the Spark-conf alias map) is `load_workspace_packages`.
+- [x] Retain a read-alias so `load_local` (dotted) and `load_local_packages` (flat) both resolve
+  to the same effective value.
+- [x] Emit a deprecation warning (`logger.warning`) when the legacy dotted key is what actually
+  supplied the value.
 
 Files: `packages/kindling/bootstrap.py`, `runtime/scripts/kindling_bootstrap.py`
 
 ### 2) Spark config key mapping
 
-- [ ] Add `spark.kindling.bootstrap.load_workspace_packages` as the canonical Spark key.
-- [ ] Retain translation of `spark.kindling.bootstrap.load_local` with a deprecation warning.
+- [x] Added `kindling.BOOTSTRAP.load_workspace_packages` → `load_workspace_packages` and
+  `load_workspace_packages` → `BOOTSTRAP.load_workspace_packages` translations, alongside the
+  existing legacy `load_local` / `load_local_packages` translations (left unchanged, additive only).
 
 Files: `packages/kindling/spark_config.py`
 
 ### 3) `data_apps.py` reference
 
-- [ ] Update `config.get("load_local_packages", False)` → `config.get("load_workspace_packages", False)`.
-- [ ] Ensure the alias in step 1 means this keeps working even if old config is supplied.
+- [x] `_override_with_workspace_packages` now reads canonical `load_workspace_packages` first,
+  falling back to legacy `load_local_packages` with a deprecation warning.
 
 Files: `packages/kindling/data_apps.py`
 
 ### 4) CLI default templates
 
-- [ ] Update generated `settings.yaml` / `settings.local.yaml` to emit `load_workspace_packages`.
-- [ ] Add a comment in scaffolded files pointing users away from the old key name.
+- [x] Updated generated `settings.yaml` / `settings.local.yaml` and all generated flat
+  bootstrap-config dicts to emit `load_workspace_packages`.
 
-Files: `packages/kindling_cli/kindling_cli/cli.py`, `packages/kindling_cli/kindling_cli/scaffold.py`,
-relevant `.j2` templates
+Files: `packages/kindling_cli/kindling_cli/cli.py`,
+`packages/kindling_cli/kindling_cli/templates/settings.yaml.j2`
 
 ### 5) Runner helpers
 
-- [ ] Rename `_load_local_package_modules()` → `_load_workspace_package_modules()` in `_runner.py`.
-- [ ] Update all callers.
-
-Files: `packages/kindling_cli/kindling_cli/_runner.py`
+- [x] **Corrected scope**: `_runner.py::_load_local_package_modules()` is an unrelated feature
+  (local-install version shim) and was intentionally left unchanged — see Status above.
 
 ### 6) Test fixtures
 
-- [ ] Update `settings.yaml` in test fixtures to use `load_workspace_packages`.
-- [ ] Update any unit tests that assert on the old key name.
-
-Key test files:
-- `tests/unit/test_runner_local_packages.py`
-- `tests/unit/test_bootstrap_spark_pool_config.py`
-- `tests/local-project/apps/sales_ops/settings.yaml`
-- `tests/data-apps/migration-test-app/settings.yaml`
+- [x] Updated `settings.yaml` in `tests/local-project/apps/sales_ops/` and
+  `tests/data-apps/migration-test-app/` to use `load_workspace_packages`.
+- [x] Updated `tests/unit/test_bootstrap_spark_pool_config.py`,
+  `tests/unit/test_bootstrap_standalone.py`, `tests/unit/test_spark_config.py` to assert on the
+  new key, plus added new tests for the canonical-key and alias paths.
+  `tests/unit/test_runner_local_packages.py` correctly left untouched (unrelated feature).
 
 ### 7) Docs update
 
-- [ ] Replace all `load_local: true/false` examples with `load_workspace_packages: true/false`.
-- [ ] Note the rename and backward-compat alias in the migration/changelog section.
+- [x] Replaced all `load_local: true/false` examples with `load_workspace_packages: true/false`.
+- [x] Noted the rename and backward-compat alias in `CHANGELOG.md`.
 
-Files: `docs/contributing/platform_workspace_config.md`,
-`docs/guide/domain_project_quickstart.md`, `CHANGELOG.md`
+Files: `docs/contributing/platform_workspace_config.md`, `docs/guide/domain_project_quickstart.md`,
+`docs/guide/setup_guide.md`, `docs/guide/devstories.md`, `docs/reference/config_reference.md`,
+`CHANGELOG.md`
 
 ### 8) Regression tests
 
-- [ ] `pytest -q tests/unit/test_runner_local_packages.py`
-- [ ] `pytest -q tests/unit/test_bootstrap_spark_pool_config.py`
-- [ ] `pytest -q tests/unit/` (full unit suite)
+- [x] `pytest -q tests/unit/test_bootstrap_spark_pool_config.py tests/unit/test_bootstrap_standalone.py tests/unit/test_spark_config.py`
+  — passing.
+- [x] `pytest -q tests/unit/` (full unit suite) — 1540/1540 passing (2026-07-01).
 
 ### 9) Compatibility alias removal (future)
 

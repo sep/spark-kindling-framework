@@ -27,7 +27,7 @@ def _config_service_with_defaults():
             "kindling.required_packages": [],
             "kindling.extensions": [],
             "kindling.platform.environment": "standalone",
-            "load_local_packages": "NOT_SET",
+            "load_workspace_packages": "NOT_SET",
         }
         return values.get(key, default)
 

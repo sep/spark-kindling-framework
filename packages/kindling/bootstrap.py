@@ -76,7 +76,7 @@ def _get_spark_kindling_config() -> Dict[str, Any]:
     bootstrap_prefix = "bootstrap."
     bootstrap_aliases = {
         "load_lake": "use_lake_packages",
-        "load_local": "load_local_packages",
+        "load_local": "load_workspace_packages",  # deprecated; canonical is load_workspace_packages
     }
 
     for item in iterator:
@@ -694,7 +694,7 @@ default:
 
     bootstrap:
       load_lake: false
-      load_local: true
+      load_workspace_packages: true
       required_packages: []
       extensions: []
       ignored_folders: []
@@ -1630,20 +1630,33 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         except Exception as secret_resolution_error:
             logger.warning(f"Secret resolution pass failed: {secret_resolution_error}")
 
-        load_local_default = False if platform == "standalone" else True
-        load_local_value = config_service.get("kindling.bootstrap.load_local", load_local_default)
+        load_workspace_packages_default = False if platform == "standalone" else True
+        load_workspace_packages_value = config_service.get(
+            "kindling.bootstrap.load_workspace_packages"
+        )
+        if load_workspace_packages_value is None:
+            load_workspace_packages_value = config_service.get("kindling.bootstrap.load_local")
+            if load_workspace_packages_value is not None:
+                logger.warning(
+                    "Config key 'kindling.bootstrap.load_local' is deprecated; use "
+                    "'kindling.bootstrap.load_workspace_packages' instead."
+                )
+        if load_workspace_packages_value is None:
+            load_workspace_packages_value = load_workspace_packages_default
         logger.debug(
-            f"kindling.bootstrap.load_local = {load_local_value} "
-            f"(type: {type(load_local_value).__name__})"
+            f"kindling.bootstrap.load_workspace_packages = {load_workspace_packages_value} "
+            f"(type: {type(load_workspace_packages_value).__name__})"
         )
 
-        load_local_flat = config_service.get("load_local_packages", "NOT_SET")
+        load_workspace_packages_flat = config_service.get(
+            "load_workspace_packages", config_service.get("load_local_packages", "NOT_SET")
+        )
         logger.debug(
-            f"load_local_packages (flat) = {load_local_flat} "
-            f"(type: {type(load_local_flat).__name__})"
+            f"load_workspace_packages (flat) = {load_workspace_packages_flat} "
+            f"(type: {type(load_workspace_packages_flat).__name__})"
         )
 
-        if load_local_value:
+        if load_workspace_packages_value:
             ignored_folders = config_service.get("kindling.bootstrap.ignored_folders", [])
             workspace_packages = get_kindling_service(NotebookManager).get_all_packages(
                 ignored_folders=ignored_folders
@@ -1654,7 +1667,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             load_workspace_packages(platformservice, workspace_packages, logger)
             logger.info(f"Loaded {len(workspace_packages)} workspace packages")
         else:
-            logger.info("Skipping workspace package loading (load_local=False)")
+            logger.info("Skipping workspace package loading (load_workspace_packages=False)")
             # Pre-seed the notebook cache so any subsequent call to get_all_notebooks()
             # returns immediately instead of hitting the platform API, which may be
             # unavailable from the Spark cluster in some environments.
@@ -1663,7 +1676,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 if loader._notebook_cache is None:
                     loader._notebook_cache = []
                     loader._folder_cache = set()
-                    logger.debug("Notebook cache pre-seeded empty (load_local=False)")
+                    logger.debug("Notebook cache pre-seeded empty (load_workspace_packages=False)")
             except Exception as _pre_seed_err:
                 logger.debug(f"Could not pre-seed notebook cache: {_pre_seed_err}")
 

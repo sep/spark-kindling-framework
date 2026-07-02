@@ -37,7 +37,7 @@ kindling:
       print: true
   bootstrap:
     load_lake: true
-    load_local: false
+    load_workspace_packages: false
   spark_configs: {}
   required_packages: []
   extensions: []
