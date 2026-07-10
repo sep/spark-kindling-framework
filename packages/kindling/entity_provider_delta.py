@@ -7,11 +7,6 @@ from typing import Callable, Dict, Literal, Optional, Type
 
 import pyspark.sql.utils
 from delta.tables import DeltaTable
-from pyspark.errors import AnalysisException
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import coalesce, col, concat_ws, lit, sha2, struct, to_json
-from pyspark.sql.types import BooleanType, StructField, StructType, TimestampType
-
 from kindling.common_transforms import *
 from kindling.features import get_feature_bool, set_runtime_feature
 
@@ -20,6 +15,10 @@ from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
+from pyspark.errors import AnalysisException
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import coalesce, col, concat_ws, lit, sha2, struct, to_json
+from pyspark.sql.types import BooleanType, StructField, StructType, TimestampType
 
 from .data_entities import *
 from .entity_provider import (
@@ -1197,19 +1196,29 @@ class DeltaEntityProvider(
         """)
 
     def _read_delta_table(
-        self, table_ref: DeltaTableReference, since_version: Optional[int] = None
+        self,
+        table_ref: DeltaTableReference,
+        since_version: Optional[int] = None,
+        end_version: Optional[int] = None,
     ) -> DataFrame:
         """Read Delta table with optional change feed"""
         self.logger.debug(f"Reading Delta Table - {table_ref.table_name} version: {since_version}")
 
         if since_version is not None:
-            self.logger.debug(f"Reading change feed since version: {since_version}")
-            return (
+            self.logger.debug(
+                f"Reading change feed for versions: {since_version}..{end_version or 'latest'}"
+            )
+            reader = (
                 self.spark.read.format("delta")
                 .option("readChangeFeed", "true")
                 .option("startingVersion", since_version)
-                .load(table_ref.get_read_path())
             )
+            if end_version is not None:
+                # Bound the slice so lazily-executed reads cover exactly the
+                # versions the caller's watermark will record, even if more
+                # commits land before an action runs the plan.
+                reader = reader.option("endingVersion", end_version)
+            return reader.load(table_ref.get_read_path())
         else:
             # Use spark.read.table for catalog-managed tables rather than DeltaTable.forName,
             # which can fail on Databricks UC for unqualified 1-part names due to catalog
@@ -1516,10 +1525,13 @@ class DeltaEntityProvider(
             )
             raise
 
-    def read_entity_since_version(self, entity, since_version: int) -> DataFrame:
-        """Read entity changes since specific version"""
+    def read_entity_since_version(
+        self, entity, since_version: int, end_version: Optional[int] = None
+    ) -> DataFrame:
+        """Read entity changes since specific version (inclusive), optionally
+        bounded to end_version (inclusive)."""
         table_ref = self._get_table_reference(entity)
-        df = self._read_delta_table(table_ref, since_version)
+        df = self._read_delta_table(table_ref, since_version, end_version)
         return self._transform_delta_feed_to_changes(df, entity.merge_columns)
 
     def read_entity_as_of(self, entity, point_in_time) -> DataFrame:

@@ -1615,6 +1615,18 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         platformservice = initialize_platform_services(platform, config_service, logger)
         logger.info("Platform services initialized")
 
+        # Attach the watermark aspect: incremental reads and watermark
+        # advancement hook into pipe execution via signals rather than being
+        # woven into the read/persist strategy. Standalone/local execution
+        # deliberately runs without it (full reads, no watermark state),
+        # matching the fixture-based local dev workflow.
+        if platform != "standalone":
+            from kindling.injection import GlobalInjector
+            from kindling.watermarking import WatermarkAspect
+
+            GlobalInjector.get(WatermarkAspect).register()
+            logger.info("Watermark aspect registered")
+
         # Apply spark_configs to the live Spark session.
         # This must happen after the session exists so conf.set() works.
         _apply_spark_configs(config_service, logger)

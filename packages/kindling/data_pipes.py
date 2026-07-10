@@ -8,12 +8,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
+from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -38,14 +37,15 @@ class EntityReadPersistStrategy(ABC):
         - persist.before_persist: Before persisting pipe output
         - persist.after_persist: After successful persist
         - persist.persist_failed: When persist fails
-        - persist.watermark_saved: After watermark is saved
+
+    (persist.watermark_saved is emitted by WatermarkAspect, which listens
+    to persist.after_persist — see kindling.watermarking.)
     """
 
     EMITS = [
         "persist.before_persist",
         "persist.after_persist",
         "persist.persist_failed",
-        "persist.watermark_saved",
     ]
 
     @abstractmethod
@@ -497,7 +497,14 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
     ) -> dict[str, DataFrame]:
         result = {}
         for i, entity_id in enumerate(pipe.input_entity_ids):
-            is_first = i == 0  # True for the first entity, False for others
+            # Driving-source convention: a pipe operates on ONE source of
+            # truth — its first input — and every other input is reference
+            # data, read in full. Only the driving source is ever read
+            # incrementally (watermarked). A multi-source output table is
+            # built by multiple pipes, each with its own driving source,
+            # never by one pipe with several watermarked inputs. See
+            # WatermarkAspect (kindling.watermarking) for the write side.
+            is_first = i == 0
             key = entity_id.replace(".", "_")
             result[key] = entity_reader(
                 self.dpe.get_entity_definition(entity_id), pipe.use_watermark and is_first

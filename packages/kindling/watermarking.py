@@ -1,11 +1,18 @@
 import time
 import uuid
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from kindling.common_transforms import *
+from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import *
+from kindling.spark_log_provider import *
+from kindling.spark_session import *
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, date_format, lit
@@ -17,13 +24,6 @@ from pyspark.sql.types import (
     StructType,
     TimestampType,
 )
-
-from kindling.common_transforms import *
-from kindling.injection import *
-from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_config import *
-from kindling.spark_log_provider import *
-from kindling.spark_session import *
 
 from .data_entities import *
 
@@ -115,6 +115,18 @@ class WatermarkService(ABC):
     @abstractmethod
     def read_current_entity_changes(self, entity, pipe):
         pass
+
+    def read_changes_with_version(self, entity, pipe) -> Tuple[Optional[DataFrame], Optional[int]]:
+        """Read unprocessed changes AND the source version the read covers.
+
+        Returns ``(DataFrame, version)``; ``(None, None)`` means no new data.
+        The returned version is the version the read is bounded to — the
+        value the caller must record as the watermark once (and only once)
+        the processed output is durably persisted. Capturing it at read
+        time is what prevents a commit landing between read and persist
+        from being marked processed without ever being read.
+        """
+        raise NotImplementedError
 
 
 @GlobalInjector.singleton_autobind()
@@ -238,6 +250,10 @@ class WatermarkManager(WatermarkService, SignalEmitter):
             raise
 
     def read_current_entity_changes(self, entity, pipe):
+        df, _ = self.read_changes_with_version(entity, pipe)
+        return df
+
+    def read_changes_with_version(self, entity, pipe) -> Tuple[Optional[DataFrame], Optional[int]]:
         key_columns = entity.merge_columns
         self.logger.debug(
             f"read_current_changes - {entity.entityid} for {pipe.name}: {str(key_columns)}"
@@ -265,7 +281,7 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                 current_version=currentVersion,
                 watermark_version=watermark_version,
             )
-            return None
+            return None, None
 
         if watermark_version is None:
             self.logger.debug(
@@ -293,12 +309,20 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                 has_data=True,
                 is_initial_load=True,
             )
-            return result
+            return result, currentVersion
         elif currentVersion > watermark_version:
             self.logger.debug(
-                f"read_current_changes - {entity.entityid} for {pipe.name}: Version: {currentVersion} -- Reading and transforming feed"
+                f"read_current_changes - {entity.entityid} for {pipe.name}: "
+                f"Reading changes for versions {watermark_version + 1}..{currentVersion}"
             )
-            result = self.ep.read_entity_since_version(entity, currentVersion)
+            # Read from the version AFTER the watermark (startingVersion is
+            # inclusive), bounded to currentVersion so the slice matches the
+            # version recorded once the output persists. Reading from
+            # currentVersion instead would silently skip every commit
+            # between the watermark and the latest one.
+            result = self.ep.read_entity_since_version(
+                entity, watermark_version + 1, end_version=currentVersion
+            )
             self.emit(
                 "watermark.after_read_changes",
                 entity_id=entity.entityid,
@@ -309,7 +333,7 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                 has_data=True,
                 is_initial_load=False,
             )
-            return result
+            return result, currentVersion
         else:
             self.logger.debug(
                 f"read_current_changes - {entity.entityid} for {pipe.name}: No new data"
@@ -322,4 +346,113 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                 current_version=currentVersion,
                 watermark_version=watermark_version,
             )
+            return None, None
+
+
+@dataclass
+class ResolvedRead:
+    """Marker returned by a ``read.resolve_read`` handler that has taken
+    ownership of the read. ``df`` may be None, meaning "resolved: no new
+    data" (the pipe should skip) — distinct from no handler resolving at
+    all, which falls through to an ordinary full provider read."""
+
+    df: Optional[DataFrame]
+
+
+@GlobalInjector.singleton_autobind()
+class WatermarkAspect(SignalEmitter):
+    """Incremental processing as a bolt-on signal aspect.
+
+    Watermark behavior attaches to pipe execution through signals instead of
+    being woven into the read/persist strategy:
+
+    - ``read.resolve_read`` (sync, interdicting): when the read is for a
+      pipe's driving source with ``use_watermark`` enabled, this aspect
+      performs the incremental changes read and records the source version
+      that read covers, keyed by pipe.
+    - ``persist.after_persist``: advances the watermark to the recorded
+      version — the version that was READ, never re-fetched at persist
+      time, so a commit landing between read and persist is never marked
+      processed without being processed.
+    - ``persist.persist_failed``: discards the recorded version; the
+      watermark stays put and the next run re-reads the same slice
+      (at-least-once, made safe by idempotent merge writes).
+
+    Driving-source convention: a pipe operates on a single source of
+    truth — its FIRST input entity — and every other input is reference
+    data, read in full. Only the driving source is watermarked. A table fed
+    by multiple sources is built by multiple pipes each contributing its
+    own driving source, not by one pipe with several watermarked inputs.
+    (``DataPipesExecuter._populate_source_dict`` implements the read side
+    of this convention by passing ``use_watermark`` only for input 0.)
+
+    The aspect is registered at bootstrap for non-standalone platforms.
+    Local/standalone execution deliberately runs without it: reads fall
+    through to fixture/provider full reads, matching prior behavior where
+    watermarking was skipped locally. An execution engine that owns its own
+    incrementality (e.g. a declarative-pipelines backend) simply never
+    registers the aspect.
+    """
+
+    EMITS = [
+        "persist.watermark_saved",
+    ]
+
+    @inject
+    def __init__(
+        self,
+        wms: WatermarkService,
+        lp: PythonLoggerProvider,
+        signal_provider: SignalProvider,
+    ):
+        self.wms = wms
+        self.logger = lp.get_logger("WatermarkAspect")
+        self._signals = signal_provider
+        self._init_signal_emitter(signal_provider)
+        self._pending: Dict[str, Tuple[str, int]] = {}
+        self._registered = False
+
+    def register(self) -> None:
+        """Connect the aspect's handlers. Idempotent."""
+        if self._registered:
+            return
+        for signal_name, handler in (
+            ("read.resolve_read", self._on_resolve_read),
+            ("persist.after_persist", self._on_after_persist),
+            ("persist.persist_failed", self._on_persist_failed),
+        ):
+            signal = self._signals.get_signal(signal_name) or self._signals.create_signal(
+                signal_name
+            )
+            signal.connect(handler, weak=False)
+        self._registered = True
+        self.logger.debug("WatermarkAspect registered")
+
+    def _on_resolve_read(self, sender, *, entity=None, pipe=None, use_watermark=False, **kwargs):
+        if not use_watermark or entity is None or pipe is None:
             return None
+        df, version = self.wms.read_changes_with_version(entity, pipe)
+        if version is not None:
+            self._pending[pipe.pipeid] = (entity.entityid, version)
+        else:
+            self._pending.pop(pipe.pipeid, None)
+        return ResolvedRead(df=df)
+
+    def _on_after_persist(self, sender, *, pipe_id=None, persist_id=None, **kwargs):
+        pending = self._pending.pop(pipe_id, None)
+        if pending is None:
+            return None
+        source_entity_id, version = pending
+        self.wms.save_watermark(source_entity_id, pipe_id, version, str(uuid.uuid4()))
+        self.emit(
+            "persist.watermark_saved",
+            pipe_id=pipe_id,
+            source_entity_id=source_entity_id,
+            version=version,
+            persist_id=persist_id,
+        )
+        return None
+
+    def _on_persist_failed(self, sender, *, pipe_id=None, **kwargs):
+        self._pending.pop(pipe_id, None)
+        return None
