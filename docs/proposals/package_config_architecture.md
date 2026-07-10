@@ -3,6 +3,7 @@
 > **Created:** 2026-02-02
 > **Status:** Design Proposal (Under Review)
 > **Context:** Extending configuration system to support package-level config and decorator overrides
+> **Revised:** 2026-07-06 — dropped the two-phase pending-registration model in favor of a simpler post-registration config overlay. See "Key Insight" under Implementation Design for why.
 
 ---
 
@@ -640,26 +641,24 @@ with config.datapipes("bronze.ingest_orders") as pipe:
 
 ## Implementation Design (Revised)
 
-### Key Insight: Two-Phase Registration
+### Key Insight: Config Overrides Applied Post-Registration (No Pending Queue Needed)
 
-The fundamental problem with the original design is **timing**:
-- Decorators execute at **import time** (before bootstrap)
-- Config is loaded at **bootstrap time** (after imports)
+An earlier draft of this section proposed a two-phase pending-queue registration model to solve a supposed timing problem: decorators registering before config was loaded. Tracing the actual bootstrap flow (`bootstrap.py::initialize_framework`) shows that problem doesn't occur in practice:
 
-**Solution: Two-Phase Registration**
+1. Config is fully loaded and bound into the DI container (`configure_injector_with_config`).
+2. Platform services initialize (`initialize_platform_services`).
+3. Only *then* does `_import_local_package_registrations()` import pipe/entity modules, which is what fires `@DataPipes.pipe` / `@DataEntities.entity` decorators.
 
-```
-Phase 1 (Import Time):
-  - Decorators register "raw" metadata to a pending queue
-  - No config resolution yet
+`register_pipe`/`register_entity` are already gated behind `_raise_if_not_initialized()`, which requires the platform service to be bound — and that binding happens after config load. A decorator can never successfully register before config exists: it either runs after config is available, or raises `KindlingNotInitializedError`. There is no race to protect against, and therefore no need for a pending-queue/finalize handoff, `PendingPipeRegistration`/`PendingEntityRegistration` dataclasses, or decoupling registration from DI/init.
 
-Phase 2 (Bootstrap Time):
-  - Load config files
-  - Process pending registrations
-  - Apply wildcard patterns
-  - Apply specific overrides
-  - Move to active registry
-```
+**Simpler solution: post-registration config overlay**
+- `DataPipesManager`/`DataEntityManager` keep their existing eager `register_pipe`/`register_entity` methods — decorators register immediately, exactly as they do today.
+- Each manager retains the original decorator params alongside the registered metadata.
+- Add `apply_config_overrides(config_service)` on each manager: walks the already-populated registry once, and for each entry resolves overrides via `ConfigPatternMatcher.resolve_overrides(item_id, base_params)` (Phase 1 below), replacing the stored metadata with the merged result.
+- Bootstrap calls `apply_config_overrides()` once per manager, at the same point in `initialize_framework()` where `_import_local_package_registrations()` already runs today.
+- For hot-reload (e.g. re-running a notebook cell without a process restart), re-run the same overlay against each entry's stored original params — no separate queue object is needed for this either.
+
+This keeps registration behavior unchanged and adds one small, testable post-processing step instead of a new registration lifecycle.
 
 ### Phase 1: Wildcard Pattern Matcher
 
@@ -798,20 +797,12 @@ class ConfigPatternMatcher:
         return result
 ```
 
-### Phase 2: Two-Phase Registry
+### Phase 2: Registry with Config Overlay
 
 ```python
 # packages/kindling/data_pipes.py (revised)
 
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass, fields
-
-@dataclass
-class PendingPipeRegistration:
-    """Holds decorator params until config is available."""
-    pipe_id: str
-    decorator_params: Dict[str, Any]
-    module_path: str  # For package detection
 
 class DataPipesRegistry(ABC):
     """Abstract base for pipe registration."""
@@ -831,77 +822,43 @@ class DataPipesRegistry(ABC):
 
 @GlobalInjector.singleton_autobind()
 class DataPipesManager(DataPipesRegistry):
-    """Two-phase pipe registry with config override support."""
+    """Eager pipe registry with a post-registration config overlay."""
 
     def __init__(self):
-        self._pending: List[PendingPipeRegistration] = []
+        self._raw_params: Dict[str, Dict[str, Any]] = {}
         self._registry: Dict[str, PipeMetadata] = {}
-        self._finalized = False
-        self._config_matcher: Optional['ConfigPatternMatcher'] = None
 
     def register_pipe(self, pipeid: str, **decorator_params):
-        """Phase 1: Queue registration (called at import time)."""
-        import sys
+        """Register immediately, same as today. No config dependency here."""
+        self._raw_params[pipeid] = decorator_params
+        self._registry[pipeid] = PipeMetadata(pipeid=pipeid, **decorator_params)
 
-        # Get calling module for package detection
-        frame = sys._getframe(2)  # Skip decorator wrapper
-        module_path = frame.f_globals.get('__name__', '')
+    def apply_config_overrides(self, config_service: 'ConfigService'):
+        """Re-resolve every registered pipe against current config.
 
-        self._pending.append(PendingPipeRegistration(
-            pipe_id=pipeid,
-            decorator_params=decorator_params,
-            module_path=module_path
-        ))
-
-        # If already finalized (hot reload), process immediately
-        if self._finalized:
-            self._process_single_registration(self._pending[-1])
-
-    def finalize_registrations(self, config_service: 'ConfigService'):
-        """Phase 2: Apply config overrides (called at bootstrap time)."""
+        Called once from bootstrap after config load, and safely re-callable
+        for hot-reload since it always starts from the original decorator params.
+        """
         from kindling.config_patterns import ConfigPatternMatcher
 
-        # Build pattern matcher from config
         datapipes_config = config_service.get('datapipes', default={})
-        self._config_matcher = ConfigPatternMatcher(datapipes_config)
+        matcher = ConfigPatternMatcher(datapipes_config)
 
-        # Process all pending registrations
-        for pending in self._pending:
-            self._process_single_registration(pending)
+        for pipeid, raw_params in self._raw_params.items():
+            final_params = matcher.resolve_overrides(pipeid, raw_params.copy())
 
-        self._pending.clear()
-        self._finalized = True
+            if final_params.get('_enabled') is False:
+                print(f"⚠️  Pipe disabled by config: {pipeid}")
 
-    def _process_single_registration(self, pending: PendingPipeRegistration):
-        """Process one registration with config overrides."""
-        # Start with decorator params
-        final_params = pending.decorator_params.copy()
+            internal_keys = ['_remove_tags', '_remove_all_tags', '_enabled']
+            enabled = final_params.get('_enabled', True)
+            clean_params = {k: v for k, v in final_params.items() if k not in internal_keys}
 
-        # Apply config overrides if matcher available
-        if self._config_matcher:
-            final_params = self._config_matcher.resolve_overrides(
-                pending.pipe_id,
-                final_params
+            self._registry[pipeid] = PipeMetadata(
+                pipeid=pipeid,
+                **clean_params,
+                _internal_enabled=enabled
             )
-
-        # Check enabled flag
-        if final_params.get('_enabled') is False:
-            print(f"⚠️  Pipe disabled by config: {pending.pipe_id}")
-            final_params['_enabled'] = False
-
-        # Clean up internal keys before creating metadata
-        internal_keys = ['_remove_tags', '_remove_all_tags', '_enabled']
-        clean_params = {k: v for k, v in final_params.items() if k not in internal_keys}
-
-        # Store enabled flag separately
-        enabled = final_params.get('_enabled', True)
-
-        # Create and store metadata
-        self._registry[pending.pipe_id] = PipeMetadata(
-            pipeid=pending.pipe_id,
-            **clean_params,
-            _internal_enabled=enabled
-        )
 
     def get_pipe_ids(self) -> List[str]:
         return list(self._registry.keys())
@@ -916,7 +873,9 @@ class DataPipesManager(DataPipesRegistry):
 # packages/kindling/bootstrap.py (additions)
 
 def apply_config_overrides():
-    """Called during bootstrap to finalize registrations with config."""
+    """Called during bootstrap, after config load, to overlay config onto
+    the already-registered pipes/entities (same point where
+    _import_local_package_registrations() runs today)."""
     from kindling.data_pipes import DataPipesManager
     from kindling.data_entities import DataEntityManager
     from kindling.spark_config import ConfigService
@@ -924,18 +883,16 @@ def apply_config_overrides():
 
     config = get_kindling_service(ConfigService)
 
-    # Finalize pipe registrations
     pipes_manager = get_kindling_service(DataPipesManager)
-    pipes_manager.finalize_registrations(config)
-    print(f"✓ Finalized {len(pipes_manager.get_pipe_ids())} pipe registrations")
+    pipes_manager.apply_config_overrides(config)
+    print(f"✓ Applied config overrides to {len(pipes_manager.get_pipe_ids())} pipe(s)")
 
-    # Finalize entity registrations
     entities_manager = get_kindling_service(DataEntityManager)
-    entities_manager.finalize_registrations(config)
-    print(f"✓ Finalized {len(entities_manager.get_entity_ids())} entity registrations")
+    entities_manager.apply_config_overrides(config)
+    print(f"✓ Applied config overrides to {len(entities_manager.get_entity_ids())} entit(y/ies)")
 ```
 
-### Phase 4: Decorator (Simplified)
+### Phase 4: Decorator (Unchanged)
 
 ```python
 # packages/kindling/data_pipes.py
@@ -950,7 +907,8 @@ class DataPipes:
         """Decorator for registering data pipes.
 
         No more package_name param - config uses pipe IDs directly.
-        Config overrides are applied at bootstrap time, not here.
+        Registration is eager; config overrides are layered on top later
+        by DataPipesManager.apply_config_overrides(), not here.
         """
         def decorator(func):
             if cls.dpregistry is None:
@@ -969,8 +927,6 @@ class DataPipes:
             pipeid = decorator_params["pipeid"]
             del decorator_params["pipeid"]
 
-            # Simple registration - no config lookup here
-            # Config applied later in finalize_registrations()
             cls.dpregistry.register_pipe(pipeid, **decorator_params)
 
             return func
@@ -1158,14 +1114,15 @@ dataentities:
 - [ ] Test edge cases (overlapping patterns, escaping)
 ```
 
-### Phase 2: Two-Phase Registration (Week 3-4)
+### Phase 2: Config Overlay (Week 3-4)
 
 ```
-- [ ] Refactor DataPipesManager to two-phase model
-- [ ] Refactor DataEntityManager to two-phase model
-- [ ] Add finalize_registrations() to bootstrap
-- [ ] Ensure backward compatibility
-- [ ] Write integration tests
+- [ ] Add apply_config_overrides() to DataPipesManager (retain raw params, overlay on top)
+- [ ] Add apply_config_overrides() to DataEntityManager (same pattern; retire the
+      existing lazy per-read merge in get_entity_definition() in favor of this)
+- [ ] Call apply_config_overrides() from bootstrap after config load
+- [ ] Ensure backward compatibility (registration behavior is unchanged)
+- [ ] Write integration tests, including hot-reload re-overlay
 ```
 
 ### Phase 3: Tag Management & Features (Week 5)
@@ -1400,12 +1357,12 @@ print(f"Final config: {final}")
 
 ### Recommended Approach
 
-**✅ Global Namespace with Wildcard Patterns + Two-Phase Registration**
+**✅ Global Namespace with Wildcard Patterns + Post-Registration Config Overlay**
 
 Key design decisions:
 1. **Global namespace** - Pipe/entity IDs are globally unique (layer.name convention)
 2. **Wildcard patterns** - `bronze.*`, `*.ingest_*`, `**` for DRY config
-3. **Two-phase registration** - Decorators queue, bootstrap finalizes with config
+3. **Eager registration + config overlay** - Decorators register immediately (as they do today); bootstrap layers config overrides on top afterward via `apply_config_overrides()`
 4. **No package_name in decorators** - Simplifies code, uses ID for config lookup
 
 ### Key Benefits
@@ -1416,27 +1373,27 @@ Key design decisions:
 4. **Feature Flags** - `_enabled: false` disables without code changes
 5. **Tag Removal** - `_remove_tags` for environment-specific cleanup
 6. **Backward Compatible** - All config is optional, decorators work unchanged
-7. **Correct Timing** - Bootstrap applies config, not import time
+7. **Correct Timing** - Bootstrap already loads config before any pipe/entity module is imported (see `bootstrap.py::initialize_framework` → `_import_local_package_registrations`), so overlay-after-registration is sufficient; no registration-lifecycle change is needed
 
 ### What Changed from Original Proposal
 
 | Aspect | Original | Revised |
 |--------|----------|---------|
 | Package namespace | `package_name` param on decorator | Not needed - global namespace |
-| Timing | Config at import time (broken) | Config at bootstrap time (correct) |
+| Timing | Config at import time (broken) | Bootstrap already sequences config-load before pipe/entity import; overlay config after eager registration |
 | Wildcards | Not supported | Full glob pattern support |
 | Tag removal | Not possible | `_remove_tags` syntax |
-| Registration | Direct to registry | Two-phase (pending → finalize) |
+| Registration | Direct to registry | Unchanged (direct/eager) - config is overlaid on top afterward, not gated by a pending queue |
 
 ### Implementation Effort (Updated)
 
 | Phase | Weeks | Effort |
 |-------|-------|--------|
 | Pattern Matching (`config_patterns.py`) | 2 | Medium |
-| Two-Phase Registration | 2 | Medium |
+| Config Overlay (`apply_config_overrides()`) | 1 | Low |
 | Tag Management & Features | 1 | Low |
 | Documentation & Polish | 1 | Low |
-| **Total** | **6 weeks** | **Medium** |
+| **Total** | **5 weeks** | **Medium** |
 
 ### Resolved Design Decisions
 
@@ -1499,6 +1456,6 @@ _(None remaining - all major decisions resolved)_
 ### Next Steps
 
 1. **Prototype pattern matcher** - Validate glob pattern approach
-2. **Test two-phase registration** - Ensure backward compatibility
+2. **Test config overlay** - Ensure registration behavior and existing tests are unaffected
 3. **Gather feedback** - Validate wildcard syntax preferences
 4. **Implement MVP** - Pattern matching + basic overrides
