@@ -5,8 +5,6 @@ from functools import reduce
 from pathlib import Path
 from typing import Optional
 
-from pyspark.sql.functions import col
-
 from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.entity_provider_csv import (
@@ -18,6 +16,7 @@ from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log import *
 from kindling.watermarking import *
+from pyspark.sql.functions import col
 
 
 def _is_local_execution() -> bool:
@@ -56,7 +55,16 @@ def _apply_df_transforms(results, df):
 class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
     """Strategy for reading entities and persisting pipe results with signals.
 
-    Subscribers can intercept and transform DataFrames at two points:
+    Subscribers can intercept at three points:
+
+    ``read.resolve_read`` — fired before any read happens. Receives
+    ``entity``, ``entity_id``, ``pipe``, ``pipe_id``, ``use_watermark``.
+    A handler that takes ownership of the read returns a ``ResolvedRead``
+    (see ``kindling.watermarking``) whose ``df`` becomes the read result —
+    possibly ``None``, meaning "no new data, skip the pipe." When no
+    handler resolves, the strategy falls through to an ordinary full read
+    from the entity's provider. This is how incremental/watermark reads
+    attach (``WatermarkAspect``) without the strategy knowing about them.
 
     ``read.after_read`` — fired after reading a source entity. Receives
     ``df``, ``entity_id``, ``pipe_id``, ``used_watermark``. Return a new
@@ -65,22 +73,26 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
     ``persist.before_persist`` — fired before writing the pipe output.
     Receives ``df``, ``pipe_id``, ``source_entity_id``, ``output_entity_id``,
-    ``source_version``, ``persist_id``. Return a new DataFrame to replace
-    the one written to storage, or ``None`` to leave it unchanged.
+    ``persist_id``. Return a new DataFrame to replace the one written to
+    storage, or ``None`` to leave it unchanged.
+
+    Watermark bookkeeping is deliberately NOT handled here: the
+    ``WatermarkAspect`` (``kindling.watermarking``) listens to
+    ``persist.after_persist`` / ``persist.persist_failed`` and advances the
+    watermark to the cursor it captured at read time.
     """
 
     EMITS = [
+        "read.resolve_read",
         "read.after_read",
         "persist.before_persist",
         "persist.after_persist",
-        "persist.watermark_saved",
         "persist.persist_failed",
     ]
 
     @inject
     def __init__(
         self,
-        wms: WatermarkService,
         ep: EntityProvider,
         der: DataEntityRegistry,
         tp: SparkTraceProvider,
@@ -88,7 +100,6 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         provider_registry: EntityProviderRegistry,
         signal_provider: Optional[SignalProvider] = None,
     ):
-        self.wms = wms
         self.der = der
         self.ep = ep  # Legacy EntityProvider for backward compatibility
         self.provider_registry = provider_registry  # New multi-provider registry
@@ -100,9 +111,24 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         strategy = self
 
         def entity_reader(entity, usewm):
-            if usewm and not _is_local_execution():
-                # Watermarking uses the legacy path (Delta-specific)
-                df = strategy.wms.read_current_entity_changes(entity, pipe)
+            # Interdiction point: a handler (e.g. WatermarkAspect) may take
+            # ownership of the read entirely — including deciding there is
+            # no new data (df=None). Distinct from read.after_read, which
+            # can only transform a DataFrame that was already read.
+            resolved = None
+            for _, retval in strategy.emit(
+                "read.resolve_read",
+                entity=entity,
+                entity_id=entity.entityid,
+                pipe=pipe,
+                pipe_id=pipe.pipeid,
+                use_watermark=usewm,
+            ):
+                if retval is not None and hasattr(retval, "df"):
+                    resolved = retval
+
+            if resolved is not None:
+                df = resolved.df
             elif _is_local_execution():
                 # [implementer] tests/entities/ auto-discovery convention — ki-bsi
                 # Priority: explicit --source > kindling.yaml env mapping > fixture CSV > registry
@@ -147,26 +173,16 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
             if pipe.input_entity_ids and len(pipe.input_entity_ids) > 0:
 
+                # Driving-source convention: input 0 is the pipe's single
+                # source of truth; other inputs are reference data. See
+                # WatermarkAspect (kindling.watermarking) for the full
+                # statement of the convention.
                 src_input_entity = strategy.der.get_entity_definition(pipe.input_entity_ids[0])
                 src_input_entity_id = src_input_entity.entityid
-
-                # Get provider for source entity (version tracking may be Delta-specific)
-                src_provider = strategy.provider_registry.get_provider_for_entity(src_input_entity)
-                # Version tracking: Delta providers return actual version numbers, other providers
-                # default to 0 (no versioning). This is acceptable for watermarking as the
-                # watermark system will still track processing state via timestamps.
-                src_read_version = (
-                    src_provider.get_entity_version(src_input_entity)
-                    if hasattr(src_provider, "get_entity_version")
-                    else 0
-                )
 
                 output_entity = strategy.der.get_entity_definition(pipe.output_entity_id)
                 output_provider = strategy.provider_registry.get_provider_for_entity(output_entity)
 
-                strategy.logger.debug(
-                    f"read_version - pipe = {pipe.pipeid} - ver = {src_read_version}"
-                )
                 strategy.logger.debug(f"persist_lambda - pipe = {pipe.pipeid}")
 
                 results = strategy.emit(
@@ -175,7 +191,6 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                     pipe_id=pipe.pipeid,
                     source_entity_id=src_input_entity_id,
                     output_entity_id=pipe.output_entity_id,
-                    source_version=src_read_version,
                     persist_id=persist_id,
                 )
                 df = _apply_df_transforms(results, df)
@@ -216,26 +231,6 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                                 else:
                                     raise ValueError(
                                         f"Provider '{output_entity.provider_type or 'unknown'}' does not support write operations"
-                                    )
-
-                        if pipe.use_watermark:
-                            with strategy.tp.span(operation="save_watermarks"):
-                                with strategy.tp.span(
-                                    operation="save_watermark", component=f"{src_input_entity_id}"
-                                ):
-                                    strategy.wms.save_watermark(
-                                        src_input_entity_id,
-                                        pipe.pipeid,
-                                        src_read_version,
-                                        str(uuid.uuid4()),
-                                    )
-
-                                    strategy.emit(
-                                        "persist.watermark_saved",
-                                        pipe_id=pipe.pipeid,
-                                        source_entity_id=src_input_entity_id,
-                                        version=src_read_version,
-                                        persist_id=persist_id,
                                     )
 
                     duration = time.time() - start_time
