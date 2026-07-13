@@ -377,6 +377,12 @@ class WatermarkAspect(SignalEmitter):
     - ``persist.persist_failed``: discards the recorded version; the
       watermark stays put and the next run re-reads the same slice
       (at-least-once, made safe by idempotent merge writes).
+    - ``datapipes.pipe_failed`` / ``orchestrator.pipe_failed``: a pipe can
+      fail BEFORE its persist runs (a reference-input read fails, the
+      transform raises) — these discard the recorded version too, so a
+      capture can never outlive the execution that made it. As a second
+      guard, a non-watermarked read of a pipe's driving source (a
+      full-refresh run) also clears any stale capture for that pipe.
 
     Driving-source convention: a pipe operates on a single source of
     truth — its FIRST input entity — and every other input is reference
@@ -420,6 +426,12 @@ class WatermarkAspect(SignalEmitter):
             ("read.resolve_read", self._on_resolve_read),
             ("persist.after_persist", self._on_after_persist),
             ("persist.persist_failed", self._on_persist_failed),
+            # A pipe can fail before its persist ever runs (a reference
+            # input read fails, the transform raises). Both executers emit
+            # a pipe-level failure signal; clear the captured version so it
+            # cannot outlive the execution that captured it.
+            ("datapipes.pipe_failed", self._on_pipe_failed),
+            ("orchestrator.pipe_failed", self._on_pipe_failed),
         ):
             signal = self._signals.get_signal(signal_name) or self._signals.create_signal(
                 signal_name
@@ -429,7 +441,18 @@ class WatermarkAspect(SignalEmitter):
         self.logger.debug("WatermarkAspect registered")
 
     def _on_resolve_read(self, sender, *, entity=None, pipe=None, use_watermark=False, **kwargs):
-        if not use_watermark or entity is None or pipe is None:
+        if entity is None or pipe is None:
+            return None
+        if not use_watermark:
+            # A non-watermarked read of the pipe's DRIVING source (a
+            # full-refresh run, or a pipe with watermarking disabled)
+            # supersedes any version captured by an earlier failed
+            # watermarked execution. Clear it so the persist that follows
+            # this read cannot save a stale watermark. Reference-input
+            # reads (non-driving) must not clear the driving capture.
+            input_ids = getattr(pipe, "input_entity_ids", None) or []
+            if input_ids and entity.entityid == input_ids[0]:
+                self._pending.pop(pipe.pipeid, None)
             return None
         df, version = self.wms.read_changes_with_version(entity, pipe)
         if version is not None:
@@ -454,5 +477,9 @@ class WatermarkAspect(SignalEmitter):
         return None
 
     def _on_persist_failed(self, sender, *, pipe_id=None, **kwargs):
+        self._pending.pop(pipe_id, None)
+        return None
+
+    def _on_pipe_failed(self, sender, *, pipe_id=None, **kwargs):
         self._pending.pop(pipe_id, None)
         return None
