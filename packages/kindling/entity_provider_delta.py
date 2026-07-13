@@ -97,15 +97,36 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
         mergeSchema), and without it MERGE silently drops source columns
         the target lacks — e.g. a column added to an entity's declared
         schema after the table was deployed would never materialize.
+
+        ``DeltaMergeBuilder.withSchemaEvolution()`` exists only from Delta
+        3.2; Kindling's floor is delta-spark 2.4 because supported managed
+        runtimes still ship older Delta. On older builders, fall back to
+        the session-conf mechanism (``schema.autoMerge.enabled``) scoped
+        to this merge and restored afterward.
         """
-        (
-            delta_table.alias("old")
-            .merge(source=df.alias("new"), condition=merge_condition)
-            .withSchemaEvolution()
-            .whenMatchedUpdateAll()
-            .whenNotMatchedInsertAll()
-            .execute()
-        )
+        builder = delta_table.alias("old").merge(source=df.alias("new"), condition=merge_condition)
+
+        if hasattr(builder, "withSchemaEvolution"):
+            (
+                builder.withSchemaEvolution()
+                .whenMatchedUpdateAll()
+                .whenNotMatchedInsertAll()
+                .execute()
+            )
+            return
+
+        # Delta < 3.2 compatibility path.
+        spark = df.sparkSession
+        conf_key = "spark.databricks.delta.schema.autoMerge.enabled"
+        previous = spark.conf.get(conf_key, None)
+        spark.conf.set(conf_key, "true")
+        try:
+            (builder.whenMatchedUpdateAll().whenNotMatchedInsertAll().execute())
+        finally:
+            if previous is None:
+                spark.conf.unset(conf_key)
+            else:
+                spark.conf.set(conf_key, previous)
 
 
 @DeltaMergeStrategies.register(name="scd2")

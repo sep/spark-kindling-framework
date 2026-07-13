@@ -91,3 +91,67 @@ def test_scd1_strategy_apply_uses_provided_merge_condition():
         source=df.alias.return_value,
         condition="old.`id` = new.`id`",
     )
+
+
+def _apply_scd1_strategy_legacy_delta(existing_conf_value=None):
+    """Apply SCD1 against a merge builder WITHOUT withSchemaEvolution
+    (Delta < 3.2), returning the builder and the session conf mock."""
+    delta_table = MagicMock()
+    aliased_delta = delta_table.alias.return_value
+    merge_builder = aliased_delta.merge.return_value
+    del merge_builder.withSchemaEvolution  # hasattr() -> False
+
+    df = MagicMock()
+    conf = df.sparkSession.conf
+    conf.get.return_value = existing_conf_value
+    entity = MagicMock()
+
+    SCD1MergeStrategy().apply(delta_table, df, entity, "old.`id` = new.`id`")
+
+    return merge_builder, conf
+
+
+def test_scd1_strategy_legacy_delta_executes_merge_chain():
+    merge_builder, _ = _apply_scd1_strategy_legacy_delta()
+
+    merge_builder.whenMatchedUpdateAll.return_value.whenNotMatchedInsertAll.return_value.execute.assert_called_once_with()
+
+
+def test_scd1_strategy_legacy_delta_enables_automerge_conf():
+    _, conf = _apply_scd1_strategy_legacy_delta()
+
+    conf.set.assert_called_once_with("spark.databricks.delta.schema.autoMerge.enabled", "true")
+
+
+def test_scd1_strategy_legacy_delta_unsets_conf_when_previously_absent():
+    _, conf = _apply_scd1_strategy_legacy_delta(existing_conf_value=None)
+
+    conf.unset.assert_called_once_with("spark.databricks.delta.schema.autoMerge.enabled")
+
+
+def test_scd1_strategy_legacy_delta_restores_previous_conf_value():
+    _, conf = _apply_scd1_strategy_legacy_delta(existing_conf_value="false")
+
+    conf.unset.assert_not_called()
+    assert conf.set.call_args_list[-1].args == (
+        "spark.databricks.delta.schema.autoMerge.enabled",
+        "false",
+    )
+
+
+def test_scd1_strategy_legacy_delta_restores_conf_even_when_merge_fails():
+    delta_table = MagicMock()
+    merge_builder = delta_table.alias.return_value.merge.return_value
+    del merge_builder.withSchemaEvolution
+    merge_builder.whenMatchedUpdateAll.return_value.whenNotMatchedInsertAll.return_value.execute.side_effect = RuntimeError(
+        "merge failed"
+    )
+
+    df = MagicMock()
+    conf = df.sparkSession.conf
+    conf.get.return_value = None
+
+    with pytest.raises(RuntimeError, match="merge failed"):
+        SCD1MergeStrategy().apply(delta_table, df, MagicMock(), "old.`id` = new.`id`")
+
+    conf.unset.assert_called_once_with("spark.databricks.delta.schema.autoMerge.enabled")
