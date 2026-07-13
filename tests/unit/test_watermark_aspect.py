@@ -29,9 +29,14 @@ def wms():
 
 
 @pytest.fixture
-def aspect(wms, signal_provider):
+def aspect_logger():
+    return MagicMock()
+
+
+@pytest.fixture
+def aspect(wms, signal_provider, aspect_logger):
     logger_provider = MagicMock(spec=PythonLoggerProvider)
-    logger_provider.get_logger.return_value = MagicMock()
+    logger_provider.get_logger.return_value = aspect_logger
     aspect = WatermarkAspect(wms=wms, lp=logger_provider, signal_provider=signal_provider)
     aspect.register()
     return aspect
@@ -197,6 +202,54 @@ class TestStalePendingLifecycle:
         )
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
         wms.save_cursor.assert_not_called()
+
+    @pytest.mark.parametrize("skip_signal", ["datapipes.pipe_skipped", "orchestrator.pipe_skipped"])
+    def test_pipe_skip_clears_pending(self, aspect, wms, signal_provider, skip_signal):
+        """Driving read had data, but the pipe was skipped (e.g. a
+        reference input was unavailable) — nothing persisted, so the
+        capture must not survive to a later after_persist."""
+        pipe = _pipe()
+        self._capture_then_fail_before_persist(signal_provider, pipe)
+        _emit(signal_provider, skip_signal, pipe_id=pipe.pipeid, skip_reason="no_data")
+
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
+        wms.save_cursor.assert_not_called()
+
+    def test_overlapping_same_pipe_captures_warn_and_last_wins(
+        self, aspect, wms, signal_provider, aspect_logger
+    ):
+        """Concurrent same-pipe execution is unsupported (one cursor per
+        source/reader). The aspect's documented behavior when captures
+        overlap anyway: warn, last capture wins, single save."""
+        pipe = _pipe()
+        wms.read_changes.return_value = (MagicMock(name="df"), "10")
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        aspect_logger.warning.assert_not_called()
+
+        # A second capture for the same pipe before the first persists.
+        wms.read_changes.return_value = (MagicMock(name="df"), "12")
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        aspect_logger.warning.assert_called_once()
+
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="a")
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="b")
+
+        wms.save_cursor.assert_called_once()
+        assert wms.save_cursor.call_args[0][2] == "12"
 
     def test_failure_in_one_pipe_does_not_affect_another(self, aspect, wms, signal_provider):
         pipe_a = _pipe("pipe.a")

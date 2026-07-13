@@ -430,10 +430,28 @@ class WatermarkAspect(SignalEmitter):
       (at-least-once, made safe by idempotent merge writes).
     - ``datapipes.pipe_failed`` / ``orchestrator.pipe_failed``: a pipe can
       fail BEFORE its persist runs (a reference-input read fails, the
-      transform raises) — these discard the recorded version too, so a
+      transform raises) — these discard the recorded cursor too, so a
       capture can never outlive the execution that made it. As a second
       guard, a non-watermarked read of a pipe's driving source (a
       full-refresh run) also clears any stale capture for that pipe.
+    - ``datapipes.pipe_skipped`` / ``orchestrator.pipe_skipped``: a pipe
+      whose driving read produced data can still be skipped when another
+      input is unavailable — nothing persists, so the capture is discarded
+      for the same reason.
+
+    Concurrency contract: **concurrent executions of the same pipe within
+    one process are unsupported.** This is inherent to the watermark
+    model — there is exactly one cursor per (source, reader), so two
+    concurrent incremental executions of one pipe would race on the cursor
+    and merge overlapping slices regardless of this aspect's bookkeeping.
+    Pending captures are therefore keyed by pipe id alone; both executers
+    run a pipe at most once per run. If a watermarked capture replaces an
+    existing one (a crashed run that emitted no lifecycle signals, or a
+    genuinely concurrent overlapping run), the aspect logs a warning and
+    last-capture-wins. If concurrent same-pipe execution ever becomes a
+    requirement, the right shape is an execution-scoped token minted at
+    read time and carried through the persist/failure signals — a
+    deliberate future design, not something to approximate here.
 
     Driving-source convention: a pipe operates on a single source of
     truth — its FIRST input entity — and every other input is reference
@@ -484,6 +502,10 @@ class WatermarkAspect(SignalEmitter):
             # cannot outlive the execution that captured it.
             ("datapipes.pipe_failed", self._on_pipe_failed),
             ("orchestrator.pipe_failed", self._on_pipe_failed),
+            # A skipped pipe (driving read had data, another input didn't)
+            # never persists — its capture dies with the execution too.
+            ("datapipes.pipe_skipped", self._on_pipe_failed),
+            ("orchestrator.pipe_skipped", self._on_pipe_failed),
         ):
             signal = self._signals.get_signal(signal_name) or self._signals.create_signal(
                 signal_name
@@ -508,6 +530,20 @@ class WatermarkAspect(SignalEmitter):
             return None
         df, cursor = self.wms.read_changes(entity, pipe)
         if cursor is not None:
+            if pipe.pipeid in self._pending:
+                # Every normal lifecycle path (persist, persist-failure,
+                # pipe-failure, skip, full-refresh) clears the capture, so
+                # finding one here means a prior run crashed without
+                # emitting signals — or two executions of this pipe are
+                # overlapping in this process, which the watermark model
+                # does not support (one cursor per source/reader). See the
+                # class docstring's concurrency contract.
+                self.logger.warning(
+                    f"Replacing existing pending watermark capture for pipe "
+                    f"'{pipe.pipeid}' — prior execution ended without a "
+                    f"lifecycle signal, or concurrent same-pipe executions "
+                    f"are overlapping (unsupported). Last capture wins."
+                )
             self._pending[pipe.pipeid] = (entity.entityid, cursor)
         else:
             self._pending.pop(pipe.pipeid, None)
