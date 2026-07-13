@@ -76,8 +76,11 @@ The two share one declaration API; the gap is three layers deep.
 **Layer 1 — API surface (code you can write).** OSS Spark 4.1 SDP has the
 full structural vocabulary: `@dp.table`, `@dp.materialized_view`,
 `@dp.temporary_view`, `@dp.append_flow`, `create_streaming_table()`,
-`create_sink()`, and dependency inference. Databricks adds exactly two
-APIs that do not exist in OSS:
+`create_sink()`, and dependency inference. Databricks adds several
+capabilities on top — per its own comparison table: AUTO CDC,
+expectations, update flows, `foreachBatch` sinks, a queryable event log,
+and continuous mode. This is not an exhaustive capability analysis; the
+two **relevant to this proposal's adapter** are:
 
 | Databricks-only API | What it does |
 |---|---|
@@ -110,7 +113,12 @@ platform:
    diagnostic — the fail-fast principle extended from "unsupported pipe
    shape" to "unsupported platform feature."
 4. Deployment glue (spec YAML + CLI vs. workspace object/bundles/REST)
-   stays out of both packages — docs and tooling, not engine.
+   stays out of both packages — docs and tooling, not engine — with one
+   deliberate exception: **`kindling_sdp` owns a minimal local validation
+   harness** that generates an ephemeral pipeline spec and invokes
+   `spark-pipelines dry-run` against the declared graph. The dry-run
+   acceptance criterion below needs an owner, and dev-time validation is
+   engine responsibility even though production deployment is not.
 
 ## Model Mapping
 
@@ -207,9 +215,16 @@ with AUTO CDC to a mechanical mapping:
    IS NULL`), which is *more* natural in SDP than what exists now.
    Existing `scd.*` tags survive as sugar; migration is additive.
 
-Deliberately out: business-authored bitemporality (`valid_from`/
-`valid_to`). AUTO CDC has one time axis; anything needing two is not
-SCD2-the-flow.
+Deliberately out of the MVP mapping: bitemporality. Databricks now has
+bitemporal AUTO CDC (`stored_as_scd_type="bitemporal"` +
+`system_sequence_by`, adding `__SYSTEM_START_AT`/`__SYSTEM_END_AT`
+alongside the SCD2 columns) — but it is in Beta and Databricks-only, so
+the declared-flow contract must not depend on it. Worth tracking, not
+adopting: it maps directly onto the business-time vs. system-time split
+(`valid_from`/`valid_to` vs. `effective_from`/`effective_to`) that
+`temporal_event_segmentation.md`'s Condition-replay open question needs,
+so a future adapter tier could resolve that question natively once the
+feature GAs.
 
 ## MVP Scope
 
@@ -277,8 +292,10 @@ stated here so the two proposals reference each other.
 - [ ] No per-app source generation.
 - [ ] The imperative persist path is not invoked in SDP mode.
 - [ ] SDP infers and executes the pipeline graph from the declared reads.
-- [ ] The declared pipeline dry-runs on OSS Spark locally
-      (`spark-pipelines dry-run`), with no Databricks dependency.
+- [ ] The declared pipeline dry-runs on OSS Spark locally via
+      `kindling_sdp`'s validation harness (ephemeral spec +
+      `spark-pipelines dry-run` — see the bridge section), with no
+      Databricks dependency.
 - [ ] Unsupported pipes fail during declaration with actionable errors,
       including adapter-tier features requested on the OSS runtime.
 - [ ] **Dual-engine parity:** the same app under the runner engine and
@@ -312,3 +329,7 @@ stated here so the two proposals reference each other.
   https://spark.apache.org/docs/latest/declarative-pipelines-programming-guide.html
 - What is Lakeflow Spark Declarative Pipelines (Databricks) —
   https://docs.databricks.com/aws/en/ldp/concepts
+- Lakeflow vs. Apache Spark Declarative Pipelines feature comparison —
+  https://learn.microsoft.com/azure/databricks/ldp/concepts/spark-declarative-pipelines
+- The AUTO CDC APIs (incl. bitemporal, Beta) —
+  https://learn.microsoft.com/azure/databricks/ldp/cdc
