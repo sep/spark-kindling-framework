@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-
 from kindling.entity_provider_delta import (
     DeltaMergeStrategies,
     DeltaMergeStrategy,
@@ -59,22 +58,28 @@ def _apply_scd1_strategy():
     return delta_table, df, merge_builder
 
 
+def test_scd1_strategy_apply_enables_schema_evolution():
+    _, _, merge_builder = _apply_scd1_strategy()
+
+    merge_builder.withSchemaEvolution.assert_called_once_with()
+
+
 def test_scd1_strategy_apply_calls_when_matched_update_all():
     _, _, merge_builder = _apply_scd1_strategy()
 
-    merge_builder.whenMatchedUpdateAll.assert_called_once_with()
+    merge_builder.withSchemaEvolution.return_value.whenMatchedUpdateAll.assert_called_once_with()
 
 
 def test_scd1_strategy_apply_calls_when_not_matched_insert_all():
     _, _, merge_builder = _apply_scd1_strategy()
 
-    merge_builder.whenMatchedUpdateAll.return_value.whenNotMatchedInsertAll.assert_called_once_with()
+    merge_builder.withSchemaEvolution.return_value.whenMatchedUpdateAll.return_value.whenNotMatchedInsertAll.assert_called_once_with()
 
 
 def test_scd1_strategy_apply_calls_execute():
     _, _, merge_builder = _apply_scd1_strategy()
 
-    merge_builder.whenMatchedUpdateAll.return_value.whenNotMatchedInsertAll.return_value.execute.assert_called_once_with()
+    merge_builder.withSchemaEvolution.return_value.whenMatchedUpdateAll.return_value.whenNotMatchedInsertAll.return_value.execute.assert_called_once_with()
 
 
 def test_scd1_strategy_apply_uses_provided_merge_condition():

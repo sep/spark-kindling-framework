@@ -90,10 +90,18 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
         entity,
         merge_condition: str,
     ) -> None:
-        """Run the legacy update-all / insert-all Delta merge."""
+        """Run the legacy update-all / insert-all Delta merge.
+
+        Schema evolution is enabled explicitly: Kindling assumes additive
+        schema evolution everywhere (the write path already sets
+        mergeSchema), and without it MERGE silently drops source columns
+        the target lacks — e.g. a column added to an entity's declared
+        schema after the table was deployed would never materialize.
+        """
         (
             delta_table.alias("old")
             .merge(source=df.alias("new"), condition=merge_condition)
+            .withSchemaEvolution()
             .whenMatchedUpdateAll()
             .whenNotMatchedInsertAll()
             .execute()

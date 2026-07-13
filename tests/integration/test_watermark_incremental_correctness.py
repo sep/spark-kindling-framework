@@ -49,6 +49,7 @@ from pyspark.sql.types import (
     StringType,
     StructField,
     StructType,
+    TimestampType,
 )
 
 
@@ -400,3 +401,57 @@ class TestTimestampCursorProvider:
         manager.save_cursor(rest_entity.entityid, pipe.pipeid, cursor2, "exec-2")
         df3, cursor3 = manager.read_changes(rest_entity, pipe)
         assert df3 is None and cursor3 is None
+
+
+class TestWatermarkSchemaUpgrade:
+    """Already-deployed watermark tables predate the cursor column. The
+    merge path's schema evolution must add it on first save — without
+    that, save_cursor appears to succeed while the cursor is silently
+    dropped, and non-integer (REST/timestamp) cursors are lost, causing
+    repeated initial loads."""
+
+    def test_save_cursor_onto_old_schema_watermark_table(
+        self, spark, delta_provider, watermark_manager
+    ):
+        from datetime import datetime
+
+        # Pre-create system.watermarks with the OLD schema (no cursor
+        # column), as an upgraded environment would have it.
+        old_schema = StructType(
+            [
+                StructField("watermark_id", StringType(), False),
+                StructField("source_entity_id", StringType(), False),
+                StructField("reader_id", StringType(), False),
+                StructField("timestamp", TimestampType(), False),
+                StructField("last_version_processed", IntegerType(), False),
+                StructField("last_execution_id", StringType(), False),
+            ]
+        )
+        wm_entity = SimpleWatermarkEntityFinder().get_watermark_entity_for_entity("any")
+        old_entity = SimpleNamespace(**vars(wm_entity))
+        old_entity.schema = old_schema
+        legacy_row = spark.createDataFrame(
+            [
+                (
+                    "legacy_src_legacy_reader",
+                    "legacy_src",
+                    "legacy_reader",
+                    datetime(2026, 1, 1, 0, 0, 0),
+                    5,
+                    "exec-0",
+                )
+            ],
+            old_schema,
+        )
+        delta_provider.write_to_entity(legacy_row, old_entity)
+        assert "cursor" not in delta_provider.read_entity(wm_entity).columns
+
+        # A non-integer cursor saved through the manager must survive the
+        # round trip — the merge must ADD the cursor column, not silently
+        # drop it.
+        watermark_manager.save_cursor("bronze.api", "pipe.rest", "2026-07-13T10:00:00Z", "exec-1")
+        assert watermark_manager.get_cursor("bronze.api", "pipe.rest") == "2026-07-13T10:00:00Z"
+
+        # The pre-upgrade row (NULL cursor after evolution) still resolves
+        # through the legacy integer fallback.
+        assert watermark_manager.get_cursor("legacy_src", "legacy_reader") == "5"
