@@ -599,11 +599,11 @@ number sidesteps the parsing problem entirely.
 Execution is a driver-side loop over the small set of active Conditions
 (tens to low hundreds, safe to `.collect()`, unlike event data), each
 iteration issuing its own lazily-planned Spark filter/transform — not one
-mega-expression trying to encode every rule at once. **This is the
-incremental bounded (batch-style) execution path specifically** — see
-"Streaming" for why stateful "change" conditions need a different mechanism
-(`applyInPandasWithState`) once the input is a genuinely unbounded stream
-rather than a bounded slice:
+mega-expression trying to encode every rule at once. **This is the one
+evaluation engine for both execution modes** — batch runs drive it from a
+scheduler over bounded slices, and streaming runs drive the same loop from
+inside a `foreachBatch` trigger body (see "Streaming"); only the opt-in
+subsecond tier uses a different mechanism:
 
 ```python
 active_conditions = spark.read.table("silver_conditions_current").collect()
@@ -622,29 +622,27 @@ Comparing against Fabric Activator's own condition categories (state, change,
 heartbeat, occurrence) validated that this expression-string model covers
 nearly everything Activator supports as a plain Spark SQL predicate,
 including stateful "change" conditions via `LAG()` over a subject-ordered
-window — **but only in incremental bounded execution.** Structured Streaming
-does not support arbitrary row-based window functions like `LAG()`/`LEAD()`
-over an unbounded stream; Spark's streaming windowing is time-based
-(`window()`/`session_window()`), not row-based. The streaming equivalent of
-"compare current to previous" is `applyInPandasWithState`
-(`flatMapGroupsWithState` in Scala/Java) — per-subject state that persists
-across micro-batches, read and updated explicitly rather than computed by a
-window function over rows that aren't all present yet. See "Streaming"
-below for what this changes about the execution model, not just the SQL.
+window — which requires all relevant rows to be present at once, i.e. a
+bounded slice. That requirement is met in *both* execution modes, because
+streaming execution runs the same engine over per-trigger bounded slices
+via `foreachBatch` (see "Streaming"); only the opt-in subsecond tier,
+where rows are processed as they arrive, needs the stateful-streaming
+equivalent (`applyInPandasWithState` / `flatMapGroupsWithState` —
+per-subject state read and updated explicitly rather than computed by a
+window function).
 
 The one real gap in the SQL-expression model itself, independent of
-bounded-vs-streaming: Activator's "no presence of data" (heartbeat)
-condition has to fire even when nothing arrives, which can't be a row-level
+execution mode: Activator's "no presence of data" (heartbeat) condition
+has to fire even when nothing arrives, which can't be a row-level
 predicate at all — it needs a wall-clock timer. That's not a new problem
 here; it's exactly what synthetic expiration events already exist to solve
-(see below), and `applyInPandasWithState`'s `GroupState.setTimeoutDuration`/
-`setTimeoutTimestamp` is the concrete mechanism that provides that timer in
-streaming execution — a callback fires for a subject's state even when no
-new event arrives for it, which is exactly "no presence of data" stated as
-an API instead of a requirement. Activator's "true for a duration"
-occurrence similarly has a retroactive form (SQL-expressible via the same
-window-function technique, bounded execution only) and an instant-on-crossing
-form that needs the same timeout mechanism as heartbeat, in streaming.
+(see below): the engine's per-run/per-trigger expiration sweep provides
+the timer in both modes (with the empty-trigger caveat noted in
+"Streaming"), and `GroupState.setTimeoutDuration`/`setTimeoutTimestamp`
+provides it natively in the subsecond tier. Activator's "true for a
+duration" occurrence similarly has a retroactive form (SQL-expressible via
+the same window-function technique over bounded slices) and an
+instant-on-crossing form that belongs to the same timer mechanisms.
 
 ## Episode Shape
 
@@ -834,9 +832,9 @@ persisted open-episode state) — a classification step at the end instead of
 interval construction. The companion determination Event that arrived in an
 earlier slice — already behind the relation Condition's own watermark — is
 the same "previous value written in an earlier run" problem already named
-for `LAG()` at slice boundaries, solved by the same two mechanisms: a
-lookback window in incremental bounded execution, per-subject state
-(`applyInPandasWithState`) in streaming.
+for `LAG()` at slice boundaries, solved by the same lookback-window
+mechanism in both execution modes (streaming runs the same engine over
+per-trigger bounded slices — see "Streaming").
 
 A schematic Condition row (the exact expression surface for referencing the
 two paired events from `enter_when` is an engine implementation detail to
@@ -1020,12 +1018,19 @@ smaller individual run sizes, or a restart-safety checkpoint between
 generations — but it's an optimization/ops tradeoff to opt into, not
 something correctness requires.
 
-Each Condition still tracks its own read position using Kindling's existing
-per-reader watermark — `get_watermark(source_entity_id="silver.events",
-reader_id=condition_id)` — filtered to the generation(s) it consumes, so a
-generation-2 Condition only ever picks up generation-1 events it hasn't seen
-yet, whether that generation-1 data was written earlier in the same run or
-in a previous one.
+Each Condition still tracks its own read position using Kindling's
+per-reader watermark cursors —
+`get_cursor(source_entity_id="silver.events", reader_id=condition_id)`,
+with the cursor being a Delta version since `silver.events` is
+Delta-backed — filtered to the generation(s) it consumes, so a
+generation-2 Condition only ever picks up generation-1 events it hasn't
+seen yet, whether that generation-1 data was written earlier in the same
+run or in a previous one. The condition engine is a deliberate *explicit*
+consumer of the watermark API (many readers over one entity), distinct
+from the pipe-scoped `WatermarkAspect` that handles ordinary pipes'
+driving-source reads; both record the cursor covering exactly what was
+read (bounded with CDF `endingVersion`), which is what makes each slice
+deterministic and each advance safe against writes landing mid-run.
 
 ### Where Higher-Generation Events Actually Come From
 
@@ -1231,40 +1236,78 @@ run.
 ### Streaming
 
 Streaming execution maintains open episode state and emits lifecycle events
-as data arrives.
+as data arrives. Streaming support is part of the product shape, not an
+optional someday add-on.
 
-Streaming support is part of the product shape, not an optional someday
-add-on. The incremental bounded implementation defines the *semantics* that
-carry into streaming execution — event-time ordering, watermarks,
-late-arrival policy, open-episode state, synthetic expiration events, and
-close/expiry behavior — but the *execution mechanism* for boundary/transition
-detection does not carry over unchanged, and an earlier draft of this
-section implied it would.
+**Streaming is the same engine, driven by triggers — not a second
+implementation.** An earlier draft of this section treated batch and
+streaming as two implementations of the same semantics (`LAG()` plus a
+lookback window in bounded execution; `applyInPandasWithState` per-subject
+state in streaming). That framing doubles the engine surface to build,
+test, and keep semantically identical. The resolution: streaming execution
+is a `foreachBatch` wrapper around the incremental bounded engine.
+Structured Streaming hands `foreachBatch` a bounded DataFrame per
+trigger — and a bounded slice plus persisted episode state is exactly the
+input the bounded engine already consumes. One engine, two drivers: a
+scheduler in batch mode, a streaming trigger in streaming mode.
 
-Incremental bounded execution can lean on plain Spark SQL window functions
-(`LAG()` over `PARTITION BY subject ORDER BY event_ts`, per "Interpretation
-at Runtime") because a bounded slice has all its rows present at once.
-Structured Streaming has no equivalent for arbitrary row-based window
-functions over an unbounded stream — only time-based windowing. The
-streaming implementation of the same "compare current to previous" logic
-needs `applyInPandasWithState` (`flatMapGroupsWithState` in Scala/Java):
-explicit per-subject state, carried across micro-batches, read and written
-by the Condition's own logic rather than computed by a window function. This
-is also where synthetic expiration/heartbeat timers belong natively —
-`GroupState.setTimeoutDuration`/`setTimeoutTimestamp` fires a callback for a
-subject with no new arrivals, which is the same requirement "no presence of
-data" already names in the Activator cross-reference, expressed as a real
-API instead of an open requirement.
+What the unified engine resolves by construction:
 
-Incremental bounded execution's "small lookback range... needed for
-transition detection at slice boundaries" (see Execution Model) exists for
-the same underlying reason `applyInPandasWithState` exists in streaming: a
-plain `LAG()` over only the current bounded slice returns nothing meaningful
-for the first row of each subject in a new slice, because the true
-"previous value" was written in an earlier run, not present in the current
-DataFrame at all. The lookback window and the streaming per-subject state
-are two different implementations of the same requirement — carry the
-previous value forward explicitly — not two unrelated techniques.
+- **The generation walk stops being a streaming problem.** The
+  single-events-table design would create a self-loop in pure streaming (a
+  query reading `silver.events` while writing condition outputs back to
+  it). Under `foreachBatch`, the *stream* reads only base sources
+  (bronze → normalization); condition evaluation, episode formation, and
+  all higher generations run as the same topological walk inside the
+  trigger body, with ordinary batch writes back to `silver.events`. The
+  generation graph stays what it already is — a validation-time concept
+  (cycle rejection, ordering) — with no per-generation streaming queries
+  to orchestrate.
+- **Determinism-per-slice survives.** "Deterministic for a given input
+  slice plus persisted episode state" is a batch property pure stateful
+  streaming cannot easily honor; per-trigger bounded slices keep it
+  intact, and keep the test story unified — the streaming path is tested
+  by invoking the same engine with the same slices.
+- **Episode revision-in-place works by construction.** Superseding a
+  synthetic expiration with a real end event is a Delta merge —
+  impossible in a pure streaming sink, ordinary inside `foreachBatch`.
+- **Replay is unchanged.** Stop the stream, run the existing bounded
+  replay (business-time Condition filtering), reset the affected
+  per-condition cursors, restart. The streaming checkpoint is untouched
+  because it tracks source ingestion, not derived state.
+- **The lookback mechanism is shared, not duplicated.** The bounded
+  path's "small lookback range at slice boundaries" (a plain `LAG()` over
+  only the current slice returns nothing meaningful for each subject's
+  first row — the true previous value was written in an earlier run)
+  applies identically per trigger. No separate per-subject state store.
+
+**Incrementality ownership — one owner per hop.** The streaming checkpoint
+owns progress on the source→events hop; per-reader cursors (see
+"Generation and Recursion") own each Condition's progress over
+`silver.events`, identically in both modes. No double bookkeeping. This is
+the same principle Kindling's watermark refactor established: whoever owns
+a hop's incrementality is its only tracker — batch pipes attach the
+`WatermarkAspect`, engines that own their own incrementality (streaming
+checkpoints here; a declarative-pipelines backend in
+`declarative_pipelines_engine.md`) simply don't.
+
+**Two residuals genuinely differ from batch, and are tiered rather than
+papered over:**
+
+- **Heartbeat/expiration with zero arrivals.** Spark can skip empty
+  micro-batches, so "fire when nothing arrives" needs either a forced
+  per-trigger tick or the batch engine's existing answer (the expiration
+  sweep each run performs) on a scheduler tick. Cheap, but it is the one
+  place trigger-driven execution is not automatically sufficient.
+- **Latency floor.** `foreachBatch` gives seconds, not subseconds. For
+  genuinely subsecond detection, `applyInPandasWithState`
+  (`flatMapGroupsWithState` in Scala/Java) — explicit per-subject state
+  with `GroupState.setTimeoutDuration`/`setTimeoutTimestamp` timers for
+  heartbeat/absence — becomes an **opt-in optimization tier for specific
+  latency-critical Conditions**, not the default execution model. (Or
+  Activator, per "Fabric Activator as an Alternative Backend" — the same
+  tiering discipline applied there.) This retires stateful-streaming
+  machinery from the required path entirely.
 
 ### Replay
 
@@ -1610,7 +1653,11 @@ explicit streaming contract:
    watermark scoped by generation, so routine runs process only new or
    affected events instead of rescanning the full source entity.
 10. A documented streaming contract for ordering, watermarks, open episode
-    state, late events, synthetic expiration events, and episode closure.
+    state, late events, synthetic expiration events, and episode closure —
+    now largely a statement of the unified-engine design (see "Streaming":
+    `foreachBatch` over the same bounded engine, one incrementality owner
+    per hop) plus its two named residuals (empty-trigger expiration ticks;
+    the opt-in subsecond tier), rather than an open research item.
 11. Unit tests using memory providers, including condition rows exercising
     the validation pass with deliberately malformed rules.
 12. Integration tests using local Spark.
@@ -1769,7 +1816,9 @@ deferrable polish.
       and persisted episode state.
 - [ ] Streaming semantics are specified for event-time ordering, watermarks,
       open episode state, late events, synthetic expiration events, and
-      episode closure.
+      episode closure — as the unified engine driven by `foreachBatch`
+      triggers, with the empty-trigger expiration tick and the opt-in
+      subsecond tier called out explicitly.
 - [ ] Open episodes can be closed by synthetic expiration events and later
       revised when a real end event arrives within the allowed revision
       period, reusing existing SCD2 revision machinery.
