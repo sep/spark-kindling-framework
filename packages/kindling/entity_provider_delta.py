@@ -7,11 +7,6 @@ from typing import Callable, Dict, Literal, Optional, Type
 
 import pyspark.sql.utils
 from delta.tables import DeltaTable
-from pyspark.errors import AnalysisException
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import coalesce, col, concat_ws, lit, sha2, struct, to_json
-from pyspark.sql.types import BooleanType, StructField, StructType, TimestampType
-
 from kindling.common_transforms import *
 from kindling.features import get_feature_bool, set_runtime_feature
 
@@ -20,11 +15,16 @@ from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
+from pyspark.errors import AnalysisException
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import coalesce, col, concat_ws, lit, sha2, struct, to_json
+from pyspark.sql.types import BooleanType, StructField, StructType, TimestampType
 
 from .data_entities import *
 from .entity_provider import (
     BaseEntityProvider,
     DestinationEnsuringProvider,
+    IncrementalReadableEntityProvider,
     StreamableEntityProvider,
     StreamWritableEntityProvider,
     WritableEntityProvider,
@@ -90,14 +90,43 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
         entity,
         merge_condition: str,
     ) -> None:
-        """Run the legacy update-all / insert-all Delta merge."""
-        (
-            delta_table.alias("old")
-            .merge(source=df.alias("new"), condition=merge_condition)
-            .whenMatchedUpdateAll()
-            .whenNotMatchedInsertAll()
-            .execute()
-        )
+        """Run the legacy update-all / insert-all Delta merge.
+
+        Schema evolution is enabled explicitly: Kindling assumes additive
+        schema evolution everywhere (the write path already sets
+        mergeSchema), and without it MERGE silently drops source columns
+        the target lacks — e.g. a column added to an entity's declared
+        schema after the table was deployed would never materialize.
+
+        ``DeltaMergeBuilder.withSchemaEvolution()`` exists only from Delta
+        3.2; Kindling's floor is delta-spark 2.4 because supported managed
+        runtimes still ship older Delta. On older builders, fall back to
+        the session-conf mechanism (``schema.autoMerge.enabled``) scoped
+        to this merge and restored afterward.
+        """
+        builder = delta_table.alias("old").merge(source=df.alias("new"), condition=merge_condition)
+
+        if hasattr(builder, "withSchemaEvolution"):
+            (
+                builder.withSchemaEvolution()
+                .whenMatchedUpdateAll()
+                .whenNotMatchedInsertAll()
+                .execute()
+            )
+            return
+
+        # Delta < 3.2 compatibility path.
+        spark = df.sparkSession
+        conf_key = "spark.databricks.delta.schema.autoMerge.enabled"
+        previous = spark.conf.get(conf_key, None)
+        spark.conf.set(conf_key, "true")
+        try:
+            (builder.whenMatchedUpdateAll().whenNotMatchedInsertAll().execute())
+        finally:
+            if previous is None:
+                spark.conf.unset(conf_key)
+            else:
+                spark.conf.set(conf_key, previous)
 
 
 @DeltaMergeStrategies.register(name="scd2")
@@ -361,6 +390,7 @@ class DeltaEntityProvider(
     EntityProvider,
     BaseEntityProvider,
     DestinationEnsuringProvider,
+    IncrementalReadableEntityProvider,
     StreamableEntityProvider,
     WritableEntityProvider,
     StreamWritableEntityProvider,
@@ -1197,19 +1227,29 @@ class DeltaEntityProvider(
         """)
 
     def _read_delta_table(
-        self, table_ref: DeltaTableReference, since_version: Optional[int] = None
+        self,
+        table_ref: DeltaTableReference,
+        since_version: Optional[int] = None,
+        end_version: Optional[int] = None,
     ) -> DataFrame:
         """Read Delta table with optional change feed"""
         self.logger.debug(f"Reading Delta Table - {table_ref.table_name} version: {since_version}")
 
         if since_version is not None:
-            self.logger.debug(f"Reading change feed since version: {since_version}")
-            return (
+            self.logger.debug(
+                f"Reading change feed for versions: {since_version}..{end_version or 'latest'}"
+            )
+            reader = (
                 self.spark.read.format("delta")
                 .option("readChangeFeed", "true")
                 .option("startingVersion", since_version)
-                .load(table_ref.get_read_path())
             )
+            if end_version is not None:
+                # Bound the slice so lazily-executed reads cover exactly the
+                # versions the caller's watermark will record, even if more
+                # commits land before an action runs the plan.
+                reader = reader.option("endingVersion", end_version)
+            return reader.load(table_ref.get_read_path())
         else:
             # Use spark.read.table for catalog-managed tables rather than DeltaTable.forName,
             # which can fail on Databricks UC for unqualified 1-part names due to catalog
@@ -1516,11 +1556,57 @@ class DeltaEntityProvider(
             )
             raise
 
-    def read_entity_since_version(self, entity, since_version: int) -> DataFrame:
-        """Read entity changes since specific version"""
+    def read_entity_since_version(
+        self, entity, since_version: int, end_version: Optional[int] = None
+    ) -> DataFrame:
+        """Read entity changes since specific version (inclusive), optionally
+        bounded to end_version (inclusive)."""
         table_ref = self._get_table_reference(entity)
-        df = self._read_delta_table(table_ref, since_version)
+        df = self._read_delta_table(table_ref, since_version, end_version)
         return self._transform_delta_feed_to_changes(df, entity.merge_columns)
+
+    def read_entity_changes(self, entity, cursor: Optional[str]):
+        """IncrementalReadableEntityProvider: Delta's cursor is a stringified
+        table version. Returns (df, new_cursor); (None, None) = no new data.
+
+        The read is bounded to the version encoded in the returned cursor
+        (CDF endingVersion), so the lazily-executed slice matches what the
+        watermark will record even if more commits land before an action.
+        """
+        watermark_version = int(cursor) if cursor is not None else None
+        current_version = self.get_entity_version(entity)
+
+        if watermark_version is None and current_version == 0:
+            # Source table does not exist yet.
+            return None, None
+
+        if watermark_version is None:
+            # Initial load: full read stamped with the version it covers.
+            from kindling.common_transforms import drop_if_exists, remove_duplicates
+            from pyspark.sql.functions import current_timestamp, date_format, lit
+            from pyspark.sql.types import IntegerType, TimestampType
+
+            df = remove_duplicates(
+                self.read_entity(entity)
+                .withColumn("SourceVersion", lit(current_version).cast(IntegerType()))
+                .transform(drop_if_exists, "SourceTimestamp")
+                .withColumn(
+                    "SourceTimestamp",
+                    lit(date_format(current_timestamp(), "yyyy-MM-dd HH:mm:ss")).cast(
+                        TimestampType()
+                    ),
+                ),
+                entity.merge_columns,
+            )
+            return df, str(current_version)
+
+        if current_version > watermark_version:
+            df = self.read_entity_since_version(
+                entity, watermark_version + 1, end_version=current_version
+            )
+            return df, str(current_version)
+
+        return None, None
 
     def read_entity_as_of(self, entity, point_in_time) -> DataFrame:
         """Read entity state at a specific point in time."""

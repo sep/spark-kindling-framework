@@ -7,12 +7,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
+from pyspark.sql import DataFrame
 
 ROUTING_KEY_METHODS: tuple[str, ...] = ("hash", "concat")
 
@@ -180,7 +179,7 @@ class EntityProvider(ABC):
         pass
 
     @abstractmethod
-    def read_entity_since_version(self, entity, since_version):
+    def read_entity_since_version(self, entity, since_version, end_version=None):
         pass
 
     @abstractmethod
