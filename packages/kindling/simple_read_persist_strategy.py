@@ -79,7 +79,7 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
     Watermark bookkeeping is deliberately NOT handled here: the
     ``WatermarkAspect`` (``kindling.watermarking``) listens to
     ``persist.after_persist`` / ``persist.persist_failed`` and advances the
-    watermark to the version it captured at read time.
+    watermark to the cursor it captured at read time.
     """
 
     EMITS = [

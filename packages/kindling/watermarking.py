@@ -8,6 +8,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
 from kindling.common_transforms import *
+from kindling.entity_provider import IncrementalReadableEntityProvider
+from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
@@ -51,7 +53,14 @@ class SimpleWatermarkEntityFinder(WatermarkEntityFinder):
                 StructField("source_entity_id", StringType(), False),
                 StructField("reader_id", StringType(), False),
                 StructField("timestamp", TimestampType(), False),
+                # Legacy column: only meaningful for integer (Delta version)
+                # cursors; -1 for providers with non-integer cursors. Kept
+                # NOT NULL for compatibility with already-deployed tables.
                 StructField("last_version_processed", IntegerType(), False),
+                # The general watermark: an opaque cursor string defined and
+                # interpreted by the source entity's provider (a Delta
+                # version, a REST updated_at timestamp, queue offsets, ...).
+                StructField("cursor", StringType(), True),
                 StructField("last_execution_id", StringType(), False),
             ]
         )
@@ -99,10 +108,51 @@ class WatermarkService(ABC):
     ]
 
     @abstractmethod
-    def get_watermark(self, source_entity_id: str, reader_id: str) -> Optional[int]:
+    def get_cursor(self, source_entity_id: str, reader_id: str) -> Optional[str]:
+        """Return the stored cursor for (source, reader), or None if this
+        reader has never processed the source. The cursor is an opaque
+        string defined and interpreted only by the source entity's provider
+        (see ``IncrementalReadableEntityProvider``) — a Delta table version,
+        a REST created/updated timestamp, queue offsets, etc."""
         pass
 
     @abstractmethod
+    def save_cursor(
+        self,
+        source_entity_id: str,
+        reader_id: str,
+        cursor: str,
+        last_execution_id: str,
+    ) -> DataFrame:
+        pass
+
+    @abstractmethod
+    def read_changes(self, entity, pipe) -> Tuple[Optional[DataFrame], Optional[str]]:
+        """Read unprocessed changes AND the cursor the read covers.
+
+        Returns ``(DataFrame, new_cursor)``; ``(None, None)`` means no new
+        data. The returned cursor covers exactly the returned data — the
+        value the caller must record as the watermark once (and only once)
+        the processed output is durably persisted. Capturing it at read
+        time is what prevents source changes landing between read and
+        persist from being marked processed without ever being read.
+        """
+        pass
+
+    # -- Legacy version-typed wrappers -----------------------------------
+    # Delta cursors are stringified table versions; these wrappers keep the
+    # historical integer-based API working for callers that know they are
+    # talking to a version-cursor source.
+
+    def get_watermark(self, source_entity_id: str, reader_id: str) -> Optional[int]:
+        cursor = self.get_cursor(source_entity_id, reader_id)
+        if cursor is None:
+            return None
+        try:
+            return int(cursor)
+        except ValueError:
+            return None
+
     def save_watermark(
         self,
         source_entity_id: str,
@@ -110,23 +160,13 @@ class WatermarkService(ABC):
         last_version_processed: int,
         last_execution_id: str,
     ) -> DataFrame:
-        pass
+        return self.save_cursor(
+            source_entity_id, reader_id, str(last_version_processed), last_execution_id
+        )
 
-    @abstractmethod
     def read_current_entity_changes(self, entity, pipe):
-        pass
-
-    def read_changes_with_version(self, entity, pipe) -> Tuple[Optional[DataFrame], Optional[int]]:
-        """Read unprocessed changes AND the source version the read covers.
-
-        Returns ``(DataFrame, version)``; ``(None, None)`` means no new data.
-        The returned version is the version the read is bounded to — the
-        value the caller must record as the watermark once (and only once)
-        the processed output is durably persisted. Capturing it at read
-        time is what prevents a commit landing between read and persist
-        from being marked processed without ever being read.
-        """
-        raise NotImplementedError
+        df, _ = self.read_changes(entity, pipe)
+        return df
 
 
 @GlobalInjector.singleton_autobind()
@@ -140,15 +180,17 @@ class WatermarkManager(WatermarkService, SignalEmitter):
         wef: WatermarkEntityFinder,
         lp: PythonLoggerProvider,
         signal_provider: Optional[SignalProvider] = None,
+        provider_registry: Optional[EntityProviderRegistry] = None,
     ):
         self.wef = wef
         self.ep = ep
+        self.provider_registry = provider_registry
         self.logger = lp.get_logger("watermark")
         self.spark = get_or_create_spark_session()
         self._init_signal_emitter(signal_provider)
 
-    def get_watermark(self, source_entity_id: str, reader_id: str) -> Optional[int]:
-        self.logger.debug(f"Getting watermark for {source_entity_id}-{reader_id}")
+    def get_cursor(self, source_entity_id: str, reader_id: str) -> Optional[str]:
+        self.logger.debug(f"Getting watermark cursor for {source_entity_id}-{reader_id}")
 
         self.emit("watermark.before_get", source_entity_id=source_entity_id, reader_id=reader_id)
 
@@ -158,9 +200,9 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                 .filter(
                     (col("source_entity_id") == source_entity_id) & (col("reader_id") == reader_id)
                 )
-                .select("last_version_processed")
                 .limit(1)
             )
+            row = None if df.isEmpty() else df.first()
         except AnalysisException as e:
             if "DELTA_MISSING_DELTA_TABLE" in str(e):
                 self.logger.debug("Watermarks table does not exist yet")
@@ -172,7 +214,7 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                 return None
             raise
 
-        if df.isEmpty():
+        if row is None:
             self.logger.debug("No watermark")
             self.emit(
                 "watermark.watermark_missing",
@@ -181,33 +223,47 @@ class WatermarkManager(WatermarkService, SignalEmitter):
             )
             return None
 
-        version = df.first()["last_version_processed"]
-        self.logger.debug(f"Watermark = {version}")
+        # Prefer the general cursor column; fall back to the legacy integer
+        # column for rows written before the cursor column existed.
+        cursor = row["cursor"] if "cursor" in df.columns else None
+        if cursor is None:
+            legacy = row["last_version_processed"]
+            cursor = str(legacy) if legacy is not None and legacy >= 0 else None
+
+        self.logger.debug(f"Watermark cursor = {cursor}")
         self.emit(
             "watermark.watermark_found",
             source_entity_id=source_entity_id,
             reader_id=reader_id,
-            version=version,
+            cursor=cursor,
         )
-        return version
+        return cursor
 
-    def save_watermark(
+    def save_cursor(
         self,
         source_entity_id: str,
         reader_id: str,
-        last_version_processed: int,
+        cursor: str,
         last_execution_id: str,
     ) -> DataFrame:
         self.emit(
             "watermark.before_save",
             source_entity_id=source_entity_id,
             reader_id=reader_id,
-            last_version_processed=last_version_processed,
+            cursor=cursor,
             last_execution_id=last_execution_id,
         )
 
         try:
             timestamp = datetime.fromtimestamp(time.time())
+
+            # Legacy integer column: populated when the cursor is a version
+            # number (Delta), -1 sentinel otherwise (column is NOT NULL on
+            # already-deployed tables).
+            try:
+                legacy_version = int(cursor)
+            except (TypeError, ValueError):
+                legacy_version = -1
 
             data = [
                 (
@@ -215,7 +271,8 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                     source_entity_id,
                     reader_id,
                     timestamp,
-                    last_version_processed,
+                    legacy_version,
+                    cursor,
                     last_execution_id,
                 )
             ]
@@ -232,7 +289,7 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                 "watermark.after_save",
                 source_entity_id=source_entity_id,
                 reader_id=reader_id,
-                last_version_processed=last_version_processed,
+                cursor=cursor,
                 last_execution_id=last_execution_id,
             )
 
@@ -243,21 +300,14 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                 "watermark.save_failed",
                 source_entity_id=source_entity_id,
                 reader_id=reader_id,
-                last_version_processed=last_version_processed,
+                cursor=cursor,
                 error=str(e),
                 error_type=type(e).__name__,
             )
             raise
 
-    def read_current_entity_changes(self, entity, pipe):
-        df, _ = self.read_changes_with_version(entity, pipe)
-        return df
-
-    def read_changes_with_version(self, entity, pipe) -> Tuple[Optional[DataFrame], Optional[int]]:
-        key_columns = entity.merge_columns
-        self.logger.debug(
-            f"read_current_changes - {entity.entityid} for {pipe.name}: {str(key_columns)}"
-        )
+    def read_changes(self, entity, pipe) -> Tuple[Optional[DataFrame], Optional[str]]:
+        self.logger.debug(f"read_changes - {entity.entityid} for {pipe.name}")
 
         self.emit(
             "watermark.before_read_changes",
@@ -266,30 +316,66 @@ class WatermarkManager(WatermarkService, SignalEmitter):
             pipe_name=pipe.name,
         )
 
-        watermark_version = self.get_watermark(entity.entityid, pipe.pipeid)
-        currentVersion = self.ep.get_entity_version(entity)
+        cursor = self.get_cursor(entity.entityid, pipe.pipeid)
+        provider = self._provider_for(entity)
 
-        if watermark_version is None and currentVersion == 0:
-            self.logger.debug(
-                f"read_current_changes - {entity.entityid} for {pipe.name}: Source entity does not exist yet"
-            )
+        if isinstance(provider, IncrementalReadableEntityProvider):
+            df, new_cursor = provider.read_entity_changes(entity, cursor)
+        else:
+            df, new_cursor = self._legacy_version_read(provider, entity, cursor)
+
+        if df is None:
+            self.logger.debug(f"read_changes - {entity.entityid} for {pipe.name}: No new data")
             self.emit(
                 "watermark.no_new_data",
                 entity_id=entity.entityid,
                 pipe_id=pipe.pipeid,
                 pipe_name=pipe.name,
-                current_version=currentVersion,
-                watermark_version=watermark_version,
+                cursor=cursor,
             )
             return None, None
 
+        self.emit(
+            "watermark.after_read_changes",
+            entity_id=entity.entityid,
+            pipe_id=pipe.pipeid,
+            pipe_name=pipe.name,
+            cursor=cursor,
+            new_cursor=new_cursor,
+            has_data=True,
+            is_initial_load=cursor is None,
+        )
+        return df, new_cursor
+
+    def _provider_for(self, entity):
+        """Resolve the entity's own provider; fall back to the legacy
+        single provider when no registry is available."""
+        if self.provider_registry is not None:
+            try:
+                return self.provider_registry.get_provider_for_entity(entity)
+            except Exception:  # noqa: BLE001
+                self.logger.debug(
+                    f"Provider registry lookup failed for {entity.entityid}; "
+                    f"falling back to legacy provider"
+                )
+        return self.ep
+
+    def _legacy_version_read(
+        self, provider, entity, cursor: Optional[str]
+    ) -> Tuple[Optional[DataFrame], Optional[str]]:
+        """Version-based incremental read for providers that implement the
+        legacy EntityProvider interface but not
+        IncrementalReadableEntityProvider."""
+        watermark_version = int(cursor) if cursor is not None else None
+        current_version = provider.get_entity_version(entity)
+
+        if watermark_version is None and current_version == 0:
+            return None, None
+
         if watermark_version is None:
-            self.logger.debug(
-                f"read_current_changes - {entity.entityid} for {pipe.name}: No watermark"
-            )
-            result = remove_duplicates(
-                self.ep.read_entity(entity)
-                .withColumn("SourceVersion", lit(currentVersion).cast(IntegerType()))
+            df = remove_duplicates(
+                provider.read_entity(entity)
+                .withColumn("SourceVersion", lit(current_version).cast(IntegerType()))
                 .transform(drop_if_exists, "SourceTimestamp")
                 .withColumn(
                     "SourceTimestamp",
@@ -297,56 +383,17 @@ class WatermarkManager(WatermarkService, SignalEmitter):
                         TimestampType()
                     ),
                 ),
-                key_columns,
+                entity.merge_columns,
             )
-            self.emit(
-                "watermark.after_read_changes",
-                entity_id=entity.entityid,
-                pipe_id=pipe.pipeid,
-                pipe_name=pipe.name,
-                current_version=currentVersion,
-                watermark_version=None,
-                has_data=True,
-                is_initial_load=True,
+            return df, str(current_version)
+
+        if current_version > watermark_version:
+            df = provider.read_entity_since_version(
+                entity, watermark_version + 1, end_version=current_version
             )
-            return result, currentVersion
-        elif currentVersion > watermark_version:
-            self.logger.debug(
-                f"read_current_changes - {entity.entityid} for {pipe.name}: "
-                f"Reading changes for versions {watermark_version + 1}..{currentVersion}"
-            )
-            # Read from the version AFTER the watermark (startingVersion is
-            # inclusive), bounded to currentVersion so the slice matches the
-            # version recorded once the output persists. Reading from
-            # currentVersion instead would silently skip every commit
-            # between the watermark and the latest one.
-            result = self.ep.read_entity_since_version(
-                entity, watermark_version + 1, end_version=currentVersion
-            )
-            self.emit(
-                "watermark.after_read_changes",
-                entity_id=entity.entityid,
-                pipe_id=pipe.pipeid,
-                pipe_name=pipe.name,
-                current_version=currentVersion,
-                watermark_version=watermark_version,
-                has_data=True,
-                is_initial_load=False,
-            )
-            return result, currentVersion
-        else:
-            self.logger.debug(
-                f"read_current_changes - {entity.entityid} for {pipe.name}: No new data"
-            )
-            self.emit(
-                "watermark.no_new_data",
-                entity_id=entity.entityid,
-                pipe_id=pipe.pipeid,
-                pipe_name=pipe.name,
-                current_version=currentVersion,
-                watermark_version=watermark_version,
-            )
-            return None, None
+            return df, str(current_version)
+
+        return None, None
 
 
 @dataclass
@@ -368,12 +415,16 @@ class WatermarkAspect(SignalEmitter):
 
     - ``read.resolve_read`` (sync, interdicting): when the read is for a
       pipe's driving source with ``use_watermark`` enabled, this aspect
-      performs the incremental changes read and records the source version
-      that read covers, keyed by pipe.
+      performs the incremental changes read and records the **cursor** that
+      read covers, keyed by pipe. The cursor is an opaque, provider-defined
+      incremental position — a Delta table version, a REST provider's
+      created/updated timestamp, queue offsets — which this aspect stores
+      and returns verbatim, never interprets (see
+      ``IncrementalReadableEntityProvider``).
     - ``persist.after_persist``: advances the watermark to the recorded
-      version — the version that was READ, never re-fetched at persist
-      time, so a commit landing between read and persist is never marked
-      processed without being processed.
+      cursor — the cursor that was READ, never re-derived at persist
+      time, so source changes landing between read and persist are never
+      marked processed without being processed.
     - ``persist.persist_failed``: discards the recorded version; the
       watermark stays put and the next run re-reads the same slice
       (at-least-once, made safe by idempotent merge writes).
@@ -415,7 +466,8 @@ class WatermarkAspect(SignalEmitter):
         self.logger = lp.get_logger("WatermarkAspect")
         self._signals = signal_provider
         self._init_signal_emitter(signal_provider)
-        self._pending: Dict[str, Tuple[str, int]] = {}
+        # pipe_id -> (source_entity_id, cursor) captured at read time
+        self._pending: Dict[str, Tuple[str, str]] = {}
         self._registered = False
 
     def register(self) -> None:
@@ -454,9 +506,9 @@ class WatermarkAspect(SignalEmitter):
             if input_ids and entity.entityid == input_ids[0]:
                 self._pending.pop(pipe.pipeid, None)
             return None
-        df, version = self.wms.read_changes_with_version(entity, pipe)
-        if version is not None:
-            self._pending[pipe.pipeid] = (entity.entityid, version)
+        df, cursor = self.wms.read_changes(entity, pipe)
+        if cursor is not None:
+            self._pending[pipe.pipeid] = (entity.entityid, cursor)
         else:
             self._pending.pop(pipe.pipeid, None)
         return ResolvedRead(df=df)
@@ -465,13 +517,18 @@ class WatermarkAspect(SignalEmitter):
         pending = self._pending.pop(pipe_id, None)
         if pending is None:
             return None
-        source_entity_id, version = pending
-        self.wms.save_watermark(source_entity_id, pipe_id, version, str(uuid.uuid4()))
+        source_entity_id, cursor = pending
+        self.wms.save_cursor(source_entity_id, pipe_id, cursor, str(uuid.uuid4()))
+        try:
+            legacy_version = int(cursor)
+        except (TypeError, ValueError):
+            legacy_version = None
         self.emit(
             "persist.watermark_saved",
             pipe_id=pipe_id,
             source_entity_id=source_entity_id,
-            version=version,
+            cursor=cursor,
+            version=legacy_version,
             persist_id=persist_id,
         )
         return None

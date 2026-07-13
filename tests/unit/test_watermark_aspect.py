@@ -24,7 +24,7 @@ def signal_provider():
 @pytest.fixture
 def wms():
     wms = MagicMock(spec=WatermarkService)
-    wms.read_changes_with_version.return_value = (MagicMock(name="df"), 7)
+    wms.read_changes.return_value = (MagicMock(name="df"), "7")
     return wms
 
 
@@ -68,11 +68,32 @@ class TestHappyPath:
 
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="x")
 
-        wms.save_watermark.assert_called_once()
-        args = wms.save_watermark.call_args[0]
+        wms.save_cursor.assert_called_once()
+        args = wms.save_cursor.call_args[0]
         assert args[0] == "bronze.src"
         assert args[1] == pipe.pipeid
-        assert args[2] == 7  # the version captured at read time
+        assert args[2] == "7"  # the cursor captured at read time
+
+    def test_non_integer_cursor_round_trips_opaquely(self, aspect, wms, signal_provider):
+        """A REST-style timestamp cursor is stored verbatim — the aspect
+        never interprets cursor contents."""
+        pipe = _pipe()
+        wms.read_changes.return_value = (
+            MagicMock(name="df"),
+            "2026-07-13T10:00:00Z",
+        )
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="x")
+
+        wms.save_cursor.assert_called_once()
+        assert wms.save_cursor.call_args[0][2] == "2026-07-13T10:00:00Z"
 
     def test_reference_input_read_does_not_clear_driving_capture(
         self, aspect, wms, signal_provider
@@ -98,7 +119,7 @@ class TestHappyPath:
         )
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="x")
 
-        wms.save_watermark.assert_called_once()
+        wms.save_cursor.assert_called_once()
 
 
 class TestStalePendingLifecycle:
@@ -136,7 +157,7 @@ class TestStalePendingLifecycle:
 
         # Full-refresh runs never save watermarks — and in particular must
         # not save the version captured by the earlier failed execution.
-        wms.save_watermark.assert_not_called()
+        wms.save_cursor.assert_not_called()
 
     @pytest.mark.parametrize(
         "failure_signal", ["datapipes.pipe_failed", "orchestrator.pipe_failed"]
@@ -149,7 +170,7 @@ class TestStalePendingLifecycle:
         # Even a bare after_persist for this pipe (no fresh resolve_read)
         # must now find nothing to save.
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
-        wms.save_watermark.assert_not_called()
+        wms.save_cursor.assert_not_called()
 
     def test_persist_failed_clears_pending(self, aspect, wms, signal_provider):
         pipe = _pipe()
@@ -157,7 +178,7 @@ class TestStalePendingLifecycle:
         _emit(signal_provider, "persist.persist_failed", pipe_id=pipe.pipeid, error="boom")
 
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
-        wms.save_watermark.assert_not_called()
+        wms.save_cursor.assert_not_called()
 
     def test_no_new_data_read_clears_prior_pending(self, aspect, wms, signal_provider):
         pipe = _pipe()
@@ -165,7 +186,7 @@ class TestStalePendingLifecycle:
 
         # Next watermarked run finds no new data — capture must be cleared,
         # not left pointing at the failed run's version.
-        wms.read_changes_with_version.return_value = (None, None)
+        wms.read_changes.return_value = (None, None)
         _emit(
             signal_provider,
             "read.resolve_read",
@@ -175,7 +196,7 @@ class TestStalePendingLifecycle:
             use_watermark=True,
         )
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
-        wms.save_watermark.assert_not_called()
+        wms.save_cursor.assert_not_called()
 
     def test_failure_in_one_pipe_does_not_affect_another(self, aspect, wms, signal_provider):
         pipe_a = _pipe("pipe.a")
@@ -193,5 +214,5 @@ class TestStalePendingLifecycle:
         )
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe_b.pipeid, persist_id="w")
 
-        wms.save_watermark.assert_called_once()
-        assert wms.save_watermark.call_args[0][1] == pipe_b.pipeid
+        wms.save_cursor.assert_called_once()
+        assert wms.save_cursor.call_args[0][1] == pipe_b.pipeid

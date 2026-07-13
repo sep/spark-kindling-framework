@@ -24,6 +24,7 @@ from .data_entities import *
 from .entity_provider import (
     BaseEntityProvider,
     DestinationEnsuringProvider,
+    IncrementalReadableEntityProvider,
     StreamableEntityProvider,
     StreamWritableEntityProvider,
     WritableEntityProvider,
@@ -360,6 +361,7 @@ class DeltaEntityProvider(
     EntityProvider,
     BaseEntityProvider,
     DestinationEnsuringProvider,
+    IncrementalReadableEntityProvider,
     StreamableEntityProvider,
     WritableEntityProvider,
     StreamWritableEntityProvider,
@@ -1533,6 +1535,49 @@ class DeltaEntityProvider(
         table_ref = self._get_table_reference(entity)
         df = self._read_delta_table(table_ref, since_version, end_version)
         return self._transform_delta_feed_to_changes(df, entity.merge_columns)
+
+    def read_entity_changes(self, entity, cursor: Optional[str]):
+        """IncrementalReadableEntityProvider: Delta's cursor is a stringified
+        table version. Returns (df, new_cursor); (None, None) = no new data.
+
+        The read is bounded to the version encoded in the returned cursor
+        (CDF endingVersion), so the lazily-executed slice matches what the
+        watermark will record even if more commits land before an action.
+        """
+        watermark_version = int(cursor) if cursor is not None else None
+        current_version = self.get_entity_version(entity)
+
+        if watermark_version is None and current_version == 0:
+            # Source table does not exist yet.
+            return None, None
+
+        if watermark_version is None:
+            # Initial load: full read stamped with the version it covers.
+            from kindling.common_transforms import drop_if_exists, remove_duplicates
+            from pyspark.sql.functions import current_timestamp, date_format, lit
+            from pyspark.sql.types import IntegerType, TimestampType
+
+            df = remove_duplicates(
+                self.read_entity(entity)
+                .withColumn("SourceVersion", lit(current_version).cast(IntegerType()))
+                .transform(drop_if_exists, "SourceTimestamp")
+                .withColumn(
+                    "SourceTimestamp",
+                    lit(date_format(current_timestamp(), "yyyy-MM-dd HH:mm:ss")).cast(
+                        TimestampType()
+                    ),
+                ),
+                entity.merge_columns,
+            )
+            return df, str(current_version)
+
+        if current_version > watermark_version:
+            df = self.read_entity_since_version(
+                entity, watermark_version + 1, end_version=current_version
+            )
+            return df, str(current_version)
+
+        return None, None
 
     def read_entity_as_of(self, entity, point_in_time) -> DataFrame:
         """Read entity state at a specific point in time."""

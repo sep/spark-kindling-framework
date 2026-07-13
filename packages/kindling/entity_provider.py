@@ -227,6 +227,45 @@ class DestinationEnsuringProvider(ABC):
         pass
 
 
+class IncrementalReadableEntityProvider(ABC):
+    """
+    Optional interface for providers that can read only what changed since a
+    watermark cursor.
+
+    The cursor is an **opaque string the provider defines and interprets** —
+    the watermark framework stores and returns it verbatim, never inspects
+    it. A Delta provider encodes a table version; a REST provider might
+    encode the max ``updated_at``/``created_at`` timestamp it has served; a
+    queue-backed provider might encode offsets as JSON. All comparison
+    semantics (inclusive vs. exclusive boundaries, same-timestamp
+    collisions, lookback/overlap windows for late-arriving records, clock
+    skew of a remote system) are the provider's policy, configured per
+    entity via tags — not the framework's.
+
+    Contract:
+
+    - ``read_entity_changes(entity, None)`` is the initial load: return all
+      current data and the cursor covering it.
+    - The returned cursor must cover **exactly the data in the returned
+      DataFrame** at the time of the call. If the DataFrame is lazy, bound
+      it (e.g. Delta's ``endingVersion``) or materialize eagerly (typical
+      for REST responses) so later-arriving data cannot silently ride along
+      uncovered.
+    - ``(None, None)`` means no new data.
+    - Consumers persist the cursor only after the derived output is durably
+      written, and may re-read the same slice after a failure — providers
+      must tolerate at-least-once delivery (downstream merges are
+      idempotent by key).
+    """
+
+    @abstractmethod
+    def read_entity_changes(
+        self, entity_metadata: EntityMetadata, cursor: Optional[str]
+    ) -> "tuple[Optional[DataFrame], Optional[str]]":
+        """Read changes after ``cursor``; return ``(df, new_cursor)``."""
+        pass
+
+
 # Type aliases for checking capabilities
 def is_streamable(provider: BaseEntityProvider) -> bool:
     """Check if provider supports streaming reads."""
@@ -246,3 +285,8 @@ def is_stream_writable(provider: BaseEntityProvider) -> bool:
 def can_ensure_destination(provider: BaseEntityProvider) -> bool:
     """Check if provider supports destination ensuring."""
     return isinstance(provider, DestinationEnsuringProvider)
+
+
+def is_incremental_readable(provider: BaseEntityProvider) -> bool:
+    """Check if provider supports cursor-based incremental reads."""
+    return isinstance(provider, IncrementalReadableEntityProvider)

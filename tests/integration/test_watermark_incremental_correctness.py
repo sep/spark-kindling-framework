@@ -32,6 +32,7 @@ from kindling.data_entities import (
     EntityNameMapper,
     EntityPathLocator,
 )
+from kindling.entity_provider import IncrementalReadableEntityProvider
 from kindling.entity_provider_delta import DeltaEntityProvider
 from kindling.signaling import BlinkerSignalProvider
 from kindling.simple_read_persist_strategy import SimpleReadPersistStrategy
@@ -140,11 +141,14 @@ def delta_provider(spark, temp_dir, mock_logger_provider, monkeypatch):
 @pytest.fixture
 def watermark_manager(spark, delta_provider, mock_logger_provider, monkeypatch):
     monkeypatch.setattr("kindling.watermarking.get_or_create_spark_session", lambda: spark)
+    provider_registry = MagicMock()
+    provider_registry.get_provider_for_entity.return_value = delta_provider
     return WatermarkManager(
         ep=delta_provider,
         wef=SimpleWatermarkEntityFinder(),
         lp=mock_logger_provider,
         signal_provider=None,
+        provider_registry=provider_registry,
     )
 
 
@@ -202,8 +206,8 @@ class TestSkippedIntermediateVersions:
         # Watermark says: processed through the version that wrote row A.
         monkeypatch.setattr(
             watermark_manager,
-            "get_watermark",
-            lambda source_entity_id, reader_id: version_after_a,
+            "get_cursor",
+            lambda source_entity_id, reader_id: str(version_after_a),
         )
 
         pipe = SimpleNamespace(pipeid="pipe.skip_test", name="skip_test")
@@ -323,3 +327,76 @@ class TestWatermarkOverAdvance:
         )
         labels = {row["label"] for row in next_read.collect()}
         assert "B" in labels
+
+
+class _FakeRestProvider(IncrementalReadableEntityProvider):
+    """REST-style read-only provider: rows carry an updated_at field, and
+    the cursor is the max updated_at ISO string served so far. Strictly-
+    greater comparison; overlap/lookback policy would be provider config
+    in a real implementation."""
+
+    def __init__(self, spark):
+        self.spark = spark
+        self.rows = []
+
+    def read_entity_changes(self, entity, cursor):
+        new_rows = [r for r in self.rows if cursor is None or r[2] > cursor]
+        if not new_rows:
+            return None, None
+        df = self.spark.createDataFrame(new_rows, ["id", "label", "updated_at"])
+        return df, max(r[2] for r in new_rows)
+
+
+class TestTimestampCursorProvider:
+    """The watermark framework must treat cursors as opaque: a provider
+    whose incremental position is a timestamp (e.g. a read-only REST
+    provider keyed on created/updated fields) round-trips through the same
+    manager, aspect contract, and Delta-backed watermark storage as
+    version-cursor providers."""
+
+    def test_timestamp_cursor_round_trip(
+        self, spark, delta_provider, mock_logger_provider, monkeypatch
+    ):
+        monkeypatch.setattr("kindling.watermarking.get_or_create_spark_session", lambda: spark)
+        rest_provider = _FakeRestProvider(spark)
+        rest_entity = _make_source_entity("bronze.api_readings")
+
+        provider_registry = MagicMock()
+        provider_registry.get_provider_for_entity.return_value = rest_provider
+
+        manager = WatermarkManager(
+            ep=delta_provider,  # watermark storage stays Delta
+            wef=SimpleWatermarkEntityFinder(),
+            lp=mock_logger_provider,
+            signal_provider=None,
+            provider_registry=provider_registry,
+        )
+        pipe = SimpleNamespace(pipeid="pipe.api_test", name="api_test")
+
+        # Initial load: two rows, cursor = max updated_at.
+        rest_provider.rows = [
+            (1, "A", "2026-07-13T08:00:00Z"),
+            (2, "B", "2026-07-13T09:00:00Z"),
+        ]
+        df, cursor = manager.read_changes(rest_entity, pipe)
+        assert {r["label"] for r in df.collect()} == {"A", "B"}
+        assert cursor == "2026-07-13T09:00:00Z"
+
+        # Persist succeeded -> cursor recorded (what the aspect does).
+        manager.save_cursor(rest_entity.entityid, pipe.pipeid, cursor, "exec-1")
+
+        # The stored cursor survives the round trip through Delta storage
+        # verbatim; the legacy integer accessor degrades gracefully.
+        assert manager.get_cursor(rest_entity.entityid, pipe.pipeid) == cursor
+        assert manager.get_watermark(rest_entity.entityid, pipe.pipeid) is None
+
+        # A new row lands upstream; the next read returns only it.
+        rest_provider.rows.append((3, "C", "2026-07-13T10:30:00Z"))
+        df2, cursor2 = manager.read_changes(rest_entity, pipe)
+        assert {r["label"] for r in df2.collect()} == {"C"}
+        assert cursor2 == "2026-07-13T10:30:00Z"
+
+        # And with nothing new, no data and no cursor movement.
+        manager.save_cursor(rest_entity.entityid, pipe.pipeid, cursor2, "exec-2")
+        df3, cursor3 = manager.read_changes(rest_entity, pipe)
+        assert df3 is None and cursor3 is None
