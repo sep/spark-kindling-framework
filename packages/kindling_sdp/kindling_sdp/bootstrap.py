@@ -35,9 +35,8 @@ def activate_sdp_mode() -> None:
     """Install the write-inert provider guard for this process.
 
     Called by ``kindling.initialize(engine="sdp")`` after core framework
-    initialization. Idempotent in effect: installing the decorator twice
-    re-wraps only if instances were created in between, and the guard
-    delegates reads either way.
+    initialization. Idempotent: the registry treats re-installing the same
+    decorator as a no-op (and refuses to stack a different one).
     """
     from kindling.entity_provider_registry import EntityProviderRegistry
     from kindling.injection import GlobalInjector

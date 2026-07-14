@@ -20,17 +20,21 @@ class FakeConfigService:
 
 class TestEngineSelection:
     def test_unknown_sdp_engine_fails_with_supported_list(self):
+        """Resolution raises BEFORE returning an activation callable, so
+        initialize() fails before any framework state is created."""
         with pytest.raises(ValueError, match="databricks_sdp.*not available"):
-            kindling._activate_sdp_mode("databricks_sdp")
+            kindling._resolve_sdp_activation("databricks_sdp")
 
-    def test_sdp_engine_activates_guard(self, monkeypatch):
+    def test_resolution_has_no_side_effects_activation_is_deferred(self, monkeypatch):
         import kindling_sdp.bootstrap as sdp_bootstrap
 
         calls = []
         monkeypatch.setattr(sdp_bootstrap, "activate_sdp_mode", lambda: calls.append(True))
 
-        kindling._activate_sdp_mode("sdp")
+        activate = kindling._resolve_sdp_activation("sdp")
 
+        assert calls == [], "resolving must not activate"
+        activate()
         assert calls == [True]
 
 

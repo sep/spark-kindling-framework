@@ -291,6 +291,35 @@ class TestWriteGuard:
         with pytest.raises(SdpModeWriteError):
             guarded.write_to_entity("df", self.entity)
 
+    def _make_registry(self):
+        from unittest.mock import MagicMock
+
+        from kindling.entity_provider_registry import EntityProviderRegistry
+
+        registry = EntityProviderRegistry.__new__(EntityProviderRegistry)
+        registry.logger = MagicMock()
+        registry._provider_classes = {}
+        registry._provider_instances = {"delta": FakeProvider()}
+        registry._provider_decorator = None
+        return registry
+
+    def test_reinstalling_same_decorator_never_double_wraps(self):
+        registry = self._make_registry()
+        registry.set_provider_decorator(SdpWriteGuardProvider)
+
+        registry.set_provider_decorator(SdpWriteGuardProvider)
+
+        guarded = registry._provider_instances["delta"]
+        assert isinstance(guarded, SdpWriteGuardProvider)
+        assert isinstance(guarded._inner, FakeProvider), "must not nest guards"
+
+    def test_installing_a_different_decorator_is_a_mode_conflict(self):
+        registry = self._make_registry()
+        registry.set_provider_decorator(SdpWriteGuardProvider)
+
+        with pytest.raises(ValueError, match="already installed"):
+            registry.set_provider_decorator(lambda p: p)
+
 
 # --------------------------------------------------------------------- #
 # Dry-run harness                                                        #

@@ -38,7 +38,21 @@ class EntityProviderRegistry:
         bootstrap installs a write-inert guard here so that no imperative
         write path is reachable while SDP owns persistence, without any
         provider being mode-aware itself.
+
+        Idempotent: installing the same decorator again is a no-op (cached
+        instances are never double-wrapped). Installing a DIFFERENT
+        decorator while one is active is an execution-mode conflict and
+        raises rather than silently nesting personalities.
         """
+        if self._provider_decorator is decorator:
+            return
+        if self._provider_decorator is not None:
+            raise ValueError(
+                f"A provider decorator is already installed "
+                f"({self._provider_decorator}); refusing to stack "
+                f"{decorator} on top of it. One execution-mode provider "
+                "personality per process."
+            )
         self._provider_decorator = decorator
         self._provider_instances = {
             provider_type: decorator(instance)

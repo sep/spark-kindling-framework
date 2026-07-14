@@ -59,14 +59,26 @@ def initialize(config=None, app_name=None, engine=None):
     if engine is not None:
         config["engine"] = engine
 
+    # Resolve SDP availability BEFORE framework initialization: a missing
+    # kindling_sdp package or an unsupported engine name must fail with the
+    # framework untouched, not half-initialized in SDP mode.
+    activate = None
+    if config.get("engine") in ("sdp", "databricks_sdp"):
+        activate = _resolve_sdp_activation(config["engine"])
+
     result = initialize_framework(config)
 
-    if config.get("engine") in ("sdp", "databricks_sdp"):
-        _activate_sdp_mode(config["engine"])
+    if activate is not None:
+        activate()
     return result
 
 
-def _activate_sdp_mode(engine_name):
+def _resolve_sdp_activation(engine_name):
+    """Validate SDP-mode availability and return the activation callable.
+
+    Raises (ImportError / ValueError) without side effects so callers can
+    check availability before any framework state is created.
+    """
     try:
         from kindling_sdp.bootstrap import SUPPORTED_ENGINES, activate_sdp_mode
     except ImportError as exc:
@@ -80,7 +92,7 @@ def _activate_sdp_mode(engine_name):
             f"(supported: {', '.join(SUPPORTED_ENGINES)}). The Databricks "
             "adapter arrives with kindling_databricks_sdp."
         )
-    activate_sdp_mode()
+    return activate_sdp_mode
 
 
 def declare_pipeline(pipe_ids=None):
