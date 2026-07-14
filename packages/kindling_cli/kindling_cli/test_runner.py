@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
 SUPPORTED_SUITES = ("unit", "component", "integration", "system", "extension", "all")
+SUPPORTED_PLATFORMS = ("databricks", "fabric", "synapse")
 
 
 @dataclass(frozen=True)
@@ -336,3 +338,101 @@ def _cleanup_old_packages() -> int:
 def flatten_pytest_args(values: Iterable[str]) -> List[str]:
     """Normalize repeated --pytest-arg values into a plain list."""
     return [value for value in values if value]
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Stdlib mirror of the ``kindling test`` click surface (cli.py).
+
+    Option names, choices, and defaults must stay in lockstep with the
+    click commands — both frontends build the same ``TestRunOptions`` and
+    call the same ``run_tests``/``run_preflight``/``run_cleanup``.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m kindling_cli.test_runner",
+        description="Run Kindling test suites without the click CLI.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    run_p = sub.add_parser("run", help="Run pytest using Kindling's shared test conventions.")
+    run_p.add_argument("--suite", choices=SUPPORTED_SUITES, default="unit")
+    run_p.add_argument("--path", dest="paths", action="append", type=Path, default=[])
+    run_p.add_argument("--platform", choices=SUPPORTED_PLATFORMS, default=None)
+    run_p.add_argument("--test", dest="test_filter", default=None)
+    run_p.add_argument("--marker", default=None)
+    run_p.add_argument("--ci", action="store_true")
+    run_p.add_argument("--results-dir", dest="results_dir", type=Path, default=Path("test-results"))
+    run_p.add_argument("--workers", default=None)
+    run_p.add_argument("--coverage", action="append", default=[])
+    run_p.add_argument("--no-cov", dest="no_cov", action="store_true")
+    run_p.add_argument("--preflight", choices=["none", "local", "system"], default="none")
+    run_p.add_argument("--dotenv", dest="dotenv_paths", action="append", type=Path, default=[])
+    run_p.add_argument("--no-dotenv", dest="no_dotenv", action="store_true")
+    run_p.add_argument("--pytest-arg", dest="pytest_args", action="append", default=[])
+
+    check_p = sub.add_parser("check", help="Run a preflight check without pytest.")
+    check_p.add_argument("--preflight", choices=["local", "system"], default="local")
+    check_p.add_argument("--platform", choices=SUPPORTED_PLATFORMS, default=None)
+
+    cleanup_p = sub.add_parser("cleanup", help="Clean up system-test resources.")
+    cleanup_p.add_argument("--platform", choices=SUPPORTED_PLATFORMS, default=None)
+    cleanup_p.add_argument("--all", dest="all_platforms", action="store_true")
+    cleanup_p.add_argument("--skip-packages", dest="skip_packages", action="store_true")
+
+    return parser
+
+
+def options_from_args(args: argparse.Namespace) -> TestRunOptions:
+    """Build TestRunOptions from parsed ``run`` arguments (same dotenv
+    resolution as the click command)."""
+    if args.no_dotenv:
+        dotenv_paths: Sequence[Path] = ()
+    elif args.dotenv_paths:
+        dotenv_paths = tuple(args.dotenv_paths)
+    else:
+        dotenv_paths = (Path(".env"),)
+
+    return TestRunOptions(
+        suite=args.suite,
+        paths=tuple(args.paths),
+        platform=args.platform,
+        test_filter=args.test_filter,
+        marker=args.marker,
+        ci=args.ci,
+        results_dir=args.results_dir,
+        workers=args.workers,
+        coverage=tuple(args.coverage),
+        no_cov=args.no_cov,
+        preflight=args.preflight,
+        dotenv_paths=dotenv_paths,
+        pytest_args=flatten_pytest_args(args.pytest_args),
+    )
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Direct entry point: ``python -m kindling_cli.test_runner <cmd> ...``.
+
+    Poe tasks invoke this module so local test execution shares ONE
+    implementation with ``kindling test ...`` while depending only on the
+    standard library — no CLI packaging, console-script entry points, or
+    click import required. The interpreter running this module needs
+    nothing installed: pytest (and any preflight tools) are launched as
+    subprocesses resolved from PATH, under their own environments.
+    """
+    args = _build_arg_parser().parse_args(argv)
+    try:
+        if args.command == "run":
+            return run_tests(options_from_args(args))
+        if args.command == "check":
+            return run_preflight(args.preflight, args.platform)
+        return run_cleanup(
+            args.platform,
+            all_platforms=args.all_platforms,
+            skip_packages=args.skip_packages,
+        )
+    except (RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
