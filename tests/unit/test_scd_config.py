@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from kindling.data_entities import (
     EntityMetadata,
     _validate_scd_config,
@@ -213,3 +212,102 @@ def test_scd_config_from_tags_optimize_unchanged_case_insensitive():
     )
 
     assert cfg.optimize_unchanged is True
+
+
+# -- Declared-flow additions: sequence_by / source_kind / delete_when --------
+
+
+def test_scd_defaults_are_change_feed_without_sequence_or_deletes():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.type": "2"}))
+
+    assert cfg.source_kind == "change_feed"
+    assert cfg.sequence_by is None
+    assert cfg.delete_when is None
+    assert cfg.close_on_missing is False
+
+
+def test_scd_source_kind_snapshot_implies_close_on_missing():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.type": "2", "scd.source_kind": "snapshot"}))
+
+    assert cfg.source_kind == "snapshot"
+    assert cfg.close_on_missing is True
+
+
+def test_scd_close_on_missing_is_sugar_for_snapshot():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.type": "2", "scd.close_on_missing": "true"}))
+
+    assert cfg.source_kind == "snapshot"
+    assert cfg.close_on_missing is True
+
+
+def test_scd_source_kind_invalid_value_raises():
+    with pytest.raises(ValueError, match="scd.source_kind"):
+        scd_config_from_tags(make_entity(tags={"scd.type": "2", "scd.source_kind": "stream"}))
+
+
+def test_scd_change_feed_with_close_on_missing_raises():
+    with pytest.raises(ValueError, match="contradicts"):
+        scd_config_from_tags(
+            make_entity(
+                tags={
+                    "scd.type": "2",
+                    "scd.source_kind": "change_feed",
+                    "scd.close_on_missing": "true",
+                }
+            )
+        )
+
+
+def test_scd_delete_when_with_snapshot_raises():
+    with pytest.raises(ValueError, match="delete_when"):
+        scd_config_from_tags(
+            make_entity(
+                tags={
+                    "scd.type": "2",
+                    "scd.source_kind": "snapshot",
+                    "scd.delete_when": "op = 'D'",
+                }
+            )
+        )
+
+
+def test_scd_delete_when_parsed_for_change_feed():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.type": "2", "scd.delete_when": "op = 'D'"}))
+
+    assert cfg.delete_when == "op = 'D'"
+    assert cfg.source_kind == "change_feed"
+
+
+def test_scd_sequence_by_parsed():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.type": "2", "scd.sequence_by": "updated_at"}))
+
+    assert cfg.sequence_by == "updated_at"
+
+
+def test_validate_sequence_by_must_be_in_schema():
+    entity = make_entity(
+        merge_columns=["id"],
+        tags={"scd.type": "2", "scd.sequence_by": "updated_at"},
+        schema=make_schema("id", "status"),
+    )
+    with pytest.raises(ValueError, match="sequence_by"):
+        _validate_scd_config(entity)
+
+
+def test_validate_sequence_by_must_not_be_temporal_column():
+    entity = make_entity(
+        merge_columns=["id"],
+        tags={"scd.type": "2", "scd.sequence_by": "__effective_from"},
+        schema=make_schema("id", "status"),
+    )
+    with pytest.raises(ValueError, match="business data column"):
+        _validate_scd_config(entity)
+
+
+def test_validate_sequence_by_in_schema_passes():
+    entity = make_entity(
+        merge_columns=["id"],
+        tags={"scd.type": "2", "scd.sequence_by": "updated_at"},
+        schema=make_schema("id", "status", "updated_at"),
+    )
+    _validate_scd_config(entity)
