@@ -3,7 +3,7 @@
 from functools import reduce
 from typing import Optional
 
-from .entities import events_schema
+from .entities import episodes_schema, events_schema
 from .validation import ActiveSparkSqlExpressionParser, TemporalConditionValidator
 
 
@@ -93,3 +93,79 @@ class ConditionEngineRunner:
             attributes.alias("attributes"),
             F.current_timestamp().alias("ingested_at"),
         )
+
+
+class EpisodeRunner:
+    """Form closed Episodes by pairing start and end Events."""
+
+    def execute(self, events_df, episode):
+        from pyspark.sql import functions as F
+        from pyspark.sql.window import Window
+
+        starts = events_df.filter(F.col("event_type") == F.lit(episode.start_event))
+        ends = events_df.filter(F.col("event_type") == F.lit(episode.end_event))
+        if episode.subject_type:
+            starts = starts.filter(F.col("subject_type") == F.lit(episode.subject_type))
+            ends = ends.filter(F.col("subject_type") == F.lit(episode.subject_type))
+
+        starts = starts.alias("start")
+        ends = ends.alias("end")
+        candidates = starts.join(
+            ends,
+            on=[
+                F.col("start.subject_type") == F.col("end.subject_type"),
+                F.col("start.subject_id") == F.col("end.subject_id"),
+                F.col("end.event_ts") >= F.col("start.event_ts"),
+            ],
+            how="inner",
+        )
+        window = Window.partitionBy(F.col("start.event_id")).orderBy(
+            F.col("end.event_ts"), F.col("end.event_id")
+        )
+        paired = candidates.withColumn("__episode_pair_rank", F.row_number().over(window)).filter(
+            F.col("__episode_pair_rank") == F.lit(1)
+        )
+
+        duration_ms = (
+            F.col("end.event_ts").cast("long") - F.col("start.event_ts").cast("long")
+        ) * F.lit(1000)
+        episode_id = F.sha2(
+            F.concat_ws(
+                "||",
+                F.lit(episode.episodeid),
+                F.col("start.event_id").cast("string"),
+                F.col("end.event_id").cast("string"),
+            ),
+            256,
+        )
+        attributes = F.create_map(
+            F.lit("start_event_type"),
+            F.lit(episode.start_event),
+            F.lit("end_event_type"),
+            F.lit(episode.end_event),
+        )
+
+        return paired.select(
+            episode_id.alias("episode_id"),
+            F.lit(episode.episodeid).alias("episode_type"),
+            F.lit(episode.condition_id).alias("condition_id"),
+            F.lit(None).cast("string").alias("parent_episode_id"),
+            F.col("start.subject_type").alias("subject_type"),
+            F.col("start.subject_id").alias("subject_id"),
+            F.col("start.event_id").alias("start_event_id"),
+            F.col("end.event_id").alias("end_event_id"),
+            F.col("start.event_ts").alias("start_time"),
+            F.col("end.event_ts").alias("end_time"),
+            F.lit("closed").alias("status"),
+            F.lit("end_event").alias("close_reason"),
+            F.lit(False).alias("end_event_synthetic"),
+            duration_ms.cast("long").alias("duration_ms"),
+            F.lit(None).cast("long").alias("event_count"),
+            F.current_timestamp().alias("created_at"),
+            F.current_timestamp().alias("updated_at"),
+            attributes.alias("attributes"),
+        )
+
+    @staticmethod
+    def empty(spark):
+        return spark.createDataFrame([], episodes_schema())

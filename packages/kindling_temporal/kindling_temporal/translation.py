@@ -6,7 +6,7 @@ from kindling.data_entities import DataEntityRegistry, EntityMetadata
 from kindling.data_pipes import DataPipesRegistry
 
 if TYPE_CHECKING:
-    from .registry import BaseEventMetadata, ConditionEngineMetadata
+    from .registry import BaseEventMetadata, ConditionEngineMetadata, EpisodeMetadata
 
 
 class TemporalPipeTranslator:
@@ -14,6 +14,7 @@ class TemporalPipeTranslator:
 
     BASE_EVENT_PIPE_PREFIX = "temporal.event."
     CONDITION_ENGINE_PIPE_PREFIX = "temporal.condition."
+    EPISODE_PIPE_PREFIX = "temporal.episode."
 
     @classmethod
     def base_event_pipe_id(cls, eventid: str) -> str:
@@ -22,6 +23,10 @@ class TemporalPipeTranslator:
     @classmethod
     def condition_engine_pipe_id(cls, engineid: str) -> str:
         return f"{cls.CONDITION_ENGINE_PIPE_PREFIX}{engineid}"
+
+    @classmethod
+    def episode_pipe_id(cls, episodeid: str) -> str:
+        return f"{cls.EPISODE_PIPE_PREFIX}{episodeid}"
 
     @classmethod
     def register_base_event(
@@ -57,6 +62,26 @@ class TemporalPipeTranslator:
 
         pipeid = metadata.pipeid or cls.condition_engine_pipe_id(metadata.engineid)
         pipe_registry.register_pipe(pipeid, **cls.condition_engine_pipe_params(metadata))
+        return pipeid
+
+    @classmethod
+    def register_episode(
+        cls,
+        metadata: "EpisodeMetadata",
+        pipe_registry: DataPipesRegistry,
+        entity_registry: Optional[DataEntityRegistry] = None,
+        output_entity: Optional[EntityMetadata] = None,
+        events_entity: Optional[EntityMetadata] = None,
+    ) -> str:
+        """Register an episode declaration as a normal Kindling pipe."""
+        if entity_registry is not None:
+            if output_entity is not None:
+                cls.ensure_entity(entity_registry, output_entity)
+            if events_entity is not None:
+                cls.ensure_entity(entity_registry, events_entity)
+
+        pipeid = metadata.pipeid or cls.episode_pipe_id(metadata.episodeid)
+        pipe_registry.register_pipe(pipeid, **cls.episode_pipe_params(metadata))
         return pipeid
 
     @classmethod
@@ -104,6 +129,25 @@ class TemporalPipeTranslator:
         }
 
     @classmethod
+    def episode_pipe_params(cls, metadata: "EpisodeMetadata") -> Dict[str, Any]:
+        return {
+            "name": metadata.name or f"Temporal episode: {metadata.episodeid}",
+            "execute": cls.episode_execute(metadata),
+            "tags": {
+                **metadata.tags,
+                "pipe_type": "temporal.episode",
+                "temporal.kind": "episode",
+                "temporal.episode_id": metadata.episodeid,
+                "temporal.start_event": metadata.start_event,
+                "temporal.end_event": metadata.end_event,
+            },
+            "input_entity_ids": [metadata.events_entity_id],
+            "output_entity_id": metadata.output_entity_id,
+            "output_type": metadata.output_type,
+            "use_watermark": metadata.use_watermark,
+        }
+
+    @classmethod
     def base_event_execute(cls, metadata: "BaseEventMetadata"):
         """Build the executable function for a lowered base event pipe."""
 
@@ -116,6 +160,27 @@ class TemporalPipeTranslator:
             source_df = next(iter(entity_dfs.values()))
             event_df = metadata.transform(source_df) if metadata.transform else source_df
             return cls.select_event_envelope(event_df, metadata)
+
+        return execute
+
+    @classmethod
+    def episode_execute(cls, metadata: "EpisodeMetadata"):
+        """Build the executable function for a lowered episode pipe."""
+
+        def execute(**entity_dfs):
+            events_key = metadata.events_entity_id.replace(".", "_")
+            try:
+                events_df = entity_dfs[events_key]
+            except KeyError as exc:
+                available = ", ".join(sorted(entity_dfs.keys()))
+                raise ValueError(
+                    f"Temporal episode '{metadata.episodeid}' expected input "
+                    f"'{events_key}', got: {available}"
+                ) from exc
+
+            from .engine import EpisodeRunner
+
+            return EpisodeRunner().execute(events_df, metadata)
 
         return execute
 

@@ -1,6 +1,6 @@
 """Temporal event, condition, and episode primitives for Kindling."""
 
-from .engine import ConditionEngineRunner
+from .engine import ConditionEngineRunner, EpisodeRunner
 from .entities import (
     SimpleTemporalEntityResolver,
     TemporalEntityResolver,
@@ -40,6 +40,7 @@ __all__ = [
     "DataEpisodes",
     "DataEvents",
     "EpisodeMetadata",
+    "EpisodeRunner",
     "InvalidCondition",
     "SimpleTemporalEntityResolver",
     "TemporalConditionValidator",

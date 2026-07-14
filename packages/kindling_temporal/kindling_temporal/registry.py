@@ -53,6 +53,11 @@ class EpisodeMetadata:
     events_entity_id: str
     start_event: str
     end_event: str
+    condition_id: Optional[str] = None
+    name: Optional[str] = None
+    pipeid: Optional[str] = None
+    output_type: str = "delta"
+    use_watermark: bool = True
     subject_type: Optional[str] = None
     min_duration_seconds: Optional[int] = None
     max_duration_seconds: Optional[int] = None
@@ -202,12 +207,14 @@ class DataEpisodes:
     registry = None
     resolver = None
     data_entity_registry = None
+    data_pipe_registry = None
 
     @classmethod
     def reset(cls) -> None:
         cls.registry = None
         cls.resolver = None
         cls.data_entity_registry = None
+        cls.data_pipe_registry = None
 
     @classmethod
     def _registry(cls) -> TemporalEpisodeRegistry:
@@ -228,6 +235,12 @@ class DataEpisodes:
         return cls.data_entity_registry
 
     @classmethod
+    def _data_pipe_registry(cls) -> DataPipesRegistry:
+        if cls.data_pipe_registry is None:
+            cls.data_pipe_registry = GlobalInjector.get(DataPipesRegistry)
+        return cls.data_pipe_registry
+
+    @classmethod
     def episode(cls, **decorator_params):
         """Register an event-pair episode definition."""
         params = dict(decorator_params)
@@ -239,7 +252,16 @@ class DataEpisodes:
         TemporalPipeTranslator.ensure_entity(entity_registry, events_entity)
         params["output_entity_id"] = episodes_entity.entityid
         params["events_entity_id"] = events_entity.entityid
+        params.setdefault("condition_id", _infer_condition_id(params["start_event"]))
         cls._registry().register_episode(episodeid, **params)
+        metadata = cls._registry().get_episode_definition(episodeid)
+        TemporalPipeTranslator.register_episode(
+            metadata,
+            cls._data_pipe_registry(),
+            entity_registry=entity_registry,
+            output_entity=episodes_entity,
+            events_entity=events_entity,
+        )
 
 
 class TemporalEventRegistryManager(TemporalEventRegistry):
@@ -287,3 +309,9 @@ class TemporalEpisodeRegistryManager(TemporalEpisodeRegistry):
 
     def get_episode_definition(self, episodeid: str) -> Optional[EpisodeMetadata]:
         return self.episodes.get(episodeid)
+
+
+def _infer_condition_id(start_event: str) -> str:
+    if start_event.endswith(".entered"):
+        return start_event[: -len(".entered")]
+    return start_event
