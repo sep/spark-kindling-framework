@@ -179,6 +179,8 @@ class DeclarationEngine(ABC):
         selected = self._select_pipe_ids(pipe_ids)
         producers = self._producers_by_entity(selected)
         pipe = self.pipe_registry.get_pipe_definition(pipe_id)
+        if pipe is None:
+            raise KeyError(f"Pipe '{pipe_id}' is not registered in the DataPipes registry")
         return self._classify(pipe, producers)
 
     # ------------------------------------------------------------------ #

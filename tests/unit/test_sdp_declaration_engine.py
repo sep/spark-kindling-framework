@@ -198,6 +198,12 @@ class TestInputClassification:
 
         assert silver.classification is InputClassification.EXTERNAL
 
+    def test_unregistered_pipe_id_raises_actionable_error(self, entity_registry, pipe_registry):
+        engine = make_engine(entity_registry, pipe_registry)
+
+        with pytest.raises(KeyError, match="'no_such.pipe' is not registered"):
+            engine.classify_inputs("no_such.pipe")
+
     def test_plan_records_classified_inputs(self, entity_registry, pipe_registry):
         engine = make_engine(entity_registry, pipe_registry)
 
