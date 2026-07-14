@@ -55,6 +55,7 @@ class EpisodeMetadata:
     end_event: str
     condition_id: Optional[str] = None
     determination_event: Optional[str] = None
+    invalidation_event: Optional[str] = None
     name: Optional[str] = None
     pipeid: Optional[str] = None
     determination_pipeid: Optional[str] = None
@@ -267,6 +268,7 @@ class DataEpisodes:
         params["events_entity_id"] = events_entity.entityid
         params.setdefault("condition_id", _infer_condition_id(params["start_event"]))
         params.setdefault("determination_event", f"{episodeid}.closed")
+        params.setdefault("invalidation_event", f"{episodeid}.invalidated")
         params["tags"] = params.get("tags") or {}
         cls._registry().register_episode(episodeid, **params)
         metadata = _require_metadata(

@@ -181,6 +181,7 @@ class TemporalPipeTranslator:
                 "temporal.kind": "episode_event",
                 "temporal.episode_id": metadata.episodeid,
                 "temporal.event_type": metadata.determination_event,
+                "temporal.invalidation_event_type": metadata.invalidation_event,
                 "temporal.start_event": metadata.start_event,
                 "temporal.end_event": metadata.end_event,
             },

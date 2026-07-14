@@ -129,12 +129,15 @@ class EpisodeRunner:
 
         paired = self._paired_boundaries(
             events_df, episode, evaluation_time=evaluation_time
-        ).filter(F.col("status").isin("closed", "expired"))
+        ).filter(F.col("status").isin("closed", "expired", "invalidated"))
         determination_event = episode.determination_event or f"{episode.episodeid}.closed"
         expiration_event = episode.expiration_event or f"{episode.episodeid}.expired"
-        emitted_event_type = F.when(
-            F.col("status") == F.lit("expired"), F.lit(expiration_event)
-        ).otherwise(F.lit(determination_event))
+        invalidation_event = episode.invalidation_event or f"{episode.episodeid}.invalidated"
+        emitted_event_type = (
+            F.when(F.col("status") == F.lit("expired"), F.lit(expiration_event))
+            .when(F.col("status") == F.lit("invalidated"), F.lit(invalidation_event))
+            .otherwise(F.lit(determination_event))
+        )
         event_id = F.sha2(
             F.concat_ws(
                 "||",
@@ -270,20 +273,30 @@ class EpisodeRunner:
             .when(is_expired, expiration_time)
             .otherwise(F.lit(None).cast("timestamp"))
         )
-        status = (
-            F.when(is_closed, F.lit("closed"))
-            .when(is_expired, F.lit("expired"))
-            .otherwise(F.lit("open"))
-        )
-        close_reason = (
-            F.when(is_closed, F.lit("end_event"))
-            .when(is_expired, F.lit("expiration"))
-            .otherwise(F.lit(None).cast("string"))
-        )
         duration_ms = F.when(
             end_time.isNotNull(),
             (end_time.cast("long") - F.col("start.event_ts").cast("long")) * F.lit(1000),
         ).otherwise(F.lit(None).cast("long"))
+        is_too_short = F.lit(False)
+        if episode.min_duration_seconds is not None:
+            is_too_short = is_closed & (duration_ms < F.lit(episode.min_duration_seconds * 1000))
+        is_too_long = F.lit(False)
+        if episode.max_duration_seconds is not None:
+            is_too_long = is_closed & (duration_ms > F.lit(episode.max_duration_seconds * 1000))
+        is_invalidated = is_too_short | is_too_long
+        status = (
+            F.when(is_invalidated, F.lit("invalidated"))
+            .when(is_closed, F.lit("closed"))
+            .when(is_expired, F.lit("expired"))
+            .otherwise(F.lit("open"))
+        )
+        close_reason = (
+            F.when(is_too_short, F.lit("min_duration"))
+            .when(is_too_long, F.lit("max_duration"))
+            .when(is_closed, F.lit("end_event"))
+            .when(is_expired, F.lit("expiration"))
+            .otherwise(F.lit(None).cast("string"))
+        )
         episode_id = F.sha2(
             F.concat_ws(
                 "||",

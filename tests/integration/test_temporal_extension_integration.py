@@ -366,6 +366,64 @@ def test_episode_runner_prefers_visible_real_end_over_batch_expiration(spark):
 
 
 @pytest.mark.requires_spark
+def test_episode_runner_invalidates_closed_episode_outside_duration_bounds(spark):
+    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+
+    boundary_events = ConditionEngineRunner().execute(_events_df(spark), _conditions_df(spark))
+    runner = EpisodeRunner()
+
+    too_short_episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        invalidation_event="episode.temperature_high_active.invalidated",
+        min_duration_seconds=900,
+        subject_type="machine",
+    )
+    too_short_row = runner.execute(boundary_events, too_short_episode).collect()[0]
+    too_short_event = runner.execute_determination_events(
+        boundary_events, too_short_episode
+    ).collect()[0]
+
+    assert too_short_row.status == "invalidated"
+    assert too_short_row.close_reason == "min_duration"
+    assert too_short_row.end_event_synthetic is False
+    assert too_short_row.duration_ms == 600000
+    assert too_short_event.event_type == "episode.temperature_high_active.invalidated"
+    assert too_short_event.payload["status"] == "invalidated"
+    assert too_short_event.payload["close_reason"] == "min_duration"
+    assert too_short_event.payload["duration_ms"] == "600000"
+
+    too_long_episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        invalidation_event="episode.temperature_high_active.invalidated",
+        max_duration_seconds=300,
+        subject_type="machine",
+    )
+    too_long_row = runner.execute(boundary_events, too_long_episode).collect()[0]
+    too_long_event = runner.execute_determination_events(
+        boundary_events, too_long_episode
+    ).collect()[0]
+
+    assert too_long_row.status == "invalidated"
+    assert too_long_row.close_reason == "max_duration"
+    assert too_long_row.end_event_synthetic is False
+    assert too_long_row.duration_ms == 600000
+    assert too_long_event.event_type == "episode.temperature_high_active.invalidated"
+    assert too_long_event.payload["status"] == "invalidated"
+    assert too_long_event.payload["close_reason"] == "max_duration"
+    assert too_long_event.payload["duration_ms"] == "600000"
+
+
+@pytest.mark.requires_spark
 def test_episode_runner_emits_episode_determination_event(spark):
     from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
 

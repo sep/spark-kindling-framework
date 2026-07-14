@@ -25,9 +25,12 @@ complete temporal-processing system described in the white paper and proposal.
   explicit evaluation time or bounded input horizon;
 - bounded batch correction where a visible real end event wins over synthetic
   expiration while preserving the same `episode_id`;
+- closed-episode invalidation for configured `min_duration_seconds` and
+  `max_duration_seconds` bounds;
 - episode-determination events emitted back into the canonical event envelope
   with `correlation_id = episode_id` and incremented generation numbers,
-  including expiration events for expired episodes;
+  including expiration events for expired episodes and invalidation events for
+  invalidated episodes;
 - unit, integration, and system coverage for the first executable slice.
 
 ## Lifecycle identity
@@ -44,8 +47,8 @@ do not create a different episode identity.
 The remaining proposal work is tracked here so the current package is not
 mistaken for a full implementation:
 
-- invalidated episode lifecycle handling and stateful late real-end revision of
-  already-persisted expired episodes;
+- stateful late real-end revision of already-persisted expired or invalidated
+  episodes;
 - late-event grace windows, watermarks, replay/backfill semantics, and
   stateful streaming execution;
 - multi-generation orchestration beyond one condition-engine pass;

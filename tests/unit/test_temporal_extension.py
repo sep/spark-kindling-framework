@@ -295,6 +295,7 @@ def test_episode_registration_uses_canonical_entities():
     assert metadata.end_event == "condition.machine_running.exited"
     assert metadata.condition_id == "condition.machine_running"
     assert metadata.determination_event == "episode.machine_cycle.closed"
+    assert metadata.invalidation_event == "episode.machine_cycle.invalidated"
     assert metadata.expires_after_seconds == 28800
     assert entity_registry.get_entity_definition("silver.events") is not None
     assert entity_registry.get_entity_definition("silver.episodes") is not None
@@ -316,6 +317,9 @@ def test_episode_registration_uses_canonical_entities():
     assert event_pipe.use_watermark is True
     assert event_pipe.tags["pipe_type"] == "temporal.episode_event"
     assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.closed"
+    assert (
+        event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.invalidated"
+    )
     assert event_pipe.tags["temporal.start_event"] == "condition.machine_running.entered"
     assert event_pipe.tags["temporal.end_event"] == "condition.machine_running.exited"
     assert callable(event_pipe.execute)
@@ -344,15 +348,18 @@ def test_episode_registration_accepts_explicit_determination_event_and_pipe_id()
             start_event="condition.machine_running.entered",
             end_event="condition.machine_running.exited",
             determination_event="episode.machine_cycle.completed",
+            invalidation_event="episode.machine_cycle.rejected",
             determination_pipeid="temporal.episode_event.machine_cycle_completed",
         )
 
     metadata = registry.get_episode_definition("episode.machine_cycle")
     assert metadata.determination_event == "episode.machine_cycle.completed"
+    assert metadata.invalidation_event == "episode.machine_cycle.rejected"
 
     event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.machine_cycle_completed")
     assert event_pipe.output_entity_id == "silver.events"
     assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.completed"
+    assert event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.rejected"
 
 
 def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
@@ -389,6 +396,7 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
         start_event="condition.none.entered",
         end_event="condition.none.exited",
         determination_event="episode.none.closed",
+        invalidation_event="episode.none.invalidated",
         tags=None,
     )
 

@@ -255,6 +255,14 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
             expires_after_seconds=300,
             expiration_event="episode.temperature_high_active.expired",
         )
+        DataEpisodes.episode(
+            episodeid="episode.temperature_high_duration_guard",
+            start_event="condition.temperature_high.entered",
+            end_event="condition.temperature_high.exited",
+            subject_type="machine",
+            max_duration_seconds=300,
+            invalidation_event="episode.temperature_high_duration_guard.invalidated",
+        )
 
     condition_pipe = pipe_registry.get_pipe_definition(
         "temporal.condition.condition_engine.default"
@@ -264,6 +272,12 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     )
     episode_event_pipe = pipe_registry.get_pipe_definition(
         "temporal.episode_event.episode.temperature_high_active"
+    )
+    duration_guard_pipe = pipe_registry.get_pipe_definition(
+        "temporal.episode.episode.temperature_high_duration_guard"
+    )
+    duration_guard_event_pipe = pipe_registry.get_pipe_definition(
+        "temporal.episode_event.episode.temperature_high_duration_guard"
     )
 
     boundary_events = condition_pipe.execute(
@@ -291,6 +305,19 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     assert determination_rows[0].event_type == "episode.temperature_high_active.closed"
     assert determination_rows[0].generation == 2
     assert determination_rows[0].correlation_id == rows[0].episode_id
+
+    invalidated_rows = duration_guard_pipe.execute(silver_events=boundary_events).collect()
+    invalidated_events = duration_guard_event_pipe.execute(silver_events=boundary_events).collect()
+
+    assert len(invalidated_rows) == 1
+    assert invalidated_rows[0].episode_type == "episode.temperature_high_duration_guard"
+    assert invalidated_rows[0].status == "invalidated"
+    assert invalidated_rows[0].close_reason == "max_duration"
+    assert invalidated_rows[0].duration_ms == 600000
+    assert len(invalidated_events) == 1
+    assert invalidated_events[0].event_type == "episode.temperature_high_duration_guard.invalidated"
+    assert invalidated_events[0].payload["status"] == "invalidated"
+    assert invalidated_events[0].payload["close_reason"] == "max_duration"
 
     recursive_events = boundary_events.unionByName(determination_events)
     recursive_boundary_events = condition_pipe.execute(
