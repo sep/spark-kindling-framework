@@ -17,7 +17,16 @@ from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import coalesce, col, concat_ws, lit, sha2, struct, to_json
+from pyspark.sql.functions import (
+    coalesce,
+    col,
+    concat_ws,
+    expr,
+    lit,
+    sha2,
+    struct,
+    to_json,
+)
 from pyspark.sql.types import BooleanType, StructField, StructType, TimestampType
 
 from .data_entities import *
@@ -195,66 +204,155 @@ def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
 
 
 def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
-    """Execute an SCD Type 2 staged-updates merge for a Delta table."""
+    """Execute an SCD Type 2 staged-updates merge for a Delta table.
+
+    Declared-flow semantics (see SCDConfig):
+
+    - ``sequence_by``: ordering authority comes from the named data column.
+      A new version's effective_from and the closed version's effective_to
+      carry the incoming row's sequence value (contiguous history in
+      sequence time); rows whose sequence is not strictly later than the
+      current version's effective_from are stale out-of-order arrivals and
+      are ignored. Without ``sequence_by``, effective columns are stamped
+      ``current_timestamp()`` at merge time (arrival order) as before.
+    - ``delete_when`` (change-feed only): rows matching the predicate CLOSE
+      the current version without inserting a new one. Deletes for unknown
+      keys are no-ops; stale deletes are ignored under the same
+      strictly-later rule.
+    - Snapshot sources (``source_kind=snapshot`` / ``close_on_missing``)
+      close missing keys at processing time — there is no incoming row to
+      take a sequence value from.
+    """
     if _SCD2_MERGE_KEY_COLUMN in df.columns:
         raise ValueError(
             f"Incoming DataFrame contains reserved column '{_SCD2_MERGE_KEY_COLUMN}'. "
             "Rename this column before writing to an SCD2 entity."
         )
     cfg = scd_config_from_tags(entity)
+    if cfg.sequence_by and cfg.sequence_by not in df.columns:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.sequence_by column "
+            f"'{cfg.sequence_by}' is missing from the incoming DataFrame"
+        )
+    # A null sequence value has no position in the ordering: it would stamp
+    # null effective columns and make the strictly-later guard evaluate to
+    # NULL, silently discarding the row's updates/deletes.
+    if cfg.sequence_by and df.filter(col(cfg.sequence_by).isNull()).head(1):
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.sequence_by column "
+            f"'{cfg.sequence_by}' contains null values in the incoming batch; "
+            "every row must carry a sequence value"
+        )
     business_keys = entity.merge_columns
     temporal_columns = {
         cfg.effective_from_column,
         cfg.effective_to_column,
         cfg.is_current_column,
     }
+    # The sequence column is ordering authority, not content: a row whose
+    # only difference is a newer sequence value is not a change.
     tracked_columns = cfg.tracked_columns or [
         column
         for column in df.columns
-        if column not in business_keys and column not in temporal_columns
+        if column not in business_keys
+        and column not in temporal_columns
+        and column != cfg.sequence_by
     ]
     current_target = (
         delta_table.toDF().filter(col(cfg.is_current_column) == lit(True)).alias("target")
     )
+
+    # Change-feed deletes are split out before change detection: they close
+    # but never insert, and never count as new rows.
+    upserts_df = df
+    deletes_df = None
+    if cfg.delete_when:
+        delete_predicate = expr(cfg.delete_when)
+        deletes_df = df.filter(delete_predicate)
+        upserts_df = df.filter(~delete_predicate)
+
+    seq_guard = None
+    if cfg.sequence_by:
+        seq_guard = (
+            f"({_quote_sql_identifier(cfg.sequence_by, 'source')} > "
+            f"{_quote_sql_identifier(cfg.effective_from_column, 'target')})"
+        )
+
+    close_expr = (
+        _quote_sql_identifier(cfg.sequence_by, "staged")
+        if cfg.sequence_by
+        else "current_timestamp()"
+    )
     close_set = {
+        _quote_sql_identifier(cfg.effective_to_column): close_expr,
+        _quote_sql_identifier(cfg.is_current_column): "false",
+    }
+    # Missing-key closes (snapshot) have no staged row to read a sequence
+    # value from; they always close at processing time.
+    close_set_missing = {
         _quote_sql_identifier(cfg.effective_to_column): "current_timestamp()",
         _quote_sql_identifier(cfg.is_current_column): "false",
     }
 
     if cfg.optimize_unchanged:
         hash_expr = sha2(to_json(struct(*[col(c) for c in tracked_columns])), 256)
-        source_hashed = df.withColumn(_SCD2_SRC_HASH_COLUMN, hash_expr)
-        tgt_hash_expr = sha2(to_json(struct(*[col(f"target.{c}") for c in tracked_columns])), 256)
+        source_hashed = upserts_df.withColumn(_SCD2_SRC_HASH_COLUMN, hash_expr)
+        # SQL mirror of hash_expr: struct field names (the unqualified column
+        # names) must match on both sides or the JSON — and thus the hash —
+        # never compares equal.
+        tgt_hash_sql = "sha2(to_json(struct({})), 256)".format(
+            ", ".join(_quote_sql_identifier(c, "target") for c in tracked_columns)
+        )
+        changed_where = f"source.{_SCD2_SRC_HASH_COLUMN} != {tgt_hash_sql}"
+        if seq_guard:
+            changed_where = f"({changed_where}) AND {seq_guard}"
         changed_rows = (
             source_hashed.alias("source")
             .join(current_target, on=business_keys, how="inner")
-            .where(f"source.{_SCD2_SRC_HASH_COLUMN} != {tgt_hash_expr}")
+            .where(changed_where)
             .select("source.*")
         )
         if cfg.close_on_missing:
+            # NOT(changed) includes stale out-of-order rows: the key is
+            # present in the snapshot, so it must be sentinel-protected
+            # from the missing-key close even though it changes nothing.
             unchanged_rows = (
                 source_hashed.alias("source")
                 .join(current_target, on=business_keys, how="inner")
-                .where(f"source.{_SCD2_SRC_HASH_COLUMN} = {tgt_hash_expr}")
+                .where(f"NOT ({changed_where})")
                 .select("source.*")
             )
-        new_rows = df.join(current_target, on=business_keys, how="left_anti")
+        new_rows = upserts_df.join(current_target, on=business_keys, how="left_anti")
     else:
         change_condition = _build_null_safe_change_condition("source", "target", tracked_columns)
+        changed_where = change_condition
+        if seq_guard:
+            changed_where = f"({change_condition}) AND {seq_guard}"
         changed_rows = (
-            df.alias("source")
+            upserts_df.alias("source")
             .join(current_target, on=business_keys, how="inner")
-            .where(change_condition)
+            .where(changed_where)
             .select("source.*")
         )
         if cfg.close_on_missing:
             unchanged_rows = (
-                df.alias("source")
+                upserts_df.alias("source")
                 .join(current_target, on=business_keys, how="inner")
-                .where(f"NOT ({change_condition})")
+                .where(f"NOT ({changed_where})")
                 .select("source.*")
             )
-        new_rows = df.join(current_target, on=business_keys, how="left_anti")
+        new_rows = upserts_df.join(current_target, on=business_keys, how="left_anti")
+
+    delete_close_rows = None
+    if deletes_df is not None:
+        # Inner join: a delete for an unknown key is a no-op. The seq guard
+        # drops stale deletes the same way it drops stale changes.
+        joined_deletes = deletes_df.alias("source").join(
+            current_target, on=business_keys, how="inner"
+        )
+        if seq_guard:
+            joined_deletes = joined_deletes.where(seq_guard)
+        delete_close_rows = joined_deletes.select("source.*")
 
     rows_to_close_or_insert = changed_rows.unionByName(new_rows, allowMissingColumns=True)
     routing_key_expr = _routing_key_column_expr(business_keys, cfg.routing_key_method)
@@ -277,13 +375,24 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         insert_rows = changed_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, lit(None).cast("string"))
         keyed_rows = rows_to_close_or_insert.withColumn(_SCD2_MERGE_KEY_COLUMN, routing_key_expr)
         staged = insert_rows.unionByName(keyed_rows, allowMissingColumns=True)
+        if delete_close_rows is not None:
+            # Keyed close-only rows: they match the current version (close
+            # it) and have no merge_key-NULL insert companion.
+            staged = staged.unionByName(
+                delete_close_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, routing_key_expr),
+                allowMissingColumns=True,
+            )
 
     source_columns = [column for column in df.columns if column not in temporal_columns]
     insert_values = {
         _quote_sql_identifier(column): _quote_sql_identifier(column, "staged")
         for column in source_columns
     }
-    insert_values[_quote_sql_identifier(cfg.effective_from_column)] = "current_timestamp()"
+    insert_values[_quote_sql_identifier(cfg.effective_from_column)] = (
+        _quote_sql_identifier(cfg.sequence_by, "staged")
+        if cfg.sequence_by
+        else "current_timestamp()"
+    )
     insert_values[_quote_sql_identifier(cfg.effective_to_column)] = "NULL"
     insert_values[_quote_sql_identifier(cfg.is_current_column)] = "true"
     target_routing_key_sql = _routing_key_target_sql(business_keys, cfg.routing_key_method)
@@ -301,7 +410,7 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
             .whenNotMatchedInsert(values=insert_values)
             .whenNotMatchedBySourceUpdate(
                 condition=f"target.{cfg.is_current_column} = true",
-                set=close_set,
+                set=close_set_missing,
             )
         )
     else:
