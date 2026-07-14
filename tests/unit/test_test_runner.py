@@ -166,3 +166,104 @@ def test_build_pytest_args_supports_explicit_paths_and_passthrough():
         "--cov=kindling",
         "--tb=short",
     ]
+
+
+# --------------------------------------------------------------------- #
+# Direct (argparse) frontend: python -m kindling_cli.test_runner         #
+# --------------------------------------------------------------------- #
+
+
+def test_main_run_builds_the_same_options_as_the_ci_poe_task(monkeypatch):
+    """The exact argument string test-unit-ci passes must produce the
+    TestRunOptions the click frontend would build."""
+    captured = {}
+    monkeypatch.setattr(test_runner, "run_tests", lambda options: captured.update(o=options) or 0)
+
+    rc = test_runner.main(
+        [
+            "run",
+            "--suite",
+            "unit",
+            "--path",
+            "tests/unit",
+            "--ci",
+            "--coverage",
+            "packages/kindling",
+            "--coverage",
+            "packages/kindling_sdp",
+            "--pytest-arg=--cov-report=xml",
+        ]
+    )
+
+    assert rc == 0
+    options = captured["o"]
+    assert options.suite == "unit"
+    assert [str(p) for p in options.paths] == ["tests/unit"]
+    assert options.ci is True
+    assert list(options.coverage) == ["packages/kindling", "packages/kindling_sdp"]
+    assert options.pytest_args == ["--cov-report=xml"]
+    assert options.dotenv_paths == (test_runner.Path(".env"),)
+    assert options.no_cov is False
+    assert options.preflight == "none"
+
+
+def test_main_run_no_dotenv_clears_dotenv_paths(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(test_runner, "run_tests", lambda options: captured.update(o=options) or 0)
+
+    test_runner.main(["run", "--no-dotenv"])
+
+    assert captured["o"].dotenv_paths == ()
+
+
+def test_main_cleanup_dispatches_to_run_cleanup(monkeypatch):
+    captured = {}
+
+    def fake_cleanup(platform, *, all_platforms, skip_packages):
+        captured.update(platform=platform, all=all_platforms, skip=skip_packages)
+        return 3
+
+    monkeypatch.setattr(test_runner, "run_cleanup", fake_cleanup)
+
+    rc = test_runner.main(["cleanup", "--platform", "fabric", "--skip-packages"])
+
+    assert rc == 3
+    assert captured == {"platform": "fabric", "all": False, "skip": True}
+
+
+def test_main_maps_runtime_errors_to_exit_code_1(monkeypatch, capsys):
+    def boom(options):
+        raise RuntimeError("pytest-xdist is required")
+
+    monkeypatch.setattr(test_runner, "run_tests", boom)
+
+    rc = test_runner.main(["run"])
+
+    assert rc == 1
+    assert "pytest-xdist is required" in capsys.readouterr().err
+
+
+def test_runner_module_imports_without_click():
+    """INVARIANT (see kindling_cli/__init__.py): the runner frontend must
+    import with zero third-party dependencies — Poe tasks run it under
+    arbitrary interpreters. The sentinel makes any 'import click' on the
+    import path raise immediately."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    package_root = Path(test_runner.__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.modules['click'] = None; "
+            "import kindling_cli.test_runner; print('import-ok')",
+        ],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(package_root), "PATH": os.environ.get("PATH", "")},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "import-ok" in result.stdout
