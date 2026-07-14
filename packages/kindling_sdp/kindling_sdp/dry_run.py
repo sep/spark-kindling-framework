@@ -18,11 +18,12 @@ fixed bootstrap surface — initialize, register, ``declare_pipeline()``);
 this harness never generates application code.
 """
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 class SparkPipelinesCliNotFoundError(RuntimeError):
@@ -50,11 +51,21 @@ def write_pipeline_spec(
 ) -> Path:
     """Write ``spark-pipeline.yml`` into ``spec_dir`` and return its path.
 
-    ``definitions_globs`` are include patterns relative to the spec file
-    (e.g. ``["definitions/*.py"]``). ``storage`` defaults to a ``storage/``
+    ``definitions_globs`` are include patterns relative to the spec file.
+    The CLI accepts only literal file paths or folder globs ending in
+    ``/**`` (e.g. ``["definitions/**"]``) — ``*.py`` patterns are rejected
+    with ``PIPELINE_SPEC_INVALID_GLOB_PATTERN``, so they are rejected here
+    too, at spec-writing time. ``storage`` defaults to a ``storage/``
     directory next to the spec — required by the spec schema even for a
     dry-run.
     """
+    for pattern in definitions_globs:
+        if "*" in pattern and not pattern.endswith("/**"):
+            raise ValueError(
+                f"Invalid libraries glob '{pattern}': spark-pipelines "
+                "accepts only literal file paths or folder globs ending "
+                "in '/**' (e.g. 'definitions/**')."
+            )
     spec_dir = Path(spec_dir)
     spec_dir.mkdir(parents=True, exist_ok=True)
     storage_value = storage or (spec_dir / "storage").resolve().as_uri()
@@ -74,15 +85,48 @@ def write_pipeline_spec(
     return spec_path
 
 
+def spark_env_for_executable(executable_path: Path) -> Dict[str, str]:
+    """Derive the Spark env vars a venv-installed CLI needs.
+
+    A ``spark-pipelines`` CLI installed in its own virtualenv (the
+    recommended shape when the project's main environment pins an older
+    pyspark) launches correctly only when ``SPARK_HOME`` points at ITS
+    pyspark and ``PYSPARK_PYTHON``/``PYSPARK_DRIVER_PYTHON`` at ITS
+    interpreter — otherwise the launcher picks up an ambient SPARK_HOME or
+    the system ``python3`` and fails with ``ClassNotFoundException:
+    SparkPipelines`` or a missing ``pipelines/cli.py``. Returns ``{}``
+    when the executable doesn't sit next to a python with pyspark (e.g. a
+    PATH-wide Spark install, or a test stub) — those need no overrides.
+    """
+    bin_dir = Path(executable_path).resolve().parent
+    python = bin_dir / "python"
+    if not python.exists():
+        return {}
+    venv_root = bin_dir.parent
+    pyspark_dirs = sorted(venv_root.glob("lib/python*/site-packages/pyspark"))
+    if not pyspark_dirs:
+        return {}
+    return {
+        "SPARK_HOME": str(pyspark_dirs[-1]),
+        "PYSPARK_PYTHON": str(python),
+        "PYSPARK_DRIVER_PYTHON": str(python),
+    }
+
+
 def dry_run(
     spec_path: Path,
     executable: str = "spark-pipelines",
     timeout_seconds: int = 600,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> DryRunResult:
     """Run ``spark-pipelines dry-run --spec <spec_path>`` and capture output.
 
     ``executable`` is overridable for tests and for environments where the
-    Spark 4.1 CLI lives outside PATH. Raises
+    Spark 4.1 CLI lives outside PATH; when it resolves into a virtualenv,
+    the Spark env vars that venv needs are derived automatically (see
+    :func:`spark_env_for_executable`). ``extra_env`` overlays the
+    subprocess environment — e.g. ``PYTHONPATH`` so definitions files can
+    import ``kindling_sdp``. Raises
     :class:`SparkPipelinesCliNotFoundError` (with install guidance) when
     the executable cannot be found at all; a failed validation is NOT an
     exception — it is a ``DryRunResult`` with ``ok=False`` carrying the
@@ -96,12 +140,17 @@ def dry_run(
             "ships with Spark 4.1+: pip install 'pyspark[pipelines]>=4.1'"
         )
 
+    env = dict(os.environ)
+    env.update(spark_env_for_executable(Path(resolved)))
+    env.update(extra_env or {})
+
     completed = subprocess.run(
         [resolved, "dry-run", "--spec", str(spec_path)],
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
         check=False,
+        env=env,
     )
     return DryRunResult(
         ok=completed.returncode == 0,

@@ -302,14 +302,14 @@ class TestDryRunHarness:
         spec_path = write_pipeline_spec(
             tmp_path,
             name="orders_pipeline",
-            definitions_globs=["definitions/*.py"],
+            definitions_globs=["definitions/**"],
             database="silver",
         )
 
         text = spec_path.read_text()
         assert spec_path.name == "spark-pipeline.yml"
         assert "name: orders_pipeline" in text
-        assert "include: definitions/*.py" in text
+        assert "include: definitions/**" in text
         assert "storage: " in text, "storage is required by the spec schema"
         assert "database: silver" in text
         assert "catalog:" not in text
@@ -323,7 +323,7 @@ class TestDryRunHarness:
         return str(stub)
 
     def test_dry_run_invokes_cli_with_spec(self, tmp_path):
-        spec = write_pipeline_spec(tmp_path, "p", ["defs/*.py"])
+        spec = write_pipeline_spec(tmp_path, "p", ["defs/**"])
 
         result = dry_run(spec, executable=self._stub_cli(tmp_path, exit_code=0))
 
@@ -331,7 +331,7 @@ class TestDryRunHarness:
         assert f"args: dry-run --spec {spec}" in result.stdout
 
     def test_failed_validation_is_a_result_not_an_exception(self, tmp_path):
-        spec = write_pipeline_spec(tmp_path, "p", ["defs/*.py"])
+        spec = write_pipeline_spec(tmp_path, "p", ["defs/**"])
 
         result = dry_run(spec, executable=self._stub_cli(tmp_path, exit_code=1))
 
@@ -340,7 +340,58 @@ class TestDryRunHarness:
         assert "diagnostic" in result.stderr
 
     def test_missing_cli_raises_with_install_guidance(self, tmp_path):
-        spec = write_pipeline_spec(tmp_path, "p", ["defs/*.py"])
+        spec = write_pipeline_spec(tmp_path, "p", ["defs/**"])
 
         with pytest.raises(SparkPipelinesCliNotFoundError, match="pyspark\\[pipelines\\]"):
             dry_run(spec, executable="definitely-not-a-real-cli")
+
+    def test_wildcard_glob_not_ending_in_folder_star_star_is_rejected(self, tmp_path):
+        """The real CLI rejects *.py patterns (PIPELINE_SPEC_INVALID_GLOB
+        _PATTERN); the harness fails earlier with the same rule."""
+        with pytest.raises(ValueError, match="definitions/\\*\\*"):
+            write_pipeline_spec(tmp_path, "p", ["definitions/*.py"])
+
+    def test_literal_file_path_glob_is_allowed(self, tmp_path):
+        spec = write_pipeline_spec(tmp_path, "p", ["definitions/pipeline_defs.py"])
+
+        assert "include: definitions/pipeline_defs.py" in spec.read_text()
+
+    def test_extra_env_reaches_the_cli(self, tmp_path):
+        stub = tmp_path / "spark-pipelines"
+        stub.write_text('#!/bin/sh\necho "marker=$KINDLING_TEST_MARKER"\nexit 0\n')
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        spec = write_pipeline_spec(tmp_path, "p", ["defs/**"])
+
+        result = dry_run(spec, executable=str(stub), extra_env={"KINDLING_TEST_MARKER": "on"})
+
+        assert "marker=on" in result.stdout
+
+    def test_spark_env_derived_from_venv_installed_cli(self, tmp_path):
+        """A CLI inside a venv with pyspark gets SPARK_HOME and
+        PYSPARK_PYTHON pointed at that venv — without this, the launcher
+        picks up an ambient SPARK_HOME or the system python3 and fails."""
+        from kindling_sdp.dry_run import spark_env_for_executable
+
+        venv_root = tmp_path / "venv"
+        (venv_root / "bin").mkdir(parents=True)
+        (venv_root / "bin" / "python").touch()
+        cli = venv_root / "bin" / "spark-pipelines"
+        cli.touch()
+        pyspark_dir = venv_root / "lib" / "python3.11" / "site-packages" / "pyspark"
+        pyspark_dir.mkdir(parents=True)
+
+        env = spark_env_for_executable(cli)
+
+        assert env["SPARK_HOME"] == str(pyspark_dir)
+        assert env["PYSPARK_PYTHON"] == str(venv_root / "bin" / "python")
+        assert env["PYSPARK_DRIVER_PYTHON"] == str(venv_root / "bin" / "python")
+
+    def test_no_spark_env_derived_for_bare_executable(self, tmp_path):
+        """A stub or PATH-wide install (no sibling python/pyspark) needs no
+        overrides."""
+        from kindling_sdp.dry_run import spark_env_for_executable
+
+        stub = tmp_path / "spark-pipelines"
+        stub.touch()
+
+        assert spark_env_for_executable(stub) == {}
