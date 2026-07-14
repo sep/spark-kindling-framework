@@ -25,8 +25,9 @@ complete temporal-processing system described in the white paper and proposal.
   explicit evaluation time or bounded input horizon;
 - bounded batch correction where a visible real end event wins over synthetic
   expiration while preserving the same `episode_id`;
-- closed-episode invalidation for configured `min_duration_seconds` and
-  `max_duration_seconds` bounds;
+- episode invalidation for configured `min_duration_seconds` and
+  `max_duration_seconds` bounds, including synthetic invalidation of open
+  episodes that pass their maximum duration without a real end event;
 - episode-determination events emitted back into the canonical event envelope
   with `correlation_id = episode_id` and incremented generation numbers,
   including expiration events for expired episodes and invalidation events for

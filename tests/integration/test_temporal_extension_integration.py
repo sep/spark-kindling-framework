@@ -424,6 +424,53 @@ def test_episode_runner_invalidates_closed_episode_outside_duration_bounds(spark
 
 
 @pytest.mark.requires_spark
+def test_episode_runner_invalidates_open_episode_past_max_duration(spark):
+    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    boundary_events = ConditionEngineRunner().execute(
+        _unclosed_events_df(spark), _conditions_df(spark)
+    )
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        invalidation_event="episode.temperature_high_active.invalidated",
+        max_duration_seconds=300,
+        subject_type="machine",
+    )
+
+    runner = EpisodeRunner()
+    row = runner.execute(
+        boundary_events,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=10),
+    ).collect()[0]
+    event = runner.execute_determination_events(
+        boundary_events,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=10),
+    ).collect()[0]
+
+    assert row.status == "invalidated"
+    assert row.close_reason == "max_duration"
+    assert row.end_event_synthetic is True
+    assert row.end_event_id
+    assert row.end_time == observed_at + timedelta(minutes=5)
+    assert row.duration_ms == 300000
+    assert event.event_type == "episode.temperature_high_active.invalidated"
+    assert event.event_ts == row.end_time
+    assert event.payload["status"] == "invalidated"
+    assert event.payload["close_reason"] == "max_duration"
+    assert event.payload["end_event_id"] == row.end_event_id
+    assert event.payload["duration_ms"] == "300000"
+    assert event.attributes["end_event_synthetic"] == "true"
+
+
+@pytest.mark.requires_spark
 def test_episode_runner_emits_episode_determination_event(spark):
     from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
 

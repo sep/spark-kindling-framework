@@ -246,6 +246,11 @@ class EpisodeRunner:
             expiration_time = F.from_unixtime(
                 F.col("start.event_ts").cast("long") + F.lit(episode.expires_after_seconds)
             ).cast("timestamp")
+        max_duration_time = F.lit(None).cast("timestamp")
+        if episode.max_duration_seconds is not None:
+            max_duration_time = F.from_unixtime(
+                F.col("start.event_ts").cast("long") + F.lit(episode.max_duration_seconds)
+            ).cast("timestamp")
         is_closed = F.col("end.event_id").isNotNull()
         is_expired = (
             F.lit(episode.expires_after_seconds is not None)
@@ -253,7 +258,13 @@ class EpisodeRunner:
             & F.col("__temporal_evaluation_time").isNotNull()
             & (F.col("__temporal_evaluation_time") >= expiration_time)
         )
-        synthetic_end_event_id = F.sha2(
+        is_open_past_max_duration = (
+            F.lit(episode.max_duration_seconds is not None)
+            & F.col("end.event_id").isNull()
+            & F.col("__temporal_evaluation_time").isNotNull()
+            & (F.col("__temporal_evaluation_time") >= max_duration_time)
+        )
+        expiration_end_event_id = F.sha2(
             F.concat_ws(
                 "||",
                 F.lit(episode.episodeid),
@@ -263,13 +274,25 @@ class EpisodeRunner:
             ),
             256,
         )
+        max_duration_end_event_id = F.sha2(
+            F.concat_ws(
+                "||",
+                F.lit(episode.episodeid),
+                F.lit("max_duration"),
+                F.col("start.event_id").cast("string"),
+                max_duration_time.cast("string"),
+            ),
+            256,
+        )
         end_event_id = (
             F.when(is_closed, F.col("end.event_id"))
-            .when(is_expired, synthetic_end_event_id)
+            .when(is_open_past_max_duration, max_duration_end_event_id)
+            .when(is_expired, expiration_end_event_id)
             .otherwise(F.lit(None).cast("string"))
         )
         end_time = (
             F.when(is_closed, F.col("end.event_ts"))
+            .when(is_open_past_max_duration, max_duration_time)
             .when(is_expired, expiration_time)
             .otherwise(F.lit(None).cast("timestamp"))
         )
@@ -283,7 +306,8 @@ class EpisodeRunner:
         is_too_long = F.lit(False)
         if episode.max_duration_seconds is not None:
             is_too_long = is_closed & (duration_ms > F.lit(episode.max_duration_seconds * 1000))
-        is_invalidated = is_too_short | is_too_long
+        is_max_duration_invalidated = is_too_long | is_open_past_max_duration
+        is_invalidated = is_too_short | is_max_duration_invalidated
         status = (
             F.when(is_invalidated, F.lit("invalidated"))
             .when(is_closed, F.lit("closed"))
@@ -292,7 +316,7 @@ class EpisodeRunner:
         )
         close_reason = (
             F.when(is_too_short, F.lit("min_duration"))
-            .when(is_too_long, F.lit("max_duration"))
+            .when(is_max_duration_invalidated, F.lit("max_duration"))
             .when(is_closed, F.lit("end_event"))
             .when(is_expired, F.lit("expiration"))
             .otherwise(F.lit(None).cast("string"))
@@ -312,7 +336,7 @@ class EpisodeRunner:
             .withColumn("end_time", end_time)
             .withColumn("status", status)
             .withColumn("close_reason", close_reason)
-            .withColumn("end_event_synthetic", is_expired)
+            .withColumn("end_event_synthetic", is_expired | is_open_past_max_duration)
             .withColumn("duration_ms", duration_ms.cast("long"))
         )
 

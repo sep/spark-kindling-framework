@@ -350,6 +350,29 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     assert open_episodes[0].duration_ms is None
     assert open_determination_events == []
 
+    open_max_duration_rows = duration_guard_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    ).collect()
+    open_max_duration_events = duration_guard_event_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    ).collect()
+
+    assert len(open_max_duration_rows) == 1
+    assert open_max_duration_rows[0].status == "invalidated"
+    assert open_max_duration_rows[0].close_reason == "max_duration"
+    assert open_max_duration_rows[0].end_event_synthetic is True
+    assert open_max_duration_rows[0].end_time == datetime(2026, 7, 14, 12, 5, 0)
+    assert open_max_duration_rows[0].duration_ms == 300000
+    assert len(open_max_duration_events) == 1
+    assert (
+        open_max_duration_events[0].event_type
+        == "episode.temperature_high_duration_guard.invalidated"
+    )
+    assert open_max_duration_events[0].payload["status"] == "invalidated"
+    assert open_max_duration_events[0].payload["close_reason"] == "max_duration"
+
     expired_episodes = episode_pipe.execute(
         silver_events=open_boundary_events,
         temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
