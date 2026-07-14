@@ -297,8 +297,13 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     if cfg.optimize_unchanged:
         hash_expr = sha2(to_json(struct(*[col(c) for c in tracked_columns])), 256)
         source_hashed = upserts_df.withColumn(_SCD2_SRC_HASH_COLUMN, hash_expr)
-        tgt_hash_expr = sha2(to_json(struct(*[col(f"target.{c}") for c in tracked_columns])), 256)
-        changed_where = f"source.{_SCD2_SRC_HASH_COLUMN} != {tgt_hash_expr}"
+        # SQL mirror of hash_expr: struct field names (the unqualified column
+        # names) must match on both sides or the JSON — and thus the hash —
+        # never compares equal.
+        tgt_hash_sql = "sha2(to_json(struct({})), 256)".format(
+            ", ".join(_quote_sql_identifier(c, "target") for c in tracked_columns)
+        )
+        changed_where = f"source.{_SCD2_SRC_HASH_COLUMN} != {tgt_hash_sql}"
         if seq_guard:
             changed_where = f"({changed_where}) AND {seq_guard}"
         changed_rows = (

@@ -329,3 +329,88 @@ class TestDeleteWhen:
 
         rows = _rows(delta_provider, entity)
         assert ("c1", True) in rows, "an out-of-order delete must not close a newer version"
+
+
+class TestOptimizeUnchanged:
+    """scd.optimize_unchanged: the hash-comparison merge path on real Delta,
+    including its interplay with sequence_by and close_on_missing."""
+
+    def _entity(self, entityid, extra=None):
+        return _make_entity(
+            entityid,
+            {
+                "scd.optimize_unchanged": "true",
+                "scd.sequence_by": "updated_at",
+                **(extra or {}),
+            },
+        )
+
+    def test_unchanged_row_produces_no_new_version(self, spark, delta_provider):
+        entity = self._entity("silver.customers_opt_same")
+        _seed_table(spark, delta_provider, entity)
+
+        _merge_batch(spark, delta_provider, entity, [("c1", "bronze", TS(1))])
+        # Same content, newer sequence value: the sequence column is ordering
+        # authority, not content — no new version.
+        _merge_batch(spark, delta_provider, entity, [("c1", "bronze", TS(2))])
+
+        all_rows = delta_provider.read_entity(entity).collect()
+        assert len(all_rows) == 1
+        assert all_rows[0]["__is_current"] is True
+        assert all_rows[0]["__effective_from"] == TS(1)
+
+    def test_changed_row_chains_versions_with_sequence_values(self, spark, delta_provider):
+        entity = self._entity("silver.customers_opt_chain")
+        _seed_table(spark, delta_provider, entity)
+
+        _merge_batch(spark, delta_provider, entity, [("c1", "bronze", TS(1))])
+        _merge_batch(spark, delta_provider, entity, [("c1", "silver", TS(3))])
+
+        all_rows = delta_provider.read_entity(entity).collect()
+        current = next(r for r in all_rows if r["__is_current"])
+        closed = next(r for r in all_rows if not r["__is_current"])
+        assert current["status"] == "silver" and current["__effective_from"] == TS(3)
+        assert closed["status"] == "bronze" and closed["__effective_to"] == TS(3)
+
+    def test_out_of_order_stale_change_is_ignored(self, spark, delta_provider):
+        entity = self._entity("silver.customers_opt_ooo")
+        _seed_table(spark, delta_provider, entity)
+
+        _merge_batch(spark, delta_provider, entity, [("c1", "silver", TS(5))])
+        # Changed content but an older sequence value: the hash predicate is
+        # ANDed with the strictly-later guard, so the stale row is ignored.
+        _merge_batch(spark, delta_provider, entity, [("c1", "bronze", TS(2))])
+
+        all_rows = delta_provider.read_entity(entity).collect()
+        assert len(all_rows) == 1
+        assert all_rows[0]["__is_current"] is True
+        assert all_rows[0]["status"] == "silver"
+
+    def test_close_on_missing_sentinel_protects_present_keys(self, spark, delta_provider):
+        entity = self._entity("silver.customers_opt_com", {"scd.close_on_missing": "true"})
+        _seed_table(spark, delta_provider, entity)
+
+        _merge_batch(
+            spark,
+            delta_provider,
+            entity,
+            [("c1", "bronze", TS(1)), ("c2", "gold", TS(1)), ("c3", "silver", TS(5))],
+        )
+        # Next snapshot: c1 unchanged, c3 present but stale (changed content,
+        # older sequence), c2 vanished. Both c1 and c3 fall into NOT(changed)
+        # and must be sentinel-protected from the missing-key close.
+        _merge_batch(
+            spark,
+            delta_provider,
+            entity,
+            [("c1", "bronze", TS(2)), ("c3", "bronze", TS(2))],
+        )
+
+        rows = _rows(delta_provider, entity)
+        assert ("c1", True) in rows, "unchanged present key must stay current"
+        assert ("c1", False) not in rows
+        assert ("c3", True) in rows, "stale-but-present key must stay current"
+        assert rows[("c3", True)]["status"] == "silver"
+        assert ("c3", False) not in rows
+        assert ("c2", False) in rows, "vanished key must be closed"
+        assert ("c2", True) not in rows
