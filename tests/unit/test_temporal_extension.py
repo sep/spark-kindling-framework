@@ -1,4 +1,4 @@
-import sys
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -113,10 +113,7 @@ def test_base_event_pipe_id_is_namespaced():
 def test_base_event_decorator_registers_metadata():
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import (
-        DataEvents,
-        TemporalEventRegistryManager,
-    )
+    from kindling_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -170,20 +167,20 @@ def test_base_event_decorator_registers_metadata():
 
 def test_condition_engine_registration_is_not_condition_specific():
     from kindling.data_entities import DataEntityManager
-    from kindling_temporal import (
-        DataEvents,
-        TemporalEventRegistryManager,
-    )
+    from kindling.data_pipes import DataPipesManager
+    from kindling_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     registry = TemporalEventRegistryManager(_logger_provider())
     entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
 
     with patch(
         "kindling.injection.GlobalInjector.get",
         side_effect=_temporal_service_get(
             event_registry=registry,
             entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
         ),
     ):
         DataEvents.condition_engine(engineid="condition_engine.default")
@@ -192,16 +189,22 @@ def test_condition_engine_registration_is_not_condition_specific():
     assert metadata.engineid == "condition_engine.default"
     assert metadata.events_entity_id == "silver.events"
     assert metadata.conditions_entity_id == "silver.conditions"
+    assert metadata.conditions_current_entity_id == "silver.conditions.current"
     assert entity_registry.get_entity_definition("silver.conditions") is not None
     assert entity_registry.get_entity_definition("silver.conditions.current") is not None
+
+    pipe = pipe_registry.get_pipe_definition("temporal.condition.condition_engine.default")
+    assert pipe.input_entity_ids == ["silver.events", "silver.conditions.current"]
+    assert pipe.output_entity_id == "silver.events"
+    assert pipe.output_type == "delta"
+    assert pipe.use_watermark is True
+    assert pipe.tags["pipe_type"] == "temporal.condition_engine"
+    assert callable(pipe.execute)
 
 
 def test_episode_registration_uses_canonical_entities():
     from kindling.data_entities import DataEntityManager
-    from kindling_temporal import (
-        DataEpisodes,
-        TemporalEpisodeRegistryManager,
-    )
+    from kindling_temporal import DataEpisodes, TemporalEpisodeRegistryManager
 
     DataEpisodes.reset()
     registry = TemporalEpisodeRegistryManager(_logger_provider())
@@ -344,3 +347,83 @@ def test_condition_validator_rejects_event_type_cycles():
 
     assert report.is_valid is False
     assert "Cycle detected in pipe dependencies" in report.invalid_conditions[0].errors[0]
+
+
+@pytest.mark.requires_spark
+def test_condition_engine_runner_emits_entered_and_exited_events(spark_session):
+    from kindling_temporal import (
+        ConditionEngineRunner,
+        conditions_schema,
+        events_schema,
+    )
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    events_df = spark_session.createDataFrame(
+        [
+            (
+                "source-hot",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-1",
+                observed_at,
+                "sensor",
+                None,
+                {"temperature": "95"},
+                None,
+                observed_at,
+            ),
+            (
+                "source-cool",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-1",
+                observed_at,
+                "sensor",
+                None,
+                {"temperature": "80"},
+                None,
+                observed_at,
+            ),
+        ],
+        events_schema(),
+    )
+    conditions_df = spark_session.createDataFrame(
+        [
+            (
+                "condition.temperature_high",
+                ["telemetry.observed"],
+                "machine",
+                {
+                    "enter_when": "cast(payload['temperature'] as double) > 90",
+                    "exit_when": "cast(payload['temperature'] as double) <= 90",
+                },
+                True,
+                observed_at,
+                None,
+            )
+        ],
+        conditions_schema(),
+    )
+
+    result = ConditionEngineRunner().execute(events_df, conditions_df)
+
+    rows = {row.event_type: row for row in result.collect()}
+    assert set(rows) == {
+        "condition.temperature_high.entered",
+        "condition.temperature_high.exited",
+    }
+    assert rows["condition.temperature_high.entered"].generation == 1
+    assert rows["condition.temperature_high.entered"].event_class == "condition"
+    assert rows["condition.temperature_high.entered"].correlation_id == (
+        "condition.temperature_high"
+    )
+    assert rows["condition.temperature_high.entered"].attributes["source_event_id"] == (
+        "source-hot"
+    )
+    assert rows["condition.temperature_high.exited"].attributes["source_event_id"] == (
+        "source-cool"
+    )

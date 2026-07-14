@@ -1,5 +1,6 @@
 """Temporal event, condition, and episode primitives for Kindling."""
 
+from .engine import ConditionEngineRunner
 from .entities import (
     SimpleTemporalEntityResolver,
     TemporalEntityResolver,
@@ -31,6 +32,7 @@ from .validation import (
 __all__ = [
     "ActiveSparkSqlExpressionParser",
     "BaseEventMetadata",
+    "ConditionEngineRunner",
     "ConditionEngineMetadata",
     "ConditionRule",
     "ConditionValidationError",

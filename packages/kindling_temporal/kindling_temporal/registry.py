@@ -38,6 +38,11 @@ class ConditionEngineMetadata:
     engineid: str
     events_entity_id: str
     conditions_entity_id: str
+    conditions_current_entity_id: str
+    name: Optional[str] = None
+    pipeid: Optional[str] = None
+    output_type: str = "delta"
+    use_watermark: bool = True
     tags: Dict[str, str] = field(default_factory=dict)
 
 
@@ -168,6 +173,9 @@ class DataEvents:
         """Register the generic rules-as-data condition engine."""
         events_entity = cls._resolver().get_events_entity()
         conditions_entity = cls._resolver().get_conditions_entity()
+        conditions_current_entity_id = conditions_entity.tags.get(
+            "scd.current_entity_id", f"{conditions_entity.entityid}.current"
+        )
         entity_registry = cls._data_entity_registry()
         TemporalPipeTranslator.ensure_entity(entity_registry, events_entity)
         TemporalPipeTranslator.ensure_entity(entity_registry, conditions_entity)
@@ -175,7 +183,16 @@ class DataEvents:
             engineid,
             events_entity_id=events_entity.entityid,
             conditions_entity_id=conditions_entity.entityid,
+            conditions_current_entity_id=conditions_current_entity_id,
             tags=tags or {},
+        )
+        metadata = cls._registry().get_condition_engine_definition(engineid)
+        TemporalPipeTranslator.register_condition_engine(
+            metadata,
+            cls._data_pipe_registry(),
+            entity_registry=entity_registry,
+            events_entity=events_entity,
+            conditions_entity=conditions_entity,
         )
 
 
