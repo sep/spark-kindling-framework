@@ -134,6 +134,46 @@ def _unclosed_events_df(spark):
     )
 
 
+def _closed_events_for_machine_2_df(spark):
+    from kindling_temporal import events_schema
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    cooled_at = observed_at + timedelta(minutes=10)
+    return spark.createDataFrame(
+        [
+            (
+                "source-hot",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-2",
+                observed_at,
+                "sensor",
+                None,
+                {"temperature": "95"},
+                None,
+                observed_at,
+            ),
+            (
+                "source-cool",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-2",
+                cooled_at,
+                "sensor",
+                None,
+                {"temperature": "80"},
+                None,
+                cooled_at,
+            ),
+        ],
+        events_schema(),
+    )
+
+
 def _conditions_df(spark):
     from kindling_temporal import conditions_schema
 
@@ -295,6 +335,8 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     assert len(expired_episodes) == 1
     assert expired_episodes[0].subject_id == "machine-2"
     assert expired_episodes[0].status == "expired"
+    assert expired_episodes[0].episode_id == open_episodes[0].episode_id
+    assert expired_episodes[0].start_event_id == open_episodes[0].start_event_id
     assert expired_episodes[0].close_reason == "expiration"
     assert expired_episodes[0].end_event_synthetic is True
     assert expired_episodes[0].end_time == datetime(2026, 7, 14, 12, 5, 0)
@@ -305,3 +347,15 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     assert expired_events[0].generation == 2
     assert expired_events[0].correlation_id == expired_episodes[0].episode_id
     assert expired_events[0].payload["status"] == "expired"
+
+    closed_machine_2_boundary_events = condition_pipe.execute(
+        silver_events=_closed_events_for_machine_2_df(spark),
+        silver_conditions_current=_conditions_df(spark),
+    )
+    closure_for_same_start = episode_pipe.execute(
+        silver_events=closed_machine_2_boundary_events,
+    ).collect()[0]
+
+    assert closure_for_same_start.status == "closed"
+    assert closure_for_same_start.episode_id == open_episodes[0].episode_id
+    assert closure_for_same_start.start_event_id == open_episodes[0].start_event_id

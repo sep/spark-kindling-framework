@@ -28,6 +28,15 @@ complete temporal-processing system described in the white paper and proposal.
   including expiration events for expired episodes;
 - unit, integration, and system coverage for the first executable slice.
 
+## Lifecycle identity
+
+`episode_id` is deterministic from the episode definition and start boundary,
+not from the eventual end boundary. That lets a materialized open episode keep
+the same identity when a bounded batch view later marks it expired or closes it
+with a real end event. End-boundary changes update lifecycle fields such as
+`end_event_id`, `end_time`, `status`, `close_reason`, and `duration_ms`; they
+do not create a different episode identity.
+
 ## Not yet implemented
 
 The remaining proposal work is tracked here so the current package is not

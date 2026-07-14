@@ -277,6 +277,50 @@ def test_episode_runner_expires_open_episode_at_batch_evaluation_time(spark):
 
 
 @pytest.mark.requires_spark
+def test_episode_runner_preserves_episode_id_across_lifecycle_views(spark):
+    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    open_boundary_events = ConditionEngineRunner().execute(
+        _unclosed_events_df(spark), _conditions_df(spark)
+    )
+    closed_boundary_events = ConditionEngineRunner().execute(
+        _events_df(spark), _conditions_df(spark)
+    )
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        expires_after_seconds=300,
+        subject_type="machine",
+    )
+    runner = EpisodeRunner()
+
+    open_episode = runner.execute(
+        open_boundary_events,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=1),
+    ).collect()[0]
+    expired_episode = runner.execute(
+        open_boundary_events,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=10),
+    ).collect()[0]
+    closed_episode = runner.execute(closed_boundary_events, episode).collect()[0]
+
+    assert open_episode.status == "open"
+    assert expired_episode.status == "expired"
+    assert closed_episode.status == "closed"
+    assert open_episode.start_event_id == expired_episode.start_event_id
+    assert open_episode.start_event_id == closed_episode.start_event_id
+    assert open_episode.episode_id == expired_episode.episode_id
+    assert open_episode.episode_id == closed_episode.episode_id
+
+
+@pytest.mark.requires_spark
 def test_episode_runner_emits_episode_determination_event(spark):
     from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
 
