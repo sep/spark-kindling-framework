@@ -1,7 +1,9 @@
 # Temporal Events and Episode Primitives for Kindling
 
 **Status:** Draft — mechanism validated as a real, recurring need across current
-clients; not yet scheduled against core foundation work.
+clients. The first executable Kindling extension slice has landed, but it does
+not yet implement the full proposal; see
+`packages/kindling_temporal/README.md` for the current implementation checklist.
 **Created:** 2026-07-06
 **Related:** `event_condition_episode_ontology.md` (the implementation-agnostic
 model this proposal applies to Kindling), `data_entities.md`, `data_pipes.md`,
