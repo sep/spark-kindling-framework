@@ -294,6 +294,7 @@ def test_episode_registration_uses_canonical_entities():
     assert metadata.start_event == "condition.machine_running.entered"
     assert metadata.end_event == "condition.machine_running.exited"
     assert metadata.condition_id == "condition.machine_running"
+    assert metadata.determination_event == "episode.machine_cycle.closed"
     assert metadata.expires_after_seconds == 28800
     assert entity_registry.get_entity_definition("silver.events") is not None
     assert entity_registry.get_entity_definition("silver.episodes") is not None
@@ -307,6 +308,51 @@ def test_episode_registration_uses_canonical_entities():
     assert pipe.tags["temporal.start_event"] == "condition.machine_running.entered"
     assert pipe.tags["temporal.end_event"] == "condition.machine_running.exited"
     assert callable(pipe.execute)
+
+    event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.episode.machine_cycle")
+    assert event_pipe.input_entity_ids == ["silver.events"]
+    assert event_pipe.output_entity_id == "silver.events"
+    assert event_pipe.output_type == "delta"
+    assert event_pipe.use_watermark is True
+    assert event_pipe.tags["pipe_type"] == "temporal.episode_event"
+    assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.closed"
+    assert event_pipe.tags["temporal.start_event"] == "condition.machine_running.entered"
+    assert event_pipe.tags["temporal.end_event"] == "condition.machine_running.exited"
+    assert callable(event_pipe.execute)
+
+
+def test_episode_registration_accepts_explicit_determination_event_and_pipe_id():
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+
+    DataEpisodes.reset()
+    registry = TemporalEpisodeRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            episode_registry=registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+        ),
+    ):
+        DataEpisodes.episode(
+            episodeid="episode.machine_cycle",
+            start_event="condition.machine_running.entered",
+            end_event="condition.machine_running.exited",
+            determination_event="episode.machine_cycle.completed",
+            determination_pipeid="temporal.episode_event.machine_cycle_completed",
+        )
+
+    metadata = registry.get_episode_definition("episode.machine_cycle")
+    assert metadata.determination_event == "episode.machine_cycle.completed"
+
+    event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.machine_cycle_completed")
+    assert event_pipe.output_entity_id == "silver.events"
+    assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.completed"
 
 
 def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
@@ -342,6 +388,7 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
         events_entity_id="silver.events",
         start_event="condition.none.entered",
         end_event="condition.none.exited",
+        determination_event="episode.none.closed",
         tags=None,
     )
 
@@ -356,6 +403,10 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
     assert (
         TemporalPipeTranslator.episode_pipe_params(episode)["tags"]["pipe_type"]
         == "temporal.episode"
+    )
+    assert (
+        TemporalPipeTranslator.episode_determination_event_pipe_params(episode)["tags"]["pipe_type"]
+        == "temporal.episode_event"
     )
 
     registry = DataEntityManager()

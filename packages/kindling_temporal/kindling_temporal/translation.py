@@ -15,6 +15,7 @@ class TemporalPipeTranslator:
     BASE_EVENT_PIPE_PREFIX = "temporal.event."
     CONDITION_ENGINE_PIPE_PREFIX = "temporal.condition."
     EPISODE_PIPE_PREFIX = "temporal.episode."
+    EPISODE_DETERMINATION_EVENT_PIPE_PREFIX = "temporal.episode_event."
 
     @classmethod
     def base_event_pipe_id(cls, eventid: str) -> str:
@@ -27,6 +28,10 @@ class TemporalPipeTranslator:
     @classmethod
     def episode_pipe_id(cls, episodeid: str) -> str:
         return f"{cls.EPISODE_PIPE_PREFIX}{episodeid}"
+
+    @classmethod
+    def episode_determination_event_pipe_id(cls, episodeid: str) -> str:
+        return f"{cls.EPISODE_DETERMINATION_EVENT_PIPE_PREFIX}{episodeid}"
 
     @classmethod
     def register_base_event(
@@ -82,6 +87,24 @@ class TemporalPipeTranslator:
 
         pipeid = metadata.pipeid or cls.episode_pipe_id(metadata.episodeid)
         pipe_registry.register_pipe(pipeid, **cls.episode_pipe_params(metadata))
+        return pipeid
+
+    @classmethod
+    def register_episode_determination_event(
+        cls,
+        metadata: "EpisodeMetadata",
+        pipe_registry: DataPipesRegistry,
+        entity_registry: Optional[DataEntityRegistry] = None,
+        events_entity: Optional[EntityMetadata] = None,
+    ) -> str:
+        """Register the episode-determination event output as a normal pipe."""
+        if events_entity is not None and entity_registry is not None:
+            cls.ensure_entity(entity_registry, events_entity)
+
+        pipeid = metadata.determination_pipeid or cls.episode_determination_event_pipe_id(
+            metadata.episodeid
+        )
+        pipe_registry.register_pipe(pipeid, **cls.episode_determination_event_pipe_params(metadata))
         return pipeid
 
     @classmethod
@@ -148,6 +171,26 @@ class TemporalPipeTranslator:
         }
 
     @classmethod
+    def episode_determination_event_pipe_params(cls, metadata: "EpisodeMetadata") -> Dict[str, Any]:
+        return {
+            "name": f"Temporal episode event: {metadata.episodeid}",
+            "execute": cls.episode_determination_event_execute(metadata),
+            "tags": {
+                **(metadata.tags or {}),
+                "pipe_type": "temporal.episode_event",
+                "temporal.kind": "episode_event",
+                "temporal.episode_id": metadata.episodeid,
+                "temporal.event_type": metadata.determination_event,
+                "temporal.start_event": metadata.start_event,
+                "temporal.end_event": metadata.end_event,
+            },
+            "input_entity_ids": [metadata.events_entity_id],
+            "output_entity_id": metadata.events_entity_id,
+            "output_type": metadata.output_type,
+            "use_watermark": metadata.use_watermark,
+        }
+
+    @classmethod
     def base_event_execute(cls, metadata: "BaseEventMetadata"):
         """Build the executable function for a lowered base event pipe."""
 
@@ -181,6 +224,27 @@ class TemporalPipeTranslator:
             from .engine import EpisodeRunner
 
             return EpisodeRunner().execute(events_df, metadata)
+
+        return execute
+
+    @classmethod
+    def episode_determination_event_execute(cls, metadata: "EpisodeMetadata"):
+        """Build the executable function for episode-determination event output."""
+
+        def execute(**entity_dfs):
+            events_key = metadata.events_entity_id.replace(".", "_")
+            try:
+                events_df = entity_dfs[events_key]
+            except KeyError as exc:
+                available = ", ".join(sorted(entity_dfs.keys()))
+                raise ValueError(
+                    f"Temporal episode event '{metadata.episodeid}' expected input "
+                    f"'{events_key}', got: {available}"
+                ) from exc
+
+            from .engine import EpisodeRunner
+
+            return EpisodeRunner().execute_determination_events(events_df, metadata)
 
         return execute
 

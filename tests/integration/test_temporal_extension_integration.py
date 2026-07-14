@@ -146,3 +146,46 @@ def test_episode_runner_pairs_entered_and_exited_events(spark):
     assert row.duration_ms == 600000
     assert row.attributes["start_event_type"] == "condition.temperature_high.entered"
     assert row.attributes["end_event_type"] == "condition.temperature_high.exited"
+
+
+@pytest.mark.requires_spark
+def test_episode_runner_emits_episode_determination_event(spark):
+    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+
+    boundary_events = ConditionEngineRunner().execute(_events_df(spark), _conditions_df(spark))
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        determination_event="episode.temperature_high_active.closed",
+        subject_type="machine",
+    )
+
+    runner = EpisodeRunner()
+    episode_row = runner.execute(boundary_events, episode).collect()[0]
+    event_rows = runner.execute_determination_events(boundary_events, episode).collect()
+
+    assert len(event_rows) == 1
+    event = event_rows[0]
+    assert event.event_type == "episode.temperature_high_active.closed"
+    assert event.generation == 2
+    assert event.event_class == "episode"
+    assert event.subject_type == "machine"
+    assert event.subject_id == "machine-1"
+    assert event.event_ts == episode_row.end_time
+    assert event.correlation_id == episode_row.episode_id
+    assert event.payload["episode_id"] == episode_row.episode_id
+    assert event.payload["episode_type"] == "episode.temperature_high_active"
+    assert event.payload["condition_id"] == "condition.temperature_high"
+    assert event.payload["status"] == "closed"
+    assert event.payload["close_reason"] == "end_event"
+    assert event.payload["start_event_id"] == episode_row.start_event_id
+    assert event.payload["end_event_id"] == episode_row.end_event_id
+    assert event.payload["duration_ms"] == "600000"
+    assert event.attributes["start_event_type"] == "condition.temperature_high.entered"
+    assert event.attributes["end_event_type"] == "condition.temperature_high.exited"
+    assert event.attributes["start_generation"] == "1"
+    assert event.attributes["end_generation"] == "1"

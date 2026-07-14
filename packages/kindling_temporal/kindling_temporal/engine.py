@@ -100,6 +100,96 @@ class EpisodeRunner:
 
     def execute(self, events_df, episode):
         from pyspark.sql import functions as F
+
+        paired = self._paired_boundaries(events_df, episode)
+
+        return paired.select(
+            F.col("episode_id"),
+            F.lit(episode.episodeid).alias("episode_type"),
+            F.lit(episode.condition_id).alias("condition_id"),
+            F.lit(None).cast("string").alias("parent_episode_id"),
+            F.col("start.subject_type").alias("subject_type"),
+            F.col("start.subject_id").alias("subject_id"),
+            F.col("start.event_id").alias("start_event_id"),
+            F.col("end.event_id").alias("end_event_id"),
+            F.col("start.event_ts").alias("start_time"),
+            F.col("end.event_ts").alias("end_time"),
+            F.lit("closed").alias("status"),
+            F.lit("end_event").alias("close_reason"),
+            F.lit(False).alias("end_event_synthetic"),
+            F.col("duration_ms"),
+            F.lit(None).cast("long").alias("event_count"),
+            F.current_timestamp().alias("created_at"),
+            F.current_timestamp().alias("updated_at"),
+            self._episode_attributes(episode).alias("attributes"),
+        )
+
+    def execute_determination_events(self, events_df, episode):
+        from pyspark.sql import functions as F
+
+        paired = self._paired_boundaries(events_df, episode)
+        determination_event = episode.determination_event or f"{episode.episodeid}.closed"
+        event_id = F.sha2(
+            F.concat_ws(
+                "||",
+                F.lit(determination_event),
+                F.col("episode_id").cast("string"),
+            ),
+            256,
+        )
+        payload = F.create_map(
+            F.lit("episode_id"),
+            F.col("episode_id").cast("string"),
+            F.lit("episode_type"),
+            F.lit(episode.episodeid),
+            F.lit("condition_id"),
+            F.lit(episode.condition_id).cast("string"),
+            F.lit("status"),
+            F.lit("closed"),
+            F.lit("close_reason"),
+            F.lit("end_event"),
+            F.lit("start_event_id"),
+            F.col("start.event_id").cast("string"),
+            F.lit("end_event_id"),
+            F.col("end.event_id").cast("string"),
+            F.lit("start_time"),
+            F.col("start.event_ts").cast("string"),
+            F.lit("end_time"),
+            F.col("end.event_ts").cast("string"),
+            F.lit("duration_ms"),
+            F.col("duration_ms").cast("string"),
+        )
+        attributes = F.create_map(
+            F.lit("start_event_type"),
+            F.lit(episode.start_event),
+            F.lit("end_event_type"),
+            F.lit(episode.end_event),
+            F.lit("start_generation"),
+            F.col("start.generation").cast("string"),
+            F.lit("end_generation"),
+            F.col("end.generation").cast("string"),
+        )
+
+        return paired.select(
+            event_id.alias("event_id"),
+            F.lit(determination_event).alias("event_type"),
+            (F.greatest(F.col("start.generation"), F.col("end.generation")) + F.lit(1))
+            .cast("int")
+            .alias("generation"),
+            F.lit("episode").alias("event_class"),
+            F.col("start.subject_type").alias("subject_type"),
+            F.col("start.subject_id").alias("subject_id"),
+            F.col("end.event_ts").alias("event_ts"),
+            F.lit("kindling-temporal").alias("source_system"),
+            F.col("episode_id").alias("correlation_id"),
+            payload.alias("payload"),
+            attributes.alias("attributes"),
+            F.current_timestamp().alias("ingested_at"),
+        )
+
+    @staticmethod
+    def _paired_boundaries(events_df, episode):
+        from pyspark.sql import functions as F
         from pyspark.sql.window import Window
 
         starts = events_df.filter(F.col("event_type") == F.lit(episode.start_event))
@@ -138,32 +228,20 @@ class EpisodeRunner:
             ),
             256,
         )
-        attributes = F.create_map(
+
+        return paired.withColumn("episode_id", episode_id).withColumn(
+            "duration_ms", duration_ms.cast("long")
+        )
+
+    @staticmethod
+    def _episode_attributes(episode):
+        from pyspark.sql import functions as F
+
+        return F.create_map(
             F.lit("start_event_type"),
             F.lit(episode.start_event),
             F.lit("end_event_type"),
             F.lit(episode.end_event),
-        )
-
-        return paired.select(
-            episode_id.alias("episode_id"),
-            F.lit(episode.episodeid).alias("episode_type"),
-            F.lit(episode.condition_id).alias("condition_id"),
-            F.lit(None).cast("string").alias("parent_episode_id"),
-            F.col("start.subject_type").alias("subject_type"),
-            F.col("start.subject_id").alias("subject_id"),
-            F.col("start.event_id").alias("start_event_id"),
-            F.col("end.event_id").alias("end_event_id"),
-            F.col("start.event_ts").alias("start_time"),
-            F.col("end.event_ts").alias("end_time"),
-            F.lit("closed").alias("status"),
-            F.lit("end_event").alias("close_reason"),
-            F.lit(False).alias("end_event_synthetic"),
-            duration_ms.cast("long").alias("duration_ms"),
-            F.lit(None).cast("long").alias("event_count"),
-            F.current_timestamp().alias("created_at"),
-            F.current_timestamp().alias("updated_at"),
-            attributes.alias("attributes"),
         )
 
     @staticmethod

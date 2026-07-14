@@ -132,6 +132,29 @@ def _conditions_df(spark):
     )
 
 
+def _episode_conditions_df(spark):
+    from kindling_temporal import conditions_schema
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    return spark.createDataFrame(
+        [
+            (
+                "condition.thermal_excursion",
+                ["episode.temperature_high_active.closed"],
+                "machine",
+                {
+                    "enter_when": "payload['status'] = 'closed'",
+                    "exit_when": "false",
+                },
+                True,
+                observed_at,
+                None,
+            )
+        ],
+        conditions_schema(),
+    )
+
+
 def test_temporal_extension_registers_and_executes_condition_episode_flow(spark):
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
@@ -172,6 +195,9 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     episode_pipe = pipe_registry.get_pipe_definition(
         "temporal.episode.episode.temperature_high_active"
     )
+    episode_event_pipe = pipe_registry.get_pipe_definition(
+        "temporal.episode_event.episode.temperature_high_active"
+    )
 
     boundary_events = condition_pipe.execute(
         silver_events=_events_df(spark),
@@ -191,3 +217,24 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     assert rows[0].condition_id == "condition.temperature_high"
     assert rows[0].status == "closed"
     assert rows[0].duration_ms == 600000
+
+    determination_events = episode_event_pipe.execute(silver_events=boundary_events)
+    determination_rows = determination_events.collect()
+    assert len(determination_rows) == 1
+    assert determination_rows[0].event_type == "episode.temperature_high_active.closed"
+    assert determination_rows[0].generation == 2
+    assert determination_rows[0].correlation_id == rows[0].episode_id
+
+    recursive_events = boundary_events.unionByName(determination_events)
+    recursive_boundary_events = condition_pipe.execute(
+        silver_events=recursive_events,
+        silver_conditions_current=_episode_conditions_df(spark),
+    )
+    recursive_rows = {row.event_type: row for row in recursive_boundary_events.collect()}
+
+    assert set(recursive_rows) == {"condition.thermal_excursion.entered"}
+    assert recursive_rows["condition.thermal_excursion.entered"].generation == 3
+    assert (
+        recursive_rows["condition.thermal_excursion.entered"].attributes["source_event_id"]
+        == determination_rows[0].event_id
+    )

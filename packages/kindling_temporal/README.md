@@ -20,6 +20,8 @@ complete temporal-processing system described in the white paper and proposal.
 - `ConditionEngineRunner` execution that emits `{condition_id}.entered` and
   `{condition_id}.exited` events with incremented generation numbers;
 - `EpisodeRunner` execution that pairs start/end events into closed episodes;
+- episode-determination events emitted back into the canonical event envelope
+  with `correlation_id = episode_id` and incremented generation numbers;
 - unit, integration, and system coverage for the first executable slice.
 
 ## Not yet implemented
@@ -27,7 +29,6 @@ complete temporal-processing system described in the white paper and proposal.
 The remaining proposal work is tracked here so the current package is not
 mistaken for a full implementation:
 
-- episode-determination events emitted back into `silver.events`;
 - open, expired, and invalidated episode lifecycle handling;
 - late-event grace windows, watermarks, replay/backfill semantics, and
   stateful streaming execution;

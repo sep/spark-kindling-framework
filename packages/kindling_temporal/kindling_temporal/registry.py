@@ -54,8 +54,10 @@ class EpisodeMetadata:
     start_event: str
     end_event: str
     condition_id: Optional[str] = None
+    determination_event: Optional[str] = None
     name: Optional[str] = None
     pipeid: Optional[str] = None
+    determination_pipeid: Optional[str] = None
     output_type: str = "delta"
     use_watermark: bool = True
     subject_type: Optional[str] = None
@@ -264,6 +266,7 @@ class DataEpisodes:
         params["output_entity_id"] = episodes_entity.entityid
         params["events_entity_id"] = events_entity.entityid
         params.setdefault("condition_id", _infer_condition_id(params["start_event"]))
+        params.setdefault("determination_event", f"{episodeid}.closed")
         params["tags"] = params.get("tags") or {}
         cls._registry().register_episode(episodeid, **params)
         metadata = _require_metadata(
@@ -276,6 +279,12 @@ class DataEpisodes:
             cls._data_pipe_registry(),
             entity_registry=entity_registry,
             output_entity=episodes_entity,
+            events_entity=events_entity,
+        )
+        TemporalPipeTranslator.register_episode_determination_event(
+            metadata,
+            cls._data_pipe_registry(),
+            entity_registry=entity_registry,
             events_entity=events_entity,
         )
 
