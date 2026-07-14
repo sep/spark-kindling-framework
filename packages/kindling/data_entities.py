@@ -58,6 +58,21 @@ class SCDConfig:
     routing_key_method: str
     close_on_missing: bool = False
     optimize_unchanged: bool = False
+    # Declared-flow additions (see declarative_pipelines_engine.md, "SCD2
+    # as a Declared Flow"):
+    # sequence_by — ordering authority from a data column instead of
+    # merge-time current_timestamp(). effective_from/effective_to carry
+    # the sequence values; out-of-order rows (sequence not strictly later
+    # than the current version's effective_from) are ignored.
+    sequence_by: Optional[str] = None
+    # source_kind — the input contract, stated explicitly:
+    # "snapshot": each batch is the complete current state; absence of a
+    #   key closes it (the explicit form of scd.close_on_missing).
+    # "change_feed": rows are change events; absence means nothing.
+    source_kind: str = "change_feed"
+    # delete_when — change-feed only: a SQL predicate marking rows that
+    # CLOSE the current version without inserting a new one.
+    delete_when: Optional[str] = None
 
 
 @dataclass
@@ -254,6 +269,34 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
             f"{ROUTING_KEY_METHODS}, got '{routing_key_method}'"
         )
 
+    close_on_missing = tags.get("scd.close_on_missing", "").strip().lower() == "true"
+
+    # source_kind states the input contract explicitly; scd.close_on_missing
+    # survives as sugar for source_kind=snapshot.
+    source_kind_raw = tags.get("scd.source_kind", "").strip().lower()
+    if source_kind_raw and source_kind_raw not in ("snapshot", "change_feed"):
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.source_kind must be 'snapshot' "
+            f"or 'change_feed', got '{source_kind_raw}'"
+        )
+    if source_kind_raw == "change_feed" and close_on_missing:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.close_on_missing=true is snapshot "
+            "semantics and contradicts scd.source_kind=change_feed"
+        )
+    source_kind = source_kind_raw or ("snapshot" if close_on_missing else "change_feed")
+    if source_kind == "snapshot":
+        close_on_missing = True
+
+    delete_when = tags.get("scd.delete_when", "").strip() or None
+    if delete_when and source_kind == "snapshot":
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.delete_when applies to change-feed "
+            "sources only — a snapshot expresses deletion by absence"
+        )
+
+    sequence_by = tags.get("scd.sequence_by", "").strip() or None
+
     return SCDConfig(
         enabled=True,
         tracked_columns=tracked_columns,
@@ -262,8 +305,11 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
         is_current_column=tags.get("scd.current_col", "__is_current"),
         current_entity_id=tags.get("scd.current_entity_id", f"{entity.entityid}.current"),
         routing_key_method=routing_key_method,
-        close_on_missing=tags.get("scd.close_on_missing", "").strip().lower() == "true",
+        close_on_missing=close_on_missing,
         optimize_unchanged=tags.get("scd.optimize_unchanged", "").strip().lower() == "true",
+        sequence_by=sequence_by,
+        source_kind=source_kind,
+        delete_when=delete_when,
     )
 
 
@@ -312,6 +358,18 @@ def _validate_scd_config(entity: EntityMetadata) -> None:
             f"Entity '{entity.entityid}': scd.current_entity_id must be non-empty and "
             "differ from the base entity id."
         )
+
+    if cfg.sequence_by:
+        if cfg.sequence_by in temporal_columns:
+            raise ValueError(
+                f"Entity '{entity.entityid}': scd.sequence_by must be a business "
+                f"data column, not the temporal column '{cfg.sequence_by}'"
+            )
+        if schema_names and cfg.sequence_by not in schema_names:
+            raise ValueError(
+                f"Entity '{entity.entityid}': scd.sequence_by column "
+                f"'{cfg.sequence_by}' is not in the entity schema"
+            )
 
 
 class DataEntities:
