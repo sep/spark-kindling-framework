@@ -26,10 +26,6 @@ from kindling_sdp.declaration_plan import DeclarationPlan
 from kindling_sdp.guard_provider import SdpWriteGuardProvider
 from kindling_sdp.oss_engine import OssSdpEngine
 
-#: Engine names this package can bootstrap. ``databricks_sdp`` arrives with
-#: the adapter package (Phases 3/5).
-SUPPORTED_ENGINES = ("sdp",)
-
 
 def activate_sdp_mode() -> None:
     """Install the write-inert provider guard for this process.

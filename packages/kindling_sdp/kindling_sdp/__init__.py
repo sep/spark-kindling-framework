@@ -45,6 +45,7 @@ from kindling_sdp.dry_run import (
     dry_run,
     write_pipeline_spec,
 )
+from kindling_sdp.engine_extension import SdpEngineExtension, engine_extension
 from kindling_sdp.guard_provider import SdpModeWriteError, SdpWriteGuardProvider
 from kindling_sdp.oss_engine import OssSdpEngine, SdpRuntimeUnavailableError
 
@@ -67,12 +68,14 @@ __all__ = [
     "InputClassification",
     "OSS_SDP",
     "OssSdpEngine",
+    "SdpEngineExtension",
     "SdpFeature",
     "SdpModeWriteError",
     "SdpRuntimeUnavailableError",
     "SdpWriteGuardProvider",
     "SparkPipelinesCliNotFoundError",
     "dry_run",
+    "engine_extension",
     "write_pipeline_spec",
     "supports_auto_cdc",
     "supports_expectations",

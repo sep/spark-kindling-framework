@@ -34,10 +34,10 @@ class EntityProviderRegistry:
     def set_provider_decorator(self, decorator) -> None:
         """Wrap every provider instance — cached and future — in `decorator`.
 
-        The seam for execution-mode provider personalities: SDP-mode
-        bootstrap installs a write-inert guard here so that no imperative
-        write path is reachable while SDP owns persistence, without any
-        provider being mode-aware itself.
+        The seam for execution-mode provider personalities: an engine
+        extension that owns persistence installs a write-inert guard here
+        so that no imperative write path is reachable in its mode, without
+        any provider being mode-aware itself.
 
         Idempotent: installing the same decorator again is a no-op (cached
         instances are never double-wrapped). Installing a DIFFERENT

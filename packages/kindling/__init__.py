@@ -43,68 +43,97 @@ from .bootstrap import (
 )
 from .data_entities import KindlingNotInitializedError
 
+#: The engine extension activated by initialize(engine=...), if any. Core
+#: knows only the extension contract, never a specific engine.
+_active_engine_extension = None
+
 
 def initialize(config=None, app_name=None, engine=None):
     """Public initialize entrypoint for pre-installed kindling usage.
 
-    ``engine="sdp"`` selects the Spark Declarative Pipelines execution
-    mode (requires the ``kindling_sdp`` package): the watermark aspect is
-    never registered (SDP owns incrementality) and entity-provider write
-    paths are guarded (SDP owns persistence). Follow with registrations,
-    then ``kindling.declare_pipeline()`` as the final step.
+    ``engine="<name>"`` selects an alternative execution engine provided
+    by an extension package: the module ``kindling_<name>`` must expose an
+    ``engine_extension()`` factory (see ``_load_engine_extension`` for the
+    contract). Core has no knowledge of specific engines — e.g.
+    ``engine="sdp"`` resolves to whatever the separately-installed
+    ``kindling_sdp`` package provides. Follow with registrations, then
+    ``kindling.declare_pipeline()`` as the final step for declarative
+    engines.
     """
+    global _active_engine_extension
+
     config = dict(config or {})
     if app_name is not None:
         config["app_name"] = app_name
     if engine is not None:
         config["engine"] = engine
 
-    # Resolve SDP availability BEFORE framework initialization: a missing
-    # kindling_sdp package or an unsupported engine name must fail with the
-    # framework untouched, not half-initialized in SDP mode.
-    activate = None
-    if config.get("engine") in ("sdp", "databricks_sdp"):
-        activate = _resolve_sdp_activation(config["engine"])
+    # Resolve the engine extension BEFORE framework initialization: a
+    # missing or broken extension package must fail with the framework
+    # untouched, not half-initialized.
+    extension = None
+    if config.get("engine"):
+        extension = _load_engine_extension(config["engine"])
+        config["engine_owns_incrementality"] = bool(
+            getattr(extension, "owns_incrementality", False)
+        )
 
     result = initialize_framework(config)
 
-    if activate is not None:
-        activate()
+    if extension is not None:
+        extension.activate()
+        _active_engine_extension = extension
     return result
 
 
-def _resolve_sdp_activation(engine_name):
-    """Validate SDP-mode availability and return the activation callable.
+def _load_engine_extension(engine_name):
+    """Resolve an execution-engine extension by naming convention.
 
-    Raises (ImportError / ValueError) without side effects so callers can
-    check availability before any framework state is created.
+    The contract: engine ``<name>`` is provided by an importable module
+    ``kindling_<name>`` exposing a zero-arg ``engine_extension()`` factory.
+    The returned object must provide ``activate()`` (called once, after
+    framework initialization) and may provide ``owns_incrementality``
+    (bool — the engine manages incremental reads itself, so the watermark
+    aspect is not registered) and ``declare_pipeline(pipe_ids=None)``.
+
+    Loading is side-effect free: nothing is activated here.
     """
+    import importlib
+
+    module_name = f"kindling_{engine_name}"
     try:
-        from kindling_sdp.bootstrap import SUPPORTED_ENGINES, activate_sdp_mode
+        module = importlib.import_module(module_name)
     except ImportError as exc:
         raise ImportError(
-            f"engine='{engine_name}' requires the kindling_sdp package. "
-            "Install it alongside kindling to use SDP execution mode."
+            f"engine='{engine_name}' requires the '{module_name}' package. "
+            "Install the extension that provides this engine alongside "
+            "kindling."
         ) from exc
-    if engine_name not in SUPPORTED_ENGINES:
-        raise ValueError(
-            f"engine='{engine_name}' is not available yet "
-            f"(supported: {', '.join(SUPPORTED_ENGINES)}). The Databricks "
-            "adapter arrives with kindling_databricks_sdp."
+    factory = getattr(module, "engine_extension", None)
+    if factory is None:
+        raise TypeError(
+            f"'{module_name}' does not provide an engine_extension() "
+            f"factory, so it cannot be used as engine='{engine_name}'."
         )
-    return activate_sdp_mode
+    return factory()
 
 
 def declare_pipeline(pipe_ids=None):
-    """Declare the registered pipes as an SDP pipeline (SDP mode only).
+    """Declare the registered pipes through the active engine extension.
 
     Must run AFTER all registrations and the post-registration config
-    overlay — the last step of the entry point.
+    overlay — the last step of the entry point. Requires an engine that
+    supports pipeline declaration, selected via ``initialize(engine=...)``.
     """
-    try:
-        from kindling_sdp.bootstrap import declare_pipeline as _declare
-    except ImportError as exc:
-        raise ImportError(
-            "declare_pipeline() requires the kindling_sdp package and " "initialize(engine='sdp')."
-        ) from exc
-    return _declare(pipe_ids=pipe_ids)
+    if _active_engine_extension is None:
+        raise RuntimeError(
+            "declare_pipeline() requires a declarative execution engine — "
+            "call initialize(engine='<name>') first."
+        )
+    declare = getattr(_active_engine_extension, "declare_pipeline", None)
+    if declare is None:
+        raise TypeError(
+            f"The active engine extension ({_active_engine_extension}) "
+            "does not support pipeline declaration."
+        )
+    return declare(pipe_ids=pipe_ids)
