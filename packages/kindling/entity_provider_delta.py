@@ -234,6 +234,15 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
             f"Entity '{entity.entityid}': scd.sequence_by column "
             f"'{cfg.sequence_by}' is missing from the incoming DataFrame"
         )
+    # A null sequence value has no position in the ordering: it would stamp
+    # null effective columns and make the strictly-later guard evaluate to
+    # NULL, silently discarding the row's updates/deletes.
+    if cfg.sequence_by and df.filter(col(cfg.sequence_by).isNull()).head(1):
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.sequence_by column "
+            f"'{cfg.sequence_by}' contains null values in the incoming batch; "
+            "every row must carry a sequence value"
+        )
     business_keys = entity.merge_columns
     temporal_columns = {
         cfg.effective_from_column,

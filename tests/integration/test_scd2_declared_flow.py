@@ -248,6 +248,13 @@ class TestSequenceBy:
         with pytest.raises(ValueError, match="sequence_by"):
             delta_provider.merge_to_entity(bad, entity)
 
+    def test_null_sequence_value_in_batch_raises(self, spark, delta_provider):
+        entity = self._entity("silver.customers_seqnull")
+        _seed_table(spark, delta_provider, entity)
+        bad = spark.createDataFrame([("c1", "bronze", None)], SOURCE_SCHEMA)
+        with pytest.raises(ValueError, match="null values"):
+            delta_provider.merge_to_entity(bad, entity)
+
 
 class TestSourceKind:
     def test_snapshot_is_explicit_close_on_missing(self, spark, delta_provider):
