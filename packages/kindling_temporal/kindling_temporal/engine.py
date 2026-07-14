@@ -96,7 +96,7 @@ class ConditionEngineRunner:
 
 
 class EpisodeRunner:
-    """Form closed Episodes by pairing start and end Events."""
+    """Form Episodes by pairing start Events with the earliest matching end Event."""
 
     def execute(self, events_df, episode):
         from pyspark.sql import functions as F
@@ -114,8 +114,12 @@ class EpisodeRunner:
             F.col("end.event_id").alias("end_event_id"),
             F.col("start.event_ts").alias("start_time"),
             F.col("end.event_ts").alias("end_time"),
-            F.lit("closed").alias("status"),
-            F.lit("end_event").alias("close_reason"),
+            F.when(F.col("end.event_id").isNull(), F.lit("open"))
+            .otherwise(F.lit("closed"))
+            .alias("status"),
+            F.when(F.col("end.event_id").isNull(), F.lit(None).cast("string"))
+            .otherwise(F.lit("end_event"))
+            .alias("close_reason"),
             F.lit(False).alias("end_event_synthetic"),
             F.col("duration_ms"),
             F.lit(None).cast("long").alias("event_count"),
@@ -127,7 +131,9 @@ class EpisodeRunner:
     def execute_determination_events(self, events_df, episode):
         from pyspark.sql import functions as F
 
-        paired = self._paired_boundaries(events_df, episode)
+        paired = self._paired_boundaries(events_df, episode).filter(
+            F.col("end.event_id").isNotNull()
+        )
         determination_event = episode.determination_event or f"{episode.episodeid}.closed"
         event_id = F.sha2(
             F.concat_ws(
@@ -207,7 +213,7 @@ class EpisodeRunner:
                 F.col("start.subject_id") == F.col("end.subject_id"),
                 F.col("end.event_ts") >= F.col("start.event_ts"),
             ],
-            how="inner",
+            how="left",
         )
         window = Window.partitionBy(F.col("start.event_id")).orderBy(
             F.col("end.event_ts"), F.col("end.event_id")

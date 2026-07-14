@@ -68,6 +68,31 @@ def _events_df(spark):
     )
 
 
+def _unclosed_events_df(spark):
+    from kindling_temporal import events_schema
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    return spark.createDataFrame(
+        [
+            (
+                "source-hot",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-1",
+                observed_at,
+                "sensor",
+                None,
+                {"temperature": "95"},
+                None,
+                observed_at,
+            ),
+        ],
+        events_schema(),
+    )
+
+
 def _conditions_df(spark):
     from kindling_temporal import conditions_schema
 
@@ -146,6 +171,42 @@ def test_episode_runner_pairs_entered_and_exited_events(spark):
     assert row.duration_ms == 600000
     assert row.attributes["start_event_type"] == "condition.temperature_high.entered"
     assert row.attributes["end_event_type"] == "condition.temperature_high.exited"
+
+
+@pytest.mark.requires_spark
+def test_episode_runner_materializes_open_episode_without_end_event(spark):
+    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+
+    boundary_events = ConditionEngineRunner().execute(
+        _unclosed_events_df(spark), _conditions_df(spark)
+    )
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        determination_event="episode.temperature_high_active.closed",
+        subject_type="machine",
+    )
+
+    runner = EpisodeRunner()
+    rows = runner.execute(boundary_events, episode).collect()
+    determination_rows = runner.execute_determination_events(boundary_events, episode).collect()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.episode_type == "episode.temperature_high_active"
+    assert row.subject_id == "machine-1"
+    assert row.start_event_id
+    assert row.end_event_id is None
+    assert row.end_time is None
+    assert row.status == "open"
+    assert row.close_reason is None
+    assert row.end_event_synthetic is False
+    assert row.duration_ms is None
+    assert determination_rows == []
 
 
 @pytest.mark.requires_spark

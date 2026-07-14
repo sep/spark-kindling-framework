@@ -109,6 +109,31 @@ def _events_df(spark):
     )
 
 
+def _unclosed_events_df(spark):
+    from kindling_temporal import events_schema
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    return spark.createDataFrame(
+        [
+            (
+                "source-hot",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-2",
+                observed_at,
+                "sensor",
+                None,
+                {"temperature": "95"},
+                None,
+                observed_at,
+            ),
+        ],
+        events_schema(),
+    )
+
+
 def _conditions_df(spark):
     from kindling_temporal import conditions_schema
 
@@ -238,3 +263,20 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
         recursive_rows["condition.thermal_excursion.entered"].attributes["source_event_id"]
         == determination_rows[0].event_id
     )
+
+    open_boundary_events = condition_pipe.execute(
+        silver_events=_unclosed_events_df(spark),
+        silver_conditions_current=_conditions_df(spark),
+    )
+    open_episodes = episode_pipe.execute(silver_events=open_boundary_events).collect()
+    open_determination_events = episode_event_pipe.execute(
+        silver_events=open_boundary_events
+    ).collect()
+
+    assert len(open_episodes) == 1
+    assert open_episodes[0].subject_id == "machine-2"
+    assert open_episodes[0].status == "open"
+    assert open_episodes[0].end_event_id is None
+    assert open_episodes[0].end_time is None
+    assert open_episodes[0].duration_ms is None
+    assert open_determination_events == []
