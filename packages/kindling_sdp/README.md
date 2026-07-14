@@ -34,6 +34,21 @@ Phase 2 adds:
   unit-test-tier gate for the declared graph with no cluster in the loop
   (requires the Spark 4.1+ CLI: `pip install 'pyspark[pipelines]>=4.1'`).
 
+Phase 3 adds:
+
+- Full entity-metadata emission on the OSS engine: `comment`,
+  `table_properties` (entity tags `sdp.table_properties.<key>` over an
+  engine-config `table_properties` block, tag winning per key),
+  `partition_cols`, `cluster_by`, and `schema` — the complete Spark 4.1
+  `dp.materialized_view` keyword surface. Deliberate divergence from the
+  runner engine, per the dual-engine parity criterion: SDP does NOT force
+  `delta.enableChangeDataFeed` (that feeds the runner's watermark
+  machinery); declare it as a tag if external consumers need CDF.
+- An `engine_factory` seam on `declare_pipeline()` so adapter packages
+  reuse the whole bootstrap path.
+- The `kindling_databricks_sdp` adapter package (separate README):
+  Lakeflow expectations, selected via `engine="databricks_sdp"`.
+
 Entry point shape (fixed bootstrap surface — never generated code):
 
 ```python

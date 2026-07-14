@@ -153,7 +153,7 @@ class FakeDpModule:
     def __init__(self):
         self.declared = {}
 
-    def materialized_view(self, name=None):
+    def materialized_view(self, name=None, **kwargs):
         def decorator(fn):
             self.declared[name or fn.__name__] = fn
             return fn
