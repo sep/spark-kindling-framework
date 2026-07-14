@@ -120,3 +120,4 @@ integration-test-results/
 platform-wheels/
 security-reports/
 coverage.xml
+.venv-sdp41

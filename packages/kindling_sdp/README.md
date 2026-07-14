@@ -6,7 +6,7 @@ This package turns existing `DataEntities`/`DataPipes` registrations into a
 validated, pure-metadata `DeclarationPlan` that a concrete engine can emit as
 `pyspark.pipelines` (OSS Spark 4.1+) or Databricks Lakeflow declarations.
 
-Phase 1 (this package today) contains:
+Phase 1 contains:
 
 - The abstract `DeclarationEngine` interface and the shared plan builder.
 - Internal/external input classification derived from the registries.
@@ -15,8 +15,37 @@ Phase 1 (this package today) contains:
 - Dataset-type selection (entity tag, then engine config, then default
   `materialized_view`).
 
-Phase 1 deliberately has **no dependency on `pyspark.pipelines`** — emission
-of actual SDP declarations is Phase 2.
+Phase 2 adds:
+
+- `OssSdpEngine` — emits the plan through the OSS `pyspark.pipelines`
+  decorator API (materialized views; streaming tables are Phase 4). The
+  `dp` module is an injected dependency resolved lazily at declaration
+  time, so importing this package still never imports `pyspark.pipelines`
+  and Kindling keeps supporting Spark runtimes older than 4.1.
+- `SdpWriteGuardProvider` — the write-inert provider personality installed
+  by SDP-mode bootstrap ("SDP owns persistence"): reads delegate, every
+  write path raises `SdpModeWriteError`.
+- The bootstrap surface: `kindling.initialize(engine="sdp")` activates the
+  guard and skips the watermark aspect (SDP owns incrementality);
+  `kindling.declare_pipeline()` — the mandatory LAST step of the entry
+  point — builds, validates, and declares the plan.
+- The local validation harness (`write_pipeline_spec` + `dry_run`):
+  ephemeral `spark-pipeline.yml` + `spark-pipelines dry-run`, a
+  unit-test-tier gate for the declared graph with no cluster in the loop
+  (requires the Spark 4.1+ CLI: `pip install 'pyspark[pipelines]>=4.1'`).
+
+Entry point shape (fixed bootstrap surface — never generated code):
+
+```python
+import kindling
+
+kindling.initialize(engine="sdp")
+
+from my_app import register_all
+register_all()
+
+kindling.declare_pipeline()
+```
 
 See:
 
