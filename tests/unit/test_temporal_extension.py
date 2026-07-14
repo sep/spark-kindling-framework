@@ -164,6 +164,66 @@ def test_base_event_decorator_registers_metadata():
     assert entity.merge_columns == ["event_id"]
 
 
+def test_base_event_registration_accepts_none_tags_and_requires_metadata():
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_temporal import DataEvents, TemporalEventRegistryManager
+
+    DataEvents.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            event_registry=event_registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+        ),
+    ):
+
+        @DataEvents.base_event(
+            eventid="telemetry.null_tags",
+            input_entity_id="bronze.telemetry",
+            subject_type="machine",
+            subject_keys=["machine_id"],
+            time_column="event_ts",
+            event_type="telemetry.observed",
+            tags=None,
+        )
+        def normalize(df):
+            return df
+
+    pipe = pipe_registry.get_pipe_definition("temporal.event.telemetry.null_tags")
+    assert pipe.tags["pipe_type"] == "temporal.base_event"
+
+    DataEvents.reset()
+    missing_metadata_registry = MagicMock()
+    missing_metadata_registry.get_base_event_definition.return_value = None
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            event_registry=missing_metadata_registry,
+            entity_registry=DataEntityManager(),
+            pipe_registry=DataPipesManager(_logger_provider()),
+        ),
+    ):
+        with pytest.raises(ValueError, match="Temporal base event 'telemetry.missing'"):
+
+            @DataEvents.base_event(
+                eventid="telemetry.missing",
+                input_entity_id="bronze.telemetry",
+                subject_type="machine",
+                subject_keys=["machine_id"],
+                time_column="event_ts",
+                event_type="telemetry.observed",
+            )
+            def missing(df):
+                return df
+
+
 def test_condition_engine_registration_is_not_condition_specific():
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
@@ -249,6 +309,70 @@ def test_episode_registration_uses_canonical_entities():
     assert callable(pipe.execute)
 
 
+def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
+    from kindling.data_entities import DataEntityManager, EntityMetadata
+    from kindling_temporal import (
+        BaseEventMetadata,
+        ConditionEngineMetadata,
+        EpisodeMetadata,
+        TemporalPipeTranslator,
+        events_schema,
+    )
+
+    base_event = BaseEventMetadata(
+        eventid="telemetry.none_tags",
+        input_entity_id="bronze.telemetry",
+        output_entity_id="silver.events",
+        subject_type="machine",
+        subject_keys=["machine_id"],
+        time_column="event_ts",
+        event_type="telemetry.observed",
+        tags=None,
+    )
+    condition_engine = ConditionEngineMetadata(
+        engineid="condition_engine.none_tags",
+        events_entity_id="silver.events",
+        conditions_entity_id="silver.conditions",
+        conditions_current_entity_id="silver.conditions.current",
+        tags=None,
+    )
+    episode = EpisodeMetadata(
+        episodeid="episode.none_tags",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.none.entered",
+        end_event="condition.none.exited",
+        tags=None,
+    )
+
+    assert (
+        TemporalPipeTranslator.base_event_pipe_params(base_event)["tags"]["pipe_type"]
+        == "temporal.base_event"
+    )
+    assert (
+        TemporalPipeTranslator.condition_engine_pipe_params(condition_engine)["tags"]["pipe_type"]
+        == "temporal.condition_engine"
+    )
+    assert (
+        TemporalPipeTranslator.episode_pipe_params(episode)["tags"]["pipe_type"]
+        == "temporal.episode"
+    )
+
+    registry = DataEntityManager()
+    TemporalPipeTranslator.ensure_entity(
+        registry,
+        EntityMetadata(
+            entityid="silver.events",
+            name="events",
+            merge_columns=["event_id"],
+            tags=None,
+            schema=events_schema(),
+        ),
+    )
+
+    assert registry.get_entity_definition("silver.events").tags == {}
+
+
 class RecordingExpressionParser:
     def __init__(self, invalid_expressions=None):
         self.invalid_expressions = set(invalid_expressions or [])
@@ -324,7 +448,10 @@ def test_condition_validator_requires_enter_and_exit_expressions():
 def test_condition_validator_computes_event_type_generations():
     from kindling_temporal import TemporalConditionValidator
 
-    report = TemporalConditionValidator(expression_parser=RecordingExpressionParser()).validate(
+    validator = TemporalConditionValidator(expression_parser=RecordingExpressionParser())
+    assert validator.graph_builder.registry is not None
+
+    report = validator.validate(
         [
             _condition_row(condition_id="condition.temperature_high"),
             _condition_row(

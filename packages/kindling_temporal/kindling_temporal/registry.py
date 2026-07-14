@@ -160,9 +160,15 @@ class DataEvents:
             params["transform"] = func
             events_entity = cls._resolver().get_events_entity()
             params["output_entity_id"] = events_entity.entityid
-            params.setdefault("output_type", events_entity.tags.get("provider_type", "delta"))
+            events_entity_tags = events_entity.tags or {}
+            params.setdefault("output_type", events_entity_tags.get("provider_type", "delta"))
+            params["tags"] = params.get("tags") or {}
             cls._registry().register_base_event(eventid, **params)
-            metadata = cls._registry().get_base_event_definition(eventid)
+            metadata = _require_metadata(
+                cls._registry().get_base_event_definition(eventid),
+                "Temporal base event",
+                eventid,
+            )
             TemporalPipeTranslator.register_base_event(
                 metadata,
                 cls._data_pipe_registry(),
@@ -178,7 +184,8 @@ class DataEvents:
         """Register the generic rules-as-data condition engine."""
         events_entity = cls._resolver().get_events_entity()
         conditions_entity = cls._resolver().get_conditions_entity()
-        conditions_current_entity_id = conditions_entity.tags.get(
+        conditions_entity_tags = conditions_entity.tags or {}
+        conditions_current_entity_id = conditions_entity_tags.get(
             "scd.current_entity_id", f"{conditions_entity.entityid}.current"
         )
         entity_registry = cls._data_entity_registry()
@@ -191,7 +198,11 @@ class DataEvents:
             conditions_current_entity_id=conditions_current_entity_id,
             tags=tags or {},
         )
-        metadata = cls._registry().get_condition_engine_definition(engineid)
+        metadata = _require_metadata(
+            cls._registry().get_condition_engine_definition(engineid),
+            "Temporal condition engine",
+            engineid,
+        )
         TemporalPipeTranslator.register_condition_engine(
             metadata,
             cls._data_pipe_registry(),
@@ -253,8 +264,13 @@ class DataEpisodes:
         params["output_entity_id"] = episodes_entity.entityid
         params["events_entity_id"] = events_entity.entityid
         params.setdefault("condition_id", _infer_condition_id(params["start_event"]))
+        params["tags"] = params.get("tags") or {}
         cls._registry().register_episode(episodeid, **params)
-        metadata = cls._registry().get_episode_definition(episodeid)
+        metadata = _require_metadata(
+            cls._registry().get_episode_definition(episodeid),
+            "Temporal episode",
+            episodeid,
+        )
         TemporalPipeTranslator.register_episode(
             metadata,
             cls._data_pipe_registry(),
@@ -315,3 +331,9 @@ def _infer_condition_id(start_event: str) -> str:
     if start_event.endswith(".entered"):
         return start_event[: -len(".entered")]
     return start_event
+
+
+def _require_metadata(metadata: Optional[Any], primitive: str, primitive_id: str) -> Any:
+    if metadata is None:
+        raise ValueError(f"{primitive} '{primitive_id}' was not available after registration")
+    return metadata

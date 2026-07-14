@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 
+from kindling.data_pipes import DataPipesRegistry
 from kindling.pipe_graph import (
     GraphCycleError,
     PipeEdge,
@@ -118,7 +119,7 @@ class TemporalConditionValidator:
     ):
         self.expression_parser = expression_parser or ActiveSparkSqlExpressionParser()
         self.graph_builder = graph_builder or PipeGraphBuilder(
-            registry=None,
+            registry=_NullPipeRegistry(),
             logger_provider=_LoggerProvider(),
         )
 
@@ -231,6 +232,17 @@ class TemporalConditionValidator:
 class _LoggerProvider:
     def get_logger(self, name: str):
         return logging.getLogger(name)
+
+
+class _NullPipeRegistry(DataPipesRegistry):
+    def register_pipe(self, pipeid, **decorator_params):
+        raise NotImplementedError("Temporal condition validation builds event-type graphs directly")
+
+    def get_pipe_ids(self):
+        return []
+
+    def get_pipe_definition(self, name):
+        return None
 
 
 def _ensure_event_type_node(graph: PipeGraph, event_type: str) -> None:

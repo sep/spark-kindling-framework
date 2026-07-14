@@ -95,7 +95,7 @@ class TemporalPipeTranslator:
             "name": metadata.name or f"Temporal event: {metadata.eventid}",
             "execute": cls.base_event_execute(metadata),
             "tags": {
-                **metadata.tags,
+                **(metadata.tags or {}),
                 "pipe_type": "temporal.base_event",
                 "temporal.kind": "base_event",
                 "temporal.event_id": metadata.eventid,
@@ -114,7 +114,7 @@ class TemporalPipeTranslator:
             "name": metadata.name or f"Temporal condition engine: {metadata.engineid}",
             "execute": cls.condition_engine_execute(metadata),
             "tags": {
-                **metadata.tags,
+                **(metadata.tags or {}),
                 "pipe_type": "temporal.condition_engine",
                 "temporal.kind": "condition_engine",
                 "temporal.engine_id": metadata.engineid,
@@ -134,7 +134,7 @@ class TemporalPipeTranslator:
             "name": metadata.name or f"Temporal episode: {metadata.episodeid}",
             "execute": cls.episode_execute(metadata),
             "tags": {
-                **metadata.tags,
+                **(metadata.tags or {}),
                 "pipe_type": "temporal.episode",
                 "temporal.kind": "episode",
                 "temporal.episode_id": metadata.episodeid,
@@ -217,7 +217,7 @@ class TemporalPipeTranslator:
             entity.entityid,
             name=entity.name,
             merge_columns=list(entity.merge_columns),
-            tags=dict(entity.tags),
+            tags=dict(entity.tags or {}),
             schema=entity.schema,
             partition_columns=list(entity.partition_columns),
             cluster_columns=list(entity.cluster_columns),
