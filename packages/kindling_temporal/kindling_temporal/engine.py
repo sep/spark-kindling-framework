@@ -98,10 +98,10 @@ class ConditionEngineRunner:
 class EpisodeRunner:
     """Form Episodes by pairing start Events with the earliest matching end Event."""
 
-    def execute(self, events_df, episode):
+    def execute(self, events_df, episode, evaluation_time=None):
         from pyspark.sql import functions as F
 
-        paired = self._paired_boundaries(events_df, episode)
+        paired = self._paired_boundaries(events_df, episode, evaluation_time=evaluation_time)
 
         return paired.select(
             F.col("episode_id"),
@@ -111,16 +111,12 @@ class EpisodeRunner:
             F.col("start.subject_type").alias("subject_type"),
             F.col("start.subject_id").alias("subject_id"),
             F.col("start.event_id").alias("start_event_id"),
-            F.col("end.event_id").alias("end_event_id"),
+            F.col("end_event_id"),
             F.col("start.event_ts").alias("start_time"),
-            F.col("end.event_ts").alias("end_time"),
-            F.when(F.col("end.event_id").isNull(), F.lit("open"))
-            .otherwise(F.lit("closed"))
-            .alias("status"),
-            F.when(F.col("end.event_id").isNull(), F.lit(None).cast("string"))
-            .otherwise(F.lit("end_event"))
-            .alias("close_reason"),
-            F.lit(False).alias("end_event_synthetic"),
+            F.col("end_time"),
+            F.col("status"),
+            F.col("close_reason"),
+            F.col("end_event_synthetic"),
             F.col("duration_ms"),
             F.lit(None).cast("long").alias("event_count"),
             F.current_timestamp().alias("created_at"),
@@ -128,17 +124,21 @@ class EpisodeRunner:
             self._episode_attributes(episode).alias("attributes"),
         )
 
-    def execute_determination_events(self, events_df, episode):
+    def execute_determination_events(self, events_df, episode, evaluation_time=None):
         from pyspark.sql import functions as F
 
-        paired = self._paired_boundaries(events_df, episode).filter(
-            F.col("end.event_id").isNotNull()
-        )
+        paired = self._paired_boundaries(
+            events_df, episode, evaluation_time=evaluation_time
+        ).filter(F.col("status").isin("closed", "expired"))
         determination_event = episode.determination_event or f"{episode.episodeid}.closed"
+        expiration_event = episode.expiration_event or f"{episode.episodeid}.expired"
+        emitted_event_type = F.when(
+            F.col("status") == F.lit("expired"), F.lit(expiration_event)
+        ).otherwise(F.lit(determination_event))
         event_id = F.sha2(
             F.concat_ws(
                 "||",
-                F.lit(determination_event),
+                emitted_event_type,
                 F.col("episode_id").cast("string"),
             ),
             256,
@@ -151,17 +151,17 @@ class EpisodeRunner:
             F.lit("condition_id"),
             F.lit(episode.condition_id).cast("string"),
             F.lit("status"),
-            F.lit("closed"),
+            F.col("status").cast("string"),
             F.lit("close_reason"),
-            F.lit("end_event"),
+            F.col("close_reason").cast("string"),
             F.lit("start_event_id"),
             F.col("start.event_id").cast("string"),
             F.lit("end_event_id"),
-            F.col("end.event_id").cast("string"),
+            F.col("end_event_id").cast("string"),
             F.lit("start_time"),
             F.col("start.event_ts").cast("string"),
             F.lit("end_time"),
-            F.col("end.event_ts").cast("string"),
+            F.col("end_time").cast("string"),
             F.lit("duration_ms"),
             F.col("duration_ms").cast("string"),
         )
@@ -174,18 +174,26 @@ class EpisodeRunner:
             F.col("start.generation").cast("string"),
             F.lit("end_generation"),
             F.col("end.generation").cast("string"),
+            F.lit("end_event_synthetic"),
+            F.col("end_event_synthetic").cast("string"),
         )
 
         return paired.select(
             event_id.alias("event_id"),
-            F.lit(determination_event).alias("event_type"),
-            (F.greatest(F.col("start.generation"), F.col("end.generation")) + F.lit(1))
+            emitted_event_type.alias("event_type"),
+            (
+                F.greatest(
+                    F.col("start.generation"),
+                    F.coalesce(F.col("end.generation"), F.col("start.generation")),
+                )
+                + F.lit(1)
+            )
             .cast("int")
             .alias("generation"),
             F.lit("episode").alias("event_class"),
             F.col("start.subject_type").alias("subject_type"),
             F.col("start.subject_id").alias("subject_id"),
-            F.col("end.event_ts").alias("event_ts"),
+            F.col("end_time").alias("event_ts"),
             F.lit("kindling-temporal").alias("source_system"),
             F.col("episode_id").alias("correlation_id"),
             payload.alias("payload"),
@@ -194,7 +202,7 @@ class EpisodeRunner:
         )
 
     @staticmethod
-    def _paired_boundaries(events_df, episode):
+    def _paired_boundaries(events_df, episode, evaluation_time=None):
         from pyspark.sql import functions as F
         from pyspark.sql.window import Window
 
@@ -221,22 +229,78 @@ class EpisodeRunner:
         paired = candidates.withColumn("__episode_pair_rank", F.row_number().over(window)).filter(
             F.col("__episode_pair_rank") == F.lit(1)
         )
+        if evaluation_time is None:
+            horizon = events_df.agg(F.max("event_ts").alias("__temporal_evaluation_time"))
+            paired = paired.crossJoin(horizon)
+        else:
+            paired = paired.withColumn(
+                "__temporal_evaluation_time",
+                F.lit(evaluation_time).cast("timestamp"),
+            )
 
-        duration_ms = (
-            F.col("end.event_ts").cast("long") - F.col("start.event_ts").cast("long")
-        ) * F.lit(1000)
+        expiration_time = F.lit(None).cast("timestamp")
+        if episode.expires_after_seconds is not None:
+            expiration_time = F.from_unixtime(
+                F.col("start.event_ts").cast("long") + F.lit(episode.expires_after_seconds)
+            ).cast("timestamp")
+        is_closed = F.col("end.event_id").isNotNull()
+        is_expired = (
+            F.lit(episode.expires_after_seconds is not None)
+            & F.col("end.event_id").isNull()
+            & F.col("__temporal_evaluation_time").isNotNull()
+            & (F.col("__temporal_evaluation_time") >= expiration_time)
+        )
+        synthetic_end_event_id = F.sha2(
+            F.concat_ws(
+                "||",
+                F.lit(episode.episodeid),
+                F.lit("expired"),
+                F.col("start.event_id").cast("string"),
+                expiration_time.cast("string"),
+            ),
+            256,
+        )
+        end_event_id = (
+            F.when(is_closed, F.col("end.event_id"))
+            .when(is_expired, synthetic_end_event_id)
+            .otherwise(F.lit(None).cast("string"))
+        )
+        end_time = (
+            F.when(is_closed, F.col("end.event_ts"))
+            .when(is_expired, expiration_time)
+            .otherwise(F.lit(None).cast("timestamp"))
+        )
+        status = (
+            F.when(is_closed, F.lit("closed"))
+            .when(is_expired, F.lit("expired"))
+            .otherwise(F.lit("open"))
+        )
+        close_reason = (
+            F.when(is_closed, F.lit("end_event"))
+            .when(is_expired, F.lit("expiration"))
+            .otherwise(F.lit(None).cast("string"))
+        )
+        duration_ms = F.when(
+            end_time.isNotNull(),
+            (end_time.cast("long") - F.col("start.event_ts").cast("long")) * F.lit(1000),
+        ).otherwise(F.lit(None).cast("long"))
         episode_id = F.sha2(
             F.concat_ws(
                 "||",
                 F.lit(episode.episodeid),
                 F.col("start.event_id").cast("string"),
-                F.col("end.event_id").cast("string"),
             ),
             256,
         )
 
-        return paired.withColumn("episode_id", episode_id).withColumn(
-            "duration_ms", duration_ms.cast("long")
+        return (
+            paired.withColumn("episode_id", episode_id)
+            .withColumn("end_event_id", end_event_id)
+            .withColumn("end_time", end_time)
+            .withColumn("status", status)
+            .withColumn("close_reason", close_reason)
+            .withColumn("end_event_synthetic", is_expired)
+            .withColumn("duration_ms", duration_ms.cast("long"))
         )
 
     @staticmethod

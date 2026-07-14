@@ -223,7 +223,11 @@ class TemporalPipeTranslator:
 
             from .engine import EpisodeRunner
 
-            return EpisodeRunner().execute(events_df, metadata)
+            return EpisodeRunner().execute(
+                events_df,
+                metadata,
+                evaluation_time=entity_dfs.get("temporal_evaluation_time"),
+            )
 
         return execute
 
@@ -244,7 +248,11 @@ class TemporalPipeTranslator:
 
             from .engine import EpisodeRunner
 
-            return EpisodeRunner().execute_determination_events(events_df, metadata)
+            return EpisodeRunner().execute_determination_events(
+                events_df,
+                metadata,
+                evaluation_time=entity_dfs.get("temporal_evaluation_time"),
+            )
 
         return execute
 

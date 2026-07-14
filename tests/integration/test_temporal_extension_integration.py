@@ -177,6 +177,7 @@ def test_episode_runner_pairs_entered_and_exited_events(spark):
 def test_episode_runner_materializes_open_episode_without_end_event(spark):
     from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
 
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
     boundary_events = ConditionEngineRunner().execute(
         _unclosed_events_df(spark), _conditions_df(spark)
     )
@@ -207,6 +208,72 @@ def test_episode_runner_materializes_open_episode_without_end_event(spark):
     assert row.end_event_synthetic is False
     assert row.duration_ms is None
     assert determination_rows == []
+
+    still_open = runner.execute(
+        boundary_events,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=1),
+    ).collect()[0]
+    assert still_open.status == "open"
+
+
+@pytest.mark.requires_spark
+def test_episode_runner_expires_open_episode_at_batch_evaluation_time(spark):
+    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    boundary_events = ConditionEngineRunner().execute(
+        _unclosed_events_df(spark), _conditions_df(spark)
+    )
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        determination_event="episode.temperature_high_active.closed",
+        expiration_event="episode.temperature_high_active.expired",
+        expires_after_seconds=300,
+        subject_type="machine",
+    )
+
+    runner = EpisodeRunner()
+    rows = runner.execute(
+        boundary_events,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=10),
+    ).collect()
+    lifecycle_rows = runner.execute_determination_events(
+        boundary_events,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=10),
+    ).collect()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.episode_type == "episode.temperature_high_active"
+    assert row.subject_id == "machine-1"
+    assert row.status == "expired"
+    assert row.close_reason == "expiration"
+    assert row.end_event_synthetic is True
+    assert row.end_event_id
+    assert row.end_time == observed_at + timedelta(minutes=5)
+    assert row.duration_ms == 300000
+
+    assert len(lifecycle_rows) == 1
+    event = lifecycle_rows[0]
+    assert event.event_type == "episode.temperature_high_active.expired"
+    assert event.generation == 2
+    assert event.event_class == "episode"
+    assert event.event_ts == row.end_time
+    assert event.correlation_id == row.episode_id
+    assert event.payload["episode_id"] == row.episode_id
+    assert event.payload["status"] == "expired"
+    assert event.payload["close_reason"] == "expiration"
+    assert event.payload["end_event_id"] == row.end_event_id
+    assert event.payload["duration_ms"] == "300000"
+    assert event.attributes["end_event_synthetic"] == "true"
 
 
 @pytest.mark.requires_spark

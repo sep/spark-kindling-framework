@@ -212,6 +212,8 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
             start_event="condition.temperature_high.entered",
             end_event="condition.temperature_high.exited",
             subject_type="machine",
+            expires_after_seconds=300,
+            expiration_event="episode.temperature_high_active.expired",
         )
 
     condition_pipe = pipe_registry.get_pipe_definition(
@@ -280,3 +282,26 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     assert open_episodes[0].end_time is None
     assert open_episodes[0].duration_ms is None
     assert open_determination_events == []
+
+    expired_episodes = episode_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    ).collect()
+    expired_events = episode_event_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    ).collect()
+
+    assert len(expired_episodes) == 1
+    assert expired_episodes[0].subject_id == "machine-2"
+    assert expired_episodes[0].status == "expired"
+    assert expired_episodes[0].close_reason == "expiration"
+    assert expired_episodes[0].end_event_synthetic is True
+    assert expired_episodes[0].end_time == datetime(2026, 7, 14, 12, 5, 0)
+    assert expired_episodes[0].duration_ms == 300000
+
+    assert len(expired_events) == 1
+    assert expired_events[0].event_type == "episode.temperature_high_active.expired"
+    assert expired_events[0].generation == 2
+    assert expired_events[0].correlation_id == expired_episodes[0].episode_id
+    assert expired_events[0].payload["status"] == "expired"
