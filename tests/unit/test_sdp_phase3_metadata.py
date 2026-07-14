@@ -166,7 +166,7 @@ class TestMetadataEmission:
             entity_tags={"sdp.table_properties.owner": "entity-team"}
         )
         engine_config = {
-            "p": {"sdp": {"table_properties": {"owner": "config-team", "layer": "silver"}}}
+            "p": {"sdp": {"table_properties": {"owner": "config-team", " layer ": " silver "}}}
         }
         dp = FakeDpModule()
         engine = OssSdpEngine(entities, pipes, engine_config=engine_config, dp_module=dp)
@@ -185,7 +185,7 @@ class TestMetadataEmission:
 EXPECTATION_CONFIG = {
     "p": {
         "databricks_sdp": {
-            "expectations": {"valid_id": "id IS NOT NULL"},
+            "expectations": {" valid_id ": " id IS NOT NULL "},
             "expectations_drop": {"positive_qty": "qty > 0"},
             "expectations_fail": {"no_future": "d <= current_date()"},
         }

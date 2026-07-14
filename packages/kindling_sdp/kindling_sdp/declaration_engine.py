@@ -476,10 +476,10 @@ class DeclarationEngine(ABC):
         for engine_name in reversed(self._engine_block_precedence()):
             block = self._pipe_engine_block(pipe.pipeid, engine_name).get("table_properties")
             if isinstance(block, dict):
-                properties.update({str(k): str(v) for k, v in block.items()})
+                properties.update({str(k).strip(): str(v).strip() for k, v in block.items()})
         for tag_key, value in tags.items():
             if tag_key.startswith(TABLE_PROPERTIES_TAG_PREFIX):
-                properties[tag_key[len(TABLE_PROPERTIES_TAG_PREFIX) :]] = str(value)
+                properties[tag_key[len(TABLE_PROPERTIES_TAG_PREFIX) :].strip()] = str(value).strip()
         return properties
 
     def _select_dataset_type(self, pipe) -> DatasetType:

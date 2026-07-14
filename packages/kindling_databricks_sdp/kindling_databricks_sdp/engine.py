@@ -90,5 +90,5 @@ class DatabricksSdpEngine(OssSdpEngine):
         for engine_name in reversed(self._engine_block_precedence()):
             block = self._pipe_engine_block(pipe_id, engine_name).get(config_key)
             if isinstance(block, dict):
-                merged.update({str(k): str(v) for k, v in block.items()})
+                merged.update({str(k).strip(): str(v).strip() for k, v in block.items()})
         return merged
