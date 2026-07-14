@@ -354,8 +354,19 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     )
     closure_for_same_start = episode_pipe.execute(
         silver_events=closed_machine_2_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 15, 0),
+    ).collect()[0]
+    closure_event_for_same_start = episode_event_pipe.execute(
+        silver_events=closed_machine_2_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 15, 0),
     ).collect()[0]
 
     assert closure_for_same_start.status == "closed"
     assert closure_for_same_start.episode_id == open_episodes[0].episode_id
     assert closure_for_same_start.start_event_id == open_episodes[0].start_event_id
+    assert closure_for_same_start.end_event_synthetic is False
+    assert closure_for_same_start.end_time == datetime(2026, 7, 14, 12, 10, 0)
+    assert closure_event_for_same_start.event_type == "episode.temperature_high_active.closed"
+    assert closure_event_for_same_start.correlation_id == closure_for_same_start.episode_id
+    assert closure_event_for_same_start.payload["status"] == "closed"
+    assert closure_event_for_same_start.payload["close_reason"] == "end_event"

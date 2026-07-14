@@ -321,6 +321,51 @@ def test_episode_runner_preserves_episode_id_across_lifecycle_views(spark):
 
 
 @pytest.mark.requires_spark
+def test_episode_runner_prefers_visible_real_end_over_batch_expiration(spark):
+    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    closed_boundary_events = ConditionEngineRunner().execute(
+        _events_df(spark), _conditions_df(spark)
+    )
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        determination_event="episode.temperature_high_active.closed",
+        expiration_event="episode.temperature_high_active.expired",
+        expires_after_seconds=300,
+        subject_type="machine",
+    )
+
+    runner = EpisodeRunner()
+    row = runner.execute(
+        closed_boundary_events,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=15),
+    ).collect()[0]
+    event = runner.execute_determination_events(
+        closed_boundary_events,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=15),
+    ).collect()[0]
+
+    assert row.status == "closed"
+    assert row.close_reason == "end_event"
+    assert row.end_event_synthetic is False
+    assert row.end_time == observed_at + timedelta(minutes=10)
+    assert row.duration_ms == 600000
+    assert event.event_type == "episode.temperature_high_active.closed"
+    assert event.payload["status"] == "closed"
+    assert event.payload["close_reason"] == "end_event"
+    assert event.payload["duration_ms"] == "600000"
+    assert event.attributes["end_event_synthetic"] == "false"
+
+
+@pytest.mark.requires_spark
 def test_episode_runner_emits_episode_determination_event(spark):
     from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
 

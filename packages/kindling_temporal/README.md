@@ -23,6 +23,8 @@ complete temporal-processing system described in the white paper and proposal.
   materializes open episodes when no end event has arrived;
 - batch expiration of open episodes using `expires_after_seconds` and an
   explicit evaluation time or bounded input horizon;
+- bounded batch correction where a visible real end event wins over synthetic
+  expiration while preserving the same `episode_id`;
 - episode-determination events emitted back into the canonical event envelope
   with `correlation_id = episode_id` and incremented generation numbers,
   including expiration events for expired episodes;
@@ -42,8 +44,8 @@ do not create a different episode identity.
 The remaining proposal work is tracked here so the current package is not
 mistaken for a full implementation:
 
-- invalidated episode lifecycle handling and late real-end revision of expired
-  episodes;
+- invalidated episode lifecycle handling and stateful late real-end revision of
+  already-persisted expired episodes;
 - late-event grace windows, watermarks, replay/backfill semantics, and
   stateful streaming execution;
 - multi-generation orchestration beyond one condition-engine pass;
