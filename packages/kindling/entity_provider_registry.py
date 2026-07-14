@@ -28,7 +28,23 @@ class EntityProviderRegistry:
         self.logger = logger_provider.get_logger("EntityProviderRegistry")
         self._provider_classes: Dict[str, Type[BaseEntityProvider]] = {}
         self._provider_instances: Dict[str, BaseEntityProvider] = {}
+        self._provider_decorator = None
         self._register_builtin_providers()
+
+    def set_provider_decorator(self, decorator) -> None:
+        """Wrap every provider instance — cached and future — in `decorator`.
+
+        The seam for execution-mode provider personalities: SDP-mode
+        bootstrap installs a write-inert guard here so that no imperative
+        write path is reachable while SDP owns persistence, without any
+        provider being mode-aware itself.
+        """
+        self._provider_decorator = decorator
+        self._provider_instances = {
+            provider_type: decorator(instance)
+            for provider_type, instance in self._provider_instances.items()
+        }
+        self.logger.info(f"Provider decorator installed: {decorator}")
 
     def register_provider(
         self, provider_type: str, provider_class: Type[BaseEntityProvider]
@@ -81,6 +97,8 @@ class EntityProviderRegistry:
 
         try:
             provider_instance = GlobalInjector.get(provider_class)
+            if self._provider_decorator is not None:
+                provider_instance = self._provider_decorator(provider_instance)
             self._provider_instances[provider_type] = provider_instance
             self.logger.info(f"Created provider instance: {provider_type}")
             return provider_instance

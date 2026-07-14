@@ -1619,8 +1619,10 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # advancement hook into pipe execution via signals rather than being
         # woven into the read/persist strategy. Standalone/local execution
         # deliberately runs without it (full reads, no watermark state),
-        # matching the fixture-based local dev workflow.
-        if platform != "standalone":
+        # matching the fixture-based local dev workflow. SDP mode also runs
+        # without it: SDP owns incrementality (streaming checkpoints, MV
+        # refresh), so the aspect is simply never registered.
+        if platform != "standalone" and config.get("engine") not in ("sdp", "databricks_sdp"):
             from kindling.injection import GlobalInjector
             from kindling.watermarking import WatermarkAspect
 

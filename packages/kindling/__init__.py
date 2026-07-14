@@ -44,10 +44,55 @@ from .bootstrap import (
 from .data_entities import KindlingNotInitializedError
 
 
-def initialize(config=None, app_name=None):
-    """Public initialize entrypoint for pre-installed kindling usage."""
+def initialize(config=None, app_name=None, engine=None):
+    """Public initialize entrypoint for pre-installed kindling usage.
+
+    ``engine="sdp"`` selects the Spark Declarative Pipelines execution
+    mode (requires the ``kindling_sdp`` package): the watermark aspect is
+    never registered (SDP owns incrementality) and entity-provider write
+    paths are guarded (SDP owns persistence). Follow with registrations,
+    then ``kindling.declare_pipeline()`` as the final step.
+    """
     config = dict(config or {})
     if app_name is not None:
         config["app_name"] = app_name
+    if engine is not None:
+        config["engine"] = engine
 
-    return initialize_framework(config)
+    result = initialize_framework(config)
+
+    if config.get("engine") in ("sdp", "databricks_sdp"):
+        _activate_sdp_mode(config["engine"])
+    return result
+
+
+def _activate_sdp_mode(engine_name):
+    try:
+        from kindling_sdp.bootstrap import SUPPORTED_ENGINES, activate_sdp_mode
+    except ImportError as exc:
+        raise ImportError(
+            f"engine='{engine_name}' requires the kindling_sdp package. "
+            "Install it alongside kindling to use SDP execution mode."
+        ) from exc
+    if engine_name not in SUPPORTED_ENGINES:
+        raise ValueError(
+            f"engine='{engine_name}' is not available yet "
+            f"(supported: {', '.join(SUPPORTED_ENGINES)}). The Databricks "
+            "adapter arrives with kindling_databricks_sdp."
+        )
+    activate_sdp_mode()
+
+
+def declare_pipeline(pipe_ids=None):
+    """Declare the registered pipes as an SDP pipeline (SDP mode only).
+
+    Must run AFTER all registrations and the post-registration config
+    overlay — the last step of the entry point.
+    """
+    try:
+        from kindling_sdp.bootstrap import declare_pipeline as _declare
+    except ImportError as exc:
+        raise ImportError(
+            "declare_pipeline() requires the kindling_sdp package and " "initialize(engine='sdp')."
+        ) from exc
+    return _declare(pipe_ids=pipe_ids)
