@@ -129,7 +129,7 @@ auth-secret-fingerprints = { cmd = "python scripts/auth_secret_fingerprints.py" 
 # Testing tasks
 test = "kindling test run --suite all --path tests"
 test-unit = "kindling test run --suite unit --path tests/unit"
-test-unit-ci = "kindling test run --suite unit --path tests/unit --ci --coverage packages/kindling --pytest-arg=--cov-report=xml"
+test-unit-ci = "kindling test run --suite unit --path tests/unit --ci --coverage packages/kindling --coverage packages/kindling_sdp --pytest-arg=--cov-report=xml"
 test-integration = "kindling test run --suite integration --path tests/integration"
 test-integration-ci = "kindling test run --suite integration --path tests/integration --ci --no-cov"
 test-local = "kindling test run --suite all --path tests/local-project"
