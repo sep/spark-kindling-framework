@@ -119,3 +119,4 @@ code-quality-reports/
 integration-test-results/
 platform-wheels/
 security-reports/
+coverage.xml
