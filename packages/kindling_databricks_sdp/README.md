@@ -81,6 +81,14 @@ the SDP-native replacement, tracked separately). Expectations, when
 configured, attach to the source view — quality is checked on the
 incoming feed.
 
+Change-feed sources are consumed as a **stream**: the driving input (the
+pipe's first input, per the runner's driving-source convention) is read
+with `spark.readStream.table()` so the AUTO CDC flow processes it
+incrementally — the declarative replacement for hand-rolled
+foreachBatch+MERGE. Remaining inputs stay batch reads (stream-static
+joins). Snapshot sources keep batch reads: the snapshot API diffs whole
+snapshots per update.
+
 ## Deferred
 
 - Streaming tables and append flows for non-SCD datasets — Phase 4 (core

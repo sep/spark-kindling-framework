@@ -230,6 +230,83 @@ class TestChangeFeedMapping:
         assert "silver.customers__scd_source" in dp.views
 
 
+class FakeStreamingSession:
+    """Records batch vs streaming table reads."""
+
+    class _ReadStream:
+        def __init__(self, outer):
+            self.outer = outer
+
+        def table(self, name):
+            self.outer.stream_reads.append(name)
+            return f"stream:{name}"
+
+    def __init__(self):
+        self.batch_reads = []
+        self.stream_reads = []
+        self.readStream = FakeStreamingSession._ReadStream(self)
+
+    def table(self, name):
+        self.batch_reads.append(name)
+        return f"df:{name}"
+
+
+class TestChangeFeedStreamingSource:
+    """The change-feed source view must consume the driving input as a
+    stream — AUTO CDC replaces foreachBatch+MERGE, and that only holds if
+    the feed is incremental, not a full batch re-read per update."""
+
+    def _declare_with_session(self, tags, input_ids=("bronze.customers", "ref.regions")):
+        captured = {}
+
+        def execute(**dfs):
+            captured.update(dfs)
+            return "df:out"
+
+        entities = FakeRegistry(
+            {
+                e.entityid: e
+                for e in [
+                    *(make_entity(i) for i in input_ids),
+                    make_entity("silver.customers", tags=tags),
+                ]
+            }
+        )
+        pipes = FakeRegistry(
+            {
+                "scd.customers": make_pipe(
+                    "scd.customers", list(input_ids), "silver.customers", execute=execute
+                )
+            }
+        )
+        dp = FakeLakeflowDp()
+        session = FakeStreamingSession()
+        engine = DatabricksSdpEngine(
+            entities, pipes, dp_module=dp, session_provider=lambda: session
+        )
+        engine.declare_pipeline(engine.build_plan())
+        dp.views["silver.customers__scd_source"]()
+        return session, captured
+
+    def test_driving_input_streams_remaining_inputs_stay_batch(self):
+        session, captured = self._declare_with_session(CHANGE_FEED_TAGS)
+
+        assert session.stream_reads == ["bronze.customers"]
+        assert session.batch_reads == ["ref.regions"]
+        assert captured["bronze_customers"] == "stream:bronze.customers"
+        assert captured["ref_regions"] == "df:ref.regions"
+
+    def test_snapshot_source_keeps_batch_reads(self):
+        """The snapshot API diffs whole snapshots per update — a streaming
+        read would be wrong there."""
+        session, captured = self._declare_with_session(
+            SNAPSHOT_TAGS, input_ids=("bronze.customers",)
+        )
+
+        assert session.stream_reads == []
+        assert session.batch_reads == ["bronze.customers"]
+
+
 # --------------------------------------------------------------------- #
 # Snapshot mapping                                                       #
 # --------------------------------------------------------------------- #

@@ -131,7 +131,9 @@ class OssSdpEngine(DeclarationEngine):
             kwargs["schema"] = dataset.schema
         return kwargs
 
-    def _build_dataset_function(self, dataset: DatasetDeclaration) -> Callable[[], Any]:
+    def _build_dataset_function(
+        self, dataset: DatasetDeclaration, stream_first_input: bool = False
+    ) -> Callable[[], Any]:
         """The DataFrame-returning query body SDP evaluates.
 
         Reproduces the runner engine's input contract exactly
@@ -143,6 +145,12 @@ class OssSdpEngine(DeclarationEngine):
         INTERNAL inputs are read with ``spark.table(<dataset name>)`` so
         SDP infers the pipeline graph edge; EXTERNAL inputs go through the
         resolver (default: also a catalog-table read).
+
+        ``stream_first_input`` reads the FIRST input — the driving source,
+        per the runner engine's driving-source convention — with
+        ``spark.readStream.table()`` so a consuming flow processes it
+        incrementally (AUTO CDC change feeds); remaining inputs stay batch
+        reads (stream-static joins).
         """
         session_provider = self._session_provider
         resolver = self._external_read_resolver
@@ -150,8 +158,10 @@ class OssSdpEngine(DeclarationEngine):
         def dataset_function():
             spark = session_provider()
             input_dfs = {}
-            for pipe_input in dataset.inputs:
-                if pipe_input.classification is InputClassification.INTERNAL or resolver is None:
+            for position, pipe_input in enumerate(dataset.inputs):
+                if stream_first_input and position == 0:
+                    df = spark.readStream.table(pipe_input.entity_id)
+                elif pipe_input.classification is InputClassification.INTERNAL or resolver is None:
                     df = spark.table(pipe_input.entity_id)
                 else:
                     df = resolver(spark, pipe_input.entity_id)

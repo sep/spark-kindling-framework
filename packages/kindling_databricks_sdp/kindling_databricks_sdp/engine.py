@@ -109,7 +109,12 @@ class DatabricksSdpEngine(OssSdpEngine):
 
         1. A pipeline-scoped view holding the pipe's change/snapshot
            source (expectations, if any, attach here — data quality is
-           checked on the incoming feed).
+           checked on the incoming feed). For a CHANGE FEED the driving
+           input (first, per the runner's driving-source convention) is
+           read with ``spark.readStream.table()`` so the flow consumes it
+           incrementally — no hand-rolled foreachBatch; remaining inputs
+           stay batch reads (stream-static joins). A SNAPSHOT source keeps
+           batch reads: the API diffs whole snapshots per update.
         2. ``create_streaming_table`` for the target. The entity's schema
            is deliberately NOT passed: AUTO CDC emits ``__START_AT``/
            ``__END_AT``, not the runner engine's effective-date columns.
@@ -127,7 +132,9 @@ class DatabricksSdpEngine(OssSdpEngine):
                 "no view decorator (temporary_view/view) to declare the "
                 "AUTO CDC source with."
             )
-        query_function = self._build_dataset_function(dataset)
+        query_function = self._build_dataset_function(
+            dataset, stream_first_input=not spec.is_snapshot
+        )
         query_function = self._apply_expectations(dp, dataset, query_function)
         view_decorator(name=source_name)(query_function)
 
