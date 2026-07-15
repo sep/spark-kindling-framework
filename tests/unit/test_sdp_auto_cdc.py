@@ -23,6 +23,14 @@ from kindling_sdp import DeclarationValidationError
 # --------------------------------------------------------------------- #
 
 
+@pytest.fixture(autouse=True)
+def hermetic_expr(monkeypatch):
+    """pyspark's expr() needs a live JVM; without this stub the delete_when
+    tests pass only when an earlier suite member happens to have started
+    Spark. Unit tests must not depend on suite order."""
+    monkeypatch.setattr("pyspark.sql.functions.expr", lambda predicate: f"expr({predicate})")
+
+
 class FakeRegistry(dict):
     def get_entity_ids(self):
         return self.keys()
@@ -154,7 +162,7 @@ class TestChangeFeedMapping:
         dp = declare(CHANGE_FEED_TAGS)
 
         (flow,) = dp.cdc_flows
-        assert "status = DELETED" in str(flow["apply_as_deletes"]).replace("`", "")
+        assert flow["apply_as_deletes"] == "expr(status = 'DELETED')"
 
     def test_no_delete_when_omits_apply_as_deletes(self):
         tags = {k: v for k, v in CHANGE_FEED_TAGS.items() if k != "scd.delete_when"}
