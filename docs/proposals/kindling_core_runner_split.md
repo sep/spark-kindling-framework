@@ -318,8 +318,10 @@ this proposal unwinds in kindling itself.
    `packages/kindling_runner/`, leave `kindling.*` shims, move tests per
    the mapping, split CI coverage targets.
 4. **Phase 3 — distribution split:** separate wheels, `[runner]` extra
-   default in platform wheels, deprecation window on shims, temporal
-   extension re-pins to `kindling_runner`.
+   default in platform wheels, deprecation window on shims; the temporal
+   extension pins core for its ontology/declaration layer and adds
+   `kindling_runner` only for its current execution strategy (see
+   Friction #9).
 
 ## Acceptance Criteria
 
