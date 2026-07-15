@@ -47,8 +47,13 @@ finishes the thought structurally:
 
 The coexistence is deliberate and permanent, not transitional. The runner
 is the imperative escape hatch the declarative model refuses to provide —
-driver-side loops, revision-in-place, custom persistence.
-`kindling-temporal` is scoped runner-only for exactly those reasons.
+driver-side loops, revision-in-place, custom persistence. Extensions like
+`kindling-temporal` illustrate the layering rather than break it: the
+temporal *model* (the Event/Condition/Episode ontology and the entity/
+process declaration patterns it prescribes) is engine-agnostic and sits
+on the core; only its *current execution strategy* (driver-side condition
+evaluation, episode revision-in-place) requires runner capabilities. See
+Friction #9.
 
 ## Platform Context (Why This Is a Plan, Not a Sprint)
 
@@ -280,10 +285,23 @@ packages.
 `test_framework`, `notebook_framework`, `data_apps`, `job_deployment`,
 platform services, `pipe_graph`/`cache_optimizer` (analysis, not
 scheduling), and the provider registry (with its execution-mode
-decorator seam) are core, verified by import direction. The temporal
-extension (`kindling-temporal`) declares an explicit dependency on
-`kindling_runner` — making its runner-only scoping a package fact
-instead of a documentation note.
+decorator seam) are core, verified by import direction.
+
+**`kindling-temporal` is NOT runner-only — it is split-shaped itself.**
+The temporal extension's purpose is a consistent, ontology-driven pattern
+(`event_condition_episode_ontology.md`, deliberately
+implementation-agnostic) for *what* to declare (Event/Condition/Episode
+entities) and *how* (the processes supporting temporal segmentation and
+analysis). That declaration layer depends only on the core. What the SDP
+proposal's "What Stays Runner-Only" section scopes to the runner is
+temporal's *current execution strategy* — the driver-side condition
+evaluation loop and episode revision-in-place (which needs mutable SCD2
+semantics no declarative engine offers). Post-split, the extension
+depends on core for its model and on `kindling_runner` for that
+execution strategy; a future engine that can host condition evaluation
+would take the declarations unchanged. Conflating the temporal model
+with its executor would repeat, at extension scale, the exact fusion
+this proposal unwinds in kindling itself.
 
 ## Migration Phases (each additive, each shippable alone)
 
