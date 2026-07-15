@@ -84,6 +84,18 @@ class DatasetDeclaration:
     cluster_columns: Tuple[str, ...] = ()
     tags: Dict[str, str] = field(default_factory=dict)
     comment: Optional[str] = None
+    #: The entity's declared schema, passed through opaquely (a pyspark
+    #: StructType or DDL string — never inspected at plan time).
+    schema: Any = None
+    #: Resolved table properties: entity tags ``sdp.table_properties.<key>``
+    #: merged over the active engine-config ``table_properties`` block
+    #: (entity tag wins per key — same precedence rule as dataset_type).
+    #: NOTE (dual-engine divergence, documented per the parity criterion):
+    #: unlike the runner engine's Delta provider, SDP does NOT force
+    #: ``delta.enableChangeDataFeed=true`` — CDF feeds the runner's
+    #: watermark machinery, which SDP mode never registers. Declare the
+    #: tag explicitly if CDF is wanted for external consumers.
+    table_properties: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

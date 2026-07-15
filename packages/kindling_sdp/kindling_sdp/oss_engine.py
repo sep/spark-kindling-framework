@@ -111,8 +111,25 @@ class OssSdpEngine(DeclarationEngine):
                 f"'{dataset.dataset_type.value}' is not supported by the OSS "
                 "engine yet — streaming tables and append flows are Phase 4."
             )
-        decorator = dp.materialized_view(name=dataset.name)
+        decorator = dp.materialized_view(**self._declaration_kwargs(dataset))
         decorator(self._build_dataset_function(dataset))
+
+    def _declaration_kwargs(self, dataset: DatasetDeclaration) -> dict:
+        """Entity metadata → the OSS decorator surface (Spark 4.1 keywords:
+        name, comment, table_properties, partition_cols, cluster_by,
+        schema). Empty values are omitted rather than passed as empties."""
+        kwargs: dict = {"name": dataset.name}
+        if dataset.comment:
+            kwargs["comment"] = dataset.comment
+        if dataset.table_properties:
+            kwargs["table_properties"] = dict(dataset.table_properties)
+        if dataset.partition_columns:
+            kwargs["partition_cols"] = list(dataset.partition_columns)
+        if dataset.cluster_columns:
+            kwargs["cluster_by"] = list(dataset.cluster_columns)
+        if dataset.schema is not None:
+            kwargs["schema"] = dataset.schema
+        return kwargs
 
     def _build_dataset_function(self, dataset: DatasetDeclaration) -> Callable[[], Any]:
         """The DataFrame-returning query body SDP evaluates.

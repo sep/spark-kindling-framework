@@ -54,8 +54,14 @@ def resolve_engine_config(config_service, pipe_ids: List[str]) -> Dict[str, Dict
 def declare_pipeline(
     pipe_ids: Optional[List[str]] = None,
     dp_module: Any = None,
+    engine_factory: Any = None,
 ) -> DeclarationPlan:
     """Build, validate, and declare the pipeline from the live registries.
+
+    ``engine_factory(entity_registry, pipe_registry, engine_config=...,
+    dp_module=...)`` constructs the concrete engine; defaults to
+    :class:`OssSdpEngine`. Adapter packages (``kindling_databricks_sdp``)
+    pass their own engine class here and reuse everything else.
 
     Returns the validated plan (useful for logging/inspection). Raises
     ``DeclarationValidationError`` with every accumulated issue when any
@@ -71,7 +77,8 @@ def declare_pipeline(
     config_service = GlobalInjector.get(ConfigService)
 
     selected = list(pipe_ids) if pipe_ids is not None else list(pipe_registry.get_pipe_ids())
-    engine = OssSdpEngine(
+    factory = engine_factory or OssSdpEngine
+    engine = factory(
         entity_registry,
         pipe_registry,
         engine_config=resolve_engine_config(config_service, selected),

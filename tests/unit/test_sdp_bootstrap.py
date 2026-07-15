@@ -25,8 +25,8 @@ class TestEngineExtensionSeam:
     """Core's generic loader — no engine names hardcoded anywhere in core."""
 
     def test_unknown_engine_fails_naming_the_extension_module(self):
-        with pytest.raises(ImportError, match="kindling_databricks_sdp"):
-            kindling._load_engine_extension("databricks_sdp")
+        with pytest.raises(ImportError, match="kindling_flink"):
+            kindling._load_engine_extension("flink")
 
     def test_module_without_factory_is_rejected(self, monkeypatch):
         import sys

@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "spark-kindling-sdp"
-version = "0.1.0"
+version = "0.3.0"
 description = "Spark Declarative Pipelines (SDP) declaration engine for Kindling"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"

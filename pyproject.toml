@@ -129,7 +129,7 @@ auth-secret-fingerprints = { cmd = "python scripts/auth_secret_fingerprints.py" 
 # Testing tasks
 test = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_sdk${PYTHONPATH:+:$PYTHONPATH}\" python -m kindling_cli.test_runner run --suite all --path tests" }
 test-unit = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_sdk${PYTHONPATH:+:$PYTHONPATH}\" python -m kindling_cli.test_runner run --suite unit --path tests/unit" }
-test-unit-ci = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_sdk${PYTHONPATH:+:$PYTHONPATH}\" python -m kindling_cli.test_runner run --suite unit --path tests/unit --ci --coverage packages/kindling --coverage packages/kindling_sdp --pytest-arg=--cov-report=xml" }
+test-unit-ci = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_sdk${PYTHONPATH:+:$PYTHONPATH}\" python -m kindling_cli.test_runner run --suite unit --path tests/unit --ci --coverage packages/kindling --coverage packages/kindling_sdp --coverage packages/kindling_databricks_sdp --pytest-arg=--cov-report=xml" }
 test-integration = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_sdk${PYTHONPATH:+:$PYTHONPATH}\" python -m kindling_cli.test_runner run --suite integration --path tests/integration" }
 sdp-runtime = { cmd = "python scripts/ensure_sdp_runtime.py", help = "Provision the isolated pyspark 4.1 venv (.venv-sdp41) for spark-pipelines dry-runs" }
 test-sdp-dryrun = ["sdp-runtime", "_test-sdp-dryrun"]
