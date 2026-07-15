@@ -65,7 +65,7 @@ def scd_spec_from_tags(tags) -> Optional[ScdSpec]:
     source_kind = str(tags.get("scd.source_kind", "")).strip().lower() or (
         "snapshot" if close_on_missing else "change_feed"
     )
-    tracked_raw = str(tags.get("scd.tracked_columns", "")).strip()
+    tracked_raw = str(tags.get("scd.tracked", "")).strip()
     return ScdSpec(
         scd_type=scd_type,
         sequence_by=str(tags.get("scd.sequence_by", "")).strip() or None,
@@ -83,12 +83,14 @@ def validate_scd_spec(spec: ScdSpec, merge_columns: List[str]) -> List[Tuple[str
     Returns ``(issue_code, reason)`` pairs; empty when mappable.
     """
     issues: List[Tuple[str, str]] = []
-    if spec.scd_type not in ("1", "2"):
+    if spec.scd_type != "2":
         issues.append(
             (
                 "scd_type_unsupported",
-                f"scd.type '{spec.scd_type}' has no AUTO CDC mapping "
-                "(bitemporal is deliberately excluded while in Beta)",
+                f"scd.type '{spec.scd_type}' has no AUTO CDC mapping — only "
+                "SCD Type 2 is declarable in kindling (core registration "
+                "enforces scd.type='2'; bitemporal is deliberately excluded "
+                "while in Beta)",
             )
         )
     if not spec.is_snapshot and not spec.sequence_by:

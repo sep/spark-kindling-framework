@@ -156,14 +156,13 @@ class DatabricksSdpEngine(OssSdpEngine):
             from pyspark.sql.functions import expr
 
             flow_kwargs["apply_as_deletes"] = expr(spec.delete_when)
-        if spec.scd_type == "2":
-            # Parity with #159: the sequence column is ordering authority,
-            # not content — a row whose only difference is a newer
-            # sequence value must not create a new history version.
-            if spec.tracked_columns:
-                flow_kwargs["track_history_column_list"] = list(spec.tracked_columns)
-            elif spec.sequence_by:
-                flow_kwargs["track_history_except_column_list"] = [spec.sequence_by]
+        # Parity with #159: the sequence column is ordering authority, not
+        # content — a row whose only difference is a newer sequence value
+        # must not create a new history version.
+        if spec.tracked_columns:
+            flow_kwargs["track_history_column_list"] = list(spec.tracked_columns)
+        elif spec.sequence_by:
+            flow_kwargs["track_history_except_column_list"] = [spec.sequence_by]
         dp.create_auto_cdc_flow(**flow_kwargs)
 
     def _apply_expectations(self, dp, dataset: DatasetDeclaration, query_function: Callable):

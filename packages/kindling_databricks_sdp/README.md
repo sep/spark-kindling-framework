@@ -55,18 +55,18 @@ CDC flow — instead of a materialized view:
 
 | Kindling declaration | AUTO CDC |
 |---|---|
-| `scd.type: "1"` / `"2"` | `stored_as_scd_type` |
+| `scd.type: "2"` (the only type core registration accepts) | `stored_as_scd_type` |
 | entity `merge_columns` | `keys` |
 | `scd.sequence_by` | `sequence_by` (change feed) |
 | `scd.source_kind: change_feed` (default) | `create_auto_cdc_flow` |
 | `scd.source_kind: snapshot` / `scd.close_on_missing: true` | `create_auto_cdc_from_snapshot_flow` |
 | `scd.delete_when` | `apply_as_deletes=expr(...)` |
-| `scd.tracked_columns` | `track_history_column_list` |
+| `scd.tracked` | `track_history_column_list` |
 | (default) sequence column ≠ content | `track_history_except_column_list=[sequence_by]` |
 
 Fail-fast mapping requirements (validated with everything else, all
 errors at once): change-feed targets need `scd.sequence_by`
-(`scd_sequence_by_required`); `scd.type` must be `1`/`2`
+(`scd_sequence_by_required`); `scd.type` must be `2`, matching core registration
 (`scd_type_unsupported` — bitemporal is deliberately excluded while in
 Beta); keys are required (`scd_keys_required`).
 

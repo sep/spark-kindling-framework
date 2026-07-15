@@ -170,19 +170,20 @@ class TestChangeFeedMapping:
         assert dp.cdc_flows[0]["track_history_except_column_list"] == ["updated_at"]
 
     def test_explicit_tracked_columns_map_to_track_history_column_list(self):
-        dp = declare({**CHANGE_FEED_TAGS, "scd.tracked_columns": "status, tier"})
+        dp = declare({**CHANGE_FEED_TAGS, "scd.tracked": "status, tier"})
 
         flow = dp.cdc_flows[0]
         assert flow["track_history_column_list"] == ["status", "tier"]
         assert "track_history_except_column_list" not in flow
 
-    def test_scd_type_1_skips_history_tracking_kwargs(self):
-        dp = declare({**CHANGE_FEED_TAGS, "scd.type": "1"})
+    def test_scd_type_1_fails_fast_matching_core_registration(self):
+        """Core registration only accepts scd.type='2'; the adapter must
+        not encode reachable behavior for types kindling cannot declare."""
+        entities, pipes = scd_graph({**CHANGE_FEED_TAGS, "scd.type": "1"})
+        engine = DatabricksSdpEngine(entities, pipes, dp_module=FakeLakeflowDp())
 
-        flow = dp.cdc_flows[0]
-        assert flow["stored_as_scd_type"] == 1
-        assert "track_history_except_column_list" not in flow
-        assert "track_history_column_list" not in flow
+        with pytest.raises(DeclarationValidationError, match="scd_type_unsupported"):
+            engine.build_plan()
 
     def test_runner_schema_is_not_passed_to_the_streaming_table(self):
         """Documented divergence: AUTO CDC emits __START_AT/__END_AT, not
