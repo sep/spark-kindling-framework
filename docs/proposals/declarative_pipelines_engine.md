@@ -265,11 +265,28 @@ datapipes:
 
 ### What Stays Runner-Only
 
-`kindling-temporal` (see `temporal_event_segmentation.md`) requires the
-runner engine: its condition engine is a driver-side `collect()` loop,
-episode revision needs SCD2 revision-in-place, and generation-ordered
-execution is Kindling-owned orchestration. This is a legitimate scoping,
-stated here so the two proposals reference each other.
+*Revised 2026-07-15 (design review; see `kindling_core_runner_split.md`,
+Friction #9) — the original text overstated the runner requirement.*
+
+`kindling-temporal`'s **current executor** is runner-hosted, but most of
+the temporal model has no inherent runner affinity. The
+Event/Condition/Episode ontology is engine-agnostic by design;
+condition evaluation is df→df transformation over a dependency graph the
+ontology requires to be acyclic and statically known, which is exactly
+the shape a declarative engine executes natively (generation ordering is
+native DAG ordering — SDP infers it; the runner implements it via
+`generation_executor`). The driver-side `collect()` loop is a property
+of the first executor implementation, not the model.
+
+What is genuinely engine-constrained is **episode lifecycle revision** —
+stable identity across revision, open episodes closed later, provisional
+closes superseded — which needs keyed merge/upsert semantics: the
+runner's merge machinery today; plausibly AUTO CDC in the Databricks
+adapter tier (the same keyed-sequenced-upsert shape); weakest fit on
+plain OSS SDP, where materialized-view recompute makes
+processing-time-dependent expiration awkward. Temporal therefore scopes
+its *executor* to the runner engine for now, while its declarations
+remain portable.
 
 ## Phases
 
