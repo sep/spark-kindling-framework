@@ -53,6 +53,10 @@ DATASET_TYPE_TAG = "sdp.dataset_type"
 #: Engine-config key that selects the SDP dataset type (second precedence).
 DATASET_TYPE_CONFIG_KEY = "dataset_type"
 
+#: Entity-tag prefix mapping tags to declared table properties, e.g.
+#: ``sdp.table_properties.delta.enableChangeDataFeed: "true"``.
+TABLE_PROPERTIES_TAG_PREFIX = "sdp.table_properties."
+
 #: Provider types the MVP can declare as a pipeline-managed output dataset.
 #: An absent ``provider_type`` tag means delta (the framework default).
 DECLARABLE_OUTPUT_PROVIDER_TYPES = frozenset({"delta"})
@@ -453,7 +457,30 @@ class DeclarationEngine(ABC):
             cluster_columns=tuple(entity.cluster_columns or ()),
             tags=tags,
             comment=tags.get("comment"),
+            schema=getattr(entity, "schema", None),
+            table_properties=self._resolve_table_properties(pipe, tags),
         )
+
+    def _resolve_table_properties(self, pipe, tags: Dict[str, str]) -> Dict[str, str]:
+        """Merge table properties: engine config first, entity tags on top.
+
+        Sources, lowest to highest precedence (per key — the same rule as
+        dataset_type: the dataset's own metadata wins over pipe config):
+        1. ``datapipes.<pipeid>.engine.<engine>.table_properties`` blocks,
+           walked in the engine's fallback order (common ``sdp`` block
+           first, active engine's block over it).
+        2. Entity tags prefixed ``sdp.table_properties.`` — e.g.
+           ``sdp.table_properties.delta.enableChangeDataFeed: "true"``.
+        """
+        properties: Dict[str, str] = {}
+        for engine_name in reversed(self._engine_block_precedence()):
+            block = self._pipe_engine_block(pipe.pipeid, engine_name).get("table_properties")
+            if isinstance(block, dict):
+                properties.update({str(k).strip(): str(v).strip() for k, v in block.items()})
+        for tag_key, value in tags.items():
+            if tag_key.startswith(TABLE_PROPERTIES_TAG_PREFIX):
+                properties[tag_key[len(TABLE_PROPERTIES_TAG_PREFIX) :].strip()] = str(value).strip()
+        return properties
 
     def _select_dataset_type(self, pipe) -> DatasetType:
         """Select the dataset type: entity tag, then engine config, default MV.

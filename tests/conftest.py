@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "kindling_sdk
 sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "kindling_cli"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "kindling_visualization"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "kindling_sdp"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "kindling_databricks_sdp"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

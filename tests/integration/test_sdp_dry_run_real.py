@@ -53,21 +53,24 @@ from types import SimpleNamespace
 from kindling_sdp import OssSdpEngine
 
 
-def make_entity(eid):
+def make_entity(eid, tags=None, partition_columns=(), schema=None):
     return SimpleNamespace(
-        entityid=eid, name=eid.split(".")[-1], partition_columns=[],
-        cluster_columns=None, tags={}, schema=None, merge_columns=[],
+        entityid=eid, name=eid.split(".")[-1],
+        partition_columns=list(partition_columns),
+        cluster_columns=None, tags=tags or {}, schema=schema, merge_columns=[],
         is_sql_entity=False,
     )
 
 
 def bronze_execute(**dfs):
     from pyspark.sql import SparkSession
-    return SparkSession.getActiveSession().range(3).withColumnRenamed("id", "order_id")
+    from pyspark.sql.functions import lit
+    spark = SparkSession.getActiveSession()
+    return spark.range(3).withColumnRenamed("id", "order_id").withColumn("status", lit("open"))
 
 
 def silver_execute(**dfs):
-    return dfs["bronze_orders"].select("order_id")
+    return dfs["bronze_orders"].select("order_id", "status")
 
 
 class Reg(dict):
@@ -79,7 +82,20 @@ class Reg(dict):
     get_pipe_definition = dict.get
 
 
-entities = Reg({e.entityid: e for e in [make_entity("bronze.orders"), make_entity("silver.orders")]})
+# silver carries the full Phase-3 metadata surface so the REAL CLI
+# validates the comment/table_properties/partition_cols/schema emission.
+entities = Reg({e.entityid: e for e in [
+    make_entity("bronze.orders"),
+    make_entity(
+        "silver.orders",
+        tags={
+            "comment": "Cleaned orders",
+            "sdp.table_properties.kindling.quality": "silver",
+        },
+        partition_columns=["status"],
+        schema="order_id LONG, status STRING",
+    ),
+]})
 pipes = Reg({
     "ingest.orders": SimpleNamespace(
         pipeid="ingest.orders", input_entity_ids=[], output_entity_id="bronze.orders",
