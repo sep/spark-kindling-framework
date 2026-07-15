@@ -51,9 +51,10 @@ driver-side loops, revision-in-place, custom persistence. Extensions like
 `kindling-temporal` illustrate the layering rather than break it: the
 temporal *model* (the Event/Condition/Episode ontology and the entity/
 process declaration patterns it prescribes) is engine-agnostic and sits
-on the core; only its *current execution strategy* (driver-side condition
-evaluation, episode revision-in-place) requires runner capabilities. See
-Friction #9.
+on the core, and even condition evaluation is engine-neutral df->df
+transformation over a statically-known DAG; the one genuinely
+engine-constrained piece is episode lifecycle revision (keyed
+merge/upsert semantics). See Friction #9.
 
 ## Platform Context (Why This Is a Plan, Not a Sprint)
 
@@ -292,14 +293,25 @@ The temporal extension's purpose is a consistent, ontology-driven pattern
 (`event_condition_episode_ontology.md`, deliberately
 implementation-agnostic) for *what* to declare (Event/Condition/Episode
 entities) and *how* (the processes supporting temporal segmentation and
-analysis). That declaration layer depends only on the core. What the SDP
-proposal's "What Stays Runner-Only" section scopes to the runner is
-temporal's *current execution strategy* — the driver-side condition
-evaluation loop and episode revision-in-place (which needs mutable SCD2
-semantics no declarative engine offers). Post-split, the extension
-depends on core for its model and on `kindling_runner` for that
-execution strategy; a future engine that can host condition evaluation
-would take the declarations unchanged. Conflating the temporal model
+analysis). That declaration layer depends only on the core — and so, in
+principle, does condition *evaluation*: Conditions are df->df
+transformations over a dependency graph the ontology requires to be
+acyclic and statically known (its boundedness argument), which is
+precisely the shape any engine executes; generation ordering is native
+DAG ordering, which declarative engines infer for free and the runner
+implements via `generation_executor`. The genuinely engine-constrained
+piece is narrower: **episode lifecycle revision** — stable identity
+across revision, open episodes closed later, provisional closes
+superseded — which needs keyed merge/upsert semantics (the runner's
+merge machinery today; plausibly AUTO CDC on the Databricks adapter,
+which is the same keyed-sequenced-upsert shape; weakest fit on plain OSS
+SDP, where MV recompute makes processing-time-dependent expiration
+awkward). The driver-side evaluation loop the SDP proposal's "What Stays
+Runner-Only" section cites is a property of temporal's *first executor
+implementation*, not of the model. Post-split, the extension depends on
+core for its model and on `kindling_runner` for its current executor; an
+engine that can host the episode-revision semantics could take the
+declarations unchanged. Conflating the temporal model
 with its executor would repeat, at extension scale, the exact fusion
 this proposal unwinds in kindling itself.
 
