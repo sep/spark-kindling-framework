@@ -46,9 +46,45 @@ nothing yet — incremental MV refresh on Databricks (Enzyme) is engine
 behavior rather than a declaration keyword; treated as a documented hint
 pending verification against a live workspace.
 
+## Phase 5: SCD declared flows → AUTO CDC
+
+An SCD-tagged output entity (`scd.type` plus the declared-flow tags from
+kindling core) is declared as the Lakeflow CDC pattern — a pipeline-scoped
+source view (the pipe's DataFrame), a streaming table target, and an AUTO
+CDC flow — instead of a materialized view:
+
+| Kindling declaration | AUTO CDC |
+|---|---|
+| `scd.type: "1"` / `"2"` | `stored_as_scd_type` |
+| entity `merge_columns` | `keys` |
+| `scd.sequence_by` | `sequence_by` (change feed) |
+| `scd.source_kind: change_feed` (default) | `create_auto_cdc_flow` |
+| `scd.source_kind: snapshot` / `scd.close_on_missing: true` | `create_auto_cdc_from_snapshot_flow` |
+| `scd.delete_when` | `apply_as_deletes=expr(...)` |
+| `scd.tracked_columns` | `track_history_column_list` |
+| (default) sequence column ≠ content | `track_history_except_column_list=[sequence_by]` |
+
+Fail-fast mapping requirements (validated with everything else, all
+errors at once): change-feed targets need `scd.sequence_by`
+(`scd_sequence_by_required`); `scd.type` must be `1`/`2`
+(`scd_type_unsupported` — bitemporal is deliberately excluded while in
+Beta); keys are required (`scd_keys_required`).
+
+Documented divergences from the runner engine (dual-engine parity
+criterion): history columns are `__START_AT`/`__END_AT` (the entity's
+runner-shape schema is not passed to the streaming table); snapshot
+ordering is ingestion order, not `scd.sequence_by`; out-of-order
+change-feed rows are reconciled into history rather than ignored under
+the runner's strictly-later rule; the `scd.current_entity_id`
+current-view companion stays runner-only (an ordinary declared view is
+the SDP-native replacement, tracked separately). Expectations, when
+configured, attach to the source view — quality is checked on the
+incoming feed.
+
 ## Deferred
 
-- AUTO CDC / SCD2 declared-flow mapping (`create_auto_cdc_flow`,
-  `create_auto_cdc_from_snapshot_flow`) — Phase 5, on the merged
-  `scd.sequence_by` / `scd.source_kind` / `scd.delete_when` semantics.
-- Streaming tables and append flows — Phase 4 (core first).
+- Streaming tables and append flows for non-SCD datasets — Phase 4 (core
+  first).
+- Bitemporal AUTO CDC (`stored_as_scd_type="bitemporal"`) — Beta;
+  tracked, not adopted (proposal decision).
+- Current-view companion as a declared view.

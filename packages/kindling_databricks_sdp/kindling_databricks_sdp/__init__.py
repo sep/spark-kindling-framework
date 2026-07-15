@@ -6,17 +6,27 @@ Selected via ``kindling.initialize(engine="databricks_sdp")`` — resolved
 through core's generic engine-extension convention, zero core changes.
 """
 
+from kindling_databricks_sdp.auto_cdc import (
+    SCD_SOURCE_SUFFIX,
+    ScdSpec,
+    scd_spec_from_tags,
+    validate_scd_spec,
+)
 from kindling_databricks_sdp.engine import EXPECTATION_DECORATORS, DatabricksSdpEngine
 from kindling_databricks_sdp.engine_extension import (
     DatabricksSdpEngineExtension,
     engine_extension,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "DatabricksSdpEngine",
     "DatabricksSdpEngineExtension",
     "EXPECTATION_DECORATORS",
+    "SCD_SOURCE_SUFFIX",
+    "ScdSpec",
     "engine_extension",
+    "scd_spec_from_tags",
+    "validate_scd_spec",
 ]
