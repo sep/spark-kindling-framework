@@ -17,10 +17,10 @@ Examples:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from pyspark.sql import DataFrame
-from pyspark.sql.streaming import StreamingQuery
+from pyspark.sql.streaming import DataStreamWriter, StreamingQuery
 
 from .data_entities import EntityMetadata
 
@@ -196,7 +196,7 @@ class StreamWritableEntityProvider(ABC):
         checkpoint_location: str,
         format: Optional[str] = None,
         options: Optional[dict] = None,
-    ) -> StreamingQuery:
+    ) -> "Union[DataStreamWriter, StreamingQuery]":
         """
         Append streaming DataFrame to entity.
 
@@ -208,7 +208,14 @@ class StreamWritableEntityProvider(ABC):
             options: Optional format-specific options
 
         Returns:
-            StreamingQuery object for monitoring and control
+            Either an **unstarted** ``DataStreamWriter`` the caller
+            finalizes (``toTable(name)`` for catalog sinks, ``start(path)``
+            /``start()`` otherwise — how ``SimplePipeStreamStarter``
+            resolves the destination), or an already-started
+            ``StreamingQuery`` when the provider resolves the destination
+            itself (e.g. the memory provider). Contrast with
+            ``StreamMergeableEntityProvider.merge_as_stream``, which always
+            starts the query.
         """
         pass
 

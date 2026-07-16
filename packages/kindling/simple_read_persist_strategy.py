@@ -234,13 +234,19 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
                                     if isinstance(output_provider, WritableEntityProvider):
                                         if not write_mode:
+                                            provider_type = (output_entity.tags or {}).get(
+                                                "provider_type", "delta"
+                                            )
                                             strategy.logger.info(
-                                                f"Provider '{output_entity.provider_type or 'delta'}' does not support merge, using append"
+                                                f"Provider '{provider_type}' does not support merge, using append"
                                             )
                                         output_provider.append_to_entity(df, output_entity)
                                     else:
+                                        provider_type = (output_entity.tags or {}).get(
+                                            "provider_type", "unknown"
+                                        )
                                         raise ValueError(
-                                            f"Provider '{output_entity.provider_type or 'unknown'}' does not support write operations"
+                                            f"Provider '{provider_type}' does not support write operations"
                                         )
                         else:
                             with strategy.tp.span(operation="write_to_entity_table", reraise=True):
@@ -251,8 +257,11 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                                 if isinstance(output_provider, WritableEntityProvider):
                                     output_provider.write_to_entity(df, output_entity)
                                 else:
+                                    provider_type = (output_entity.tags or {}).get(
+                                        "provider_type", "unknown"
+                                    )
                                     raise ValueError(
-                                        f"Provider '{output_entity.provider_type or 'unknown'}' does not support write operations"
+                                        f"Provider '{provider_type}' does not support write operations"
                                     )
 
                     duration = time.time() - start_time
