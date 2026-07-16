@@ -19,6 +19,7 @@ from kindling.entity_provider import (
 )
 from kindling.execution_strategy import ExecutionPlan, Generation
 from kindling.generation_executor import (
+    UNSET,
     ErrorStrategy,
     ExecutionResult,
     GenerationExecutor,
@@ -81,9 +82,20 @@ def entity_path_locator():
 
 @pytest.fixture
 def config_service():
-    """Create mock config service."""
+    """Create mock config service.
+
+    `kindling.execution.*` keys fall through to the caller's default so
+    option resolution behaves as if unconfigured; other keys return a
+    checkpoint path for the streaming code paths.
+    """
     service = Mock()
-    service.get = Mock(return_value="/checkpoints")
+
+    def get(key, default=None):
+        if key.startswith("kindling.execution."):
+            return default
+        return "/checkpoints"
+
+    service.get = Mock(side_effect=get)
     return service
 
 
@@ -224,7 +236,11 @@ def setup_streaming_mocks(
     entity_registry.get_entity_definition = Mock(side_effect=get_entity)
     provider_registry.get_provider_for_entity = Mock(return_value=provider)
     entity_path_locator.get_table_path = Mock(return_value="/data/output")
-    config_service.get = Mock(return_value="/checkpoints")
+    config_service.get = Mock(
+        side_effect=lambda key, default=None: (
+            default if key.startswith("kindling.execution.") else "/checkpoints"
+        )
+    )
 
     return mock_query, provider
 
@@ -1293,3 +1309,190 @@ class TestConvenienceMethods:
 
         assert result.all_succeeded is True
         assert "pipe1" in result.streaming_queries
+
+
+# ---- Config-Driven Execution Option Tests ----
+
+
+def make_config(values):
+    """Mock config service backed by a dict of kindling.execution.* values."""
+    service = Mock()
+    service.get = Mock(side_effect=lambda key, default=None: values.get(key, default))
+    return service
+
+
+class TestConfigDrivenOptions:
+    """Execution options resolve config-first; params override just-in-time."""
+
+    def _make_executor(self, config_service, **fixtures):
+        return GenerationExecutor(
+            pipes_registry=fixtures["pipes_registry"],
+            entity_registry=fixtures["entity_registry"],
+            pipe_stream_starter=Mock(),
+            config_service=config_service,
+            persist_strategy=fixtures["persist_strategy"],
+            trace_provider=fixtures["trace_provider"],
+            logger_provider=fixtures["logger_provider"],
+            signal_provider=fixtures["signal_provider"],
+        )
+
+    def _two_pipe_setup(self, pipes_registry, entity_registry, persist_strategy):
+        pipe1 = make_pipe("pipe1", inputs=["entity.a"])
+        pipe2 = make_pipe("pipe2", inputs=["entity.b"])
+        pipes_registry.get_pipe_definition.side_effect = lambda pid: {
+            "pipe1": pipe1,
+            "pipe2": pipe2,
+        }[pid]
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+        return make_plan(
+            ["pipe1", "pipe2"],
+            [Generation(number=0, pipe_ids=["pipe1", "pipe2"], dependencies=[])],
+        )
+
+    def test_config_enables_parallel(
+        self,
+        pipes_registry,
+        entity_registry,
+        persist_strategy,
+        trace_provider,
+        logger_provider,
+        signal_provider,
+    ):
+        """kindling.execution.parallel=true routes to the parallel path."""
+        config = make_config(
+            {"kindling.execution.parallel": True, "kindling.execution.max_workers": 2}
+        )
+        executor = self._make_executor(
+            config,
+            pipes_registry=pipes_registry,
+            entity_registry=entity_registry,
+            persist_strategy=persist_strategy,
+            trace_provider=trace_provider,
+            logger_provider=logger_provider,
+            signal_provider=signal_provider,
+        )
+        plan = self._two_pipe_setup(pipes_registry, entity_registry, persist_strategy)
+
+        with patch.object(
+            executor,
+            "_execute_generation_parallel",
+            wraps=executor._execute_generation_parallel,
+        ) as spy:
+            result = executor.execute(plan)
+
+        spy.assert_called_once()
+        assert spy.call_args.args[2] == 2  # max_workers from config
+        assert result.success_count == 2
+
+    def test_param_overrides_config_parallel(
+        self,
+        pipes_registry,
+        entity_registry,
+        persist_strategy,
+        trace_provider,
+        logger_provider,
+        signal_provider,
+    ):
+        """Explicit parallel=False wins over config parallel=true."""
+        config = make_config({"kindling.execution.parallel": True})
+        executor = self._make_executor(
+            config,
+            pipes_registry=pipes_registry,
+            entity_registry=entity_registry,
+            persist_strategy=persist_strategy,
+            trace_provider=trace_provider,
+            logger_provider=logger_provider,
+            signal_provider=signal_provider,
+        )
+        plan = self._two_pipe_setup(pipes_registry, entity_registry, persist_strategy)
+
+        with patch.object(
+            executor,
+            "_execute_generation_parallel",
+            wraps=executor._execute_generation_parallel,
+        ) as spy:
+            result = executor.execute(plan, parallel=False)
+
+        spy.assert_not_called()
+        assert result.success_count == 2
+
+    def test_config_string_values_coerced(self, executor):
+        """YAML/env config may deliver strings; they coerce to typed values."""
+        executor.config_service = make_config(
+            {
+                "kindling.execution.parallel": "true",
+                "kindling.execution.max_workers": "8",
+                "kindling.execution.error_strategy": "continue",
+                "kindling.execution.pipe_timeout": "90.5",
+            }
+        )
+        assert executor._resolve_bool_option(UNSET, "parallel") is True
+        assert executor._resolve_int_option(UNSET, "max_workers") == 8
+        assert executor._resolve_error_strategy_option(UNSET) == ErrorStrategy.CONTINUE
+        assert executor._resolve_float_option(UNSET, "pipe_timeout") == 90.5
+
+    def test_invalid_config_falls_back_with_warning(self, executor):
+        """Unparseable config values warn and use built-in defaults."""
+        executor.config_service = make_config(
+            {
+                "kindling.execution.parallel": "bananas",
+                "kindling.execution.max_workers": "many",
+                "kindling.execution.error_strategy": "explode",
+            }
+        )
+        assert executor._resolve_bool_option(UNSET, "parallel") is False
+        assert executor._resolve_int_option(UNSET, "max_workers") == 4
+        assert executor._resolve_error_strategy_option(UNSET) == ErrorStrategy.FAIL_FAST
+        assert executor.logger.warning.call_count == 3
+
+    def test_unconfigured_defaults_unchanged(self, executor):
+        """With nothing configured, resolution yields the historical defaults."""
+        assert executor._resolve_bool_option(UNSET, "parallel") is False
+        assert executor._resolve_int_option(UNSET, "max_workers") == 4
+        assert executor._resolve_error_strategy_option(UNSET) == ErrorStrategy.FAIL_FAST
+        assert executor._resolve_float_option(UNSET, "pipe_timeout") is None
+        assert executor._resolve_bool_option(UNSET, "auto_cache") is False
+
+    def test_config_error_strategy_continue_applies(
+        self,
+        pipes_registry,
+        entity_registry,
+        persist_strategy,
+        trace_provider,
+        logger_provider,
+        signal_provider,
+    ):
+        """error_strategy=continue from config lets later pipes run after a failure."""
+        config = make_config({"kindling.execution.error_strategy": "continue"})
+        executor = self._make_executor(
+            config,
+            pipes_registry=pipes_registry,
+            entity_registry=entity_registry,
+            persist_strategy=persist_strategy,
+            trace_provider=trace_provider,
+            logger_provider=logger_provider,
+            signal_provider=signal_provider,
+        )
+
+        failing = make_pipe("failing", inputs=["entity.a"])
+        failing.execute = Mock(side_effect=RuntimeError("boom"))
+        ok = make_pipe("ok", inputs=["entity.b"])
+        pipes_registry.get_pipe_definition.side_effect = lambda pid: {
+            "failing": failing,
+            "ok": ok,
+        }[pid]
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        plan = make_plan(
+            ["failing", "ok"],
+            [Generation(number=0, pipe_ids=["failing", "ok"], dependencies=[])],
+        )
+
+        result = executor.execute(plan)
+
+        assert result.failed_count == 1
+        assert result.success_count == 1

@@ -8,11 +8,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
-from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -438,29 +439,35 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         self,
         pipes: List[str],
         strategy: Optional[Any] = None,
-        parallel: bool = False,
-        max_workers: int = 4,
+        parallel: Optional[bool] = None,
+        max_workers: Optional[int] = None,
         error_strategy: Optional[Any] = None,
         pipe_timeout: Optional[float] = None,
         streaming_options: Optional[Dict[str, Any]] = None,
-        auto_cache: bool = False,
+        auto_cache: Optional[bool] = None,
         no_watermark: bool = False,
     ):
-        """Execute pipes via DAG planning/generation execution facade."""
-        from kindling.execution_orchestrator import ExecutionOrchestrator
-        from kindling.generation_executor import ErrorStrategy
+        """Execute pipes via DAG planning/generation execution facade.
 
-        resolved_error_strategy = error_strategy or ErrorStrategy.FAIL_FAST
+        Options left as None resolve from `kindling.execution.*` config;
+        passed values override config just-in-time.
+        """
+        from kindling.execution_orchestrator import ExecutionOrchestrator
+        from kindling.generation_executor import UNSET
+
+        def config_unless_set(value):
+            return UNSET if value is None else value
+
         orchestrator = GlobalInjector.get(ExecutionOrchestrator)
         return orchestrator.execute(
             pipe_ids=pipes,
             strategy=strategy,
-            parallel=parallel,
-            max_workers=max_workers,
-            error_strategy=resolved_error_strategy,
-            pipe_timeout=pipe_timeout,
+            parallel=config_unless_set(parallel),
+            max_workers=config_unless_set(max_workers),
+            error_strategy=config_unless_set(error_strategy),
+            pipe_timeout=config_unless_set(pipe_timeout),
             streaming_options=streaming_options,
-            auto_cache=auto_cache,
+            auto_cache=config_unless_set(auto_cache),
             no_watermark=no_watermark,
         )
 
