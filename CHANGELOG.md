@@ -14,6 +14,14 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- Streaming merge support: new `StreamMergeableEntityProvider` capability
+  interface (`merge_as_stream` + `is_stream_mergeable`), implemented by
+  `DeltaEntityProvider` via `foreachBatch` so every micro-batch runs through
+  the batch `merge_to_entity` path — SCD1 upserts and SCD2 version chaining
+  (including signal emissions) behave identically to batch merges. Streaming
+  pipes now merge instead of append when the output entity declares
+  `merge_columns` and the sink provider supports streaming merges; the
+  `stream.write_mode` entity tag (`append` | `merge`) forces either mode.
 - Added `kindling env update` to refresh Kindling wheels and the local
   devcontainer package index in place, so domain projects can update Kindling
   packages without rebuilding the whole devcontainer.

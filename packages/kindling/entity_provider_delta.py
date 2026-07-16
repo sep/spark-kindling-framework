@@ -35,6 +35,7 @@ from .entity_provider import (
     DestinationEnsuringProvider,
     IncrementalReadableEntityProvider,
     StreamableEntityProvider,
+    StreamMergeableEntityProvider,
     StreamWritableEntityProvider,
     WritableEntityProvider,
 )
@@ -503,6 +504,7 @@ class DeltaEntityProvider(
     StreamableEntityProvider,
     WritableEntityProvider,
     StreamWritableEntityProvider,
+    StreamMergeableEntityProvider,
     SignalEmitter,
 ):
     """
@@ -1591,6 +1593,46 @@ class DeltaEntityProvider(
             .option("mergeSchema", "true")
             .option("checkpointLocation", checkpointLocation)
         )
+
+    def merge_as_stream(self, df, entity, checkpoint_location, options=None):
+        """Merge a streaming DataFrame into the entity via foreachBatch.
+
+        Each micro-batch runs through ``merge_to_entity``, so SCD1/SCD2
+        semantics (and their signal emissions) are identical to the batch
+        path. Micro-batch replay after a failure is safe because the merge
+        is idempotent by business key.
+        """
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(entity.entityid)
+        if not entity.merge_columns:
+            raise ValueError(
+                f"Entity '{entity.entityid}': merge_as_stream requires merge_columns "
+                f"(business keys) to build the merge condition"
+            )
+
+        options = options or {}
+
+        def _merge_batch(batch_df, batch_id):
+            self.emit(
+                "entity.stream_merge_batch",
+                entity_id=entity.entityid,
+                entity_name=entity.name,
+                batch_id=batch_id,
+            )
+            self.merge_to_entity(batch_df, entity)
+
+        writer = (
+            df.writeStream.outputMode("update")
+            .option("checkpointLocation", checkpoint_location)
+            .foreachBatch(_merge_batch)
+        )
+        trigger = options.get("trigger")
+        if trigger:
+            writer = writer.trigger(**trigger)
+        query_name = options.get("query_name")
+        if query_name:
+            writer = writer.queryName(query_name)
+        return writer.start()
 
     def merge_to_entity(self, df: DataFrame, entity):
         """Merge DataFrame to entity table with signal emissions."""

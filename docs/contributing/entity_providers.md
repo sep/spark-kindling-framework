@@ -13,15 +13,16 @@ The framework uses **interface composition** rather than a single monolithic abs
 | `BaseEntityProvider` | Yes (all providers) | Batch read + existence check |
 | `WritableEntityProvider` | Optional | Batch write and append |
 | `StreamableEntityProvider` | Optional | Streaming read |
-| `StreamWritableEntityProvider` | Optional | Streaming write |
+| `StreamWritableEntityProvider` | Optional | Streaming write (append) |
+| `StreamMergeableEntityProvider` | Optional | Streaming merge (per micro-batch upsert) |
 | `DestinationEnsuringProvider` | Optional | Pre-create the write destination |
 
-This means a read-only CSV provider only implements `BaseEntityProvider`, while a full-featured Delta provider implements all five.
+This means a read-only CSV provider only implements `BaseEntityProvider`, while a full-featured Delta provider implements all of them.
 
 Capability helpers are provided for runtime checks:
 
 ```python
-from kindling.entity_provider import is_streamable, is_writable, is_stream_writable, can_ensure_destination
+from kindling.entity_provider import is_streamable, is_writable, is_stream_writable, is_stream_mergeable, can_ensure_destination
 
 if is_writable(provider):
     provider.write_to_entity(df, entity)
@@ -113,6 +114,23 @@ class StreamWritableEntityProvider(ABC):
         """Append streaming DataFrame to entity."""
 ```
 
+### StreamMergeableEntityProvider
+
+Optional interface for providers that can merge a streaming DataFrame into an entity. Unlike `append_as_stream` — which returns an unstarted writer for the caller to finish — a stream merge runs per micro-batch (e.g. Spark `foreachBatch` driving the provider's batch merge), so the provider starts the query itself and returns the running `StreamingQuery`.
+
+```python
+class StreamMergeableEntityProvider(ABC):
+    @abstractmethod
+    def merge_as_stream(
+        self,
+        df: DataFrame,
+        entity_metadata: EntityMetadata,
+        checkpoint_location: str,
+        options: Optional[dict] = None,
+    ) -> StreamingQuery:
+        """Merge streaming DataFrame into entity, one micro-batch at a time."""
+```
+
 ### DestinationEnsuringProvider
 
 Optional interface for providers that can pre-create a write destination.
@@ -126,7 +144,7 @@ class DestinationEnsuringProvider(ABC):
 
 ### DeltaEntityProvider
 
-The default implementation for Delta Lake storage. It implements all five interfaces.
+The default implementation for Delta Lake storage. It implements all of the provider interfaces.
 
 ```python
 @GlobalInjector.singleton_autobind()
@@ -137,6 +155,7 @@ class DeltaEntityProvider(
     StreamableEntityProvider,
     WritableEntityProvider,
     StreamWritableEntityProvider,
+    StreamMergeableEntityProvider,
     SignalEmitter,
 ):
     @inject
@@ -176,6 +195,7 @@ class DeltaEntityProvider(
 - `merge_to_entity(df, entity)` — SCD1 or SCD2 merge with signal emissions
 - `read_entity_as_stream(entity, format=None, options=None)` — streaming read
 - `append_as_stream(df, entity, checkpointLocation, format=None, options=None)` — streaming write
+- `merge_as_stream(df, entity, checkpoint_location, options=None)` — streaming merge via `foreachBatch` (starts and returns the query)
 - `read_entity_since_version(entity, since_version)` — change feed read
 - `read_entity_as_of(entity, point_in_time)` — point-in-time read
 - `get_entity_version(entity)` — current Delta table version
@@ -317,6 +337,22 @@ When an entity carries `tags={"scd.type": "2"}`, `merge_to_entity` automatically
 - If the row matches but tracked columns are unchanged — no action (no false history entries).
 
 This is handled entirely by `DeltaMergeStrategies` — no pipe-level changes are needed.
+
+### Streaming Merge (`merge_as_stream`)
+
+`merge_as_stream` merges a streaming DataFrame into an entity by running each micro-batch through `merge_to_entity` via `foreachBatch`. SCD1/SCD2 semantics (and their signal emissions) are identical to the batch path, and micro-batch replay after a failure is safe because the merge is idempotent by business key. The entity must declare `merge_columns`; a `entity.stream_merge_batch` signal is emitted per micro-batch.
+
+```python
+query = provider.merge_as_stream(
+    stream_df,
+    entity,
+    "/checkpoints/orders",
+    options={"trigger": {"availableNow": True}, "query_name": "orders-merge"},
+)
+query.awaitTermination()
+```
+
+Streaming pipes (`SimplePipeStreamStarter`) use this automatically: when the output entity declares `merge_columns` and the sink provider supports streaming merges, the pipe output is merged instead of appended — mirroring the batch persist strategy. Set the `stream.write_mode` entity tag to `append` or `merge` to force either mode.
 
 ### Point-in-Time Reads (`read_entity_as_of`)
 
