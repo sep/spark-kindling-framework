@@ -230,14 +230,14 @@ def test_merge_columns_route_to_merge_as_stream_when_provider_supports_merge():
     out_provider.append_as_stream.assert_not_called()
 
 
-def test_stream_write_mode_append_tag_forces_append_despite_merge_columns():
+def test_write_mode_append_tag_forces_append_despite_merge_columns():
     dst_entity = Mock(
         entityid="entity.dst",
         tags={
             "provider_type": "delta",
             "provider.access_mode": "catalog",
             "provider.table_name": "main.analytics.entity_dst",
-            "stream.write_mode": "append",
+            "write.mode": "append",
         },
         merge_columns=["order_id"],
     )
@@ -278,10 +278,10 @@ def test_no_merge_columns_defaults_to_append():
     out_provider.merge_as_stream.assert_not_called()
 
 
-def test_stream_write_mode_merge_tag_requires_merge_capable_provider():
+def test_write_mode_merge_tag_requires_merge_capable_provider():
     dst_entity = Mock(
         entityid="entity.dst",
-        tags={"provider_type": "delta", "stream.write_mode": "merge"},
+        tags={"provider_type": "delta", "write.mode": "merge"},
         merge_columns=["order_id"],
     )
     out_provider = Mock(spec=StreamWritableEntityProvider)
@@ -291,14 +291,14 @@ def test_stream_write_mode_merge_tag_requires_merge_capable_provider():
         starter.start_pipe_stream("pipe1")
 
 
-def test_invalid_stream_write_mode_tag_raises():
+def test_invalid_write_mode_tag_raises():
     dst_entity = Mock(
         entityid="entity.dst",
-        tags={"provider_type": "delta", "stream.write_mode": "upsert"},
+        tags={"provider_type": "delta", "write.mode": "upsert"},
         merge_columns=["order_id"],
     )
     out_provider = Mock(spec=_MergeCapableProvider)
 
     starter, _ = _make_starter(dst_entity, out_provider)
-    with pytest.raises(ValueError, match="stream.write_mode"):
+    with pytest.raises(ValueError, match="write.mode"):
         starter.start_pipe_stream("pipe1")

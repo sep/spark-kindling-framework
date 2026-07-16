@@ -68,6 +68,35 @@ class TestDeltaMergeAsStream:
         with pytest.raises(ValueError, match="merge_columns"):
             provider.merge_as_stream(MagicMock(), entity, "/chk")
 
+    def test_declared_change_feed_without_sequence_by_raises(self, provider):
+        entity = self._make_entity(tags={"scd.type": "2", "scd.source_kind": "change_feed"})
+        with pytest.raises(ValueError, match="scd.sequence_by"):
+            provider.merge_as_stream(MagicMock(), entity, "/chk")
+
+    def test_declared_change_feed_with_sequence_by_starts(self, provider):
+        entity = self._make_entity(
+            tags={
+                "scd.type": "2",
+                "scd.source_kind": "change_feed",
+                "scd.sequence_by": "updated_at",
+            }
+        )
+        df = MagicMock()
+        query = (
+            df.writeStream.outputMode.return_value.option.return_value.foreachBatch.return_value.start.return_value
+        )
+        assert provider.merge_as_stream(df, entity, "/chk") is query
+
+    def test_implicit_change_feed_default_is_not_rejected(self, provider):
+        # Vanilla SCD2 (no source_kind tag) keeps arrival-time ordering with
+        # the one-row-per-key-per-batch contract on the source, as in batch.
+        entity = self._make_entity(tags={"scd.type": "2"})
+        df = MagicMock()
+        query = (
+            df.writeStream.outputMode.return_value.option.return_value.foreachBatch.return_value.start.return_value
+        )
+        assert provider.merge_as_stream(df, entity, "/chk") is query
+
     def test_starts_foreach_batch_query_with_checkpoint(self, provider):
         entity = self._make_entity()
         df = MagicMock()

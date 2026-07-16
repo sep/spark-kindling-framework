@@ -1623,6 +1623,24 @@ class DeltaEntityProvider(
         options = options or {}
         cfg = scd_config_from_tags(entity)
 
+        # An entity that explicitly declares its input as a change feed is
+        # stating that batches carry change *events* — and a streaming
+        # micro-batch may carry several events per business key. Without a
+        # sequence column they can be neither collapsed nor ordered, and
+        # the merge would fail mid-stream on Delta's multiple-source-rows
+        # rule. Fail fast at query start instead. (An implicit/derived
+        # change_feed default is not rejected: vanilla SCD2 entities keep
+        # arrival-time ordering with the one-row-per-key-per-batch contract
+        # on the source, exactly as in batch merges.)
+        declared_source_kind = str((entity.tags or {}).get("scd.source_kind", "")).strip().lower()
+        if cfg.enabled and declared_source_kind == "change_feed" and not cfg.sequence_by:
+            raise ValueError(
+                f"Entity '{entity.entityid}': streaming merge into a change-feed SCD2 "
+                f"entity requires scd.sequence_by — a micro-batch may carry several "
+                f"change events per business key, and without a sequence column they "
+                f"cannot be collapsed or ordered"
+            )
+
         def _merge_batch(batch_df, batch_id):
             if cfg.enabled and cfg.sequence_by and cfg.sequence_by in batch_df.columns:
                 from pyspark.sql import Window

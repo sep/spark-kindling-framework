@@ -22,10 +22,16 @@ All notable changes to spark-kindling are documented here.
   signals) behave identically to batch merges. When the entity declares
   `scd.sequence_by`, each micro-batch is collapsed to the latest row per
   business key by sequence — the same latest-change-per-key convention the
-  batch incremental path applies to change feeds. Streaming pipes now merge
-  instead of append when the output entity declares `merge_columns` and the
-  sink provider supports streaming merges; the `stream.write_mode` entity
-  tag (`append` | `merge`) forces either mode.
+  batch incremental path applies to change feeds — and entities explicitly
+  tagged `scd.source_kind: change_feed` without `scd.sequence_by` are
+  rejected at query start rather than failing mid-stream. Streaming pipes
+  now merge instead of append when the output entity declares
+  `merge_columns` and the sink provider supports streaming merges.
+- `write.mode` entity tag (`append` | `merge`), honored by both the batch
+  persist path and streaming pipes: `append` skips the merge even when the
+  provider supports it (append-only fact tables no longer pay MERGE cost);
+  `merge` makes the merge requirement explicit instead of a silent append
+  fallback. Unset keeps the existing defaults.
 - Added `kindling env update` to refresh Kindling wheels and the local
   devcontainer package index in place, so domain projects can update Kindling
   packages without rebuilding the whole devcontainer.

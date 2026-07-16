@@ -342,7 +342,9 @@ This is handled entirely by `DeltaMergeStrategies` — no pipe-level changes are
 
 `merge_as_stream` merges a streaming DataFrame into an entity by running each micro-batch through `merge_to_entity` via `foreachBatch`. SCD1/SCD2 semantics are identical to the batch path — including the `entity.before_merge` / `entity.after_merge` / `entity.merge_failed` signals, which fire once per micro-batch — and micro-batch replay after a failure is safe because the merge is idempotent by business key. The entity must declare `merge_columns`.
 
-The merge contract is **one row per business key per merge** (Delta rejects multiple source rows matching one target row). A streaming micro-batch of change events can carry several rows per key, so when the entity declares `scd.sequence_by` each micro-batch is collapsed to the latest row per key by sequence — the same latest-change-per-key convention the batch incremental path applies to change feeds. Without `scd.sequence_by` the one-row-per-key contract is the source's to uphold.
+The merge contract is **one row per business key per merge** (Delta rejects multiple source rows matching one target row). A streaming micro-batch of change events can carry several rows per key, so when the entity declares `scd.sequence_by` each micro-batch is collapsed to the latest row per key by sequence — the same latest-change-per-key convention the batch incremental path applies to change feeds. Without `scd.sequence_by` the one-row-per-key contract is the source's to uphold; an entity that *explicitly* declares `scd.source_kind: change_feed` without `scd.sequence_by` is rejected at query start, since its micro-batches can be neither collapsed nor ordered.
+
+Note that SCD2 history granularity on this path is **per merge** — per micro-batch when streaming — with `scd.sequence_by` deciding the winner within a batch. Domains that need per-event history fidelity should target the AUTO CDC engine (`kindling_databricks_sdp`).
 
 ```python
 query = provider.merge_as_stream(
@@ -354,7 +356,16 @@ query = provider.merge_as_stream(
 query.awaitTermination()
 ```
 
-Streaming pipes (`SimplePipeStreamStarter`) use this automatically: when the output entity declares `merge_columns` and the sink provider supports streaming merges, the pipe output is merged instead of appended — mirroring the batch persist strategy. Set the `stream.write_mode` entity tag to `append` or `merge` to force either mode.
+Streaming pipes (`SimplePipeStreamStarter`) use this automatically: when the output entity declares `merge_columns` and the sink provider supports streaming merges, the pipe output is merged instead of appended — mirroring the batch persist strategy.
+
+### The `write.mode` tag
+
+The `write.mode` entity tag (`append` | `merge`) forces the sink write mode on **both** persist paths:
+
+- **Batch** (`SimpleReadPersistStrategy`) — `append` skips the merge even when the provider supports it (useful for append-only fact tables, where a MERGE is wasted cost); `merge` makes the merge requirement explicit and errors instead of silently falling back to append.
+- **Streaming** (`SimplePipeStreamStarter`) — `append` forces `append_as_stream` even when the entity declares `merge_columns`; `merge` requires a stream-merge-capable sink provider.
+
+Unset keeps each path's default: merge when the provider can (and, for streaming, when the entity declares `merge_columns`), append otherwise. The first write that creates the table is unaffected by the tag.
 
 ### Point-in-Time Reads (`read_entity_as_of`)
 

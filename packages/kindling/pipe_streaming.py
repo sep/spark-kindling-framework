@@ -102,11 +102,12 @@ class SimplePipeStreamStarter(PipeStreamStarter):
         # entity's SCD1/SCD2 semantics) vs append. Mirrors the batch persist
         # strategy, which merges whenever the provider supports it: entities
         # that declare merge/business keys default to merge when the sink
-        # provider can stream-merge. `stream.write_mode` forces either mode.
-        write_mode = str(output_entity.tags.get("stream.write_mode") or "").strip().lower()
+        # provider can stream-merge. The `write.mode` entity tag (shared
+        # with the batch persist path) forces either mode.
+        write_mode = str(output_entity.tags.get("write.mode") or "").strip().lower()
         if write_mode not in ("", "append", "merge"):
             raise ValueError(
-                f"Entity '{output_entity.entityid}': invalid stream.write_mode "
+                f"Entity '{output_entity.entityid}': invalid write.mode "
                 f"'{write_mode}' (expected 'append' or 'merge')"
             )
         if write_mode == "merge" and not is_stream_mergeable(output_provider):
