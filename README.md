@@ -25,6 +25,7 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 - [Data Pipes](./docs/guide/data_pipes.md) - Transformation pipeline system
 - [Entity Providers](./docs/contributing/entity_providers.md) - Storage abstraction system
 - [Setup Guide](./docs/guide/setup_guide.md) - Installation and configuration
+- [Migrating from runMultiple](./docs/guide/migrating_from_runmultiple.md) - Move Synapse/Fabric notebook DAGs to Kindling pipes
 
 ### Advanced Features
 - [Job Deployment](./docs/contributing/job_deployment.md) - Deploy apps as Spark jobs
