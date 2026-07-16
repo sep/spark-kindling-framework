@@ -14,6 +14,7 @@ same checkpoint only processes source data added since the first pass.
 
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -25,7 +26,7 @@ from kindling.entity_provider_delta import DeltaEntityProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StringType, StructField, StructType
+from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 
 def _teardown_existing_spark_jvm():
@@ -185,3 +186,51 @@ class TestStreamMergeSCD2:
         assert closed["__effective_to"] is not None
         assert current["__effective_to"] is None
         assert current["__effective_from"] >= closed["__effective_from"]
+
+    def test_multi_event_micro_batch_collapses_to_latest_by_sequence(
+        self, spark, delta_provider, temp_dir
+    ):
+        """A single micro-batch carrying several change events for one key
+        is collapsed to the latest by scd.sequence_by before the merge —
+        the merge contract is one row per business key per merge."""
+        seq_schema = StructType(
+            [
+                StructField("customer_id", StringType(), False),
+                StructField("status", StringType(), True),
+                StructField("updated_at", TimestampType(), True),
+            ]
+        )
+        entity = SimpleNamespace(
+            entityid="silver.customers_stream_seq",
+            name="customers_stream_seq",
+            partition_columns=[],
+            cluster_columns=None,
+            merge_columns=["customer_id"],
+            tags={
+                "provider_type": "delta",
+                "scd.type": "2",
+                "scd.sequence_by": "updated_at",
+            },
+            schema=seq_schema,
+        )
+        source_path = str(temp_dir / "source_seq")
+        checkpoint = str(temp_dir / "chk_seq")
+        delta_provider.ensure_destination(entity)
+
+        # One source commit = one micro-batch with three events for c1.
+        df = spark.createDataFrame(
+            [
+                ("c1", "bronze", datetime(2026, 7, 1)),
+                ("c1", "silver", datetime(2026, 7, 2)),
+                ("c1", "gold", datetime(2026, 7, 3)),
+            ],
+            seq_schema,
+        )
+        df.coalesce(1).write.format("delta").mode("append").save(source_path)
+        _run_stream_merge(spark, delta_provider, entity, source_path, checkpoint)
+
+        rows = delta_provider.read_entity(entity).collect()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "gold"
+        assert rows[0]["__is_current"] is True
+        assert rows[0]["__effective_from"] == datetime(2026, 7, 3)

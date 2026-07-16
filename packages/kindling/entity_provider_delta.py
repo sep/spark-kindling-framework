@@ -1598,9 +1598,19 @@ class DeltaEntityProvider(
         """Merge a streaming DataFrame into the entity via foreachBatch.
 
         Each micro-batch runs through ``merge_to_entity``, so SCD1/SCD2
-        semantics (and their signal emissions) are identical to the batch
-        path. Micro-batch replay after a failure is safe because the merge
-        is idempotent by business key.
+        semantics (and their per-merge signal emissions) are identical to
+        the batch path. Micro-batch replay after a failure is safe because
+        the merge is idempotent by business key.
+
+        The merge contract is one row per business key per merge (Delta
+        rejects multiple source rows matching one target row). A streaming
+        micro-batch of change events can carry several rows per key, so
+        when the entity declares ``scd.sequence_by`` each micro-batch is
+        collapsed to the latest row per key by sequence — the same
+        latest-change-per-key convention the batch incremental path applies
+        (``_transform_delta_feed_to_changes``). Without ``sequence_by``
+        there is no ordering authority, and the one-row-per-key contract is
+        the source's to uphold.
         """
         if self._is_read_only(entity):
             raise ReadOnlyEntityError(entity.entityid)
@@ -1611,14 +1621,21 @@ class DeltaEntityProvider(
             )
 
         options = options or {}
+        cfg = scd_config_from_tags(entity)
 
         def _merge_batch(batch_df, batch_id):
-            self.emit(
-                "entity.stream_merge_batch",
-                entity_id=entity.entityid,
-                entity_name=entity.name,
-                batch_id=batch_id,
-            )
+            if cfg.enabled and cfg.sequence_by and cfg.sequence_by in batch_df.columns:
+                from pyspark.sql import Window
+                from pyspark.sql.functions import row_number
+
+                latest_per_key = Window.partitionBy(*entity.merge_columns).orderBy(
+                    col(cfg.sequence_by).desc()
+                )
+                batch_df = (
+                    batch_df.withColumn("__row_rank", row_number().over(latest_per_key))
+                    .filter(col("__row_rank") == 1)
+                    .drop("__row_rank")
+                )
             self.merge_to_entity(batch_df, entity)
 
         writer = (

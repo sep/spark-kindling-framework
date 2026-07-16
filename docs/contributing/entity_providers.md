@@ -340,7 +340,9 @@ This is handled entirely by `DeltaMergeStrategies` — no pipe-level changes are
 
 ### Streaming Merge (`merge_as_stream`)
 
-`merge_as_stream` merges a streaming DataFrame into an entity by running each micro-batch through `merge_to_entity` via `foreachBatch`. SCD1/SCD2 semantics (and their signal emissions) are identical to the batch path, and micro-batch replay after a failure is safe because the merge is idempotent by business key. The entity must declare `merge_columns`; a `entity.stream_merge_batch` signal is emitted per micro-batch.
+`merge_as_stream` merges a streaming DataFrame into an entity by running each micro-batch through `merge_to_entity` via `foreachBatch`. SCD1/SCD2 semantics are identical to the batch path — including the `entity.before_merge` / `entity.after_merge` / `entity.merge_failed` signals, which fire once per micro-batch — and micro-batch replay after a failure is safe because the merge is idempotent by business key. The entity must declare `merge_columns`.
+
+The merge contract is **one row per business key per merge** (Delta rejects multiple source rows matching one target row). A streaming micro-batch of change events can carry several rows per key, so when the entity declares `scd.sequence_by` each micro-batch is collapsed to the latest row per key by sequence — the same latest-change-per-key convention the batch incremental path applies to change feeds. Without `scd.sequence_by` the one-row-per-key contract is the source's to uphold.
 
 ```python
 query = provider.merge_as_stream(
