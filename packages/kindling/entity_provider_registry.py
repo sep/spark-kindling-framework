@@ -185,6 +185,13 @@ class EntityProviderRegistry:
             self.logger.debug("EventHub provider not available")
 
         try:
+            from .entity_provider_parquet import ParquetEntityProvider
+
+            self.register_provider("parquet", ParquetEntityProvider)
+        except ImportError:
+            self.logger.debug("Parquet provider not available")
+
+        try:
             from .entity_provider_memory import MemoryEntityProvider
 
             self.register_provider("memory", MemoryEntityProvider)

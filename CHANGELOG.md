@@ -21,6 +21,11 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- Parquet entity provider (`provider_type: "parquet"`, core): batch and
+  streaming read/write of plain-parquet datasets via native Spark, with
+  partitioned writes and destination ensuring. For interchange at solution
+  boundaries — no transaction log, so no merge and no safe retry; Delta
+  remains the provider for internal pipeline storage.
 - `skip_dependents` error strategy for DAG execution: on pipe failure, only
   its transitive consumers are skipped (reported with
   `reason: upstream_failed`) while independent branches keep running —
