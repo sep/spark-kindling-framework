@@ -1,7 +1,7 @@
 """
 System test for Azure Monitor OpenTelemetry extension.
 
-Tests that the kindling-otel-azure extension:
+Tests that the kindling-ext-otel-azure extension:
 1. Loads correctly from artifacts storage
 2. Overrides default trace and log providers
 3. Successfully sends telemetry to Azure Monitor
@@ -146,7 +146,7 @@ class TestAzureMonitorExtension:
 
         # Validate using stdout validator helper
         bootstrap_results = stdout_validator.validate_bootstrap_execution()
-        extension_results = stdout_validator.validate_extension_loading("kindling-otel-azure")
+        extension_results = stdout_validator.validate_extension_loading("kindling-ext-otel-azure")
 
         # Print validation results
         stdout_validator.print_validation_summary(bootstrap_results, "Bootstrap Validation")

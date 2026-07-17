@@ -71,7 +71,7 @@ kindling:
     logging:
       level: DEBUG  # More verbose for Fabric diagnostic logs
   extensions:
-    - kindling-otel-azure>=0.3.0
+    - kindling-ext-otel-azure>=0.3.0
 
 # config/platform_databricks.yaml
 kindling:

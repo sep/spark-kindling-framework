@@ -655,7 +655,7 @@ def test_render_starter_notebook_source_points_to_environment_bootstrap():
     assert "%run environment_bootstrap" in source
     assert 'logger.info("Kindling starter notebook ready")' in source
     assert 'BOOTSTRAP_CONFIG["app_name"]' in source
-    assert '"extensions": ["kindling-otel-azure>=0.3.0"]' in source
+    assert '"extensions": ["kindling-ext-otel-azure>=0.3.0"]' in source
 
 
 # ---------------------------------------------------------------------------

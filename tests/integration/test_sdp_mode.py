@@ -25,14 +25,15 @@ from unittest.mock import MagicMock
 
 import pytest
 from delta import configure_spark_with_delta_pip
+from kindling_ext_sdp import OssSdpEngine, SdpModeWriteError, SdpWriteGuardProvider
+from pyspark.sql import SparkSession
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
 from kindling.data_entities import EntityMetadata, EntityNameMapper, EntityPathLocator
 from kindling.data_pipes import PipeMetadata
 from kindling.entity_provider_delta import DeltaEntityProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
-from kindling_sdp import OssSdpEngine, SdpModeWriteError, SdpWriteGuardProvider
-from pyspark.sql import SparkSession
-from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 
 def _teardown_existing_spark_jvm():

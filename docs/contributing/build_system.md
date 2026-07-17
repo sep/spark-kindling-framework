@@ -136,7 +136,7 @@ pip install kindling_synapse-0.6.0-py3-none-any.whl
 pip install kindling_databricks-0.6.0-py3-none-any.whl
 
 # Optional: Add observability features
-pip install kindling-otel-azure-0.3.0-py3-none-any.whl
+pip install kindling-ext-otel-azure-0.3.0-py3-none-any.whl
 
 # Optional: Add Databricks Delta Live Tables
 pip install kindling-databricks-dlt-0.1.0-py3-none-any.whl

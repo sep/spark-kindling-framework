@@ -311,7 +311,7 @@ consequence of a mistyped entity id.
 ## Proposed Extension
 
 Start as a Kindling extension rather than core framework functionality.
-Package name: `kindling-temporal` — preferred over `kindling-events` because
+Package name: `kindling-ext-temporal` — preferred over `kindling-events` because
 Kindling's `signaling.py` already owns "event"/"signal" vocabulary for
 framework observability; reusing "events" for this extension's domain events
 invites exactly the kind of confusion this doc is trying to avoid. Prose
@@ -1581,7 +1581,7 @@ independently re-declares "the same" `entityid` rather than importing the
 owning team's canonical declaration, they can simply omit the `read_only`
 tag on their own copy. Real governance wants the owning team's declaration —
 tags included — to be the one and only source, imported rather than
-re-declared, the same way `kindling_otel_azure`/`kindling_adx` are installable
+re-declared, the same way `kindling_ext_otel_azure`/`kindling_ext_adx` are installable
 packages other deployments import rather than re-implement. A lighter version
 of the same idea already exists in `bootstrap.py`'s local-package
 registration import, at monorepo scale rather than published-wheel scale.

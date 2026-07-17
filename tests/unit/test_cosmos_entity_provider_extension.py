@@ -6,7 +6,9 @@ import pytest
 
 from kindling.data_entities import EntityMetadata
 
-EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "packages" / "kindling_cosmos"
+EXTENSION_PACKAGE_ROOT = (
+    Path(__file__).resolve().parents[2] / "packages" / "extensions" / "kindling_ext_cosmos"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -110,7 +112,7 @@ class _Reader:
 
 
 def _provider():
-    from kindling_cosmos import CosmosEntityProvider
+    from kindling_ext_cosmos import CosmosEntityProvider
 
     logger_provider = MagicMock()
     logger_provider.get_logger.return_value = MagicMock()
@@ -121,20 +123,20 @@ def _patched_spark_read(reader):
     spark = MagicMock()
     spark.read = reader
     return patch(
-        "kindling_cosmos.entity_provider_cosmos.get_or_create_spark_session",
+        "kindling_ext_cosmos.entity_provider_cosmos.get_or_create_spark_session",
         return_value=spark,
     )
 
 
 def test_import_registers_cosmos_provider():
     for module_name in list(sys.modules):
-        if module_name == "kindling_cosmos" or module_name.startswith("kindling_cosmos."):
+        if module_name == "kindling_ext_cosmos" or module_name.startswith("kindling_ext_cosmos."):
             del sys.modules[module_name]
 
     registry = MagicMock()
 
     with patch("kindling.injection.GlobalInjector.get", return_value=registry):
-        import kindling_cosmos  # noqa: F401
+        import kindling_ext_cosmos  # noqa: F401
 
     provider_class = registry.register_provider.call_args.args[1]
     assert registry.register_provider.call_args.args[0] == "cosmos"

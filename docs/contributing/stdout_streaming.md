@@ -111,7 +111,7 @@ bootstrap_results = validator.validate_bootstrap_execution()
 # Returns: {"bootstrap_start": True, "framework_init": True, "config_loaded": True}
 
 # Validate extension loading
-extension_results = validator.validate_extension_loading("kindling-otel-azure")
+extension_results = validator.validate_extension_loading("kindling-ext-otel-azure")
 # Returns: {"extension_install": True, "extension_success": True}
 
 # Validate test app execution

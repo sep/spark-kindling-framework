@@ -429,7 +429,7 @@ kindling:
     logging:
       level: DEBUG  # More verbose for diagnostic emitters
   extensions:
-    - kindling-otel-azure>=0.2.0
+    - kindling-ext-otel-azure>=0.2.0
 
 # workspace_team-a-workspace-id.yaml - Team A workspace
 kindling:

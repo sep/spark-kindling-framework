@@ -6,7 +6,7 @@ Deploys a specific extension wheel from packages/ to the same storage location
 as the main framework wheels.
 
 Usage:
-    python scripts/deploy_extensions.py kindling-otel-azure
+    python scripts/deploy_extensions.py kindling-ext-otel-azure
 """
 
 import argparse
@@ -44,7 +44,7 @@ def find_extension_wheels(extension_name: str, platform: Optional[str] = None) -
     Find extension wheels in dist/ directory
 
     Args:
-        extension_name: Extension name (e.g., 'kindling-otel-azure')
+        extension_name: Extension name (e.g., 'kindling-ext-otel-azure')
         platform: Optional platform filter (e.g., 'fabric')
 
     Returns:
@@ -58,7 +58,7 @@ def find_extension_wheels(extension_name: str, platform: Optional[str] = None) -
     # Convert to underscore format for wheel filename matching
     wheel_prefix = extension_name.replace("-", "_")
 
-    # Build pattern: kindling_otel_azure_fabric-*.whl or kindling_otel_azure-*.whl
+    # Build pattern: kindling_ext_otel_azure_fabric-*.whl or kindling_ext_otel_azure-*.whl
     if platform:
         pattern = f"{wheel_prefix}_{platform}-*.whl"
     else:
@@ -120,16 +120,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts/deploy_extensions.py kindling-otel-azure
+  python scripts/deploy_extensions.py kindling-ext-otel-azure
 
 Before deploying, build the extension:
-  cd packages/kindling_otel_azure
+  cd packages/extensions/kindling_ext_otel_azure
   poetry build
         """,
     )
     parser.add_argument(
         "extension",
-        help="Extension to deploy (e.g., kindling-otel-azure)",
+        help="Extension to deploy (e.g., kindling-ext-otel-azure)",
     )
 
     args = parser.parse_args()
@@ -148,7 +148,7 @@ Before deploying, build the extension:
     if not wheels:
         print(f"❌ No wheels found for extension: {args.extension}")
         print(f"\nMake sure the extension is built:")
-        print(f"  cd packages/{args.extension.replace('-', '_')}")
+        print(f"  cd packages/extensions/{args.extension.replace('-', '_')}")
         print(f"  poetry build")
         sys.exit(1)
 

@@ -4,7 +4,7 @@ description: Complex tracing system test with variable durations and nested span
 # No extension specified - works with both default and Azure Monitor telemetry
 # To test with Azure Monitor, add:
 # extensions:
-#   - kindling-otel-azure>=0.1.0
+#   - kindling-ext-otel-azure>=0.1.0
 #
 # extension_config:
 #   azure_monitor:

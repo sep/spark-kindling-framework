@@ -41,14 +41,14 @@ finishes the thought structurally:
   config, DI, platform services, packaging. Engine-agnostic.
 - **`kindling_runner`** — the imperative engine, packaged as an ordinary
   engine extension (the same `kindling_<name>.engine_extension()`
-  convention `kindling_sdp` and `kindling_databricks_sdp` already use),
+  convention `kindling_ext_sdp` and `kindling_ext_databricks` already use),
   and bound as the **default** engine when `initialize()` is called with
   no `engine=`.
 
 The coexistence is deliberate and permanent, not transitional. The runner
 is the imperative escape hatch the declarative model refuses to provide —
 driver-side loops, revision-in-place, custom persistence. Extensions like
-`kindling-temporal` illustrate the layering rather than break it: the
+`kindling-ext-temporal` illustrate the layering rather than break it: the
 temporal *model* (the Event/Condition/Episode ontology and the entity/
 process declaration patterns it prescribes) is engine-agnostic and sits
 on the core, and even condition evaluation is engine-neutral df->df
@@ -73,7 +73,7 @@ governed by where kindling actually runs:
   half of SDP, platform-managed, with no streaming tables and no CDC/SCD
   semantics). Runtime 1.3 (Spark 3.5) enters LTS 2026-10 through 2027-03.
 - **Databricks**: Lakeflow SDP is real today; the
-  `kindling_databricks_sdp` adapter (expectations, AUTO CDC) targets it.
+  `kindling_ext_databricks` adapter (expectations, AUTO CDC) targets it.
 - **Self-managed Spark 4.1+**: OSS SDP works today; the dry-run harness
   validates against it in CI-adjacent tooling.
 
@@ -105,8 +105,8 @@ kindling_runner (engine extension: "runner", the default)
   file-ingestion processor, migration
   concrete provider WRITE personalities (see Friction #3)
 
-kindling_sdp (engine extension: "sdp")            # exists — OSS SDP
-kindling_databricks_sdp ("databricks_sdp")        # exists — Lakeflow
+kindling_ext_sdp (engine extension: "sdp")            # exists — OSS SDP
+kindling_ext_databricks ("databricks_sdp")        # exists — Lakeflow
 kindling_fabric_mlv ("fabric_mlv")                # future — Fabric MLVs
 ```
 
@@ -196,7 +196,7 @@ providers fuse three roles per class:
 - **The SCD merge compiler** — `_execute_scd2_merge` and the merge
   strategies inside `entity_provider_delta.py` are precisely "the runner
   engine's compilation of the SCD2 declared flow" (the AUTO CDC mapping
-  in `kindling_databricks_sdp` is the same declaration compiled by a
+  in `kindling_ext_databricks` is the same declaration compiled by a
   different engine). It is engine code that happens to live in a
   provider.
 
@@ -247,7 +247,7 @@ required for the split (its internal untidiness is a separate concern).
 names in the module). But the signal *taxonomy* — `read.resolve_read`,
 `persist.after_persist`, `persist.persist_failed`, streaming lifecycle
 signals — is runner-published contract that extensions (watermarking
-itself, kindling-temporal, monitoring) subscribe to. **Resolution:**
+itself, kindling-ext-temporal, monitoring) subscribe to. **Resolution:**
 infra stays core; signal namespaces get documented ownership (runner
 signals are the runner's public API, versioned with it). Cross-engine
 consumers must not assume runner signals exist in SDP mode — already
@@ -276,7 +276,7 @@ extra (`spark-kindling[runner]`, included by the platform wheels) so
 existing installs are unchanged. The engine-extension loader gives a
 precise, actionable error when `engine="runner"` (implicit default) is
 requested but the package is absent. Version coupling: runner pins a
-compatible core range, exactly as `kindling_sdp` does now. CI: the
+compatible core range, exactly as `kindling_ext_sdp` does now. CI: the
 coverage flags, test tree split (the sweep produced the full
 test-to-package mapping), and KDA packaging tests all follow the
 packages.
@@ -288,7 +288,7 @@ platform services, `pipe_graph`/`cache_optimizer` (analysis, not
 scheduling), and the provider registry (with its execution-mode
 decorator seam) are core, verified by import direction.
 
-**`kindling-temporal` is NOT runner-only — it is split-shaped itself.**
+**`kindling-ext-temporal` is NOT runner-only — it is split-shaped itself.**
 The temporal extension's purpose is a consistent, ontology-driven pattern
 (`event_condition_episode_ontology.md`, deliberately
 implementation-agnostic) for *what* to declare (Event/Condition/Episode

@@ -2566,7 +2566,7 @@ BOOTSTRAP_CONFIG = {{
     "platform": "{platform}",
     "use_lake_packages": True,
     "load_workspace_packages": False,
-    # "extensions": ["kindling-otel-azure>=0.3.0"],
+    # "extensions": ["kindling-ext-otel-azure>=0.3.0"],
 }}
 
 # Run the shared notebook bootstrap helper.

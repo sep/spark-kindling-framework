@@ -308,7 +308,7 @@ logger.info("=" * 60)
 
 # Flush if Azure Monitor extension is loaded
 try:
-    from kindling_otel_azure.config import AzureMonitorConfig
+    from kindling_ext_otel_azure.config import AzureMonitorConfig
 
     logger.info("Azure Monitor extension detected - flushing spans...")
     flush_success = AzureMonitorConfig.force_flush(timeout_millis=10000)

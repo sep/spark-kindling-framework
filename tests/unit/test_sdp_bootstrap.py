@@ -1,16 +1,17 @@
 """Unit tests for the engine-extension seam and SDP's implementation of it.
 
 Kindling core knows only the generic contract — ``engine="<name>"`` →
-import ``kindling_<name>`` → ``engine_extension()`` factory → object with
+    import ``kindling_ext_<name>`` → ``engine_extension()`` factory → object with
 ``activate()`` / ``owns_incrementality`` / optional ``declare_pipeline``.
-These tests exercise that seam and kindling_sdp's implementation of it;
+These tests exercise that seam and kindling_ext_sdp's implementation of it;
 full ``initialize_framework`` runs are integration territory.
 """
 
-import kindling
 import pytest
-from kindling_sdp.bootstrap import resolve_engine_config
-from kindling_sdp.engine_extension import SdpEngineExtension
+from kindling_ext_sdp.bootstrap import resolve_engine_config
+from kindling_ext_sdp.engine_extension import SdpEngineExtension
+
+import kindling
 
 
 class FakeConfigService:
@@ -22,23 +23,25 @@ class FakeConfigService:
 
 
 class TestEngineExtensionSeam:
-    """Core's generic loader — no engine names hardcoded anywhere in core."""
+    """Core's extension loader and its Databricks umbrella mapping."""
 
     def test_unknown_engine_fails_naming_the_extension_module(self):
-        with pytest.raises(ImportError, match="kindling_flink"):
+        with pytest.raises(ImportError, match="kindling_ext_flink"):
             kindling._load_engine_extension("flink")
 
     def test_module_without_factory_is_rejected(self, monkeypatch):
         import sys
         from types import ModuleType
 
-        monkeypatch.setitem(sys.modules, "kindling_notanengine", ModuleType("kindling_notanengine"))
+        monkeypatch.setitem(
+            sys.modules, "kindling_ext_notanengine", ModuleType("kindling_ext_notanengine")
+        )
 
         with pytest.raises(TypeError, match="engine_extension"):
             kindling._load_engine_extension("notanengine")
 
     def test_loading_is_side_effect_free_activation_is_deferred(self, monkeypatch):
-        import kindling_sdp.bootstrap as sdp_bootstrap
+        import kindling_ext_sdp.bootstrap as sdp_bootstrap
 
         calls = []
         monkeypatch.setattr(sdp_bootstrap, "activate_sdp_mode", lambda: calls.append(True))
@@ -66,7 +69,7 @@ class TestEngineExtensionSeam:
 
 
 class TestSdpEngineExtension:
-    """kindling_sdp's side of the contract."""
+    """kindling_ext_sdp's side of the contract."""
 
     def test_resolves_via_the_naming_convention(self):
         extension = kindling._load_engine_extension("sdp")
@@ -77,7 +80,7 @@ class TestSdpEngineExtension:
         assert SdpEngineExtension().owns_incrementality is True
 
     def test_declare_pipeline_delegates_to_sdp_bootstrap(self, monkeypatch):
-        import kindling_sdp.bootstrap as sdp_bootstrap
+        import kindling_ext_sdp.bootstrap as sdp_bootstrap
 
         received = {}
 

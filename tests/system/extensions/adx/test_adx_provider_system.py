@@ -36,13 +36,14 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
+
 from kindling.data_entities import EntityMetadata
 
 
 def _import_provider_class():
     """Import AdxEntityProvider without triggering DI registration.
 
-    ``kindling_adx.__init__`` calls ``register_provider()`` on import, which
+    ``kindling_ext_adx.__init__`` calls ``register_provider()`` on import, which
     resolves the real EntityProviderRegistry through GlobalInjector — that
     requires an initialized framework. This test drives the provider
     directly, so stub the injector during import (same pattern as the unit
@@ -51,16 +52,18 @@ def _import_provider_class():
     from unittest.mock import MagicMock, patch
 
     for module_name in list(sys.modules):
-        if module_name == "kindling_adx" or module_name.startswith("kindling_adx."):
+        if module_name == "kindling_ext_adx" or module_name.startswith("kindling_ext_adx."):
             del sys.modules[module_name]
 
     with patch("kindling.injection.GlobalInjector.get", return_value=MagicMock()):
-        from kindling_adx import AdxEntityProvider
+        from kindling_ext_adx import AdxEntityProvider
 
     return AdxEntityProvider
 
 
-EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[4] / "packages" / "kindling_adx"
+EXTENSION_PACKAGE_ROOT = (
+    Path(__file__).resolve().parents[4] / "packages" / "extensions" / "kindling_ext_adx"
+)
 
 # Target resources come from env vars (see .env.sep in local dev). The
 # service principal defaults to the ambient AZURE_CLIENT_ID/AZURE_TENANT_ID.

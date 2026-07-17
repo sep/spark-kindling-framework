@@ -3,7 +3,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "packages" / "kindling_temporal"
+EXTENSION_PACKAGE_ROOT = (
+    Path(__file__).resolve().parents[2] / "packages" / "extensions" / "kindling_ext_temporal"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -24,14 +26,15 @@ def _temporal_service_get(
     entity_registry=None,
     pipe_registry=None,
 ):
-    from kindling.data_entities import DataEntityRegistry
-    from kindling.data_pipes import DataPipesRegistry
-    from kindling_temporal import (
+    from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
         TemporalEntityResolver,
         TemporalEpisodeRegistry,
         TemporalEventRegistry,
     )
+
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
 
     def _get(dep):
         if dep is TemporalEntityResolver:
@@ -50,7 +53,7 @@ def _temporal_service_get(
 
 
 def test_default_resolver_returns_canonical_entities():
-    from kindling_temporal import SimpleTemporalEntityResolver
+    from kindling_ext_temporal import SimpleTemporalEntityResolver
 
     resolver = SimpleTemporalEntityResolver()
 
@@ -60,7 +63,7 @@ def test_default_resolver_returns_canonical_entities():
 
 
 def test_conditions_entity_is_scd2_tagged():
-    from kindling_temporal import SimpleTemporalEntityResolver
+    from kindling_ext_temporal import SimpleTemporalEntityResolver
 
     entity = SimpleTemporalEntityResolver().get_conditions_entity()
 
@@ -70,7 +73,7 @@ def test_conditions_entity_is_scd2_tagged():
 
 
 def test_conditions_schema_supports_multiple_consumed_event_types():
-    from kindling_temporal import conditions_schema
+    from kindling_ext_temporal import conditions_schema
     from pyspark.sql.types import ArrayType, StringType
 
     consumes_field = conditions_schema()["consumes_event_type"]
@@ -80,7 +83,7 @@ def test_conditions_schema_supports_multiple_consumed_event_types():
 
 
 def test_events_schema_matches_proposal_envelope():
-    from kindling_temporal import events_schema
+    from kindling_ext_temporal import events_schema
 
     columns = events_schema().fieldNames()
 
@@ -101,7 +104,7 @@ def test_events_schema_matches_proposal_envelope():
 
 
 def test_base_event_pipe_id_is_namespaced():
-    from kindling_temporal import TemporalPipeTranslator
+    from kindling_ext_temporal import TemporalPipeTranslator
 
     assert (
         TemporalPipeTranslator.base_event_pipe_id("telemetry.base")
@@ -110,9 +113,10 @@ def test_base_event_pipe_id_is_namespaced():
 
 
 def test_base_event_decorator_registers_metadata():
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -165,9 +169,10 @@ def test_base_event_decorator_registers_metadata():
 
 
 def test_base_event_registration_accepts_none_tags_and_requires_metadata():
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -225,9 +230,10 @@ def test_base_event_registration_accepts_none_tags_and_requires_metadata():
 
 
 def test_condition_engine_registration_is_not_condition_specific():
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     registry = TemporalEventRegistryManager(_logger_provider())
@@ -262,9 +268,10 @@ def test_condition_engine_registration_is_not_condition_specific():
 
 
 def test_episode_registration_uses_canonical_entities():
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import DataEpisodes, TemporalEpisodeRegistryManager
 
     DataEpisodes.reset()
     registry = TemporalEpisodeRegistryManager(_logger_provider())
@@ -310,14 +317,15 @@ def test_episode_registration_uses_canonical_entities():
 
 
 def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
-    from kindling.data_entities import DataEntityManager, EntityMetadata
-    from kindling_temporal import (
+    from kindling_ext_temporal import (
         BaseEventMetadata,
         ConditionEngineMetadata,
         EpisodeMetadata,
         TemporalPipeTranslator,
         events_schema,
     )
+
+    from kindling.data_entities import DataEntityManager, EntityMetadata
 
     base_event = BaseEventMetadata(
         eventid="telemetry.none_tags",
@@ -400,7 +408,7 @@ def _condition_row(**overrides):
 
 
 def test_condition_validator_rejects_bad_expression_per_row():
-    from kindling_temporal import TemporalConditionValidator
+    from kindling_ext_temporal import TemporalConditionValidator
 
     parser = RecordingExpressionParser(invalid_expressions={"bad spark sql"})
     validator = TemporalConditionValidator(expression_parser=parser)
@@ -426,7 +434,7 @@ def test_condition_validator_rejects_bad_expression_per_row():
 
 
 def test_condition_validator_requires_enter_and_exit_expressions():
-    from kindling_temporal import TemporalConditionValidator
+    from kindling_ext_temporal import TemporalConditionValidator
 
     report = TemporalConditionValidator(expression_parser=RecordingExpressionParser()).validate(
         [
@@ -446,7 +454,7 @@ def test_condition_validator_requires_enter_and_exit_expressions():
 
 
 def test_condition_validator_computes_event_type_generations():
-    from kindling_temporal import TemporalConditionValidator
+    from kindling_ext_temporal import TemporalConditionValidator
 
     validator = TemporalConditionValidator(expression_parser=RecordingExpressionParser())
     assert validator.graph_builder.registry is not None
@@ -470,7 +478,7 @@ def test_condition_validator_computes_event_type_generations():
 
 
 def test_condition_validator_rejects_event_type_cycles():
-    from kindling_temporal import TemporalConditionValidator
+    from kindling_ext_temporal import TemporalConditionValidator
 
     report = TemporalConditionValidator(expression_parser=RecordingExpressionParser()).validate(
         [

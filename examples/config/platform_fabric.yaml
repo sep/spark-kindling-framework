@@ -28,4 +28,4 @@ kindling:
     optimize_write: true
 # Example: Fabric-specific extensions
 # extensions:
-#   - kindling-otel-azure>=0.2.0  # Azure Monitor integration for Fabric
+#   - kindling-ext-otel-azure>=0.2.0  # Azure Monitor integration for Fabric

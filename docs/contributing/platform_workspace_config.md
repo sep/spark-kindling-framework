@@ -75,7 +75,7 @@ kindling:
     spark.sql.adaptive.enabled: "true"
 
   extensions:
-    - kindling-otel-azure>=0.3.0
+    - kindling-ext-otel-azure>=0.3.0
 ```
 
 **Upload to:** `{artifacts_storage_path}/config/settings.fabric.yaml`
@@ -274,7 +274,7 @@ Spark pool/session config can also provide defaults via `spark.kindling.*`:
 ```text
 spark.kindling.bootstrap.environment=prod
 spark.kindling.bootstrap.use_lake_packages=true
-spark.kindling.extensions=["kindling-otel-azure>=0.3.0"]
+spark.kindling.extensions=["kindling-ext-otel-azure>=0.3.0"]
 ```
 
 Mapping rules:
@@ -299,7 +299,7 @@ kindling:
   platform:
     name: fabric
   extensions:
-    - kindling-otel-azure>=0.3.0
+    - kindling-ext-otel-azure>=0.3.0
 
 # workspace_team-a-workspace-id.yaml - Team A settings
 kindling:

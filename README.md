@@ -62,8 +62,9 @@ The framework consists of several modular components:
 
 ## Extensions
 
-- **[kindling-otel-azure](./packages/kindling_otel_azure/)** - Azure Monitor OpenTelemetry integration
-- **[kindling-databricks-dlt](./packages/kindling_databricks_dlt/)** - Databricks Delta Live Tables integration
+- **[kindling-ext-otel-azure](./packages/extensions/kindling_ext_otel_azure/)** - Azure Monitor OpenTelemetry integration
+- **[kindling-ext-sdp](./packages/extensions/kindling_ext_sdp/)** - Spark Declarative Pipelines support
+- **[kindling-ext-databricks](./packages/extensions/kindling_ext_databricks/)** - Databricks Lakeflow extensions
 
 ## Install
 
@@ -175,7 +176,7 @@ executer.run_datapipes(["customers.transform"])
 
 ### Extensibility
 - **Extension system** - load custom packages via configuration
-- **Azure Monitor integration** - via kindling-otel-azure extension
+- **Azure Monitor integration** - via kindling-ext-otel-azure extension
 - **Custom providers** - implement your own storage backends
 - **Signal/event system** - blinker-based pub/sub for custom workflows
 

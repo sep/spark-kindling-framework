@@ -24,11 +24,11 @@ DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
 _FATAL_SYSTEM_TEST_LOG_PREFIXES = (
     "ERROR: (KindlingBootstrap) Extension wheel not found:",
     "ERROR: (KindlingBootstrap) Failed to install extension",
-    "WARN: (KindlingBootstrap) Failed to import extension kindling_otel_azure",
+    "WARN: (KindlingBootstrap) Failed to import extension kindling_ext_otel_azure",
     "❌ No wheel found matching",
     "❌ Failed to install extension",
-    "❌ Failed to import extension kindling_otel_azure",
-    "kindling-otel-azure not found - extension not loaded",
+    "❌ Failed to import extension kindling_ext_otel_azure",
+    "kindling-ext-otel-azure not found - extension not loaded",
 )
 
 
@@ -354,10 +354,12 @@ def _get_repo_version() -> Optional[str]:
 
 
 def _get_otel_extension_version() -> Optional[str]:
-    """Return the version from the kindling-otel-azure package for deterministic installs."""
+    """Return the version from the kindling-ext-otel-azure package for deterministic installs."""
     try:
         repo_root = Path(__file__).resolve().parents[2]
-        pyproject_path = repo_root / "packages" / "kindling_otel_azure" / "pyproject.toml"
+        pyproject_path = (
+            repo_root / "packages" / "extensions" / "kindling_ext_otel_azure" / "pyproject.toml"
+        )
         content = pyproject_path.read_text(encoding="utf-8")
         match = re.search(r'^version\s*=\s*"([^"]+)"\s*$', content, re.MULTILINE)
         if not match:
@@ -417,7 +419,9 @@ def _get_system_test_azure_monitor_defaults(
     ).strip()
     extension_version = _get_otel_extension_version()
     extension_spec = (
-        f"kindling-otel-azure=={extension_version}" if extension_version else "kindling-otel-azure"
+        f"kindling-ext-otel-azure=={extension_version}"
+        if extension_version
+        else "kindling-ext-otel-azure"
     )
 
     return (
@@ -725,7 +729,7 @@ class StdoutStreamValidator:
         Validate extension loading markers.
 
         Args:
-            extension_name: Name of extension (e.g., "kindling-otel-azure")
+            extension_name: Name of extension (e.g., "kindling-ext-otel-azure")
 
         Returns:
             Dict with validation results:

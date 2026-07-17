@@ -9,7 +9,7 @@ cluster.
 The CLI lives in an isolated venv (``poe sdp-runtime`` provisions
 ``.venv-sdp41/``) because the repo's main environment pins pyspark <4.0;
 the test is skipped when no CLI is available (as in CI today). The
-definitions file runs in the CLI's own Python, where only ``kindling_sdp``
+definitions file runs in the CLI's own Python, where only ``kindling_ext_sdp``
 (duck-typed registries, no kindling-core import) is on PYTHONPATH — which
 is itself a regression test for the package's standalone-import invariant.
 
@@ -21,10 +21,10 @@ import shutil
 from pathlib import Path
 
 import pytest
-from kindling_sdp import dry_run, write_pipeline_spec
+from kindling_ext_sdp import dry_run, write_pipeline_spec
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-KINDLING_SDP_PACKAGE = REPO_ROOT / "packages" / "kindling_sdp"
+KINDLING_SDP_PACKAGE = REPO_ROOT / "packages" / "extensions" / "kindling_ext_sdp"
 
 
 def _find_cli():
@@ -45,12 +45,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 # Self-contained on purpose: this file is executed by the CLI's Python,
-# which has kindling_sdp but not kindling core (nor delta-spark) installed.
+# which has kindling_ext_sdp but not kindling core (nor delta-spark) installed.
 DEFINITIONS = '''
 """Prototype graph: bronze source -> silver materialized view."""
 from types import SimpleNamespace
 
-from kindling_sdp import OssSdpEngine
+from kindling_ext_sdp import OssSdpEngine
 
 
 def make_entity(eid, tags=None, partition_columns=(), schema=None):

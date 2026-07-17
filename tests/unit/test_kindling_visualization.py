@@ -2,13 +2,13 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from kindling_visualization.registry import (
+from kindling_ext_visualization.registry import (
     VisualizationMetadata,
     VisualizationRegistryManager,
     Visualizations,
 )
-from kindling_visualization.renderer import MatplotlibVisualizationRenderer
-from kindling_visualization.runner import VisualizationRunnerService
+from kindling_ext_visualization.renderer import MatplotlibVisualizationRenderer
+from kindling_ext_visualization.runner import VisualizationRunnerService
 
 
 class FakeSparkDataFrame:

@@ -48,7 +48,7 @@ def _emit_signal(logger, test_id: str, signal_name: str) -> None:
 def _flush_azure_monitor(logger) -> None:
     """Best-effort flush/shutdown for Azure Monitor-backed telemetry export."""
     try:
-        from kindling_otel_azure.config import AzureMonitorConfig
+        from kindling_ext_otel_azure.config import AzureMonitorConfig
 
         logger.info("Azure Monitor extension detected - flushing telemetry...")
         print("Azure Monitor extension detected - flushing telemetry...", flush=True)

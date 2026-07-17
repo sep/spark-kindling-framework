@@ -30,4 +30,4 @@ kindling:
     default_executor_memory: "28g"
 # Example: Synapse-specific extensions
 # extensions:
-#   - kindling-otel-azure>=0.2.0  # Azure Monitor integration for Synapse
+#   - kindling-ext-otel-azure>=0.2.0  # Azure Monitor integration for Synapse
