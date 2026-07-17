@@ -1,4 +1,4 @@
-# kindling-cosmos
+# kindling-ext-cosmos
 
 Azure Cosmos DB (NoSQL API) entity provider extension for Kindling.
 

@@ -3,14 +3,14 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "kindling-cosmos"
+name = "kindling-ext-cosmos"
 version = "0.1.0"
 description = "Azure Cosmos DB entity provider extension for Kindling"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
 readme = "README.md"
 packages = [
-    {include = "kindling_cosmos"},
+    {include = "kindling_ext_cosmos"},
 ]
 
 [tool.poetry.dependencies]

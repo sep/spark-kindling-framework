@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.data_entities import EntityMetadata
 
 EXTENSION_PACKAGE_ROOT = (
@@ -323,7 +324,7 @@ def _patched_spark_read(reader):
     spark = MagicMock()
     spark.read = reader
     return patch(
-        "kindling_adx.entity_provider_adx.get_or_create_spark_session",
+        "kindling_ext_adx.entity_provider_adx.get_or_create_spark_session",
         return_value=spark,
     )
 
