@@ -1,6 +1,6 @@
 # Entity Provider Roadmap — ADX, Cosmos DB, Parquet
 
-**Status:** ADX and Cosmos DB shipped (July 2026); Parquet is the open item.
+**Status:** All three shipped (July 2026) — ADX (#170), Cosmos DB (#171), Parquet.
 **Scope:** Tracks provider coverage against the framework's capability model.
 Originally an evaluation of three candidates; two have since landed and this
 doc records what shipped, what was learned live, and what remains.
@@ -94,16 +94,19 @@ out of the box, arguably safer than the Delta append path.
 
 ---
 
-## Parquet — OPEN (next up; core provider)
+## Parquet — SHIPPED (core provider)
 
-Plain-parquet handling today is limited to file-ingestion *patterns*. Delta
-covers internal storage — a Parquet provider is for the **boundaries**:
-consuming parquet produced by external systems, publishing extracts for
-consumers that can't read Delta.
+`packages/kindling/entity_provider_parquet.py`, auto-registered as
+`provider_type: "parquet"` — native Spark, zero new dependencies. All five
+interfaces implemented (streaming reads require the entity `schema`, per
+Spark's file-source rule; partitioned writes honor `partition_columns`).
+Round-trip verified by real-Spark integration tests
+(`tests/integration/test_entity_provider_parquet_roundtrip.py`) including a
+streaming file-source → file-sink hop — no cloud resources needed.
 
-**Decision: lives in core** (`entity_provider_parquet.py` beside the CSV
-provider, auto-registered as `provider_type: "parquet"`), not an extension —
-native Spark, zero new dependencies.
+Positioning: Delta covers internal storage — the Parquet provider is for the
+**boundaries**: consuming parquet produced by external systems, publishing
+extracts for consumers that can't read Delta.
 
 | Interface | Fit |
 |---|---|
