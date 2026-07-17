@@ -190,7 +190,7 @@ environment without code changes.
 |---|---|
 | `"concurrency": 4` | `parallel: true`, `max_workers: 4` |
 | `"timeoutPerCellInSeconds": 900` | `pipe_timeout: 900` (per pipe, not per cell) |
-| Activity fails → dependents skipped | `error_strategy: fail_fast` (default): a failed generation stops the run, so downstream generations never start |
+| Activity fails → dependents skipped | `error_strategy: skip_dependents` — exact same semantics: only transitive consumers skip, independent branches keep running |
 | Run everything, report failures at the end | `error_strategy: continue` |
 
 ```yaml
@@ -340,11 +340,12 @@ those (the DAG orchestrator will re-derive the correct sub-order).
 equivalent; `pipe_timeout` applies per pipe. If you need a global budget,
 enforce it in the caller (e.g., the platform job's timeout setting).
 
-**Failure semantics.** With the default `FAIL_FAST`, a pipe failure stops
-its generation and no later generation starts — close to `runMultiple`
-skipping dependents, but coarser: independent pipes in *later* generations
-that don't depend on the failure are also not run. Use
-`ErrorStrategy.CONTINUE` if you want maximum forward progress.
+**Failure semantics.** `error_strategy: skip_dependents` reproduces
+`runMultiple`'s behavior exactly: a failed pipe's transitive consumers are
+skipped (reported with `reason: upstream_failed`) while independent branches
+keep running. The default `FAIL_FAST` is stricter — a failed generation
+stops the whole run — and `CONTINUE` is looser, running everything and
+reporting failures at the end.
 
 **Skipped pipes.** A pipe is skipped (not failed) when its first input
 entity returns no data. This replaces the common notebook pattern of exiting

@@ -389,7 +389,7 @@ the built-in default. Passing a parameter overrides config just-in-time
 | `strategy` | `ExecutionStrategy` | — | `None` (batch) | Strategy override |
 | `parallel` | `bool` | `parallel` | `False` | Run independent pipes *within* a generation concurrently (generations themselves are always sequential) |
 | `max_workers` | `int` | `max_workers` | `4` | Thread pool size when parallel |
-| `error_strategy` | `ErrorStrategy` | `error_strategy` (`fail_fast` \| `continue`) | `FAIL_FAST` | Error handling mode |
+| `error_strategy` | `ErrorStrategy` | `error_strategy` (`fail_fast` \| `continue` \| `skip_dependents`) | `FAIL_FAST` | Error handling mode |
 | `pipe_timeout` | `float` | `pipe_timeout` | `None` | Per-pipe timeout in seconds |
 | `streaming_options` | `dict` | — | `None` | Passed to GenerationExecutor |
 | `auto_cache` | `bool` | `auto_cache` | `False` | Enable automatic cache |
@@ -411,6 +411,13 @@ kindling:
       "ingest.orders":       # quote ids containing dots — the map is indexed
         retry: { attempts: 1 }   # by the literal id, not dotted traversal
 ```
+
+**Error strategies**: `fail_fast` stops after the first failed generation;
+`continue` runs everything and reports failures at the end;
+`skip_dependents` skips only the transitive consumers of a failed pipe
+(reported as skipped with `reason: upstream_failed`) while independent
+branches keep running — matching notebook-DAG (`runMultiple`)
+dependent-skipping semantics.
 
 **Retry semantics**: only exceptions raised inside an attempt are retried —
 timeouts surfaced by the parallel wrapper are never retried (the first

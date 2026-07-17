@@ -27,7 +27,7 @@ from kindling.generation_executor import (
     PipeResult,
     RetryPolicy,
 )
-from kindling.pipe_graph import PipeGraph, PipeNode
+from kindling.pipe_graph import PipeEdge, PipeGraph, PipeNode
 from kindling.pipe_streaming import SimplePipeStreamStarter
 
 # ---- Fixtures ----
@@ -1735,3 +1735,128 @@ class TestRetry:
 
         assert result.success_count == 1
         assert result.generation_results[0].pipe_results[0].attempts == 2
+
+
+# ---- Skip-Dependents Tests (Phase 3) ----
+
+
+def make_chain_graph():
+    """a -> b -> c chain plus independent pipe x."""
+    graph = PipeGraph()
+    graph.add_node(PipeNode("a", [], "entity.a"))
+    graph.add_node(PipeNode("b", ["entity.a"], "entity.b"))
+    graph.add_node(PipeNode("c", ["entity.b"], "entity.c"))
+    graph.add_node(PipeNode("x", [], "entity.x"))
+    graph.add_edge(PipeEdge(from_pipe="a", to_pipe="b", entity="entity.a"))
+    graph.add_edge(PipeEdge(from_pipe="b", to_pipe="c", entity="entity.b"))
+    return graph
+
+
+class TestSkipDependents:
+    """ErrorStrategy.SKIP_DEPENDENTS skips downstream pipes, runs independent ones."""
+
+    def _setup(self, pipes_registry, entity_registry, persist_strategy, failing_ids):
+        def get_pipe(pid):
+            inputs = {"a": [], "b": ["entity.a"], "c": ["entity.b"], "x": []}[pid]
+            pipe = make_pipe(pid, inputs=inputs, output=f"entity.{pid}")
+            if pid in failing_ids:
+                pipe.execute = Mock(side_effect=RuntimeError(f"{pid} boom"))
+            return pipe
+
+        pipes_registry.get_pipe_definition.side_effect = get_pipe
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        graph = make_chain_graph()
+        generations = [
+            Generation(number=0, pipe_ids=["a", "x"], dependencies=[]),
+            Generation(number=1, pipe_ids=["b"], dependencies=["a"]),
+            Generation(number=2, pipe_ids=["c"], dependencies=["b"]),
+        ]
+        return ExecutionPlan(
+            pipe_ids=["a", "x", "b", "c"],
+            generations=generations,
+            graph=graph,
+            strategy="batch",
+            metadata={},
+        )
+
+    def test_dependents_skipped_independent_branch_runs(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        with patch.object(executor, "emit", wraps=executor.emit) as emit_spy:
+            result = executor.execute(plan, error_strategy=ErrorStrategy.SKIP_DEPENDENTS)
+
+        statuses = {r.pipe_id: r.status for g in result.generation_results for r in g.pipe_results}
+        assert statuses == {"a": "failed", "x": "success", "b": "skipped", "c": "skipped"}
+
+        upstream_skips = [
+            c
+            for c in emit_spy.call_args_list
+            if c.args[0] == "orchestrator.pipe_skipped"
+            and c.kwargs.get("reason") == "upstream_failed"
+        ]
+        assert {c.kwargs["pipe_id"] for c in upstream_skips} == {"b", "c"}
+        assert all(c.kwargs["upstream_pipe"] == "a" for c in upstream_skips)
+
+    def test_mid_chain_failure_skips_only_downstream(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"b"})
+
+        result = executor.execute(plan, error_strategy=ErrorStrategy.SKIP_DEPENDENTS)
+
+        statuses = {r.pipe_id: r.status for g in result.generation_results for r in g.pipe_results}
+        assert statuses == {"a": "success", "x": "success", "b": "failed", "c": "skipped"}
+
+    def test_skipped_result_carries_upstream_error(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        result = executor.execute(plan, error_strategy=ErrorStrategy.SKIP_DEPENDENTS)
+
+        skipped = [
+            r for g in result.generation_results for r in g.pipe_results if r.status == "skipped"
+        ]
+        assert all(r.error_type == "UpstreamFailure" for r in skipped)
+        assert all("'a' failed" in r.error for r in skipped)
+
+    def test_fail_fast_behavior_unchanged(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        result = executor.execute(plan, error_strategy=ErrorStrategy.FAIL_FAST)
+
+        # fail_fast stops after generation 0 — b and c never appear at all
+        assert len(result.generation_results) == 1
+
+    def test_config_selects_skip_dependents(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config(
+            {"kindling.execution.error_strategy": "skip_dependents"}
+        )
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        result = executor.execute(plan)
+
+        statuses = {r.pipe_id: r.status for g in result.generation_results for r in g.pipe_results}
+        assert statuses["b"] == "skipped"
+        assert statuses["x"] == "success"
+
+    def test_parallel_mode_skips_dependents(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        result = executor.execute(
+            plan, error_strategy=ErrorStrategy.SKIP_DEPENDENTS, parallel=True, max_workers=2
+        )
+
+        statuses = {r.pipe_id: r.status for g in result.generation_results for r in g.pipe_results}
+        assert statuses == {"a": "failed", "x": "success", "b": "skipped", "c": "skipped"}

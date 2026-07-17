@@ -1,6 +1,6 @@
 # Proposal: Config-Driven Execution Options
 
-**Status:** Phase 1 shipped (#169); Phase 2 (retry) implemented; Phase 3 open
+**Status:** Phase 1 shipped (#169); Phase 2 (retry) shipped (#173); Phase 3 (skip_dependents) implemented
 **Author:** derived from migration-gap analysis (see
 [Migrating from runMultiple](../guide/migrating_from_runmultiple.md))
 
@@ -105,7 +105,7 @@ previously required code changes.
 - Future hardening: `persist_id`-based idempotent persist to make retry
   safe by default on non-merge paths.
 
-## Phase 3 — `skip_dependents` error strategy
+## Phase 3 — `skip_dependents` error strategy (IMPLEMENTED)
 
 - New `ErrorStrategy.SKIP_DEPENDENTS`: on pipe failure, mark transitive
   consumers (via `PipeGraph.entity_consumers`) as skipped, keep independent
