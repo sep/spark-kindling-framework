@@ -26,8 +26,12 @@ DIST_DIR = Path("dist")
 DESIGN_TIME_PACKAGE_DIRS = [
     Path("packages/kindling_sdk"),
     Path("packages/kindling_cli"),
-    Path("packages/kindling_otel_azure"),
-    Path("packages/kindling_visualization"),
+    Path("packages/extensions/kindling_ext_adx"),
+    Path("packages/extensions/kindling_ext_databricks"),
+    Path("packages/extensions/kindling_ext_otel_azure"),
+    Path("packages/extensions/kindling_ext_sdp"),
+    Path("packages/extensions/kindling_ext_temporal"),
+    Path("packages/extensions/kindling_ext_visualization"),
 ]
 
 PLATFORM_FILES_TO_REMOVE = {
@@ -172,7 +176,7 @@ def main():
     print("   pip install 'spark-kindling[standalone]'  # local dev / CI")
     print("   pip install spark-kindling-cli")
     print("   pip install spark-kindling-sdk")
-    print("   pip install kindling-visualization")
+    print("   pip install kindling-ext-visualization")
     print("\n📤 Next step:")
     print("   poetry run poe deploy       # Deploy to Azure Storage (testing)")
     print("   poetry run poe deploy --release latest  # Deploy from GitHub release (production)")

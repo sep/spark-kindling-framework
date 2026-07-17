@@ -9,7 +9,7 @@ def test_get_spark_kindling_config_maps_bootstrap_and_kindling_keys():
         ("spark.kindling.bootstrap.use_lake_packages", "false"),
         ("spark.kindling.bootstrap.load_local", "true"),
         ("spark.kindling.bootstrap.artifacts_storage_path", "abfss://artifacts@acct/path"),
-        ("spark.kindling.extensions", '["kindling-otel-azure>=0.3.0"]'),
+        ("spark.kindling.extensions", '["kindling-ext-otel-azure>=0.3.0"]'),
         ("spark.kindling.telemetry.logging.level", '"DEBUG"'),
         ("spark.executor.memory", "8g"),
     ]
@@ -20,7 +20,7 @@ def test_get_spark_kindling_config_maps_bootstrap_and_kindling_keys():
     assert result["use_lake_packages"] is False
     assert result["load_workspace_packages"] is True
     assert result["artifacts_storage_path"] == "abfss://artifacts@acct/path"
-    assert result["kindling.extensions"] == ["kindling-otel-azure>=0.3.0"]
+    assert result["kindling.extensions"] == ["kindling-ext-otel-azure>=0.3.0"]
     assert result["kindling.telemetry.logging.level"] == "DEBUG"
     assert "spark.executor.memory" not in result
 

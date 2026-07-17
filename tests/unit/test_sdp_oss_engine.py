@@ -15,9 +15,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
-from kindling_sdp import (
+from kindling_ext_sdp import (
     DatasetType,
     OssSdpEngine,
     SdpModeWriteError,
@@ -27,6 +25,9 @@ from kindling_sdp import (
     dry_run,
     write_pipeline_spec,
 )
+
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures: fake registries (same graph as test_sdp_declaration_engine) #
@@ -399,7 +400,7 @@ class TestDryRunHarness:
         """A CLI inside a venv with pyspark gets SPARK_HOME and
         PYSPARK_PYTHON pointed at that venv — without this, the launcher
         picks up an ambient SPARK_HOME or the system python3 and fails."""
-        from kindling_sdp.dry_run import spark_env_for_executable
+        from kindling_ext_sdp.dry_run import spark_env_for_executable
 
         venv_root = tmp_path / "venv"
         (venv_root / "bin").mkdir(parents=True)
@@ -418,7 +419,7 @@ class TestDryRunHarness:
     def test_no_spark_env_derived_for_bare_executable(self, tmp_path):
         """A stub or PATH-wide install (no sibling python/pyspark) needs no
         overrides."""
-        from kindling_sdp.dry_run import spark_env_for_executable
+        from kindling_ext_sdp.dry_run import spark_env_for_executable
 
         stub = tmp_path / "spark-pipelines"
         stub.touch()

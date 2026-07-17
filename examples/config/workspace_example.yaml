@@ -46,7 +46,7 @@ kindling:
 
   # Workspace-specific extensions
   EXTENSIONS:
-    - kindling-otel-azure>=0.2.0
+    - kindling-ext-otel-azure>=0.2.0
 
   # Workspace-specific Spark configurations
   SPARK_CONFIGS:

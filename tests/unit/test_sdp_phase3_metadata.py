@@ -10,12 +10,13 @@ expectation decorators the OSS module lacks.
 
 from types import SimpleNamespace
 
-import kindling
 import pytest
+from kindling_ext_databricks import DatabricksSdpEngine, engine_extension
+from kindling_ext_sdp import OssSdpEngine
+
+import kindling
 from kindling.data_entities import EntityMetadata
 from kindling.data_pipes import PipeMetadata
-from kindling_databricks_sdp import DatabricksSdpEngine, engine_extension
-from kindling_sdp import OssSdpEngine
 
 # --------------------------------------------------------------------- #
 # Fixtures                                                               #
@@ -249,7 +250,7 @@ class TestDatabricksEngineExtension:
         assert extension.owns_incrementality is True
 
     def test_declare_pipeline_passes_the_adapter_engine_factory(self, monkeypatch):
-        import kindling_sdp.bootstrap as sdp_bootstrap
+        import kindling_ext_sdp.bootstrap as sdp_bootstrap
 
         received = {}
 

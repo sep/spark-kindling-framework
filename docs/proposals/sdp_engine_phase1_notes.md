@@ -8,22 +8,22 @@ PR #158 (watermark aspect).
 
 Phase 1 delivers the declaration-engine *interface* and the registry-derived
 logic behind it — internal/external read classification, capability gating,
-dataset-type selection, and fail-fast validation — as the `kindling_sdp`
-package (`packages/kindling_sdp/`). It emits no `pyspark.pipelines`
+dataset-type selection, and fail-fast validation — as the `kindling_ext_sdp`
+package (`packages/extensions/kindling_ext_sdp/`). It emits no `pyspark.pipelines`
 declarations and has no dependency on them; that is Phase 2. This note
 records the decisions Phase 1 was chartered to make.
 
 ## What Phase 1 Contains
 
-- `kindling_sdp.declaration_plan` — the pure-metadata plan:
+- `kindling_ext_sdp.declaration_plan` — the pure-metadata plan:
   `DeclarationPlan` → `DatasetDeclaration` (name, dataset type, the pipe's
   execute callable passed through unchanged, classified inputs, and entity
   metadata passthrough: partition/cluster columns, tags, comment).
-- `kindling_sdp.capabilities` — `CapabilitySet` (`OSS_SDP` vs
+- `kindling_ext_sdp.capabilities` — `CapabilitySet` (`OSS_SDP` vs
   `DATABRICKS_SDP`) plus `SdpFeature` (expectations, AUTO CDC, incremental
   MV refresh), in the small-ABC/`is_*`-helper style of
   `kindling.entity_provider`.
-- `kindling_sdp.declaration_engine` — the abstract `DeclarationEngine`.
+- `kindling_ext_sdp.declaration_engine` — the abstract `DeclarationEngine`.
   Plan building and `validate()` (all errors at once, never
   first-error-only) are concrete; only `declare_pipeline(plan)` — actual
   emission — is abstract, for Phase-2 subclasses.
@@ -171,7 +171,7 @@ is no SDP bootstrap path to bind against until then).
   runtime guard + dry-run territory, not registry metadata.
 - **Entity-id → catalog/schema/table mapping** (open question in the
   parent proposal; `DatasetDeclaration.name` is a logical id).
-- Expectations/AUTO CDC emission (`kindling_databricks_sdp` adapter,
+- Expectations/AUTO CDC emission (`kindling_ext_databricks` adapter,
   Phases 3/5), streaming tables and append flows (Phase 4), and the
   multiple-flows-per-target question (fails fast for now as
   `duplicate_output_entity`).

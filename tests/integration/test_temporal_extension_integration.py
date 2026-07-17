@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 from pyspark.sql import SparkSession
 
-EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "packages" / "kindling_temporal"
+EXTENSION_PACKAGE_ROOT = (
+    Path(__file__).resolve().parents[2] / "packages" / "extensions" / "kindling_ext_temporal"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +31,7 @@ def spark():
 
 
 def _events_df(spark):
-    from kindling_temporal import events_schema
+    from kindling_ext_temporal import events_schema
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     cooled_at = observed_at + timedelta(minutes=10)
@@ -69,7 +71,7 @@ def _events_df(spark):
 
 
 def _conditions_df(spark):
-    from kindling_temporal import conditions_schema
+    from kindling_ext_temporal import conditions_schema
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     return spark.createDataFrame(
@@ -93,7 +95,7 @@ def _conditions_df(spark):
 
 @pytest.mark.requires_spark
 def test_condition_engine_runner_emits_entered_and_exited_events(spark):
-    from kindling_temporal import ConditionEngineRunner
+    from kindling_ext_temporal import ConditionEngineRunner
 
     result = ConditionEngineRunner().execute(_events_df(spark), _conditions_df(spark))
 
@@ -117,7 +119,11 @@ def test_condition_engine_runner_emits_entered_and_exited_events(spark):
 
 @pytest.mark.requires_spark
 def test_episode_runner_pairs_entered_and_exited_events(spark):
-    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
 
     boundary_events = ConditionEngineRunner().execute(_events_df(spark), _conditions_df(spark))
     episode = EpisodeMetadata(

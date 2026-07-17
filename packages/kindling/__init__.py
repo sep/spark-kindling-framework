@@ -52,11 +52,11 @@ def initialize(config=None, app_name=None, engine=None):
     """Public initialize entrypoint for pre-installed kindling usage.
 
     ``engine="<name>"`` selects an alternative execution engine provided
-    by an extension package: the module ``kindling_<name>`` must expose an
+    by an extension package: the module ``kindling_ext_<name>`` must expose an
     ``engine_extension()`` factory (see ``_load_engine_extension`` for the
     contract). Core has no knowledge of specific engines — e.g.
     ``engine="sdp"`` resolves to whatever the separately-installed
-    ``kindling_sdp`` package provides. Follow with registrations, then
+    ``kindling_ext_sdp`` package provides. Follow with registrations, then
     ``kindling.declare_pipeline()`` as the final step for declarative
     engines.
     """
@@ -90,7 +90,9 @@ def _load_engine_extension(engine_name):
     """Resolve an execution-engine extension by naming convention.
 
     The contract: engine ``<name>`` is provided by an importable module
-    ``kindling_<name>`` exposing a zero-arg ``engine_extension()`` factory.
+    ``kindling_ext_<name>`` exposing a zero-arg ``engine_extension()`` factory.
+    Engines whose extension is a multi-engine umbrella may provide an explicit
+    module mapping below (for example, Databricks SDP).
     The returned object must provide ``activate()`` (called once, after
     framework initialization) and may provide ``owns_incrementality``
     (bool — the engine manages incremental reads itself, so the watermark
@@ -100,7 +102,9 @@ def _load_engine_extension(engine_name):
     """
     import importlib
 
-    module_name = f"kindling_{engine_name}"
+    module_name = {
+        "databricks_sdp": "kindling_ext_databricks",
+    }.get(engine_name, f"kindling_ext_{engine_name}")
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
