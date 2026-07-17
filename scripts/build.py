@@ -27,6 +27,7 @@ DESIGN_TIME_PACKAGE_DIRS = [
     Path("packages/kindling_sdk"),
     Path("packages/kindling_cli"),
     Path("packages/extensions/kindling_ext_adx"),
+    Path("packages/extensions/kindling_ext_cosmos"),
     Path("packages/extensions/kindling_ext_databricks"),
     Path("packages/extensions/kindling_ext_otel_azure"),
     Path("packages/extensions/kindling_ext_sdp"),
