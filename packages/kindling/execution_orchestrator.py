@@ -10,7 +10,7 @@ from injector import inject
 
 from kindling.execution_strategy import ExecutionPlanGenerator, ExecutionStrategy
 from kindling.generation_executor import (
-    ErrorStrategy,
+    UNSET,
     ExecutionResult,
     GenerationExecutor,
 )
@@ -48,15 +48,19 @@ class ExecutionOrchestrator(SignalEmitter):
         self,
         pipe_ids: List[str],
         strategy: Optional[ExecutionStrategy] = None,
-        parallel: bool = False,
-        max_workers: int = 4,
-        error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
-        pipe_timeout: Optional[float] = None,
+        parallel: Any = UNSET,  # bool | UNSET
+        max_workers: Any = UNSET,  # int | UNSET
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
+        pipe_timeout: Any = UNSET,  # float | None (no timeout) | UNSET
         streaming_options: Optional[dict[str, Any]] = None,
-        auto_cache: bool = False,
+        auto_cache: Any = UNSET,  # bool | UNSET
         no_watermark: bool = False,
     ) -> ExecutionResult:
-        """Generate an execution plan and run it through GenerationExecutor."""
+        """Generate an execution plan and run it through GenerationExecutor.
+
+        Execution options left UNSET resolve from `kindling.execution.*`
+        config inside GenerationExecutor; passed values override config.
+        """
         plan = self.plan_generator.generate_plan(pipe_ids, strategy=strategy)
 
         self.emit(
@@ -88,11 +92,11 @@ class ExecutionOrchestrator(SignalEmitter):
     def execute_batch(
         self,
         pipe_ids: List[str],
-        parallel: bool = False,
-        max_workers: int = 4,
-        error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
-        pipe_timeout: Optional[float] = None,
-        auto_cache: bool = False,
+        parallel: Any = UNSET,  # bool | UNSET
+        max_workers: Any = UNSET,  # int | UNSET
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
+        pipe_timeout: Any = UNSET,  # float | None (no timeout) | UNSET
+        auto_cache: Any = UNSET,  # bool | UNSET
     ) -> ExecutionResult:
         """Execute in batch mode using the batch strategy."""
         strategy = self.plan_generator.batch_strategy
@@ -109,7 +113,7 @@ class ExecutionOrchestrator(SignalEmitter):
     def execute_streaming(
         self,
         pipe_ids: List[str],
-        error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
         streaming_options: Optional[dict[str, Any]] = None,
     ) -> ExecutionResult:
         """Execute in streaming mode using the streaming strategy."""
