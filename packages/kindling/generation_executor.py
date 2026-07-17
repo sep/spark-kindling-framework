@@ -58,6 +58,9 @@ class ErrorStrategy(Enum):
 
     FAIL_FAST = "fail_fast"  # Stop immediately on first error
     CONTINUE = "continue"  # Run all pipes, collect errors
+    # Skip transitive dependents of a failed pipe; independent branches
+    # keep running (matches notebook-DAG dependent-skipping semantics).
+    SKIP_DEPENDENTS = "skip_dependents"
 
 
 #: Built-in defaults, used when neither a parameter nor config provides a
@@ -345,6 +348,7 @@ class GenerationExecutor(SignalEmitter):
                 component="generation_executor",
                 operation=f"execute_{mode}",
             ):
+                blocked: Dict[str, str] = {}  # pipe_id -> upstream pipe that failed
                 for generation in plan.generations:
                     gen_result = self._execute_generation(
                         generation=generation,
@@ -356,6 +360,7 @@ class GenerationExecutor(SignalEmitter):
                         pipe_timeout=pipe_timeout,
                         streaming_options=streaming_options,
                         no_watermark=no_watermark,
+                        blocked=blocked,
                     )
                     result.generation_results.append(gen_result)
 
@@ -366,6 +371,14 @@ class GenerationExecutor(SignalEmitter):
                             f"({gen_result.failed_pipes}), stopping execution"
                         )
                         break
+
+                    # Skip-dependents: poison the transitive consumers of
+                    # failures so later generations skip them while
+                    # independent branches keep running.
+                    if error_strategy == ErrorStrategy.SKIP_DEPENDENTS:
+                        for failed_pipe in gen_result.failed_pipes:
+                            for dependent in self._transitive_dependents(plan.graph, failed_pipe):
+                                blocked.setdefault(dependent, failed_pipe)
 
             result.duration_seconds = time.time() - start_time
 
@@ -637,6 +650,22 @@ class GenerationExecutor(SignalEmitter):
                     f"persists may double-write (at-least-once semantics)"
                 )
 
+    def _transitive_dependents(self, graph: Any, pipe_id: str) -> List[str]:
+        """BFS over graph.get_dependents to find all downstream pipes."""
+        seen: List[str] = []
+        frontier = [pipe_id]
+        while frontier:
+            current = frontier.pop()
+            try:
+                dependents = graph.get_dependents(current) or []
+            except Exception:
+                dependents = []
+            for dependent in dependents:
+                if dependent not in seen and dependent != pipe_id:
+                    seen.append(dependent)
+                    frontier.append(dependent)
+        return seen
+
     def _is_streaming_plan(self, plan: ExecutionPlan) -> bool:
         """Determine if plan should use streaming execution."""
         strategy = plan.strategy.lower()
@@ -750,9 +779,15 @@ class GenerationExecutor(SignalEmitter):
         pipe_timeout: Optional[float],
         streaming_options: Optional[Dict[str, Any]],
         no_watermark: bool = False,
+        blocked: Optional[Dict[str, str]] = None,
     ) -> GenerationResult:
-        """Execute all pipes in a generation."""
+        """Execute all pipes in a generation.
+
+        Pipes present in `blocked` (skip_dependents poisoning: pipe_id ->
+        failed upstream pipe) are skipped without executing.
+        """
         gen_start = time.time()
+        blocked = blocked or {}
 
         self.logger.info(
             f"Starting generation {generation.number}: "
@@ -769,14 +804,46 @@ class GenerationExecutor(SignalEmitter):
 
         gen_result = GenerationResult(generation_number=generation.number)
 
-        if parallel and not is_streaming and len(generation.pipe_ids) > 1:
+        skipped_results = []
+        runnable_ids = []
+        for pipe_id in generation.pipe_ids:
+            if pipe_id in blocked:
+                upstream = blocked[pipe_id]
+                self.logger.warning(f"Skipping pipe '{pipe_id}': upstream pipe '{upstream}' failed")
+                self.emit(
+                    "orchestrator.pipe_skipped",
+                    run_id=run_id,
+                    pipe_id=pipe_id,
+                    duration_seconds=0.0,
+                    reason="upstream_failed",
+                    upstream_pipe=upstream,
+                )
+                skipped_results.append(
+                    PipeResult(
+                        pipe_id=pipe_id,
+                        status="skipped",
+                        error=f"upstream pipe '{upstream}' failed",
+                        error_type="UpstreamFailure",
+                    )
+                )
+            else:
+                runnable_ids.append(pipe_id)
+        gen_result.pipe_results.extend(skipped_results)
+
+        if parallel and not is_streaming and len(runnable_ids) > 1:
             # Parallel batch execution
-            gen_result = self._execute_generation_parallel(
-                generation, run_id, max_workers, error_strategy, pipe_timeout, no_watermark
+            runnable_generation = Generation(
+                number=generation.number,
+                pipe_ids=runnable_ids,
+                dependencies=generation.dependencies,
             )
+            parallel_result = self._execute_generation_parallel(
+                runnable_generation, run_id, max_workers, error_strategy, pipe_timeout, no_watermark
+            )
+            gen_result.pipe_results.extend(parallel_result.pipe_results)
         else:
             # Sequential execution (batch or streaming)
-            for pipe_id in generation.pipe_ids:
+            for pipe_id in runnable_ids:
                 pipe_result = self._execute_pipe(
                     pipe_id=pipe_id,
                     run_id=run_id,

@@ -21,6 +21,12 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- `skip_dependents` error strategy for DAG execution: on pipe failure, only
+  its transitive consumers are skipped (reported with
+  `reason: upstream_failed`) while independent branches keep running —
+  notebook-DAG (`runMultiple`) dependent-skipping semantics. Select via
+  `kindling.execution.error_strategy: skip_dependents` or
+  `ErrorStrategy.SKIP_DEPENDENTS`.
 - Per-pipe retry for DAG execution: `kindling.execution.retry.attempts` /
   `interval_seconds` (run-level) and `kindling.execution.pipes.<pipeid>.retry.*`
   (per-pipe), with `retry_attempts`/`retry_interval_seconds` as just-in-time
