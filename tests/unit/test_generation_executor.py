@@ -1708,3 +1708,30 @@ class TestRetry:
 
         warnings = [str(c) for c in executor.logger.warning.call_args_list]
         assert not any("does not support merge" in w for w in warnings)
+
+    def test_dotted_pipe_id_resolves_via_literal_mapping(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        """Pipe ids containing dots index the pipes map literally, not by dotted traversal."""
+        executor.config_service = make_config(
+            {
+                "kindling.execution.pipes": {
+                    "ingest.orders": {"retry": {"attempts": 1, "interval_seconds": 0}}
+                }
+            }
+        )
+        pipe = make_pipe("ingest.orders", inputs=["entity.a"])
+        pipe.execute = Mock(side_effect=[RuntimeError("transient"), Mock()])
+        pipes_registry.get_pipe_definition.return_value = pipe
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+        plan = make_plan(
+            ["ingest.orders"],
+            [Generation(number=0, pipe_ids=["ingest.orders"], dependencies=[])],
+        )
+
+        result = executor.execute(plan)
+
+        assert result.success_count == 1
+        assert result.generation_results[0].pipe_results[0].attempts == 2

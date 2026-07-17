@@ -20,6 +20,7 @@ Part of: Capability #15 - Unified DAG Orchestrator
 
 import time
 import uuid
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -553,11 +554,35 @@ class GenerationExecutor(SignalEmitter):
 
     # ---- Retry policy (config-first, per-pipe overrides) ----
 
+    def _pipe_retry_overrides(self, pipe_id: str) -> Dict[str, Any]:
+        """Read `kindling.execution.pipes` as a mapping keyed by literal pipe id.
+
+        Pipe ids routinely contain dots (e.g. ``ingest.orders``), which a
+        dotted config-key lookup would mis-traverse — so the mapping is
+        indexed by the literal id.
+        """
+        try:
+            pipes_map = self.config_service.get("kindling.execution.pipes", None)
+        except Exception:
+            return {}
+        if not isinstance(pipes_map, Mapping):
+            return {}
+        entry = pipes_map.get(pipe_id)
+        if not isinstance(entry, Mapping):
+            return {}
+        retry = entry.get("retry")
+        return dict(retry) if isinstance(retry, Mapping) else {}
+
     def _resolve_pipe_retry_policy(self, pipe_id: str) -> RetryPolicy:
         """Per-pipe retry policy: pipes.<pipeid>.retry.* config over run defaults."""
         defaults = self._retry_defaults
+        overrides = self._pipe_retry_overrides(pipe_id)
 
         def pipe_config(option: str, fallback: Any) -> Any:
+            if option in overrides:
+                return overrides[option]
+            # Dotted fallback for pipe ids without dots (and flat env-var
+            # style config like CONFIG__kindling__execution__pipes__...).
             key = f"kindling.execution.pipes.{pipe_id}.retry.{option}"
             try:
                 return self.config_service.get(key, fallback)

@@ -405,9 +405,11 @@ kindling:
     retry:
       attempts: 0            # retries per failed pipe attempt (0 = off)
       interval_seconds: 30
-    pipes:                   # per-pipe overrides, keyed by pipeid
+    pipes:                   # per-pipe overrides, keyed by LITERAL pipeid
       silver_orders:
         retry: { attempts: 2, interval_seconds: 10 }
+      "ingest.orders":       # quote ids containing dots — the map is indexed
+        retry: { attempts: 1 }   # by the literal id, not dotted traversal
 ```
 
 **Retry semantics**: only exceptions raised inside an attempt are retried —
