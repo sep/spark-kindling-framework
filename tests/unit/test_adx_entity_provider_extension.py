@@ -345,7 +345,10 @@ def test_read_entity_by_table_uses_kusto_source_options():
     assert reader.format_name == "com.microsoft.kusto.spark.datasource"
     assert reader.options["kustoCluster"] == "https://fawkes.eastus.kusto.windows.net"
     assert reader.options["kustoDatabase"] == "Kindling"
-    assert reader.options["kustoTable"] == "Orders"
+    # The connector's read path is KQL-only; a table read passes the table
+    # name as kustoQuery (kustoTable is a sink option).
+    assert reader.options["kustoQuery"] == "Orders"
+    assert "kustoTable" not in reader.options
     assert reader.options["managedIdentityAuth"] == "true"
     # Write-only options must not leak into reads
     assert "writeMode" not in reader.options

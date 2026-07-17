@@ -150,12 +150,15 @@ class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider, StreamWritab
 
         options: Dict[str, Any] = {"kustoDatabase": database}
 
+        # The connector's read path takes KQL only — kustoTable is a sink
+        # option. A bare table name is a valid KQL query, so reading a table
+        # means passing its name as kustoQuery.
         query = config.get("query") or config.get("kusto_query")
         table = config.get("table") or config.get("table_name")
         if query:
             options["kustoQuery"] = query
         elif table:
-            options["kustoTable"] = table
+            options["kustoQuery"] = table
         else:
             raise ValueError(
                 f"ADX entity '{entity_metadata.entityid}' requires provider.table "
