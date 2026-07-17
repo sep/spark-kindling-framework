@@ -447,6 +447,8 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         streaming_options: Optional[Dict[str, Any]] = None,
         auto_cache: Any = UNSET,  # bool | UNSET
         no_watermark: bool = False,
+        retry_attempts: Any = UNSET,  # int | UNSET
+        retry_interval_seconds: Any = UNSET,  # float | UNSET
     ):
         """Execute pipes via DAG planning/generation execution facade.
 
@@ -467,6 +469,8 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
             streaming_options=streaming_options,
             auto_cache=auto_cache,
             no_watermark=no_watermark,
+            retry_attempts=retry_attempts,
+            retry_interval_seconds=retry_interval_seconds,
         )
 
     def _execute_datapipe(

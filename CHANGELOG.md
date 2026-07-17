@@ -21,6 +21,12 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- Per-pipe retry for DAG execution: `kindling.execution.retry.attempts` /
+  `interval_seconds` (run-level) and `kindling.execution.pipes.<pipeid>.retry.*`
+  (per-pipe), with `retry_attempts`/`retry_interval_seconds` as just-in-time
+  parameter overrides. Emits `orchestrator.pipe_retrying`; records `attempts`
+  on pipe results; warns when retry targets a non-merge-capable provider
+  (retried appends are at-least-once).
 - New guide: [Migrating from notebook-based execution (`runMultiple`)](docs/guide/migrating_from_runmultiple.md)
   for Synapse/Fabric users moving notebook DAGs to Kindling pipes.
 - Added `kindling env update` to refresh Kindling wheels and the local

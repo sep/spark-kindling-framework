@@ -55,6 +55,8 @@ class ExecutionOrchestrator(SignalEmitter):
         streaming_options: Optional[dict[str, Any]] = None,
         auto_cache: Any = UNSET,  # bool | UNSET
         no_watermark: bool = False,
+        retry_attempts: Any = UNSET,  # int | UNSET
+        retry_interval_seconds: Any = UNSET,  # float | UNSET
     ) -> ExecutionResult:
         """Generate an execution plan and run it through GenerationExecutor.
 
@@ -87,6 +89,8 @@ class ExecutionOrchestrator(SignalEmitter):
             streaming_options=streaming_options,
             auto_cache=auto_cache,
             no_watermark=no_watermark,
+            retry_attempts=retry_attempts,
+            retry_interval_seconds=retry_interval_seconds,
         )
 
     def execute_batch(
