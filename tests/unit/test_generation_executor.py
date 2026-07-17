@@ -25,6 +25,7 @@ from kindling.generation_executor import (
     GenerationExecutor,
     GenerationResult,
     PipeResult,
+    RetryPolicy,
 )
 from kindling.pipe_graph import PipeGraph, PipeNode
 from kindling.pipe_streaming import SimplePipeStreamStarter
@@ -1522,3 +1523,188 @@ class TestConfigDrivenOptions:
         executor.config_service = make_config({"kindling.execution.pipe_timeout": 900})
         assert executor._resolve_float_option(None, "pipe_timeout", minimum=0.0) is None
         assert executor._resolve_float_option(UNSET, "pipe_timeout", minimum=0.0) == 900.0
+
+
+# ---- Retry Tests (Phase 2: per-pipe retry) ----
+
+
+class TestRetry:
+    """Config-driven per-pipe retry in _execute_pipe."""
+
+    def _single_pipe_plan(self, pipes_registry, entity_registry, persist_strategy, execute_fn):
+        pipe = make_pipe("pipe1", inputs=["entity.a"])
+        pipe.execute = execute_fn
+        pipes_registry.get_pipe_definition.return_value = pipe
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+        return make_plan(["pipe1"], [Generation(number=0, pipe_ids=["pipe1"], dependencies=[])])
+
+    def test_no_retry_by_default(self, executor, pipes_registry, entity_registry, persist_strategy):
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=RuntimeError("boom")),
+        )
+
+        with patch.object(executor, "emit", wraps=executor.emit) as emit_spy:
+            result = executor.execute(plan, error_strategy=ErrorStrategy.CONTINUE)
+
+        assert result.failed_count == 1
+        assert result.generation_results[0].pipe_results[0].attempts == 1
+        assert not any(c.args[0] == "orchestrator.pipe_retrying" for c in emit_spy.call_args_list)
+
+    def test_retry_recovers_after_transient_failure(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config({"kindling.execution.retry.attempts": 2})
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=[RuntimeError("transient"), Mock()]),
+        )
+
+        with (
+            patch("kindling.generation_executor.time.sleep") as sleep_spy,
+            patch.object(executor, "emit", wraps=executor.emit) as emit_spy,
+        ):
+            result = executor.execute(plan)
+
+        assert result.success_count == 1
+        assert result.generation_results[0].pipe_results[0].attempts == 2
+        retrying = [c for c in emit_spy.call_args_list if c.args[0] == "orchestrator.pipe_retrying"]
+        failed = [c for c in emit_spy.call_args_list if c.args[0] == "orchestrator.pipe_failed"]
+        assert len(retrying) == 1
+        assert retrying[0].kwargs["attempt"] == 1
+        assert retrying[0].kwargs["max_attempts"] == 3
+        assert failed == []
+        sleep_spy.assert_called_once_with(30.0)  # default interval
+
+    def test_retry_exhaustion_reports_attempts(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config(
+            {
+                "kindling.execution.retry.attempts": 1,
+                "kindling.execution.retry.interval_seconds": 0,
+            }
+        )
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=RuntimeError("boom")),
+        )
+
+        with patch.object(executor, "emit", wraps=executor.emit) as emit_spy:
+            result = executor.execute(plan, error_strategy=ErrorStrategy.CONTINUE)
+
+        pipe_result = result.generation_results[0].pipe_results[0]
+        assert pipe_result.status == "failed"
+        assert pipe_result.attempts == 2
+        failed = [c for c in emit_spy.call_args_list if c.args[0] == "orchestrator.pipe_failed"]
+        assert len(failed) == 1
+        assert failed[0].kwargs["attempts"] == 2
+
+    def test_per_pipe_config_overrides_run_default(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config(
+            {
+                "kindling.execution.retry.attempts": 0,
+                "kindling.execution.pipes.pipe1.retry.attempts": 1,
+                "kindling.execution.pipes.pipe1.retry.interval_seconds": 0,
+            }
+        )
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=[RuntimeError("transient"), Mock()]),
+        )
+
+        result = executor.execute(plan)
+
+        assert result.success_count == 1
+        assert result.generation_results[0].pipe_results[0].attempts == 2
+
+    def test_param_overrides_config_retry(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config({"kindling.execution.retry.attempts": 5})
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=RuntimeError("boom")),
+        )
+
+        result = executor.execute(plan, error_strategy=ErrorStrategy.CONTINUE, retry_attempts=0)
+
+        assert result.generation_results[0].pipe_results[0].attempts == 1
+
+    def test_custom_interval_is_used(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config(
+            {
+                "kindling.execution.retry.attempts": 1,
+                "kindling.execution.retry.interval_seconds": 5,
+            }
+        )
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=[RuntimeError("transient"), Mock()]),
+        )
+
+        with patch("kindling.generation_executor.time.sleep") as sleep_spy:
+            executor.execute(plan)
+
+        sleep_spy.assert_called_once_with(5.0)
+
+    def test_invalid_per_pipe_value_falls_back(self, executor):
+        executor.config_service = make_config(
+            {"kindling.execution.pipes.pipe1.retry.attempts": "many"}
+        )
+        executor._retry_defaults = RetryPolicy(attempts=0)
+
+        policy = executor._resolve_pipe_retry_policy("pipe1")
+
+        assert policy.attempts == 0
+        executor.logger.warning.assert_called()
+
+    def test_warns_when_retry_pipe_provider_lacks_merge(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config({"kindling.execution.retry.attempts": 1})
+        plan = self._single_pipe_plan(
+            pipes_registry, entity_registry, persist_strategy, Mock(return_value=Mock())
+        )
+        provider = Mock(spec=[])  # no merge_to_entity attribute
+        executor.provider_registry = Mock()
+        executor.provider_registry.get_provider_for_entity.return_value = provider
+
+        executor.execute(plan)
+
+        warnings = [str(c) for c in executor.logger.warning.call_args_list]
+        assert any("does not support merge" in w for w in warnings)
+
+    def test_no_warning_for_merge_capable_provider(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config({"kindling.execution.retry.attempts": 1})
+        plan = self._single_pipe_plan(
+            pipes_registry, entity_registry, persist_strategy, Mock(return_value=Mock())
+        )
+        provider = Mock(spec=["merge_to_entity"])
+        executor.provider_registry = Mock()
+        executor.provider_registry.get_provider_for_entity.return_value = provider
+
+        executor.execute(plan)
+
+        warnings = [str(c) for c in executor.logger.warning.call_args_list]
+        assert not any("does not support merge" in w for w in warnings)

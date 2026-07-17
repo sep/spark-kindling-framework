@@ -59,6 +59,8 @@ def test_execute_generates_plan_emits_signal_and_delegates():
         streaming_options={"pipe_a": {"checkpoint": "/tmp/checkpoints"}},
         auto_cache=True,
         no_watermark=False,
+        retry_attempts=UNSET,
+        retry_interval_seconds=UNSET,
     )
 
     signal.send.assert_called_once()
