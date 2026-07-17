@@ -185,6 +185,8 @@ class CosmosEntityProvider(
         auth_mode = str(config.get("auth", config.get("auth_mode", "service_principal"))).lower()
 
         if auth_mode in ("service_principal", "spn"):
+            # The connector requires subscription id and resource group for
+            # ServicePrincipal auth (it resolves account metadata through ARM).
             required = {
                 "spark.cosmos.auth.aad.clientId": config.get("client_id") or config.get("app_id"),
                 "spark.cosmos.auth.aad.clientSecret": (
@@ -193,6 +195,8 @@ class CosmosEntityProvider(
                 "spark.cosmos.account.tenantId": (
                     config.get("tenant_id") or config.get("authority_id")
                 ),
+                "spark.cosmos.account.subscriptionId": config.get("subscription_id"),
+                "spark.cosmos.account.resourceGroupName": config.get("resource_group"),
             }
             missing = [key for key, value in required.items() if not value]
             if missing:
@@ -201,12 +205,6 @@ class CosmosEntityProvider(
                     f"is missing options: {', '.join(missing)}"
                 )
             required["spark.cosmos.auth.type"] = "ServicePrincipal"
-            subscription_id = config.get("subscription_id")
-            if subscription_id:
-                required["spark.cosmos.account.subscriptionId"] = subscription_id
-            resource_group = config.get("resource_group")
-            if resource_group:
-                required["spark.cosmos.account.resourceGroupName"] = resource_group
             return required
 
         if auth_mode in ("master_key", "key", "account_key"):

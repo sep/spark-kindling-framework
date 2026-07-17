@@ -28,6 +28,9 @@ tags={
     "provider.client_id": "<app id>",              # service_principal auth
     "provider.client_secret": "<secret>",
     "provider.tenant_id": "<tenant id>",
+    "provider.subscription_id": "<subscription>",  # required for service_principal:
+    "provider.resource_group": "<resource group>", # the connector resolves account
+                                                   # metadata through ARM
     # "provider.account_key": "<key>",             # master_key auth instead
 }
 ```

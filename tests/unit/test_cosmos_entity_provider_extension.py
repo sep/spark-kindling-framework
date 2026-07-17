@@ -33,6 +33,8 @@ BASE_TAGS = {
     "provider.client_id": "client-id",
     "provider.client_secret": "client-secret",
     "provider.tenant_id": "tenant-id",
+    "provider.subscription_id": "sub-id",
+    "provider.resource_group": "rg-name",
 }
 
 
@@ -157,6 +159,8 @@ def test_write_upserts_with_service_principal_options():
     assert writer.options["spark.cosmos.auth.aad.clientId"] == "client-id"
     assert writer.options["spark.cosmos.auth.aad.clientSecret"] == "client-secret"
     assert writer.options["spark.cosmos.account.tenantId"] == "tenant-id"
+    assert writer.options["spark.cosmos.account.subscriptionId"] == "sub-id"
+    assert writer.options["spark.cosmos.account.resourceGroupName"] == "rg-name"
     assert writer.options["spark.cosmos.write.strategy"] == "ItemOverwrite"
     assert writer.mode_name == "Append"
     assert writer.saved is True

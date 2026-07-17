@@ -37,6 +37,10 @@ COSMOS_DATABASE = os.getenv("COSMOS_TEST_DATABASE", "").strip()
 COSMOS_CONTAINER = os.getenv("COSMOS_TEST_CONTAINER", "").strip()
 COSMOS_CLIENT_ID = os.getenv("COSMOS_TEST_CLIENT_ID") or os.getenv("AZURE_CLIENT_ID", "")
 COSMOS_TENANT_ID = os.getenv("COSMOS_TEST_TENANT_ID") or os.getenv("AZURE_TENANT_ID", "")
+COSMOS_SUBSCRIPTION_ID = os.getenv("COSMOS_TEST_SUBSCRIPTION_ID") or os.getenv(
+    "AZURE_SUBSCRIPTION_ID", ""
+)
+COSMOS_RESOURCE_GROUP = os.getenv("COSMOS_TEST_RESOURCE_GROUP", "")
 COSMOS_SPARK_PACKAGE = "com.azure.cosmos.spark:azure-cosmos-spark_3-5_2-12:4.37.2"
 
 # Single-region account with eventual consistency: reads usually see writes
@@ -93,6 +97,8 @@ def cosmos_client_secret():
             "COSMOS_TEST_CONTAINER": COSMOS_CONTAINER,
             "COSMOS_TEST_CLIENT_ID (or AZURE_CLIENT_ID)": COSMOS_CLIENT_ID,
             "COSMOS_TEST_TENANT_ID (or AZURE_TENANT_ID)": COSMOS_TENANT_ID,
+            "COSMOS_TEST_SUBSCRIPTION_ID (or AZURE_SUBSCRIPTION_ID)": COSMOS_SUBSCRIPTION_ID,
+            "COSMOS_TEST_RESOURCE_GROUP": COSMOS_RESOURCE_GROUP,
         }.items()
         if not value
     ]
@@ -140,6 +146,8 @@ def _entity(client_secret: str, extra_tags: Optional[dict] = None) -> EntityMeta
         "provider.container": COSMOS_CONTAINER,
         "provider.client_id": COSMOS_CLIENT_ID,
         "provider.tenant_id": COSMOS_TENANT_ID,
+        "provider.subscription_id": COSMOS_SUBSCRIPTION_ID,
+        "provider.resource_group": COSMOS_RESOURCE_GROUP,
         "provider.client_secret": client_secret,
         **(extra_tags or {}),
     }
