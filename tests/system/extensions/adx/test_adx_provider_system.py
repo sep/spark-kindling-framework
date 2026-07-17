@@ -62,12 +62,12 @@ def _import_provider_class():
 
 EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[4] / "packages" / "kindling_adx"
 
-ADX_CLUSTER = os.getenv(
-    "ADX_TEST_CLUSTER", "https://sep-adx-dataint-dev.northcentralus.kusto.windows.net"
-).rstrip("/")
-ADX_DATABASE = os.getenv("ADX_TEST_DATABASE", "kindling")
-ADX_CLIENT_ID = os.getenv("ADX_TEST_CLIENT_ID", "dacf705a-49ca-4791-b6a3-c35448112241")
-ADX_TENANT_ID = os.getenv("ADX_TEST_TENANT_ID", "898f7683-8ab4-4a28-b74e-510b95f981eb")
+# Target resources come from env vars (see .env.sep in local dev). The
+# service principal defaults to the ambient AZURE_CLIENT_ID/AZURE_TENANT_ID.
+ADX_CLUSTER = os.getenv("ADX_TEST_CLUSTER", "").rstrip("/")
+ADX_DATABASE = os.getenv("ADX_TEST_DATABASE", "")
+ADX_CLIENT_ID = os.getenv("ADX_TEST_CLIENT_ID") or os.getenv("AZURE_CLIENT_ID", "")
+ADX_TENANT_ID = os.getenv("ADX_TEST_TENANT_ID") or os.getenv("AZURE_TENANT_ID", "")
 ADX_SECRET_NAME = os.getenv("ADX_TEST_CLIENT_SECRET_NAME", "sep-kindling-nonprod-client-secret")
 KUSTO_SPARK_PACKAGE = "com.microsoft.azure.kusto:kusto-spark_3.0_2.12:7.0.6"
 
@@ -134,6 +134,19 @@ def _adx_mgmt(csl: str, client_secret: str) -> None:
 
 @pytest.fixture(scope="module")
 def adx_client_secret():
+    missing = [
+        name
+        for name, value in {
+            "ADX_TEST_CLUSTER": ADX_CLUSTER,
+            "ADX_TEST_DATABASE": ADX_DATABASE,
+            "ADX_TEST_CLIENT_ID (or AZURE_CLIENT_ID)": ADX_CLIENT_ID,
+            "ADX_TEST_TENANT_ID (or AZURE_TENANT_ID)": ADX_TENANT_ID,
+        }.items()
+        if not value
+    ]
+    if missing:
+        pytest.skip(f"ADX test resource not configured (see .env.sep): {', '.join(missing)}")
+
     secret = _resolve_client_secret()
     if not secret:
         pytest.skip(
