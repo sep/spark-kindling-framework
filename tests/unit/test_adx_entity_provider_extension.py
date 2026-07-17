@@ -3,9 +3,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.data_entities import EntityMetadata
 
-EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "packages" / "kindling_adx"
+EXTENSION_PACKAGE_ROOT = (
+    Path(__file__).resolve().parents[2] / "packages" / "extensions" / "kindling_ext_adx"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +81,7 @@ class _StreamWriter:
 
 
 def _provider():
-    from kindling_adx import AdxEntityProvider
+    from kindling_ext_adx import AdxEntityProvider
 
     logger_provider = MagicMock()
     logger_provider.get_logger.return_value = MagicMock()
@@ -87,13 +90,13 @@ def _provider():
 
 def test_import_registers_adx_provider():
     for module_name in list(sys.modules):
-        if module_name == "kindling_adx" or module_name.startswith("kindling_adx."):
+        if module_name == "kindling_ext_adx" or module_name.startswith("kindling_ext_adx."):
             del sys.modules[module_name]
 
     registry = MagicMock()
 
     with patch("kindling.injection.GlobalInjector.get", return_value=registry):
-        import kindling_adx
+        import kindling_ext_adx
 
     provider_class = registry.register_provider.call_args.args[1]
     assert registry.register_provider.call_args.args[0] == "adx"
@@ -321,7 +324,7 @@ def _patched_spark_read(reader):
     spark = MagicMock()
     spark.read = reader
     return patch(
-        "kindling_adx.entity_provider_adx.get_or_create_spark_session",
+        "kindling_ext_adx.entity_provider_adx.get_or_create_spark_session",
         return_value=spark,
     )
 

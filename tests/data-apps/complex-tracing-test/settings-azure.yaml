@@ -3,7 +3,7 @@ version: 0.1.0
 description: Complex tracing system test with Azure Monitor OpenTelemetry extension
 
 extensions:
-  - kindling-otel-azure>=0.1.0.4
+  - kindling-ext-otel-azure>=0.1.0.4
 
 extension_config:
   azure_monitor:

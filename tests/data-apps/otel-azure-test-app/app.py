@@ -2,7 +2,7 @@
 """
 Azure Monitor OpenTelemetry Extension Test App
 
-Tests that the kindling-otel-azure extension correctly overrides
+Tests that the kindling-ext-otel-azure extension correctly overrides
 the default trace and log providers with Azure Monitor versions.
 
 CRITICAL: This test requires the Kindling bootstrap system to load the extension.
@@ -47,23 +47,23 @@ def get_logger():
 
 
 def log_extension_version(logger):
-    """Log the version of the kindling-otel-azure extension that was loaded"""
+    """Log the version of the kindling-ext-otel-azure extension that was loaded"""
     try:
-        import kindling_otel_azure
+        import kindling_ext_otel_azure
 
-        version = kindling_otel_azure.__version__
+        version = kindling_ext_otel_azure.__version__
         # Print to stdout (captured by Fabric/Databricks)
-        print(f"EXTENSION_VERSION: kindling-otel-azure {version}")
+        print(f"EXTENSION_VERSION: kindling-ext-otel-azure {version}")
         # Also log via framework
-        logger.info(f"Extension loaded: kindling-otel-azure version {version}")
+        logger.info(f"Extension loaded: kindling-ext-otel-azure version {version}")
         return version
     except ImportError:
-        print("⚠️  kindling-otel-azure not found - extension not loaded")
-        logger.warning("kindling-otel-azure not found - extension not loaded")
+        print("⚠️  kindling-ext-otel-azure not found - extension not loaded")
+        logger.warning("kindling-ext-otel-azure not found - extension not loaded")
         return None
     except AttributeError:
-        print("⚠️  kindling-otel-azure version not available")
-        logger.warning("kindling-otel-azure version not available")
+        print("⚠️  kindling-ext-otel-azure version not available")
+        logger.warning("kindling-ext-otel-azure version not available")
         return None
 
 
@@ -209,7 +209,7 @@ logger.info("=" * 60)
 extension_version = log_extension_version(logger)
 if extension_version:
     logger.info(f"✅ Extension version check passed: {extension_version}")
-    print(f"✅ Extension package found: kindling-otel-azure {extension_version}")
+    print(f"✅ Extension package found: kindling-ext-otel-azure {extension_version}")
 else:
     logger.warning("⚠️  Extension version could not be determined")
     print("⚠️  Extension package NOT found - extension may not be installed")
@@ -252,7 +252,7 @@ else:
 # CRITICAL: Force flush spans before exit to ensure they're exported to Application Insights
 logger.info("Flushing spans to Application Insights...")
 try:
-    from kindling_otel_azure.config import AzureMonitorConfig
+    from kindling_ext_otel_azure.config import AzureMonitorConfig
 
     flush_success = AzureMonitorConfig.force_flush(timeout_millis=5000)  # 5 second timeout
     if flush_success:

@@ -30,7 +30,9 @@ import pytest
 
 from kindling.data_entities import EntityMetadata
 
-EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[4] / "packages" / "kindling_cosmos"
+EXTENSION_PACKAGE_ROOT = (
+    Path(__file__).resolve().parents[4] / "packages" / "extensions" / "kindling_ext_cosmos"
+)
 
 
 def _env(*names: str) -> str:
@@ -59,7 +61,7 @@ READ_TIMEOUT_SECONDS = int(os.getenv("COSMOS_TEST_READ_TIMEOUT", "120"))
 def _import_provider_class():
     """Import CosmosEntityProvider without triggering DI registration.
 
-    ``kindling_cosmos.__init__`` calls ``register_provider()`` on import,
+    ``kindling_ext_cosmos.__init__`` calls ``register_provider()`` on import,
     which resolves the real EntityProviderRegistry through GlobalInjector —
     that requires an initialized framework. This test drives the provider
     directly, so stub the injector during import (same pattern as the unit
@@ -68,11 +70,11 @@ def _import_provider_class():
     from unittest.mock import MagicMock, patch
 
     for module_name in list(sys.modules):
-        if module_name == "kindling_cosmos" or module_name.startswith("kindling_cosmos."):
+        if module_name == "kindling_ext_cosmos" or module_name.startswith("kindling_ext_cosmos."):
             del sys.modules[module_name]
 
     with patch("kindling.injection.GlobalInjector.get", return_value=MagicMock()):
-        from kindling_cosmos import CosmosEntityProvider
+        from kindling_ext_cosmos import CosmosEntityProvider
 
     return CosmosEntityProvider
 

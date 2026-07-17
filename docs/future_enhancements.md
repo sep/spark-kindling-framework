@@ -22,7 +22,7 @@ Extensions/wheels can be loaded globally via:
 kindling:
   bootstrap:
     required_packages:
-      - kindling-otel-azure>=0.1.0
+      - kindling-ext-otel-azure>=0.1.0
 ```
 
 ### Proposed Enhancement: Workspace-Specific Config
@@ -68,7 +68,7 @@ workspace:
 
 # Workspace-level extensions (all apps in workspace)
 extensions:
-  - kindling-otel-azure>=0.1.0
+  - kindling-ext-otel-azure>=0.1.0
   - custom-transformers==2.1.0
 
 # Workspace-specific settings

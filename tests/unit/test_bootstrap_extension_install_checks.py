@@ -29,7 +29,7 @@ def test_extension_install_skips_when_installed_version_satisfies_requirement():
             logger,
             {
                 "required_packages": [],
-                "extensions": ["kindling-otel-azure>=0.3.0"],
+                "extensions": ["kindling-ext-otel-azure>=0.3.0"],
             },
             artifacts_storage_path="abfss://artifacts@acct/path",
         )
@@ -53,7 +53,7 @@ def test_extension_install_attempts_when_installed_version_does_not_satisfy_requ
             logger,
             {
                 "required_packages": [],
-                "extensions": ["kindling-otel-azure>=0.3.0"],
+                "extensions": ["kindling-ext-otel-azure>=0.3.0"],
             },
             artifacts_storage_path="abfss://artifacts@acct/path",
         )
@@ -164,7 +164,7 @@ def test_extension_install_uses_explicit_dbfs_temp_path_for_databricks():
     storage_utils = DBUtils()
     storage_utils.fs.ls.return_value = [
         SimpleNamespace(
-            path="abfss://artifacts@acct/path/packages/kindling_otel_azure-0.4.0-py3-none-any.whl"
+            path="abfss://artifacts@acct/path/packages/kindling_ext_otel_azure-0.4.0-py3-none-any.whl"
         )
     ]
 
@@ -182,7 +182,7 @@ def test_extension_install_uses_explicit_dbfs_temp_path_for_databricks():
             logger,
             {
                 "required_packages": [],
-                "extensions": ["kindling-otel-azure>=0.3.0"],
+                "extensions": ["kindling-ext-otel-azure>=0.3.0"],
                 "temp_path": "dbfs:/tmp/kindling_extensions",
             },
             artifacts_storage_path="abfss://artifacts@acct/path",
@@ -190,7 +190,7 @@ def test_extension_install_uses_explicit_dbfs_temp_path_for_databricks():
 
     copied_path = storage_utils.fs.cp.call_args.args[1]
     assert copied_path.startswith("dbfs:/tmp/kindling_extensions/.kindling-bootstrap/")
-    assert copied_path.endswith("/extensions/kindling_otel_azure-0.4.0-py3-none-any.whl")
+    assert copied_path.endswith("/extensions/kindling_ext_otel_azure-0.4.0-py3-none-any.whl")
     subprocess_run.assert_called_once()
     install_args = subprocess_run.call_args.args[0]
     assert "--ignore-installed" in install_args
@@ -210,7 +210,7 @@ def test_extension_install_accepts_platform_suffixed_extension_wheel_names():
         SimpleNamespace(
             path=(
                 "abfss://artifacts@acct/path/packages/"
-                "kindling_otel_azure_databricks-0.3.2-py3-none-any.whl"
+                "kindling_ext_otel_azure_databricks-0.3.2-py3-none-any.whl"
             )
         )
     ]
@@ -229,14 +229,16 @@ def test_extension_install_accepts_platform_suffixed_extension_wheel_names():
             logger,
             {
                 "required_packages": [],
-                "extensions": ["kindling-otel-azure==0.3.2"],
+                "extensions": ["kindling-ext-otel-azure==0.3.2"],
                 "temp_path": "dbfs:/tmp/kindling_extensions",
             },
             artifacts_storage_path="abfss://artifacts@acct/path",
         )
 
     copied_path = storage_utils.fs.cp.call_args.args[1]
-    assert copied_path.endswith("/extensions/kindling_otel_azure_databricks-0.3.2-py3-none-any.whl")
+    assert copied_path.endswith(
+        "/extensions/kindling_ext_otel_azure_databricks-0.3.2-py3-none-any.whl"
+    )
     subprocess_run.assert_called_once()
 
 
@@ -252,7 +254,7 @@ def test_extension_install_prioritizes_new_site_packages_and_clears_stale_depend
         SimpleNamespace(
             path=(
                 "abfss://artifacts@acct/path/packages/"
-                "kindling_otel_azure_databricks-0.3.2-py3-none-any.whl"
+                "kindling_ext_otel_azure_databricks-0.3.2-py3-none-any.whl"
             )
         )
     ]
@@ -281,7 +283,7 @@ def test_extension_install_prioritizes_new_site_packages_and_clears_stale_depend
                 logger,
                 {
                     "required_packages": [],
-                    "extensions": ["kindling-otel-azure==0.3.2"],
+                    "extensions": ["kindling-ext-otel-azure==0.3.2"],
                     "temp_path": "dbfs:/tmp/kindling_extensions",
                 },
                 artifacts_storage_path="abfss://artifacts@acct/path",
