@@ -32,15 +32,23 @@ from kindling.data_entities import EntityMetadata
 
 EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[4] / "packages" / "kindling_cosmos"
 
-COSMOS_ENDPOINT = os.getenv("COSMOS_TEST_ACCOUNT_ENDPOINT", "").strip()
-COSMOS_DATABASE = os.getenv("COSMOS_TEST_DATABASE", "").strip()
-COSMOS_CONTAINER = os.getenv("COSMOS_TEST_CONTAINER", "").strip()
-COSMOS_CLIENT_ID = os.getenv("COSMOS_TEST_CLIENT_ID") or os.getenv("AZURE_CLIENT_ID", "")
-COSMOS_TENANT_ID = os.getenv("COSMOS_TEST_TENANT_ID") or os.getenv("AZURE_TENANT_ID", "")
-COSMOS_SUBSCRIPTION_ID = os.getenv("COSMOS_TEST_SUBSCRIPTION_ID") or os.getenv(
-    "AZURE_SUBSCRIPTION_ID", ""
-)
-COSMOS_RESOURCE_GROUP = os.getenv("COSMOS_TEST_RESOURCE_GROUP", "")
+
+def _env(*names: str) -> str:
+    """First non-blank env var among names, stripped."""
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+COSMOS_ENDPOINT = _env("COSMOS_TEST_ACCOUNT_ENDPOINT")
+COSMOS_DATABASE = _env("COSMOS_TEST_DATABASE")
+COSMOS_CONTAINER = _env("COSMOS_TEST_CONTAINER")
+COSMOS_CLIENT_ID = _env("COSMOS_TEST_CLIENT_ID", "AZURE_CLIENT_ID")
+COSMOS_TENANT_ID = _env("COSMOS_TEST_TENANT_ID", "AZURE_TENANT_ID")
+COSMOS_SUBSCRIPTION_ID = _env("COSMOS_TEST_SUBSCRIPTION_ID", "AZURE_SUBSCRIPTION_ID")
+COSMOS_RESOURCE_GROUP = _env("COSMOS_TEST_RESOURCE_GROUP", "AZURE_RESOURCE_GROUP")
 COSMOS_SPARK_PACKAGE = "com.azure.cosmos.spark:azure-cosmos-spark_3-5_2-12:4.37.2"
 
 # Single-region account with eventual consistency: reads usually see writes
@@ -75,12 +83,12 @@ class _LoggerProvider:
 
 
 def _resolve_client_secret() -> Optional[str]:
-    explicit = (os.getenv("COSMOS_TEST_CLIENT_SECRET") or "").strip()
+    explicit = _env("COSMOS_TEST_CLIENT_SECRET")
     if explicit:
         return explicit
 
-    if (os.getenv("AZURE_CLIENT_ID") or "").strip().lower() == COSMOS_CLIENT_ID.lower():
-        ambient = (os.getenv("AZURE_CLIENT_SECRET") or "").strip()
+    if COSMOS_CLIENT_ID and _env("AZURE_CLIENT_ID").lower() == COSMOS_CLIENT_ID.lower():
+        ambient = _env("AZURE_CLIENT_SECRET")
         if ambient:
             return ambient
 
@@ -191,7 +199,9 @@ def _poll_for_rows(provider, entity, expected_count: int):
 @pytest.mark.system
 @pytest.mark.azure
 @pytest.mark.slow
-def test_cosmos_write_read_upsert_roundtrip(spark, cosmos_client_secret):
+def test_cosmos_write_read_upsert_roundtrip(cosmos_client_secret, spark):
+    # Fixture order matters: cosmos_client_secret first, so an unconfigured
+    # environment skips before the spark fixture downloads the connector.
     CosmosEntityProvider = _import_provider_class()
 
     run_id = f"kindling-systest-{uuid.uuid4().hex[:8]}"
