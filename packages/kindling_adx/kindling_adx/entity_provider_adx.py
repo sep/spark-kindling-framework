@@ -10,9 +10,6 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from injector import inject
-from pyspark.sql import DataFrame
-from pyspark.sql.streaming import StreamingQuery
-
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider import (
     BaseEntityProvider,
@@ -21,7 +18,10 @@ from kindling.entity_provider import (
 )
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import GlobalInjector
+from kindling.spark_config import get_or_create_spark_session
 from kindling.spark_log_provider import PythonLoggerProvider
+from pyspark.sql import DataFrame
+from pyspark.sql.streaming import StreamingQuery
 
 ADX_SPARK_CONNECTOR_MAVEN_COORDINATE = "com.microsoft.azure.kusto:kusto-spark_3.0_2.12:7.0.6"
 GENERIC_FORMAT = "com.microsoft.kusto.spark.datasource"
@@ -29,18 +29,39 @@ SYNAPSE_FORMAT = "com.microsoft.kusto.spark.synapse.datasource"
 
 
 class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider, StreamWritableEntityProvider):
-    """Write DataFrames to Azure Data Explorer through the Kusto Spark connector."""
+    """Read and write DataFrames against Azure Data Explorer through the Kusto Spark connector."""
 
     @inject
     def __init__(self, logger_provider: PythonLoggerProvider):
         self.logger = logger_provider.get_logger("AdxEntityProvider")
 
     def read_entity(self, entity_metadata: EntityMetadata) -> DataFrame:
-        """Read support is intentionally absent from the first extension version."""
-        raise NotImplementedError(
-            "AdxEntityProvider is currently a materialization target only. "
-            "Use it for write_to_entity/append_to_entity, or add read support with kustoQuery."
+        """Read an ADX table (or `provider.query` KQL result) as a batch DataFrame.
+
+        Requires database Viewer permissions for the configured identity —
+        write-only entities keep working without them because the persist path
+        never calls read.
+        """
+        config = self._get_provider_config(entity_metadata)
+        options = self._build_read_options(entity_metadata, config)
+        source_format = self._source_format(config)
+
+        self.logger.info(
+            "Reading entity '%s' from ADX %s using %s",
+            entity_metadata.entityid,
+            (
+                f"query on database '{options.get('kustoDatabase')}'"
+                if "kustoQuery" in options
+                else f"table '{options.get('kustoTable')}'"
+            ),
+            source_format,
         )
+
+        spark = get_or_create_spark_session()
+        reader = spark.read.format(source_format)
+        for key, value in options.items():
+            reader = reader.option(key, value)
+        return reader.load()
 
     def check_entity_exists(self, entity_metadata: EntityMetadata) -> bool:
         """Return configured existence assumption for write-path compatibility.
@@ -120,6 +141,30 @@ class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider, StreamWritab
             return SYNAPSE_FORMAT
         return GENERIC_FORMAT
 
+    def _build_read_options(
+        self, entity_metadata: EntityMetadata, config: Dict[str, Any]
+    ) -> Dict[str, str]:
+        database = config.get("database")
+        if not database:
+            raise ValueError(f"ADX entity '{entity_metadata.entityid}' requires provider.database")
+
+        options: Dict[str, Any] = {"kustoDatabase": database}
+
+        query = config.get("query") or config.get("kusto_query")
+        table = config.get("table") or config.get("table_name")
+        if query:
+            options["kustoQuery"] = query
+        elif table:
+            options["kustoTable"] = table
+        else:
+            raise ValueError(
+                f"ADX entity '{entity_metadata.entityid}' requires provider.table "
+                "or provider.query for reads"
+            )
+
+        options.update(self._connection_options(entity_metadata, config))
+        return self._stringify_options(options)
+
     def _build_options(
         self, entity_metadata: EntityMetadata, config: Dict[str, Any]
     ) -> Dict[str, str]:
@@ -136,6 +181,15 @@ class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider, StreamWritab
             "writeMode": config.get("write_mode", "Queued"),
             "tableCreateOptions": config.get("table_create_options", "FailIfNotExist"),
         }
+
+        options.update(self._connection_options(entity_metadata, config))
+        return self._stringify_options(options)
+
+    def _connection_options(
+        self, entity_metadata: EntityMetadata, config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Cluster/linked-service, auth, and passthrough options shared by reads and writes."""
+        options: Dict[str, Any] = {}
 
         auth_mode = self._auth_mode(config)
         if auth_mode == "synapse_linked_service":
@@ -157,6 +211,9 @@ class AdxEntityProvider(BaseEntityProvider, WritableEntityProvider, StreamWritab
             options.update(self._auth_options(entity_metadata, config, auth_mode))
 
         options.update(self._extra_connector_options(config))
+        return options
+
+    def _stringify_options(self, options: Dict[str, Any]) -> Dict[str, str]:
         return {
             key: self._stringify_option(value)
             for key, value in options.items()

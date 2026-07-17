@@ -135,3 +135,30 @@ Streaming defaults:
 `provider.write_mode: KustoStreaming` only when the destination table/database is
 configured for ADX streaming ingestion and the lower-latency tradeoff is
 intentional.
+
+## Reads
+
+ADX entities can also be used as pipe *inputs*. `read_entity()` reads either a
+whole table or the result of a KQL query through the same connector and auth
+configuration used for writes:
+
+```python
+tags={
+    "provider_type": "adx",
+    "provider.auth": "managed_identity",
+    "provider.cluster": "https://mycluster.region.kusto.windows.net",
+    "provider.database": "MyDatabase",
+    "provider.table": "MyTable",
+    # Optional — takes precedence over provider.table when set:
+    "provider.query": "MyTable | where Amount > 0 | project-away _etl_internal",
+}
+```
+
+Notes:
+
+- Reads require database **Viewer** permissions for the configured identity.
+  Write-only entities keep working without them — the persist path never reads,
+  and `check_entity_exists()` still honors `provider.assume_exists`.
+- Large scans use the connector's distributed read mode. To force small results
+  through the driver (reference-data lookups), pass
+  `provider.option.readMode: ForceSingleMode`.

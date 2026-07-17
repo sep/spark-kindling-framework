@@ -3,7 +3,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 
 EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "packages" / "kindling_adx"
@@ -298,3 +297,128 @@ def test_table_is_required():
 
     with pytest.raises(ValueError, match="provider.table"):
         provider.append_to_entity(df, entity)
+
+
+class _Reader:
+    def __init__(self):
+        self.format_name = None
+        self.options = {}
+        self.loaded_df = MagicMock(name="read_df")
+
+    def format(self, name):
+        self.format_name = name
+        return self
+
+    def option(self, key, value):
+        self.options[key] = value
+        return self
+
+    def load(self):
+        return self.loaded_df
+
+
+def _patched_spark_read(reader):
+    spark = MagicMock()
+    spark.read = reader
+    return patch(
+        "kindling_adx.entity_provider_adx.get_or_create_spark_session",
+        return_value=spark,
+    )
+
+
+def test_read_entity_by_table_uses_kusto_source_options():
+    provider = _provider()
+    reader = _Reader()
+    entity = _entity(
+        {
+            "provider.auth": "managed_identity",
+            "provider.cluster": "https://fawkes.eastus.kusto.windows.net",
+            "provider.database": "Kindling",
+            "provider.table": "Orders",
+        }
+    )
+
+    with _patched_spark_read(reader):
+        df = provider.read_entity(entity)
+
+    assert df is reader.loaded_df
+    assert reader.format_name == "com.microsoft.kusto.spark.datasource"
+    assert reader.options["kustoCluster"] == "https://fawkes.eastus.kusto.windows.net"
+    assert reader.options["kustoDatabase"] == "Kindling"
+    assert reader.options["kustoTable"] == "Orders"
+    assert reader.options["managedIdentityAuth"] == "true"
+    # Write-only options must not leak into reads
+    assert "writeMode" not in reader.options
+    assert "tableCreateOptions" not in reader.options
+
+
+def test_read_entity_prefers_query_over_table():
+    provider = _provider()
+    reader = _Reader()
+    entity = _entity(
+        {
+            "provider.auth": "managed_identity",
+            "provider.cluster": "fawkes.eastus",
+            "provider.database": "Kindling",
+            "provider.table": "Orders",
+            "provider.query": "Orders | where Amount > 0",
+        }
+    )
+
+    with _patched_spark_read(reader):
+        provider.read_entity(entity)
+
+    assert reader.options["kustoQuery"] == "Orders | where Amount > 0"
+    assert "kustoTable" not in reader.options
+
+
+def test_read_entity_requires_table_or_query():
+    provider = _provider()
+    entity = _entity(
+        {
+            "provider.auth": "managed_identity",
+            "provider.cluster": "fawkes.eastus",
+            "provider.database": "Kindling",
+        }
+    )
+
+    with pytest.raises(ValueError, match="provider.table"):
+        provider.read_entity(entity)
+
+
+def test_read_entity_uses_synapse_linked_service_format():
+    provider = _provider()
+    reader = _Reader()
+    entity = _entity(
+        {
+            "provider.auth": "synapse_linked_service",
+            "provider.linked_service": "fawkes_adx",
+            "provider.database": "Kindling",
+            "provider.table": "Orders",
+        }
+    )
+
+    with _patched_spark_read(reader):
+        provider.read_entity(entity)
+
+    assert reader.format_name == "com.microsoft.kusto.spark.synapse.datasource"
+    assert reader.options["spark.synapse.linkedService"] == "fawkes_adx"
+
+
+def test_read_entity_passes_extra_connector_options():
+    provider = _provider()
+    reader = _Reader()
+    entity = _entity(
+        {
+            "provider.auth": "managed_identity",
+            "provider.cluster": "fawkes.eastus",
+            "provider.database": "Kindling",
+            "provider.table": "Orders",
+            "provider.option.readMode": "ForceSingleMode",
+        }
+    )
+
+    with _patched_spark_read(reader):
+        provider.read_entity(entity)
+
+    assert reader.options["readMode"] == "ForceSingleMode"
