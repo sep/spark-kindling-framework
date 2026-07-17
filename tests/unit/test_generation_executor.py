@@ -1496,3 +1496,29 @@ class TestConfigDrivenOptions:
 
         assert result.failed_count == 1
         assert result.success_count == 1
+
+    def test_range_validation_falls_back(self, executor):
+        """Out-of-range config values (workers < 1, negative timeout) use defaults."""
+        executor.config_service = make_config(
+            {
+                "kindling.execution.max_workers": 0,
+                "kindling.execution.pipe_timeout": -5,
+            }
+        )
+        assert executor._resolve_int_option(UNSET, "max_workers", minimum=1) == 4
+        assert executor._resolve_float_option(UNSET, "pipe_timeout", minimum=0.0) is None
+        assert executor.logger.warning.call_count == 2
+
+    def test_config_lookup_failure_warns_and_defaults(self, executor):
+        """A raising ConfigService is logged, not silently swallowed."""
+        executor.config_service = Mock()
+        executor.config_service.get = Mock(side_effect=RuntimeError("config down"))
+        assert executor._resolve_bool_option(UNSET, "parallel") is False
+        assert executor.logger.warning.call_count == 1
+        assert "config down" in executor.logger.warning.call_args.args[0]
+
+    def test_explicit_none_pipe_timeout_overrides_config(self, executor):
+        """pipe_timeout=None passed explicitly disables the timeout despite config."""
+        executor.config_service = make_config({"kindling.execution.pipe_timeout": 900})
+        assert executor._resolve_float_option(None, "pipe_timeout", minimum=0.0) is None
+        assert executor._resolve_float_option(UNSET, "pipe_timeout", minimum=0.0) == 900.0

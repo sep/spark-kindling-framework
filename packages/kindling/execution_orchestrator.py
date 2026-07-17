@@ -11,7 +11,6 @@ from injector import inject
 from kindling.execution_strategy import ExecutionPlanGenerator, ExecutionStrategy
 from kindling.generation_executor import (
     UNSET,
-    ErrorStrategy,
     ExecutionResult,
     GenerationExecutor,
 )
@@ -49,12 +48,12 @@ class ExecutionOrchestrator(SignalEmitter):
         self,
         pipe_ids: List[str],
         strategy: Optional[ExecutionStrategy] = None,
-        parallel: Optional[bool] = UNSET,
-        max_workers: Optional[int] = UNSET,
-        error_strategy: Optional[ErrorStrategy] = UNSET,
-        pipe_timeout: Optional[float] = UNSET,
+        parallel: Any = UNSET,  # bool | UNSET
+        max_workers: Any = UNSET,  # int | UNSET
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
+        pipe_timeout: Any = UNSET,  # float | None (no timeout) | UNSET
         streaming_options: Optional[dict[str, Any]] = None,
-        auto_cache: Optional[bool] = UNSET,
+        auto_cache: Any = UNSET,  # bool | UNSET
         no_watermark: bool = False,
     ) -> ExecutionResult:
         """Generate an execution plan and run it through GenerationExecutor.
@@ -93,11 +92,11 @@ class ExecutionOrchestrator(SignalEmitter):
     def execute_batch(
         self,
         pipe_ids: List[str],
-        parallel: Optional[bool] = UNSET,
-        max_workers: Optional[int] = UNSET,
-        error_strategy: Optional[ErrorStrategy] = UNSET,
-        pipe_timeout: Optional[float] = UNSET,
-        auto_cache: Optional[bool] = UNSET,
+        parallel: Any = UNSET,  # bool | UNSET
+        max_workers: Any = UNSET,  # int | UNSET
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
+        pipe_timeout: Any = UNSET,  # float | None (no timeout) | UNSET
+        auto_cache: Any = UNSET,  # bool | UNSET
     ) -> ExecutionResult:
         """Execute in batch mode using the batch strategy."""
         strategy = self.plan_generator.batch_strategy
@@ -114,7 +113,7 @@ class ExecutionOrchestrator(SignalEmitter):
     def execute_streaming(
         self,
         pipe_ids: List[str],
-        error_strategy: Optional[ErrorStrategy] = UNSET,
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
         streaming_options: Optional[dict[str, Any]] = None,
     ) -> ExecutionResult:
         """Execute in streaming mode using the streaming strategy."""

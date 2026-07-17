@@ -44,6 +44,7 @@ from kindling.execution_strategy import (
 )
 from kindling.injection import GlobalInjector
 from kindling.pipe_streaming import PipeStreamStarter
+from kindling.sentinels import UNSET, _Unset
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
@@ -56,18 +57,6 @@ class ErrorStrategy(Enum):
     FAIL_FAST = "fail_fast"  # Stop immediately on first error
     CONTINUE = "continue"  # Run all pipes, collect errors
 
-
-class _Unset:
-    """Sentinel type for 'not passed — resolve from configuration'."""
-
-    def __repr__(self):
-        return "UNSET"
-
-
-#: Default for execution options: fall through to `kindling.execution.*`
-#: config, then to the built-in default. Pass a real value to override
-#: config just-in-time (spot-testing); config is the primary interface.
-UNSET: Any = _Unset()
 
 #: Built-in defaults, used when neither a parameter nor config provides a
 #: value. Keys are the config names under `kindling.execution.`.
@@ -244,12 +233,12 @@ class GenerationExecutor(SignalEmitter):
     def execute(
         self,
         plan: ExecutionPlan,
-        parallel: Optional[bool] = UNSET,
-        max_workers: Optional[int] = UNSET,
-        error_strategy: Optional[ErrorStrategy] = UNSET,
-        pipe_timeout: Optional[float] = UNSET,
+        parallel: Any = UNSET,  # bool | UNSET
+        max_workers: Any = UNSET,  # int | UNSET
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
+        pipe_timeout: Any = UNSET,  # float | None (no timeout) | UNSET
         streaming_options: Optional[Dict[str, Any]] = None,
-        auto_cache: Optional[bool] = UNSET,
+        auto_cache: Any = UNSET,  # bool | UNSET
         no_watermark: bool = False,
     ) -> ExecutionResult:
         """Execute an ExecutionPlan generation by generation.
@@ -282,9 +271,9 @@ class GenerationExecutor(SignalEmitter):
             ExecutionResult with per-pipe and per-generation results
         """
         parallel = self._resolve_bool_option(parallel, "parallel")
-        max_workers = self._resolve_int_option(max_workers, "max_workers")
+        max_workers = self._resolve_int_option(max_workers, "max_workers", minimum=1)
         error_strategy = self._resolve_error_strategy_option(error_strategy)
-        pipe_timeout = self._resolve_float_option(pipe_timeout, "pipe_timeout")
+        pipe_timeout = self._resolve_float_option(pipe_timeout, "pipe_timeout", minimum=0.0)
         auto_cache = self._resolve_bool_option(auto_cache, "auto_cache")
 
         run_id = str(uuid.uuid4())
@@ -400,11 +389,11 @@ class GenerationExecutor(SignalEmitter):
     def execute_batch(
         self,
         plan: ExecutionPlan,
-        parallel: Optional[bool] = UNSET,
-        max_workers: Optional[int] = UNSET,
-        error_strategy: Optional[ErrorStrategy] = UNSET,
-        pipe_timeout: Optional[float] = UNSET,
-        auto_cache: Optional[bool] = UNSET,
+        parallel: Any = UNSET,  # bool | UNSET
+        max_workers: Any = UNSET,  # int | UNSET
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
+        pipe_timeout: Any = UNSET,  # float | None (no timeout) | UNSET
+        auto_cache: Any = UNSET,  # bool | UNSET
     ) -> ExecutionResult:
         """Execute a batch plan (convenience method).
 
@@ -424,7 +413,7 @@ class GenerationExecutor(SignalEmitter):
         self,
         plan: ExecutionPlan,
         streaming_options: Optional[Dict[str, Any]] = None,
-        error_strategy: Optional[ErrorStrategy] = UNSET,
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
     ) -> ExecutionResult:
         """Execute a streaming plan (convenience method).
 
@@ -459,7 +448,12 @@ class GenerationExecutor(SignalEmitter):
         default = EXECUTION_CONFIG_DEFAULTS[option]
         try:
             value = self.config_service.get(f"kindling.execution.{option}", default)
-        except Exception:
+        except Exception as e:
+            self.logger.warning(
+                f"Config lookup failed for execution option "
+                f"'kindling.execution.{option}' ({type(e).__name__}: {e}) — "
+                f"using default {default!r}"
+            )
             value = default
         return value, False
 
@@ -477,21 +471,29 @@ class GenerationExecutor(SignalEmitter):
             return bool(value)
         return self._fall_back(option, value, from_param)
 
-    def _resolve_int_option(self, param: Any, option: str) -> int:
+    def _resolve_int_option(self, param: Any, option: str, minimum: Optional[int] = None) -> int:
         value, from_param = self._resolve_config_value(param, option)
         try:
-            return int(value)
+            resolved = int(value)
         except (TypeError, ValueError):
             return self._fall_back(option, value, from_param)
+        if minimum is not None and resolved < minimum:
+            return self._fall_back(option, value, from_param)
+        return resolved
 
-    def _resolve_float_option(self, param: Any, option: str) -> Optional[float]:
+    def _resolve_float_option(
+        self, param: Any, option: str, minimum: Optional[float] = None
+    ) -> Optional[float]:
         value, from_param = self._resolve_config_value(param, option)
         if value is None:
             return None
         try:
-            return float(value)
+            resolved = float(value)
         except (TypeError, ValueError):
             return self._fall_back(option, value, from_param)
+        if minimum is not None and resolved < minimum:
+            return self._fall_back(option, value, from_param)
+        return resolved
 
     def _resolve_error_strategy_option(self, param: Any) -> ErrorStrategy:
         value, from_param = self._resolve_config_value(param, "error_strategy")
