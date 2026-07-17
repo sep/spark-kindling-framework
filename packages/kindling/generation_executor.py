@@ -376,7 +376,9 @@ class GenerationExecutor(SignalEmitter):
                     # failures so later generations skip them while
                     # independent branches keep running.
                     if error_strategy == ErrorStrategy.SKIP_DEPENDENTS:
-                        for failed_pipe in gen_result.failed_pipes:
+                        # Sorted for deterministic upstream attribution:
+                        # parallel results arrive in as_completed order.
+                        for failed_pipe in sorted(gen_result.failed_pipes):
                             for dependent in self._transitive_dependents(plan.graph, failed_pipe):
                                 blocked.setdefault(dependent, failed_pipe)
 
@@ -651,20 +653,22 @@ class GenerationExecutor(SignalEmitter):
                 )
 
     def _transitive_dependents(self, graph: Any, pipe_id: str) -> List[str]:
-        """BFS over graph.get_dependents to find all downstream pipes."""
+        """BFS over graph.get_dependents to find all downstream pipes.
+
+        Errors from the graph lookup propagate: silently treating a failed
+        lookup as "no dependents" would execute pipes that skip_dependents
+        promised to skip. Returned sorted for deterministic poisoning order.
+        """
         seen: List[str] = []
         frontier = [pipe_id]
         while frontier:
             current = frontier.pop()
-            try:
-                dependents = graph.get_dependents(current) or []
-            except Exception:
-                dependents = []
+            dependents = graph.get_dependents(current) or []
             for dependent in dependents:
                 if dependent not in seen and dependent != pipe_id:
                     seen.append(dependent)
                     frontier.append(dependent)
-        return seen
+        return sorted(seen)
 
     def _is_streaming_plan(self, plan: ExecutionPlan) -> bool:
         """Determine if plan should use streaming execution."""
