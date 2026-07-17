@@ -44,6 +44,7 @@ from kindling.execution_strategy import (
 )
 from kindling.injection import GlobalInjector
 from kindling.pipe_streaming import PipeStreamStarter
+from kindling.sentinels import UNSET, _Unset
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
@@ -55,6 +56,17 @@ class ErrorStrategy(Enum):
 
     FAIL_FAST = "fail_fast"  # Stop immediately on first error
     CONTINUE = "continue"  # Run all pipes, collect errors
+
+
+#: Built-in defaults, used when neither a parameter nor config provides a
+#: value. Keys are the config names under `kindling.execution.`.
+EXECUTION_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "parallel": False,
+    "max_workers": 4,
+    "error_strategy": ErrorStrategy.FAIL_FAST,
+    "pipe_timeout": None,
+    "auto_cache": False,
+}
 
 
 @dataclass
@@ -221,12 +233,12 @@ class GenerationExecutor(SignalEmitter):
     def execute(
         self,
         plan: ExecutionPlan,
-        parallel: bool = False,
-        max_workers: int = 4,
-        error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
-        pipe_timeout: Optional[float] = None,
+        parallel: Any = UNSET,  # bool | UNSET
+        max_workers: Any = UNSET,  # int | UNSET
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
+        pipe_timeout: Any = UNSET,  # float | None (no timeout) | UNSET
         streaming_options: Optional[Dict[str, Any]] = None,
-        auto_cache: bool = False,
+        auto_cache: Any = UNSET,  # bool | UNSET
         no_watermark: bool = False,
     ) -> ExecutionResult:
         """Execute an ExecutionPlan generation by generation.
@@ -236,6 +248,11 @@ class GenerationExecutor(SignalEmitter):
 
         For streaming plans (strategy="streaming" or "config_based" with streaming mode):
             Starts each pipe as a streaming processor and returns queries.
+
+        Execution options left UNSET resolve from hierarchical config under
+        `kindling.execution.*` (parallel, max_workers, error_strategy,
+        pipe_timeout, auto_cache), falling back to built-in defaults.
+        Passing a value overrides config just-in-time.
 
         Args:
             plan: The execution plan to execute
@@ -253,6 +270,12 @@ class GenerationExecutor(SignalEmitter):
         Returns:
             ExecutionResult with per-pipe and per-generation results
         """
+        parallel = self._resolve_bool_option(parallel, "parallel")
+        max_workers = self._resolve_int_option(max_workers, "max_workers", minimum=1)
+        error_strategy = self._resolve_error_strategy_option(error_strategy)
+        pipe_timeout = self._resolve_float_option(pipe_timeout, "pipe_timeout", minimum=0.0)
+        auto_cache = self._resolve_bool_option(auto_cache, "auto_cache")
+
         run_id = str(uuid.uuid4())
         start_time = time.time()
 
@@ -366,15 +389,16 @@ class GenerationExecutor(SignalEmitter):
     def execute_batch(
         self,
         plan: ExecutionPlan,
-        parallel: bool = False,
-        max_workers: int = 4,
-        error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
-        pipe_timeout: Optional[float] = None,
-        auto_cache: bool = False,
+        parallel: Any = UNSET,  # bool | UNSET
+        max_workers: Any = UNSET,  # int | UNSET
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
+        pipe_timeout: Any = UNSET,  # float | None (no timeout) | UNSET
+        auto_cache: Any = UNSET,  # bool | UNSET
     ) -> ExecutionResult:
         """Execute a batch plan (convenience method).
 
-        Shorthand for execute() with batch-specific defaults.
+        Shorthand for execute() with batch-specific defaults. Options left
+        UNSET resolve from `kindling.execution.*` config.
         """
         return self.execute(
             plan=plan,
@@ -389,7 +413,7 @@ class GenerationExecutor(SignalEmitter):
         self,
         plan: ExecutionPlan,
         streaming_options: Optional[Dict[str, Any]] = None,
-        error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
     ) -> ExecutionResult:
         """Execute a streaming plan (convenience method).
 
@@ -410,6 +434,86 @@ class GenerationExecutor(SignalEmitter):
         )
 
     # ---- Internal Methods ----
+
+    # ---- Execution option resolution (config-first) ----
+
+    def _resolve_config_value(self, param: Any, option: str) -> Any:
+        """Resolve one execution option: param → config → built-in default.
+
+        Returns the raw (uncoerced) value plus whether it came from a
+        parameter, as (value, from_param).
+        """
+        if not isinstance(param, _Unset):
+            return param, True
+        default = EXECUTION_CONFIG_DEFAULTS[option]
+        try:
+            value = self.config_service.get(f"kindling.execution.{option}", default)
+        except Exception as e:
+            self.logger.warning(
+                f"Config lookup failed for execution option "
+                f"'kindling.execution.{option}' ({type(e).__name__}: {e}) — "
+                f"using default {default!r}"
+            )
+            value = default
+        return value, False
+
+    def _resolve_bool_option(self, param: Any, option: str) -> bool:
+        value, from_param = self._resolve_config_value(param, option)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("true", "1", "yes", "on"):
+                return True
+            if lowered in ("false", "0", "no", "off"):
+                return False
+        if isinstance(value, int):
+            return bool(value)
+        return self._fall_back(option, value, from_param)
+
+    def _resolve_int_option(self, param: Any, option: str, minimum: Optional[int] = None) -> int:
+        value, from_param = self._resolve_config_value(param, option)
+        try:
+            resolved = int(value)
+        except (TypeError, ValueError):
+            return self._fall_back(option, value, from_param)
+        if minimum is not None and resolved < minimum:
+            return self._fall_back(option, value, from_param)
+        return resolved
+
+    def _resolve_float_option(
+        self, param: Any, option: str, minimum: Optional[float] = None
+    ) -> Optional[float]:
+        value, from_param = self._resolve_config_value(param, option)
+        if value is None:
+            return None
+        try:
+            resolved = float(value)
+        except (TypeError, ValueError):
+            return self._fall_back(option, value, from_param)
+        if minimum is not None and resolved < minimum:
+            return self._fall_back(option, value, from_param)
+        return resolved
+
+    def _resolve_error_strategy_option(self, param: Any) -> ErrorStrategy:
+        value, from_param = self._resolve_config_value(param, "error_strategy")
+        if isinstance(value, ErrorStrategy):
+            return value
+        if isinstance(value, str):
+            try:
+                return ErrorStrategy(value.strip().lower())
+            except ValueError:
+                pass
+        return self._fall_back("error_strategy", value, from_param)
+
+    def _fall_back(self, option: str, value: Any, from_param: bool) -> Any:
+        source = "parameter" if from_param else "config kindling.execution"
+        default = EXECUTION_CONFIG_DEFAULTS[option]
+        self.logger.warning(
+            f"Invalid {source} value for execution option '{option}': "
+            f"{value!r} — using default {default!r}"
+        )
+        return default
 
     def _is_streaming_plan(self, plan: ExecutionPlan) -> bool:
         """Determine if plan should use streaming execution."""

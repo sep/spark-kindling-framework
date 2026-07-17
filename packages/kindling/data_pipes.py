@@ -8,11 +8,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+
 from kindling.injection import *
+from kindling.sentinels import UNSET
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
-from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -438,26 +440,29 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         self,
         pipes: List[str],
         strategy: Optional[Any] = None,
-        parallel: bool = False,
-        max_workers: int = 4,
-        error_strategy: Optional[Any] = None,
-        pipe_timeout: Optional[float] = None,
+        parallel: Any = UNSET,  # bool | UNSET
+        max_workers: Any = UNSET,  # int | UNSET
+        error_strategy: Any = UNSET,  # ErrorStrategy | UNSET
+        pipe_timeout: Any = UNSET,  # float | None (no timeout) | UNSET
         streaming_options: Optional[Dict[str, Any]] = None,
-        auto_cache: bool = False,
+        auto_cache: Any = UNSET,  # bool | UNSET
         no_watermark: bool = False,
     ):
-        """Execute pipes via DAG planning/generation execution facade."""
-        from kindling.execution_orchestrator import ExecutionOrchestrator
-        from kindling.generation_executor import ErrorStrategy
+        """Execute pipes via DAG planning/generation execution facade.
 
-        resolved_error_strategy = error_strategy or ErrorStrategy.FAIL_FAST
+        Options left UNSET resolve from `kindling.execution.*` config;
+        passed values override config just-in-time (an explicit
+        ``pipe_timeout=None`` disables the timeout even when config sets one).
+        """
+        from kindling.execution_orchestrator import ExecutionOrchestrator
+
         orchestrator = GlobalInjector.get(ExecutionOrchestrator)
         return orchestrator.execute(
             pipe_ids=pipes,
             strategy=strategy,
             parallel=parallel,
             max_workers=max_workers,
-            error_strategy=resolved_error_strategy,
+            error_strategy=error_strategy,
             pipe_timeout=pipe_timeout,
             streaming_options=streaming_options,
             auto_cache=auto_cache,

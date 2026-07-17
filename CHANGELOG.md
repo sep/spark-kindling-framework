@@ -6,6 +6,13 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- DAG execution options (`parallel`, `max_workers`, `error_strategy`,
+  `pipe_timeout`, `auto_cache`) now resolve config-first from
+  `kindling.execution.*` through the hierarchical config layers, with
+  function parameters acting as just-in-time overrides. Behavior note:
+  deployments that already set `kindling.execution.*` keys will have them
+  take effect — previously these options could only be enabled via code.
+
 - Renamed the bootstrap config key `load_local` (YAML) / `load_local_packages` (flat) to
   `load_workspace_packages`, since it controls whether packages are loaded from the platform
   workspace, not "local" packages. The old names still work as deprecated aliases and log a
@@ -14,6 +21,8 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- New guide: [Migrating from notebook-based execution (`runMultiple`)](docs/guide/migrating_from_runmultiple.md)
+  for Synapse/Fabric users moving notebook DAGs to Kindling pipes.
 - Added `kindling env update` to refresh Kindling wheels and the local
   devcontainer package index in place, so domain projects can update Kindling
   packages without rebuilding the whole devcontainer.

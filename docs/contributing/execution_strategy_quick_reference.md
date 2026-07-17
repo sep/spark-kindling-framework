@@ -378,17 +378,34 @@ result = orchestrator.execute_streaming(pipe_ids, streaming_options={...})
 
 **`execute()` parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `pipe_ids` | `List[str]` | required | Pipes to execute |
-| `strategy` | `ExecutionStrategy` | `None` (batch) | Strategy override |
-| `parallel` | `bool` | `False` | Run generations in parallel |
-| `max_workers` | `int` | `4` | Thread pool size when parallel |
-| `error_strategy` | `ErrorStrategy` | `FAIL_FAST` | Error handling mode |
-| `pipe_timeout` | `float` | `None` | Per-pipe timeout in seconds |
-| `streaming_options` | `dict` | `None` | Passed to GenerationExecutor |
-| `auto_cache` | `bool` | `False` | Enable automatic cache |
-| `no_watermark` | `bool` | `False` | Skip watermark writes |
+Execution options are **config-first**: any option left unset resolves from
+hierarchical configuration under `kindling.execution.*`, then falls back to
+the built-in default. Passing a parameter overrides config just-in-time
+(spot-testing) — config is the primary interface.
+
+| Parameter | Type | Config key (`kindling.execution.`) | Built-in default | Description |
+|-----------|------|------------------------------------|------------------|-------------|
+| `pipe_ids` | `List[str]` | — | required | Pipes to execute |
+| `strategy` | `ExecutionStrategy` | — | `None` (batch) | Strategy override |
+| `parallel` | `bool` | `parallel` | `False` | Run independent pipes *within* a generation concurrently (generations themselves are always sequential) |
+| `max_workers` | `int` | `max_workers` | `4` | Thread pool size when parallel |
+| `error_strategy` | `ErrorStrategy` | `error_strategy` (`fail_fast` \| `continue`) | `FAIL_FAST` | Error handling mode |
+| `pipe_timeout` | `float` | `pipe_timeout` | `None` | Per-pipe timeout in seconds |
+| `streaming_options` | `dict` | — | `None` | Passed to GenerationExecutor |
+| `auto_cache` | `bool` | `auto_cache` | `False` | Enable automatic cache |
+| `no_watermark` | `bool` | — | `False` | Skip watermark writes (inherently a just-in-time flag) |
+
+```yaml
+# settings.yaml (or platform/workspace/environment layer)
+kindling:
+  execution:
+    parallel: true
+    max_workers: 8
+    error_strategy: continue
+```
+
+Streaming plans ignore `parallel` regardless of source — stream startup
+order matters, so streaming pipes always start sequentially.
 
 `ExecutionOrchestrator` emits the `"orchestrator.plan_generated"` signal after planning and before execution, carrying strategy, pipe count, generation count, and max parallelism.
 
