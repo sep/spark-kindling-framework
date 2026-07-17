@@ -20,6 +20,7 @@ Part of: Capability #15 - Unified DAG Orchestrator
 
 import time
 import uuid
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -36,6 +37,7 @@ from kindling.data_pipes import (
     EntityReadPersistStrategy,
     PipeMetadata,
 )
+from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.execution_strategy import (
     ExecutionPlan,
     ExecutionPlanGenerator,
@@ -66,7 +68,17 @@ EXECUTION_CONFIG_DEFAULTS: Dict[str, Any] = {
     "error_strategy": ErrorStrategy.FAIL_FAST,
     "pipe_timeout": None,
     "auto_cache": False,
+    "retry.attempts": 0,
+    "retry.interval_seconds": 30.0,
 }
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Resolved retry policy for one pipe."""
+
+    attempts: int = 0  # retries after the first attempt (0 = no retry)
+    interval_seconds: float = 30.0
 
 
 @dataclass
@@ -79,6 +91,7 @@ class PipeResult:
     error: Optional[str] = None
     error_type: Optional[str] = None
     streaming_query: Optional[Any] = None  # For streaming mode
+    attempts: int = 1  # total attempts made (1 = no retry was needed)
 
 
 @dataclass
@@ -185,6 +198,7 @@ class GenerationExecutor(SignalEmitter):
         - orchestrator.pipe_started
         - orchestrator.pipe_completed
         - orchestrator.pipe_failed
+        - orchestrator.pipe_retrying
         - orchestrator.pipe_skipped
         - orchestrator.cache_recommended
         - orchestrator.cache_hit
@@ -200,6 +214,7 @@ class GenerationExecutor(SignalEmitter):
         "orchestrator.pipe_started",
         "orchestrator.pipe_completed",
         "orchestrator.pipe_failed",
+        "orchestrator.pipe_retrying",
         "orchestrator.pipe_skipped",
         "orchestrator.cache_recommended",
         "orchestrator.cache_hit",
@@ -217,6 +232,7 @@ class GenerationExecutor(SignalEmitter):
         trace_provider: SparkTraceProvider,
         logger_provider: PythonLoggerProvider,
         signal_provider: SignalProvider = None,
+        provider_registry: EntityProviderRegistry = None,
     ):
         self.pipes_registry = pipes_registry
         self.entity_registry = entity_registry
@@ -226,8 +242,12 @@ class GenerationExecutor(SignalEmitter):
         self.tp = trace_provider
         self.logger = logger_provider.get_logger("generation_executor")
         self._init_signal_emitter(signal_provider)
+        # Optional: used only for the retry-safety warning (merge-capable
+        # output providers make retried persists idempotent).
+        self.provider_registry = provider_registry
         self._cache_optimizer = CacheOptimizer()
         self._cache_lock = Lock()
+        self._retry_defaults = RetryPolicy()
         self._reset_cache_state()
 
     def execute(
@@ -240,6 +260,8 @@ class GenerationExecutor(SignalEmitter):
         streaming_options: Optional[Dict[str, Any]] = None,
         auto_cache: Any = UNSET,  # bool | UNSET
         no_watermark: bool = False,
+        retry_attempts: Any = UNSET,  # int | UNSET
+        retry_interval_seconds: Any = UNSET,  # float | UNSET
     ) -> ExecutionResult:
         """Execute an ExecutionPlan generation by generation.
 
@@ -251,8 +273,10 @@ class GenerationExecutor(SignalEmitter):
 
         Execution options left UNSET resolve from hierarchical config under
         `kindling.execution.*` (parallel, max_workers, error_strategy,
-        pipe_timeout, auto_cache), falling back to built-in defaults.
-        Passing a value overrides config just-in-time.
+        pipe_timeout, auto_cache, retry.attempts, retry.interval_seconds),
+        falling back to built-in defaults. Passing a value overrides config
+        just-in-time. Retry policy additionally supports per-pipe config under
+        `kindling.execution.pipes.<pipeid>.retry.*`.
 
         Args:
             plan: The execution plan to execute
@@ -266,6 +290,10 @@ class GenerationExecutor(SignalEmitter):
             auto_cache: If True, call `persist()/cache()` on recommended shared
                 entities when first read in batch mode.
             no_watermark: If True, disable watermark reads/writes for this run.
+            retry_attempts: Run-level retries per failed pipe attempt
+                (0 = off). Retried persists are only idempotent on
+                merge-capable providers — a warning is logged otherwise.
+            retry_interval_seconds: Delay between retry attempts.
 
         Returns:
             ExecutionResult with per-pipe and per-generation results
@@ -275,6 +303,13 @@ class GenerationExecutor(SignalEmitter):
         error_strategy = self._resolve_error_strategy_option(error_strategy)
         pipe_timeout = self._resolve_float_option(pipe_timeout, "pipe_timeout", minimum=0.0)
         auto_cache = self._resolve_bool_option(auto_cache, "auto_cache")
+        self._retry_defaults = RetryPolicy(
+            attempts=self._resolve_int_option(retry_attempts, "retry.attempts", minimum=0),
+            interval_seconds=self._resolve_float_option(
+                retry_interval_seconds, "retry.interval_seconds", minimum=0.0
+            )
+            or 0.0,
+        )
 
         run_id = str(uuid.uuid4())
         start_time = time.time()
@@ -302,6 +337,8 @@ class GenerationExecutor(SignalEmitter):
         result = ExecutionResult(plan=plan, run_id=run_id)
         self._initialize_cache_state(plan=plan, is_streaming=is_streaming, auto_cache=auto_cache)
         self._emit_cache_recommendations(plan=plan, run_id=run_id)
+        if not is_streaming:
+            self._warn_retry_without_merge(plan)
 
         try:
             with self.tp.span(
@@ -514,6 +551,91 @@ class GenerationExecutor(SignalEmitter):
             f"{value!r} — using default {default!r}"
         )
         return default
+
+    # ---- Retry policy (config-first, per-pipe overrides) ----
+
+    def _pipe_retry_overrides(self, pipe_id: str) -> Dict[str, Any]:
+        """Read `kindling.execution.pipes` as a mapping keyed by literal pipe id.
+
+        Pipe ids routinely contain dots (e.g. ``ingest.orders``), which a
+        dotted config-key lookup would mis-traverse — so the mapping is
+        indexed by the literal id.
+        """
+        try:
+            pipes_map = self.config_service.get("kindling.execution.pipes", None)
+        except Exception:
+            return {}
+        if not isinstance(pipes_map, Mapping):
+            return {}
+        entry = pipes_map.get(pipe_id)
+        if not isinstance(entry, Mapping):
+            return {}
+        retry = entry.get("retry")
+        return dict(retry) if isinstance(retry, Mapping) else {}
+
+    def _resolve_pipe_retry_policy(self, pipe_id: str) -> RetryPolicy:
+        """Per-pipe retry policy: pipes.<pipeid>.retry.* config over run defaults."""
+        defaults = self._retry_defaults
+        overrides = self._pipe_retry_overrides(pipe_id)
+
+        def pipe_config(option: str, fallback: Any) -> Any:
+            if option in overrides:
+                return overrides[option]
+            # Dotted fallback for pipe ids without dots (and flat env-var
+            # style config like CONFIG__kindling__execution__pipes__...).
+            key = f"kindling.execution.pipes.{pipe_id}.retry.{option}"
+            try:
+                return self.config_service.get(key, fallback)
+            except Exception:
+                return fallback
+
+        attempts = pipe_config("attempts", defaults.attempts)
+        interval = pipe_config("interval_seconds", defaults.interval_seconds)
+
+        try:
+            attempts = max(0, int(attempts))
+        except (TypeError, ValueError):
+            self.logger.warning(
+                f"Invalid retry.attempts for pipe '{pipe_id}': {attempts!r} — "
+                f"using {defaults.attempts}"
+            )
+            attempts = defaults.attempts
+        try:
+            interval = max(0.0, float(interval))
+        except (TypeError, ValueError):
+            self.logger.warning(
+                f"Invalid retry.interval_seconds for pipe '{pipe_id}': {interval!r} — "
+                f"using {defaults.interval_seconds}"
+            )
+            interval = defaults.interval_seconds
+
+        return RetryPolicy(attempts=attempts, interval_seconds=interval)
+
+    def _warn_retry_without_merge(self, plan: ExecutionPlan) -> None:
+        """Warn when retry is enabled for pipes whose output provider lacks merge.
+
+        Without merge_to_entity, the persist path appends — a retried persist
+        can double-write (at-least-once). Best-effort: skipped when the
+        provider registry or definitions are unavailable.
+        """
+        if self.provider_registry is None:
+            return
+
+        for pipe_id in plan.pipe_ids:
+            if self._resolve_pipe_retry_policy(pipe_id).attempts <= 0:
+                continue
+            try:
+                pipe = self.pipes_registry.get_pipe_definition(pipe_id)
+                entity = self.entity_registry.get_entity_definition(pipe.output_entity_id)
+                provider = self.provider_registry.get_provider_for_entity(entity)
+            except Exception:
+                continue
+            if provider is not None and not hasattr(provider, "merge_to_entity"):
+                self.logger.warning(
+                    f"Retry is enabled for pipe '{pipe_id}' but its output provider "
+                    f"({type(provider).__name__}) does not support merge — retried "
+                    f"persists may double-write (at-least-once semantics)"
+                )
 
     def _is_streaming_plan(self, plan: ExecutionPlan) -> bool:
         """Determine if plan should use streaming execution."""
@@ -755,8 +877,16 @@ class GenerationExecutor(SignalEmitter):
         streaming_options: Optional[Dict[str, Any]],
         no_watermark: bool = False,
     ) -> PipeResult:
-        """Execute a single pipe (batch or streaming)."""
+        """Execute a single pipe (batch or streaming), with retry per policy.
+
+        Only exceptions raised inside an attempt are retried. Timeouts
+        surfaced by the parallel wrapper (`future.result`) are never retried
+        here — the first attempt's thread may still be running and could
+        commit its write later (zombie double-write).
+        """
+        policy = self._resolve_pipe_retry_policy(pipe_id)
         pipe_start = time.time()
+        attempt = 1
 
         self.logger.debug(f"Executing pipe: {pipe_id} (streaming={is_streaming})")
 
@@ -767,65 +897,95 @@ class GenerationExecutor(SignalEmitter):
             is_streaming=is_streaming,
         )
 
-        try:
-            pipe = self.pipes_registry.get_pipe_definition(pipe_id)
-            if pipe is None:
-                raise ValueError(f"Pipe '{pipe_id}' not found in registry")
-            if no_watermark and pipe.use_watermark:
-                pipe = replace(pipe, use_watermark=False)
+        while True:
+            try:
+                pipe = self.pipes_registry.get_pipe_definition(pipe_id)
+                if pipe is None:
+                    raise ValueError(f"Pipe '{pipe_id}' not found in registry")
+                if no_watermark and pipe.use_watermark:
+                    pipe = replace(pipe, use_watermark=False)
 
-            if is_streaming:
-                result = self._execute_pipe_streaming(pipe, streaming_options)
-            else:
-                result = self._execute_pipe_batch(pipe, run_id)
+                if is_streaming:
+                    result = self._execute_pipe_streaming(pipe, streaming_options)
+                else:
+                    result = self._execute_pipe_batch(pipe, run_id)
 
-            duration = time.time() - pipe_start
-            result.duration_seconds = duration
+                duration = time.time() - pipe_start
+                result.duration_seconds = duration
+                result.attempts = attempt
 
-            if result.status == "skipped":
-                self.logger.debug(f"Pipe '{pipe_id}' skipped (no data)")
+                if result.status == "skipped":
+                    self.logger.debug(f"Pipe '{pipe_id}' skipped (no data)")
+                    self.emit(
+                        "orchestrator.pipe_skipped",
+                        run_id=run_id,
+                        pipe_id=pipe_id,
+                        duration_seconds=duration,
+                    )
+                else:
+                    self.logger.info(
+                        f"Pipe '{pipe_id}' completed in {duration:.2f}s"
+                        + (f" (attempt {attempt})" if attempt > 1 else "")
+                    )
+                    self.emit(
+                        "orchestrator.pipe_completed",
+                        run_id=run_id,
+                        pipe_id=pipe_id,
+                        duration_seconds=duration,
+                        is_streaming=is_streaming,
+                        attempts=attempt,
+                    )
+
+                return result
+
+            except Exception as e:
+                if attempt <= policy.attempts:
+                    self.logger.warning(
+                        f"Pipe '{pipe_id}' failed on attempt {attempt}/"
+                        f"{policy.attempts + 1} ({type(e).__name__}: {e}) — "
+                        f"retrying in {policy.interval_seconds}s"
+                    )
+                    self.emit(
+                        "orchestrator.pipe_retrying",
+                        run_id=run_id,
+                        pipe_id=pipe_id,
+                        attempt=attempt,
+                        max_attempts=policy.attempts + 1,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        interval_seconds=policy.interval_seconds,
+                    )
+                    if policy.interval_seconds > 0:
+                        time.sleep(policy.interval_seconds)
+                    attempt += 1
+                    continue
+
+                duration = time.time() - pipe_start
+
+                self.logger.error(
+                    f"Pipe '{pipe_id}' failed after {duration:.2f}s "
+                    f"({attempt} attempt{'s' if attempt > 1 else ''}): {e}",
+                    include_traceback=True,
+                )
+
                 self.emit(
-                    "orchestrator.pipe_skipped",
+                    "orchestrator.pipe_failed",
                     run_id=run_id,
                     pipe_id=pipe_id,
+                    error=str(e),
+                    error_type=type(e).__name__,
                     duration_seconds=duration,
+                    attempts=attempt,
                 )
-            else:
-                self.logger.info(f"Pipe '{pipe_id}' completed in {duration:.2f}s")
-                self.emit(
-                    "orchestrator.pipe_completed",
-                    run_id=run_id,
+
+                return PipeResult(
                     pipe_id=pipe_id,
+                    status="failed",
                     duration_seconds=duration,
-                    is_streaming=is_streaming,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    attempts=attempt,
                 )
-
-            return result
-
-        except Exception as e:
-            duration = time.time() - pipe_start
-
-            self.logger.error(
-                f"Pipe '{pipe_id}' failed after {duration:.2f}s: {e}",
-                include_traceback=True,
-            )
-
-            self.emit(
-                "orchestrator.pipe_failed",
-                run_id=run_id,
-                pipe_id=pipe_id,
-                error=str(e),
-                error_type=type(e).__name__,
-                duration_seconds=duration,
-            )
-
-            return PipeResult(
-                pipe_id=pipe_id,
-                status="failed",
-                duration_seconds=duration,
-                error=str(e),
-                error_type=type(e).__name__,
-            )
 
     def _execute_pipe_batch(self, pipe: PipeMetadata, run_id: str) -> PipeResult:
         """Execute a pipe in batch mode (read → transform → persist)."""

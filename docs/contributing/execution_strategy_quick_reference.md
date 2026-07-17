@@ -402,7 +402,23 @@ kindling:
     parallel: true
     max_workers: 8
     error_strategy: continue
+    retry:
+      attempts: 0            # retries per failed pipe attempt (0 = off)
+      interval_seconds: 30
+    pipes:                   # per-pipe overrides, keyed by LITERAL pipeid
+      silver_orders:
+        retry: { attempts: 2, interval_seconds: 10 }
+      "ingest.orders":       # quote ids containing dots — the map is indexed
+        retry: { attempts: 1 }   # by the literal id, not dotted traversal
 ```
+
+**Retry semantics**: only exceptions raised inside an attempt are retried —
+timeouts surfaced by the parallel wrapper are never retried (the first
+attempt's thread may still be running). Retried persists are only idempotent
+on merge-capable output providers (Delta, Cosmos); a warning is logged at
+execution start for retry-enabled pipes whose provider lacks
+`merge_to_entity`. The executor emits `orchestrator.pipe_retrying` per retry
+and records total `attempts` on each `PipeResult`.
 
 Streaming plans ignore `parallel` regardless of source — stream startup
 order matters, so streaming pipes always start sequentially.

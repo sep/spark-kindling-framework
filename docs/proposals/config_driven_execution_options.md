@@ -1,6 +1,6 @@
 # Proposal: Config-Driven Execution Options
 
-**Status:** Phase 1 in progress
+**Status:** Phase 1 shipped (#169); Phase 2 (retry) implemented; Phase 3 open
 **Author:** derived from migration-gap analysis (see
 [Migrating from runMultiple](../guide/migrating_from_runmultiple.md))
 
@@ -84,7 +84,7 @@ Backward compatibility: all existing call sites keep working. The only
 behavior change is intentional — config can now enable options that
 previously required code changes.
 
-## Phase 2 — Per-pipe retry
+## Phase 2 — Per-pipe retry (IMPLEMENTED)
 
 - `kindling.execution.retry.attempts` / `interval_seconds` as run-level
   defaults; `kindling.execution.pipes.<pipeid>.retry.*` per pipe.
