@@ -143,11 +143,10 @@ class ParquetEntityProvider(
         """Read the dataset as a file-source stream.
 
         Spark's file source requires an explicit schema — the entity's
-        `schema` supplies it.
+        `schema` supplies it. `options` are applied directly as Spark
+        reader options (e.g. maxFilesPerTrigger).
         """
         config = self._get_provider_config(entity_metadata)
-        if options:
-            config = {**config, **options}
         path = self._require_path(entity_metadata, config)
 
         schema = entity_metadata.schema
@@ -167,6 +166,8 @@ class ParquetEntityProvider(
         reader = spark.readStream.format(format or "parquet").schema(schema)
         for key, value in self._extra_options(config).items():
             reader = reader.option(key, value)
+        for key, value in (options or {}).items():
+            reader = reader.option(key, value)
         return reader.load(path)
 
     # ---- StreamWritableEntityProvider ----
@@ -179,10 +180,12 @@ class ParquetEntityProvider(
         format: Optional[str] = None,
         options: Optional[dict] = None,
     ) -> StreamingQuery:
-        """Append a streaming DataFrame via the parquet file sink."""
+        """Append a streaming DataFrame via the parquet file sink.
+
+        `options` are applied directly as Spark writer options (e.g.
+        maxRecordsPerFile).
+        """
         config = self._get_provider_config(entity_metadata)
-        if options:
-            config = {**config, **options}
         path = self._require_path(entity_metadata, config)
 
         self.logger.info(
@@ -199,6 +202,8 @@ class ParquetEntityProvider(
         if partition_columns:
             writer = writer.partitionBy(*partition_columns)
         for key, value in self._extra_options(config).items():
+            writer = writer.option(key, value)
+        for key, value in (options or {}).items():
             writer = writer.option(key, value)
         return writer.start()
 

@@ -225,3 +225,32 @@ def test_registry_registers_parquet_provider():
         registry = EntityProviderRegistry(logger_provider)
 
     assert "parquet" in registry.list_registered_providers()
+
+
+def test_stream_read_applies_direct_options():
+    provider = _provider()
+    patcher, spark = _patched_spark()
+    reader = spark.readStream.format.return_value
+    reader.schema.return_value = reader
+    reader.option.return_value = reader
+
+    with patcher:
+        provider.read_entity_as_stream(
+            _entity(BASE_TAGS, schema=MagicMock()), options={"maxFilesPerTrigger": "10"}
+        )
+
+    reader.option.assert_any_call("maxFilesPerTrigger", "10")
+
+
+def test_stream_append_applies_direct_options():
+    provider = _provider()
+    df = MagicMock()
+    writer = df.writeStream.format.return_value
+    writer.outputMode.return_value = writer
+    writer.option.return_value = writer
+
+    provider.append_as_stream(
+        df, _entity(BASE_TAGS), "/chk/exports", options={"maxRecordsPerFile": "1000"}
+    )
+
+    writer.option.assert_any_call("maxRecordsPerFile", "1000")

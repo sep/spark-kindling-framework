@@ -26,7 +26,18 @@ def spark():
         .config("spark.sql.shuffle.partitions", "2")
         .getOrCreate()
     )
+
+    # get_or_create_spark_session() prefers __main__.spark (notebook
+    # convention) — point it at this session so the provider uses it, and
+    # clear it afterward so no stale/stopped session leaks to later tests.
+    import __main__
+
+    previous = getattr(__main__, "spark", None)
+    __main__.spark = session
+
     yield session
+
+    __main__.spark = previous
     session.stop()
 
 
