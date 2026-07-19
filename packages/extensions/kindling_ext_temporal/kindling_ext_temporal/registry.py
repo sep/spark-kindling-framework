@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from injector import inject
-
 from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import DataPipesRegistry
 from kindling.injection import GlobalInjector
@@ -269,6 +268,7 @@ class DataEpisodes:
         params["events_entity_id"] = events_entity.entityid
         params.setdefault("condition_id", _infer_condition_id(params["start_event"]))
         params.setdefault("determination_event", f"{episodeid}.closed")
+        params.setdefault("expiration_event", f"{episodeid}.expired")
         params.setdefault("invalidation_event", f"{episodeid}.invalidated")
         params["tags"] = params.get("tags") or {}
         cls._registry().register_episode(episodeid, **params)

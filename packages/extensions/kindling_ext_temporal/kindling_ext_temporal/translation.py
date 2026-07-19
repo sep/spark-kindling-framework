@@ -16,6 +16,7 @@ class TemporalPipeTranslator:
     CONDITION_ENGINE_PIPE_PREFIX = "temporal.condition."
     EPISODE_PIPE_PREFIX = "temporal.episode."
     EPISODE_DETERMINATION_EVENT_PIPE_PREFIX = "temporal.episode_event."
+    EVALUATION_TIME_CONFIG_KEY = "kindling.temporal.evaluation_time"
 
     @classmethod
     def base_event_pipe_id(cls, eventid: str) -> str:
@@ -181,6 +182,7 @@ class TemporalPipeTranslator:
                 "temporal.kind": "episode_event",
                 "temporal.episode_id": metadata.episodeid,
                 "temporal.event_type": metadata.determination_event,
+                "temporal.expiration_event_type": metadata.expiration_event,
                 "temporal.invalidation_event_type": metadata.invalidation_event,
                 "temporal.start_event": metadata.start_event,
                 "temporal.end_event": metadata.end_event,
@@ -227,10 +229,29 @@ class TemporalPipeTranslator:
             return EpisodeRunner().execute(
                 events_df,
                 metadata,
-                evaluation_time=entity_dfs.get("temporal_evaluation_time"),
+                evaluation_time=cls.resolve_evaluation_time(entity_dfs),
             )
 
         return execute
+
+    @classmethod
+    def resolve_evaluation_time(cls, entity_dfs: Dict[str, Any]) -> Any:
+        """Resolve the batch evaluation time for synthetic episode boundaries.
+
+        A per-execution `temporal_evaluation_time` keyword argument wins;
+        otherwise the `kindling.temporal.evaluation_time` config key is
+        consulted. Returns None (bounded input horizon) when neither is set or
+        no ConfigService is bound.
+        """
+        if "temporal_evaluation_time" in entity_dfs:
+            return entity_dfs["temporal_evaluation_time"]
+        try:
+            from kindling.injection import GlobalInjector
+            from kindling.spark_config import ConfigService
+
+            return GlobalInjector.get(ConfigService).get(cls.EVALUATION_TIME_CONFIG_KEY, None)
+        except Exception:
+            return None
 
     @classmethod
     def episode_determination_event_execute(cls, metadata: "EpisodeMetadata"):
@@ -252,7 +273,7 @@ class TemporalPipeTranslator:
             return EpisodeRunner().execute_determination_events(
                 events_df,
                 metadata,
-                evaluation_time=entity_dfs.get("temporal_evaluation_time"),
+                evaluation_time=cls.resolve_evaluation_time(entity_dfs),
             )
 
         return execute

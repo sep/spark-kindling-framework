@@ -450,6 +450,76 @@ def test_episode_runner_invalidates_closed_episode_outside_duration_bounds(spark
 
 
 @pytest.mark.requires_spark
+def test_episode_runner_earliest_synthetic_boundary_is_terminal(spark):
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    boundary_events = ConditionEngineRunner().execute(
+        _unclosed_events_df(spark), _conditions_df(spark)
+    )
+    runner = EpisodeRunner()
+    past_both_boundaries = observed_at + timedelta(minutes=20)
+
+    expiration_first = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        expiration_event="episode.temperature_high_active.expired",
+        invalidation_event="episode.temperature_high_active.invalidated",
+        expires_after_seconds=300,
+        max_duration_seconds=600,
+        subject_type="machine",
+    )
+    expired_row = runner.execute(
+        boundary_events, expiration_first, evaluation_time=past_both_boundaries
+    ).collect()[0]
+    expired_event = runner.execute_determination_events(
+        boundary_events, expiration_first, evaluation_time=past_both_boundaries
+    ).collect()[0]
+
+    assert expired_row.status == "expired"
+    assert expired_row.close_reason == "expiration"
+    assert expired_row.end_time == observed_at + timedelta(minutes=5)
+    assert expired_row.duration_ms == 300000
+    assert expired_event.event_type == "episode.temperature_high_active.expired"
+    assert expired_event.payload["status"] == "expired"
+
+    max_duration_first = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        expiration_event="episode.temperature_high_active.expired",
+        invalidation_event="episode.temperature_high_active.invalidated",
+        expires_after_seconds=600,
+        max_duration_seconds=300,
+        subject_type="machine",
+    )
+    invalidated_row = runner.execute(
+        boundary_events, max_duration_first, evaluation_time=past_both_boundaries
+    ).collect()[0]
+    invalidated_event = runner.execute_determination_events(
+        boundary_events, max_duration_first, evaluation_time=past_both_boundaries
+    ).collect()[0]
+
+    assert invalidated_row.status == "invalidated"
+    assert invalidated_row.close_reason == "max_duration"
+    assert invalidated_row.end_time == observed_at + timedelta(minutes=5)
+    assert invalidated_row.duration_ms == 300000
+    assert invalidated_event.event_type == "episode.temperature_high_active.invalidated"
+    assert invalidated_event.payload["status"] == "invalidated"
+
+
+@pytest.mark.requires_spark
 def test_episode_runner_invalidates_open_episode_past_max_duration(spark):
     from kindling_ext_temporal import (
         ConditionEngineRunner,

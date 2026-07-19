@@ -243,14 +243,14 @@ class EpisodeRunner:
 
         expiration_time = F.lit(None).cast("timestamp")
         if episode.expires_after_seconds is not None:
-            expiration_time = F.from_unixtime(
+            expiration_time = F.timestamp_seconds(
                 F.col("start.event_ts").cast("long") + F.lit(episode.expires_after_seconds)
-            ).cast("timestamp")
+            )
         max_duration_time = F.lit(None).cast("timestamp")
         if episode.max_duration_seconds is not None:
-            max_duration_time = F.from_unixtime(
+            max_duration_time = F.timestamp_seconds(
                 F.col("start.event_ts").cast("long") + F.lit(episode.max_duration_seconds)
-            ).cast("timestamp")
+            )
         is_closed = F.col("end.event_id").isNotNull()
         is_expired = (
             F.lit(episode.expires_after_seconds is not None)
@@ -264,6 +264,16 @@ class EpisodeRunner:
             & F.col("__temporal_evaluation_time").isNotNull()
             & (F.col("__temporal_evaluation_time") >= max_duration_time)
         )
+        if episode.expires_after_seconds is not None and episode.max_duration_seconds is not None:
+            # The earliest synthetic boundary is terminal: an episode that
+            # expired before its max-duration horizon stays expired in later
+            # batch views instead of being retroactively invalidated, and vice
+            # versa. Both boundaries are fixed offsets from the start event, so
+            # the configured offsets decide which comes first.
+            if episode.expires_after_seconds <= episode.max_duration_seconds:
+                is_open_past_max_duration = is_open_past_max_duration & ~is_expired
+            else:
+                is_expired = is_expired & ~is_open_past_max_duration
         expiration_end_event_id = F.sha2(
             F.concat_ws(
                 "||",

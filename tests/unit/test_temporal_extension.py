@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -287,7 +288,6 @@ def test_episode_registration_uses_canonical_entities():
             end_event="condition.machine_running.exited",
             subject_type="machine",
             expires_after_seconds=28800,
-            expiration_event="episode.machine_cycle.expired",
         )
 
     metadata = registry.get_episode_definition("episode.machine_cycle")
@@ -297,6 +297,7 @@ def test_episode_registration_uses_canonical_entities():
     assert metadata.end_event == "condition.machine_running.exited"
     assert metadata.condition_id == "condition.machine_running"
     assert metadata.determination_event == "episode.machine_cycle.closed"
+    assert metadata.expiration_event == "episode.machine_cycle.expired"
     assert metadata.invalidation_event == "episode.machine_cycle.invalidated"
     assert metadata.expires_after_seconds == 28800
     assert entity_registry.get_entity_definition("silver.events") is not None
@@ -319,6 +320,7 @@ def test_episode_registration_uses_canonical_entities():
     assert event_pipe.use_watermark is True
     assert event_pipe.tags["pipe_type"] == "temporal.episode_event"
     assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.closed"
+    assert event_pipe.tags["temporal.expiration_event_type"] == "episode.machine_cycle.expired"
     assert (
         event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.invalidated"
     )
@@ -350,18 +352,65 @@ def test_episode_registration_accepts_explicit_determination_event_and_pipe_id()
             start_event="condition.machine_running.entered",
             end_event="condition.machine_running.exited",
             determination_event="episode.machine_cycle.completed",
+            expiration_event="episode.machine_cycle.timed_out",
             invalidation_event="episode.machine_cycle.rejected",
             determination_pipeid="temporal.episode_event.machine_cycle_completed",
         )
 
     metadata = registry.get_episode_definition("episode.machine_cycle")
     assert metadata.determination_event == "episode.machine_cycle.completed"
+    assert metadata.expiration_event == "episode.machine_cycle.timed_out"
     assert metadata.invalidation_event == "episode.machine_cycle.rejected"
 
     event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.machine_cycle_completed")
     assert event_pipe.output_entity_id == "silver.events"
     assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.completed"
+    assert event_pipe.tags["temporal.expiration_event_type"] == "episode.machine_cycle.timed_out"
     assert event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.rejected"
+
+
+def test_translator_evaluation_time_prefers_execution_parameter():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    explicit = datetime(2026, 7, 14, 12, 10, 0)
+    with patch("kindling.injection.GlobalInjector.get") as injector_get:
+        resolved = TemporalPipeTranslator.resolve_evaluation_time(
+            {"temporal_evaluation_time": explicit}
+        )
+
+    assert resolved == explicit
+    injector_get.assert_not_called()
+
+
+def test_translator_evaluation_time_falls_back_to_config():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    configured = datetime(2026, 7, 14, 12, 10, 0)
+
+    class _ConfigService:
+        def __init__(self):
+            self.requested = []
+
+        def get(self, key, default=None):
+            self.requested.append(key)
+            return configured
+
+    config_service = _ConfigService()
+    with patch("kindling.injection.GlobalInjector.get", return_value=config_service):
+        resolved = TemporalPipeTranslator.resolve_evaluation_time({"silver_events": None})
+
+    assert resolved == configured
+    assert config_service.requested == ["kindling.temporal.evaluation_time"]
+
+
+def test_translator_evaluation_time_defaults_to_none_without_config_service():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=RuntimeError("no ConfigService binding"),
+    ):
+        assert TemporalPipeTranslator.resolve_evaluation_time({"silver_events": None}) is None
 
 
 def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
@@ -398,6 +447,7 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
         start_event="condition.none.entered",
         end_event="condition.none.exited",
         determination_event="episode.none.closed",
+        expiration_event="episode.none.expired",
         invalidation_event="episode.none.invalidated",
         tags=None,
     )

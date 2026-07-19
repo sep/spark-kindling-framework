@@ -22,17 +22,28 @@ complete temporal-processing system described in the white paper and proposal.
 - `EpisodeRunner` execution that pairs start/end events into closed episodes and
   materializes open episodes when no end event has arrived;
 - batch expiration of open episodes using `expires_after_seconds` and an
-  explicit evaluation time or bounded input horizon;
+  explicit evaluation time (execution parameter or
+  `kindling.temporal.evaluation_time` config) or bounded input horizon;
 - bounded batch correction where a visible real end event wins over synthetic
   expiration while preserving the same `episode_id`;
 - episode invalidation for configured `min_duration_seconds` and
   `max_duration_seconds` bounds, including synthetic invalidation of open
-  episodes that pass their maximum duration without a real end event;
+  episodes that pass their maximum duration without a real end event; when
+  both expiration and max duration are configured, the earliest synthetic
+  boundary is terminal;
 - episode-determination events emitted back into the canonical event envelope
   with `correlation_id = episode_id` and incremented generation numbers,
   including expiration events for expired episodes and invalidation events for
   invalidated episodes;
 - unit, integration, and system coverage for the first executable slice.
+
+## Configuration
+
+- `kindling.temporal.evaluation_time` — optional explicit evaluation time for
+  synthetic episode boundaries (expiration and max-duration invalidation) in
+  batch views. A per-execution `temporal_evaluation_time` keyword argument to
+  a temporal pipe's `execute` overrides it. When neither is set, the bounded
+  input horizon (the batch's maximum `event_ts`) is used.
 
 ## Lifecycle identity
 
