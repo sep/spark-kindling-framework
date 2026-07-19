@@ -864,3 +864,266 @@ def test_episode_runner_deduplicates_replayed_start_against_persisted_episode(sp
     assert len(replayed) == 1
     assert replayed[0].episode_id == persisted_row.episode_id
     assert replayed[0].status == "open"
+
+
+class _RecordingProvider:
+    def __init__(self):
+        self.merged = []
+        self.appended = []
+
+    def merge_to_entity(self, df, entity):
+        self.merged.append((df, entity))
+
+    def append_to_entity(self, df, entity):
+        self.appended.append((df, entity))
+
+
+def _conditions_rows_df(spark, rows):
+    from kindling_ext_temporal import conditions_schema
+
+    return spark.createDataFrame(rows, conditions_schema())
+
+
+@pytest.mark.requires_spark
+def test_ingest_conditions_upserts_valid_rows_and_quarantines_invalid(spark):
+    from kindling_ext_temporal import SimpleTemporalEntityResolver, ingest_conditions
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    rows = [
+        (
+            "condition.temperature_high",
+            ["telemetry.observed"],
+            "machine",
+            {
+                "enter_when": "cast(payload['temperature'] as double) > 90",
+                "exit_when": "cast(payload['temperature'] as double) <= 90",
+            },
+            True,
+            observed_at,
+            None,
+        ),
+        (
+            "condition.pressure_high",
+            ["telemetry.observed"],
+            "machine",
+            {
+                "enter_when": "cast(payload['pressure'] as double) > 5",
+                "exit_when": "cast(payload['pressure'] as double) <= 5",
+            },
+            False,
+            observed_at,
+            None,
+        ),
+        (
+            "condition.broken",
+            ["telemetry.observed"],
+            "machine",
+            {"enter_when": "this is ((( not sql", "exit_when": "false"},
+            True,
+            observed_at,
+            None,
+        ),
+    ]
+    provider = _RecordingProvider()
+
+    result = ingest_conditions(
+        _conditions_rows_df(spark, rows),
+        resolver=SimpleTemporalEntityResolver(),
+        provider_factory=lambda entity: provider,
+        quarantine_entity_id="silver.conditions_quarantine",
+    )
+
+    assert result.ingested_count == 2
+    assert result.is_clean is False
+    assert [invalid.condition_id for invalid in result.quarantined] == ["condition.broken"]
+    assert result.quarantine_entity_id == "silver.conditions_quarantine"
+
+    merged_df, merged_entity = provider.merged[0]
+    assert merged_entity.entityid == "silver.conditions"
+    merged_ids = sorted(row.condition_id for row in merged_df.collect())
+    assert merged_ids == ["condition.pressure_high", "condition.temperature_high"]
+
+    quarantine_df, quarantine_entity = provider.appended[0]
+    assert quarantine_entity.entityid == "silver.conditions_quarantine"
+    quarantine_rows = quarantine_df.collect()
+    assert len(quarantine_rows) == 1
+    assert quarantine_rows[0].condition_id == "condition.broken"
+    assert quarantine_rows[0].errors
+    assert quarantine_rows[0].raw_row
+    assert quarantine_rows[0].quarantined_at is not None
+
+
+@pytest.mark.requires_spark
+def test_ingest_conditions_without_quarantine_entity_only_returns_rejects(spark):
+    from kindling_ext_temporal import SimpleTemporalEntityResolver, ingest_conditions
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    rows = [
+        (
+            "condition.broken",
+            ["telemetry.observed"],
+            "machine",
+            {"enter_when": "((( nope", "exit_when": "false"},
+            True,
+            observed_at,
+            None,
+        ),
+    ]
+    provider = _RecordingProvider()
+
+    result = ingest_conditions(
+        _conditions_rows_df(spark, rows),
+        resolver=SimpleTemporalEntityResolver(),
+        provider_factory=lambda entity: provider,
+        quarantine_entity_id=None,
+    )
+
+    assert result.ingested_count == 0
+    assert len(result.quarantined) == 1
+    assert result.quarantine_entity_id is None
+    assert provider.merged == []
+    assert provider.appended == []
+
+
+@pytest.mark.requires_spark
+def test_ingest_conditions_raises_on_event_type_graph_cycle(spark):
+    from kindling_ext_temporal import (
+        ConditionValidationError,
+        SimpleTemporalEntityResolver,
+        ingest_conditions,
+    )
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    rows = [
+        (
+            "condition.a",
+            ["condition.b.entered"],
+            "machine",
+            {"enter_when": "true", "exit_when": "false"},
+            True,
+            observed_at,
+            None,
+        ),
+        (
+            "condition.b",
+            ["condition.a.entered"],
+            "machine",
+            {"enter_when": "true", "exit_when": "false"},
+            True,
+            observed_at,
+            None,
+        ),
+    ]
+    provider = _RecordingProvider()
+
+    with pytest.raises(ConditionValidationError, match="not ingestible"):
+        ingest_conditions(
+            _conditions_rows_df(spark, rows),
+            resolver=SimpleTemporalEntityResolver(),
+            provider_factory=lambda entity: provider,
+        )
+    assert provider.merged == []
+
+
+@pytest.mark.requires_spark
+def test_validated_conditions_transform_gates_file_drop(spark):
+    from kindling_ext_temporal import (
+        ConditionValidationError,
+        validated_conditions_transform,
+    )
+
+    valid_df = _conditions_df(spark)
+    assert validated_conditions_transform(valid_df) is valid_df
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    invalid_df = _conditions_rows_df(
+        spark,
+        [
+            (
+                "condition.broken",
+                ["telemetry.observed"],
+                "machine",
+                {"enter_when": "((( nope", "exit_when": "false"},
+                True,
+                observed_at,
+                None,
+            )
+        ],
+    )
+    with pytest.raises(ConditionValidationError):
+        validated_conditions_transform(invalid_df)
+
+
+@pytest.mark.requires_spark
+def test_ingest_conditions_quarantines_duplicate_condition_ids(spark):
+    from kindling_ext_temporal import SimpleTemporalEntityResolver, ingest_conditions
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    good = {
+        "enter_when": "cast(payload['temperature'] as double) > 90",
+        "exit_when": "cast(payload['temperature'] as double) <= 90",
+    }
+    rows = [
+        ("condition.dup", ["telemetry.observed"], "machine", good, True, observed_at, None),
+        ("condition.dup", ["telemetry.observed"], "machine", good, False, observed_at, None),
+        ("condition.unique", ["telemetry.observed"], "machine", good, True, observed_at, None),
+    ]
+    provider = _RecordingProvider()
+
+    result = ingest_conditions(
+        _conditions_rows_df(spark, rows),
+        resolver=SimpleTemporalEntityResolver(),
+        provider_factory=lambda entity: provider,
+        quarantine_entity_id=None,
+    )
+
+    assert result.ingested_count == 1
+    assert sorted(invalid.condition_id for invalid in result.quarantined) == [
+        "condition.dup",
+        "condition.dup",
+    ]
+    assert all("appears 2 times" in invalid.errors[0] for invalid in result.quarantined)
+    merged_ids = [row.condition_id for row in provider.merged[0][0].collect()]
+    assert merged_ids == ["condition.unique"]
+
+
+@pytest.mark.requires_spark
+def test_ingest_conditions_explicit_none_disables_configured_quarantine(spark, monkeypatch):
+    from kindling_ext_temporal import SimpleTemporalEntityResolver
+    from kindling_ext_temporal import conditions as conditions_module
+    from kindling_ext_temporal import ingest_conditions
+
+    monkeypatch.setattr(
+        conditions_module, "_resolve_quarantine_entity_id", lambda: "silver.conditions_quarantine"
+    )
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    rows = [
+        (
+            "condition.broken",
+            ["telemetry.observed"],
+            "machine",
+            {"enter_when": "((( nope", "exit_when": "false"},
+            True,
+            observed_at,
+            None,
+        ),
+    ]
+
+    default_provider = _RecordingProvider()
+    defaulted = ingest_conditions(
+        _conditions_rows_df(spark, rows),
+        resolver=SimpleTemporalEntityResolver(),
+        provider_factory=lambda entity: default_provider,
+    )
+    assert defaulted.quarantine_entity_id == "silver.conditions_quarantine"
+    assert len(default_provider.appended) == 1
+
+    disabled_provider = _RecordingProvider()
+    disabled = ingest_conditions(
+        _conditions_rows_df(spark, rows),
+        resolver=SimpleTemporalEntityResolver(),
+        provider_factory=lambda entity: disabled_provider,
+        quarantine_entity_id=None,
+    )
+    assert disabled.quarantine_entity_id is None
+    assert disabled_provider.appended == []
