@@ -116,6 +116,7 @@ class EpisodeRunner:
             F.col("start.subject_type").alias("subject_type"),
             F.col("start.subject_id").alias("subject_id"),
             F.col("start.event_id").alias("start_event_id"),
+            F.col("start.generation").cast("int").alias("start_generation"),
             F.col("end_event_id"),
             F.col("start.event_ts").alias("start_time"),
             F.col("end_time"),
@@ -403,13 +404,18 @@ class EpisodeRunner:
         if episode.subject_type:
             revisable = revisable.filter(F.col("subject_type") == F.lit(episode.subject_type))
 
+        # Rows persisted before the schema carried start_generation (or with a
+        # null value) reconstruct at generation 1.
+        if "start_generation" in episodes_df.columns:
+            start_generation = F.coalesce(F.col("start_generation").cast("int"), F.lit(1))
+        else:
+            start_generation = F.lit(1)
+
         string_map = "map<string,string>"
         return revisable.select(
             F.col("start_event_id").alias("event_id"),
             F.lit(episode.start_event).alias("event_type"),
-            F.coalesce(F.col("attributes").getItem("start_generation").cast("int"), F.lit(1)).alias(
-                "generation"
-            ),
+            start_generation.alias("generation"),
             F.lit("condition").alias("event_class"),
             F.col("subject_type"),
             F.col("subject_id"),
@@ -430,8 +436,6 @@ class EpisodeRunner:
             F.lit(episode.start_event),
             F.lit("end_event_type"),
             F.lit(episode.end_event),
-            F.lit("start_generation"),
-            F.col("start.generation").cast("string"),
         )
 
     @staticmethod

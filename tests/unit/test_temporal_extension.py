@@ -1,6 +1,6 @@
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -304,18 +304,19 @@ def test_episode_registration_uses_canonical_entities():
     assert entity_registry.get_entity_definition("silver.episodes") is not None
 
     pipe = pipe_registry.get_pipe_definition("temporal.episode.episode.machine_cycle")
-    assert pipe.input_entity_ids == ["silver.events", "silver.episodes"]
+    assert pipe.input_entity_ids == ["silver.events"]
     assert pipe.output_entity_id == "silver.episodes"
     assert pipe.output_type == "delta"
     assert pipe.use_watermark is True
     assert pipe.tags["pipe_type"] == "temporal.episode"
     assert pipe.tags["temporal.start_event"] == "condition.machine_running.entered"
     assert pipe.tags["temporal.end_event"] == "condition.machine_running.exited"
-    assert pipe.tags["temporal.revise_persisted"] == "true"
+    assert pipe.tags["temporal.reads_prior_state"] == "true"
     assert callable(pipe.execute)
 
     event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.episode.machine_cycle")
-    assert event_pipe.input_entity_ids == ["silver.events", "silver.episodes"]
+    assert event_pipe.input_entity_ids == ["silver.events"]
+    assert event_pipe.tags["temporal.reads_prior_state"] == "true"
     assert event_pipe.output_entity_id == "silver.events"
     assert event_pipe.output_type == "delta"
     assert event_pipe.use_watermark is True
@@ -370,40 +371,131 @@ def test_episode_registration_accepts_explicit_determination_event_and_pipe_id()
     assert event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.rejected"
 
 
-def test_episode_registration_can_opt_out_of_persisted_revision():
-    from kindling.data_entities import DataEntityManager
-    from kindling.data_pipes import DataPipesManager
-    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+def _episode_metadata_for_resolution():
+    from kindling_ext_temporal import EpisodeMetadata
 
-    DataEpisodes.reset()
-    registry = TemporalEpisodeRegistryManager(_logger_provider())
-    entity_registry = DataEntityManager()
-    pipe_registry = DataPipesManager(_logger_provider())
+    return EpisodeMetadata(
+        episodeid="episode.machine_cycle",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.machine_running.entered",
+        end_event="condition.machine_running.exited",
+    )
+
+
+def test_translator_prior_episodes_prefers_execution_parameter():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    state_df = object()
+    with patch("kindling.injection.GlobalInjector.get") as injector_get:
+        resolved = TemporalPipeTranslator.resolve_prior_episodes(
+            {"silver_events": None, "silver_episodes": state_df},
+            _episode_metadata_for_resolution(),
+        )
+
+    assert resolved is state_df
+    injector_get.assert_not_called()
+
+
+def test_translator_prior_episodes_reads_existing_entity_through_provider():
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.entity_provider_registry import EntityProviderRegistry
+    from kindling.spark_config import ConfigService
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    state_df = object()
+    entity = Mock(entityid="silver.episodes")
+    entity_registry = Mock()
+    entity_registry.get_entity_definition.return_value = entity
+    provider = Mock()
+    provider.check_entity_exists.return_value = True
+    provider.read_entity.return_value = state_df
+    provider_registry = Mock()
+    provider_registry.get_provider_for_entity.return_value = provider
+    config_service = Mock()
+    config_service.get.return_value = True
+
+    def _get(dep):
+        if dep is ConfigService:
+            return config_service
+        if dep is DataEntityRegistry:
+            return entity_registry
+        if dep is EntityProviderRegistry:
+            return provider_registry
+        raise AssertionError(f"Unexpected service request: {dep}")
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=_get):
+        resolved = TemporalPipeTranslator.resolve_prior_episodes(
+            {"silver_events": None}, _episode_metadata_for_resolution()
+        )
+
+    assert resolved is state_df
+    config_service.get.assert_called_once_with("kindling.temporal.revise_persisted", True)
+    provider.read_entity.assert_called_once_with(entity)
+
+
+def test_translator_prior_episodes_none_when_entity_missing_or_disabled():
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.entity_provider_registry import EntityProviderRegistry
+    from kindling.spark_config import ConfigService
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    entity_registry = Mock()
+    entity_registry.get_entity_definition.return_value = Mock(entityid="silver.episodes")
+    provider = Mock()
+    provider.check_entity_exists.return_value = False
+    provider_registry = Mock()
+    provider_registry.get_provider_for_entity.return_value = provider
+
+    def _get_enabled(dep):
+        if dep is ConfigService:
+            service = Mock()
+            service.get.return_value = True
+            return service
+        if dep is DataEntityRegistry:
+            return entity_registry
+        if dep is EntityProviderRegistry:
+            return provider_registry
+        raise AssertionError(f"Unexpected service request: {dep}")
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=_get_enabled):
+        assert (
+            TemporalPipeTranslator.resolve_prior_episodes(
+                {"silver_events": None}, _episode_metadata_for_resolution()
+            )
+            is None
+        )
+    provider.read_entity.assert_not_called()
+
+    def _get_disabled(dep):
+        if dep is ConfigService:
+            service = Mock()
+            service.get.return_value = "false"
+            return service
+        raise AssertionError(f"Unexpected service request: {dep}")
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=_get_disabled):
+        assert (
+            TemporalPipeTranslator.resolve_prior_episodes(
+                {"silver_events": None}, _episode_metadata_for_resolution()
+            )
+            is None
+        )
+
+
+def test_translator_prior_episodes_none_without_bound_services():
+    from kindling_ext_temporal import TemporalPipeTranslator
 
     with patch(
         "kindling.injection.GlobalInjector.get",
-        side_effect=_temporal_service_get(
-            episode_registry=registry,
-            entity_registry=entity_registry,
-            pipe_registry=pipe_registry,
-        ),
+        side_effect=RuntimeError("no bindings"),
     ):
-        DataEpisodes.episode(
-            episodeid="episode.machine_cycle",
-            start_event="condition.machine_running.entered",
-            end_event="condition.machine_running.exited",
-            revise_persisted=False,
+        assert (
+            TemporalPipeTranslator.resolve_prior_episodes(
+                {"silver_events": None}, _episode_metadata_for_resolution()
+            )
+            is None
         )
-
-    metadata = registry.get_episode_definition("episode.machine_cycle")
-    assert metadata.revise_persisted is False
-
-    pipe = pipe_registry.get_pipe_definition("temporal.episode.episode.machine_cycle")
-    assert pipe.input_entity_ids == ["silver.events"]
-    assert pipe.tags["temporal.revise_persisted"] == "false"
-
-    event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.episode.machine_cycle")
-    assert event_pipe.input_entity_ids == ["silver.events"]
 
 
 def test_translator_evaluation_time_prefers_execution_parameter():

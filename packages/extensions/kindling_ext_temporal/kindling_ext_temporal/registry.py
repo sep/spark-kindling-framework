@@ -67,7 +67,6 @@ class EpisodeMetadata:
     late_event_grace_seconds: Optional[int] = None
     expires_after_seconds: Optional[int] = None
     expiration_event: Optional[str] = None
-    revise_persisted: bool = True
     tags: Dict[str, str] = field(default_factory=dict)
 
 

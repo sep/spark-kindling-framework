@@ -3,6 +3,8 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
+from kindling.data_entities import EntityMetadata
+from kindling.injection import GlobalInjector
 from pyspark.sql.types import (
     ArrayType,
     BooleanType,
@@ -14,9 +16,6 @@ from pyspark.sql.types import (
     StructType,
     TimestampType,
 )
-
-from kindling.data_entities import EntityMetadata
-from kindling.injection import GlobalInjector
 
 
 def events_schema() -> StructType:
@@ -66,6 +65,7 @@ def episodes_schema() -> StructType:
             StructField("subject_type", StringType(), False),
             StructField("subject_id", StringType(), False),
             StructField("start_event_id", StringType(), False),
+            StructField("start_generation", IntegerType(), True),
             StructField("end_event_id", StringType(), True),
             StructField("start_time", TimestampType(), False),
             StructField("end_time", TimestampType(), True),

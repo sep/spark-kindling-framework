@@ -194,6 +194,7 @@ def test_episode_runner_pairs_entered_and_exited_events(spark):
     assert row.subject_type == "machine"
     assert row.subject_id == "machine-1"
     assert row.start_event_id
+    assert row.start_generation == 1
     assert row.end_event_id
     assert row.status == "closed"
     assert row.close_reason == "end_event"
@@ -707,6 +708,18 @@ def test_episode_runner_revises_persisted_expired_episode_with_late_real_end(spa
     assert event.payload["status"] == "closed"
     assert event.payload["close_reason"] == "end_event"
     assert event.payload["end_event_id"] == row.end_event_id
+
+    legacy_state = persisted.drop("start_generation")
+    legacy_revised = runner.execute(
+        late_end_boundaries,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=15),
+        existing_episodes_df=legacy_state,
+    ).collect()
+    assert len(legacy_revised) == 1
+    assert legacy_revised[0].status == "closed"
+    assert legacy_revised[0].episode_id == persisted_row.episode_id
+    assert legacy_revised[0].start_generation == 1
 
 
 @pytest.mark.requires_spark
