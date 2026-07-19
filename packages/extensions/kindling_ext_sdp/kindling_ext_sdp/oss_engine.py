@@ -77,6 +77,9 @@ class OssSdpEngine(DeclarationEngine):
             EXTERNAL inputs. Defaults to ``spark.table(entity_id)`` — the
             entity id as a catalog table name, pending the proposal's open
             "Catalog naming" question.
+        external_stream_read_resolver: ``(spark, entity_id) -> DataFrame``
+            for streamed EXTERNAL inputs. Defaults to
+            ``spark.readStream.table(entity_id)``.
     """
 
     def __init__(
@@ -88,11 +91,15 @@ class OssSdpEngine(DeclarationEngine):
         dp_module: Any = None,
         session_provider: Optional[Callable[[], Any]] = None,
         external_read_resolver: Optional[Callable[[Any, str], Any]] = None,
+        external_stream_read_resolver: Optional[Callable[[Any, str], Any]] = None,
     ):
         super().__init__(entity_registry, pipe_registry, capabilities, engine_config)
         self._dp_module = dp_module
         self._session_provider = session_provider or _default_session_provider
         self._external_read_resolver = external_read_resolver
+        self._external_stream_read_resolver = external_stream_read_resolver or (
+            lambda spark, entity_id: spark.readStream.table(entity_id)
+        )
 
     def declare_pipeline(self, plan: DeclarationPlan) -> None:
         """Declare every dataset in the (already validated) plan."""
@@ -131,7 +138,9 @@ class OssSdpEngine(DeclarationEngine):
             kwargs["schema"] = dataset.schema
         return kwargs
 
-    def _build_dataset_function(self, dataset: DatasetDeclaration) -> Callable[[], Any]:
+    def _build_dataset_function(
+        self, dataset: DatasetDeclaration, stream_first_input: bool = False
+    ) -> Callable[[], Any]:
         """The DataFrame-returning query body SDP evaluates.
 
         Reproduces the runner engine's input contract exactly
@@ -143,15 +152,27 @@ class OssSdpEngine(DeclarationEngine):
         INTERNAL inputs are read with ``spark.table(<dataset name>)`` so
         SDP infers the pipeline graph edge; EXTERNAL inputs go through the
         resolver (default: also a catalog-table read).
+
+        ``stream_first_input`` reads the FIRST input — the driving source,
+        per the runner engine's driving-source convention — with
+        ``spark.readStream.table()`` so a consuming flow processes it
+        incrementally (AUTO CDC change feeds); remaining inputs stay batch
+        reads (stream-static joins).
         """
         session_provider = self._session_provider
         resolver = self._external_read_resolver
+        stream_resolver = self._external_stream_read_resolver
 
         def dataset_function():
             spark = session_provider()
             input_dfs = {}
-            for pipe_input in dataset.inputs:
-                if pipe_input.classification is InputClassification.INTERNAL or resolver is None:
+            for position, pipe_input in enumerate(dataset.inputs):
+                if stream_first_input and position == 0:
+                    if pipe_input.classification is InputClassification.INTERNAL:
+                        df = spark.readStream.table(pipe_input.entity_id)
+                    else:
+                        df = stream_resolver(spark, pipe_input.entity_id)
+                elif pipe_input.classification is InputClassification.INTERNAL or resolver is None:
                     df = spark.table(pipe_input.entity_id)
                 else:
                     df = resolver(spark, pipe_input.entity_id)
