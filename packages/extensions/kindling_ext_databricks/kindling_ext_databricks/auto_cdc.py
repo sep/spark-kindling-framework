@@ -93,6 +93,14 @@ def validate_scd_spec(spec: ScdSpec, merge_columns: List[str]) -> List[Tuple[str
                 "while in Beta)",
             )
         )
+    if spec.is_snapshot and spec.delete_when:
+        issues.append(
+            (
+                "scd_delete_when_snapshot_unsupported",
+                "scd.delete_when cannot be used with snapshot AUTO CDC — "
+                "a snapshot expresses deletion by absence",
+            )
+        )
     if not spec.is_snapshot and not spec.sequence_by:
         issues.append(
             (

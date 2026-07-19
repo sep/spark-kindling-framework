@@ -11,12 +11,13 @@ Databricks CDC reference.
 import pytest
 from kindling.data_entities import EntityMetadata
 from kindling.data_pipes import PipeMetadata
-from kindling_databricks_sdp import (
+from kindling_ext_databricks import (
     DatabricksSdpEngine,
     scd_spec_from_tags,
     validate_scd_spec,
 )
-from kindling_sdp import DeclarationValidationError
+from kindling_ext_sdp import DeclarationValidationError
+from kindling_ext_sdp.declaration_plan import DatasetDeclaration, DatasetType
 
 # --------------------------------------------------------------------- #
 # Fixtures                                                               #
@@ -304,6 +305,58 @@ class TestChangeFeedStreamingSource:
         assert captured["bronze_customers"] == "stream:bronze.customers"
         assert captured["ref_regions"] == "df:ref.regions"
 
+    def test_external_driving_input_uses_stream_resolver(self):
+        captured = {}
+
+        def execute(**dfs):
+            captured.update(dfs)
+            return "df:out"
+
+        entities = FakeRegistry(
+            {
+                e.entityid: e
+                for e in [
+                    make_entity("bronze.customers"),
+                    make_entity("ref.regions"),
+                    make_entity("silver.customers", tags=CHANGE_FEED_TAGS),
+                ]
+            }
+        )
+        pipes = FakeRegistry(
+            {
+                "scd.customers": make_pipe(
+                    "scd.customers",
+                    ["bronze.customers", "ref.regions"],
+                    "silver.customers",
+                    execute=execute,
+                )
+            }
+        )
+        dp = FakeLakeflowDp()
+        session = FakeStreamingSession()
+
+        def batch_resolver(spark, entity_id):
+            return spark.table(f"catalog.{entity_id}")
+
+        def stream_resolver(spark, entity_id):
+            return spark.readStream.table(f"catalog.{entity_id}")
+
+        engine = DatabricksSdpEngine(
+            entities,
+            pipes,
+            dp_module=dp,
+            session_provider=lambda: session,
+            external_read_resolver=batch_resolver,
+            external_stream_read_resolver=stream_resolver,
+        )
+        engine.declare_pipeline(engine.build_plan())
+        dp.views["silver.customers__scd_source"]()
+
+        assert session.stream_reads == ["catalog.bronze.customers"]
+        assert session.batch_reads == ["catalog.ref.regions"]
+        assert captured["bronze_customers"] == "stream:catalog.bronze.customers"
+        assert captured["ref_regions"] == "df:catalog.ref.regions"
+
     def test_snapshot_source_keeps_batch_reads(self):
         """The snapshot API diffs whole snapshots per update — a streaming
         read would be wrong there."""
@@ -343,6 +396,16 @@ class TestSnapshotMapping:
 
         assert "sequence_by" not in dp.snapshot_flows[0]
 
+    def test_snapshot_delete_when_fails_fast(self):
+        entities, pipes = scd_graph({**SNAPSHOT_TAGS, "scd.delete_when": "deleted = true"})
+        engine = DatabricksSdpEngine(entities, pipes, dp_module=FakeLakeflowDp())
+
+        with pytest.raises(
+            DeclarationValidationError,
+            match="scd_delete_when_snapshot_unsupported",
+        ):
+            engine.build_plan()
+
 
 # --------------------------------------------------------------------- #
 # Validation                                                             #
@@ -376,6 +439,37 @@ class TestAutoCdcValidation:
 
         with pytest.raises(DeclarationValidationError, match="scd_keys_required"):
             engine.build_plan()
+
+    def test_missing_scd_entity_fails_with_dataset_name(self):
+        dataset = DatasetDeclaration(
+            name="silver.missing",
+            dataset_type=DatasetType.MATERIALIZED_VIEW,
+            execute=lambda **dfs: "df",
+            pipe_id="scd.missing",
+            inputs=(),
+        )
+        engine = DatabricksSdpEngine(FakeRegistry(), FakeRegistry(), dp_module=FakeLakeflowDp())
+
+        with pytest.raises(RuntimeError, match="silver.missing"):
+            engine._declare_scd_dataset(
+                FakeLakeflowDp(),
+                dataset,
+                scd_spec_from_tags(CHANGE_FEED_TAGS),
+            )
+
+    def test_duplicate_scd_writers_fail_once_per_entity_issue(self):
+        entities, pipes = scd_graph({"scd.type": "2", "scd.source_kind": "change_feed"})
+        pipes["scd.customers.second"] = make_pipe(
+            "scd.customers.second",
+            ["bronze.customers"],
+            "silver.customers",
+        )
+        engine = DatabricksSdpEngine(entities, pipes, dp_module=FakeLakeflowDp())
+
+        issues = engine.validate()
+
+        assert sum(issue.code == "duplicate_output_entity" for issue in issues) == 1
+        assert sum(issue.code == "scd_sequence_by_required" for issue in issues) == 1
 
     def test_non_scd_datasets_still_declare_as_materialized_views(self):
         entities, pipes = scd_graph({})  # no scd tags on silver

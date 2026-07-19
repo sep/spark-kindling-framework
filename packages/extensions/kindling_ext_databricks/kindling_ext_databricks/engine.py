@@ -69,6 +69,7 @@ class DatabricksSdpEngine(OssSdpEngine):
         """Core validation plus the AUTO CDC mapping requirements for
         SCD-tagged targets (Phase 5)."""
         issues = super().validate(pipe_ids)
+        seen_scd_issues = set()
         for pipe_id in self._select_pipe_ids(pipe_ids):
             pipe = self.pipe_registry.get_pipe_definition(pipe_id)
             if pipe is None or not pipe.output_entity_id:
@@ -80,6 +81,10 @@ class DatabricksSdpEngine(OssSdpEngine):
             if spec is None:
                 continue
             for code, reason in validate_scd_spec(spec, list(entity.merge_columns or ())):
+                issue_key = (pipe.output_entity_id, code)
+                if issue_key in seen_scd_issues:
+                    continue
+                seen_scd_issues.add(issue_key)
                 issues.append(DeclarationIssue(pipe_id=pipe_id, code=code, reason=reason))
         return issues
 
@@ -123,6 +128,11 @@ class DatabricksSdpEngine(OssSdpEngine):
            comes from ingestion order, not scd.sequence_by).
         """
         entity = self.entity_registry.get_entity_definition(dataset.name)
+        if entity is None:
+            raise RuntimeError(
+                f"Dataset '{dataset.name}': output entity could not be resolved "
+                "while declaring its AUTO CDC flow."
+            )
         source_name = f"{dataset.name}{SCD_SOURCE_SUFFIX}"
 
         view_decorator = getattr(dp, "temporary_view", None) or getattr(dp, "view", None)
