@@ -44,6 +44,14 @@ complete temporal-processing system described in the white paper and proposal.
   re-emit into an in-place revision; a batch with no new events and no
   evaluation time emits nothing for reconstructed episodes so persisted state
   never regresses;
+- validated conditions ingestion: `ingest_conditions` validates rule rows per
+  row (Spark SQL expression parsing, event-type graph cycle rejection),
+  quarantines rejects (returned, and appended to
+  `kindling.temporal.conditions.quarantine_entity_id` when configured), and
+  upserts the well-formed rows — including disabled ones — through the
+  conditions entity's SCD2 merge; `validated_conditions_transform` gates a
+  `FileIngestion` file-drop entry with the same validation, rejecting a file
+  whole on any invalid row;
 - unit, integration, and system coverage for the first executable slice.
 
 ## Configuration
@@ -56,6 +64,10 @@ complete temporal-processing system described in the white paper and proposal.
 - `kindling.temporal.revise_persisted` — set to `false` to disable the prior
   episode-state read entirely; episode pipes then compute a pure batch view.
   Defaults to enabled.
+- `kindling.temporal.conditions.quarantine_entity_id` — optional entity id for
+  rejected condition rows; when set, `ingest_conditions` appends quarantined
+  rows (condition id, errors, raw row, timestamp) there. Unset: rejects are
+  only returned in the ingestion result.
 
 ## Revision semantics
 
@@ -113,4 +125,5 @@ mistaken for a full implementation:
 - aggregation, correlation, and inference-derived event paths;
 - cloud platform persistence/orchestration coverage beyond the local system
   test path;
+- a `kindling conditions set/remove` CLI on top of `ingest_conditions`;
 - production examples and operator documentation.

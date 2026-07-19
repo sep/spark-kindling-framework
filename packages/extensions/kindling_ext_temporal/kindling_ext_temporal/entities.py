@@ -54,6 +54,17 @@ def conditions_schema() -> StructType:
     )
 
 
+def condition_quarantine_schema() -> StructType:
+    """Schema for rejected condition rows (validation quarantine)."""
+    return StructType(
+        [
+            StructField("condition_id", StringType(), True),
+            StructField("errors", ArrayType(StringType(), False), False),
+            StructField("raw_row", StringType(), True),
+        ]
+    )
+
+
 def episodes_schema() -> StructType:
     """Return the canonical episode schema."""
     return StructType(

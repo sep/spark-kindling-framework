@@ -727,3 +727,14 @@ def test_condition_validator_rejects_event_type_cycles():
 
     assert report.is_valid is False
     assert "Cycle detected in pipe dependencies" in report.invalid_conditions[0].errors[0]
+
+
+def test_conditions_ingestion_result_and_config_key():
+    from kindling_ext_temporal import (
+        QUARANTINE_ENTITY_CONFIG_KEY,
+        ConditionsIngestionResult,
+    )
+
+    assert QUARANTINE_ENTITY_CONFIG_KEY == "kindling.temporal.conditions.quarantine_entity_id"
+    assert ConditionsIngestionResult(ingested_count=3).is_clean is True
+    assert ConditionsIngestionResult(ingested_count=0, quarantined=[object()]).is_clean is False
