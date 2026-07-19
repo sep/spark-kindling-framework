@@ -1,6 +1,6 @@
 """Lower temporal declarations into ordinary Kindling pipe registrations."""
 
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from kindling.data_entities import DataEntityRegistry, EntityMetadata
 from kindling.data_pipes import DataPipesRegistry
@@ -164,12 +164,27 @@ class TemporalPipeTranslator:
                 "temporal.episode_id": metadata.episodeid,
                 "temporal.start_event": metadata.start_event,
                 "temporal.end_event": metadata.end_event,
+                "temporal.revise_persisted": str(bool(metadata.revise_persisted)).lower(),
             },
-            "input_entity_ids": [metadata.events_entity_id],
+            "input_entity_ids": cls._episode_input_entity_ids(metadata),
             "output_entity_id": metadata.output_entity_id,
             "output_type": metadata.output_type,
             "use_watermark": metadata.use_watermark,
         }
+
+    @classmethod
+    def _episode_input_entity_ids(cls, metadata: "EpisodeMetadata") -> List[str]:
+        """Inputs for episode-family pipes.
+
+        The events entity is first — the watermarked driving source. With
+        revision enabled, the episodes entity follows as reference data (read
+        in full per the driving-source convention) so late real end events can
+        revise persisted open/expired/synthetically-invalidated episodes.
+        """
+        input_ids = [metadata.events_entity_id]
+        if metadata.revise_persisted:
+            input_ids.append(metadata.output_entity_id)
+        return input_ids
 
     @classmethod
     def episode_determination_event_pipe_params(cls, metadata: "EpisodeMetadata") -> Dict[str, Any]:
@@ -186,8 +201,9 @@ class TemporalPipeTranslator:
                 "temporal.invalidation_event_type": metadata.invalidation_event,
                 "temporal.start_event": metadata.start_event,
                 "temporal.end_event": metadata.end_event,
+                "temporal.revise_persisted": str(bool(metadata.revise_persisted)).lower(),
             },
-            "input_entity_ids": [metadata.events_entity_id],
+            "input_entity_ids": cls._episode_input_entity_ids(metadata),
             "output_entity_id": metadata.events_entity_id,
             "output_type": metadata.output_type,
             "use_watermark": metadata.use_watermark,
@@ -226,10 +242,12 @@ class TemporalPipeTranslator:
 
             from .engine import EpisodeRunner
 
+            episodes_key = metadata.output_entity_id.replace(".", "_")
             return EpisodeRunner().execute(
                 events_df,
                 metadata,
                 evaluation_time=cls.resolve_evaluation_time(entity_dfs),
+                existing_episodes_df=entity_dfs.get(episodes_key),
             )
 
         return execute
@@ -270,10 +288,12 @@ class TemporalPipeTranslator:
 
             from .engine import EpisodeRunner
 
+            episodes_key = metadata.output_entity_id.replace(".", "_")
             return EpisodeRunner().execute_determination_events(
                 events_df,
                 metadata,
                 evaluation_time=cls.resolve_evaluation_time(entity_dfs),
+                existing_episodes_df=entity_dfs.get(episodes_key),
             )
 
         return execute

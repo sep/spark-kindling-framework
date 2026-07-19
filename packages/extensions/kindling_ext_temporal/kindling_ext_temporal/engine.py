@@ -98,10 +98,15 @@ class ConditionEngineRunner:
 class EpisodeRunner:
     """Form Episodes by pairing start Events with the earliest matching end Event."""
 
-    def execute(self, events_df, episode, evaluation_time=None):
+    def execute(self, events_df, episode, evaluation_time=None, existing_episodes_df=None):
         from pyspark.sql import functions as F
 
-        paired = self._paired_boundaries(events_df, episode, evaluation_time=evaluation_time)
+        paired = self._paired_boundaries(
+            events_df,
+            episode,
+            evaluation_time=evaluation_time,
+            existing_episodes_df=existing_episodes_df,
+        )
 
         return paired.select(
             F.col("episode_id"),
@@ -124,11 +129,16 @@ class EpisodeRunner:
             self._episode_attributes(episode).alias("attributes"),
         )
 
-    def execute_determination_events(self, events_df, episode, evaluation_time=None):
+    def execute_determination_events(
+        self, events_df, episode, evaluation_time=None, existing_episodes_df=None
+    ):
         from pyspark.sql import functions as F
 
         paired = self._paired_boundaries(
-            events_df, episode, evaluation_time=evaluation_time
+            events_df,
+            episode,
+            evaluation_time=evaluation_time,
+            existing_episodes_df=existing_episodes_df,
         ).filter(F.col("status").isin("closed", "expired", "invalidated"))
         determination_event = episode.determination_event or f"{episode.episodeid}.closed"
         expiration_event = episode.expiration_event or f"{episode.episodeid}.expired"
@@ -205,7 +215,7 @@ class EpisodeRunner:
         )
 
     @staticmethod
-    def _paired_boundaries(events_df, episode, evaluation_time=None):
+    def _paired_boundaries(events_df, episode, evaluation_time=None, existing_episodes_df=None):
         from pyspark.sql import functions as F
         from pyspark.sql.window import Window
 
@@ -214,6 +224,15 @@ class EpisodeRunner:
         if episode.subject_type:
             starts = starts.filter(F.col("subject_type") == F.lit(episode.subject_type))
             ends = ends.filter(F.col("subject_type") == F.lit(episode.subject_type))
+
+        starts = starts.withColumn("__temporal_reconstructed_start", F.lit(False))
+        if existing_episodes_df is not None:
+            reconstructed = EpisodeRunner._reconstruct_start_boundaries(
+                existing_episodes_df, episode
+            ).join(starts.select("event_id"), on="event_id", how="left_anti")
+            starts = starts.unionByName(
+                reconstructed.withColumn("__temporal_reconstructed_start", F.lit(True))
+            )
 
         starts = starts.alias("start")
         ends = ends.alias("end")
@@ -240,6 +259,16 @@ class EpisodeRunner:
                 "__temporal_evaluation_time",
                 F.lit(evaluation_time).cast("timestamp"),
             )
+        # A reconstructed start with no new end event and no evaluation time
+        # carries no new information; emitting it would recompute the
+        # persisted episode as merely "open" and regress its lifecycle state.
+        paired = paired.filter(
+            ~(
+                F.col("start.__temporal_reconstructed_start")
+                & F.col("end.event_id").isNull()
+                & F.col("__temporal_evaluation_time").isNull()
+            )
+        )
 
         expiration_time = F.lit(None).cast("timestamp")
         if episode.expires_after_seconds is not None:
@@ -351,6 +380,46 @@ class EpisodeRunner:
         )
 
     @staticmethod
+    def _reconstruct_start_boundaries(episodes_df, episode):
+        """Rebuild start-boundary event rows for persisted revisable episodes.
+
+        Revisable means the episode has no real end yet: open, expired, or
+        invalidated with a synthetic end. Episodes ended by a real event are
+        terminal and never revised. The reconstructed rows let an incremental
+        batch that only contains a late real end event pair it against a start
+        consumed by an earlier batch.
+        """
+        from pyspark.sql import functions as F
+
+        revisable = episodes_df.filter(
+            (F.col("episode_type") == F.lit(episode.episodeid))
+            & (
+                F.col("status").isin("open", "expired")
+                | ((F.col("status") == F.lit("invalidated")) & F.col("end_event_synthetic"))
+            )
+        )
+        if episode.subject_type:
+            revisable = revisable.filter(F.col("subject_type") == F.lit(episode.subject_type))
+
+        string_map = "map<string,string>"
+        return revisable.select(
+            F.col("start_event_id").alias("event_id"),
+            F.lit(episode.start_event).alias("event_type"),
+            F.coalesce(F.col("attributes").getItem("start_generation").cast("int"), F.lit(1)).alias(
+                "generation"
+            ),
+            F.lit("condition").alias("event_class"),
+            F.col("subject_type"),
+            F.col("subject_id"),
+            F.col("start_time").alias("event_ts"),
+            F.lit("kindling-ext-temporal.revision").alias("source_system"),
+            F.col("episode_id").alias("correlation_id"),
+            F.lit(None).cast(string_map).alias("payload"),
+            F.lit(None).cast(string_map).alias("attributes"),
+            F.current_timestamp().alias("ingested_at"),
+        )
+
+    @staticmethod
     def _episode_attributes(episode):
         from pyspark.sql import functions as F
 
@@ -359,6 +428,8 @@ class EpisodeRunner:
             F.lit(episode.start_event),
             F.lit("end_event_type"),
             F.lit(episode.end_event),
+            F.lit("start_generation"),
+            F.col("start.generation").cast("string"),
         )
 
     @staticmethod

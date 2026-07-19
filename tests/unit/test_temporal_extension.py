@@ -304,17 +304,18 @@ def test_episode_registration_uses_canonical_entities():
     assert entity_registry.get_entity_definition("silver.episodes") is not None
 
     pipe = pipe_registry.get_pipe_definition("temporal.episode.episode.machine_cycle")
-    assert pipe.input_entity_ids == ["silver.events"]
+    assert pipe.input_entity_ids == ["silver.events", "silver.episodes"]
     assert pipe.output_entity_id == "silver.episodes"
     assert pipe.output_type == "delta"
     assert pipe.use_watermark is True
     assert pipe.tags["pipe_type"] == "temporal.episode"
     assert pipe.tags["temporal.start_event"] == "condition.machine_running.entered"
     assert pipe.tags["temporal.end_event"] == "condition.machine_running.exited"
+    assert pipe.tags["temporal.revise_persisted"] == "true"
     assert callable(pipe.execute)
 
     event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.episode.machine_cycle")
-    assert event_pipe.input_entity_ids == ["silver.events"]
+    assert event_pipe.input_entity_ids == ["silver.events", "silver.episodes"]
     assert event_pipe.output_entity_id == "silver.events"
     assert event_pipe.output_type == "delta"
     assert event_pipe.use_watermark is True
@@ -367,6 +368,42 @@ def test_episode_registration_accepts_explicit_determination_event_and_pipe_id()
     assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.completed"
     assert event_pipe.tags["temporal.expiration_event_type"] == "episode.machine_cycle.timed_out"
     assert event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.rejected"
+
+
+def test_episode_registration_can_opt_out_of_persisted_revision():
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+
+    DataEpisodes.reset()
+    registry = TemporalEpisodeRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            episode_registry=registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+        ),
+    ):
+        DataEpisodes.episode(
+            episodeid="episode.machine_cycle",
+            start_event="condition.machine_running.entered",
+            end_event="condition.machine_running.exited",
+            revise_persisted=False,
+        )
+
+    metadata = registry.get_episode_definition("episode.machine_cycle")
+    assert metadata.revise_persisted is False
+
+    pipe = pipe_registry.get_pipe_definition("temporal.episode.episode.machine_cycle")
+    assert pipe.input_entity_ids == ["silver.events"]
+    assert pipe.tags["temporal.revise_persisted"] == "false"
+
+    event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.episode.machine_cycle")
+    assert event_pipe.input_entity_ids == ["silver.events"]
 
 
 def test_translator_evaluation_time_prefers_execution_parameter():
