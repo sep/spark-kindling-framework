@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -26,15 +27,14 @@ def _temporal_service_get(
     entity_registry=None,
     pipe_registry=None,
 ):
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
     from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
         TemporalEntityResolver,
         TemporalEpisodeRegistry,
         TemporalEventRegistry,
     )
-
-    from kindling.data_entities import DataEntityRegistry
-    from kindling.data_pipes import DataPipesRegistry
 
     def _get(dep):
         if dep is TemporalEntityResolver:
@@ -113,10 +113,9 @@ def test_base_event_pipe_id_is_namespaced():
 
 
 def test_base_event_decorator_registers_metadata():
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
-
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -169,10 +168,9 @@ def test_base_event_decorator_registers_metadata():
 
 
 def test_base_event_registration_accepts_none_tags_and_requires_metadata():
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
-
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -230,10 +228,9 @@ def test_base_event_registration_accepts_none_tags_and_requires_metadata():
 
 
 def test_condition_engine_registration_is_not_condition_specific():
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
-
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     registry = TemporalEventRegistryManager(_logger_provider())
@@ -268,10 +265,9 @@ def test_condition_engine_registration_is_not_condition_specific():
 
 
 def test_episode_registration_uses_canonical_entities():
-    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
-
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
 
     DataEpisodes.reset()
     registry = TemporalEpisodeRegistryManager(_logger_provider())
@@ -292,7 +288,6 @@ def test_episode_registration_uses_canonical_entities():
             end_event="condition.machine_running.exited",
             subject_type="machine",
             expires_after_seconds=28800,
-            expiration_event="episode.machine_cycle.expired",
         )
 
     metadata = registry.get_episode_definition("episode.machine_cycle")
@@ -301,6 +296,9 @@ def test_episode_registration_uses_canonical_entities():
     assert metadata.start_event == "condition.machine_running.entered"
     assert metadata.end_event == "condition.machine_running.exited"
     assert metadata.condition_id == "condition.machine_running"
+    assert metadata.determination_event == "episode.machine_cycle.closed"
+    assert metadata.expiration_event == "episode.machine_cycle.expired"
+    assert metadata.invalidation_event == "episode.machine_cycle.invalidated"
     assert metadata.expires_after_seconds == 28800
     assert entity_registry.get_entity_definition("silver.events") is not None
     assert entity_registry.get_entity_definition("silver.episodes") is not None
@@ -315,8 +313,108 @@ def test_episode_registration_uses_canonical_entities():
     assert pipe.tags["temporal.end_event"] == "condition.machine_running.exited"
     assert callable(pipe.execute)
 
+    event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.episode.machine_cycle")
+    assert event_pipe.input_entity_ids == ["silver.events"]
+    assert event_pipe.output_entity_id == "silver.events"
+    assert event_pipe.output_type == "delta"
+    assert event_pipe.use_watermark is True
+    assert event_pipe.tags["pipe_type"] == "temporal.episode_event"
+    assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.closed"
+    assert event_pipe.tags["temporal.expiration_event_type"] == "episode.machine_cycle.expired"
+    assert (
+        event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.invalidated"
+    )
+    assert event_pipe.tags["temporal.start_event"] == "condition.machine_running.entered"
+    assert event_pipe.tags["temporal.end_event"] == "condition.machine_running.exited"
+    assert callable(event_pipe.execute)
+
+
+def test_episode_registration_accepts_explicit_determination_event_and_pipe_id():
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+
+    DataEpisodes.reset()
+    registry = TemporalEpisodeRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            episode_registry=registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+        ),
+    ):
+        DataEpisodes.episode(
+            episodeid="episode.machine_cycle",
+            start_event="condition.machine_running.entered",
+            end_event="condition.machine_running.exited",
+            determination_event="episode.machine_cycle.completed",
+            expiration_event="episode.machine_cycle.timed_out",
+            invalidation_event="episode.machine_cycle.rejected",
+            determination_pipeid="temporal.episode_event.machine_cycle_completed",
+        )
+
+    metadata = registry.get_episode_definition("episode.machine_cycle")
+    assert metadata.determination_event == "episode.machine_cycle.completed"
+    assert metadata.expiration_event == "episode.machine_cycle.timed_out"
+    assert metadata.invalidation_event == "episode.machine_cycle.rejected"
+
+    event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.machine_cycle_completed")
+    assert event_pipe.output_entity_id == "silver.events"
+    assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.completed"
+    assert event_pipe.tags["temporal.expiration_event_type"] == "episode.machine_cycle.timed_out"
+    assert event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.rejected"
+
+
+def test_translator_evaluation_time_prefers_execution_parameter():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    explicit = datetime(2026, 7, 14, 12, 10, 0)
+    with patch("kindling.injection.GlobalInjector.get") as injector_get:
+        resolved = TemporalPipeTranslator.resolve_evaluation_time(
+            {"temporal_evaluation_time": explicit}
+        )
+
+    assert resolved == explicit
+    injector_get.assert_not_called()
+
+
+def test_translator_evaluation_time_falls_back_to_config():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    configured = datetime(2026, 7, 14, 12, 10, 0)
+
+    class _ConfigService:
+        def __init__(self):
+            self.requested = []
+
+        def get(self, key, default=None):
+            self.requested.append(key)
+            return configured
+
+    config_service = _ConfigService()
+    with patch("kindling.injection.GlobalInjector.get", return_value=config_service):
+        resolved = TemporalPipeTranslator.resolve_evaluation_time({"silver_events": None})
+
+    assert resolved == configured
+    assert config_service.requested == ["kindling.temporal.evaluation_time"]
+
+
+def test_translator_evaluation_time_defaults_to_none_without_config_service():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=RuntimeError("no ConfigService binding"),
+    ):
+        assert TemporalPipeTranslator.resolve_evaluation_time({"silver_events": None}) is None
+
 
 def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
+    from kindling.data_entities import DataEntityManager, EntityMetadata
     from kindling_ext_temporal import (
         BaseEventMetadata,
         ConditionEngineMetadata,
@@ -324,8 +422,6 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
         TemporalPipeTranslator,
         events_schema,
     )
-
-    from kindling.data_entities import DataEntityManager, EntityMetadata
 
     base_event = BaseEventMetadata(
         eventid="telemetry.none_tags",
@@ -350,6 +446,9 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
         events_entity_id="silver.events",
         start_event="condition.none.entered",
         end_event="condition.none.exited",
+        determination_event="episode.none.closed",
+        expiration_event="episode.none.expired",
+        invalidation_event="episode.none.invalidated",
         tags=None,
     )
 
@@ -364,6 +463,10 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
     assert (
         TemporalPipeTranslator.episode_pipe_params(episode)["tags"]["pipe_type"]
         == "temporal.episode"
+    )
+    assert (
+        TemporalPipeTranslator.episode_determination_event_pipe_params(episode)["tags"]["pipe_type"]
+        == "temporal.episode_event"
     )
 
     registry = DataEntityManager()
