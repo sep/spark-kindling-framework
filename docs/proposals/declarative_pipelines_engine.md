@@ -51,10 +51,10 @@ the OSS API on the Databricks Runtime.
 That fact inverts the natural packaging. The engine core must not be
 Databricks-named or Databricks-dependent:
 
-- **`kindling_sdp`** — the declaration engine, targeting only the OSS
+- **`kindling_ext_sdp`** — the declaration engine, targeting only the OSS
   `pyspark.pipelines` API. Runs on vanilla Spark 4.1+ and on Databricks
   unchanged.
-- **`kindling_databricks_sdp`** — a thin adapter layering on the
+- **`kindling_ext_databricks`** — a thin adapter layering on the
   Databricks-only features (see gap analysis below).
 
 "DLT" naming is legacy everywhere; prose and code target `pyspark.
@@ -66,7 +66,7 @@ against declarations built from local registrations is a unit-test-tier
 gate for the declared graph.
 
 Spark 4.1+ is a floor for the SDP extra only. Kindling core keeps
-supporting older runtimes; `kindling_sdp` is strictly optional with no
+supporting older runtimes; `kindling_ext_sdp` is strictly optional with no
 core dependency on `pyspark.pipelines`.
 
 ## The Gap Between OSS SDP and Databricks Lakeflow, and the Bridge
@@ -102,9 +102,9 @@ Catalog governance.
 interoperable superset, nothing the core emits needs rewriting per
 platform:
 
-1. `kindling_sdp` emits only Layer-1 common surface. The same output runs
+1. `kindling_ext_sdp` emits only Layer-1 common surface. The same output runs
    unmodified on vanilla Spark and Databricks.
-2. `kindling_databricks_sdp` decorates those declarations with
+2. `kindling_ext_databricks` decorates those declarations with
    expectations (from config/tags) and maps `scd.*` entity tags to AUTO
    CDC flows (see "SCD2 as a Declared Flow").
 3. **Capability gating in the core:** config naming an adapter feature
@@ -114,7 +114,7 @@ platform:
    shape" to "unsupported platform feature."
 4. Deployment glue (spec YAML + CLI vs. workspace object/bundles/REST)
    stays out of both packages — docs and tooling, not engine — with one
-   deliberate exception: **`kindling_sdp` owns a minimal local validation
+   deliberate exception: **`kindling_ext_sdp` owns a minimal local validation
    harness** that generates an ephemeral pipeline spec and invokes
    `spark-pipelines dry-run` against the declared graph. The dry-run
    acceptance criterion below needs an owner, and dev-time validation is
@@ -265,11 +265,28 @@ datapipes:
 
 ### What Stays Runner-Only
 
-`kindling-temporal` (see `temporal_event_segmentation.md`) requires the
-runner engine: its condition engine is a driver-side `collect()` loop,
-episode revision needs SCD2 revision-in-place, and generation-ordered
-execution is Kindling-owned orchestration. This is a legitimate scoping,
-stated here so the two proposals reference each other.
+*Revised 2026-07-15 (design review; see `kindling_core_runner_split.md`,
+Friction #9) — the original text overstated the runner requirement.*
+
+`kindling-ext-temporal`'s **current executor** is runner-hosted, but most of
+the temporal model has no inherent runner affinity. The
+Event/Condition/Episode ontology is engine-agnostic by design;
+condition evaluation is df→df transformation over a dependency graph the
+ontology requires to be acyclic and statically known, which is exactly
+the shape a declarative engine executes natively (generation ordering is
+native DAG ordering — SDP infers it; the runner implements it via
+`generation_executor`). The driver-side `collect()` loop is a property
+of the first executor implementation, not the model.
+
+What is genuinely engine-constrained is **episode lifecycle revision** —
+stable identity across revision, open episodes closed later, provisional
+closes superseded — which needs keyed merge/upsert semantics: the
+runner's merge machinery today; plausibly AUTO CDC in the Databricks
+adapter tier (the same keyed-sequenced-upsert shape); weakest fit on
+plain OSS SDP, where materialized-view recompute makes
+processing-time-dependent expiration awkward. Temporal therefore scopes
+its *executor* to the runner engine for now, while its declarations
+remain portable.
 
 ## Phases
 
@@ -293,7 +310,7 @@ stated here so the two proposals reference each other.
 - [ ] The imperative persist path is not invoked in SDP mode.
 - [ ] SDP infers and executes the pipeline graph from the declared reads.
 - [ ] The declared pipeline dry-runs on OSS Spark locally via
-      `kindling_sdp`'s validation harness (ephemeral spec +
+      `kindling_ext_sdp`'s validation harness (ephemeral spec +
       `spark-pipelines dry-run` — see the bridge section), with no
       Databricks dependency.
 - [ ] Unsupported pipes fail during declaration with actionable errors,

@@ -3,7 +3,7 @@
 from unittest.mock import Mock
 
 from kindling.execution_orchestrator import ExecutionOrchestrator
-from kindling.generation_executor import ErrorStrategy
+from kindling.generation_executor import UNSET, ErrorStrategy
 
 
 def test_execute_generates_plan_emits_signal_and_delegates():
@@ -59,6 +59,8 @@ def test_execute_generates_plan_emits_signal_and_delegates():
         streaming_options={"pipe_a": {"checkpoint": "/tmp/checkpoints"}},
         auto_cache=True,
         no_watermark=False,
+        retry_attempts=UNSET,
+        retry_interval_seconds=UNSET,
     )
 
     signal.send.assert_called_once()
@@ -89,10 +91,10 @@ def test_execute_batch_uses_batch_strategy():
     orchestrator.execute.assert_called_once_with(
         pipe_ids=["p1"],
         strategy=plan_generator.batch_strategy,
-        parallel=False,
-        max_workers=4,
-        error_strategy=ErrorStrategy.FAIL_FAST,
-        pipe_timeout=None,
+        parallel=UNSET,
+        max_workers=UNSET,
+        error_strategy=UNSET,
+        pipe_timeout=UNSET,
         auto_cache=True,
     )
 

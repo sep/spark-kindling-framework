@@ -281,7 +281,7 @@ class TestComplexTracing:
             azure_markers_found = any(
                 marker in log_content
                 for marker in [
-                    "kindling_otel_azure",
+                    "kindling_ext_otel_azure",
                     "Loaded extension",
                     "Azure Monitor providers registered",
                 ]
@@ -307,7 +307,7 @@ class TestComplexTracing:
             # Should use default provider
             assert (
                 "Using default Kindling telemetry" in log_content
-                or "kindling_otel_azure" not in log_content
+                or "kindling_ext_otel_azure" not in log_content
             ), "Unexpected Azure Monitor extension detected"
             print("✅ Default Kindling telemetry active")
 

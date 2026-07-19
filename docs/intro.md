@@ -187,7 +187,7 @@ To start using Kindling in your Spark notebooks:
 
 5. **Extend and Monitor**: Add custom integrations and observability
    - [Logging & Tracing](./logging_tracing.md)
-   - [Azure Monitor Extension](../packages/kindling_otel_azure/README.md)
+   - [Azure Monitor Extension](../packages/extensions/kindling_ext_otel_azure/README.md)
 
 ## Use Cases
 

@@ -54,6 +54,11 @@ class TestCSVEntityProviderIntegration:
         __main__.spark = spark
 
         yield spark
+
+        # Clear the global before stopping: a stale __main__.spark pointing
+        # at a stopped session poisons any later test that calls
+        # get_or_create_spark_session().
+        __main__.spark = None
         spark.stop()
 
     @pytest.fixture

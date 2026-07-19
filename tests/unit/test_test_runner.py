@@ -190,7 +190,9 @@ def test_main_run_builds_the_same_options_as_the_ci_poe_task(monkeypatch):
             "--coverage",
             "packages/kindling",
             "--coverage",
-            "packages/kindling_sdp",
+            "packages/extensions/kindling_ext_sdp",
+            "--coverage",
+            "packages/extensions/kindling_ext_databricks",
             "--pytest-arg=--cov-report=xml",
         ]
     )
@@ -200,7 +202,11 @@ def test_main_run_builds_the_same_options_as_the_ci_poe_task(monkeypatch):
     assert options.suite == "unit"
     assert [str(p) for p in options.paths] == ["tests/unit"]
     assert options.ci is True
-    assert list(options.coverage) == ["packages/kindling", "packages/kindling_sdp"]
+    assert list(options.coverage) == [
+        "packages/kindling",
+        "packages/extensions/kindling_ext_sdp",
+        "packages/extensions/kindling_ext_databricks",
+    ]
     assert options.pytest_args == ["--cov-report=xml"]
     assert options.dotenv_paths == (test_runner.Path(".env"),)
     assert options.no_cov is False

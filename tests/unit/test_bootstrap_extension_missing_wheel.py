@@ -22,12 +22,12 @@ def test_extension_missing_wheel_does_not_raise_cleanup_local_variable_error():
             logger,
             {
                 "required_packages": [],
-                "extensions": ["kindling-otel-azure==0.3.2"],
+                "extensions": ["kindling-ext-otel-azure==0.3.2"],
                 "temp_path": "/Volumes/kindling/kindling/artifacts",
             },
             artifacts_storage_path="abfss://artifacts@acct/path",
         )
 
     error_messages = [call.args[0] for call in logger.error.call_args_list]
-    assert "Extension wheel not found: kindling-otel-azure==0.3.2" in error_messages
+    assert "Extension wheel not found: kindling-ext-otel-azure==0.3.2" in error_messages
     assert not any("local variable 'is_databricks'" in msg for msg in error_messages)

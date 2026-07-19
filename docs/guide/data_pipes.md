@@ -220,16 +220,31 @@ pipeline with non-trivial dependencies.
 ```python
 # Dependency-aware execution — runs pipes in correct order automatically
 executer.run_datapipes(pipes_to_run, use_dag=True)
+```
 
-# With options: parallel within each generation, fail-fast on error
+Execution options (parallelism, worker count, error strategy, timeouts,
+caching) are **config-first**: set them once under `kindling.execution.*`
+and they apply to every DAG run, per environment:
+
+```yaml
+kindling:
+  execution:
+    parallel: true        # run independent pipes within a generation concurrently
+    max_workers: 4
+    error_strategy: fail_fast   # or: continue
+    auto_cache: true
+```
+
+Parameters remain available as just-in-time overrides for spot-testing —
+a passed value beats config for that run only:
+
+```python
 from kindling.generation_executor import ErrorStrategy
 executer.run_datapipes(
     pipes_to_run,
     use_dag=True,
-    parallel=True,
-    max_workers=4,
-    error_strategy=ErrorStrategy.FAIL_FAST,
-    auto_cache=True,
+    parallel=False,          # override config for this one run
+    error_strategy=ErrorStrategy.CONTINUE,
 )
 ```
 

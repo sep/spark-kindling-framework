@@ -101,9 +101,20 @@ def entity_path_locator():
 
 @pytest.fixture
 def config_service():
-    """Mock config service."""
+    """Mock config service.
+
+    `kindling.execution.*` keys fall through to the caller's default so
+    option resolution behaves as if unconfigured; other keys return a
+    checkpoint path for the streaming code paths.
+    """
     service = Mock()
-    service.get = Mock(return_value="/checkpoints")
+
+    def get(key, default=None):
+        if key.startswith("kindling.execution."):
+            return default
+        return "/checkpoints"
+
+    service.get = Mock(side_effect=get)
     return service
 
 
