@@ -378,17 +378,57 @@ result = orchestrator.execute_streaming(pipe_ids, streaming_options={...})
 
 **`execute()` parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `pipe_ids` | `List[str]` | required | Pipes to execute |
-| `strategy` | `ExecutionStrategy` | `None` (batch) | Strategy override |
-| `parallel` | `bool` | `False` | Run generations in parallel |
-| `max_workers` | `int` | `4` | Thread pool size when parallel |
-| `error_strategy` | `ErrorStrategy` | `FAIL_FAST` | Error handling mode |
-| `pipe_timeout` | `float` | `None` | Per-pipe timeout in seconds |
-| `streaming_options` | `dict` | `None` | Passed to GenerationExecutor |
-| `auto_cache` | `bool` | `False` | Enable automatic cache |
-| `no_watermark` | `bool` | `False` | Skip watermark writes |
+Execution options are **config-first**: any option left unset resolves from
+hierarchical configuration under `kindling.execution.*`, then falls back to
+the built-in default. Passing a parameter overrides config just-in-time
+(spot-testing) — config is the primary interface.
+
+| Parameter | Type | Config key (`kindling.execution.`) | Built-in default | Description |
+|-----------|------|------------------------------------|------------------|-------------|
+| `pipe_ids` | `List[str]` | — | required | Pipes to execute |
+| `strategy` | `ExecutionStrategy` | — | `None` (batch) | Strategy override |
+| `parallel` | `bool` | `parallel` | `False` | Run independent pipes *within* a generation concurrently (generations themselves are always sequential) |
+| `max_workers` | `int` | `max_workers` | `4` | Thread pool size when parallel |
+| `error_strategy` | `ErrorStrategy` | `error_strategy` (`fail_fast` \| `continue` \| `skip_dependents`) | `FAIL_FAST` | Error handling mode |
+| `pipe_timeout` | `float` | `pipe_timeout` | `None` | Per-pipe timeout in seconds |
+| `streaming_options` | `dict` | — | `None` | Passed to GenerationExecutor |
+| `auto_cache` | `bool` | `auto_cache` | `False` | Enable automatic cache |
+| `no_watermark` | `bool` | — | `False` | Skip watermark writes (inherently a just-in-time flag) |
+
+```yaml
+# settings.yaml (or platform/workspace/environment layer)
+kindling:
+  execution:
+    parallel: true
+    max_workers: 8
+    error_strategy: continue
+    retry:
+      attempts: 0            # retries per failed pipe attempt (0 = off)
+      interval_seconds: 30
+    pipes:                   # per-pipe overrides, keyed by LITERAL pipeid
+      silver_orders:
+        retry: { attempts: 2, interval_seconds: 10 }
+      "ingest.orders":       # quote ids containing dots — the map is indexed
+        retry: { attempts: 1 }   # by the literal id, not dotted traversal
+```
+
+**Error strategies**: `fail_fast` stops after the first failed generation;
+`continue` runs everything and reports failures at the end;
+`skip_dependents` skips only the transitive consumers of a failed pipe
+(reported as skipped with `reason: upstream_failed`) while independent
+branches keep running — matching notebook-DAG (`runMultiple`)
+dependent-skipping semantics.
+
+**Retry semantics**: only exceptions raised inside an attempt are retried —
+timeouts surfaced by the parallel wrapper are never retried (the first
+attempt's thread may still be running). Retried persists are only idempotent
+on merge-capable output providers (Delta, Cosmos); a warning is logged at
+execution start for retry-enabled pipes whose provider lacks
+`merge_to_entity`. The executor emits `orchestrator.pipe_retrying` per retry
+and records total `attempts` on each `PipeResult`.
+
+Streaming plans ignore `parallel` regardless of source — stream startup
+order matters, so streaming pipes always start sequentially.
 
 `ExecutionOrchestrator` emits the `"orchestrator.plan_generated"` signal after planning and before execution, carrying strategy, pipe count, generation count, and max parallelism.
 

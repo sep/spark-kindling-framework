@@ -28,7 +28,37 @@ class EntityProviderRegistry:
         self.logger = logger_provider.get_logger("EntityProviderRegistry")
         self._provider_classes: Dict[str, Type[BaseEntityProvider]] = {}
         self._provider_instances: Dict[str, BaseEntityProvider] = {}
+        self._provider_decorator = None
         self._register_builtin_providers()
+
+    def set_provider_decorator(self, decorator) -> None:
+        """Wrap every provider instance — cached and future — in `decorator`.
+
+        The seam for execution-mode provider personalities: an engine
+        extension that owns persistence installs a write-inert guard here
+        so that no imperative write path is reachable in its mode, without
+        any provider being mode-aware itself.
+
+        Idempotent: installing the same decorator again is a no-op (cached
+        instances are never double-wrapped). Installing a DIFFERENT
+        decorator while one is active is an execution-mode conflict and
+        raises rather than silently nesting personalities.
+        """
+        if self._provider_decorator is decorator:
+            return
+        if self._provider_decorator is not None:
+            raise ValueError(
+                f"A provider decorator is already installed "
+                f"({self._provider_decorator}); refusing to stack "
+                f"{decorator} on top of it. One execution-mode provider "
+                "personality per process."
+            )
+        self._provider_decorator = decorator
+        self._provider_instances = {
+            provider_type: decorator(instance)
+            for provider_type, instance in self._provider_instances.items()
+        }
+        self.logger.info(f"Provider decorator installed: {decorator}")
 
     def register_provider(
         self, provider_type: str, provider_class: Type[BaseEntityProvider]
@@ -81,6 +111,8 @@ class EntityProviderRegistry:
 
         try:
             provider_instance = GlobalInjector.get(provider_class)
+            if self._provider_decorator is not None:
+                provider_instance = self._provider_decorator(provider_instance)
             self._provider_instances[provider_type] = provider_instance
             self.logger.info(f"Created provider instance: {provider_type}")
             return provider_instance
@@ -151,6 +183,13 @@ class EntityProviderRegistry:
             self.register_provider("eventhub", EventHubEntityProvider)
         except ImportError:
             self.logger.debug("EventHub provider not available")
+
+        try:
+            from .entity_provider_parquet import ParquetEntityProvider
+
+            self.register_provider("parquet", ParquetEntityProvider)
+        except ImportError:
+            self.logger.debug("Parquet provider not available")
 
         try:
             from .entity_provider_memory import MemoryEntityProvider

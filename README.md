@@ -25,6 +25,7 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 - [Data Pipes](./docs/guide/data_pipes.md) - Transformation pipeline system
 - [Entity Providers](./docs/contributing/entity_providers.md) - Storage abstraction system
 - [Setup Guide](./docs/guide/setup_guide.md) - Installation and configuration
+- [Migrating from runMultiple](./docs/guide/migrating_from_runmultiple.md) - Move Synapse/Fabric notebook DAGs to Kindling pipes
 
 ### Advanced Features
 - [Job Deployment](./docs/contributing/job_deployment.md) - Deploy apps as Spark jobs
@@ -61,8 +62,9 @@ The framework consists of several modular components:
 
 ## Extensions
 
-- **[kindling-otel-azure](./packages/kindling_otel_azure/)** - Azure Monitor OpenTelemetry integration
-- **[kindling-databricks-dlt](./packages/kindling_databricks_dlt/)** - Databricks Delta Live Tables integration
+- **[kindling-ext-otel-azure](./packages/extensions/kindling_ext_otel_azure/)** - Azure Monitor OpenTelemetry integration
+- **[kindling-ext-sdp](./packages/extensions/kindling_ext_sdp/)** - Spark Declarative Pipelines support
+- **[kindling-ext-databricks](./packages/extensions/kindling_ext_databricks/)** - Databricks Lakeflow extensions
 
 ## Install
 
@@ -174,7 +176,7 @@ executer.run_datapipes(["customers.transform"])
 
 ### Extensibility
 - **Extension system** - load custom packages via configuration
-- **Azure Monitor integration** - via kindling-otel-azure extension
+- **Azure Monitor integration** - via kindling-ext-otel-azure extension
 - **Custom providers** - implement your own storage backends
 - **Signal/event system** - blinker-based pub/sub for custom workflows
 

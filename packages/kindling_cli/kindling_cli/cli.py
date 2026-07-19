@@ -21,6 +21,7 @@ from urllib.parse import quote, urlparse
 
 import click
 import yaml
+from kindling_cli.test_runner import SUPPORTED_PLATFORMS
 from kindling_sdk.platform_provider import (
     azure_cloud_config,
     azure_synapse_dev_endpoint_suffix,
@@ -29,7 +30,6 @@ from kindling_sdk.platform_provider import (
     fabric_api_base_url,
 )
 
-SUPPORTED_PLATFORMS = ("databricks", "fabric", "synapse")
 APP_RUN_PLATFORMS = ("standalone", *SUPPORTED_PLATFORMS)
 APP_EXECUTOR_PATTERNS = ("batch", "structured-streaming", "file-ingestion")
 APP_CONFIG_FILE = "app.yaml"
@@ -2566,7 +2566,7 @@ BOOTSTRAP_CONFIG = {{
     "platform": "{platform}",
     "use_lake_packages": True,
     "load_workspace_packages": False,
-    # "extensions": ["kindling-otel-azure>=0.3.0"],
+    # "extensions": ["kindling-ext-otel-azure>=0.3.0"],
 }}
 
 # Run the shared notebook bootstrap helper.

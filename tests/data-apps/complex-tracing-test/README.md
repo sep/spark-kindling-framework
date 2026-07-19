@@ -35,7 +35,7 @@ No extension required - uses built-in SparkTraceProvider.
 Add to settings.yaml:
 ```yaml
 extensions:
-  - kindling-otel-azure>=0.1.0
+  - kindling-ext-otel-azure>=0.1.0
 
 extension_config:
   azure_monitor:

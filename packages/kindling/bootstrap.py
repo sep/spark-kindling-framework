@@ -978,7 +978,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             logger.error(f"Failed to install {package_spec}: {e}")
 
     def load_extension_wheel(package_spec, storage_utils, artifacts_path, temp_path=None):
-        """Install extension wheel from artifacts storage (like kindling-otel-azure)"""
+        """Install extension wheel from artifacts storage (like kindling-ext-otel-azure)"""
         if is_package_installed(package_spec, check_version=True):
             import_name = get_import_name(package_spec)
             logger.info(f"Extension already installed: {import_name}")
@@ -991,7 +991,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         import tempfile
 
         package_name = get_package_name(package_spec)
-        # Convert to wheel format: kindling-otel-azure -> kindling_otel_azure
+        # Convert to wheel format: kindling-ext-otel-azure -> kindling_ext_otel_azure
         wheel_prefix = package_name.replace("-", "_")
 
         # Extract version requirement if present
@@ -1547,7 +1547,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         extensions = config_service.get("kindling.extensions", []) or []
 
         # Deduplicate extensions - prefer versioned specs over plain names
-        # e.g., keep "kindling-otel-azure>=0.3.0a1" instead of "kindling-otel-azure"
+        # e.g., keep "kindling-ext-otel-azure>=0.3.0a1" instead of "kindling-ext-otel-azure"
         if extensions:
             ext_dict = {}
             for ext in extensions:
@@ -1619,8 +1619,12 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # advancement hook into pipe execution via signals rather than being
         # woven into the read/persist strategy. Standalone/local execution
         # deliberately runs without it (full reads, no watermark state),
-        # matching the fixture-based local dev workflow.
-        if platform != "standalone":
+        # matching the fixture-based local dev workflow. An execution-engine
+        # extension that owns its own incrementality (declared via its
+        # owns_incrementality capability, surfaced here as config by
+        # initialize()) also runs without it — the aspect is simply never
+        # registered.
+        if platform != "standalone" and not config.get("engine_owns_incrementality"):
             from kindling.injection import GlobalInjector
             from kindling.watermarking import WatermarkAspect
 

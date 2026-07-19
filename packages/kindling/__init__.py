@@ -43,11 +43,101 @@ from .bootstrap import (
 )
 from .data_entities import KindlingNotInitializedError
 
+#: The engine extension activated by initialize(engine=...), if any. Core
+#: knows only the extension contract, never a specific engine.
+_active_engine_extension = None
 
-def initialize(config=None, app_name=None):
-    """Public initialize entrypoint for pre-installed kindling usage."""
+
+def initialize(config=None, app_name=None, engine=None):
+    """Public initialize entrypoint for pre-installed kindling usage.
+
+    ``engine="<name>"`` selects an alternative execution engine provided
+    by an extension package: the module ``kindling_ext_<name>`` must expose an
+    ``engine_extension()`` factory (see ``_load_engine_extension`` for the
+    contract). Core has no knowledge of specific engines — e.g.
+    ``engine="sdp"`` resolves to whatever the separately-installed
+    ``kindling_ext_sdp`` package provides. Follow with registrations, then
+    ``kindling.declare_pipeline()`` as the final step for declarative
+    engines.
+    """
+    global _active_engine_extension
+
     config = dict(config or {})
     if app_name is not None:
         config["app_name"] = app_name
+    if engine is not None:
+        config["engine"] = engine
 
-    return initialize_framework(config)
+    # Resolve the engine extension BEFORE framework initialization: a
+    # missing or broken extension package must fail with the framework
+    # untouched, not half-initialized.
+    extension = None
+    if config.get("engine"):
+        extension = _load_engine_extension(config["engine"])
+        config["engine_owns_incrementality"] = bool(
+            getattr(extension, "owns_incrementality", False)
+        )
+
+    result = initialize_framework(config)
+
+    if extension is not None:
+        extension.activate()
+        _active_engine_extension = extension
+    return result
+
+
+def _load_engine_extension(engine_name):
+    """Resolve an execution-engine extension by naming convention.
+
+    The contract: engine ``<name>`` is provided by an importable module
+    ``kindling_ext_<name>`` exposing a zero-arg ``engine_extension()`` factory.
+    Engines whose extension is a multi-engine umbrella may provide an explicit
+    module mapping below (for example, Databricks SDP).
+    The returned object must provide ``activate()`` (called once, after
+    framework initialization) and may provide ``owns_incrementality``
+    (bool — the engine manages incremental reads itself, so the watermark
+    aspect is not registered) and ``declare_pipeline(pipe_ids=None)``.
+
+    Loading is side-effect free: nothing is activated here.
+    """
+    import importlib
+
+    module_name = {
+        "databricks_sdp": "kindling_ext_databricks",
+    }.get(engine_name, f"kindling_ext_{engine_name}")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ImportError(
+            f"engine='{engine_name}' requires the '{module_name}' package. "
+            "Install the extension that provides this engine alongside "
+            "kindling."
+        ) from exc
+    factory = getattr(module, "engine_extension", None)
+    if factory is None:
+        raise TypeError(
+            f"'{module_name}' does not provide an engine_extension() "
+            f"factory, so it cannot be used as engine='{engine_name}'."
+        )
+    return factory()
+
+
+def declare_pipeline(pipe_ids=None):
+    """Declare the registered pipes through the active engine extension.
+
+    Must run AFTER all registrations and the post-registration config
+    overlay — the last step of the entry point. Requires an engine that
+    supports pipeline declaration, selected via ``initialize(engine=...)``.
+    """
+    if _active_engine_extension is None:
+        raise RuntimeError(
+            "declare_pipeline() requires a declarative execution engine — "
+            "call initialize(engine='<name>') first."
+        )
+    declare = getattr(_active_engine_extension, "declare_pipeline", None)
+    if declare is None:
+        raise TypeError(
+            f"The active engine extension ({_active_engine_extension}) "
+            "does not support pipeline declaration."
+        )
+    return declare(pipe_ids=pipe_ids)
