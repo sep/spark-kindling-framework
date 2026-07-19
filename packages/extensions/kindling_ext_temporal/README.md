@@ -35,6 +35,15 @@ complete temporal-processing system described in the white paper and proposal.
   with `correlation_id = episode_id` and incremented generation numbers,
   including expiration events for expired episodes and invalidation events for
   invalidated episodes;
+- stateful late real-end revision of persisted episodes: the episode engine
+  resolves its own prior state at execution time (on by default, disabled via
+  `kindling.temporal.revise_persisted`), reconstructs start boundaries for
+  persisted open, expired, and synthetically-invalidated episodes, and
+  re-emits them with the same `episode_id` when a late real end event
+  arrives — the entity's `merge_columns=["episode_id"]` upsert turns the
+  re-emit into an in-place revision; a batch with no new events and no
+  evaluation time emits nothing for reconstructed episodes so persisted state
+  never regresses;
 - unit, integration, and system coverage for the first executable slice.
 
 ## Configuration
@@ -44,6 +53,42 @@ complete temporal-processing system described in the white paper and proposal.
   batch views. A per-execution `temporal_evaluation_time` keyword argument to
   a temporal pipe's `execute` overrides it. When neither is set, the bounded
   input horizon (the batch's maximum `event_ts`) is used.
+- `kindling.temporal.revise_persisted` — set to `false` to disable the prior
+  episode-state read entirely; episode pipes then compute a pure batch view.
+  Defaults to enabled.
+
+## Revision semantics
+
+Episodes ended by a real end event are terminal: revision reconsiders only
+persisted episodes whose end is synthetic (expired, invalidated past max
+duration) or absent (open). A late-arriving end event that is earlier than an
+already-accepted real end does not reopen or re-pair a closed episode. Prior
+determination events (for example an expiration event later superseded by a
+real close) remain in `silver.events` as history; the corrective event is
+emitted alongside them with its own deterministic `event_id`.
+
+Prior state is an execution-strategy concern this extension owns, not a
+declared dataflow dependency: episode pipes declare only the events entity as
+input, and the engine resolves persisted episode state itself at execution
+time — a keyword argument named after the episodes entity (tests, manual
+runs) wins, the `kindling.temporal.revise_persisted` config key can disable
+the read, and otherwise the episodes entity is read through its provider when
+it exists. A first run therefore proceeds with no prior state instead of
+failing on a read of the table it is about to create. The pipes carry a
+`temporal.reads_prior_state` tag so lineage tooling can see the feedback
+loop the pipe graph deliberately does not schedule around. (A pipe that does
+declare its own output as an input — the determination pipe writes and reads
+`silver.events` — is prior-state feedback too; `PipeGraphBuilder` skips such
+self-edges instead of reporting a cycle.)
+
+Known limitations:
+
+- episode rows persisted before the schema carried `start_generation` are
+  reconstructed at generation 1; determination events for that legacy cohort
+  can understate generation, and revision writes the fallback back to the
+  row;
+- revision re-emits refresh `created_at` (the upsert updates all columns), so
+  a revised episode does not retain its original creation timestamp.
 
 ## Lifecycle identity
 
@@ -59,8 +104,8 @@ do not create a different episode identity.
 The remaining proposal work is tracked here so the current package is not
 mistaken for a full implementation:
 
-- stateful late real-end revision of already-persisted expired or invalidated
-  episodes;
+- revision of episodes closed by a real end event (a later-arriving end
+  earlier than the accepted one never re-pairs a closed episode);
 - late-event grace windows, watermarks, replay/backfill semantics, and
   stateful streaming execution;
 - multi-generation orchestration beyond one condition-engine pass;
