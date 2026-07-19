@@ -1052,3 +1052,78 @@ def test_validated_conditions_transform_gates_file_drop(spark):
     )
     with pytest.raises(ConditionValidationError):
         validated_conditions_transform(invalid_df)
+
+
+@pytest.mark.requires_spark
+def test_ingest_conditions_quarantines_duplicate_condition_ids(spark):
+    from kindling_ext_temporal import SimpleTemporalEntityResolver, ingest_conditions
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    good = {
+        "enter_when": "cast(payload['temperature'] as double) > 90",
+        "exit_when": "cast(payload['temperature'] as double) <= 90",
+    }
+    rows = [
+        ("condition.dup", ["telemetry.observed"], "machine", good, True, observed_at, None),
+        ("condition.dup", ["telemetry.observed"], "machine", good, False, observed_at, None),
+        ("condition.unique", ["telemetry.observed"], "machine", good, True, observed_at, None),
+    ]
+    provider = _RecordingProvider()
+
+    result = ingest_conditions(
+        _conditions_rows_df(spark, rows),
+        resolver=SimpleTemporalEntityResolver(),
+        provider_factory=lambda entity: provider,
+        quarantine_entity_id=None,
+    )
+
+    assert result.ingested_count == 1
+    assert sorted(invalid.condition_id for invalid in result.quarantined) == [
+        "condition.dup",
+        "condition.dup",
+    ]
+    assert all("appears 2 times" in invalid.errors[0] for invalid in result.quarantined)
+    merged_ids = [row.condition_id for row in provider.merged[0][0].collect()]
+    assert merged_ids == ["condition.unique"]
+
+
+@pytest.mark.requires_spark
+def test_ingest_conditions_explicit_none_disables_configured_quarantine(spark, monkeypatch):
+    from kindling_ext_temporal import SimpleTemporalEntityResolver
+    from kindling_ext_temporal import conditions as conditions_module
+    from kindling_ext_temporal import ingest_conditions
+
+    monkeypatch.setattr(
+        conditions_module, "_resolve_quarantine_entity_id", lambda: "silver.conditions_quarantine"
+    )
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    rows = [
+        (
+            "condition.broken",
+            ["telemetry.observed"],
+            "machine",
+            {"enter_when": "((( nope", "exit_when": "false"},
+            True,
+            observed_at,
+            None,
+        ),
+    ]
+
+    default_provider = _RecordingProvider()
+    defaulted = ingest_conditions(
+        _conditions_rows_df(spark, rows),
+        resolver=SimpleTemporalEntityResolver(),
+        provider_factory=lambda entity: default_provider,
+    )
+    assert defaulted.quarantine_entity_id == "silver.conditions_quarantine"
+    assert len(default_provider.appended) == 1
+
+    disabled_provider = _RecordingProvider()
+    disabled = ingest_conditions(
+        _conditions_rows_df(spark, rows),
+        resolver=SimpleTemporalEntityResolver(),
+        provider_factory=lambda entity: disabled_provider,
+        quarantine_entity_id=None,
+    )
+    assert disabled.quarantine_entity_id is None
+    assert disabled_provider.appended == []

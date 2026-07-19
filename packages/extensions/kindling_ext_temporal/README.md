@@ -45,8 +45,9 @@ complete temporal-processing system described in the white paper and proposal.
   evaluation time emits nothing for reconstructed episodes so persisted state
   never regresses;
 - validated conditions ingestion: `ingest_conditions` validates rule rows per
-  row (Spark SQL expression parsing, event-type graph cycle rejection),
-  quarantines rejects (returned, and appended to
+  row (Spark SQL expression parsing, event-type graph cycle rejection,
+  duplicate `condition_id`s within a batch), quarantines rejects (returned,
+  and appended to
   `kindling.temporal.conditions.quarantine_entity_id` when configured), and
   upserts the well-formed rows — including disabled ones — through the
   conditions entity's SCD2 merge; `validated_conditions_transform` gates a

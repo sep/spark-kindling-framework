@@ -20,8 +20,13 @@ file containing any invalid row is rejected whole (the file path has no
 per-row quarantine channel; use `ingest_conditions` for that).
 """
 
+import json
+import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
+
+from kindling.sentinels import UNSET
 
 from .entities import condition_quarantine_schema
 from .validation import (
@@ -31,6 +36,8 @@ from .validation import (
 )
 
 QUARANTINE_ENTITY_CONFIG_KEY = "kindling.temporal.conditions.quarantine_entity_id"
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -88,7 +95,11 @@ def _write_quarantine(spark, invalids, quarantine_entity_id, provider_factory):
         (
             invalid.condition_id or None,
             list(invalid.errors),
-            None if invalid.row is None else repr(invalid.row.asDict(recursive=True)),
+            (
+                None
+                if invalid.row is None
+                else json.dumps(invalid.row.asDict(recursive=True), default=str)
+            ),
         )
         for invalid in invalids
     ]
@@ -104,27 +115,49 @@ def ingest_conditions(
     validator: Optional[TemporalConditionValidator] = None,
     resolver=None,
     provider_factory=None,
-    quarantine_entity_id: Optional[str] = None,
+    quarantine_entity_id: Any = UNSET,
 ) -> ConditionsIngestionResult:
     """Validate condition rows per row, quarantine rejects, upsert the rest.
 
     The conditions set is small by design (tens to low hundreds — the same
     assumption the condition engine's driver-side loop makes), so rows are
     collected and validated on the driver. Graph cycles raise
-    ConditionValidationError: a cyclic set has no ingestible subset.
+    ConditionValidationError: a cyclic set has no ingestible subset. Rows
+    sharing a condition_id within one batch are all quarantined — the entity
+    declares no scd.sequence_by, so which duplicate should win is undefined
+    and the SCD2 merge would reject the batch far less legibly.
 
     Keyword arguments are JIT overrides for tests and manual runs; defaults
     resolve through the injector (TemporalEntityResolver, the provider
     registry) and the `kindling.temporal.conditions.quarantine_entity_id`
-    config key.
+    config key. Pass ``quarantine_entity_id=None`` to disable the quarantine
+    write even when config names an entity.
     """
     from .validation import ActiveSparkSqlExpressionParser
 
     rows = conditions_df.collect()
+
+    id_counts = Counter(getattr(row, "condition_id", None) for row in rows)
+    duplicates = [
+        InvalidCondition(
+            condition_id=row.condition_id,
+            errors=[
+                f"condition_id '{row.condition_id}' appears "
+                f"{id_counts[row.condition_id]} times in this batch — which "
+                "version wins is undefined (the entity has no scd.sequence_by)"
+            ],
+            row=row,
+        )
+        for row in rows
+        if getattr(row, "condition_id", None) is not None and id_counts[row.condition_id] > 1
+    ]
+    duplicate_row_ids = {id(invalid.row) for invalid in duplicates}
+    candidate_rows = [row for row in rows if id(row) not in duplicate_row_ids]
+
     validator = validator or TemporalConditionValidator(
         expression_parser=ActiveSparkSqlExpressionParser(conditions_df.sparkSession)
     )
-    report = validator.validate(rows)
+    report = validator.validate(candidate_rows)
 
     set_level = [invalid for invalid in report.invalid_conditions if invalid.row is None]
     if set_level:
@@ -134,7 +167,7 @@ def ingest_conditions(
         )
 
     invalid_row_ids = {id(invalid.row) for invalid in report.invalid_conditions}
-    valid_rows = [row for row in rows if id(row) not in invalid_row_ids]
+    valid_rows = [row for row in candidate_rows if id(row) not in invalid_row_ids]
 
     provider_factory = provider_factory or _provider_for
     if valid_rows:
@@ -142,12 +175,22 @@ def ingest_conditions(
         valid_df = conditions_df.sparkSession.createDataFrame(valid_rows, conditions_df.schema)
         provider_factory(entity).merge_to_entity(valid_df, entity)
 
-    quarantined = list(report.invalid_conditions)
-    quarantine_entity_id = quarantine_entity_id or _resolve_quarantine_entity_id()
+    quarantined = duplicates + list(report.invalid_conditions)
+    if quarantine_entity_id is UNSET:
+        quarantine_entity_id = _resolve_quarantine_entity_id()
     if quarantined and quarantine_entity_id:
-        _write_quarantine(
-            conditions_df.sparkSession, quarantined, quarantine_entity_id, provider_factory
-        )
+        try:
+            _write_quarantine(
+                conditions_df.sparkSession, quarantined, quarantine_entity_id, provider_factory
+            )
+        except Exception:
+            _logger.warning(
+                "Quarantine write to '%s' failed after a successful conditions "
+                "merge; rejected rows are only in the returned result",
+                quarantine_entity_id,
+                exc_info=True,
+            )
+            quarantine_entity_id = None
 
     return ConditionsIngestionResult(
         ingested_count=len(valid_rows),
