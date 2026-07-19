@@ -8,13 +8,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-
 from kindling.injection import *
 from kindling.sentinels import UNSET
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
+from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -268,6 +267,42 @@ class DataPipesExecution(ABC):
         pass
 
 
+def self_input_without_state(pipe, entity_id, entity, provider_registry, logger) -> bool:
+    """Return True when a pipe's self-referential input has no persisted state yet.
+
+    A non-driving input naming the pipe's own output entity consumes the
+    previous run's state (see PipeGraphBuilder's self-edge exemption). Before
+    the pipe's first successful persist that state does not exist, and reading
+    it would fail the very pipe that is supposed to create it. Executers
+    substitute None for such an input — pipe execute functions treat a missing
+    self-input as "no prior state".
+
+    Only a positive "entity does not exist" answer skips the read. When the
+    check cannot be made (no provider registry, unknown entity, provider
+    without an existence check, or the check itself fails), the read proceeds
+    and any real read error surfaces as usual.
+    """
+    if entity_id != pipe.output_entity_id or provider_registry is None or entity is None:
+        return False
+    try:
+        provider = provider_registry.get_provider_for_entity(entity)
+        if provider is None or not hasattr(provider, "check_entity_exists"):
+            return False
+        if provider.check_entity_exists(entity):
+            return False
+    except Exception as exc:
+        logger.debug(
+            f"Self-input existence check failed for '{entity_id}' "
+            f"({type(exc).__name__}: {exc}) — attempting the read"
+        )
+        return False
+    logger.info(
+        f"Pipe '{pipe.pipeid}' reads its own output entity '{entity_id}', which does "
+        f"not exist yet — passing no prior state (None) for this input"
+    )
+    return True
+
+
 @GlobalInjector.singleton_autobind()
 class DataPipesManager(DataPipesRegistry):
     @inject
@@ -515,9 +550,13 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
             # WatermarkAspect (kindling.watermarking) for the write side.
             is_first = i == 0
             key = entity_id.replace(".", "_")
-            result[key] = entity_reader(
-                self.dpe.get_entity_definition(entity_id), pipe.use_watermark and is_first
-            )
+            entity = self.dpe.get_entity_definition(entity_id)
+            if not is_first and self_input_without_state(
+                pipe, entity_id, entity, getattr(self.erps, "provider_registry", None), self.logger
+            ):
+                result[key] = None
+                continue
+            result[key] = entity_reader(entity, pipe.use_watermark and is_first)
         return result
 
 

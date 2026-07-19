@@ -28,7 +28,6 @@ from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
 
 from injector import inject
-
 from kindling.cache_optimizer import CacheOptimizer
 from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import (
@@ -36,6 +35,7 @@ from kindling.data_pipes import (
     DataPipesRegistry,
     EntityReadPersistStrategy,
     PipeMetadata,
+    self_input_without_state,
 )
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.execution_strategy import (
@@ -1068,6 +1068,15 @@ class GenerationExecutor(SignalEmitter):
         for i, entity_id in enumerate(pipe.input_entity_ids):
             is_first = i == 0
             key = entity_id.replace(".", "_")
+            if not is_first and self_input_without_state(
+                pipe,
+                entity_id,
+                self.entity_registry.get_entity_definition(entity_id),
+                self.provider_registry,
+                self.logger,
+            ):
+                input_entities[key] = None
+                continue
             input_entities[key] = self._read_batch_input_entity(
                 entity_id=entity_id,
                 entity_reader=entity_reader,

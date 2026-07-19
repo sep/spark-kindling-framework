@@ -65,7 +65,19 @@ emitted alongside them with its own deterministic `event_id`.
 
 A pipe reading its own output entity (the episode pipes read `silver.episodes`
 while writing it) is prior-state feedback, not a scheduling dependency;
-`PipeGraphBuilder` skips such self-edges instead of reporting a cycle.
+`PipeGraphBuilder` skips such self-edges instead of reporting a cycle, and
+both executers pass `None` for a self-referential input whose table does not
+exist yet, so the pipe's first run proceeds with no prior state instead of
+failing on the read.
+
+Known limitations:
+
+- episode rows persisted before this package recorded `start_generation` in
+  episode attributes are reconstructed with generation 1; determination
+  events for that legacy cohort can understate generation, and revision
+  writes the fallback back to the row;
+- revision re-emits refresh `created_at` (the upsert updates all columns), so
+  a revised episode does not retain its original creation timestamp.
 
 ## Lifecycle identity
 

@@ -227,9 +227,11 @@ class EpisodeRunner:
 
         starts = starts.withColumn("__temporal_reconstructed_start", F.lit(False))
         if existing_episodes_df is not None:
-            reconstructed = EpisodeRunner._reconstruct_start_boundaries(
-                existing_episodes_df, episode
-            ).join(starts.select("event_id"), on="event_id", how="left_anti")
+            reconstructed = (
+                EpisodeRunner._reconstruct_start_boundaries(existing_episodes_df, episode)
+                .dropDuplicates(["event_id"])
+                .join(starts.select("event_id"), on="event_id", how="left_anti")
+            )
             starts = starts.unionByName(
                 reconstructed.withColumn("__temporal_reconstructed_start", F.lit(True))
             )

@@ -8,7 +8,6 @@ from typing import Callable, Dict, List
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
-
 from kindling.data_entities import KindlingNotInitializedError
 from kindling.data_pipes import (
     DataPipes,
@@ -19,6 +18,7 @@ from kindling.data_pipes import (
     EntityReadPersistStrategy,
     PipeMetadata,
     StageProcessingService,
+    self_input_without_state,
 )
 from kindling.injection import GlobalInjector
 
@@ -741,6 +741,7 @@ class TestDataPipesExecuter:
         mock_pipe = Mock(spec=PipeMetadata)
         mock_pipe.pipeid = "test_pipe"
         mock_pipe.input_entity_ids = ["entity1", "entity2"]
+        mock_pipe.output_entity_id = "entity.final"
         mock_pipe.execute = Mock(return_value=mock_result)
 
         # Mock entity reader
@@ -803,6 +804,7 @@ class TestDataPipesExecuter:
         # Mock pipe
         mock_pipe = Mock(spec=PipeMetadata)
         mock_pipe.input_entity_ids = ["entity.one", "entity.two", "entity.three"]
+        mock_pipe.output_entity_id = "entity.final"
 
         # Mock DataFrames
         mock_df1 = Mock()
@@ -1344,3 +1346,121 @@ class TestDataPipesView:
                     output_entity_id="view.orders",
                     sql="SELECT * FROM bronze_orders",
                 )
+
+
+class TestSelfInputWithoutState:
+    """Tests for the self-referential-input first-run guard."""
+
+    def _pipe(self, output_entity_id="entity.out"):
+        pipe = Mock(spec=PipeMetadata)
+        pipe.pipeid = "pipe.self"
+        pipe.output_entity_id = output_entity_id
+        return pipe
+
+    def _provider_registry(self, exists=None, provider=None, raises=None):
+        registry = Mock()
+        if raises is not None:
+            registry.get_provider_for_entity.side_effect = raises
+        else:
+            if provider is None:
+                provider = Mock()
+                provider.check_entity_exists.return_value = exists
+            registry.get_provider_for_entity.return_value = provider
+        return registry
+
+    def test_non_self_input_never_skips(self):
+        registry = self._provider_registry(exists=False)
+        assert (
+            self_input_without_state(self._pipe(), "entity.other", Mock(), registry, Mock())
+            is False
+        )
+        registry.get_provider_for_entity.assert_not_called()
+
+    def test_missing_self_input_skips_read(self):
+        logger = Mock()
+        result = self_input_without_state(
+            self._pipe(), "entity.out", Mock(), self._provider_registry(exists=False), logger
+        )
+        assert result is True
+        logger.info.assert_called_once()
+
+    def test_existing_self_input_reads_normally(self):
+        assert (
+            self_input_without_state(
+                self._pipe(), "entity.out", Mock(), self._provider_registry(exists=True), Mock()
+            )
+            is False
+        )
+
+    def test_no_provider_registry_attempts_read(self):
+        assert self_input_without_state(self._pipe(), "entity.out", Mock(), None, Mock()) is False
+
+    def test_unknown_entity_attempts_read(self):
+        registry = self._provider_registry(exists=False)
+        assert self_input_without_state(self._pipe(), "entity.out", None, registry, Mock()) is False
+
+    def test_provider_without_existence_check_attempts_read(self):
+        registry = self._provider_registry(provider=object())
+        assert (
+            self_input_without_state(self._pipe(), "entity.out", Mock(), registry, Mock()) is False
+        )
+
+    def test_failed_existence_check_attempts_read(self):
+        registry = self._provider_registry(raises=RuntimeError("no storage context"))
+        logger = Mock()
+        assert (
+            self_input_without_state(self._pipe(), "entity.out", Mock(), registry, logger) is False
+        )
+        logger.debug.assert_called_once()
+
+
+class TestPopulateSourceDictSelfInput:
+    """DataPipesExecuter passes None for a missing self-referential input."""
+
+    def _executer(self, provider_registry):
+        logger_provider = Mock()
+        logger_provider.get_logger.return_value = Mock()
+        entity_registry = Mock()
+        entity_registry.get_entity_definition.side_effect = lambda entity_id: Mock(
+            entityid=entity_id
+        )
+        erps = Mock()
+        erps.provider_registry = provider_registry
+        return DataPipesExecuter(logger_provider, entity_registry, Mock(), erps, Mock())
+
+    def _self_reading_pipe(self):
+        pipe = Mock(spec=PipeMetadata)
+        pipe.pipeid = "pipe.self"
+        pipe.input_entity_ids = ["entity.src", "entity.out"]
+        pipe.output_entity_id = "entity.out"
+        pipe.use_watermark = True
+        return pipe
+
+    def test_missing_self_input_becomes_none(self):
+        provider = Mock()
+        provider.check_entity_exists.return_value = False
+        provider_registry = Mock()
+        provider_registry.get_provider_for_entity.return_value = provider
+        executer = self._executer(provider_registry)
+        reader = Mock(return_value=Mock())
+
+        result = executer._populate_source_dict(reader, self._self_reading_pipe())
+
+        assert result["entity_out"] is None
+        assert result["entity_src"] is not None
+        assert reader.call_count == 1
+
+    def test_existing_self_input_is_read(self):
+        provider = Mock()
+        provider.check_entity_exists.return_value = True
+        provider_registry = Mock()
+        provider_registry.get_provider_for_entity.return_value = provider
+        executer = self._executer(provider_registry)
+        src_df, out_df = Mock(), Mock()
+        reader = Mock(side_effect=[src_df, out_df])
+
+        result = executer._populate_source_dict(reader, self._self_reading_pipe())
+
+        assert result["entity_src"] is src_df
+        assert result["entity_out"] is out_df
+        assert reader.call_count == 2
