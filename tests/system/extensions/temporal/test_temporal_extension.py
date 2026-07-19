@@ -176,6 +176,31 @@ def _closed_events_for_machine_2_df(spark):
     )
 
 
+def _late_end_events_for_machine_2_df(spark):
+    from kindling_ext_temporal import events_schema
+
+    cooled_at = datetime(2026, 7, 14, 12, 10, 0)
+    return spark.createDataFrame(
+        [
+            (
+                "source-cool-late",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-2",
+                cooled_at,
+                "sensor",
+                None,
+                {"temperature": "80"},
+                None,
+                datetime(2026, 7, 14, 12, 20, 0),
+            ),
+        ],
+        events_schema(),
+    )
+
+
 def _conditions_df(spark):
     from kindling_ext_temporal import conditions_schema
 
@@ -422,3 +447,34 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     assert closure_event_for_same_start.correlation_id == closure_for_same_start.episode_id
     assert closure_event_for_same_start.payload["status"] == "closed"
     assert closure_event_for_same_start.payload["close_reason"] == "end_event"
+
+    late_end_boundary_events = condition_pipe.execute(
+        silver_events=_late_end_events_for_machine_2_df(spark),
+        silver_conditions_current=_conditions_df(spark),
+    )
+    persisted_expired = episode_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    )
+    revised = episode_pipe.execute(
+        silver_events=late_end_boundary_events,
+        silver_episodes=persisted_expired,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 25, 0),
+    ).collect()
+    revised_events = episode_event_pipe.execute(
+        silver_events=late_end_boundary_events,
+        silver_episodes=persisted_expired,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 25, 0),
+    ).collect()
+
+    assert len(revised) == 1
+    assert revised[0].status == "closed"
+    assert revised[0].close_reason == "end_event"
+    assert revised[0].episode_id == open_episodes[0].episode_id
+    assert revised[0].start_event_id == open_episodes[0].start_event_id
+    assert revised[0].end_event_synthetic is False
+    assert revised[0].end_time == datetime(2026, 7, 14, 12, 10, 0)
+    assert len(revised_events) == 1
+    assert revised_events[0].event_type == "episode.temperature_high_active.closed"
+    assert revised_events[0].correlation_id == revised[0].episode_id
+    assert revised_events[0].payload["status"] == "closed"

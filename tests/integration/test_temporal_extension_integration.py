@@ -95,6 +95,30 @@ def _unclosed_events_df(spark):
     )
 
 
+def _end_only_events_df(spark, cooled_at):
+    from kindling_ext_temporal import events_schema
+
+    return spark.createDataFrame(
+        [
+            (
+                "source-cool",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-1",
+                cooled_at,
+                "sensor",
+                None,
+                {"temperature": "80"},
+                None,
+                cooled_at,
+            ),
+        ],
+        events_schema(),
+    )
+
+
 def _conditions_df(spark):
     from kindling_ext_temporal import conditions_schema
 
@@ -170,6 +194,7 @@ def test_episode_runner_pairs_entered_and_exited_events(spark):
     assert row.subject_type == "machine"
     assert row.subject_id == "machine-1"
     assert row.start_event_id
+    assert row.start_generation == 1
     assert row.end_event_id
     assert row.status == "closed"
     assert row.close_reason == "end_event"
@@ -615,3 +640,227 @@ def test_episode_runner_emits_episode_determination_event(spark):
     assert event.attributes["end_event_type"] == "condition.temperature_high.exited"
     assert event.attributes["start_generation"] == "1"
     assert event.attributes["end_generation"] == "1"
+
+
+@pytest.mark.requires_spark
+def test_episode_runner_revises_persisted_expired_episode_with_late_real_end(spark):
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        determination_event="episode.temperature_high_active.closed",
+        expiration_event="episode.temperature_high_active.expired",
+        expires_after_seconds=300,
+        subject_type="machine",
+    )
+    runner = EpisodeRunner()
+
+    first_batch_boundaries = ConditionEngineRunner().execute(
+        _unclosed_events_df(spark), _conditions_df(spark)
+    )
+    persisted = runner.execute(
+        first_batch_boundaries, episode, evaluation_time=observed_at + timedelta(minutes=10)
+    )
+    persisted_row = persisted.collect()[0]
+    assert persisted_row.status == "expired"
+
+    late_end_boundaries = ConditionEngineRunner().execute(
+        _end_only_events_df(spark, observed_at + timedelta(minutes=10)), _conditions_df(spark)
+    )
+    revised = runner.execute(
+        late_end_boundaries,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=15),
+        existing_episodes_df=persisted,
+    ).collect()
+    revision_events = runner.execute_determination_events(
+        late_end_boundaries,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=15),
+        existing_episodes_df=persisted,
+    ).collect()
+
+    assert len(revised) == 1
+    row = revised[0]
+    assert row.episode_id == persisted_row.episode_id
+    assert row.start_event_id == persisted_row.start_event_id
+    assert row.status == "closed"
+    assert row.close_reason == "end_event"
+    assert row.end_event_synthetic is False
+    assert row.end_time == observed_at + timedelta(minutes=10)
+    assert row.duration_ms == 600000
+
+    assert len(revision_events) == 1
+    event = revision_events[0]
+    assert event.event_type == "episode.temperature_high_active.closed"
+    assert event.generation == 2
+    assert event.correlation_id == persisted_row.episode_id
+    assert event.payload["status"] == "closed"
+    assert event.payload["close_reason"] == "end_event"
+    assert event.payload["end_event_id"] == row.end_event_id
+
+    legacy_state = persisted.drop("start_generation")
+    legacy_revised = runner.execute(
+        late_end_boundaries,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=15),
+        existing_episodes_df=legacy_state,
+    ).collect()
+    assert len(legacy_revised) == 1
+    assert legacy_revised[0].status == "closed"
+    assert legacy_revised[0].episode_id == persisted_row.episode_id
+    assert legacy_revised[0].start_generation == 1
+
+
+@pytest.mark.requires_spark
+def test_episode_runner_revises_persisted_invalidated_episode_with_in_bounds_real_end(spark):
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        invalidation_event="episode.temperature_high_active.invalidated",
+        max_duration_seconds=300,
+        subject_type="machine",
+    )
+    runner = EpisodeRunner()
+
+    first_batch_boundaries = ConditionEngineRunner().execute(
+        _unclosed_events_df(spark), _conditions_df(spark)
+    )
+    persisted = runner.execute(
+        first_batch_boundaries, episode, evaluation_time=observed_at + timedelta(minutes=10)
+    )
+    persisted_row = persisted.collect()[0]
+    assert persisted_row.status == "invalidated"
+    assert persisted_row.end_event_synthetic is True
+
+    late_end_boundaries = ConditionEngineRunner().execute(
+        _end_only_events_df(spark, observed_at + timedelta(minutes=4)), _conditions_df(spark)
+    )
+    revised = runner.execute(
+        late_end_boundaries,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=15),
+        existing_episodes_df=persisted,
+    ).collect()
+
+    assert len(revised) == 1
+    row = revised[0]
+    assert row.episode_id == persisted_row.episode_id
+    assert row.status == "closed"
+    assert row.close_reason == "end_event"
+    assert row.end_event_synthetic is False
+    assert row.end_time == observed_at + timedelta(minutes=4)
+    assert row.duration_ms == 240000
+
+
+@pytest.mark.requires_spark
+def test_episode_runner_does_not_regress_persisted_state_without_new_information(spark):
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+        events_schema,
+    )
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        expiration_event="episode.temperature_high_active.expired",
+        expires_after_seconds=300,
+        subject_type="machine",
+    )
+    runner = EpisodeRunner()
+
+    first_batch_boundaries = ConditionEngineRunner().execute(
+        _unclosed_events_df(spark), _conditions_df(spark)
+    )
+    persisted = runner.execute(
+        first_batch_boundaries, episode, evaluation_time=observed_at + timedelta(minutes=10)
+    )
+    assert persisted.collect()[0].status == "expired"
+
+    empty_boundaries = spark.createDataFrame([], events_schema())
+    no_information = runner.execute(
+        empty_boundaries, episode, existing_episodes_df=persisted
+    ).collect()
+    assert no_information == []
+
+    recomputed = runner.execute(
+        empty_boundaries,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=20),
+        existing_episodes_df=persisted,
+    ).collect()
+    assert len(recomputed) == 1
+    assert recomputed[0].status == "expired"
+    assert recomputed[0].episode_id == persisted.collect()[0].episode_id
+    assert recomputed[0].end_time == observed_at + timedelta(minutes=5)
+    assert recomputed[0].duration_ms == 300000
+
+
+@pytest.mark.requires_spark
+def test_episode_runner_deduplicates_replayed_start_against_persisted_episode(spark):
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    episode = EpisodeMetadata(
+        episodeid="episode.temperature_high_active",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.temperature_high.entered",
+        end_event="condition.temperature_high.exited",
+        condition_id="condition.temperature_high",
+        expires_after_seconds=300,
+        subject_type="machine",
+    )
+    runner = EpisodeRunner()
+
+    first_batch_boundaries = ConditionEngineRunner().execute(
+        _unclosed_events_df(spark), _conditions_df(spark)
+    )
+    persisted = runner.execute(
+        first_batch_boundaries, episode, evaluation_time=observed_at + timedelta(minutes=1)
+    )
+    persisted_row = persisted.collect()[0]
+    assert persisted_row.status == "open"
+
+    replayed = runner.execute(
+        first_batch_boundaries,
+        episode,
+        evaluation_time=observed_at + timedelta(minutes=1),
+        existing_episodes_df=persisted,
+    ).collect()
+
+    assert len(replayed) == 1
+    assert replayed[0].episode_id == persisted_row.episode_id
+    assert replayed[0].status == "open"

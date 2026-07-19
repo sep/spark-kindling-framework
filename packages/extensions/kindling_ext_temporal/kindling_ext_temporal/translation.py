@@ -17,6 +17,7 @@ class TemporalPipeTranslator:
     EPISODE_PIPE_PREFIX = "temporal.episode."
     EPISODE_DETERMINATION_EVENT_PIPE_PREFIX = "temporal.episode_event."
     EVALUATION_TIME_CONFIG_KEY = "kindling.temporal.evaluation_time"
+    PRIOR_STATE_CONFIG_KEY = "kindling.temporal.revise_persisted"
 
     @classmethod
     def base_event_pipe_id(cls, eventid: str) -> str:
@@ -164,6 +165,7 @@ class TemporalPipeTranslator:
                 "temporal.episode_id": metadata.episodeid,
                 "temporal.start_event": metadata.start_event,
                 "temporal.end_event": metadata.end_event,
+                "temporal.reads_prior_state": "true",
             },
             "input_entity_ids": [metadata.events_entity_id],
             "output_entity_id": metadata.output_entity_id,
@@ -186,6 +188,7 @@ class TemporalPipeTranslator:
                 "temporal.invalidation_event_type": metadata.invalidation_event,
                 "temporal.start_event": metadata.start_event,
                 "temporal.end_event": metadata.end_event,
+                "temporal.reads_prior_state": "true",
             },
             "input_entity_ids": [metadata.events_entity_id],
             "output_entity_id": metadata.events_entity_id,
@@ -230,9 +233,52 @@ class TemporalPipeTranslator:
                 events_df,
                 metadata,
                 evaluation_time=cls.resolve_evaluation_time(entity_dfs),
+                existing_episodes_df=cls.resolve_prior_episodes(entity_dfs, metadata),
             )
 
         return execute
+
+    @classmethod
+    def resolve_prior_episodes(cls, entity_dfs: Dict[str, Any], metadata: "EpisodeMetadata") -> Any:
+        """Resolve the persisted episode state an episode-family pipe revises.
+
+        Prior state is an execution-strategy concern owned by this extension,
+        not a declared dataflow dependency — the pipe graph never schedules a
+        pipe ahead of its own previous run. Resolution order: a JIT keyword
+        argument named after the episodes entity (tests, manual runs) wins;
+        the `kindling.temporal.revise_persisted` config key can disable the
+        read; otherwise the episodes entity is read through its provider when
+        it exists. Returns None (no prior state) when disabled, unresolvable,
+        or not yet created — the runner treats None as a pure batch view.
+        """
+        episodes_key = metadata.output_entity_id.replace(".", "_")
+        if episodes_key in entity_dfs:
+            return entity_dfs[episodes_key]
+        try:
+            from kindling.injection import GlobalInjector
+            from kindling.spark_config import ConfigService
+
+            enabled = GlobalInjector.get(ConfigService).get(cls.PRIOR_STATE_CONFIG_KEY, True)
+            if str(enabled).strip().lower() in ("false", "0", "no", "off"):
+                return None
+        except Exception:
+            pass
+        try:
+            from kindling.data_entities import DataEntityRegistry
+            from kindling.entity_provider_registry import EntityProviderRegistry
+            from kindling.injection import GlobalInjector
+
+            entity = GlobalInjector.get(DataEntityRegistry).get_entity_definition(
+                metadata.output_entity_id
+            )
+            if entity is None:
+                return None
+            provider = GlobalInjector.get(EntityProviderRegistry).get_provider_for_entity(entity)
+            if provider is None or not provider.check_entity_exists(entity):
+                return None
+            return provider.read_entity(entity)
+        except Exception:
+            return None
 
     @classmethod
     def resolve_evaluation_time(cls, entity_dfs: Dict[str, Any]) -> Any:
@@ -274,6 +320,7 @@ class TemporalPipeTranslator:
                 events_df,
                 metadata,
                 evaluation_time=cls.resolve_evaluation_time(entity_dfs),
+                existing_episodes_df=cls.resolve_prior_episodes(entity_dfs, metadata),
             )
 
         return execute

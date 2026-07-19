@@ -4,7 +4,6 @@ from collections import defaultdict
 from unittest.mock import MagicMock, Mock
 
 import pytest
-
 from kindling.data_pipes import PipeMetadata
 from kindling.pipe_graph import (
     GraphCycleError,
@@ -283,17 +282,26 @@ class TestPipeGraphBuilder:
         assert "pipe1" in str(exc_info.value)
         assert "pipe2" in str(exc_info.value)
 
-    def test_detect_self_cycle(self, builder, mock_registry):
-        """Test detecting a self-referencing cycle."""
-        # pipe1 -> pipe1 (self-loop via entity)
+    def test_self_read_is_prior_state_not_a_cycle(self, builder, mock_registry):
+        """A pipe reading its own output entity builds without a cycle.
+
+        Reading your own output consumes the previous run's persisted state
+        (e.g. temporal episode revision) — it cannot be satisfied by
+        scheduling, so no self-edge is created and ordering edges to other
+        pipes are preserved.
+        """
         mock_registry.pipe_defs = {
-            "pipe1": self.create_pipe_metadata("pipe1", ["entity.a"], "entity.a"),
+            "pipe0": self.create_pipe_metadata("pipe0", [], "entity.src"),
+            "pipe1": self.create_pipe_metadata("pipe1", ["entity.src", "entity.a"], "entity.a"),
+            "pipe2": self.create_pipe_metadata("pipe2", ["entity.a"], "entity.b"),
         }
 
-        with pytest.raises(GraphCycleError) as exc_info:
-            builder.build_graph(["pipe1"])
+        graph = builder.build_graph(["pipe0", "pipe1", "pipe2"])
 
-        assert "pipe1" in str(exc_info.value)
+        assert len(graph.edges) == 2
+        assert all(edge.from_pipe != edge.to_pipe for edge in graph.edges)
+        assert graph.get_root_nodes() == ["pipe0"]
+        assert graph.get_leaf_nodes() == ["pipe2"]
 
     def test_detect_complex_cycle(self, builder, mock_registry):
         """Test detecting a cycle in a complex graph."""
