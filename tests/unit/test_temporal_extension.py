@@ -26,15 +26,14 @@ def _temporal_service_get(
     entity_registry=None,
     pipe_registry=None,
 ):
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
     from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
         TemporalEntityResolver,
         TemporalEpisodeRegistry,
         TemporalEventRegistry,
     )
-
-    from kindling.data_entities import DataEntityRegistry
-    from kindling.data_pipes import DataPipesRegistry
 
     def _get(dep):
         if dep is TemporalEntityResolver:
@@ -113,10 +112,9 @@ def test_base_event_pipe_id_is_namespaced():
 
 
 def test_base_event_decorator_registers_metadata():
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
-
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -169,10 +167,9 @@ def test_base_event_decorator_registers_metadata():
 
 
 def test_base_event_registration_accepts_none_tags_and_requires_metadata():
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
-
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -230,10 +227,9 @@ def test_base_event_registration_accepts_none_tags_and_requires_metadata():
 
 
 def test_condition_engine_registration_is_not_condition_specific():
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
-
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     registry = TemporalEventRegistryManager(_logger_provider())
@@ -268,10 +264,9 @@ def test_condition_engine_registration_is_not_condition_specific():
 
 
 def test_episode_registration_uses_canonical_entities():
-    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
-
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
 
     DataEpisodes.reset()
     registry = TemporalEpisodeRegistryManager(_logger_provider())
@@ -335,7 +330,7 @@ def test_episode_registration_uses_canonical_entities():
 def test_episode_registration_accepts_explicit_determination_event_and_pipe_id():
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
 
     DataEpisodes.reset()
     registry = TemporalEpisodeRegistryManager(_logger_provider())
@@ -370,6 +365,7 @@ def test_episode_registration_accepts_explicit_determination_event_and_pipe_id()
 
 
 def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
+    from kindling.data_entities import DataEntityManager, EntityMetadata
     from kindling_ext_temporal import (
         BaseEventMetadata,
         ConditionEngineMetadata,
@@ -377,8 +373,6 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
         TemporalPipeTranslator,
         events_schema,
     )
-
-    from kindling.data_entities import DataEntityManager, EntityMetadata
 
     base_event = BaseEventMetadata(
         eventid="telemetry.none_tags",

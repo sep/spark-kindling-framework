@@ -46,15 +46,14 @@ def _temporal_service_get(
     entity_registry,
     pipe_registry,
 ):
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
     from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
         TemporalEntityResolver,
         TemporalEpisodeRegistry,
         TemporalEventRegistry,
     )
-
-    from kindling.data_entities import DataEntityRegistry
-    from kindling.data_pipes import DataPipesRegistry
 
     def _get(dep):
         if dep is TemporalEntityResolver:
@@ -113,7 +112,7 @@ def _events_df(spark):
 
 
 def _unclosed_events_df(spark):
-    from kindling_temporal import events_schema
+    from kindling_ext_temporal import events_schema
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     return spark.createDataFrame(
@@ -138,7 +137,7 @@ def _unclosed_events_df(spark):
 
 
 def _closed_events_for_machine_2_df(spark):
-    from kindling_temporal import events_schema
+    from kindling_ext_temporal import events_schema
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     cooled_at = observed_at + timedelta(minutes=10)
@@ -201,7 +200,7 @@ def _conditions_df(spark):
 
 
 def _episode_conditions_df(spark):
-    from kindling_temporal import conditions_schema
+    from kindling_ext_temporal import conditions_schema
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     return spark.createDataFrame(
@@ -224,15 +223,14 @@ def _episode_conditions_df(spark):
 
 
 def test_temporal_extension_registers_and_executes_condition_episode_flow(spark):
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
     from kindling_ext_temporal import (
         DataEpisodes,
         DataEvents,
         TemporalEpisodeRegistryManager,
         TemporalEventRegistryManager,
     )
-
-    from kindling.data_entities import DataEntityManager
-    from kindling.data_pipes import DataPipesManager
 
     DataEvents.reset()
     DataEpisodes.reset()

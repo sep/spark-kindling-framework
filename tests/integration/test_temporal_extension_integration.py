@@ -71,7 +71,7 @@ def _events_df(spark):
 
 
 def _unclosed_events_df(spark):
-    from kindling_temporal import events_schema
+    from kindling_ext_temporal import events_schema
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     return spark.createDataFrame(
@@ -181,7 +181,11 @@ def test_episode_runner_pairs_entered_and_exited_events(spark):
 
 @pytest.mark.requires_spark
 def test_episode_runner_materializes_open_episode_without_end_event(spark):
-    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     boundary_events = ConditionEngineRunner().execute(
@@ -225,7 +229,11 @@ def test_episode_runner_materializes_open_episode_without_end_event(spark):
 
 @pytest.mark.requires_spark
 def test_episode_runner_expires_open_episode_at_batch_evaluation_time(spark):
-    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     boundary_events = ConditionEngineRunner().execute(
@@ -284,7 +292,11 @@ def test_episode_runner_expires_open_episode_at_batch_evaluation_time(spark):
 
 @pytest.mark.requires_spark
 def test_episode_runner_preserves_episode_id_across_lifecycle_views(spark):
-    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     open_boundary_events = ConditionEngineRunner().execute(
@@ -328,7 +340,11 @@ def test_episode_runner_preserves_episode_id_across_lifecycle_views(spark):
 
 @pytest.mark.requires_spark
 def test_episode_runner_prefers_visible_real_end_over_batch_expiration(spark):
-    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     closed_boundary_events = ConditionEngineRunner().execute(
@@ -373,7 +389,11 @@ def test_episode_runner_prefers_visible_real_end_over_batch_expiration(spark):
 
 @pytest.mark.requires_spark
 def test_episode_runner_invalidates_closed_episode_outside_duration_bounds(spark):
-    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
 
     boundary_events = ConditionEngineRunner().execute(_events_df(spark), _conditions_df(spark))
     runner = EpisodeRunner()
@@ -431,7 +451,11 @@ def test_episode_runner_invalidates_closed_episode_outside_duration_bounds(spark
 
 @pytest.mark.requires_spark
 def test_episode_runner_invalidates_open_episode_past_max_duration(spark):
-    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     boundary_events = ConditionEngineRunner().execute(
@@ -478,7 +502,11 @@ def test_episode_runner_invalidates_open_episode_past_max_duration(spark):
 
 @pytest.mark.requires_spark
 def test_episode_runner_emits_episode_determination_event(spark):
-    from kindling_temporal import ConditionEngineRunner, EpisodeMetadata, EpisodeRunner
+    from kindling_ext_temporal import (
+        ConditionEngineRunner,
+        EpisodeMetadata,
+        EpisodeRunner,
+    )
 
     boundary_events = ConditionEngineRunner().execute(_events_df(spark), _conditions_df(spark))
     episode = EpisodeMetadata(
