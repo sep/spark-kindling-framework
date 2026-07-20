@@ -44,7 +44,11 @@ The selector performs this sequence during Lakeflow source evaluation:
    comma-separated `kindling.lakeflow.allowed_apps` value. An absent or empty
    allowlist authorizes every discovered app.
 3. Bridge `kindling.*` and `datapipes.*` pipeline settings into Kindling's
-   configuration service and initialize with `engine="databricks_sdp"`.
+   configuration service and initialize with `engine="databricks_sdp"`. The
+   bridge first enumerates `RuntimeConfig.getAll()`, falls back to
+   `SparkContext.getConf().getAll()` for PySpark 3.x, and finally reads only
+   the explicit app-selection keys with a warning if neither enumeration API
+   is available.
 4. Import the selected declaration module and call `register_all()`.
 5. Call `kindling.declare_pipeline()` last; Lakeflow then owns graph
    orchestration.
