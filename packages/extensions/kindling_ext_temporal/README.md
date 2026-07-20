@@ -57,7 +57,12 @@ walkthrough is in `docs/guide/temporal_end_to_end.md`.
   conditions entity's SCD2 merge; `validated_conditions_transform` gates a
   `FileIngestion` file-drop entry with the same validation, rejecting a file
   whole on any invalid row;
-- unit, integration, and system coverage for the first executable slice.
+- unit, integration, and system coverage for the first executable slice,
+  including a Databricks system test (`tests/system/extensions/temporal/`,
+  `tests/data-apps/temporal-test-app`) that validates the end-to-end flow,
+  validated conditions ingestion with per-row quarantine, and cross-run
+  late-end revision (two separate job executions over shared catalog
+  storage) on a real workspace.
 
 ## Configuration
 
@@ -128,7 +133,7 @@ mistaken for a full implementation:
 - multi-generation orchestration beyond one condition-engine pass;
 - interval hierarchy and temporal-relation reasoning;
 - aggregation, correlation, and inference-derived event paths;
-- cloud platform persistence/orchestration coverage beyond the local system
-  test path;
+- cloud platform coverage beyond Databricks (the Fabric/Synapse legs of the
+  platform system test);
 - a `kindling conditions set/remove` CLI on top of `ingest_conditions`;
 - a runnable example data app packaging the end-to-end guide walkthrough.

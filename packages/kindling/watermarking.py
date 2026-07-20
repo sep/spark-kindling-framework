@@ -204,7 +204,14 @@ class WatermarkManager(WatermarkService, SignalEmitter):
             )
             row = None if df.isEmpty() else df.first()
         except AnalysisException as e:
-            if "DELTA_MISSING_DELTA_TABLE" in str(e):
+            missing_markers = (
+                "DELTA_MISSING_DELTA_TABLE",
+                # Catalog-managed watermark tables surface as missing
+                # tables/views rather than missing Delta paths.
+                "TABLE_OR_VIEW_NOT_FOUND",
+                "DELTA_TABLE_NOT_FOUND",
+            )
+            if any(marker in str(e) for marker in missing_markers):
                 self.logger.debug("Watermarks table does not exist yet")
                 self.emit(
                     "watermark.watermark_missing",
@@ -367,10 +374,13 @@ class WatermarkManager(WatermarkService, SignalEmitter):
         legacy EntityProvider interface but not
         IncrementalReadableEntityProvider."""
         watermark_version = int(cursor) if cursor is not None else None
-        current_version = provider.get_entity_version(entity)
 
-        if watermark_version is None and current_version == 0:
+        if watermark_version is None and not provider.check_entity_exists(entity):
+            # Existence is checked explicitly: version 0 is also a real,
+            # readable table whose creation commit may already contain data.
             return None, None
+
+        current_version = provider.get_entity_version(entity)
 
         if watermark_version is None:
             df = remove_duplicates(
