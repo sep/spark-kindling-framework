@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "lakeflow-scd-test-app"
-version = "0.1.0"
+version = "0.1.1"
 description = "System-test data app: minimal SCD2 declared flow for Lakeflow AUTO CDC validation"
 authors = ["Kindling Team"]
 packages = [{ include = "lakeflow_scd_app" }]

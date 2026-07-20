@@ -9,14 +9,16 @@ engine, calls :func:`register_all`, and declares the pipeline.
 The graph is the smallest shape that exercises the SCD declared-flow ->
 AUTO CDC mapping (#166) against the real API:
 
-- ``lakeflow.customers_seed`` — a zero-input pipe materializing a customer
-  snapshot. The snapshot content is selected by the pipeline configuration
-  value ``lakeflow_scd.snapshot`` (``v1``/``v2``) so two pipeline updates
-  with different configuration demonstrate SCD2 version chaining.
 - ``silver.customers`` — the SCD2 target (``scd.type=2``,
   ``scd.source_kind=snapshot``): the Databricks engine emits a
   ``__scd_source`` view, ``create_streaming_table`` and
-  ``create_auto_cdc_from_snapshot_flow``.
+  ``create_auto_cdc_from_snapshot_flow``. The snapshot source is built by
+  the zero-input pipe body itself (content selected by the
+  ``lakeflow_scd.snapshot`` pipeline configuration value, ``v1``/``v2``)
+  so two pipeline updates with different configuration demonstrate SCD2
+  version chaining without any additional dataset: the system-test
+  service principal has CREATE TABLE but not CREATE MATERIALIZED VIEW on
+  the target schema, so a materialized-view seed dataset cannot deploy.
 
 Registration only happens inside :func:`register_all`; importing this
 module has no side effects (the selector requires declaration-only apps).
@@ -37,15 +39,6 @@ def register_all() -> None:
             StructField("tier", StringType(), False),
             StructField("updated_at", TimestampType(), False),
         ]
-    )
-
-    DataEntities.entity(
-        entityid="bronze.customers_feed",
-        name="customers_feed",
-        merge_columns=["customer_id"],
-        tags={"provider_type": "delta"},
-        schema=customers_schema,
-        partition_columns=[],
     )
 
     DataEntities.entity(
@@ -76,29 +69,17 @@ def register_all() -> None:
     }
 
     @DataPipes.pipe(
-        pipeid="lakeflow.customers_seed",
-        name="Customers snapshot seed",
-        input_entity_ids=[],
-        output_entity_id="bronze.customers_feed",
-        output_type="delta",
-        tags={},
-        use_watermark=False,
-    )
-    def customers_seed():
-        from pyspark.sql import SparkSession
-
-        spark = SparkSession.getActiveSession()
-        snapshot = str(spark.conf.get("lakeflow_scd.snapshot", "v1")).strip().lower()
-        return spark.createDataFrame(SNAPSHOTS.get(snapshot, SNAPSHOTS["v1"]), customers_schema)
-
-    @DataPipes.pipe(
         pipeid="lakeflow.customers_scd",
         name="Customers SCD2",
-        input_entity_ids=["bronze.customers_feed"],
+        input_entity_ids=[],
         output_entity_id="silver.customers",
         output_type="delta",
         tags={},
         use_watermark=False,
     )
-    def customers_scd(bronze_customers_feed):
-        return bronze_customers_feed
+    def customers_scd():
+        from pyspark.sql import SparkSession
+
+        spark = SparkSession.getActiveSession()
+        snapshot = str(spark.conf.get("lakeflow_scd.snapshot", "v1")).strip().lower()
+        return spark.createDataFrame(SNAPSHOTS.get(snapshot, SNAPSHOTS["v1"]), customers_schema)
