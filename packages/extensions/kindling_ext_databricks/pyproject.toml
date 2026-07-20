@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "spark-kindling-ext-databricks"
-version = "0.1.0"
+version = "0.1.4"
 description = "Databricks Lakeflow adapter for Kindling's SDP declaration engine"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"

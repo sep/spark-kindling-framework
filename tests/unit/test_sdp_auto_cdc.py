@@ -150,11 +150,11 @@ class TestChangeFeedMapping:
     def test_emits_view_streaming_table_and_cdc_flow(self):
         dp = declare(CHANGE_FEED_TAGS)
 
-        assert "silver.customers__scd_source" in dp.views
+        assert "silver_customers__scd_source" in dp.views
         assert "silver.customers" in dp.streaming_tables
         (flow,) = dp.cdc_flows
         assert flow["target"] == "silver.customers"
-        assert flow["source"] == "silver.customers__scd_source"
+        assert flow["source"] == "silver_customers__scd_source"
         assert flow["keys"] == ["customer_id"]
         assert flow["sequence_by"] == "updated_at"
         assert flow["stored_as_scd_type"] == 2
@@ -236,7 +236,7 @@ class TestChangeFeedMapping:
         )
 
         assert dp.expectations == [{"valid_key": "customer_id IS NOT NULL"}]
-        assert "silver.customers__scd_source" in dp.views
+        assert "silver_customers__scd_source" in dp.views
 
 
 class FakeStreamingSession:
@@ -294,7 +294,7 @@ class TestChangeFeedStreamingSource:
             entities, pipes, dp_module=dp, session_provider=lambda: session
         )
         engine.declare_pipeline(engine.build_plan())
-        dp.views["silver.customers__scd_source"]()
+        dp.views["silver_customers__scd_source"]()
         return session, captured
 
     def test_driving_input_streams_remaining_inputs_stay_batch(self):
@@ -350,7 +350,7 @@ class TestChangeFeedStreamingSource:
             external_stream_read_resolver=stream_resolver,
         )
         engine.declare_pipeline(engine.build_plan())
-        dp.views["silver.customers__scd_source"]()
+        dp.views["silver_customers__scd_source"]()
 
         assert session.stream_reads == ["catalog.bronze.customers"]
         assert session.batch_reads == ["catalog.ref.regions"]
@@ -379,7 +379,7 @@ class TestSnapshotMapping:
 
         (flow,) = dp.snapshot_flows
         assert flow["target"] == "silver.customers"
-        assert flow["source"] == "silver.customers__scd_source"
+        assert flow["source"] == "silver_customers__scd_source"
         assert flow["keys"] == ["customer_id"]
         assert flow["stored_as_scd_type"] == 2
         assert dp.cdc_flows == []

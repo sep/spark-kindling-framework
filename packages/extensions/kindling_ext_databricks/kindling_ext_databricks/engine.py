@@ -133,7 +133,11 @@ class DatabricksSdpEngine(OssSdpEngine):
                 f"Dataset '{dataset.name}': output entity could not be resolved "
                 "while declaring its AUTO CDC flow."
             )
-        source_name = f"{dataset.name}{SCD_SOURCE_SUFFIX}"
+        # Pipeline-scoped views only accept single-part names — Lakeflow
+        # rejects dotted names outright ("View with multipart name ... is
+        # not supported"). The view is internal plumbing, so normalize the
+        # entity id; the AUTO CDC flow references the same normalized name.
+        source_name = f"{dataset.name.replace('.', '_')}{SCD_SOURCE_SUFFIX}"
 
         view_decorator = getattr(dp, "temporary_view", None) or getattr(dp, "view", None)
         if view_decorator is None:
