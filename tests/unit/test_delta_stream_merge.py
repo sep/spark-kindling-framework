@@ -82,10 +82,24 @@ class TestDeltaMergeAsStream:
             }
         )
         df = MagicMock()
+        df.columns = ["order_id", "status", "updated_at"]
         query = (
             df.writeStream.outputMode.return_value.option.return_value.foreachBatch.return_value.start.return_value
         )
         assert provider.merge_as_stream(df, entity, "/chk") is query
+
+    def test_sequence_by_missing_from_stream_raises_before_start(self, provider):
+        # A missing sequence column would silently skip the per-batch
+        # collapse and kill the query mid-stream; it must fail at query
+        # start, before the writer is even built.
+        entity = self._make_entity(tags={"scd.type": "2", "scd.sequence_by": "updated_at"})
+        df = MagicMock()
+        df.columns = ["order_id", "status"]
+
+        with pytest.raises(ValueError, match="scd.sequence_by"):
+            provider.merge_as_stream(df, entity, "/chk")
+
+        df.writeStream.outputMode.assert_not_called()
 
     def test_implicit_change_feed_default_is_not_rejected(self, provider):
         # Vanilla SCD2 (no source_kind tag) keeps arrival-time ordering with

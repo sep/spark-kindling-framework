@@ -1641,8 +1641,20 @@ class DeltaEntityProvider(
                 f"cannot be collapsed or ordered"
             )
 
+        # The declared sequence column must actually be in the stream: a
+        # missing column would silently skip the per-batch collapse and the
+        # query would die mid-stream on Delta's multiple-source-rows rule.
+        # Fail fast at query start instead (micro-batch schema == stream
+        # schema, so checking here covers every batch).
+        if cfg.enabled and cfg.sequence_by and cfg.sequence_by not in df.columns:
+            raise ValueError(
+                f"Entity '{entity.entityid}': scd.sequence_by column "
+                f"'{cfg.sequence_by}' is missing from the streaming DataFrame — "
+                f"the per-batch latest-row-per-key collapse cannot run"
+            )
+
         def _merge_batch(batch_df, batch_id):
-            if cfg.enabled and cfg.sequence_by and cfg.sequence_by in batch_df.columns:
+            if cfg.enabled and cfg.sequence_by:
                 from pyspark.sql import Window
                 from pyspark.sql.functions import row_number
 
