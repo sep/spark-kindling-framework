@@ -195,26 +195,32 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                 )
                 df = _apply_df_transforms(results, df)
 
-                # Sink write mode override, shared with the streaming path
-                # (SimplePipeStreamStarter): "append" skips the merge even
-                # when the provider supports it (e.g. append-only fact
-                # tables); "merge" makes the merge requirement explicit —
-                # no silent append fallback. Unset keeps the default:
-                # merge when the provider can, append otherwise.
-                write_mode = str((output_entity.tags or {}).get("write.mode") or "").strip().lower()
-                if write_mode not in ("", "append", "merge"):
-                    raise ValueError(
-                        f"Entity '{output_entity.entityid}': invalid write.mode "
-                        f"'{write_mode}' (expected 'append' or 'merge')"
-                    )
-                if write_mode == "merge" and not hasattr(output_provider, "merge_to_entity"):
-                    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
-                    raise ValueError(
-                        f"Entity '{output_entity.entityid}': write.mode is 'merge' but "
-                        f"provider '{provider_type}' does not support merge operations"
-                    )
-
                 try:
+                    # Sink write mode override, shared with the streaming path
+                    # (SimplePipeStreamStarter): "append" skips the merge even
+                    # when the provider supports it (e.g. append-only fact
+                    # tables); "merge" makes the merge requirement explicit —
+                    # no silent append fallback. Unset keeps the default:
+                    # merge when the provider can, append otherwise. The
+                    # static tag value is validated at entity-registration
+                    # time (data_entities._validate_write_mode_tag); checking
+                    # inside the try keeps any raise paired with
+                    # persist.persist_failed after persist.before_persist.
+                    write_mode = (
+                        str((output_entity.tags or {}).get("write.mode") or "").strip().lower()
+                    )
+                    if write_mode not in ("", "append", "merge"):
+                        raise ValueError(
+                            f"Entity '{output_entity.entityid}': invalid write.mode "
+                            f"'{write_mode}' (expected 'append' or 'merge')"
+                        )
+                    if write_mode == "merge" and not hasattr(output_provider, "merge_to_entity"):
+                        provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
+                        raise ValueError(
+                            f"Entity '{output_entity.entityid}': write.mode is 'merge' but "
+                            f"provider '{provider_type}' does not support merge operations"
+                        )
+
                     with strategy.tp.span(
                         component="data_utils", operation="merge_and_watermark", reraise=False
                     ):
