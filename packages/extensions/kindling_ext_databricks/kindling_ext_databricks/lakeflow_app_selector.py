@@ -23,6 +23,11 @@ from pyspark.sql.utils import AnalysisException
 APP_ENTRY_POINT_GROUP = "spark_kindling.data_apps"
 DATA_APP_CONFIG_KEY = "kindling.data_app"
 ALLOWED_APPS_CONFIG_KEY = "kindling.lakeflow.allowed_apps"
+#: Comma-separated pipeline-configuration keys to bridge by point lookup.
+#: Restricted runtimes (serverless / shared-access clusters) allow
+#: ``spark.conf.get`` on pipeline configuration but block every enumeration
+#: surface, so keys beyond the defaults must be named explicitly.
+CONFIG_KEYS_CONFIG_KEY = "kindling.lakeflow.config_keys"
 
 _LOGGER = logging.getLogger(__name__)
 _CONF_READ_ERRORS = (AttributeError, KeyError, Py4JError, AnalysisException, RuntimeError)
@@ -90,38 +95,49 @@ def _spark_conf_get(spark: Any, key: str) -> Optional[str]:
 
 
 def _spark_conf_items(spark: Any) -> Iterable[Tuple[str, Any]]:
-    """Enumerate Spark configuration with PySpark 3.x and Databricks fallbacks."""
+    """Enumerate Spark configuration with PySpark 3.x and Databricks fallbacks.
+
+    Every tier is best-effort: restricted runtimes (serverless / shared-access
+    clusters with py4j whitelisting) can fail these calls with exception types
+    outside any fixed tuple — enumeration must degrade, never crash
+    declaration.
+    """
 
     try:
         get_all = getattr(spark.conf, "getAll", None)
-    except _CONF_READ_ERRORS as exc:
-        _LOGGER.debug("RuntimeConfig.getAll is unavailable: %s", exc)
-        get_all = None
-    if callable(get_all):
-        try:
+        if callable(get_all):
             values = get_all()
             if isinstance(values, Mapping):
                 return tuple(values.items())
             return tuple(values)
-        except (TypeError, *_CONF_READ_ERRORS) as exc:
-            _LOGGER.debug("Unable to enumerate RuntimeConfig.getAll(): %s", exc)
+    except Exception as exc:  # noqa: BLE001 - best-effort tier
+        _LOGGER.debug("Unable to enumerate RuntimeConfig.getAll(): %s", exc)
 
     try:
-        spark_context = spark.sparkContext
-        values = spark_context.getConf().getAll()
+        values = spark.sparkContext.getConf().getAll()
         if isinstance(values, Mapping):
             return tuple(values.items())
         return tuple(values)
-    except (TypeError, *_CONF_READ_ERRORS) as exc:
+    except Exception as exc:  # noqa: BLE001 - py4j-restricted runtimes
         _LOGGER.debug("Unable to enumerate SparkContext.getConf().getAll(): %s", exc)
+
+    # Restricted runtimes usually still allow SQL and point lookups even when
+    # the py4j conf objects are whitelisted away.
+    try:
+        rows = spark.sql("SET").collect()
+        items = tuple((row[0], row[1]) for row in rows if row[0] is not None)
+        if items:
+            return items
+    except Exception as exc:  # noqa: BLE001 - best-effort tier
+        _LOGGER.debug("Unable to enumerate configuration via SET: %s", exc)
 
     explicit_keys = (DATA_APP_CONFIG_KEY, ALLOWED_APPS_CONFIG_KEY)
     explicit_items = tuple(
         (key, value) for key in explicit_keys if (value := _spark_conf_get(spark, key)) is not None
     )
     _LOGGER.warning(
-        "Unable to enumerate Spark configuration through RuntimeConfig.getAll() "
-        "or SparkContext.getConf().getAll(); bridged only explicit keys %s "
+        "Unable to enumerate Spark configuration through RuntimeConfig.getAll(), "
+        "SparkContext.getConf().getAll(), or SET; bridged only explicit keys %s "
         "(available: %s)",
         explicit_keys,
         tuple(key for key, _ in explicit_items),
@@ -153,6 +169,24 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
     allowed = _spark_conf_get(spark, ALLOWED_APPS_CONFIG_KEY)
     if allowed is not None:
         config[ALLOWED_APPS_CONFIG_KEY] = allowed
+
+    # Restricted runtimes cannot enumerate configuration at all; bridge any
+    # explicitly named keys by point lookup.
+    raw_keys = _spark_conf_get(spark, CONFIG_KEYS_CONFIG_KEY)
+    if raw_keys:
+        for key in (part.strip() for part in str(raw_keys).split(",")):
+            if key and key not in config:
+                value = _spark_conf_get(spark, key)
+                if value is not None:
+                    config[key] = value
+
+    # Declaration-time default: SDP owns execution and persistence, and
+    # platform services are runtime machinery (workspace scans, token
+    # acquisition) that pipeline environments cannot construct — the
+    # Databricks platform service fails with "No workspace_id provided" in
+    # Lakeflow. An explicit platform in the bridged config wins.
+    if "platform" not in config and "kindling.platform.environment" not in config:
+        config["platform"] = "standalone"
     return config
 
 
