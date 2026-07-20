@@ -30,10 +30,14 @@ class CurrentViewEntityProvider(BaseEntityProvider):
                 "scd.companion_of tag for current_view provider"
             )
 
-        from .data_entities import DataEntityManager
+        from .data_entities import DataEntityRegistry
         from .entity_provider_registry import EntityProviderRegistry
 
-        entity_manager = GlobalInjector.get(DataEntityManager)
+        # Resolve through the DataEntityRegistry interface — the binding all
+        # registrations go through. Injector singletons cache per binding
+        # key, so resolving the concrete manager class here would return a
+        # second, empty registry instance in a bootstrapped app.
+        entity_manager = GlobalInjector.get(DataEntityRegistry)
         provider_registry = GlobalInjector.get(EntityProviderRegistry)
         base_entity = entity_manager.get_entity_definition(base_entity_id)
         if base_entity is None:

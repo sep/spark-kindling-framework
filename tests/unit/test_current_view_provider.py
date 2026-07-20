@@ -1,10 +1,9 @@
 from unittest.mock import MagicMock
 
 import pytest
-from pyspark.sql.types import StringType, StructField, StructType
-
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_current_view import CurrentViewEntityProvider
+from pyspark.sql.types import StringType, StructField, StructType
 
 
 class Expr:
@@ -58,7 +57,7 @@ def _wire_provider(monkeypatch, companion, base=None, base_provider=None):
     provider_registry.get_provider_for_entity.return_value = base_provider
 
     def fake_get(cls):
-        if cls.__name__ == "DataEntityManager":
+        if cls.__name__ == "DataEntityRegistry":
             return entity_manager
         if cls.__name__ == "EntityProviderRegistry":
             return provider_registry
