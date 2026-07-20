@@ -19,6 +19,12 @@ The framework uses **interface composition** rather than a single monolithic abs
 
 This means a read-only CSV provider only implements `BaseEntityProvider`, while a full-featured Delta provider implements all of them.
 
+Built-in providers: `delta` (all five + merge), `parquet` (all five, no
+merge — plain-parquet interchange at solution boundaries; see
+`entity_provider_parquet.py` for the no-transaction-log caveats), `csv`,
+`memory`, `eventhub`, `sql` (views), and `current_view`. Extensions add
+`adx` and `cosmos`.
+
 Capability helpers are provided for runtime checks:
 
 ```python

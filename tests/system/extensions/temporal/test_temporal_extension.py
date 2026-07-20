@@ -7,7 +7,9 @@ from pyspark.sql import SparkSession
 
 pytestmark = [pytest.mark.system, pytest.mark.standalone, pytest.mark.requires_spark]
 
-EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[4] / "packages" / "kindling_temporal"
+EXTENSION_PACKAGE_ROOT = (
+    Path(__file__).resolve().parents[4] / "packages" / "extensions" / "kindling_ext_temporal"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +48,7 @@ def _temporal_service_get(
 ):
     from kindling.data_entities import DataEntityRegistry
     from kindling.data_pipes import DataPipesRegistry
-    from kindling_temporal import (
+    from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
         TemporalEntityResolver,
         TemporalEpisodeRegistry,
@@ -70,7 +72,7 @@ def _temporal_service_get(
 
 
 def _events_df(spark):
-    from kindling_temporal import events_schema
+    from kindling_ext_temporal import events_schema
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     cooled_at = observed_at + timedelta(minutes=10)
@@ -109,8 +111,98 @@ def _events_df(spark):
     )
 
 
+def _unclosed_events_df(spark):
+    from kindling_ext_temporal import events_schema
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    return spark.createDataFrame(
+        [
+            (
+                "source-hot",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-2",
+                observed_at,
+                "sensor",
+                None,
+                {"temperature": "95"},
+                None,
+                observed_at,
+            ),
+        ],
+        events_schema(),
+    )
+
+
+def _closed_events_for_machine_2_df(spark):
+    from kindling_ext_temporal import events_schema
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    cooled_at = observed_at + timedelta(minutes=10)
+    return spark.createDataFrame(
+        [
+            (
+                "source-hot",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-2",
+                observed_at,
+                "sensor",
+                None,
+                {"temperature": "95"},
+                None,
+                observed_at,
+            ),
+            (
+                "source-cool",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-2",
+                cooled_at,
+                "sensor",
+                None,
+                {"temperature": "80"},
+                None,
+                cooled_at,
+            ),
+        ],
+        events_schema(),
+    )
+
+
+def _late_end_events_for_machine_2_df(spark):
+    from kindling_ext_temporal import events_schema
+
+    cooled_at = datetime(2026, 7, 14, 12, 10, 0)
+    return spark.createDataFrame(
+        [
+            (
+                "source-cool-late",
+                "telemetry.observed",
+                0,
+                "base",
+                "machine",
+                "machine-2",
+                cooled_at,
+                "sensor",
+                None,
+                {"temperature": "80"},
+                None,
+                datetime(2026, 7, 14, 12, 20, 0),
+            ),
+        ],
+        events_schema(),
+    )
+
+
 def _conditions_df(spark):
-    from kindling_temporal import conditions_schema
+    from kindling_ext_temporal import conditions_schema
 
     observed_at = datetime(2026, 7, 14, 12, 0, 0)
     return spark.createDataFrame(
@@ -132,10 +224,33 @@ def _conditions_df(spark):
     )
 
 
+def _episode_conditions_df(spark):
+    from kindling_ext_temporal import conditions_schema
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    return spark.createDataFrame(
+        [
+            (
+                "condition.thermal_excursion",
+                ["episode.temperature_high_active.closed"],
+                "machine",
+                {
+                    "enter_when": "payload['status'] = 'closed'",
+                    "exit_when": "false",
+                },
+                True,
+                observed_at,
+                None,
+            )
+        ],
+        conditions_schema(),
+    )
+
+
 def test_temporal_extension_registers_and_executes_condition_episode_flow(spark):
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import (
+    from kindling_ext_temporal import (
         DataEpisodes,
         DataEvents,
         TemporalEpisodeRegistryManager,
@@ -164,6 +279,16 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
             start_event="condition.temperature_high.entered",
             end_event="condition.temperature_high.exited",
             subject_type="machine",
+            expires_after_seconds=300,
+            expiration_event="episode.temperature_high_active.expired",
+        )
+        DataEpisodes.episode(
+            episodeid="episode.temperature_high_duration_guard",
+            start_event="condition.temperature_high.entered",
+            end_event="condition.temperature_high.exited",
+            subject_type="machine",
+            max_duration_seconds=300,
+            invalidation_event="episode.temperature_high_duration_guard.invalidated",
         )
 
     condition_pipe = pipe_registry.get_pipe_definition(
@@ -171,6 +296,15 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     )
     episode_pipe = pipe_registry.get_pipe_definition(
         "temporal.episode.episode.temperature_high_active"
+    )
+    episode_event_pipe = pipe_registry.get_pipe_definition(
+        "temporal.episode_event.episode.temperature_high_active"
+    )
+    duration_guard_pipe = pipe_registry.get_pipe_definition(
+        "temporal.episode.episode.temperature_high_duration_guard"
+    )
+    duration_guard_event_pipe = pipe_registry.get_pipe_definition(
+        "temporal.episode_event.episode.temperature_high_duration_guard"
     )
 
     boundary_events = condition_pipe.execute(
@@ -191,3 +325,156 @@ def test_temporal_extension_registers_and_executes_condition_episode_flow(spark)
     assert rows[0].condition_id == "condition.temperature_high"
     assert rows[0].status == "closed"
     assert rows[0].duration_ms == 600000
+
+    determination_events = episode_event_pipe.execute(silver_events=boundary_events)
+    determination_rows = determination_events.collect()
+    assert len(determination_rows) == 1
+    assert determination_rows[0].event_type == "episode.temperature_high_active.closed"
+    assert determination_rows[0].generation == 2
+    assert determination_rows[0].correlation_id == rows[0].episode_id
+
+    invalidated_rows = duration_guard_pipe.execute(silver_events=boundary_events).collect()
+    invalidated_events = duration_guard_event_pipe.execute(silver_events=boundary_events).collect()
+
+    assert len(invalidated_rows) == 1
+    assert invalidated_rows[0].episode_type == "episode.temperature_high_duration_guard"
+    assert invalidated_rows[0].status == "invalidated"
+    assert invalidated_rows[0].close_reason == "max_duration"
+    assert invalidated_rows[0].duration_ms == 600000
+    assert len(invalidated_events) == 1
+    assert invalidated_events[0].event_type == "episode.temperature_high_duration_guard.invalidated"
+    assert invalidated_events[0].payload["status"] == "invalidated"
+    assert invalidated_events[0].payload["close_reason"] == "max_duration"
+
+    recursive_events = boundary_events.unionByName(determination_events)
+    recursive_boundary_events = condition_pipe.execute(
+        silver_events=recursive_events,
+        silver_conditions_current=_episode_conditions_df(spark),
+    )
+    recursive_rows = {row.event_type: row for row in recursive_boundary_events.collect()}
+
+    assert set(recursive_rows) == {"condition.thermal_excursion.entered"}
+    assert recursive_rows["condition.thermal_excursion.entered"].generation == 3
+    assert (
+        recursive_rows["condition.thermal_excursion.entered"].attributes["source_event_id"]
+        == determination_rows[0].event_id
+    )
+
+    open_boundary_events = condition_pipe.execute(
+        silver_events=_unclosed_events_df(spark),
+        silver_conditions_current=_conditions_df(spark),
+    )
+    open_episodes = episode_pipe.execute(silver_events=open_boundary_events).collect()
+    open_determination_events = episode_event_pipe.execute(
+        silver_events=open_boundary_events
+    ).collect()
+
+    assert len(open_episodes) == 1
+    assert open_episodes[0].subject_id == "machine-2"
+    assert open_episodes[0].status == "open"
+    assert open_episodes[0].end_event_id is None
+    assert open_episodes[0].end_time is None
+    assert open_episodes[0].duration_ms is None
+    assert open_determination_events == []
+
+    open_max_duration_rows = duration_guard_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    ).collect()
+    open_max_duration_events = duration_guard_event_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    ).collect()
+
+    assert len(open_max_duration_rows) == 1
+    assert open_max_duration_rows[0].status == "invalidated"
+    assert open_max_duration_rows[0].close_reason == "max_duration"
+    assert open_max_duration_rows[0].end_event_synthetic is True
+    assert open_max_duration_rows[0].end_time == datetime(2026, 7, 14, 12, 5, 0)
+    assert open_max_duration_rows[0].duration_ms == 300000
+    assert len(open_max_duration_events) == 1
+    assert (
+        open_max_duration_events[0].event_type
+        == "episode.temperature_high_duration_guard.invalidated"
+    )
+    assert open_max_duration_events[0].payload["status"] == "invalidated"
+    assert open_max_duration_events[0].payload["close_reason"] == "max_duration"
+
+    expired_episodes = episode_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    ).collect()
+    expired_events = episode_event_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    ).collect()
+
+    assert len(expired_episodes) == 1
+    assert expired_episodes[0].subject_id == "machine-2"
+    assert expired_episodes[0].status == "expired"
+    assert expired_episodes[0].episode_id == open_episodes[0].episode_id
+    assert expired_episodes[0].start_event_id == open_episodes[0].start_event_id
+    assert expired_episodes[0].close_reason == "expiration"
+    assert expired_episodes[0].end_event_synthetic is True
+    assert expired_episodes[0].end_time == datetime(2026, 7, 14, 12, 5, 0)
+    assert expired_episodes[0].duration_ms == 300000
+
+    assert len(expired_events) == 1
+    assert expired_events[0].event_type == "episode.temperature_high_active.expired"
+    assert expired_events[0].generation == 2
+    assert expired_events[0].correlation_id == expired_episodes[0].episode_id
+    assert expired_events[0].payload["status"] == "expired"
+
+    closed_machine_2_boundary_events = condition_pipe.execute(
+        silver_events=_closed_events_for_machine_2_df(spark),
+        silver_conditions_current=_conditions_df(spark),
+    )
+    closure_for_same_start = episode_pipe.execute(
+        silver_events=closed_machine_2_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 15, 0),
+    ).collect()[0]
+    closure_event_for_same_start = episode_event_pipe.execute(
+        silver_events=closed_machine_2_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 15, 0),
+    ).collect()[0]
+
+    assert closure_for_same_start.status == "closed"
+    assert closure_for_same_start.episode_id == open_episodes[0].episode_id
+    assert closure_for_same_start.start_event_id == open_episodes[0].start_event_id
+    assert closure_for_same_start.end_event_synthetic is False
+    assert closure_for_same_start.end_time == datetime(2026, 7, 14, 12, 10, 0)
+    assert closure_event_for_same_start.event_type == "episode.temperature_high_active.closed"
+    assert closure_event_for_same_start.correlation_id == closure_for_same_start.episode_id
+    assert closure_event_for_same_start.payload["status"] == "closed"
+    assert closure_event_for_same_start.payload["close_reason"] == "end_event"
+
+    late_end_boundary_events = condition_pipe.execute(
+        silver_events=_late_end_events_for_machine_2_df(spark),
+        silver_conditions_current=_conditions_df(spark),
+    )
+    persisted_expired = episode_pipe.execute(
+        silver_events=open_boundary_events,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 10, 0),
+    )
+    revised = episode_pipe.execute(
+        silver_events=late_end_boundary_events,
+        silver_episodes=persisted_expired,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 25, 0),
+    ).collect()
+    revised_events = episode_event_pipe.execute(
+        silver_events=late_end_boundary_events,
+        silver_episodes=persisted_expired,
+        temporal_evaluation_time=datetime(2026, 7, 14, 12, 25, 0),
+    ).collect()
+
+    assert len(revised) == 1
+    assert revised[0].status == "closed"
+    assert revised[0].close_reason == "end_event"
+    assert revised[0].episode_id == open_episodes[0].episode_id
+    assert revised[0].start_event_id == open_episodes[0].start_event_id
+    assert revised[0].end_event_synthetic is False
+    assert revised[0].end_time == datetime(2026, 7, 14, 12, 10, 0)
+    assert len(revised_events) == 1
+    assert revised_events[0].event_type == "episode.temperature_high_active.closed"
+    assert revised_events[0].correlation_id == revised[0].episode_id
+    assert revised_events[0].payload["status"] == "closed"

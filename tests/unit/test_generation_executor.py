@@ -19,13 +19,15 @@ from kindling.entity_provider import (
 )
 from kindling.execution_strategy import ExecutionPlan, Generation
 from kindling.generation_executor import (
+    UNSET,
     ErrorStrategy,
     ExecutionResult,
     GenerationExecutor,
     GenerationResult,
     PipeResult,
+    RetryPolicy,
 )
-from kindling.pipe_graph import PipeGraph, PipeNode
+from kindling.pipe_graph import PipeEdge, PipeGraph, PipeNode
 from kindling.pipe_streaming import SimplePipeStreamStarter
 
 # ---- Fixtures ----
@@ -81,9 +83,20 @@ def entity_path_locator():
 
 @pytest.fixture
 def config_service():
-    """Create mock config service."""
+    """Create mock config service.
+
+    `kindling.execution.*` keys fall through to the caller's default so
+    option resolution behaves as if unconfigured; other keys return a
+    checkpoint path for the streaming code paths.
+    """
     service = Mock()
-    service.get = Mock(return_value="/checkpoints")
+
+    def get(key, default=None):
+        if key.startswith("kindling.execution."):
+            return default
+        return "/checkpoints"
+
+    service.get = Mock(side_effect=get)
     return service
 
 
@@ -224,7 +237,11 @@ def setup_streaming_mocks(
     entity_registry.get_entity_definition = Mock(side_effect=get_entity)
     provider_registry.get_provider_for_entity = Mock(return_value=provider)
     entity_path_locator.get_table_path = Mock(return_value="/data/output")
-    config_service.get = Mock(return_value="/checkpoints")
+    config_service.get = Mock(
+        side_effect=lambda key, default=None: (
+            default if key.startswith("kindling.execution.") else "/checkpoints"
+        )
+    )
 
     return mock_query, provider
 
@@ -1293,3 +1310,553 @@ class TestConvenienceMethods:
 
         assert result.all_succeeded is True
         assert "pipe1" in result.streaming_queries
+
+
+# ---- Config-Driven Execution Option Tests ----
+
+
+def make_config(values):
+    """Mock config service backed by a dict of kindling.execution.* values."""
+    service = Mock()
+    service.get = Mock(side_effect=lambda key, default=None: values.get(key, default))
+    return service
+
+
+class TestConfigDrivenOptions:
+    """Execution options resolve config-first; params override just-in-time."""
+
+    def _make_executor(self, config_service, **fixtures):
+        return GenerationExecutor(
+            pipes_registry=fixtures["pipes_registry"],
+            entity_registry=fixtures["entity_registry"],
+            pipe_stream_starter=Mock(),
+            config_service=config_service,
+            persist_strategy=fixtures["persist_strategy"],
+            trace_provider=fixtures["trace_provider"],
+            logger_provider=fixtures["logger_provider"],
+            signal_provider=fixtures["signal_provider"],
+        )
+
+    def _two_pipe_setup(self, pipes_registry, entity_registry, persist_strategy):
+        pipe1 = make_pipe("pipe1", inputs=["entity.a"])
+        pipe2 = make_pipe("pipe2", inputs=["entity.b"])
+        pipes_registry.get_pipe_definition.side_effect = lambda pid: {
+            "pipe1": pipe1,
+            "pipe2": pipe2,
+        }[pid]
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+        return make_plan(
+            ["pipe1", "pipe2"],
+            [Generation(number=0, pipe_ids=["pipe1", "pipe2"], dependencies=[])],
+        )
+
+    def test_config_enables_parallel(
+        self,
+        pipes_registry,
+        entity_registry,
+        persist_strategy,
+        trace_provider,
+        logger_provider,
+        signal_provider,
+    ):
+        """kindling.execution.parallel=true routes to the parallel path."""
+        config = make_config(
+            {"kindling.execution.parallel": True, "kindling.execution.max_workers": 2}
+        )
+        executor = self._make_executor(
+            config,
+            pipes_registry=pipes_registry,
+            entity_registry=entity_registry,
+            persist_strategy=persist_strategy,
+            trace_provider=trace_provider,
+            logger_provider=logger_provider,
+            signal_provider=signal_provider,
+        )
+        plan = self._two_pipe_setup(pipes_registry, entity_registry, persist_strategy)
+
+        with patch.object(
+            executor,
+            "_execute_generation_parallel",
+            wraps=executor._execute_generation_parallel,
+        ) as spy:
+            result = executor.execute(plan)
+
+        spy.assert_called_once()
+        assert spy.call_args.args[2] == 2  # max_workers from config
+        assert result.success_count == 2
+
+    def test_param_overrides_config_parallel(
+        self,
+        pipes_registry,
+        entity_registry,
+        persist_strategy,
+        trace_provider,
+        logger_provider,
+        signal_provider,
+    ):
+        """Explicit parallel=False wins over config parallel=true."""
+        config = make_config({"kindling.execution.parallel": True})
+        executor = self._make_executor(
+            config,
+            pipes_registry=pipes_registry,
+            entity_registry=entity_registry,
+            persist_strategy=persist_strategy,
+            trace_provider=trace_provider,
+            logger_provider=logger_provider,
+            signal_provider=signal_provider,
+        )
+        plan = self._two_pipe_setup(pipes_registry, entity_registry, persist_strategy)
+
+        with patch.object(
+            executor,
+            "_execute_generation_parallel",
+            wraps=executor._execute_generation_parallel,
+        ) as spy:
+            result = executor.execute(plan, parallel=False)
+
+        spy.assert_not_called()
+        assert result.success_count == 2
+
+    def test_config_string_values_coerced(self, executor):
+        """YAML/env config may deliver strings; they coerce to typed values."""
+        executor.config_service = make_config(
+            {
+                "kindling.execution.parallel": "true",
+                "kindling.execution.max_workers": "8",
+                "kindling.execution.error_strategy": "continue",
+                "kindling.execution.pipe_timeout": "90.5",
+            }
+        )
+        assert executor._resolve_bool_option(UNSET, "parallel") is True
+        assert executor._resolve_int_option(UNSET, "max_workers") == 8
+        assert executor._resolve_error_strategy_option(UNSET) == ErrorStrategy.CONTINUE
+        assert executor._resolve_float_option(UNSET, "pipe_timeout") == 90.5
+
+    def test_invalid_config_falls_back_with_warning(self, executor):
+        """Unparseable config values warn and use built-in defaults."""
+        executor.config_service = make_config(
+            {
+                "kindling.execution.parallel": "bananas",
+                "kindling.execution.max_workers": "many",
+                "kindling.execution.error_strategy": "explode",
+            }
+        )
+        assert executor._resolve_bool_option(UNSET, "parallel") is False
+        assert executor._resolve_int_option(UNSET, "max_workers") == 4
+        assert executor._resolve_error_strategy_option(UNSET) == ErrorStrategy.FAIL_FAST
+        assert executor.logger.warning.call_count == 3
+
+    def test_unconfigured_defaults_unchanged(self, executor):
+        """With nothing configured, resolution yields the historical defaults."""
+        assert executor._resolve_bool_option(UNSET, "parallel") is False
+        assert executor._resolve_int_option(UNSET, "max_workers") == 4
+        assert executor._resolve_error_strategy_option(UNSET) == ErrorStrategy.FAIL_FAST
+        assert executor._resolve_float_option(UNSET, "pipe_timeout") is None
+        assert executor._resolve_bool_option(UNSET, "auto_cache") is False
+
+    def test_config_error_strategy_continue_applies(
+        self,
+        pipes_registry,
+        entity_registry,
+        persist_strategy,
+        trace_provider,
+        logger_provider,
+        signal_provider,
+    ):
+        """error_strategy=continue from config lets later pipes run after a failure."""
+        config = make_config({"kindling.execution.error_strategy": "continue"})
+        executor = self._make_executor(
+            config,
+            pipes_registry=pipes_registry,
+            entity_registry=entity_registry,
+            persist_strategy=persist_strategy,
+            trace_provider=trace_provider,
+            logger_provider=logger_provider,
+            signal_provider=signal_provider,
+        )
+
+        failing = make_pipe("failing", inputs=["entity.a"])
+        failing.execute = Mock(side_effect=RuntimeError("boom"))
+        ok = make_pipe("ok", inputs=["entity.b"])
+        pipes_registry.get_pipe_definition.side_effect = lambda pid: {
+            "failing": failing,
+            "ok": ok,
+        }[pid]
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        plan = make_plan(
+            ["failing", "ok"],
+            [Generation(number=0, pipe_ids=["failing", "ok"], dependencies=[])],
+        )
+
+        result = executor.execute(plan)
+
+        assert result.failed_count == 1
+        assert result.success_count == 1
+
+    def test_range_validation_falls_back(self, executor):
+        """Out-of-range config values (workers < 1, negative timeout) use defaults."""
+        executor.config_service = make_config(
+            {
+                "kindling.execution.max_workers": 0,
+                "kindling.execution.pipe_timeout": -5,
+            }
+        )
+        assert executor._resolve_int_option(UNSET, "max_workers", minimum=1) == 4
+        assert executor._resolve_float_option(UNSET, "pipe_timeout", minimum=0.0) is None
+        assert executor.logger.warning.call_count == 2
+
+    def test_config_lookup_failure_warns_and_defaults(self, executor):
+        """A raising ConfigService is logged, not silently swallowed."""
+        executor.config_service = Mock()
+        executor.config_service.get = Mock(side_effect=RuntimeError("config down"))
+        assert executor._resolve_bool_option(UNSET, "parallel") is False
+        assert executor.logger.warning.call_count == 1
+        assert "config down" in executor.logger.warning.call_args.args[0]
+
+    def test_explicit_none_pipe_timeout_overrides_config(self, executor):
+        """pipe_timeout=None passed explicitly disables the timeout despite config."""
+        executor.config_service = make_config({"kindling.execution.pipe_timeout": 900})
+        assert executor._resolve_float_option(None, "pipe_timeout", minimum=0.0) is None
+        assert executor._resolve_float_option(UNSET, "pipe_timeout", minimum=0.0) == 900.0
+
+
+# ---- Retry Tests (Phase 2: per-pipe retry) ----
+
+
+class TestRetry:
+    """Config-driven per-pipe retry in _execute_pipe."""
+
+    def _single_pipe_plan(self, pipes_registry, entity_registry, persist_strategy, execute_fn):
+        pipe = make_pipe("pipe1", inputs=["entity.a"])
+        pipe.execute = execute_fn
+        pipes_registry.get_pipe_definition.return_value = pipe
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+        return make_plan(["pipe1"], [Generation(number=0, pipe_ids=["pipe1"], dependencies=[])])
+
+    def test_no_retry_by_default(self, executor, pipes_registry, entity_registry, persist_strategy):
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=RuntimeError("boom")),
+        )
+
+        with patch.object(executor, "emit", wraps=executor.emit) as emit_spy:
+            result = executor.execute(plan, error_strategy=ErrorStrategy.CONTINUE)
+
+        assert result.failed_count == 1
+        assert result.generation_results[0].pipe_results[0].attempts == 1
+        assert not any(c.args[0] == "orchestrator.pipe_retrying" for c in emit_spy.call_args_list)
+
+    def test_retry_recovers_after_transient_failure(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config({"kindling.execution.retry.attempts": 2})
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=[RuntimeError("transient"), Mock()]),
+        )
+
+        with (
+            patch("kindling.generation_executor.time.sleep") as sleep_spy,
+            patch.object(executor, "emit", wraps=executor.emit) as emit_spy,
+        ):
+            result = executor.execute(plan)
+
+        assert result.success_count == 1
+        assert result.generation_results[0].pipe_results[0].attempts == 2
+        retrying = [c for c in emit_spy.call_args_list if c.args[0] == "orchestrator.pipe_retrying"]
+        failed = [c for c in emit_spy.call_args_list if c.args[0] == "orchestrator.pipe_failed"]
+        assert len(retrying) == 1
+        assert retrying[0].kwargs["attempt"] == 1
+        assert retrying[0].kwargs["max_attempts"] == 3
+        assert failed == []
+        sleep_spy.assert_called_once_with(30.0)  # default interval
+
+    def test_retry_exhaustion_reports_attempts(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config(
+            {
+                "kindling.execution.retry.attempts": 1,
+                "kindling.execution.retry.interval_seconds": 0,
+            }
+        )
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=RuntimeError("boom")),
+        )
+
+        with patch.object(executor, "emit", wraps=executor.emit) as emit_spy:
+            result = executor.execute(plan, error_strategy=ErrorStrategy.CONTINUE)
+
+        pipe_result = result.generation_results[0].pipe_results[0]
+        assert pipe_result.status == "failed"
+        assert pipe_result.attempts == 2
+        failed = [c for c in emit_spy.call_args_list if c.args[0] == "orchestrator.pipe_failed"]
+        assert len(failed) == 1
+        assert failed[0].kwargs["attempts"] == 2
+
+    def test_per_pipe_config_overrides_run_default(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config(
+            {
+                "kindling.execution.retry.attempts": 0,
+                "kindling.execution.pipes.pipe1.retry.attempts": 1,
+                "kindling.execution.pipes.pipe1.retry.interval_seconds": 0,
+            }
+        )
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=[RuntimeError("transient"), Mock()]),
+        )
+
+        result = executor.execute(plan)
+
+        assert result.success_count == 1
+        assert result.generation_results[0].pipe_results[0].attempts == 2
+
+    def test_param_overrides_config_retry(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config({"kindling.execution.retry.attempts": 5})
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=RuntimeError("boom")),
+        )
+
+        result = executor.execute(plan, error_strategy=ErrorStrategy.CONTINUE, retry_attempts=0)
+
+        assert result.generation_results[0].pipe_results[0].attempts == 1
+
+    def test_custom_interval_is_used(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config(
+            {
+                "kindling.execution.retry.attempts": 1,
+                "kindling.execution.retry.interval_seconds": 5,
+            }
+        )
+        plan = self._single_pipe_plan(
+            pipes_registry,
+            entity_registry,
+            persist_strategy,
+            Mock(side_effect=[RuntimeError("transient"), Mock()]),
+        )
+
+        with patch("kindling.generation_executor.time.sleep") as sleep_spy:
+            executor.execute(plan)
+
+        sleep_spy.assert_called_once_with(5.0)
+
+    def test_invalid_per_pipe_value_falls_back(self, executor):
+        executor.config_service = make_config(
+            {"kindling.execution.pipes.pipe1.retry.attempts": "many"}
+        )
+        executor._retry_defaults = RetryPolicy(attempts=0)
+
+        policy = executor._resolve_pipe_retry_policy("pipe1")
+
+        assert policy.attempts == 0
+        executor.logger.warning.assert_called()
+
+    def test_warns_when_retry_pipe_provider_lacks_merge(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config({"kindling.execution.retry.attempts": 1})
+        plan = self._single_pipe_plan(
+            pipes_registry, entity_registry, persist_strategy, Mock(return_value=Mock())
+        )
+        provider = Mock(spec=[])  # no merge_to_entity attribute
+        executor.provider_registry = Mock()
+        executor.provider_registry.get_provider_for_entity.return_value = provider
+
+        executor.execute(plan)
+
+        warnings = [str(c) for c in executor.logger.warning.call_args_list]
+        assert any("does not support merge" in w for w in warnings)
+
+    def test_no_warning_for_merge_capable_provider(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config({"kindling.execution.retry.attempts": 1})
+        plan = self._single_pipe_plan(
+            pipes_registry, entity_registry, persist_strategy, Mock(return_value=Mock())
+        )
+        provider = Mock(spec=["merge_to_entity"])
+        executor.provider_registry = Mock()
+        executor.provider_registry.get_provider_for_entity.return_value = provider
+
+        executor.execute(plan)
+
+        warnings = [str(c) for c in executor.logger.warning.call_args_list]
+        assert not any("does not support merge" in w for w in warnings)
+
+    def test_dotted_pipe_id_resolves_via_literal_mapping(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        """Pipe ids containing dots index the pipes map literally, not by dotted traversal."""
+        executor.config_service = make_config(
+            {
+                "kindling.execution.pipes": {
+                    "ingest.orders": {"retry": {"attempts": 1, "interval_seconds": 0}}
+                }
+            }
+        )
+        pipe = make_pipe("ingest.orders", inputs=["entity.a"])
+        pipe.execute = Mock(side_effect=[RuntimeError("transient"), Mock()])
+        pipes_registry.get_pipe_definition.return_value = pipe
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+        plan = make_plan(
+            ["ingest.orders"],
+            [Generation(number=0, pipe_ids=["ingest.orders"], dependencies=[])],
+        )
+
+        result = executor.execute(plan)
+
+        assert result.success_count == 1
+        assert result.generation_results[0].pipe_results[0].attempts == 2
+
+
+# ---- Skip-Dependents Tests (Phase 3) ----
+
+
+def make_chain_graph():
+    """a -> b -> c chain plus independent pipe x."""
+    graph = PipeGraph()
+    graph.add_node(PipeNode("a", [], "entity.a"))
+    graph.add_node(PipeNode("b", ["entity.a"], "entity.b"))
+    graph.add_node(PipeNode("c", ["entity.b"], "entity.c"))
+    graph.add_node(PipeNode("x", [], "entity.x"))
+    graph.add_edge(PipeEdge(from_pipe="a", to_pipe="b", entity="entity.a"))
+    graph.add_edge(PipeEdge(from_pipe="b", to_pipe="c", entity="entity.b"))
+    return graph
+
+
+class TestSkipDependents:
+    """ErrorStrategy.SKIP_DEPENDENTS skips downstream pipes, runs independent ones."""
+
+    def _setup(self, pipes_registry, entity_registry, persist_strategy, failing_ids):
+        def get_pipe(pid):
+            inputs = {"a": [], "b": ["entity.a"], "c": ["entity.b"], "x": []}[pid]
+            pipe = make_pipe(pid, inputs=inputs, output=f"entity.{pid}")
+            if pid in failing_ids:
+                pipe.execute = Mock(side_effect=RuntimeError(f"{pid} boom"))
+            return pipe
+
+        pipes_registry.get_pipe_definition.side_effect = get_pipe
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        graph = make_chain_graph()
+        generations = [
+            Generation(number=0, pipe_ids=["a", "x"], dependencies=[]),
+            Generation(number=1, pipe_ids=["b"], dependencies=["a"]),
+            Generation(number=2, pipe_ids=["c"], dependencies=["b"]),
+        ]
+        return ExecutionPlan(
+            pipe_ids=["a", "x", "b", "c"],
+            generations=generations,
+            graph=graph,
+            strategy="batch",
+            metadata={},
+        )
+
+    def test_dependents_skipped_independent_branch_runs(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        with patch.object(executor, "emit", wraps=executor.emit) as emit_spy:
+            result = executor.execute(plan, error_strategy=ErrorStrategy.SKIP_DEPENDENTS)
+
+        statuses = {r.pipe_id: r.status for g in result.generation_results for r in g.pipe_results}
+        assert statuses == {"a": "failed", "x": "success", "b": "skipped", "c": "skipped"}
+
+        upstream_skips = [
+            c
+            for c in emit_spy.call_args_list
+            if c.args[0] == "orchestrator.pipe_skipped"
+            and c.kwargs.get("reason") == "upstream_failed"
+        ]
+        assert {c.kwargs["pipe_id"] for c in upstream_skips} == {"b", "c"}
+        assert all(c.kwargs["upstream_pipe"] == "a" for c in upstream_skips)
+
+    def test_mid_chain_failure_skips_only_downstream(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"b"})
+
+        result = executor.execute(plan, error_strategy=ErrorStrategy.SKIP_DEPENDENTS)
+
+        statuses = {r.pipe_id: r.status for g in result.generation_results for r in g.pipe_results}
+        assert statuses == {"a": "success", "x": "success", "b": "failed", "c": "skipped"}
+
+    def test_skipped_result_carries_upstream_error(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        result = executor.execute(plan, error_strategy=ErrorStrategy.SKIP_DEPENDENTS)
+
+        skipped = [
+            r for g in result.generation_results for r in g.pipe_results if r.status == "skipped"
+        ]
+        assert all(r.error_type == "UpstreamFailure" for r in skipped)
+        assert all("'a' failed" in r.error for r in skipped)
+
+    def test_fail_fast_behavior_unchanged(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        result = executor.execute(plan, error_strategy=ErrorStrategy.FAIL_FAST)
+
+        # fail_fast stops after generation 0 — b and c never appear at all
+        assert len(result.generation_results) == 1
+
+    def test_config_selects_skip_dependents(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        executor.config_service = make_config(
+            {"kindling.execution.error_strategy": "skip_dependents"}
+        )
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        result = executor.execute(plan)
+
+        statuses = {r.pipe_id: r.status for g in result.generation_results for r in g.pipe_results}
+        assert statuses["b"] == "skipped"
+        assert statuses["x"] == "success"
+
+    def test_parallel_mode_skips_dependents(
+        self, executor, pipes_registry, entity_registry, persist_strategy
+    ):
+        plan = self._setup(pipes_registry, entity_registry, persist_strategy, failing_ids={"a"})
+
+        result = executor.execute(
+            plan, error_strategy=ErrorStrategy.SKIP_DEPENDENTS, parallel=True, max_workers=2
+        )
+
+        statuses = {r.pipe_id: r.status for g in result.generation_results for r in g.pipe_results}
+        assert statuses == {"a": "failed", "x": "success", "b": "skipped", "c": "skipped"}

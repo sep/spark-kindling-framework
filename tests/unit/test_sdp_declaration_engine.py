@@ -1,4 +1,4 @@
-"""Unit tests for the kindling_sdp Phase-1 declaration engine.
+"""Unit tests for the kindling_ext_sdp Phase-1 declaration engine.
 
 Covers internal/external input classification, dataset-type selection
 precedence, fail-fast validation (all errors accumulated), and
@@ -9,12 +9,10 @@ session is needed.
 import sys
 
 import pytest
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
 
 # The extension package root is added to sys.path by tests/conftest.py,
-# matching the other extension packages (kindling_visualization, ...).
-from kindling_sdp import (
+# matching the other extension packages (kindling_ext_visualization, ...).
+from kindling_ext_sdp import (
     DATABRICKS_SDP,
     OSS_SDP,
     DatasetType,
@@ -25,6 +23,9 @@ from kindling_sdp import (
     supports_expectations,
     supports_incremental_mv_refresh,
 )
+
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures: fake registries over a small bronze -> silver -> gold graph #
@@ -151,8 +152,8 @@ def issue_codes(issues):
 
 
 class TestPhase1Invariants:
-    def test_importing_kindling_sdp_does_not_import_pyspark_pipelines(self):
-        assert "kindling_sdp" in sys.modules
+    def test_importing_kindling_ext_sdp_does_not_import_pyspark_pipelines(self):
+        assert "kindling_ext_sdp" in sys.modules
         assert "pyspark.pipelines" not in sys.modules
 
 

@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from injector import inject
-
 from kindling.data_pipes import DataPipesRegistry, PipeMetadata
 from kindling.spark_log_provider import PythonLoggerProvider
 
@@ -224,6 +223,17 @@ class PipeGraphBuilder:
             for input_entity in node.input_entities:
                 # Find which pipe produces this input entity
                 producer_id = graph.entity_producers.get(input_entity)
+                if producer_id == pipe_id:
+                    # A pipe reading its own output entity consumes the
+                    # previous run's persisted state (e.g. temporal episode
+                    # revision), not an ordering dependency — a self-edge
+                    # could never be satisfied by scheduling and would be
+                    # reported as a cycle.
+                    self.logger.debug(
+                        f"Skipping self-edge: {pipe_id} reads its own output "
+                        f"entity '{input_entity}' (prior-state feedback)"
+                    )
+                    continue
                 if producer_id and producer_id in graph.nodes:
                     # Create edge from producer to consumer
                     edge = PipeEdge(from_pipe=producer_id, to_pipe=pipe_id, entity=input_entity)

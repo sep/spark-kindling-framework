@@ -6,6 +6,13 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- DAG execution options (`parallel`, `max_workers`, `error_strategy`,
+  `pipe_timeout`, `auto_cache`) now resolve config-first from
+  `kindling.execution.*` through the hierarchical config layers, with
+  function parameters acting as just-in-time overrides. Behavior note:
+  deployments that already set `kindling.execution.*` keys will have them
+  take effect — previously these options could only be enabled via code.
+
 - Renamed the bootstrap config key `load_local` (YAML) / `load_local_packages` (flat) to
   `load_workspace_packages`, since it controls whether packages are loaded from the platform
   workspace, not "local" packages. The old names still work as deprecated aliases and log a
@@ -32,6 +39,25 @@ All notable changes to spark-kindling are documented here.
   provider supports it (append-only fact tables no longer pay MERGE cost);
   `merge` makes the merge requirement explicit instead of a silent append
   fallback. Unset keeps the existing defaults.
+- Parquet entity provider (`provider_type: "parquet"`, core): batch and
+  streaming read/write of plain-parquet datasets via native Spark, with
+  partitioned writes and destination ensuring. For interchange at solution
+  boundaries — no transaction log, so no merge and no safe retry; Delta
+  remains the provider for internal pipeline storage.
+- `skip_dependents` error strategy for DAG execution: on pipe failure, only
+  its transitive consumers are skipped (reported with
+  `reason: upstream_failed`) while independent branches keep running —
+  notebook-DAG (`runMultiple`) dependent-skipping semantics. Select via
+  `kindling.execution.error_strategy: skip_dependents` or
+  `ErrorStrategy.SKIP_DEPENDENTS`.
+- Per-pipe retry for DAG execution: `kindling.execution.retry.attempts` /
+  `interval_seconds` (run-level) and `kindling.execution.pipes.<pipeid>.retry.*`
+  (per-pipe), with `retry_attempts`/`retry_interval_seconds` as just-in-time
+  parameter overrides. Emits `orchestrator.pipe_retrying`; records `attempts`
+  on pipe results; warns when retry targets a non-merge-capable provider
+  (retried appends are at-least-once).
+- New guide: [Migrating from notebook-based execution (`runMultiple`)](docs/guide/migrating_from_runmultiple.md)
+  for Synapse/Fabric users moving notebook DAGs to Kindling pipes.
 - Added `kindling env update` to refresh Kindling wheels and the local
   devcontainer package index in place, so domain projects can update Kindling
   packages without rebuilding the whole devcontainer.

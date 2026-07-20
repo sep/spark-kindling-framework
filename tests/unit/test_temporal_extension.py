@@ -1,9 +1,12 @@
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-EXTENSION_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "packages" / "kindling_temporal"
+EXTENSION_PACKAGE_ROOT = (
+    Path(__file__).resolve().parents[2] / "packages" / "extensions" / "kindling_ext_temporal"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +29,7 @@ def _temporal_service_get(
 ):
     from kindling.data_entities import DataEntityRegistry
     from kindling.data_pipes import DataPipesRegistry
-    from kindling_temporal import (
+    from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
         TemporalEntityResolver,
         TemporalEpisodeRegistry,
@@ -50,7 +53,7 @@ def _temporal_service_get(
 
 
 def test_default_resolver_returns_canonical_entities():
-    from kindling_temporal import SimpleTemporalEntityResolver
+    from kindling_ext_temporal import SimpleTemporalEntityResolver
 
     resolver = SimpleTemporalEntityResolver()
 
@@ -60,7 +63,7 @@ def test_default_resolver_returns_canonical_entities():
 
 
 def test_conditions_entity_is_scd2_tagged():
-    from kindling_temporal import SimpleTemporalEntityResolver
+    from kindling_ext_temporal import SimpleTemporalEntityResolver
 
     entity = SimpleTemporalEntityResolver().get_conditions_entity()
 
@@ -70,7 +73,7 @@ def test_conditions_entity_is_scd2_tagged():
 
 
 def test_conditions_schema_supports_multiple_consumed_event_types():
-    from kindling_temporal import conditions_schema
+    from kindling_ext_temporal import conditions_schema
     from pyspark.sql.types import ArrayType, StringType
 
     consumes_field = conditions_schema()["consumes_event_type"]
@@ -80,7 +83,7 @@ def test_conditions_schema_supports_multiple_consumed_event_types():
 
 
 def test_events_schema_matches_proposal_envelope():
-    from kindling_temporal import events_schema
+    from kindling_ext_temporal import events_schema
 
     columns = events_schema().fieldNames()
 
@@ -101,7 +104,7 @@ def test_events_schema_matches_proposal_envelope():
 
 
 def test_base_event_pipe_id_is_namespaced():
-    from kindling_temporal import TemporalPipeTranslator
+    from kindling_ext_temporal import TemporalPipeTranslator
 
     assert (
         TemporalPipeTranslator.base_event_pipe_id("telemetry.base")
@@ -112,7 +115,7 @@ def test_base_event_pipe_id_is_namespaced():
 def test_base_event_decorator_registers_metadata():
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import DataEvents, TemporalEventRegistryManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -167,7 +170,7 @@ def test_base_event_decorator_registers_metadata():
 def test_base_event_registration_accepts_none_tags_and_requires_metadata():
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import DataEvents, TemporalEventRegistryManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -227,7 +230,7 @@ def test_base_event_registration_accepts_none_tags_and_requires_metadata():
 def test_condition_engine_registration_is_not_condition_specific():
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import DataEvents, TemporalEventRegistryManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     registry = TemporalEventRegistryManager(_logger_provider())
@@ -264,7 +267,7 @@ def test_condition_engine_registration_is_not_condition_specific():
 def test_episode_registration_uses_canonical_entities():
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
 
     DataEpisodes.reset()
     registry = TemporalEpisodeRegistryManager(_logger_provider())
@@ -285,7 +288,6 @@ def test_episode_registration_uses_canonical_entities():
             end_event="condition.machine_running.exited",
             subject_type="machine",
             expires_after_seconds=28800,
-            expiration_event="episode.machine_cycle.expired",
         )
 
     metadata = registry.get_episode_definition("episode.machine_cycle")
@@ -294,6 +296,9 @@ def test_episode_registration_uses_canonical_entities():
     assert metadata.start_event == "condition.machine_running.entered"
     assert metadata.end_event == "condition.machine_running.exited"
     assert metadata.condition_id == "condition.machine_running"
+    assert metadata.determination_event == "episode.machine_cycle.closed"
+    assert metadata.expiration_event == "episode.machine_cycle.expired"
+    assert metadata.invalidation_event == "episode.machine_cycle.invalidated"
     assert metadata.expires_after_seconds == 28800
     assert entity_registry.get_entity_definition("silver.events") is not None
     assert entity_registry.get_entity_definition("silver.episodes") is not None
@@ -306,12 +311,240 @@ def test_episode_registration_uses_canonical_entities():
     assert pipe.tags["pipe_type"] == "temporal.episode"
     assert pipe.tags["temporal.start_event"] == "condition.machine_running.entered"
     assert pipe.tags["temporal.end_event"] == "condition.machine_running.exited"
+    assert pipe.tags["temporal.reads_prior_state"] == "true"
     assert callable(pipe.execute)
+
+    event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.episode.machine_cycle")
+    assert event_pipe.input_entity_ids == ["silver.events"]
+    assert event_pipe.tags["temporal.reads_prior_state"] == "true"
+    assert event_pipe.output_entity_id == "silver.events"
+    assert event_pipe.output_type == "delta"
+    assert event_pipe.use_watermark is True
+    assert event_pipe.tags["pipe_type"] == "temporal.episode_event"
+    assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.closed"
+    assert event_pipe.tags["temporal.expiration_event_type"] == "episode.machine_cycle.expired"
+    assert (
+        event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.invalidated"
+    )
+    assert event_pipe.tags["temporal.start_event"] == "condition.machine_running.entered"
+    assert event_pipe.tags["temporal.end_event"] == "condition.machine_running.exited"
+    assert callable(event_pipe.execute)
+
+
+def test_episode_registration_accepts_explicit_determination_event_and_pipe_id():
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+
+    DataEpisodes.reset()
+    registry = TemporalEpisodeRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            episode_registry=registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+        ),
+    ):
+        DataEpisodes.episode(
+            episodeid="episode.machine_cycle",
+            start_event="condition.machine_running.entered",
+            end_event="condition.machine_running.exited",
+            determination_event="episode.machine_cycle.completed",
+            expiration_event="episode.machine_cycle.timed_out",
+            invalidation_event="episode.machine_cycle.rejected",
+            determination_pipeid="temporal.episode_event.machine_cycle_completed",
+        )
+
+    metadata = registry.get_episode_definition("episode.machine_cycle")
+    assert metadata.determination_event == "episode.machine_cycle.completed"
+    assert metadata.expiration_event == "episode.machine_cycle.timed_out"
+    assert metadata.invalidation_event == "episode.machine_cycle.rejected"
+
+    event_pipe = pipe_registry.get_pipe_definition("temporal.episode_event.machine_cycle_completed")
+    assert event_pipe.output_entity_id == "silver.events"
+    assert event_pipe.tags["temporal.event_type"] == "episode.machine_cycle.completed"
+    assert event_pipe.tags["temporal.expiration_event_type"] == "episode.machine_cycle.timed_out"
+    assert event_pipe.tags["temporal.invalidation_event_type"] == "episode.machine_cycle.rejected"
+
+
+def _episode_metadata_for_resolution():
+    from kindling_ext_temporal import EpisodeMetadata
+
+    return EpisodeMetadata(
+        episodeid="episode.machine_cycle",
+        output_entity_id="silver.episodes",
+        events_entity_id="silver.events",
+        start_event="condition.machine_running.entered",
+        end_event="condition.machine_running.exited",
+    )
+
+
+def test_translator_prior_episodes_prefers_execution_parameter():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    state_df = object()
+    with patch("kindling.injection.GlobalInjector.get") as injector_get:
+        resolved = TemporalPipeTranslator.resolve_prior_episodes(
+            {"silver_events": None, "silver_episodes": state_df},
+            _episode_metadata_for_resolution(),
+        )
+
+    assert resolved is state_df
+    injector_get.assert_not_called()
+
+
+def test_translator_prior_episodes_reads_existing_entity_through_provider():
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.entity_provider_registry import EntityProviderRegistry
+    from kindling.spark_config import ConfigService
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    state_df = object()
+    entity = Mock(entityid="silver.episodes")
+    entity_registry = Mock()
+    entity_registry.get_entity_definition.return_value = entity
+    provider = Mock()
+    provider.check_entity_exists.return_value = True
+    provider.read_entity.return_value = state_df
+    provider_registry = Mock()
+    provider_registry.get_provider_for_entity.return_value = provider
+    config_service = Mock()
+    config_service.get.return_value = True
+
+    def _get(dep):
+        if dep is ConfigService:
+            return config_service
+        if dep is DataEntityRegistry:
+            return entity_registry
+        if dep is EntityProviderRegistry:
+            return provider_registry
+        raise AssertionError(f"Unexpected service request: {dep}")
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=_get):
+        resolved = TemporalPipeTranslator.resolve_prior_episodes(
+            {"silver_events": None}, _episode_metadata_for_resolution()
+        )
+
+    assert resolved is state_df
+    config_service.get.assert_called_once_with("kindling.temporal.revise_persisted", True)
+    provider.read_entity.assert_called_once_with(entity)
+
+
+def test_translator_prior_episodes_none_when_entity_missing_or_disabled():
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.entity_provider_registry import EntityProviderRegistry
+    from kindling.spark_config import ConfigService
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    entity_registry = Mock()
+    entity_registry.get_entity_definition.return_value = Mock(entityid="silver.episodes")
+    provider = Mock()
+    provider.check_entity_exists.return_value = False
+    provider_registry = Mock()
+    provider_registry.get_provider_for_entity.return_value = provider
+
+    def _get_enabled(dep):
+        if dep is ConfigService:
+            service = Mock()
+            service.get.return_value = True
+            return service
+        if dep is DataEntityRegistry:
+            return entity_registry
+        if dep is EntityProviderRegistry:
+            return provider_registry
+        raise AssertionError(f"Unexpected service request: {dep}")
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=_get_enabled):
+        assert (
+            TemporalPipeTranslator.resolve_prior_episodes(
+                {"silver_events": None}, _episode_metadata_for_resolution()
+            )
+            is None
+        )
+    provider.read_entity.assert_not_called()
+
+    def _get_disabled(dep):
+        if dep is ConfigService:
+            service = Mock()
+            service.get.return_value = "false"
+            return service
+        raise AssertionError(f"Unexpected service request: {dep}")
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=_get_disabled):
+        assert (
+            TemporalPipeTranslator.resolve_prior_episodes(
+                {"silver_events": None}, _episode_metadata_for_resolution()
+            )
+            is None
+        )
+
+
+def test_translator_prior_episodes_none_without_bound_services():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=RuntimeError("no bindings"),
+    ):
+        assert (
+            TemporalPipeTranslator.resolve_prior_episodes(
+                {"silver_events": None}, _episode_metadata_for_resolution()
+            )
+            is None
+        )
+
+
+def test_translator_evaluation_time_prefers_execution_parameter():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    explicit = datetime(2026, 7, 14, 12, 10, 0)
+    with patch("kindling.injection.GlobalInjector.get") as injector_get:
+        resolved = TemporalPipeTranslator.resolve_evaluation_time(
+            {"temporal_evaluation_time": explicit}
+        )
+
+    assert resolved == explicit
+    injector_get.assert_not_called()
+
+
+def test_translator_evaluation_time_falls_back_to_config():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    configured = datetime(2026, 7, 14, 12, 10, 0)
+
+    class _ConfigService:
+        def __init__(self):
+            self.requested = []
+
+        def get(self, key, default=None):
+            self.requested.append(key)
+            return configured
+
+    config_service = _ConfigService()
+    with patch("kindling.injection.GlobalInjector.get", return_value=config_service):
+        resolved = TemporalPipeTranslator.resolve_evaluation_time({"silver_events": None})
+
+    assert resolved == configured
+    assert config_service.requested == ["kindling.temporal.evaluation_time"]
+
+
+def test_translator_evaluation_time_defaults_to_none_without_config_service():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=RuntimeError("no ConfigService binding"),
+    ):
+        assert TemporalPipeTranslator.resolve_evaluation_time({"silver_events": None}) is None
 
 
 def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
     from kindling.data_entities import DataEntityManager, EntityMetadata
-    from kindling_temporal import (
+    from kindling_ext_temporal import (
         BaseEventMetadata,
         ConditionEngineMetadata,
         EpisodeMetadata,
@@ -342,6 +575,9 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
         events_entity_id="silver.events",
         start_event="condition.none.entered",
         end_event="condition.none.exited",
+        determination_event="episode.none.closed",
+        expiration_event="episode.none.expired",
+        invalidation_event="episode.none.invalidated",
         tags=None,
     )
 
@@ -356,6 +592,10 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
     assert (
         TemporalPipeTranslator.episode_pipe_params(episode)["tags"]["pipe_type"]
         == "temporal.episode"
+    )
+    assert (
+        TemporalPipeTranslator.episode_determination_event_pipe_params(episode)["tags"]["pipe_type"]
+        == "temporal.episode_event"
     )
 
     registry = DataEntityManager()
@@ -400,7 +640,7 @@ def _condition_row(**overrides):
 
 
 def test_condition_validator_rejects_bad_expression_per_row():
-    from kindling_temporal import TemporalConditionValidator
+    from kindling_ext_temporal import TemporalConditionValidator
 
     parser = RecordingExpressionParser(invalid_expressions={"bad spark sql"})
     validator = TemporalConditionValidator(expression_parser=parser)
@@ -426,7 +666,7 @@ def test_condition_validator_rejects_bad_expression_per_row():
 
 
 def test_condition_validator_requires_enter_and_exit_expressions():
-    from kindling_temporal import TemporalConditionValidator
+    from kindling_ext_temporal import TemporalConditionValidator
 
     report = TemporalConditionValidator(expression_parser=RecordingExpressionParser()).validate(
         [
@@ -446,7 +686,7 @@ def test_condition_validator_requires_enter_and_exit_expressions():
 
 
 def test_condition_validator_computes_event_type_generations():
-    from kindling_temporal import TemporalConditionValidator
+    from kindling_ext_temporal import TemporalConditionValidator
 
     validator = TemporalConditionValidator(expression_parser=RecordingExpressionParser())
     assert validator.graph_builder.registry is not None
@@ -470,7 +710,7 @@ def test_condition_validator_computes_event_type_generations():
 
 
 def test_condition_validator_rejects_event_type_cycles():
-    from kindling_temporal import TemporalConditionValidator
+    from kindling_ext_temporal import TemporalConditionValidator
 
     report = TemporalConditionValidator(expression_parser=RecordingExpressionParser()).validate(
         [
@@ -487,3 +727,14 @@ def test_condition_validator_rejects_event_type_cycles():
 
     assert report.is_valid is False
     assert "Cycle detected in pipe dependencies" in report.invalid_conditions[0].errors[0]
+
+
+def test_conditions_ingestion_result_and_config_key():
+    from kindling_ext_temporal import (
+        QUARANTINE_ENTITY_CONFIG_KEY,
+        ConditionsIngestionResult,
+    )
+
+    assert QUARANTINE_ENTITY_CONFIG_KEY == "kindling.temporal.conditions.quarantine_entity_id"
+    assert ConditionsIngestionResult(ingested_count=3).is_clean is True
+    assert ConditionsIngestionResult(ingested_count=0, quarantined=[object()]).is_clean is False

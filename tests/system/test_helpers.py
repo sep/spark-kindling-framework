@@ -24,11 +24,11 @@ DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
 _FATAL_SYSTEM_TEST_LOG_PREFIXES = (
     "ERROR: (KindlingBootstrap) Extension wheel not found:",
     "ERROR: (KindlingBootstrap) Failed to install extension",
-    "WARN: (KindlingBootstrap) Failed to import extension kindling_otel_azure",
+    "WARN: (KindlingBootstrap) Failed to import extension kindling_ext_otel_azure",
     "❌ No wheel found matching",
     "❌ Failed to install extension",
-    "❌ Failed to import extension kindling_otel_azure",
-    "kindling-otel-azure not found - extension not loaded",
+    "❌ Failed to import extension kindling_ext_otel_azure",
+    "kindling-ext-otel-azure not found - extension not loaded",
 )
 
 
@@ -354,10 +354,12 @@ def _get_repo_version() -> Optional[str]:
 
 
 def _get_otel_extension_version() -> Optional[str]:
-    """Return the version from the kindling-otel-azure package for deterministic installs."""
+    """Return the version from the kindling-ext-otel-azure package for deterministic installs."""
     try:
         repo_root = Path(__file__).resolve().parents[2]
-        pyproject_path = repo_root / "packages" / "kindling_otel_azure" / "pyproject.toml"
+        pyproject_path = (
+            repo_root / "packages" / "extensions" / "kindling_ext_otel_azure" / "pyproject.toml"
+        )
         content = pyproject_path.read_text(encoding="utf-8")
         match = re.search(r'^version\s*=\s*"([^"]+)"\s*$', content, re.MULTILINE)
         if not match:
@@ -417,7 +419,9 @@ def _get_system_test_azure_monitor_defaults(
     ).strip()
     extension_version = _get_otel_extension_version()
     extension_spec = (
-        f"kindling-otel-azure=={extension_version}" if extension_version else "kindling-otel-azure"
+        f"kindling-ext-otel-azure=={extension_version}"
+        if extension_version
+        else "kindling-ext-otel-azure"
     )
 
     return (
@@ -500,12 +504,20 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
     if platform_name == "synapse" and "configure_diagnostic_emitters" not in merged_config:
         merged_config["configure_diagnostic_emitters"] = False
 
-    # Default Synapse jobs to 1 executor (driver + 1 node = 2 nodes/job).
-    # The platform default is 2 executors (3 nodes/job), which means a 6-node pool
-    # can only run 2 concurrent jobs — queuing the 3rd worker.  1 executor lets all
-    # 3 CI workers run simultaneously within the 6-node pool.
+    # Right-size Synapse test jobs. The platform defaults (2 executors,
+    # 4 cores / 28g per container) node-size every container on Small pools,
+    # making each job occupy 3 full nodes for seconds of actual test work —
+    # and serializing the whole suite on a 3-node pool. 1 executor at
+    # 2 cores / 8g packs driver + executor onto ~1 node, so a 3-node pool
+    # runs 3 concurrent workers and session allocation is faster.
     if platform_name == "synapse" and "spark_config" not in merged_config:
-        merged_config["spark_config"] = {"executor_instances": 1}
+        merged_config["spark_config"] = {
+            "executor_instances": 1,
+            "executor_cores": 2,
+            "executor_memory": "8g",
+            "driver_cores": 2,
+            "driver_memory": "8g",
+        }
 
     return merged_config
 
@@ -725,7 +737,7 @@ class StdoutStreamValidator:
         Validate extension loading markers.
 
         Args:
-            extension_name: Name of extension (e.g., "kindling-otel-azure")
+            extension_name: Name of extension (e.g., "kindling-ext-otel-azure")
 
         Returns:
             Dict with validation results:
