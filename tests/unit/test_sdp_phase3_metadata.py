@@ -10,13 +10,12 @@ expectation decorators the OSS module lacks.
 
 from types import SimpleNamespace
 
-import pytest
-from kindling_ext_databricks import DatabricksSdpEngine, engine_extension
-from kindling_ext_sdp import OssSdpEngine
-
 import kindling
+import pytest
 from kindling.data_entities import EntityMetadata
 from kindling.data_pipes import PipeMetadata
+from kindling_ext_databricks import DatabricksSdpEngine, engine_extension
+from kindling_ext_sdp import OssSdpEngine
 
 # --------------------------------------------------------------------- #
 # Fixtures                                                               #
@@ -129,7 +128,7 @@ class TestMetadataEmission:
 
         engine.declare_pipeline(engine.build_plan())
 
-        kwargs, _ = dp.declared["silver.orders"]
+        kwargs, _ = dp.declared["silver_orders"]
         assert kwargs["comment"] == "Cleaned orders"
         assert kwargs["table_properties"] == {
             "delta.enableChangeDataFeed": "true",
@@ -146,7 +145,7 @@ class TestMetadataEmission:
 
         engine.declare_pipeline(engine.build_plan())
 
-        kwargs, _ = dp.declared["silver.orders"]
+        kwargs, _ = dp.declared["silver_orders"]
         assert set(kwargs) == {"name"}
 
     def test_cdf_is_not_forced_unlike_the_runner_engine(self):
@@ -159,7 +158,7 @@ class TestMetadataEmission:
 
         engine.declare_pipeline(engine.build_plan())
 
-        kwargs, _ = dp.declared["silver.orders"]
+        kwargs, _ = dp.declared["silver_orders"]
         assert "table_properties" not in kwargs
 
     def test_engine_config_table_properties_with_entity_tag_precedence(self):
@@ -174,7 +173,7 @@ class TestMetadataEmission:
 
         engine.declare_pipeline(engine.build_plan())
 
-        kwargs, _ = dp.declared["silver.orders"]
+        kwargs, _ = dp.declared["silver_orders"]
         assert kwargs["table_properties"] == {"owner": "entity-team", "layer": "silver"}
 
 
@@ -207,7 +206,7 @@ class TestDatabricksAdapter:
         assert ("expect_all", {"valid_id": "id IS NOT NULL"}) in dp.expectations
         assert ("expect_all_or_drop", {"positive_qty": "qty > 0"}) in dp.expectations
         assert ("expect_all_or_fail", {"no_future": "d <= current_date()"}) in dp.expectations
-        assert "silver.orders" in dp.declared, "the MV must still be declared"
+        assert "silver_orders" in dp.declared, "the MV must still be declared"
 
     def test_expectations_against_oss_runtime_fail_actionably(self):
         """A Databricks engine pointed at an OSS dp module (no expect_all)
@@ -238,7 +237,7 @@ class TestDatabricksAdapter:
 
         engine.declare_pipeline(engine.build_plan())
 
-        kwargs, _ = dp.declared["silver.orders"]
+        kwargs, _ = dp.declared["silver_orders"]
         assert kwargs["comment"] == "x" and kwargs["partition_cols"] == ["d"]
 
 

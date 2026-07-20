@@ -25,15 +25,14 @@ from unittest.mock import MagicMock
 
 import pytest
 from delta import configure_spark_with_delta_pip
-from kindling_ext_sdp import OssSdpEngine, SdpModeWriteError, SdpWriteGuardProvider
-from pyspark.sql import SparkSession
-from pyspark.sql.types import IntegerType, StringType, StructField, StructType
-
 from kindling.data_entities import EntityMetadata, EntityNameMapper, EntityPathLocator
 from kindling.data_pipes import PipeMetadata
 from kindling.entity_provider_delta import DeltaEntityProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
+from kindling_ext_sdp import OssSdpEngine, SdpModeWriteError, SdpWriteGuardProvider
+from pyspark.sql import SparkSession
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 
 def _teardown_existing_spark_jvm():
@@ -210,6 +209,6 @@ class TestEmittedDatasetFunctionOnRealSpark:
         engine = OssSdpEngine(entities, pipes, dp_module=dp, session_provider=lambda: spark)
         engine.declare_pipeline(engine.build_plan())
 
-        result = dp.declared["silver.orders"]()
+        result = dp.declared["silver_orders"]()
 
         assert sorted(r["order_id"] for r in result.collect()) == [1, 3]

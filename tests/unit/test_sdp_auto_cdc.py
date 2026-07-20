@@ -151,9 +151,9 @@ class TestChangeFeedMapping:
         dp = declare(CHANGE_FEED_TAGS)
 
         assert "silver_customers__scd_source" in dp.views
-        assert "silver.customers" in dp.streaming_tables
+        assert "silver_customers" in dp.streaming_tables
         (flow,) = dp.cdc_flows
-        assert flow["target"] == "silver.customers"
+        assert flow["target"] == "silver_customers"
         assert flow["source"] == "silver_customers__scd_source"
         assert flow["keys"] == ["customer_id"]
         assert flow["sequence_by"] == "updated_at"
@@ -199,7 +199,7 @@ class TestChangeFeedMapping:
         the runner's effective-date columns the entity schema describes."""
         dp = declare(CHANGE_FEED_TAGS, schema="not-none-sentinel")
 
-        assert "schema" not in dp.streaming_tables["silver.customers"]
+        assert "schema" not in dp.streaming_tables["silver_customers"]
 
     def test_entity_metadata_still_reaches_the_streaming_table(self):
         dp = declare(
@@ -207,7 +207,7 @@ class TestChangeFeedMapping:
             partition_columns=["region"],
         )
 
-        st = dp.streaming_tables["silver.customers"]
+        st = dp.streaming_tables["silver_customers"]
         assert st["comment"] == "Customer history"
         assert st["partition_cols"] == ["region"]
 
@@ -378,7 +378,7 @@ class TestSnapshotMapping:
         dp = declare(SNAPSHOT_TAGS)
 
         (flow,) = dp.snapshot_flows
-        assert flow["target"] == "silver.customers"
+        assert flow["target"] == "silver_customers"
         assert flow["source"] == "silver_customers__scd_source"
         assert flow["keys"] == ["customer_id"]
         assert flow["stored_as_scd_type"] == 2
@@ -478,7 +478,7 @@ class TestAutoCdcValidation:
 
         engine.declare_pipeline(engine.build_plan())
 
-        assert "silver.customers" in dp.declared_mvs
+        assert "silver_customers" in dp.declared_mvs
         assert dp.cdc_flows == [] and dp.snapshot_flows == []
 
 

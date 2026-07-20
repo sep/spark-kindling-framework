@@ -13,6 +13,22 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
+def pipeline_dataset_name(entity_id: str) -> str:
+    """The emitted (physical) dataset name for a Kindling entity id.
+
+    Datasets are emitted with single-part names inside the pipeline's
+    target catalog/schema, dots normalized to underscores — the same leaf
+    normalization the runner engine's EntityNameMapper applies. Unity
+    Catalog pipelines interpret a dotted dataset name as schema-qualified
+    (``silver.customers`` becomes ``<catalog>.silver.customers``), which
+    bypasses the pipeline target schema and requires CREATE SCHEMA on the
+    catalog; pipeline-scoped views reject dotted names outright ("View
+    with multipart name ... is not supported"). Plan-level
+    ``DatasetDeclaration.name`` stays the logical entity id.
+    """
+    return entity_id.replace(".", "_")
+
+
 class DatasetType(str, Enum):
     """The SDP dataset kind a pipe's output is declared as.
 
