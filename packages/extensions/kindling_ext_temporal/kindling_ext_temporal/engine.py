@@ -233,8 +233,12 @@ class EpisodeRunner:
                 .dropDuplicates(["event_id"])
                 .join(starts.select("event_id"), on="event_id", how="left_anti")
             )
+            # allowMissingColumns: the driving events frame can carry
+            # incremental-read bookkeeping columns (SourceVersion,
+            # SourceTimestamp) that reconstructed prior-state rows lack.
             starts = starts.unionByName(
-                reconstructed.withColumn("__temporal_reconstructed_start", F.lit(True))
+                reconstructed.withColumn("__temporal_reconstructed_start", F.lit(True)),
+                allowMissingColumns=True,
             )
 
         starts = starts.alias("start")
