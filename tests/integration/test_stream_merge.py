@@ -187,6 +187,42 @@ class TestStreamMergeSCD2:
         assert current["__effective_to"] is None
         assert current["__effective_from"] >= closed["__effective_from"]
 
+    def test_replayed_micro_batch_does_not_chain_new_scd2_version(
+        self, spark, delta_provider, temp_dir
+    ):
+        """foreachBatch delivery is at-least-once: after a failure between
+        the merge and the checkpoint commit, Spark re-delivers the last
+        micro-batch. Re-merging the same rows through the batch path that
+        ``_merge_batch`` drives must be a no-op — no new SCD2 version, no
+        re-versioned current row (the docstring's replay-safety claim,
+        actually exercised)."""
+        entity = _make_entity("silver.customers_stream_replay", {"scd.type": "2"})
+        source_path = str(temp_dir / "source_replay")
+        checkpoint = str(temp_dir / "chk_replay")
+        delta_provider.ensure_destination(entity)
+
+        _append_source_batch(spark, source_path, [("c1", "bronze")])
+        _run_stream_merge(spark, delta_provider, entity, source_path, checkpoint)
+        last_batch_rows = [("c1", "gold")]
+        _append_source_batch(spark, source_path, last_batch_rows)
+        _run_stream_merge(spark, delta_provider, entity, source_path, checkpoint)
+
+        def _versions():
+            return {
+                (r["status"], r["__is_current"], r["__effective_from"], r["__effective_to"])
+                for r in delta_provider.read_entity(entity).collect()
+            }
+
+        versions_before = _versions()
+
+        # Replay: the last micro-batch's DataFrame goes through the same
+        # merge the foreachBatch handler runs.
+        replay_df = spark.createDataFrame(last_batch_rows, SOURCE_SCHEMA)
+        delta_provider.merge_to_entity(replay_df, entity)
+
+        assert _versions() == versions_before
+        assert len(versions_before) == 2  # bronze (closed) + gold (current)
+
     def test_multi_event_micro_batch_collapses_to_latest_by_sequence(
         self, spark, delta_provider, temp_dir
     ):
