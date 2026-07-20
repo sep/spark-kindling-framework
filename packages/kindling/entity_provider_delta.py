@@ -1402,6 +1402,9 @@ class DeltaEntityProvider(
                 # versions the caller's watermark will record, even if more
                 # commits land before an action runs the plan.
                 reader = reader.option("endingVersion", end_version)
+            if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+                # load() expects a filesystem path; catalog tables read by name.
+                return reader.table(table_ref.table_name)
             return reader.load(table_ref.get_read_path())
         else:
             # Use spark.read.table for catalog-managed tables rather than DeltaTable.forName,
