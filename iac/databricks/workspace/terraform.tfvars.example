@@ -132,6 +132,17 @@ dlt_pipelines = [
   #   notebook_path = "/my-org/run_ingestion_dlts"
   #   development   = true
   # },
+  # {
+  #   name          = "kindling-orders-lakeflow"
+  #   target_schema = "orders"
+  #   file_glob     = "/Repos/my-org/kindling_lakeflow_pipeline.py"
+  #   development   = true
+  #   continuous    = false
+  #   configuration = {
+  #     "kindling.data_app"              = "orders"
+  #     "kindling.lakeflow.allowed_apps" = "orders,customers"
+  #   }
+  # },
 ]
 
 # -- Workspace Config ---------------------------------------------------------
