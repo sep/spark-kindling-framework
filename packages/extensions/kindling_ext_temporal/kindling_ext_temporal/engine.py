@@ -140,6 +140,11 @@ class EpisodeRunner:
             episode,
             evaluation_time=evaluation_time,
             existing_episodes_df=existing_episodes_df,
+            # The episode pipe runs first and revises persisted state, so a
+            # late real end's episode is already closed (terminal) by the
+            # time this pipe runs; reconstruct episodes whose real end is in
+            # this batch so the corrective determination event still fires.
+            reconstruct_batch_closed=True,
         ).filter(F.col("status").isin("closed", "expired", "invalidated"))
         determination_event = episode.determination_event or f"{episode.episodeid}.closed"
         expiration_event = episode.expiration_event or f"{episode.episodeid}.expired"
@@ -216,7 +221,13 @@ class EpisodeRunner:
         )
 
     @staticmethod
-    def _paired_boundaries(events_df, episode, evaluation_time=None, existing_episodes_df=None):
+    def _paired_boundaries(
+        events_df,
+        episode,
+        evaluation_time=None,
+        existing_episodes_df=None,
+        reconstruct_batch_closed=False,
+    ):
         from pyspark.sql import functions as F
         from pyspark.sql.window import Window
 
@@ -229,12 +240,20 @@ class EpisodeRunner:
         starts = starts.withColumn("__temporal_reconstructed_start", F.lit(False))
         if existing_episodes_df is not None:
             reconstructed = (
-                EpisodeRunner._reconstruct_start_boundaries(existing_episodes_df, episode)
+                EpisodeRunner._reconstruct_start_boundaries(
+                    existing_episodes_df,
+                    episode,
+                    batch_events_df=events_df if reconstruct_batch_closed else None,
+                )
                 .dropDuplicates(["event_id"])
                 .join(starts.select("event_id"), on="event_id", how="left_anti")
             )
+            # allowMissingColumns: the driving events frame can carry
+            # incremental-read bookkeeping columns (SourceVersion,
+            # SourceTimestamp) that reconstructed prior-state rows lack.
             starts = starts.unionByName(
-                reconstructed.withColumn("__temporal_reconstructed_start", F.lit(True))
+                reconstructed.withColumn("__temporal_reconstructed_start", F.lit(True)),
+                allowMissingColumns=True,
             )
 
         starts = starts.alias("start")
@@ -383,7 +402,7 @@ class EpisodeRunner:
         )
 
     @staticmethod
-    def _reconstruct_start_boundaries(episodes_df, episode):
+    def _reconstruct_start_boundaries(episodes_df, episode, batch_events_df=None):
         """Rebuild start-boundary event rows for persisted revisable episodes.
 
         Revisable means the episode has no real end yet: open, expired, or
@@ -391,16 +410,32 @@ class EpisodeRunner:
         terminal and never revised. The reconstructed rows let an incremental
         batch that only contains a late real end event pair it against a start
         consumed by an earlier batch.
+
+        When ``batch_events_df`` is given (the determination path), episodes
+        already closed by a real end event WHOSE end event is part of this
+        batch are reconstructed too: in sequential execution the episode pipe
+        revises persisted state before the determination pipe runs, so a
+        late-end revision would otherwise be terminal by the time its
+        corrective determination event should be emitted. Deterministic
+        determination event ids keep the re-emit idempotent.
         """
         from pyspark.sql import functions as F
 
-        revisable = episodes_df.filter(
-            (F.col("episode_type") == F.lit(episode.episodeid))
-            & (
-                F.col("status").isin("open", "expired")
-                | ((F.col("status") == F.lit("invalidated")) & F.col("end_event_synthetic"))
-            )
+        scoped = episodes_df.filter(F.col("episode_type") == F.lit(episode.episodeid))
+        revisable = scoped.filter(
+            F.col("status").isin("open", "expired")
+            | ((F.col("status") == F.lit("invalidated")) & F.col("end_event_synthetic"))
         )
+        if batch_events_df is not None:
+            batch_end_ids = (
+                batch_events_df.filter(F.col("event_type") == F.lit(episode.end_event))
+                .select(F.col("event_id").alias("end_event_id"))
+                .distinct()
+            )
+            closed_in_batch = scoped.filter(
+                (F.col("status") == F.lit("closed")) & ~F.col("end_event_synthetic")
+            ).join(batch_end_ids, on="end_event_id", how="leftsemi")
+            revisable = revisable.unionByName(closed_in_batch)
         if episode.subject_type:
             revisable = revisable.filter(F.col("subject_type") == F.lit(episode.subject_type))
 

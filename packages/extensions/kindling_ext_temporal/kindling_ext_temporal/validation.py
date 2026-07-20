@@ -50,7 +50,12 @@ class ActiveSparkSqlExpressionParser:
         if spark is None:
             raise RuntimeError("No active SparkSession available for expression parsing")
 
-        spark._jsparkSession.sessionState().sqlParser().parseExpression(expression)
+        # functions.expr parses eagerly through public API. The direct route
+        # (spark._jsparkSession.sessionState().sqlParser()) is blocked by
+        # py4j security whitelisting on Databricks shared-access clusters.
+        from pyspark.sql import functions as F
+
+        F.expr(expression)
 
 
 @dataclass(frozen=True)

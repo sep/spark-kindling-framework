@@ -162,15 +162,32 @@ def _quote_sql_identifier(name: str, alias: Optional[str] = None) -> str:
 
 
 def _build_null_safe_change_condition(
-    source_alias: str, target_alias: str, tracked_columns: list[str]
+    source_alias: str, target_alias: str, tracked_columns: list[str], schema=None
 ) -> str:
     if not tracked_columns:
         return "false"
 
+    from pyspark.sql.types import MapType
+
+    unorderable = {
+        field.name
+        for field in (schema.fields if schema else [])
+        if isinstance(field.dataType, MapType)
+    }
+
+    def _comparable(column: str, alias: str) -> str:
+        ident = _quote_sql_identifier(column, alias)
+        # Spark's binary comparison does not support ordering on MAP types;
+        # compare their JSON projection instead (same approach as the
+        # optimize_unchanged hash path).
+        if column in unorderable:
+            return f"to_json({ident})"
+        return ident
+
     return " OR ".join(
         [
-            f"({_quote_sql_identifier(column, source_alias)} != "
-            f"{_quote_sql_identifier(column, target_alias)} OR "
+            f"({_comparable(column, source_alias)} != "
+            f"{_comparable(column, target_alias)} OR "
             f"({_quote_sql_identifier(column, source_alias)} IS NULL) != "
             f"({_quote_sql_identifier(column, target_alias)} IS NULL))"
             for column in tracked_columns
@@ -325,7 +342,9 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
             )
         new_rows = upserts_df.join(current_target, on=business_keys, how="left_anti")
     else:
-        change_condition = _build_null_safe_change_condition("source", "target", tracked_columns)
+        change_condition = _build_null_safe_change_condition(
+            "source", "target", tracked_columns, schema=upserts_df.schema
+        )
         changed_where = change_condition
         if seq_guard:
             changed_where = f"({change_condition}) AND {seq_guard}"
@@ -463,10 +482,33 @@ class DeltaTableReference:
     def get_delta_table(self) -> DeltaTable:
         """Get DeltaTable instance using appropriate method"""
         if self.access_mode == DeltaAccessMode.CATALOG:
-            return DeltaTable.forName(self.spark, self.get_read_path())
+            try:
+                return DeltaTable.forName(self.spark, self.table_name)
+            except Exception as name_error:
+                # DeltaTable.forName cannot parse catalog-qualified 3-part
+                # names on OSS Delta (and is restricted on some managed
+                # runtimes). Resolve the table's storage location through the
+                # catalog and fall back to a path handle.
+                location = self._resolve_catalog_location()
+                if location is None:
+                    raise name_error
+                return DeltaTable.forPath(self.spark, location)
         elif self.access_mode == DeltaAccessMode.STORAGE:
             return DeltaTable.forPath(self.spark, self.get_read_path())
         raise ValueError(f"Unsupported Delta access mode: {self.access_mode}")
+
+    def _resolve_catalog_location(self) -> Optional[str]:
+        """Resolve a catalog table's storage location, or None if unavailable."""
+        try:
+            quoted = ".".join(
+                f"`{part.strip().replace('`', '``')}`"
+                for part in self.table_name.split(".")
+                if part.strip()
+            )
+            row = self.spark.sql(f"DESCRIBE DETAIL {quoted}").select("location").first()
+            return row["location"] if row else None
+        except Exception:
+            return None
 
     def get_spark_read_stream(self, spark, options=None):
         base = spark.readStream.format("delta")
@@ -1360,6 +1402,9 @@ class DeltaEntityProvider(
                 # versions the caller's watermark will record, even if more
                 # commits land before an action runs the plan.
                 reader = reader.option("endingVersion", end_version)
+            if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+                # load() expects a filesystem path; catalog tables read by name.
+                return reader.table(table_ref.table_name)
             return reader.load(table_ref.get_read_path())
         else:
             # Use spark.read.table for catalog-managed tables rather than DeltaTable.forName,
@@ -1496,7 +1541,10 @@ class DeltaEntityProvider(
             version = table_ref.get_delta_table().history(1).select("version").collect()[0][0]
             self.logger.debug(f"Retrieved table {table_ref.table_name} version: {version}")
             return version
-        except Exception:
+        except Exception as e:
+            # Version 0 doubles as "no table" upstream; an existing table
+            # whose handle fails must be loud, not silently invisible.
+            self.logger.warning(f"Version lookup failed for {table_ref.table_name}: {e}")
             return 0
 
     def _build_merge_condition(self, alias1: str, alias2: str, cols: list[str]) -> str:
@@ -1697,10 +1745,13 @@ class DeltaEntityProvider(
         )
 
         try:
-            if self._check_table_exists(table_ref):
-                self._merge_to_delta_table(df, entity, table_ref)
-            else:
-                self.write_to_entity(df, entity)
+            if not self._check_table_exists(table_ref):
+                # Create the table empty and still run the merge strategy:
+                # writing the raw dataframe would skip SCD bookkeeping (an
+                # SCD2 entity's first rows would land with NULL
+                # is_current/effective columns, invisible to current views).
+                self.ensure_entity_table(entity)
+            self._merge_to_delta_table(df, entity, table_ref)
 
             duration = time.time() - start_time
             self.emit(
@@ -1772,11 +1823,14 @@ class DeltaEntityProvider(
         watermark will record even if more commits land before an action.
         """
         watermark_version = int(cursor) if cursor is not None else None
-        current_version = self.get_entity_version(entity)
 
-        if watermark_version is None and current_version == 0:
-            # Source table does not exist yet.
+        if watermark_version is None and not self.check_entity_exists(entity):
+            # Source table does not exist yet. (Existence is checked
+            # explicitly: version 0 is also a real, readable table whose
+            # creation commit may already contain data.)
             return None, None
+
+        current_version = self.get_entity_version(entity)
 
         if watermark_version is None:
             # Initial load: full read stamped with the version it covers.

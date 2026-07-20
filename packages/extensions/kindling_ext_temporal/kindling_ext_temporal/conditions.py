@@ -79,11 +79,28 @@ def _provider_for(entity):
     return GlobalInjector.get(EntityProviderRegistry).get_provider_for_entity(entity)
 
 
-def _write_quarantine(spark, invalids, quarantine_entity_id, provider_factory):
-    from kindling.data_entities import EntityMetadata
-    from pyspark.sql import functions as F
+def _quarantine_entity(quarantine_entity_id):
+    """Resolve the registered quarantine entity; fall back to ad-hoc metadata.
 
-    entity = EntityMetadata(
+    An app that registered the entity owns its storage configuration
+    (provider tags, paths); fabricating metadata here would silently write
+    to a different location than the registered entity reads from.
+    """
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+
+        registered = GlobalInjector.get(DataEntityRegistry).get_entity_definition(
+            quarantine_entity_id
+        )
+        if registered is not None:
+            return registered
+    except Exception:  # noqa: BLE001 - registry unavailable in bare tests
+        pass
+
+    from kindling.data_entities import EntityMetadata
+
+    return EntityMetadata(
         entityid=quarantine_entity_id,
         name=quarantine_entity_id.split(".")[-1],
         merge_columns=[],
@@ -91,6 +108,12 @@ def _write_quarantine(spark, invalids, quarantine_entity_id, provider_factory):
         schema=condition_quarantine_schema(),
         partition_columns=[],
     )
+
+
+def _write_quarantine(spark, invalids, quarantine_entity_id, provider_factory):
+    from pyspark.sql import functions as F
+
+    entity = _quarantine_entity(quarantine_entity_id)
     rows = [
         (
             invalid.condition_id or None,

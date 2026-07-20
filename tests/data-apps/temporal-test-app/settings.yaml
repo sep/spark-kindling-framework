@@ -1,0 +1,3 @@
+kindling:
+  extensions:
+    - kindling-ext-temporal==0.1.0

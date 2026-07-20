@@ -342,7 +342,11 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         pipe_activator = self.erps.create_pipe_persist_activator
 
         try:
-            with self.tp.span(component="data_pipes_executer", operation="execute_datapipes"):
+            # reraise=True: a swallowed span exception would leave the failed
+            # run looking successful to the caller.
+            with self.tp.span(
+                component="data_pipes_executer", operation="execute_datapipes", reraise=True
+            ):
                 for index, pipeid in enumerate(pipes):
                     pipe = self.dpr.get_pipe_definition(pipeid)
                     if no_watermark and pipe.use_watermark:
@@ -363,6 +367,7 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
                             operation="execute_datapipe",
                             component=f"pipe-{pipeid}",
                             details=pipe.tags,
+                            reraise=True,
                         ):
                             was_skipped = self._execute_datapipe(
                                 pipe_entity_reader(pipe), pipe_activator(pipe), pipe
