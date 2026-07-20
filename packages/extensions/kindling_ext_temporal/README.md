@@ -7,6 +7,10 @@ in `docs/proposals/temporal_event_segmentation.md`. It supports the core
 Event -> Condition boundary Events -> closed Episode path, but it is not yet the
 complete temporal-processing system described in the white paper and proposal.
 
+Operator docs: the execution/streaming contract is specified in
+`docs/guide/temporal_streaming_contract.md`; a worked telemetry-to-gold
+walkthrough is in `docs/guide/temporal_end_to_end.md`.
+
 ## Implemented
 
 - canonical `silver.events`, `silver.conditions`, and `silver.episodes` entity
@@ -127,4 +131,4 @@ mistaken for a full implementation:
 - cloud platform persistence/orchestration coverage beyond the local system
   test path;
 - a `kindling conditions set/remove` CLI on top of `ingest_conditions`;
-- production examples and operator documentation.
+- a runnable example data app packaging the end-to-end guide walkthrough.
