@@ -14,14 +14,20 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import logging
-from types import ModuleType
+from types import CodeType, ModuleType
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple
+
+from py4j.protocol import Py4JError
+from pyspark.sql.utils import AnalysisException
 
 APP_ENTRY_POINT_GROUP = "spark_kindling.data_apps"
 DATA_APP_CONFIG_KEY = "kindling.data_app"
 ALLOWED_APPS_CONFIG_KEY = "kindling.lakeflow.allowed_apps"
 
 _LOGGER = logging.getLogger(__name__)
+_CONF_READ_ERRORS = (AttributeError, KeyError, Py4JError, AnalysisException, RuntimeError)
+# RuntimeError covers restricted/serverless SparkContext access, where the
+# context exists conceptually but is not exposed to the Python evaluation.
 
 
 class LakeflowAppSelectionError(RuntimeError):
@@ -67,12 +73,15 @@ def _spark_conf_get(spark: Any, key: str) -> Optional[str]:
     """Read a RuntimeConfig key while remaining compatible with test fakes."""
     try:
         value = spark.conf.get(key, None)
-    except TypeError:
+    except TypeError as exc:
+        _LOGGER.debug("RuntimeConfig.get(key, default) is unavailable for %s: %s", key, exc)
         try:
             value = spark.conf.get(key)
-        except Exception:
+        except (TypeError, *_CONF_READ_ERRORS) as fallback_exc:
+            _LOGGER.debug("Unable to read Spark configuration key %s: %s", key, fallback_exc)
             return None
-    except Exception:
+    except _CONF_READ_ERRORS as exc:
+        _LOGGER.debug("Unable to read Spark configuration key %s: %s", key, exc)
         return None
 
     if value is None:
@@ -81,14 +90,43 @@ def _spark_conf_get(spark: Any, key: str) -> Optional[str]:
 
 
 def _spark_conf_items(spark: Any) -> Iterable[Tuple[str, Any]]:
-    try:
-        values = spark.conf.getAll()
-    except Exception:
-        return ()
+    """Enumerate Spark configuration with PySpark 3.x and Databricks fallbacks."""
 
-    if isinstance(values, Mapping):
-        return values.items()
-    return values
+    try:
+        get_all = getattr(spark.conf, "getAll", None)
+    except _CONF_READ_ERRORS as exc:
+        _LOGGER.debug("RuntimeConfig.getAll is unavailable: %s", exc)
+        get_all = None
+    if callable(get_all):
+        try:
+            values = get_all()
+            if isinstance(values, Mapping):
+                return tuple(values.items())
+            return tuple(values)
+        except (TypeError, *_CONF_READ_ERRORS) as exc:
+            _LOGGER.debug("Unable to enumerate RuntimeConfig.getAll(): %s", exc)
+
+    try:
+        spark_context = spark.sparkContext
+        values = spark_context.getConf().getAll()
+        if isinstance(values, Mapping):
+            return tuple(values.items())
+        return tuple(values)
+    except (TypeError, *_CONF_READ_ERRORS) as exc:
+        _LOGGER.debug("Unable to enumerate SparkContext.getConf().getAll(): %s", exc)
+
+    explicit_keys = (DATA_APP_CONFIG_KEY, ALLOWED_APPS_CONFIG_KEY)
+    explicit_items = tuple(
+        (key, value) for key in explicit_keys if (value := _spark_conf_get(spark, key)) is not None
+    )
+    _LOGGER.warning(
+        "Unable to enumerate Spark configuration through RuntimeConfig.getAll() "
+        "or SparkContext.getConf().getAll(); bridged only explicit keys %s "
+        "(available: %s)",
+        explicit_keys,
+        tuple(key for key, _ in explicit_items),
+    )
+    return explicit_items
 
 
 def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
@@ -174,16 +212,33 @@ def _callable_signature(value: Callable[..., Any]) -> Tuple[Any, ...]:
         "callable",
         getattr(value, "__module__", None),
         getattr(value, "__qualname__", None),
-        code.co_code,
-        repr(code.co_consts),
-        code.co_names,
-        repr(getattr(value, "__defaults__", None)),
-        repr(getattr(value, "__kwdefaults__", None)),
+        _code_signature(code),
+        _stable_signature(getattr(value, "__defaults__", None)),
+        _stable_signature(getattr(value, "__kwdefaults__", None)),
         closure_values,
     )
 
 
+def _code_signature(code: CodeType) -> Tuple[Any, ...]:
+    """Return a structural signature that is stable across module imports."""
+    return (
+        "code",
+        code.co_code,
+        code.co_names,
+        tuple(_stable_signature(constant) for constant in code.co_consts),
+        code.co_varnames,
+        code.co_freevars,
+        code.co_cellvars,
+        code.co_argcount,
+        code.co_posonlyargcount,
+        code.co_kwonlyargcount,
+        code.co_flags,
+    )
+
+
 def _stable_signature(value: Any) -> Any:
+    if isinstance(value, CodeType):
+        return _code_signature(value)
     if callable(value):
         return _callable_signature(value)
     if dataclasses.is_dataclass(value):
