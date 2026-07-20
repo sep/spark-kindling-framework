@@ -122,6 +122,15 @@ class SimplePipeStreamStarter(PipeStreamStarter):
             )
             write_mode = "merge" if wants_merge else "append"
 
+        # Make the resolved mode visible at query start: whether a streaming
+        # pipe merges or appends is derived (tag > merge_columns + provider
+        # capability), and the answer decides how replayed micro-batches
+        # land in the sink.
+        self.logger.info(
+            f"Streaming pipe '{pipeid}' -> entity '{output_entity.entityid}': "
+            f"resolved sink write mode '{write_mode}'"
+        )
+
         if write_mode == "append" and (
             not is_stream_writable(output_provider)
             and not hasattr(output_provider, "append_as_stream")
@@ -151,8 +160,16 @@ class SimplePipeStreamStarter(PipeStreamStarter):
         if write_mode == "merge":
             # merge_as_stream starts the query itself (foreachBatch resolves
             # the target table internally), so no toTable()/start() step.
+            # Recognized streaming options are forwarded so callers can set
+            # the trigger and query name on merged sinks too.
+            merge_options = {
+                key: options[key] for key in ("trigger", "query_name") if key in options
+            }
             return output_provider.merge_as_stream(
-                transformed_stream, output_entity, f"{base_chkpt_path}/{pipe.pipeid}"
+                transformed_stream,
+                output_entity,
+                f"{base_chkpt_path}/{pipe.pipeid}",
+                options=merge_options,
             )
 
         stream_handle = output_provider.append_as_stream(

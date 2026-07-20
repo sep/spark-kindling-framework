@@ -225,9 +225,37 @@ def test_merge_columns_route_to_merge_as_stream_when_provider_supports_merge():
 
     assert result is query
     out_provider.merge_as_stream.assert_called_once_with(
-        pipe.execute.return_value, dst_entity, "/checkpoints/pipe1"
+        pipe.execute.return_value, dst_entity, "/checkpoints/pipe1", options={}
     )
     out_provider.append_as_stream.assert_not_called()
+
+
+def test_streaming_options_plumbed_through_to_merge_as_stream():
+    """trigger/query_name passed to start_pipe_stream reach merge_as_stream;
+    starter-only options (base_checkpoint_path) are not forwarded."""
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={"provider_type": "delta", "provider.access_mode": "catalog"},
+        merge_columns=["order_id"],
+    )
+    out_provider = Mock(spec=_MergeCapableProvider)
+
+    starter, pipe = _make_starter(dst_entity, out_provider)
+    starter.start_pipe_stream(
+        "pipe1",
+        options={
+            "base_checkpoint_path": "/custom-chk",
+            "trigger": {"availableNow": True},
+            "query_name": "orders-merge",
+        },
+    )
+
+    out_provider.merge_as_stream.assert_called_once_with(
+        pipe.execute.return_value,
+        dst_entity,
+        "/custom-chk/pipe1",
+        options={"trigger": {"availableNow": True}, "query_name": "orders-merge"},
+    )
 
 
 def test_write_mode_append_tag_forces_append_despite_merge_columns():

@@ -19,6 +19,16 @@ All notable changes to spark-kindling are documented here.
   warning when used; update `settings.yaml` / `settings.local.yaml` to the new name at your
   convenience.
 
+- Streaming pipes whose output entity declares `merge_columns` now default to
+  a per-micro-batch **merge** instead of an append when the sink provider
+  supports streaming merges (see Added). Migration note: this applies to
+  existing queries under their existing checkpoint — after upgrading, new
+  micro-batches merge by business key, but rows appended by earlier runs are
+  not retroactively reconciled. If an append-era table already contains
+  duplicate business keys, deduplicate or rebuild it before relying on merge
+  semantics, or pin the old behavior with the `write.mode: append` entity
+  tag. The resolved write mode is logged at query start.
+
 ### Added
 
 - Streaming merge support: new `StreamMergeableEntityProvider` capability

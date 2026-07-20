@@ -362,7 +362,9 @@ query = provider.merge_as_stream(
 query.awaitTermination()
 ```
 
-Streaming pipes (`SimplePipeStreamStarter`) use this automatically: when the output entity declares `merge_columns` and the sink provider supports streaming merges, the pipe output is merged instead of appended — mirroring the batch persist strategy.
+`options` recognizes `trigger` (kwargs for `DataStreamWriter.trigger`, e.g. `{"availableNow": True}` or `{"processingTime": "5 minutes"}`) and `query_name`. The query runs with `outputMode("update")` — the mode that matches an upsert sink: for stateful queries Spark hands each micro-batch the rows updated since the last trigger (rather than append's finalized-only rows), and each batch is merged into the target by business key. For stateless pipelines `update` and `append` deliver the same rows, so the choice is behavior-neutral there.
+
+Streaming pipes (`SimplePipeStreamStarter`) use this automatically: when the output entity declares `merge_columns` and the sink provider supports streaming merges, the pipe output is merged instead of appended — mirroring the batch persist strategy. The starter logs the resolved write mode at query start and forwards the recognized streaming options (`trigger`, `query_name`) from `start_pipe_stream(pipeid, options=...)` to `merge_as_stream`.
 
 ### The `write.mode` tag
 
