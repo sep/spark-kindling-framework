@@ -35,6 +35,7 @@ from .entity_provider import (
     DestinationEnsuringProvider,
     IncrementalReadableEntityProvider,
     StreamableEntityProvider,
+    StreamMergeableEntityProvider,
     StreamWritableEntityProvider,
     WritableEntityProvider,
 )
@@ -503,6 +504,7 @@ class DeltaEntityProvider(
     StreamableEntityProvider,
     WritableEntityProvider,
     StreamWritableEntityProvider,
+    StreamMergeableEntityProvider,
     SignalEmitter,
 ):
     """
@@ -1591,6 +1593,93 @@ class DeltaEntityProvider(
             .option("mergeSchema", "true")
             .option("checkpointLocation", checkpointLocation)
         )
+
+    def merge_as_stream(self, df, entity, checkpoint_location, options=None):
+        """Merge a streaming DataFrame into the entity via foreachBatch.
+
+        Each micro-batch runs through ``merge_to_entity``, so SCD1/SCD2
+        semantics (and their per-merge signal emissions) are identical to
+        the batch path. Micro-batch replay after a failure is safe because
+        the merge is idempotent by business key.
+
+        The merge contract is one row per business key per merge (Delta
+        rejects multiple source rows matching one target row). A streaming
+        micro-batch of change events can carry several rows per key, so
+        when the entity declares ``scd.sequence_by`` each micro-batch is
+        collapsed to the latest row per key by sequence — the same
+        latest-change-per-key convention the batch incremental path applies
+        (``_transform_delta_feed_to_changes``). Without ``sequence_by``
+        there is no ordering authority, and the one-row-per-key contract is
+        the source's to uphold.
+        """
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(entity.entityid)
+        if not entity.merge_columns:
+            raise ValueError(
+                f"Entity '{entity.entityid}': merge_as_stream requires merge_columns "
+                f"(business keys) to build the merge condition"
+            )
+
+        options = options or {}
+        cfg = scd_config_from_tags(entity)
+
+        # An entity that explicitly declares its input as a change feed is
+        # stating that batches carry change *events* — and a streaming
+        # micro-batch may carry several events per business key. Without a
+        # sequence column they can be neither collapsed nor ordered, and
+        # the merge would fail mid-stream on Delta's multiple-source-rows
+        # rule. Fail fast at query start instead. (An implicit/derived
+        # change_feed default is not rejected: vanilla SCD2 entities keep
+        # arrival-time ordering with the one-row-per-key-per-batch contract
+        # on the source, exactly as in batch merges.)
+        declared_source_kind = str((entity.tags or {}).get("scd.source_kind", "")).strip().lower()
+        if cfg.enabled and declared_source_kind == "change_feed" and not cfg.sequence_by:
+            raise ValueError(
+                f"Entity '{entity.entityid}': streaming merge into a change-feed SCD2 "
+                f"entity requires scd.sequence_by — a micro-batch may carry several "
+                f"change events per business key, and without a sequence column they "
+                f"cannot be collapsed or ordered"
+            )
+
+        # The declared sequence column must actually be in the stream: a
+        # missing column would silently skip the per-batch collapse and the
+        # query would die mid-stream on Delta's multiple-source-rows rule.
+        # Fail fast at query start instead (micro-batch schema == stream
+        # schema, so checking here covers every batch).
+        if cfg.enabled and cfg.sequence_by and cfg.sequence_by not in df.columns:
+            raise ValueError(
+                f"Entity '{entity.entityid}': scd.sequence_by column "
+                f"'{cfg.sequence_by}' is missing from the streaming DataFrame — "
+                f"the per-batch latest-row-per-key collapse cannot run"
+            )
+
+        def _merge_batch(batch_df, batch_id):
+            if cfg.enabled and cfg.sequence_by:
+                from pyspark.sql import Window
+                from pyspark.sql.functions import row_number
+
+                latest_per_key = Window.partitionBy(*entity.merge_columns).orderBy(
+                    col(cfg.sequence_by).desc()
+                )
+                batch_df = (
+                    batch_df.withColumn("__row_rank", row_number().over(latest_per_key))
+                    .filter(col("__row_rank") == 1)
+                    .drop("__row_rank")
+                )
+            self.merge_to_entity(batch_df, entity)
+
+        writer = (
+            df.writeStream.outputMode("update")
+            .option("checkpointLocation", checkpoint_location)
+            .foreachBatch(_merge_batch)
+        )
+        trigger = options.get("trigger")
+        if trigger:
+            writer = writer.trigger(**trigger)
+        query_name = options.get("query_name")
+        if query_name:
+            writer = writer.queryName(query_name)
+        return writer.start()
 
     def merge_to_entity(self, df: DataFrame, entity):
         """Merge DataFrame to entity table with signal emissions."""

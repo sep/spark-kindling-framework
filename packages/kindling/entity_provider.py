@@ -17,10 +17,10 @@ Examples:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from pyspark.sql import DataFrame
-from pyspark.sql.streaming import StreamingQuery
+from pyspark.sql.streaming import DataStreamWriter, StreamingQuery
 
 from .data_entities import EntityMetadata
 
@@ -196,7 +196,7 @@ class StreamWritableEntityProvider(ABC):
         checkpoint_location: str,
         format: Optional[str] = None,
         options: Optional[dict] = None,
-    ) -> StreamingQuery:
+    ) -> "Union[DataStreamWriter, StreamingQuery]":
         """
         Append streaming DataFrame to entity.
 
@@ -208,7 +208,52 @@ class StreamWritableEntityProvider(ABC):
             options: Optional format-specific options
 
         Returns:
-            StreamingQuery object for monitoring and control
+            Either an **unstarted** ``DataStreamWriter`` the caller
+            finalizes (``toTable(name)`` for catalog sinks, ``start(path)``
+            /``start()`` otherwise — how ``SimplePipeStreamStarter``
+            resolves the destination), or an already-started
+            ``StreamingQuery`` when the provider resolves the destination
+            itself (e.g. the memory provider). Contrast with
+            ``StreamMergeableEntityProvider.merge_as_stream``, which always
+            starts the query.
+        """
+        pass
+
+
+class StreamMergeableEntityProvider(ABC):
+    """
+    Optional interface for providers that can merge a streaming DataFrame
+    into an entity.
+
+    Unlike ``append_as_stream`` — which returns an unstarted writer for the
+    caller to finish (``toTable``/``start``) — a stream merge is executed
+    per micro-batch (e.g. Spark ``foreachBatch`` driving the provider's
+    batch merge), so the provider starts the query itself and returns the
+    running ``StreamingQuery``. The merge semantics (SCD1 upsert, SCD2
+    staged updates, ...) are the provider's: the same rules that govern its
+    batch ``merge_to_entity`` apply to every micro-batch.
+    """
+
+    @abstractmethod
+    def merge_as_stream(
+        self,
+        df: DataFrame,
+        entity_metadata: EntityMetadata,
+        checkpoint_location: str,
+        options: Optional[dict] = None,
+    ) -> StreamingQuery:
+        """
+        Merge streaming DataFrame into entity, one micro-batch at a time.
+
+        Args:
+            df: Streaming DataFrame to merge
+            entity_metadata: Metadata describing the destination entity;
+                its merge/business keys define the match condition
+            checkpoint_location: Path for streaming checkpoint
+            options: Optional provider-specific options (e.g. trigger config)
+
+        Returns:
+            The started StreamingQuery for monitoring and control
         """
         pass
 
@@ -280,6 +325,11 @@ def is_writable(provider: BaseEntityProvider) -> bool:
 def is_stream_writable(provider: BaseEntityProvider) -> bool:
     """Check if provider supports streaming writes."""
     return isinstance(provider, StreamWritableEntityProvider)
+
+
+def is_stream_mergeable(provider: BaseEntityProvider) -> bool:
+    """Check if provider supports streaming merges."""
+    return isinstance(provider, StreamMergeableEntityProvider)
 
 
 def can_ensure_destination(provider: BaseEntityProvider) -> bool:

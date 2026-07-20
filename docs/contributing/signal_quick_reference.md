@@ -92,6 +92,15 @@ Compatibility note:
 - `persist.persist_failed`
 - `persist.watermark_saved`
 
+> **Batch pipes only.** The `read.*` and `persist.*` signals fire from
+> `SimpleReadPersistStrategy`, which drives batch pipe execution — streaming
+> pipes (`SimplePipeStreamStarter`) do not emit them, so signal aspects like
+> watermarking and `DataSignals` DataFrame intercepts apply to batch pipes
+> only. (Checkpoints are the streaming equivalent of watermarks; provider
+> `entity.before_merge`/`entity.after_merge` signals do fire per micro-batch
+> for streaming merge sinks.) Streaming-native staged signals are future work
+> tracked with the stage-processor signal inversion proposal.
+
 ### App + Job Deployment (`job_deployment.py`)
 - `app.before_deploy`
 - `app.after_deploy`
