@@ -352,7 +352,11 @@ The merge contract is **one row per business key per merge** (Delta rejects mult
 
 Note that SCD2 history granularity on this path is **per merge** — per micro-batch when streaming — with `scd.sequence_by` deciding the winner within a batch. Domains that need per-event history fidelity should target the AUTO CDC engine (`kindling_databricks_sdp`).
 
+Ensure the destination before starting the query. For an SCD2 entity this creates the table with the augmented temporal schema (`__effective_from`, `__effective_to`, `__is_current`); without it, the first micro-batch bootstraps a table without the SCD2 columns and the next batch's merge fails. (`SimplePipeStreamStarter` does this for you.)
+
 ```python
+provider.ensure_destination(entity)
+
 query = provider.merge_as_stream(
     stream_df,
     entity,
