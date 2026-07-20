@@ -50,11 +50,8 @@ from kindling.spark_session import get_or_create_spark_session
 from kindling_ext_temporal import (
     DataEpisodes,
     DataEvents,
-    TemporalEntityResolver,
     condition_quarantine_schema,
     conditions_schema,
-    episodes_schema,
-    events_schema,
     ingest_conditions,
 )
 from pyspark.sql import functions as F
@@ -86,75 +83,15 @@ print(msg, flush=True)
 spark = get_or_create_spark_session()
 
 table_root = config_service.get("kindling.storage.table_root") or "Tables"
-temporal_root = f"{table_root}/temporal_test"
 
 # ---------------------------------------------------------------------------
-# Entities — storage-mode paths under the test_id-scoped table_root so the
-# run is isolated from other tests and cleaned up by cleanup_test_storage.
+# Entities — the shipped SimpleTemporalEntityResolver supplies the canonical
+# temporal entities. All tables are catalog-managed: the system test passes
+# kindling.storage.table_catalog / table_schema / table_name_prefix so every
+# entity (including system.watermarks) lands in a UC-supported, test-scoped
+# namespace. Delta tables at /Volumes paths are not durable on UC shared
+# clusters, so no provider.path tags here.
 # ---------------------------------------------------------------------------
-
-
-def _storage_tags(leaf: str, extra: dict = None) -> dict:
-    tags = {
-        "provider_type": "delta",
-        "provider.path": f"{temporal_root}/{leaf}",
-        "provider.access_mode": "storage",
-    }
-    if extra:
-        tags.update(extra)
-    return tags
-
-
-class SystemTestTemporalEntityResolver(TemporalEntityResolver):
-    """Test-scoped resolver: canonical temporal entities at explicit paths."""
-
-    def __init__(self):
-        self._events_entity = EntityMetadata(
-            entityid="silver.events",
-            name="events",
-            merge_columns=["event_id"],
-            tags=_storage_tags("events", {"temporal.kind": "events"}),
-            schema=events_schema(),
-            partition_columns=[],
-        )
-        self._conditions_entity = EntityMetadata(
-            entityid="silver.conditions",
-            name="conditions",
-            merge_columns=["condition_id"],
-            tags=_storage_tags(
-                "conditions",
-                {
-                    "temporal.kind": "conditions",
-                    "scd.type": "2",
-                    "scd.routing_key": "hash",
-                    "scd.close_on_missing": "true",
-                    "scd.current_entity_id": "silver.conditions.current",
-                },
-            ),
-            schema=conditions_schema(),
-            partition_columns=[],
-        )
-        self._episodes_entity = EntityMetadata(
-            entityid="silver.episodes",
-            name="episodes",
-            merge_columns=["episode_id"],
-            tags=_storage_tags("episodes", {"temporal.kind": "episodes"}),
-            schema=episodes_schema(),
-            partition_columns=[],
-        )
-
-    def get_events_entity(self) -> EntityMetadata:
-        return self._events_entity
-
-    def get_conditions_entity(self) -> EntityMetadata:
-        return self._conditions_entity
-
-    def get_episodes_entity(self) -> EntityMetadata:
-        return self._episodes_entity
-
-
-resolver = SystemTestTemporalEntityResolver()
-GlobalInjector.bind(TemporalEntityResolver, resolver)
 
 TELEMETRY_SCHEMA = StructType(
     [
@@ -173,7 +110,7 @@ DataEntities.entity(
     entityid="bronze.telemetry",
     name="telemetry",
     merge_columns=["machine_id", "reading_ts"],
-    tags=_storage_tags("telemetry"),
+    tags={"provider_type": "delta"},
     schema=TELEMETRY_SCHEMA,
     partition_columns=[],
 )
@@ -182,7 +119,7 @@ DataEntities.entity(
     entityid="silver.conditions.quarantine",
     name="conditions_quarantine",
     merge_columns=[],
-    tags=_storage_tags("conditions_quarantine"),
+    tags={"provider_type": "delta"},
     schema=QUARANTINE_SCHEMA,
     partition_columns=[],
 )
@@ -202,7 +139,7 @@ DataEntities.entity(
     entityid="gold.thermal_excursions",
     name="thermal_excursions",
     merge_columns=["episode_id"],
-    tags=_storage_tags("thermal_excursions"),
+    tags={"provider_type": "delta"},
     schema=GOLD_SCHEMA,
     partition_columns=[],
 )
@@ -670,6 +607,13 @@ _diag(
             "kindling.temporal.conditions.quarantine_entity_id", None
         ),
         "kindling.storage.table_root": table_root,
+        "kindling.storage.table_catalog": config_service.get(
+            "kindling.storage.table_catalog", None
+        ),
+        "kindling.storage.table_schema": config_service.get("kindling.storage.table_schema", None),
+        "kindling.storage.table_name_prefix": config_service.get(
+            "kindling.storage.table_name_prefix", None
+        ),
     },
 )
 
@@ -688,6 +632,32 @@ except Exception as exc:  # noqa: BLE001 - report and exit nonzero
 overall = all(test_results.values()) if test_results else False
 overall_status = "PASSED" if overall else "FAILED"
 failed = [name for name, ok in test_results.items() if not ok]
+
+if scenario == "run2" and overall:
+    # The tables are prefix-scoped catalog tables the storage cleanup path
+    # does not cover; drop them once the full lifecycle has been asserted.
+    # A failed run keeps them for debugging.
+    from kindling.data_entities import EntityNameMapper
+
+    name_mapper = GlobalInjector.get(EntityNameMapper)
+    for entity_id in [
+        "bronze.telemetry",
+        "silver.events",
+        "silver.conditions",
+        "silver.episodes",
+        "silver.conditions.quarantine",
+        "gold.thermal_excursions",
+        "system.watermarks",
+    ]:
+        try:
+            entity = _entity(entity_id)
+            table_name = name_mapper.get_table_name(
+                entity if entity is not None else type("E", (), {"entityid": entity_id})()
+            )
+            spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+            _diag("dropped", table_name)
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+            _diag("drop failed", f"{entity_id}: {exc}")
 
 msg = f"TEST_ID={test_id} status=COMPLETED result={overall_status}"
 if failed:

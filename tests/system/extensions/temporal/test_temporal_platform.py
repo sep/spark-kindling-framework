@@ -141,9 +141,18 @@ class TestTemporalExtensionPlatform:
         client.deploy_app(app_name, app_files)
         print(f"📂 Deployed app: {app_name}")
 
+        # All app tables are catalog-managed in the UC catalog/schema the
+        # system-test volumes live in, isolated per run by a table-name
+        # prefix. Delta tables written to /Volumes paths are not durable on
+        # UC shared-access clusters, so path-based storage mode is not an
+        # option here; the app drops the prefixed tables when run2 passes.
+        uc_catalog = os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG", "medallion")
+        uc_schema = os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA", "default")
+        table_prefix = f"systest_temporal_{test_id}_"
+
         def _job_config(scenario: str, evaluation_time: str) -> dict:
-            # Both jobs share test_id, so they share the test-scoped storage
-            # root: run2 revises the episodes run1 persisted.
+            # Both jobs share test_id, so they share the test-scoped tables:
+            # run2 revises the episodes run1 persisted.
             return {
                 "job_name": f"systest-temporal-{scenario}-{test_id}",
                 "app_name": app_name,
@@ -156,6 +165,11 @@ class TestTemporalExtensionPlatform:
                         # harness's kindling.extensions override replaces that
                         # key wholesale, so declare it here to survive the merge.
                         "extensions": [TEMPORAL_EXTENSION_SPEC],
+                        "storage": {
+                            "table_catalog": uc_catalog,
+                            "table_schema": uc_schema,
+                            "table_name_prefix": table_prefix,
+                        },
                         "temporal": {
                             "evaluation_time": evaluation_time,
                             "conditions": {"quarantine_entity_id": "silver.conditions.quarantine"},
