@@ -10,7 +10,6 @@ See: GitHub Issue #24 - Generation Executor
 from unittest.mock import MagicMock, Mock
 
 import pytest
-
 from kindling.data_pipes import DataPipesManager, PipeMetadata
 from kindling.entity_provider import StreamableEntityProvider
 from kindling.execution_strategy import (
@@ -58,9 +57,16 @@ def plan_generator(pipes_manager, graph_builder, logger_provider):
 
 @pytest.fixture
 def entity_registry():
-    """Mock entity registry that returns entities by ID."""
+    """Mock entity registry that returns entities by ID.
+
+    Real entities carry a dict for ``tags`` and a list for
+    ``merge_columns`` — the stream starter reads both to pick the sink
+    write mode, so the mocks must honor that contract.
+    """
     registry = Mock()
-    registry.get_entity_definition.side_effect = lambda eid: Mock(entityid=eid)
+    registry.get_entity_definition.side_effect = lambda eid: Mock(
+        entityid=eid, tags={}, merge_columns=[]
+    )
     return registry
 
 

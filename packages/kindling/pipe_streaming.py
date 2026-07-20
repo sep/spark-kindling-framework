@@ -4,6 +4,7 @@ from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.entity_provider import (
     can_ensure_destination,
+    is_stream_mergeable,
     is_stream_writable,
     is_streamable,
 )
@@ -97,8 +98,42 @@ class SimplePipeStreamStarter(PipeStreamStarter):
                 "Missing streaming checkpoint root. "
                 "Set kindling.storage.checkpoint_root or pass streaming_options['base_checkpoint_path']."
             )
-        if not is_stream_writable(output_provider) and not hasattr(
-            output_provider, "append_as_stream"
+        # Sink write mode: merge (per micro-batch upsert honoring the
+        # entity's SCD1/SCD2 semantics) vs append. Mirrors the batch persist
+        # strategy, which merges whenever the provider supports it: entities
+        # that declare merge/business keys default to merge when the sink
+        # provider can stream-merge. The `write.mode` entity tag (shared
+        # with the batch persist path) forces either mode.
+        write_mode = str(output_entity.tags.get("write.mode") or "").strip().lower()
+        if write_mode not in ("", "append", "merge"):
+            raise ValueError(
+                f"Entity '{output_entity.entityid}': invalid write.mode "
+                f"'{write_mode}' (expected 'append' or 'merge')"
+            )
+        if write_mode == "merge" and not is_stream_mergeable(output_provider):
+            raise TypeError(
+                f"Output provider for entity '{output_entity.entityid}' "
+                f"(type={output_entity.tags.get('provider_type')}) "
+                f"does not support streaming merges"
+            )
+        if not write_mode:
+            wants_merge = is_stream_mergeable(output_provider) and getattr(
+                output_entity, "merge_columns", None
+            )
+            write_mode = "merge" if wants_merge else "append"
+
+        # Make the resolved mode visible at query start: whether a streaming
+        # pipe merges or appends is derived (tag > merge_columns + provider
+        # capability), and the answer decides how replayed micro-batches
+        # land in the sink.
+        self.logger.info(
+            f"Streaming pipe '{pipeid}' -> entity '{output_entity.entityid}': "
+            f"resolved sink write mode '{write_mode}'"
+        )
+
+        if write_mode == "append" and (
+            not is_stream_writable(output_provider)
+            and not hasattr(output_provider, "append_as_stream")
         ):
             raise TypeError(
                 f"Output provider for entity '{output_entity.entityid}' "
@@ -121,6 +156,21 @@ class SimplePipeStreamStarter(PipeStreamStarter):
             ensure_output_table = getattr(output_provider, "ensure_entity_table", None)
             if callable(ensure_output_table):
                 ensure_output_table(output_entity)
+
+        if write_mode == "merge":
+            # merge_as_stream starts the query itself (foreachBatch resolves
+            # the target table internally), so no toTable()/start() step.
+            # Recognized streaming options are forwarded so callers can set
+            # the trigger and query name on merged sinks too.
+            merge_options = {
+                key: options[key] for key in ("trigger", "query_name") if key in options
+            }
+            return output_provider.merge_as_stream(
+                transformed_stream,
+                output_entity,
+                f"{base_chkpt_path}/{pipe.pipeid}",
+                options=merge_options,
+            )
 
         stream_handle = output_provider.append_as_stream(
             transformed_stream, output_entity, f"{base_chkpt_path}/{pipe.pipeid}"

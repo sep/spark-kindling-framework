@@ -196,6 +196,31 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                 df = _apply_df_transforms(results, df)
 
                 try:
+                    # Sink write mode override, shared with the streaming path
+                    # (SimplePipeStreamStarter): "append" skips the merge even
+                    # when the provider supports it (e.g. append-only fact
+                    # tables); "merge" makes the merge requirement explicit —
+                    # no silent append fallback. Unset keeps the default:
+                    # merge when the provider can, append otherwise. The
+                    # static tag value is validated at entity-registration
+                    # time (data_entities._validate_write_mode_tag); checking
+                    # inside the try keeps any raise paired with
+                    # persist.persist_failed after persist.before_persist.
+                    write_mode = (
+                        str((output_entity.tags or {}).get("write.mode") or "").strip().lower()
+                    )
+                    if write_mode not in ("", "append", "merge"):
+                        raise ValueError(
+                            f"Entity '{output_entity.entityid}': invalid write.mode "
+                            f"'{write_mode}' (expected 'append' or 'merge')"
+                        )
+                    if write_mode == "merge" and not hasattr(output_provider, "merge_to_entity"):
+                        provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
+                        raise ValueError(
+                            f"Entity '{output_entity.entityid}': write.mode is 'merge' but "
+                            f"provider '{provider_type}' does not support merge operations"
+                        )
+
                     with strategy.tp.span(
                         component="data_utils", operation="merge_and_watermark", reraise=False
                     ):
@@ -203,22 +228,31 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                         if output_provider.check_entity_exists(output_entity):
                             # Merge operation (Delta-specific, fallback to write for other providers)
                             with strategy.tp.span(operation="merge_to_entity_table"):
-                                if hasattr(output_provider, "merge_to_entity"):
+                                if write_mode != "append" and hasattr(
+                                    output_provider, "merge_to_entity"
+                                ):
                                     output_provider.merge_to_entity(df, output_entity)
                                 else:
-                                    # Provider doesn't support merge, use append if writable
+                                    # Append mode, or provider doesn't support merge
                                     from kindling.entity_provider import (
                                         WritableEntityProvider,
                                     )
 
                                     if isinstance(output_provider, WritableEntityProvider):
-                                        strategy.logger.info(
-                                            f"Provider '{output_entity.provider_type or 'delta'}' does not support merge, using append"
-                                        )
+                                        if not write_mode:
+                                            provider_type = (output_entity.tags or {}).get(
+                                                "provider_type", "delta"
+                                            )
+                                            strategy.logger.info(
+                                                f"Provider '{provider_type}' does not support merge, using append"
+                                            )
                                         output_provider.append_to_entity(df, output_entity)
                                     else:
+                                        provider_type = (output_entity.tags or {}).get(
+                                            "provider_type", "unknown"
+                                        )
                                         raise ValueError(
-                                            f"Provider '{output_entity.provider_type or 'unknown'}' does not support write operations"
+                                            f"Provider '{provider_type}' does not support write operations"
                                         )
                         else:
                             with strategy.tp.span(operation="write_to_entity_table", reraise=True):
@@ -229,8 +263,11 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                                 if isinstance(output_provider, WritableEntityProvider):
                                     output_provider.write_to_entity(df, output_entity)
                                 else:
+                                    provider_type = (output_entity.tags or {}).get(
+                                        "provider_type", "unknown"
+                                    )
                                     raise ValueError(
-                                        f"Provider '{output_entity.provider_type or 'unknown'}' does not support write operations"
+                                        f"Provider '{provider_type}' does not support write operations"
                                     )
 
                     duration = time.time() - start_time

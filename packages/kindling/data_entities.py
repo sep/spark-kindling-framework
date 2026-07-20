@@ -313,6 +313,22 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
     )
 
 
+def _validate_write_mode_tag(entity: EntityMetadata) -> None:
+    """Validate the static ``write.mode`` tag at registration time.
+
+    Both persist paths honor the tag (batch ``SimpleReadPersistStrategy``
+    and streaming ``SimplePipeStreamStarter``). Rejecting bad values here
+    surfaces typos when the entity is registered instead of mid-persist,
+    where a raise would sit awkwardly inside the persist lifecycle.
+    """
+    write_mode = str((entity.tags or {}).get("write.mode") or "").strip().lower()
+    if write_mode not in ("", "append", "merge"):
+        raise ValueError(
+            f"Entity '{entity.entityid}': invalid write.mode "
+            f"'{write_mode}' (expected 'append' or 'merge')"
+        )
+
+
 def _validate_scd_config(entity: EntityMetadata) -> None:
     """Validate SCD tag configuration at registration time."""
     cfg = scd_config_from_tags(entity)
@@ -522,6 +538,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
     def register_entity(self, entityid, **decorator_params):
         entity = EntityMetadata(entityid, **decorator_params)
         _validate_scd_config(entity)
+        _validate_write_mode_tag(entity)
 
         self.registry[entityid] = entity
         self.emit(
