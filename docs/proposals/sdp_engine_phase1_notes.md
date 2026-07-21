@@ -54,6 +54,25 @@ Fast at Declaration Time" sections make checkable from registry metadata:
 | Adapter-tier feature requested on a target without it | `capability_not_supported` |
 | Invalid `dataset_type` value | `invalid_dataset_type` |
 
+Observed platform diagnostics (2026-07-20, real Databricks serverless
+pipeline, channel CURRENT — captured by declaring hand-built plans that
+bypass `build_plan()` validation): a self-reading dataset passes source
+evaluation and fails the update at graph resolution with
+
+    Graph is not topologically sorted. There is a cycle between
+    kindling.kindling.silver_events and kindling.kindling.silver_events.
+
+and a second declaration of the same target fails immediately during
+source evaluation with
+
+    AnalysisException: Cannot redefine dataset
+    `kindling`.`kindling`.`silver_events`
+
+— both are late (update-time), generic, and name physical tables rather
+than pipes, which is exactly why `self_referencing_pipe` and
+`duplicate_output_entity` fail fast at declaration time with pipe-level
+context instead.
+
 Deliberately **not** checked in Phase 1, because it requires pipe-body
 introspection or runtime interception rather than registry metadata:
 side-effecting pipe logic (actions like `collect`/`count`/`write`/
