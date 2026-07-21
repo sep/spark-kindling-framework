@@ -140,11 +140,16 @@ class TestLakeflowSdpPlatform:
         schema = os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA", "default")
         pkg_root = PACKAGES_VOLUME.format(catalog=catalog, schema=schema)
 
-        warehouses = [
-            wh
-            for wh in w.warehouses.list()
-            if wh.state and wh.state.value in ("RUNNING", "STOPPED")
-        ]
+        # Prefer RUNNING warehouses; a STOPPED serverless warehouse
+        # auto-starts on statement execution but adds startup latency.
+        warehouses = sorted(
+            (
+                wh
+                for wh in w.warehouses.list()
+                if wh.state and wh.state.value in ("RUNNING", "STOPPED")
+            ),
+            key=lambda wh: wh.state.value != "RUNNING",
+        )
         if not warehouses:
             pytest.skip("No SQL warehouse available to verify pipeline outputs.")
         warehouse_id = os.getenv("SYSTEM_TEST_SQL_WAREHOUSE_ID") or warehouses[0].id

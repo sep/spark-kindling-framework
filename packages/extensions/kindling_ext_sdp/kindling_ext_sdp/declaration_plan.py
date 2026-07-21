@@ -26,7 +26,7 @@ def pipeline_dataset_name(entity_id: str) -> str:
     with multipart name ... is not supported"). Plan-level
     ``DatasetDeclaration.name`` stays the logical entity id.
     """
-    return entity_id.replace(".", "_")
+    return entity_id.replace(".", "_").replace("-", "_")
 
 
 class DatasetType(str, Enum):
