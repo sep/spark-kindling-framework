@@ -28,6 +28,8 @@ ALLOWED_APPS_CONFIG_KEY = "kindling.lakeflow.allowed_apps"
 #: ``spark.conf.get`` on pipeline configuration but block every enumeration
 #: surface, so keys beyond the defaults must be named explicitly.
 CONFIG_KEYS_CONFIG_KEY = "kindling.lakeflow.config_keys"
+#: Comma-separated pipe ids to declare; unset declares every registered pipe.
+PIPES_CONFIG_KEY = "kindling.lakeflow.pipes"
 
 _LOGGER = logging.getLogger(__name__)
 _CONF_READ_ERRORS = (AttributeError, KeyError, Py4JError, AnalysisException, RuntimeError)
@@ -394,5 +396,20 @@ def declare_from_pipeline_config(spark: Any = None) -> Any:
 
     after = _registry_snapshot()
     _raise_on_conflicts(before, after, app_name)
-    _LOGGER.info("Declaring Lakeflow graph for Kindling data app '%s'", app_name)
-    return kindling.declare_pipeline()
+
+    # An app may register more pipes than the pipeline should declare —
+    # notably alternative lowerings over the same declarations (the temporal
+    # chain pipes vs the per-declaration pipes, which self-reference by
+    # design and rightly fail SDP validation). kindling.lakeflow.pipes
+    # names the subset to declare; unset declares everything.
+    pipe_ids = None
+    raw_pipes = _spark_conf_get(spark, PIPES_CONFIG_KEY)
+    if raw_pipes:
+        pipe_ids = [part.strip() for part in str(raw_pipes).split(",") if part.strip()]
+
+    _LOGGER.info(
+        "Declaring Lakeflow graph for Kindling data app '%s' (pipes: %s)",
+        app_name,
+        pipe_ids or "all",
+    )
+    return kindling.declare_pipeline(pipe_ids=pipe_ids)

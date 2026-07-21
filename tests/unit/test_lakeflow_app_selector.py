@@ -516,3 +516,36 @@ def test_enumeration_falls_back_to_sql_set():
         "orders",
     )
     assert config["kindling.storage.table_schema"] == "default"
+
+
+def test_declared_pipes_are_filtered_by_config(monkeypatch):
+    monkeypatch.setattr(
+        selector,
+        "_registered_data_app_entry_points",
+        lambda: {"orders": FakeEntryPoint("orders", "orders_app")},
+    )
+    monkeypatch.setattr(selector, "_registry_snapshot", lambda: {"entity": {}, "pipe": {}})
+    monkeypatch.setattr(
+        selector,
+        "importlib",
+        SimpleNamespace(import_module=lambda _: _module("orders_app", lambda: None)),
+    )
+    monkeypatch.setattr("kindling.initialize", lambda **kwargs: None)
+    declared = {}
+    monkeypatch.setattr(
+        "kindling.declare_pipeline",
+        lambda pipe_ids=None: declared.setdefault("pipe_ids", pipe_ids),
+    )
+
+    selector.declare_from_pipeline_config(
+        FakeSpark(
+            {
+                "kindling.data_app": "orders",
+                "kindling.lakeflow.pipes": " temporal.chain.events.default, temporal.chain.episodes.default ",
+            }
+        )
+    )
+    assert declared["pipe_ids"] == [
+        "temporal.chain.events.default",
+        "temporal.chain.episodes.default",
+    ]
