@@ -19,11 +19,20 @@ class ConditionEngineRunner:
             expression_parser=ActiveSparkSqlExpressionParser(events_df.sparkSession)
         )
         validation_report = validator.validate_or_raise(condition_rows)
-        if not validation_report.valid_rules:
+        return self.execute_rules(events_df, validation_report.valid_rules)
+
+    def execute_rules(self, events_df, valid_rules):
+        """Run one boundary-emission pass over already-validated rules.
+
+        The chain executor validates the conditions set once per run and
+        drives this per generation stratum; ``execute`` keeps the
+        validate-every-call behavior for independent pipe execution.
+        """
+        if not valid_rules:
             return events_df.sparkSession.createDataFrame([], events_schema())
 
         outputs = []
-        for rule in validation_report.valid_rules:
+        for rule in valid_rules:
             scoped = self._scope_events(events_df, rule)
             outputs.append(
                 self._boundary_events(

@@ -120,7 +120,10 @@ def _run_scenario(
 class TestTemporalExtensionPlatform:
     """Temporal extension lifecycle against real platform storage."""
 
-    def test_temporal_cross_run_lifecycle(self, platform_client, app_packager, stdout_validator):
+    @pytest.mark.parametrize("execution_mode", ["pipes", "chain"])
+    def test_temporal_cross_run_lifecycle(
+        self, platform_client, app_packager, stdout_validator, execution_mode
+    ):
         client, platform = platform_client
         if platform != "databricks":
             pytest.skip(
@@ -160,6 +163,7 @@ class TestTemporalExtensionPlatform:
                 "test_id": test_id,
                 "config_overrides": {
                     "temporal_test_scenario": scenario,
+                    "temporal_execution_mode": execution_mode,
                     "kindling": {
                         # settings.yaml also declares the extension, but the
                         # harness's kindling.extensions override replaces that
