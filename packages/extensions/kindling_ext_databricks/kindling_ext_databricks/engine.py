@@ -70,6 +70,23 @@ class DatabricksSdpEngine(OssSdpEngine):
         """Core validation plus the AUTO CDC mapping requirements for
         SCD-tagged targets (Phase 5)."""
         issues = super().validate(pipe_ids)
+        # Chain pipes are custom-lowered (stratified graph): the conditions
+        # current view is read through the entity name mapper by the
+        # lowering itself, so the generic external-read check's
+        # current_view rejection does not apply to them.
+        chain_pipe_ids = {
+            pipe_id
+            for pipe_id in self._select_pipe_ids(pipe_ids)
+            if (pipe := self.pipe_registry.get_pipe_definition(pipe_id)) is not None
+            and str((pipe.tags or {}).get("temporal.kind", "")).startswith("chain_")
+        }
+        issues = [
+            issue
+            for issue in issues
+            if not (
+                issue.pipe_id in chain_pipe_ids and issue.code == "external_input_not_declarable"
+            )
+        ]
         seen_scd_issues = set()
         for pipe_id in self._select_pipe_ids(pipe_ids):
             pipe = self.pipe_registry.get_pipe_definition(pipe_id)
@@ -90,6 +107,13 @@ class DatabricksSdpEngine(OssSdpEngine):
         return issues
 
     def _declare_dataset(self, dp, dataset: DatasetDeclaration) -> None:
+        temporal_kind = (dataset.tags or {}).get("temporal.kind")
+        if temporal_kind == "chain_events":
+            self._declare_temporal_chain(dp, dataset)
+            return
+        if temporal_kind == "chain_episodes":
+            # Emitted together with its chain_events sibling.
+            return
         scd_spec = scd_spec_from_tags(dataset.tags)
         if scd_spec is not None:
             self._declare_scd_dataset(dp, dataset, scd_spec)
@@ -103,6 +127,52 @@ class DatabricksSdpEngine(OssSdpEngine):
         query_function = self._build_dataset_function(dataset)
         query_function = self._apply_expectations(dp, dataset, query_function)
         dp.materialized_view(**self._declaration_kwargs(dataset))(query_function)
+
+    def _declare_temporal_chain(self, dp, dataset: DatasetDeclaration) -> None:
+        """Lower a temporal chain-events pipe as the stratified dataset graph.
+
+        Requires kindling-ext-temporal (soft dependency: only apps that
+        registered chain pipes reach this branch). The chain_episodes
+        sibling — found by chain id through the pipe registry — is emitted
+        here too, so both halves share one wiring computation.
+        """
+        try:
+            from kindling_ext_temporal.chain import (
+                DEFAULT_MAX_GENERATIONS,
+                MAX_GENERATIONS_CONFIG_KEY,
+                chain_episodes_pipe_id,
+            )
+            from kindling_ext_temporal.sdp_lowering import declare_stratified_temporal
+        except ImportError as exc:
+            raise RuntimeError(
+                f"Dataset '{dataset.name}' is a temporal chain pipe but "
+                "kindling-ext-temporal is not installed in this pipeline "
+                "environment."
+            ) from exc
+
+        chain_id = (dataset.tags or {}).get("temporal.chain_id", "default")
+        episodes_name = None
+        episodes_pipe = self.pipe_registry.get_pipe_definition(chain_episodes_pipe_id(chain_id))
+        if episodes_pipe is not None and episodes_pipe.output_entity_id:
+            episodes_name = pipeline_dataset_name(episodes_pipe.output_entity_id)
+
+        max_generations = DEFAULT_MAX_GENERATIONS
+        try:
+            from kindling.injection import GlobalInjector
+            from kindling.spark_config import ConfigService
+
+            value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
+            if value is not None:
+                max_generations = int(value)
+        except Exception:  # noqa: BLE001 - config service unavailable in bare tests
+            pass
+
+        declare_stratified_temporal(
+            dp,
+            events_name=pipeline_dataset_name(dataset.name),
+            episodes_name=episodes_name,
+            max_generations=max_generations,
+        )
 
     # ------------------------------------------------------------------ #
     # AUTO CDC (Phase 5): SCD declared flows                               #
