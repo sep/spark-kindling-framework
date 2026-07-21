@@ -120,7 +120,7 @@ def test_two_app_names_select_their_declaration_graphs(monkeypatch):
             ),
         )
         monkeypatch.setattr("kindling.initialize", lambda **kwargs: initialized.append(kwargs))
-        monkeypatch.setattr("kindling.declare_pipeline", lambda: declared[-1])
+        monkeypatch.setattr("kindling.declare_pipeline", lambda pipe_ids=None: declared[-1])
 
         assert selector.declare_from_pipeline_config(spark) == graph
 
@@ -176,7 +176,7 @@ def test_initialize_completes_before_app_import(monkeypatch):
     )
     monkeypatch.setattr(selector, "_registry_snapshot", lambda: {"entity": {}, "pipe": {}})
     monkeypatch.setattr("kindling.initialize", initialize)
-    monkeypatch.setattr("kindling.declare_pipeline", lambda: events.append("declare"))
+    monkeypatch.setattr("kindling.declare_pipeline", lambda pipe_ids=None: events.append("declare"))
 
     def import_module(_):
         events.append("import")
@@ -214,7 +214,7 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
         "importlib",
         SimpleNamespace(import_module=lambda _: _module("orders_app", lambda: None)),
     )
-    monkeypatch.setattr("kindling.declare_pipeline", lambda: "plan")
+    monkeypatch.setattr("kindling.declare_pipeline", lambda pipe_ids=None: "plan")
 
     assert selector.declare_from_pipeline_config(spark) == "plan"
     assert captured["engine"] == "databricks_sdp"
@@ -246,7 +246,7 @@ def test_pipeline_configuration_falls_back_to_spark_context_conf(monkeypatch):
         "importlib",
         SimpleNamespace(import_module=lambda _: _module("orders_app", lambda: None)),
     )
-    monkeypatch.setattr("kindling.declare_pipeline", lambda: "plan")
+    monkeypatch.setattr("kindling.declare_pipeline", lambda pipe_ids=None: "plan")
 
     assert selector.declare_from_pipeline_config(spark) == "plan"
     assert captured["config"]["kindling.data_app"] == "orders"
@@ -295,7 +295,7 @@ def test_double_evaluation_is_idempotent(monkeypatch):
         ),
     )
     monkeypatch.setattr("kindling.initialize", lambda **kwargs: None)
-    monkeypatch.setattr("kindling.declare_pipeline", lambda: "plan")
+    monkeypatch.setattr("kindling.declare_pipeline", lambda pipe_ids=None: "plan")
     spark = FakeSpark({"kindling.data_app": "orders"})
 
     assert selector.declare_from_pipeline_config(spark) == "plan"
@@ -310,7 +310,7 @@ def test_double_evaluation_calls_real_kindling_initialize_twice(monkeypatch):
     monkeypatch.setattr(kindling, "_active_engine_extension", None)
     monkeypatch.setattr(kindling, "_load_engine_extension", lambda _: extension)
     monkeypatch.setattr(kindling, "initialize_framework", MagicMock())
-    monkeypatch.setattr(kindling, "declare_pipeline", lambda: "plan")
+    monkeypatch.setattr(kindling, "declare_pipeline", lambda pipe_ids=None: "plan")
     monkeypatch.setattr(
         selector,
         "_registered_data_app_entry_points",
@@ -436,7 +436,7 @@ def test_data_app_manager_is_not_invoked(monkeypatch):
             SimpleNamespace(import_module=lambda _: _module("orders_app", lambda: None)),
         )
         monkeypatch.setattr("kindling.initialize", lambda **kwargs: None)
-        monkeypatch.setattr("kindling.declare_pipeline", lambda: "plan")
+        monkeypatch.setattr("kindling.declare_pipeline", lambda pipe_ids=None: "plan")
 
         assert (
             selector.declare_from_pipeline_config(FakeSpark({"kindling.data_app": "orders"}))
