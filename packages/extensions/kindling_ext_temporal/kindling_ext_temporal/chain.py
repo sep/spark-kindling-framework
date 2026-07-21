@@ -76,10 +76,9 @@ def _checkpoint(df):
     generations stack; executor-local storage is job-scoped so nothing
     needs explicit cleanup.
     """
-    try:
-        return df.localCheckpoint(eager=True)
-    except Exception:  # pragma: no cover - runtimes without localCheckpoint
+    if not hasattr(df, "localCheckpoint"):  # pragma: no cover - exotic runtimes
         return df.persist()
+    return df.localCheckpoint(eager=True)
 
 
 def _union(frames):
@@ -93,11 +92,12 @@ def _resolve_max_generations(entity_dfs: Dict[str, Any]) -> int:
         from kindling.spark_config import ConfigService
 
         value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
-        if value is not None:
-            return int(value)
     except Exception:  # noqa: BLE001 - config service unavailable in bare tests
-        pass
-    return DEFAULT_MAX_GENERATIONS
+        return DEFAULT_MAX_GENERATIONS
+    if value is None:
+        return DEFAULT_MAX_GENERATIONS
+    # A malformed value must be loud, not silently reverted to the default.
+    return int(value)
 
 
 def _chain_events_execute(driving_entity_id, conditions_current_id, base_defs, episode_defs):

@@ -165,10 +165,11 @@ class DatabricksSdpEngine(OssSdpEngine):
             from kindling.spark_config import ConfigService
 
             value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
-            if value is not None:
-                max_generations = int(value)
         except Exception:  # noqa: BLE001 - config service unavailable in bare tests
-            pass
+            value = None
+        if value is not None:
+            # A malformed value must be loud, not silently defaulted.
+            max_generations = int(value)
 
         declare_stratified_temporal(
             dp,

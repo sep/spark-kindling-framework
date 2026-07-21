@@ -131,20 +131,19 @@ def _rule_generations(report) -> dict:
 
 
 def _resolve_max_generations_ceiling() -> int:
+    from .chain import DEFAULT_MAX_GENERATIONS, MAX_GENERATIONS_CONFIG_KEY
+
     try:
         from kindling.injection import GlobalInjector
         from kindling.spark_config import ConfigService
 
-        from .chain import DEFAULT_MAX_GENERATIONS, MAX_GENERATIONS_CONFIG_KEY
-
         value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
-        if value is not None:
-            return int(value)
-        return DEFAULT_MAX_GENERATIONS
     except Exception:  # noqa: BLE001 - config service unavailable in bare tests
-        from .chain import DEFAULT_MAX_GENERATIONS
-
         return DEFAULT_MAX_GENERATIONS
+    if value is None:
+        return DEFAULT_MAX_GENERATIONS
+    # A malformed value must be loud, not silently reverted to the default.
+    return int(value)
 
 
 def _write_quarantine(spark, invalids, quarantine_entity_id, provider_factory):
