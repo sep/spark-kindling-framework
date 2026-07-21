@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "kindling-ext-temporal"
-version = "0.1.0"
+version = "0.2.2"
 description = "Temporal event, condition, and episode primitives for Kindling"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"

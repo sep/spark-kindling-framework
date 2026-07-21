@@ -262,9 +262,12 @@ def declare_stratified_temporal(
 
         def stratum_flow(rules=rules, lower=lower):
             if not rules:
-                from .entities import events_schema
+                # Append flows require a streaming source even when a
+                # stratum has no rules (fixed-K topology): stream the base
+                # stratum, keep nothing.
+                from pyspark.sql import functions as F
 
-                return spark.createDataFrame([], events_schema())
+                return spark.readStream.table(lower[0]).where(F.lit(False))
             inputs = _union([spark.readStream.table(name) for name in lower])
             return engine.execute_rules(inputs, rules)
 
@@ -395,8 +398,8 @@ def _project_determination_events(episodes_df, episode_defs):
                 F.lit("kindling-temporal").alias("source_system"),
                 F.col("episode_id").alias("correlation_id"),
                 payload.alias("payload"),
-                F.lit(None).cast("map<string,string>").alias("attributes"),
+                attributes.alias("attributes"),
                 F.current_timestamp().alias("ingested_at"),
-            ).withColumn("attributes", attributes)
+            )
         )
     return _union(frames)

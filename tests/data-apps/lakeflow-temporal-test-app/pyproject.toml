@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "lakeflow-temporal-test-app"
+version = "0.1.0"
+description = "System-test data app: the temporal chain declared inside a Lakeflow pipeline"
+authors = ["Kindling Team"]
+packages = [{ include = "lakeflow_temporal_app" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+
+[tool.poetry.plugins."spark_kindling.data_apps"]
+lakeflow_temporal = "lakeflow_temporal_app"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

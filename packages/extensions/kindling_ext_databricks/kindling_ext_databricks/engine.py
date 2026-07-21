@@ -107,7 +107,10 @@ class DatabricksSdpEngine(OssSdpEngine):
         return issues
 
     def _declare_dataset(self, dp, dataset: DatasetDeclaration) -> None:
-        temporal_kind = (dataset.tags or {}).get("temporal.kind")
+        # Chain markers live on the PIPE's tags; dataset.tags carries the
+        # output entity's tags (temporal.kind=events/episodes there).
+        pipe = self.pipe_registry.get_pipe_definition(dataset.pipe_id)
+        temporal_kind = str(((pipe.tags if pipe else None) or {}).get("temporal.kind", ""))
         if temporal_kind == "chain_events":
             self._declare_temporal_chain(dp, dataset)
             return
