@@ -64,6 +64,32 @@ walkthrough is in `docs/guide/temporal_end_to_end.md`.
   late-end revision (two separate job executions over shared catalog
   storage) on a real workspace.
 
+## Chained execution
+
+`declare_temporal_chain()` (call it after all `DataEvents`/`DataEpisodes`
+declarations) lowers the registered graph into two composite pipes that any
+Kindling engine executes as ordinary pipes:
+
+- `temporal.chain.events.<chainid>` — reads the base events' shared driving
+  entity (watermarked) and the conditions current view; computes base
+  envelopes, condition boundary passes, and episode-determination events as
+  in-memory generation strata, feeding determination events back into
+  further condition passes until quiescence (capped by
+  `kindling.temporal.max_generations`); sole writer of the events entity.
+- `temporal.chain.episodes.<chainid>` — reads the events entity
+  (watermarked); pairs boundaries per episode declaration against prior
+  state; sole writer of the episodes entity.
+
+Compared with running the per-declaration pipes: higher-order conditions
+converge in one run instead of one scheduled run per generation, the events
+table has a single writer and no in-graph self-reads (the shape SDP/Lakeflow
+engines require), only true boundary inputs carry watermark cursors, and
+determination events derive from the same pre-revision prior state as the
+episode rows. The per-declaration pipes remain registered and independently
+executable; the chain is an alternative lowering over the same metadata.
+Phase-1 constraint: all base events must share one driving input entity
+(normalize heterogeneous sources into a staging entity first).
+
 ## Configuration
 
 - `kindling.temporal.evaluation_time` — optional explicit evaluation time for
@@ -78,6 +104,9 @@ walkthrough is in `docs/guide/temporal_end_to_end.md`.
   rejected condition rows; when set, `ingest_conditions` appends quarantined
   rows (condition id, errors, raw row, timestamp) there. Unset: rejects are
   only returned in the ingestion result.
+- `kindling.temporal.max_generations` — cap on the chained lowering's
+  feedback iterations (default 10); the chain stops earlier on quiescence. A
+  per-execution `temporal_max_generations` keyword argument overrides it.
 
 ## Revision semantics
 

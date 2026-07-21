@@ -18,11 +18,33 @@ proposal drives the identical engine from a Structured Streaming
 `foreachBatch` trigger body; nothing in this contract changes between the
 two drivers except who supplies the slice.
 
+## Two lowerings, one contract
+
+The declarations lower two ways; both are executed by the ordinary Kindling
+engines and both honor this contract:
+
+- **Per-declaration pipes** (one pipe per primitive): generations advance
+  one scheduled run per hop, with the events table as the conveyor belt
+  between them.
+- **Chained pipes** (`declare_temporal_chain()`): one events pipe computes
+  all generation strata in memory (feeding determination events back into
+  further condition passes until quiescence, capped by
+  `kindling.temporal.max_generations`) and persists once; one episodes pipe
+  pairs from the persisted events. Higher-order conditions converge in a
+  single run; the events and episodes tables each have exactly one writer
+  and the graph has no self-reads — the shape declarative engines
+  (Lakeflow/SDP) require. Determination events and episode rows derive from
+  the same pre-revision prior state, so revision ordering cannot skew them.
+
 ## Incrementality ownership — one owner per hop
 
 - The **events driving input** of every temporal pipe is watermarked with
   Kindling's per-reader cursor (pipe input 0, per the runner's
-  driving-source convention). Routine runs see only new events.
+  driving-source convention). Routine runs see only new events. Under the
+  chained lowering, only the true boundary inputs carry cursors: the
+  chain's driving entity (events pipe) and the events entity (episodes
+  pipe); intermediate generations are in-memory strata, never
+  persisted-and-re-read.
 - **Prior episode state is not a pipe input.** The episode engine resolves
   its own persisted state at execution time (JIT `silver_episodes` keyword →
   `kindling.temporal.revise_persisted` config → provider read guarded by an
