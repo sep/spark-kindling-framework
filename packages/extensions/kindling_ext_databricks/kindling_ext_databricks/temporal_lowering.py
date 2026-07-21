@@ -7,7 +7,7 @@ dependency, imported only when an app registered chain pipes.
 Lakeflow gives a dataset no access to its own prior state — evaluation-time
 reads of pipeline datasets are rejected (REFERENCE_DLT_DATASET_OUTSIDE_
 QUERY_DEFINITION) and in-view self-target reads fail at runtime (both
-probed on a real workspace, 2026-07-22). The chain pipes therefore lower to
+probed on a real workspace). The chain pipes therefore lower to
 a stratified dataset graph in which every dependency is a real edge between
 distinct datasets and all cross-update state lives in platform-owned
 primitives:
