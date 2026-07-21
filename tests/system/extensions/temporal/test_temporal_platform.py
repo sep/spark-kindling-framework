@@ -68,7 +68,7 @@ EXPECTED_RUN2_TESTS = [
     "run2_gold_aggregation",
 ]
 
-TEMPORAL_EXTENSION_SPEC = "kindling-ext-temporal==0.2.3"
+TEMPORAL_EXTENSION_SPEC = "kindling-ext-temporal==0.2.4"
 
 
 def _run_scenario(

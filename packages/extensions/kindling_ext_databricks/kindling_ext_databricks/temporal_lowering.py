@@ -1,4 +1,8 @@
-"""Stratified Lakeflow/SDP lowering of the temporal chain pipes.
+"""Stratified Lakeflow lowering of the temporal chain pipes.
+
+Lakeflow execution is a capability of THIS (databricks) extension; the
+temporal extension stays engine-agnostic. kindling-ext-temporal is a soft
+dependency, imported only when an app registered chain pipes.
 
 Lakeflow gives a dataset no access to its own prior state — evaluation-time
 reads of pipeline datasets are rejected (REFERENCE_DLT_DATASET_OUTSIDE_
@@ -43,8 +47,7 @@ from functools import reduce
 from typing import Any, Dict, List, Optional
 
 from kindling.injection import GlobalInjector
-
-from .translation import TemporalPipeTranslator
+from kindling_ext_temporal.translation import TemporalPipeTranslator
 
 STRATUM_SUFFIX = "__g"
 DETERMINATIONS_SUFFIX = "__determinations"
@@ -65,7 +68,10 @@ def _spark():
 
 
 def _temporal_registries():
-    from .registry import TemporalEpisodeRegistry, TemporalEventRegistry
+    from kindling_ext_temporal.registry import (
+        TemporalEpisodeRegistry,
+        TemporalEventRegistry,
+    )
 
     event_registry = GlobalInjector.get(TemporalEventRegistry)
     episode_registry = GlobalInjector.get(TemporalEpisodeRegistry)
@@ -103,8 +109,10 @@ def _read_rules(spark, conditions_entity):
     max_rule_generation).
     """
     from kindling.data_entities import scd_config_from_tags
-
-    from .validation import ActiveSparkSqlExpressionParser, TemporalConditionValidator
+    from kindling_ext_temporal.validation import (
+        ActiveSparkSqlExpressionParser,
+        TemporalConditionValidator,
+    )
 
     try:
         table_name = _physical_table_name(conditions_entity)
@@ -205,10 +213,9 @@ def declare_stratified_temporal(
     single-part dataset names of the chain pipes' outputs (episodes may be
     None when no episodes are declared).
     """
+    from kindling_ext_temporal.engine import ConditionEngineRunner, EpisodeRunner
+    from kindling_ext_temporal.entities import TemporalEntityResolver
     from pyspark.sql import functions as F
-
-    from .engine import ConditionEngineRunner, EpisodeRunner
-    from .entities import TemporalEntityResolver
 
     spark = _spark()
     base_defs, episode_defs = _temporal_registries()

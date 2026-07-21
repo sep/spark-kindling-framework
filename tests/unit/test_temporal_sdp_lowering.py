@@ -70,6 +70,7 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch):
         EntityNameMapper,
     )
     from kindling.data_pipes import DataPipesManager, DataPipesRegistry
+    from kindling_ext_databricks import temporal_lowering
     from kindling_ext_temporal import (
         DataEpisodes,
         DataEvents,
@@ -80,7 +81,6 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch):
         TemporalEventRegistry,
         TemporalEventRegistryManager,
         declare_temporal_chain,
-        sdp_lowering,
     )
 
     DataEvents.reset()
@@ -133,10 +133,10 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch):
         declare_temporal_chain()
 
         # Rules are unreadable in this hermetic test (first-run path).
-        monkeypatch.setattr(sdp_lowering, "_spark", lambda: MagicMock())
+        monkeypatch.setattr(temporal_lowering, "_spark", lambda: MagicMock())
 
         dp = FakeDp()
-        sdp_lowering.declare_stratified_temporal(
+        temporal_lowering.declare_stratified_temporal(
             dp, events_name="silver_events", episodes_name="silver_episodes", max_generations=2
         )
 
