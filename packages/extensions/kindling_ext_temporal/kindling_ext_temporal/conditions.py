@@ -110,6 +110,42 @@ def _quarantine_entity(quarantine_entity_id):
     )
 
 
+def _rule_generations(report) -> dict:
+    """Map condition_id -> its layer in the batch's event-type graph.
+
+    A rule's produced boundary types all land in one layer; the layer index
+    is the rule's generation relative to this batch's graph.
+    """
+    layer_by_type = {
+        event_type: layer_index
+        for layer_index, layer in enumerate(report.generations)
+        for event_type in layer
+    }
+    return {
+        rule.condition_id: max(
+            (layer_by_type.get(produced, 1) for produced in rule.produced_event_types),
+            default=1,
+        )
+        for rule in report.valid_rules
+    }
+
+
+def _resolve_max_generations_ceiling() -> int:
+    from .chain import DEFAULT_MAX_GENERATIONS, MAX_GENERATIONS_CONFIG_KEY
+
+    try:
+        from kindling.injection import GlobalInjector
+        from kindling.spark_config import ConfigService
+
+        value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
+    except Exception:  # noqa: BLE001 - config service unavailable in bare tests
+        return DEFAULT_MAX_GENERATIONS
+    if value is None:
+        return DEFAULT_MAX_GENERATIONS
+    # A malformed value must be loud, not silently reverted to the default.
+    return int(value)
+
+
 def _write_quarantine(spark, invalids, quarantine_entity_id, provider_factory):
     from pyspark.sql import functions as F
 
@@ -192,13 +228,41 @@ def ingest_conditions(
     invalid_row_ids = {id(invalid.row) for invalid in report.invalid_conditions}
     valid_rows = [row for row in candidate_rows if id(row) not in invalid_row_ids]
 
+    # Stamp each rule's event-type-graph layer (advisory routing metadata;
+    # the stratified lowering recomputes authoritative wiring from
+    # declarations + the full current rule set at pipeline evaluation), and
+    # reject rules deeper than the declared stratum ceiling up front.
+    generation_by_rule = _rule_generations(report)
+    max_generations = _resolve_max_generations_ceiling()
+    too_deep = [
+        InvalidCondition(
+            condition_id=row.condition_id,
+            errors=[
+                f"condition '{row.condition_id}' sits at generation "
+                f"{generation_by_rule[row.condition_id]}, beyond the declared "
+                f"stratum ceiling kindling.temporal.max_generations={max_generations}"
+            ],
+            row=row,
+        )
+        for row in valid_rows
+        if generation_by_rule.get(row.condition_id, 1) > max_generations
+    ]
+    too_deep_ids = {invalid.condition_id for invalid in too_deep}
+    valid_rows = [row for row in valid_rows if row.condition_id not in too_deep_ids]
+
     provider_factory = provider_factory or _provider_for
     if valid_rows:
+        from .entities import conditions_entity_schema
+
         entity = _conditions_entity(resolver)
-        valid_df = conditions_df.sparkSession.createDataFrame(valid_rows, conditions_df.schema)
+        stamped = [
+            {**row.asDict(recursive=False), "generation": generation_by_rule.get(row.condition_id)}
+            for row in valid_rows
+        ]
+        valid_df = conditions_df.sparkSession.createDataFrame(stamped, conditions_entity_schema())
         provider_factory(entity).merge_to_entity(valid_df, entity)
 
-    quarantined = duplicates + list(report.invalid_conditions)
+    quarantined = duplicates + list(report.invalid_conditions) + too_deep
     if quarantine_entity_id is UNSET:
         quarantine_entity_id = _resolve_quarantine_entity_id()
     if quarantined and quarantine_entity_id:

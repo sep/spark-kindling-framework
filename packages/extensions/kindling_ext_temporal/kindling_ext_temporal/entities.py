@@ -40,7 +40,7 @@ def events_schema() -> StructType:
 
 
 def conditions_schema() -> StructType:
-    """Return the rules-as-data condition schema."""
+    """Return the rules-as-data condition schema (the ingestion contract)."""
     return StructType(
         [
             StructField("condition_id", StringType(), False),
@@ -51,6 +51,21 @@ def conditions_schema() -> StructType:
             StructField("valid_from", TimestampType(), False),
             StructField("valid_to", TimestampType(), True),
         ]
+    )
+
+
+def conditions_entity_schema() -> StructType:
+    """The persisted conditions schema: the ingestion contract plus derived
+    metadata the engine stamps at ingestion.
+
+    ``generation`` is the rule's layer in the ingested batch's event-type
+    graph — advisory routing/observability metadata (the authoritative
+    stratum wiring is recomputed from declarations + current rules at
+    pipeline evaluation). It is deliberately excluded from SCD2 change
+    tracking so restamps never fabricate new rule versions.
+    """
+    return StructType(
+        list(conditions_schema().fields) + [StructField("generation", IntegerType(), True)]
     )
 
 
@@ -132,8 +147,13 @@ class SimpleTemporalEntityResolver(TemporalEntityResolver):
                 "scd.routing_key": "hash",
                 "scd.close_on_missing": "true",
                 "scd.current_entity_id": "silver.conditions.current",
+                # generation is engine-stamped derived metadata: restamping
+                # it must never fabricate a new SCD2 rule version.
+                "scd.tracked": (
+                    "consumes_event_type,subject_type,parameters,enabled,valid_from,valid_to"
+                ),
             },
-            schema=conditions_schema(),
+            schema=conditions_entity_schema(),
             partition_columns=[],
         )
         self._episodes_entity = EntityMetadata(
