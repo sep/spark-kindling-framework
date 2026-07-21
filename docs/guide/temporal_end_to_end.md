@@ -145,11 +145,24 @@ def thermal_excursions(silver_episodes):
 
 ## 6. Run it
 
-The declarations above lower to normal pipes; execute them like any others
-(`run_datapipes`/DAG orchestration). Generation layering orders them: base
-events → condition engine → episodes → determination events → gold. Two
-config keys matter operationally: `kindling.temporal.evaluation_time`
-(explicit batch evaluation time for synthetic boundaries — supply it on
-scheduler ticks so stale opens expire even with no arrivals) and
+The declarations above lower to normal pipes. The recommended execution
+path is the chained lowering — after all declarations, lower them into two
+composite pipes and run those:
+
+```python
+from kindling_ext_temporal import declare_temporal_chain
+
+chain_pipes = declare_temporal_chain()   # events chain + episodes
+run_datapipes(chain_pipes + ["gold.thermal_excursions"])
+```
+
+One run then covers every generation: base events → condition boundaries →
+episodes → determination events (fed back into higher-order conditions
+within the same run) → gold. Alternatively execute the per-declaration
+pipes individually (`run_datapipes`/DAG orchestration) — generation
+layering then advances one scheduled run per hop. Two config keys matter
+operationally: `kindling.temporal.evaluation_time` (explicit batch
+evaluation time for synthetic boundaries — supply it on scheduler ticks so
+stale opens expire even with no arrivals) and
 `kindling.temporal.revise_persisted` (prior-state read switch, on by
 default).

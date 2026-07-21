@@ -1,5 +1,11 @@
 """Temporal event, condition, and episode primitives for Kindling."""
 
+from .chain import (
+    MAX_GENERATIONS_CONFIG_KEY,
+    chain_episodes_pipe_id,
+    chain_events_pipe_id,
+    declare_temporal_chain,
+)
 from .conditions import (
     QUARANTINE_ENTITY_CONFIG_KEY,
     ConditionsIngestionResult,
@@ -11,6 +17,7 @@ from .entities import (
     SimpleTemporalEntityResolver,
     TemporalEntityResolver,
     condition_quarantine_schema,
+    conditions_entity_schema,
     conditions_schema,
     episodes_schema,
     events_schema,
@@ -39,6 +46,11 @@ from .validation import (
 __all__ = [
     "ActiveSparkSqlExpressionParser",
     "BaseEventMetadata",
+    "MAX_GENERATIONS_CONFIG_KEY",
+    "chain_episodes_pipe_id",
+    "chain_events_pipe_id",
+    "conditions_entity_schema",
+    "declare_temporal_chain",
     "ConditionEngineRunner",
     "ConditionEngineMetadata",
     "ConditionRule",

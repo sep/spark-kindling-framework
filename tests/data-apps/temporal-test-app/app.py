@@ -52,6 +52,7 @@ from kindling_ext_temporal import (
     DataEvents,
     condition_quarantine_schema,
     conditions_schema,
+    declare_temporal_chain,
     ingest_conditions,
 )
 from pyspark.sql import functions as F
@@ -212,6 +213,11 @@ TEMPORAL_PIPES = [
     f"temporal.episode_event.{EPISODE_ID}",
 ]
 
+# The chained lowering: the same declarations as two composite pipes
+# (events chain + episodes), selected per run by temporal_execution_mode.
+CHAIN_PIPES = declare_temporal_chain()
+execution_mode = str(config_service.get("temporal_execution_mode", "pipes")).strip().lower()
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -280,7 +286,9 @@ def _append(entity_id: str, df) -> None:
 
 
 def _run_temporal_pipes() -> None:
-    get_kindling_service(DataPipesExecution).run_datapipes(TEMPORAL_PIPES)
+    pipes = CHAIN_PIPES if execution_mode == "chain" else TEMPORAL_PIPES
+    _diag("execution mode", {"mode": execution_mode, "pipes": pipes})
+    get_kindling_service(DataPipesExecution).run_datapipes(pipes)
 
 
 def _ensure_tables() -> None:
