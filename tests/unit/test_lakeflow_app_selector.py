@@ -443,3 +443,76 @@ def test_data_app_manager_is_not_invoked(monkeypatch):
             == "plan"
         )
         run_app.assert_not_called()
+
+
+def test_pipeline_config_defaults_platform_to_standalone():
+    config = selector._pipeline_config_for_kindling(
+        FakeSpark({"kindling.data_app": "orders"}), "orders"
+    )
+    # Declaration-time pipelines get no platform machinery by default: the
+    # Databricks platform service cannot construct inside Lakeflow.
+    assert config["platform"] == "standalone"
+
+
+def test_pipeline_config_explicit_platform_wins():
+    config = selector._pipeline_config_for_kindling(
+        FakeSpark(
+            {
+                "kindling.data_app": "orders",
+                "kindling.platform.environment": "databricks",
+            }
+        ),
+        "orders",
+    )
+    assert "platform" not in config
+    assert config["kindling.platform.environment"] == "databricks"
+
+
+def test_restricted_runtime_bridges_named_config_keys():
+    """Serverless/shared runtimes allow point lookups but no enumeration."""
+
+    class SparkPointLookupOnly:
+        def __init__(self, values):
+            self.conf = FakeSparkConfWithoutGetAll(values)
+            # No sparkContext attribute at all, no SQL: enumeration is dead.
+
+    config = selector._pipeline_config_for_kindling(
+        SparkPointLookupOnly(
+            {
+                "kindling.data_app": "orders",
+                "kindling.lakeflow.config_keys": (
+                    "kindling.storage.table_catalog, datapipes.orders.engine.sdp.dataset_type"
+                ),
+                "kindling.storage.table_catalog": "main",
+                "datapipes.orders.engine.sdp.dataset_type": "streaming_table",
+                "kindling.unrelated": "not-bridged-unless-named",
+            }
+        ),
+        "orders",
+    )
+    assert config["kindling.storage.table_catalog"] == "main"
+    assert config["datapipes.orders.engine.sdp.dataset_type"] == "streaming_table"
+    assert "kindling.unrelated" not in config
+
+
+def test_enumeration_falls_back_to_sql_set():
+    class SparkWithSqlOnly:
+        def __init__(self, values):
+            self.conf = FakeSparkConfWithoutGetAll(values)
+            self._values = values
+
+        def sql(self, statement):
+            assert statement == "SET"
+            rows = [(k, v) for k, v in self._values.items()]
+            return SimpleNamespace(collect=lambda: rows)
+
+    config = selector._pipeline_config_for_kindling(
+        SparkWithSqlOnly(
+            {
+                "kindling.data_app": "orders",
+                "kindling.storage.table_schema": "default",
+            }
+        ),
+        "orders",
+    )
+    assert config["kindling.storage.table_schema"] == "default"

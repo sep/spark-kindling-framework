@@ -42,6 +42,7 @@ from kindling_ext_sdp.declaration_plan import (
     DatasetDeclaration,
     DatasetType,
     DeclarationIssue,
+    pipeline_dataset_name,
 )
 from kindling_ext_sdp.oss_engine import OssSdpEngine
 
@@ -133,7 +134,8 @@ class DatabricksSdpEngine(OssSdpEngine):
                 f"Dataset '{dataset.name}': output entity could not be resolved "
                 "while declaring its AUTO CDC flow."
             )
-        source_name = f"{dataset.name}{SCD_SOURCE_SUFFIX}"
+        target_name = pipeline_dataset_name(dataset.name)
+        source_name = f"{target_name}{SCD_SOURCE_SUFFIX}"
 
         view_decorator = getattr(dp, "temporary_view", None) or getattr(dp, "view", None)
         if view_decorator is None:
@@ -155,7 +157,7 @@ class DatabricksSdpEngine(OssSdpEngine):
         keys = list(entity.merge_columns or ())
         if spec.is_snapshot:
             dp.create_auto_cdc_from_snapshot_flow(
-                target=dataset.name,
+                target=target_name,
                 source=source_name,
                 keys=keys,
                 stored_as_scd_type=int(spec.scd_type),
@@ -163,7 +165,7 @@ class DatabricksSdpEngine(OssSdpEngine):
             return
 
         flow_kwargs: Dict[str, Any] = dict(
-            target=dataset.name,
+            target=target_name,
             source=source_name,
             keys=keys,
             sequence_by=spec.sequence_by,

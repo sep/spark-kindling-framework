@@ -15,6 +15,8 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 from kindling_ext_sdp import (
     DatasetType,
     OssSdpEngine,
@@ -25,9 +27,6 @@ from kindling_ext_sdp import (
     dry_run,
     write_pipeline_spec,
 )
-
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures: fake registries (same graph as test_sdp_declaration_engine) #
@@ -161,7 +160,7 @@ class TestEmission:
 
         engine.declare_pipeline(engine.build_plan())
 
-        assert set(dp.declared) == {"bronze.orders", "silver.orders"}
+        assert set(dp.declared) == {"bronze_orders", "silver_orders"}
 
     def test_dataset_function_rebuilds_the_runner_kwarg_contract(self, graph):
         """Inputs arrive as entity ids with dots -> underscores, in
@@ -171,11 +170,11 @@ class TestEmission:
         engine = make_engine(graph, dp_module=dp, session_provider=lambda: session)
         engine.declare_pipeline(engine.build_plan())
 
-        result = dp.declared["silver.orders"]()
+        result = dp.declared["silver_orders"]()
 
         assert result == "df:silver.result"
         assert list(graph.captured) == ["bronze_orders", "ref_customers"]
-        assert graph.captured["bronze_orders"] == "df:bronze.orders"
+        assert graph.captured["bronze_orders"] == "df:bronze_orders"
 
     def test_internal_and_external_inputs_read_by_table_name(self, graph):
         """spark.table(<name>) for both: internal so SDP infers the edge,
@@ -185,9 +184,11 @@ class TestEmission:
         engine = make_engine(graph, dp_module=dp, session_provider=lambda: session)
         engine.declare_pipeline(engine.build_plan())
 
-        dp.declared["silver.orders"]()
+        dp.declared["silver_orders"]()
 
-        assert session.reads == ["bronze.orders", "ref.customers"]
+        # Internal inputs read the emitted single-part dataset name;
+        # external inputs keep the entity id (resolver contract).
+        assert session.reads == ["bronze_orders", "ref.customers"]
 
     def test_external_read_resolver_overrides_external_reads_only(self, graph):
         dp = FakeDpModule()
@@ -206,10 +207,10 @@ class TestEmission:
         )
         engine.declare_pipeline(engine.build_plan())
 
-        dp.declared["silver.orders"]()
+        dp.declared["silver_orders"]()
 
         assert resolved == ["ref.customers"], "internal inputs must not hit the resolver"
-        assert session.reads == ["bronze.orders"]
+        assert session.reads == ["bronze_orders"]
         assert graph.captured["ref_customers"] == "resolved:ref.customers"
 
     def test_streaming_table_fails_fast_as_phase4(self, graph):

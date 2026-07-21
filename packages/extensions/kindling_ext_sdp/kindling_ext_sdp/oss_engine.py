@@ -29,6 +29,7 @@ from kindling_ext_sdp.declaration_plan import (
     DatasetType,
     DeclarationPlan,
     InputClassification,
+    pipeline_dataset_name,
 )
 
 
@@ -125,7 +126,7 @@ class OssSdpEngine(DeclarationEngine):
         """Entity metadata → the OSS decorator surface (Spark 4.1 keywords:
         name, comment, table_properties, partition_cols, cluster_by,
         schema). Empty values are omitted rather than passed as empties."""
-        kwargs: dict = {"name": dataset.name}
+        kwargs: dict = {"name": pipeline_dataset_name(dataset.name)}
         if dataset.comment:
             kwargs["comment"] = dataset.comment
         if dataset.table_properties:
@@ -167,13 +168,19 @@ class OssSdpEngine(DeclarationEngine):
             spark = session_provider()
             input_dfs = {}
             for position, pipe_input in enumerate(dataset.inputs):
+                if pipe_input.classification is InputClassification.INTERNAL:
+                    # In-pipeline references use the emitted (single-part)
+                    # dataset name so SDP infers the graph edge.
+                    table_name = pipeline_dataset_name(pipe_input.entity_id)
+                else:
+                    table_name = pipe_input.entity_id
                 if stream_first_input and position == 0:
                     if pipe_input.classification is InputClassification.INTERNAL:
-                        df = spark.readStream.table(pipe_input.entity_id)
+                        df = spark.readStream.table(table_name)
                     else:
                         df = stream_resolver(spark, pipe_input.entity_id)
                 elif pipe_input.classification is InputClassification.INTERNAL or resolver is None:
-                    df = spark.table(pipe_input.entity_id)
+                    df = spark.table(table_name)
                 else:
                     df = resolver(spark, pipe_input.entity_id)
                 input_dfs[pipe_input.entity_id.replace(".", "_")] = df
