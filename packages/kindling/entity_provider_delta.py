@@ -1595,7 +1595,7 @@ class DeltaEntityProvider(
         their own bookkeeping columns (SCD2 temporal columns) after this
         check runs.
         """
-        policy = str((entity.tags or {}).get("schema.drift") or "evolve").strip().lower()
+        policy = str((entity.tags or {}).get("schema.drift") or "").strip().lower() or "evolve"
         if policy == "evolve":
             return
 

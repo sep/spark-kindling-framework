@@ -9,7 +9,7 @@ Delta null-fills them and SCD2 strategies add bookkeeping columns after
 the check.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from kindling.data_entities import (
@@ -76,6 +76,11 @@ _TABLE = [StructField("order_id", StringType()), StructField("amount", LongType(
 
 
 class TestDriftPolicyEnforcement:
+    def test_whitespace_policy_defaults_to_evolve(self, provider):
+        table_ref = MagicMock()
+        provider._enforce_schema_drift_policy(_df(_TABLE), _entity(" "), table_ref)
+        table_ref.get_delta_table.assert_not_called()
+
     def test_evolve_default_skips_preflight_entirely(self, provider):
         table_ref = MagicMock()
         provider._enforce_schema_drift_policy(_df(_TABLE), _entity(), table_ref)
