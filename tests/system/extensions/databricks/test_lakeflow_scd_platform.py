@@ -21,7 +21,7 @@ serverless environments cache installed wheels by requirement set):
     packages/ path (scripts/deploy_extensions.py convention).
 
 Usage:
-    poe test-extension --extension sdp --platform databricks
+    poe test-extension --extension databricks --platform databricks
 """
 
 import base64

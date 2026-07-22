@@ -33,7 +33,7 @@ have fixed names in the target schema, so this test must not run
 concurrently with itself.
 
 Usage:
-    poe test-extension --extension temporal --platform databricks
+    poe test-extension --extension databricks --platform databricks
 """
 
 import base64
