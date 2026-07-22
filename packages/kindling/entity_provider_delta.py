@@ -489,6 +489,29 @@ class ReadOnlyEntityError(Exception):
         )
 
 
+class SchemaDriftError(Exception):
+    """Raised when a write drifts from the target table's schema and the
+    entity declares ``schema.drift: fail``."""
+
+    def __init__(self, entityid: str, new_columns, type_conflicts):
+        details = []
+        if new_columns:
+            details.append(f"new columns not in the table: {sorted(new_columns)}")
+        if type_conflicts:
+            details.append(
+                "type conflicts (column: table type != incoming type): "
+                + ", ".join(f"{name}: {t} != {d}" for name, t, d in sorted(type_conflicts))
+            )
+        super().__init__(
+            f"Entity '{entityid}' declares schema.drift='fail' and the incoming "
+            f"DataFrame drifts from the table schema — {'; '.join(details)}. "
+            "Fix the producer, update the declared schema, or relax the policy "
+            "to 'warn'/'evolve'."
+        )
+        self.new_columns = sorted(new_columns)
+        self.type_conflicts = sorted(type_conflicts)
+
+
 class EntityPathConflictError(Exception):
     """Raised when a read_only entity's catalog registration points at a different
     path than its configured provider.path."""
@@ -1508,6 +1531,7 @@ class DeltaEntityProvider(
 
     def _merge_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Merge DataFrame to existing Delta table"""
+        self._enforce_schema_drift_policy(df, entity, table_ref)
         scd_config = scd_config_from_tags(entity)
         write_mode = str((entity.tags or {}).get("write.mode") or "").strip().lower()
         if scd_config.enabled:
@@ -1541,6 +1565,7 @@ class DeltaEntityProvider(
 
     def _append_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Append DataFrame to existing Delta table"""
+        self._enforce_schema_drift_policy(df, entity, table_ref)
         writer = df.write.format("delta").mode("append").option("mergeSchema", "true")
 
         if self._should_partition_files(entity):
@@ -1556,6 +1581,46 @@ class DeltaEntityProvider(
             raise ValueError(
                 f"Cannot append entity '{entity.entityid}' without table path in access mode '{table_ref.access_mode}'"
             )
+
+    def _enforce_schema_drift_policy(self, df: DataFrame, entity, table_ref) -> None:
+        """Apply the entity's declared drift policy before touching the table.
+
+        ``schema.drift`` values: ``evolve`` (default — additive evolution,
+        no preflight, today's behavior), ``warn`` (log drift, proceed) and
+        ``fail`` (raise SchemaDriftError before the write starts).
+
+        Drift means columns the table does not have, or same-named columns
+        whose types differ. Columns the table has but the DataFrame lacks
+        are NOT drift: Delta fills them with NULL, and merge strategies add
+        their own bookkeeping columns (SCD2 temporal columns) after this
+        check runs.
+        """
+        policy = str((entity.tags or {}).get("schema.drift") or "evolve").strip().lower()
+        if policy == "evolve":
+            return
+
+        table_fields = {
+            field.name: field.dataType.simpleString()
+            for field in table_ref.get_delta_table().toDF().schema.fields
+        }
+        new_columns = []
+        type_conflicts = []
+        for field in df.schema.fields:
+            table_type = table_fields.get(field.name)
+            if table_type is None:
+                new_columns.append(field.name)
+            elif table_type != field.dataType.simpleString():
+                type_conflicts.append((field.name, table_type, field.dataType.simpleString()))
+
+        if not new_columns and not type_conflicts:
+            return
+        if policy == "fail":
+            raise SchemaDriftError(entity.entityid, new_columns, type_conflicts)
+        self.logger.warning(
+            f"Schema drift writing entity '{entity.entityid}' "
+            f"(schema.drift=warn): new columns {sorted(new_columns)}, type "
+            f"conflicts {sorted(type_conflicts)}; proceeding with evolution"
+        )
 
     def _get_table_version(self, table_ref: DeltaTableReference) -> int:
         """Get current version of Delta table"""
