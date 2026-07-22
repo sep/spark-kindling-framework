@@ -69,17 +69,36 @@ def _detect_databricks_uc_enabled(spark) -> bool:
     except Exception:
         current_catalog = ""
 
+    # A non-legacy current catalog is conclusive on its own. Only fall back
+    # to SHOW CATALOGS when it is not: that statement enumerates every
+    # catalog the principal can see and is the slowest probe in startup
+    # feature discovery on large metastores.
+    if current_catalog and current_catalog != "spark_catalog":
+        return True
+
     try:
         catalog_rows = spark.sql("SHOW CATALOGS").collect()
         catalogs = [str(row[0]).strip().lower() for row in catalog_rows if row and row[0]]
     except Exception:
         catalogs = []
 
-    if current_catalog and current_catalog != "spark_catalog":
-        return True
-    if catalogs and any(catalog != "spark_catalog" for catalog in catalogs):
-        return True
-    return False
+    return bool(catalogs) and any(catalog != "spark_catalog" for catalog in catalogs)
+
+
+#: Runtime-feature values assumed when probing is disabled
+#: (``kindling.features.discovery: "false"``): a modern Databricks
+#: environment — Unity Catalog on, Volumes available, liquid clustering
+#: (including AUTO) understood by the engine. Every value remains
+#: overridable via static ``kindling.features.<key>`` config, which wins
+#: over these runtime defaults.
+MODERN_RUNTIME_DEFAULTS = {
+    "delta.cluster_by": True,
+    "delta.auto_clustering": True,
+    "databricks.uc_enabled": True,
+    "databricks.volumes_enabled": True,
+    "databricks.any_file_required_for_bootstrap": False,
+    "databricks.name_mode_catalog_qualified": True,
+}
 
 
 def discover_runtime_features(config_service, logger=None) -> None:
@@ -87,7 +106,23 @@ def discover_runtime_features(config_service, logger=None) -> None:
 
     This should run once during startup. All keys written here are optional and
     can be overridden by kindling.features.*.
+
+    Set ``kindling.features.discovery: "false"`` to skip every probe (no
+    Spark statements at startup); runtime features are then assumed to be
+    a modern Databricks environment (``MODERN_RUNTIME_DEFAULTS``). On
+    other platforms, pair the flag with static ``kindling.features.*``
+    overrides for anything the defaults get wrong.
     """
+    if get_feature_bool(config_service, "discovery", default=True) is False:
+        for key, value in MODERN_RUNTIME_DEFAULTS.items():
+            set_runtime_feature(config_service, key, value)
+        if logger:
+            logger.info(
+                "Runtime feature discovery disabled (kindling.features.discovery=false); "
+                "assuming modern Databricks defaults"
+            )
+        return
+
     try:
         spark = get_or_create_spark_session()
     except Exception as e:
@@ -126,7 +161,7 @@ def discover_runtime_features(config_service, logger=None) -> None:
 
     major_minor = None
     if isinstance(dbr_version_raw, str) and dbr_version_raw.strip():
-        match = re.search(r"(\\d+)\\.(\\d+)", dbr_version_raw)
+        match = re.search(r"(\d+)\.(\d+)", dbr_version_raw)
         if match:
             try:
                 major_minor = (int(match.group(1)), int(match.group(2)))
