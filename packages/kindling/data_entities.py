@@ -400,6 +400,21 @@ def _validate_derived_config(entity: EntityMetadata) -> None:
             )
 
 
+def _validate_schema_drift_tag(entity: EntityMetadata) -> None:
+    """Validate the static ``schema.drift`` policy tag at registration time.
+
+    ``evolve`` (default): additive schema evolution, today's behavior.
+    ``warn``: log drift (new columns / type conflicts) before writing.
+    ``fail``: refuse drifting writes with a SchemaDriftError.
+    """
+    policy = str((entity.tags or {}).get("schema.drift") or "").strip().lower()
+    if policy not in ("", "evolve", "warn", "fail"):
+        raise ValueError(
+            f"Entity '{entity.entityid}': invalid schema.drift "
+            f"'{policy}' (expected 'evolve', 'warn' or 'fail')"
+        )
+
+
 def _validate_write_mode_tag(entity: EntityMetadata) -> None:
     """Validate the static ``write.mode`` tag at registration time.
 
@@ -710,6 +725,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         _validate_derived_config(entity)
         _validate_scd_config(entity)
         _validate_write_mode_tag(entity)
+        _validate_schema_drift_tag(entity)
 
         self.registry[entityid] = entity
         self.emit(
