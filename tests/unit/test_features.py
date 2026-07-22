@@ -122,7 +122,7 @@ def test_discovery_false_defaults_yield_to_static_overrides(monkeypatch):
     assert get_feature_bool(config, "databricks.uc_enabled") is False
 
 
-def test_uc_detection_short_circuits_show_catalogs(monkeypatch):
+def test_uc_detection_short_circuits_show_catalogs():
     """A conclusive current_catalog() must not trigger the expensive
     SHOW CATALOGS metastore enumeration."""
     from kindling.features import _detect_databricks_uc_enabled
@@ -140,7 +140,7 @@ def test_uc_detection_short_circuits_show_catalogs(monkeypatch):
     assert spark.sql.call_count == 1
 
 
-def test_uc_detection_falls_back_to_show_catalogs_on_legacy_current(monkeypatch):
+def test_uc_detection_falls_back_to_show_catalogs_on_legacy_current():
     from kindling.features import _detect_databricks_uc_enabled
 
     spark = MagicMock()
