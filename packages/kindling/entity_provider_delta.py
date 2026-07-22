@@ -34,6 +34,7 @@ from .entity_provider import (
     BaseEntityProvider,
     DestinationEnsuringProvider,
     IncrementalReadableEntityProvider,
+    ReplaceWritableEntityProvider,
     StreamableEntityProvider,
     StreamMergeableEntityProvider,
     StreamWritableEntityProvider,
@@ -132,6 +133,44 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
         spark.conf.set(conf_key, "true")
         try:
             (builder.whenMatchedUpdateAll().whenNotMatchedInsertAll().execute())
+        finally:
+            if previous is None:
+                spark.conf.unset(conf_key)
+            else:
+                spark.conf.set(conf_key, previous)
+
+
+@DeltaMergeStrategies.register(name="insert_only")
+class InsertOnlyMergeStrategy(DeltaMergeStrategy):
+    """Insert-if-absent merge for immutable state tables.
+
+    Selected by ``write.mode: insert``: rows whose business keys already
+    exist in the target are left untouched (no matched clause, so replays
+    of already-landed batches rewrite nothing), new keys are inserted.
+    Schema evolution follows the same additive policy as SCD1 — see
+    ``SCD1MergeStrategy.apply`` for the Delta-version fallback rationale.
+    """
+
+    def apply(
+        self,
+        delta_table,
+        df: DataFrame,
+        entity,
+        merge_condition: str,
+    ) -> None:
+        builder = delta_table.alias("old").merge(source=df.alias("new"), condition=merge_condition)
+
+        if hasattr(builder, "withSchemaEvolution"):
+            builder.withSchemaEvolution().whenNotMatchedInsertAll().execute()
+            return
+
+        # Delta < 3.2 compatibility path.
+        spark = df.sparkSession
+        conf_key = "spark.databricks.delta.schema.autoMerge.enabled"
+        previous = spark.conf.get(conf_key, None)
+        spark.conf.set(conf_key, "true")
+        try:
+            builder.whenNotMatchedInsertAll().execute()
         finally:
             if previous is None:
                 spark.conf.unset(conf_key)
@@ -545,6 +584,7 @@ class DeltaEntityProvider(
     IncrementalReadableEntityProvider,
     StreamableEntityProvider,
     WritableEntityProvider,
+    ReplaceWritableEntityProvider,
     StreamWritableEntityProvider,
     StreamMergeableEntityProvider,
     SignalEmitter,
@@ -1490,7 +1530,13 @@ class DeltaEntityProvider(
     def _merge_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Merge DataFrame to existing Delta table"""
         scd_config = scd_config_from_tags(entity)
-        strategy_name = "scd2" if scd_config.enabled else "scd1"
+        write_mode = str((entity.tags or {}).get("write.mode") or "").strip().lower()
+        if scd_config.enabled:
+            strategy_name = "scd2"
+        elif write_mode == "insert":
+            strategy_name = "insert_only"
+        else:
+            strategy_name = "scd1"
         strategy = DeltaMergeStrategies.get(strategy_name)
         merge_condition = self._build_merge_condition("old", "new", entity.merge_columns)
         strategy.apply(table_ref.get_delta_table(), df, entity, merge_condition)
@@ -1941,6 +1987,135 @@ class DeltaEntityProvider(
                 duration_seconds=duration,
             )
             raise
+
+    def replace_entity(self, df: DataFrame, entity):
+        """Atomically replace entity contents (derived-dataset materialization).
+
+        Full replace (no ``derived.replace_keys``) is a Delta overwrite —
+        one transaction-log commit dereferences the old files, so readers
+        see the previous version until the swap lands and the cost is only
+        the write of the new data. Keyed replace swaps exactly the slices
+        present in the batch via ``replaceWhere`` computed from the batch's
+        distinct key values: idempotent by construction, and rows the
+        recomputation no longer produces disappear (which merge cannot do).
+        """
+        if self._is_read_only(entity):
+            raise ReadOnlyEntityError(entity.entityid)
+
+        start_time = time.time()
+        table_ref = self._get_table_reference(entity)
+
+        self.emit("entity.before_replace", entity_id=entity.entityid, entity_name=entity.name)
+
+        try:
+            if self._check_table_exists(table_ref):
+                self._replace_delta_table(df, entity, table_ref)
+            else:
+                # First materialization: plain create — every slice is new.
+                self._ensure_destination_for_write(entity, table_ref)
+                self._write_to_delta_table(df, entity, table_ref)
+
+            duration = time.time() - start_time
+            self.emit(
+                "entity.after_replace",
+                entity_id=entity.entityid,
+                entity_name=entity.name,
+                duration_seconds=duration,
+            )
+        except Exception as e:
+            duration = time.time() - start_time
+            self.emit(
+                "entity.replace_failed",
+                entity_id=entity.entityid,
+                error=str(e),
+                error_type=type(e).__name__,
+                duration_seconds=duration,
+            )
+            raise
+
+    def _replace_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
+        """Overwrite the table, scoped by replaceWhere when keys are declared."""
+        derived_config = derived_config_from_tags(entity)
+
+        if derived_config.replace_keys:
+            predicate = self._build_replace_predicate(df, derived_config.replace_keys)
+            if predicate is None:
+                self.logger.info(
+                    f"Keyed replace of entity '{entity.entityid}': batch holds no "
+                    "slices — nothing to swap"
+                )
+                return
+            # overwriteSchema cannot combine with replaceWhere; keyed
+            # replaces keep the additive mergeSchema policy instead.
+            writer = (
+                df.write.format("delta")
+                .mode("overwrite")
+                .option("replaceWhere", predicate)
+                .option("mergeSchema", "true")
+            )
+        else:
+            writer = df.write.format("delta").mode("overwrite").option("overwriteSchema", "true")
+
+        if self._should_partition_files(entity):
+            writer = writer.partitionBy(*entity.partition_columns)
+
+        if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+            self._ensure_configured_table_schema_exists()
+            writer.saveAsTable(table_ref.table_name)
+            table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
+        elif table_ref.table_path:
+            writer.save(table_ref.table_path)
+        else:
+            raise ValueError(
+                f"Cannot replace entity '{entity.entityid}' without table path "
+                f"in access mode '{table_ref.access_mode}'"
+            )
+
+    def _build_replace_predicate(self, df: DataFrame, replace_keys: list[str]) -> Optional[str]:
+        """Build a replaceWhere predicate covering the batch's distinct slices.
+
+        Returns None for an empty batch — a keyed replace with no slices is
+        a no-op, unlike a full replace where empty input means an empty
+        table. Every incoming row matches the predicate by construction,
+        which is exactly what Delta's replaceWhere requires.
+        """
+        slices = df.select(*replace_keys).distinct().collect()
+        if not slices:
+            return None
+        if len(slices) > 100:
+            self.logger.warning(
+                f"Keyed replace covers {len(slices)} slices in one batch; "
+                "derived.replace_keys should scope coarse slices (runs, days), "
+                "not high-cardinality keys"
+            )
+        clauses = []
+        for row in slices:
+            parts = []
+            for key in replace_keys:
+                value = row[key]
+                if value is None:
+                    parts.append(f"`{key}` IS NULL")
+                else:
+                    parts.append(f"`{key}` = {self._sql_literal(value)}")
+            clauses.append("(" + " AND ".join(parts) + ")")
+        return " OR ".join(clauses)
+
+    @staticmethod
+    def _sql_literal(value) -> str:
+        """Render a collected Python value as a SQL literal for replaceWhere."""
+        from datetime import date, datetime
+        from decimal import Decimal
+
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float, Decimal)):
+            return str(value)
+        if isinstance(value, datetime):
+            return f"TIMESTAMP '{value.isoformat(sep=' ')}'"
+        if isinstance(value, date):
+            return f"DATE '{value.isoformat()}'"
+        escaped = str(value).replace("'", "''")
+        return f"'{escaped}'"
 
     def get_entity_version(self, entity) -> int:
         """Get current version of entity table"""
