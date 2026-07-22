@@ -2104,10 +2104,11 @@ class DeltaEntityProvider(
     def _sql_literal(value) -> str:
         """Render a collected Python value as a SQL literal for replaceWhere."""
         from datetime import date, datetime
+        from decimal import Decimal
 
         if isinstance(value, bool):
             return "true" if value else "false"
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float, Decimal)):
             return str(value)
         if isinstance(value, datetime):
             return f"TIMESTAMP '{value.isoformat(sep=' ')}'"

@@ -133,3 +133,23 @@ class TestInsertWriteModeValidation:
     def test_unknown_write_mode_still_rejected(self):
         with pytest.raises(ValueError, match="invalid write.mode"):
             _register(DataEntityManager(), tags={"write.mode": "overwrite"})
+
+
+class TestCopilotReviewRegressions:
+    def test_empty_replace_keys_tag_rejected(self):
+        """A present-but-unusable replace_keys tag must not silently become
+        a full-table replace."""
+        with pytest.raises(ValueError, match="no usable column names"):
+            _register(
+                DataEntityManager(),
+                tags={"dataset.kind": "derived", "derived.replace_keys": ","},
+            )
+
+    def test_derived_error_wins_over_state_vocabulary_errors(self):
+        """Derived exclusivity validates first: a derived entity with a bad
+        state tag fails as 'does not apply', not with the state rule."""
+        with pytest.raises(ValueError, match="write.mode does not apply"):
+            _register(
+                DataEntityManager(),
+                tags={"dataset.kind": "derived", "write.mode": "insert"},
+            )

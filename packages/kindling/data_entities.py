@@ -365,6 +365,12 @@ def _validate_derived_config(entity: EntityMetadata) -> None:
         )
 
     cfg = derived_config_from_tags(entity)
+    replace_raw = str(tags.get("derived.replace_keys") or "").strip()
+    if replace_raw and not cfg.replace_keys:
+        raise ValueError(
+            f"Entity '{entity.entityid}': derived.replace_keys is set but "
+            f"contains no usable column names: '{replace_raw}'"
+        )
     if not cfg.enabled:
         if cfg.replace_keys:
             raise ValueError(
@@ -630,9 +636,12 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
 
     def register_entity(self, entityid, **decorator_params):
         entity = EntityMetadata(entityid, **decorator_params)
+        # Derived-vs-state exclusivity first: a derived entity carrying
+        # state tags should fail with "does not apply to a derived
+        # dataset", not with a downstream state-vocabulary complaint.
+        _validate_derived_config(entity)
         _validate_scd_config(entity)
         _validate_write_mode_tag(entity)
-        _validate_derived_config(entity)
 
         self.registry[entityid] = entity
         self.emit(

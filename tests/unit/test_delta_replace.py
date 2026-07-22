@@ -204,3 +204,9 @@ class TestInsertOnlyStrategySelection:
         builder.whenNotMatchedInsertAll.assert_called_once()
         builder.whenMatchedUpdateAll.assert_not_called()
         builder.execute.assert_called_once()
+
+
+def test_sql_literal_decimal_is_unquoted():
+    from decimal import Decimal
+
+    assert DeltaEntityProvider._sql_literal(Decimal("12.50")) == "12.50"
