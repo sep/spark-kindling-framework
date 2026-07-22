@@ -140,12 +140,14 @@ class DatabricksSdpEngine(OssSdpEngine):
         here too, so both halves share one wiring computation.
         """
         try:
+            from kindling_ext_databricks.temporal_lowering import (
+                declare_stratified_temporal,
+            )
             from kindling_ext_temporal.chain import (
                 DEFAULT_MAX_GENERATIONS,
                 MAX_GENERATIONS_CONFIG_KEY,
                 chain_episodes_pipe_id,
             )
-            from kindling_ext_temporal.sdp_lowering import declare_stratified_temporal
         except ImportError as exc:
             raise RuntimeError(
                 f"Dataset '{dataset.name}' is a temporal chain pipe but "
