@@ -313,6 +313,87 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
     )
 
 
+@dataclass(frozen=True)
+class DerivedConfig:
+    """Parsed derived-dataset configuration from an entity's tags.
+
+    A derived dataset has no independent state: its contents are a pure
+    function of its inputs. Engines materialize the declaration however
+    they natively can — the runner as an atomic overwrite swap (full
+    table, or per-slice via ``replace_keys``), declarative engines as a
+    materialized view.
+    """
+
+    enabled: bool
+    replace_keys: Optional[List[str]] = None
+
+
+def derived_config_from_tags(entity: EntityMetadata) -> DerivedConfig:
+    """Extract derived-dataset configuration from an entity's tags.
+
+    Tags:
+    - ``dataset.kind``: ``"derived"`` opts in; absent/empty means a state
+      dataset (the default — today's append/merge/SCD behavior).
+    - ``derived.replace_keys``: comma-separated scoping columns. When set,
+      each write atomically replaces only the slices present in the batch
+      (the distinct values of these columns) instead of the whole table.
+    """
+    tags = entity.tags or {}
+    kind = str(tags.get("dataset.kind") or "").strip().lower()
+    replace_raw = str(tags.get("derived.replace_keys") or "").strip()
+    replace_keys = (
+        [column.strip() for column in replace_raw.split(",") if column.strip()]
+        if replace_raw
+        else None
+    )
+    return DerivedConfig(enabled=kind == "derived", replace_keys=replace_keys)
+
+
+def _validate_derived_config(entity: EntityMetadata) -> None:
+    """Validate derived-dataset tags at registration time.
+
+    Derived and state vocabularies are mutually exclusive: a derived
+    dataset is recomputed, so evolution semantics (``write.mode``,
+    ``scd.*``) cannot apply to it.
+    """
+    tags = entity.tags or {}
+    kind = str(tags.get("dataset.kind") or "").strip().lower()
+    if kind not in ("", "derived"):
+        raise ValueError(
+            f"Entity '{entity.entityid}': invalid dataset.kind "
+            f"'{kind}' (expected 'derived' or unset)"
+        )
+
+    cfg = derived_config_from_tags(entity)
+    if not cfg.enabled:
+        if cfg.replace_keys:
+            raise ValueError(
+                f"Entity '{entity.entityid}': derived.replace_keys requires "
+                "dataset.kind='derived'"
+            )
+        return
+
+    if str(tags.get("write.mode") or "").strip():
+        raise ValueError(
+            f"Entity '{entity.entityid}': write.mode does not apply to a "
+            "derived dataset — its contents are replaced, not evolved"
+        )
+    if str(tags.get("scd.type") or "").strip():
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.type does not apply to a "
+            "derived dataset — history semantics require a state dataset"
+        )
+
+    if cfg.replace_keys and entity.schema is not None:
+        schema_names = {field.name for field in entity.schema.fields}
+        missing = [column for column in cfg.replace_keys if column not in schema_names]
+        if missing:
+            raise ValueError(
+                f"Entity '{entity.entityid}': derived.replace_keys columns "
+                f"not in entity schema: {missing}"
+            )
+
+
 def _validate_write_mode_tag(entity: EntityMetadata) -> None:
     """Validate the static ``write.mode`` tag at registration time.
 
@@ -321,12 +402,24 @@ def _validate_write_mode_tag(entity: EntityMetadata) -> None:
     surfaces typos when the entity is registered instead of mid-persist,
     where a raise would sit awkwardly inside the persist lifecycle.
     """
-    write_mode = str((entity.tags or {}).get("write.mode") or "").strip().lower()
-    if write_mode not in ("", "append", "merge"):
+    tags = entity.tags or {}
+    write_mode = str(tags.get("write.mode") or "").strip().lower()
+    if write_mode not in ("", "append", "merge", "insert"):
         raise ValueError(
             f"Entity '{entity.entityid}': invalid write.mode "
-            f"'{write_mode}' (expected 'append' or 'merge')"
+            f"'{write_mode}' (expected 'append', 'merge' or 'insert')"
         )
+    if write_mode == "insert":
+        if not entity.merge_columns:
+            raise ValueError(
+                f"Entity '{entity.entityid}': write.mode 'insert' requires "
+                "merge_columns (dedup keys) to be defined"
+            )
+        if str(tags.get("scd.type") or "").strip():
+            raise ValueError(
+                f"Entity '{entity.entityid}': write.mode 'insert' contradicts "
+                "scd.type — SCD entities update history on change"
+            )
 
 
 def _validate_scd_config(entity: EntityMetadata) -> None:
@@ -539,6 +632,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         entity = EntityMetadata(entityid, **decorator_params)
         _validate_scd_config(entity)
         _validate_write_mode_tag(entity)
+        _validate_derived_config(entity)
 
         self.registry[entityid] = entity
         self.emit(

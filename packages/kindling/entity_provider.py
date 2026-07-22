@@ -258,6 +258,36 @@ class StreamMergeableEntityProvider(ABC):
         pass
 
 
+class ReplaceWritableEntityProvider(ABC):
+    """
+    Optional interface for providers that can atomically replace an entity's
+    contents.
+
+    This is the materialization contract for derived datasets
+    (``dataset.kind: derived``): the entity's contents are a pure function
+    of its inputs, so a write replaces rather than evolves. The replacement
+    must be atomic — readers see the old contents until the swap commits —
+    and idempotent: replaying the same batch converges to the same table.
+
+    The replacement scope comes from the entity's own declaration
+    (``derived.replace_keys``): unset means the whole table; set means only
+    the slices present in the incoming DataFrame (its distinct values of
+    those columns) are swapped.
+    """
+
+    @abstractmethod
+    def replace_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
+        """
+        Atomically replace entity contents (full table or declared slices).
+
+        Args:
+            df: DataFrame holding the new contents
+            entity_metadata: Metadata describing the destination entity;
+                its tags declare the replacement scope
+        """
+        pass
+
+
 class DestinationEnsuringProvider(ABC):
     """
     Optional interface for providers that can ensure a write destination exists.
@@ -330,6 +360,11 @@ def is_stream_writable(provider: BaseEntityProvider) -> bool:
 def is_stream_mergeable(provider: BaseEntityProvider) -> bool:
     """Check if provider supports streaming merges."""
     return isinstance(provider, StreamMergeableEntityProvider)
+
+
+def is_replace_writable(provider: BaseEntityProvider) -> bool:
+    """Check if provider supports atomic replace writes (derived datasets)."""
+    return isinstance(provider, ReplaceWritableEntityProvider)
 
 
 def can_ensure_destination(provider: BaseEntityProvider) -> bool:

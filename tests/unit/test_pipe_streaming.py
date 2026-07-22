@@ -330,3 +330,56 @@ def test_invalid_write_mode_tag_raises():
     starter, _ = _make_starter(dst_entity, out_provider)
     with pytest.raises(ValueError, match="write.mode"):
         starter.start_pipe_stream("pipe1")
+
+
+def test_derived_dataset_rejected_as_streaming_sink():
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={"provider_type": "delta", "dataset.kind": "derived"},
+        merge_columns=None,
+    )
+    out_provider = Mock(spec=_MergeCapableProvider)
+
+    starter, _ = _make_starter(dst_entity, out_provider)
+    with pytest.raises(TypeError, match="derived dataset"):
+        starter.start_pipe_stream("pipe1")
+
+    out_provider.merge_as_stream.assert_not_called()
+    out_provider.append_as_stream.assert_not_called()
+
+
+def test_write_mode_insert_routes_to_merge_as_stream():
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={
+            "provider_type": "delta",
+            "provider.access_mode": "catalog",
+            "write.mode": "insert",
+        },
+        merge_columns=["event_id"],
+    )
+    out_provider = Mock(spec=_MergeCapableProvider)
+    query = Mock(id="q-insert")
+    out_provider.merge_as_stream.return_value = query
+
+    starter, pipe = _make_starter(dst_entity, out_provider)
+    result = starter.start_pipe_stream("pipe1")
+
+    assert result is query
+    out_provider.merge_as_stream.assert_called_once_with(
+        pipe.execute.return_value, dst_entity, "/checkpoints/pipe1", options={}
+    )
+    out_provider.append_as_stream.assert_not_called()
+
+
+def test_write_mode_insert_requires_merge_capable_provider():
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={"provider_type": "delta", "write.mode": "insert"},
+        merge_columns=["event_id"],
+    )
+    out_provider = Mock(spec=StreamWritableEntityProvider)
+
+    starter, _ = _make_starter(dst_entity, out_provider)
+    with pytest.raises(TypeError, match="streaming merges"):
+        starter.start_pipe_stream("pipe1")

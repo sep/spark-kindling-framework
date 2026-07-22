@@ -9,6 +9,8 @@ session is needed.
 import sys
 
 import pytest
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 
 # The extension package root is added to sys.path by tests/conftest.py,
 # matching the other extension packages (kindling_ext_visualization, ...).
@@ -23,9 +25,6 @@ from kindling_ext_sdp import (
     supports_expectations,
     supports_incremental_mv_refresh,
 )
-
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures: fake registries over a small bronze -> silver -> gold graph #
@@ -625,3 +624,74 @@ class TestBuildPlan:
                 pipe_registry=pipe_registry,
                 capabilities=OSS_SDP,
             )
+
+
+# --------------------------------------------------------------------- #
+# Derived datasets (core dataset.kind tag)                                #
+# --------------------------------------------------------------------- #
+
+
+class TestDerivedDatasetSelection:
+    def test_derived_kind_forces_materialized_view(self, entities, pipe_registry):
+        """dataset.kind='derived' IS the materialized-view declaration; it
+        wins over engine config asking for a streaming table."""
+        tagged = [
+            (
+                make_entity("bronze.orders", tags={"dataset.kind": "derived"})
+                if entity.entityid == "bronze.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            engine_config={"ingest.orders": {"sdp": {"dataset_type": "streaming_table"}}},
+        )
+
+        plan = engine.build_plan()
+
+        assert plan.get_dataset("bronze.orders").dataset_type is DatasetType.MATERIALIZED_VIEW
+
+    def test_derived_kind_conflicting_sdp_tag_is_a_validation_error(self, entities, pipe_registry):
+        tagged = [
+            (
+                make_entity(
+                    "bronze.orders",
+                    tags={
+                        "dataset.kind": "derived",
+                        "sdp.dataset_type": "streaming_table",
+                    },
+                )
+                if entity.entityid == "bronze.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(FakeEntityRegistry(tagged), pipe_registry)
+
+        issues = engine.validate()
+
+        assert issue_codes(issues) == ["invalid_dataset_type"]
+        assert "derived" in issues[0].reason
+
+    def test_derived_kind_explicit_materialized_view_tag_is_fine(self, entities, pipe_registry):
+        tagged = [
+            (
+                make_entity(
+                    "bronze.orders",
+                    tags={
+                        "dataset.kind": "derived",
+                        "sdp.dataset_type": "materialized_view",
+                    },
+                )
+                if entity.entityid == "bronze.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(FakeEntityRegistry(tagged), pipe_registry)
+
+        plan = engine.build_plan()
+
+        assert plan.get_dataset("bronze.orders").dataset_type is DatasetType.MATERIALIZED_VIEW
