@@ -106,6 +106,23 @@ Sugar form: `@DataEntities.insert_only_entity(...)` sets the
 - Works identically in batch and streaming (each micro-batch runs the
   same insert-only merge through the stream-merge sink).
 
+## Schema drift policy (`schema.drift`)
+
+State-dataset writes evolve schemas additively by default. The
+`schema.drift` tag makes that a declared policy:
+
+- `evolve` (default) — additive evolution, no preflight; today's behavior.
+- `warn` — before a merge/append, log any drift (columns the table lacks,
+  or same-named columns with different types) and proceed.
+- `fail` — refuse a drifting write with `SchemaDriftError` naming the
+  columns, *before* the write starts. Use on bronze tables whose producers
+  you don't own — silent schema unioning is how tables grow accidental
+  envelope branches.
+
+Columns the table has but the incoming DataFrame lacks are not drift:
+Delta null-fills them, and SCD2 bookkeeping columns are added by the
+merge strategy after the check.
+
 ## Choosing a write shape
 
 | You want | Declare |
