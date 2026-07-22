@@ -86,3 +86,17 @@ class TestNoBehaviorInAnnotation:
         fake_registry.register_entity.side_effect = ValueError("scd.type does not apply")
         with pytest.raises(ValueError, match="scd.type does not apply"):
             _declare(DataEntities.derived_entity, tags={"scd.type": "2"})
+
+
+class TestReplaceKeysTypeValidation:
+    def test_set_rejected_with_clear_error(self, fake_registry):
+        with pytest.raises(ValueError, match="list/tuple of column names, got set"):
+            _declare(DataEntities.derived_entity, replace_keys={"run_id", "site"})
+
+    def test_non_string_elements_rejected(self, fake_registry):
+        with pytest.raises(ValueError, match="list/tuple of column names"):
+            _declare(DataEntities.derived_entity, replace_keys=[1, 2])
+
+    def test_tuple_accepted(self, fake_registry):
+        _declare(DataEntities.derived_entity, replace_keys=("run_id", "site"))
+        assert _declared_tags(fake_registry)["derived.replace_keys"] == "run_id,site"

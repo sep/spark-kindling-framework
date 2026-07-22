@@ -590,8 +590,18 @@ class DataEntities:
         if replace_keys:
             if isinstance(replace_keys, str):
                 default_tags["derived.replace_keys"] = replace_keys
-            else:
+            elif isinstance(replace_keys, (list, tuple)) and all(
+                isinstance(key, str) for key in replace_keys
+            ):
+                # Ordered sequences only: a set would make the tag value —
+                # and thus the declaration — nondeterministic.
                 default_tags["derived.replace_keys"] = ",".join(replace_keys)
+            else:
+                raise ValueError(
+                    "derived_entity replace_keys must be a comma-separated "
+                    "string or a list/tuple of column names, got "
+                    f"{type(replace_keys).__name__}"
+                )
         decorator_params["tags"] = {**default_tags, **(decorator_params.get("tags") or {})}
         return cls.entity(**decorator_params)
 
