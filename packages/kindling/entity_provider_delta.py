@@ -1045,34 +1045,16 @@ class DeltaEntityProvider(
                     f"Unable to set delta.enableChangeDataFeed for '{table_ref.table_name}': {e}"
                 )
         else:
-            dt = (
-                DeltaTable.createIfNotExists(self.spark)
-                .tableName(table_ref.table_name)
-                .property("delta.enableChangeDataFeed", "true")
+            # A zero-column Delta table is a trap, not a bootstrap: it reads
+            # as "exists" to every existence check, sending retries down the
+            # merge path where the merge condition fails on key columns that
+            # don't exist. Mirror the physical-table path and refuse.
+            raise ValueError(
+                f"Cannot create managed Delta table '{table_ref.table_name}' without "
+                f"schema for entity '{entity.entityid}'. Provide entity.schema, or "
+                "create the table once via an append/write path first (a merge "
+                "cannot create a missing table)."
             )
-
-            # Liquid clustering: enable at creation time when possible.
-            # Some engines do not allow ALTER TABLE ... CLUSTER BY unless the table was created
-            # with clustering enabled.
-            cluster_cols = self._get_cluster_columns(entity)
-            if (
-                cluster_cols
-                and not self._is_auto_clustering_requested(cluster_cols)
-                and get_feature_bool(self.config, "delta.cluster_by", default=True) is not False
-            ):
-                try:
-                    dt = dt.clusterBy(*cluster_cols)
-                except Exception as e:
-                    # Best-effort: don't fail table creation if clustering isn't supported.
-                    self.logger.warning(
-                        f"Unable to enable clustering at table creation for '{table_ref.table_name}' "
-                        f"(columns={cluster_cols}): {e}"
-                    )
-
-            if self._should_partition_files(entity):
-                dt = dt.partitionedBy(*entity.partition_columns)
-
-            dt.execute()
         table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
 
     def _ensure_schema_applied(self, entity, table_ref: DeltaTableReference):
@@ -1509,23 +1491,20 @@ class DeltaEntityProvider(
             )
             return
 
-        try:
-            self._ensure_table_exists(entity, table_ref)
-        except ValueError as e:
-            # Storage bootstrap requires schema to create an empty Delta table. If the entity
-            # has no schema, keep the legacy implicit-create behavior and let the first write
-            # create the table from the DataFrame schema instead.
-            if (
-                not entity.schema
-                and self._is_for_path_mode(table_ref.access_mode)
-                and "without schema" in str(e).lower()
-            ):
-                self.logger.warning(
-                    f"Skipping explicit ensure for entity '{entity.entityid}' in storage mode "
-                    f"because no entity.schema is defined; falling back to write-driven creation."
-                )
-                return
-            raise
+        # Ensure only when there is a schema to ensure FROM. A schema-less
+        # entity has nothing to pre-create with: catalog mode used to plant a
+        # zero-column Delta table here (a trap — a crash before the data
+        # write leaves it behind, and the retry's merge path then fails on
+        # missing key columns), while storage mode already skipped. The
+        # imminent write carries a schema; let it create the table.
+        if not entity.schema:
+            self.logger.debug(
+                f"Skipping explicit ensure for entity '{entity.entityid}': no "
+                "entity.schema is defined; falling back to write-driven creation."
+            )
+            return
+
+        self._ensure_table_exists(entity, table_ref)
 
     def _merge_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Merge DataFrame to existing Delta table"""
@@ -1667,6 +1646,32 @@ class DeltaEntityProvider(
 
     def ensure_destination(self, entity_metadata: EntityMetadata) -> None:
         # Delta destinations are tables/paths; reuse the existing ensure hook.
+        # Schema-less writable entities skip here for the same reason as
+        # _ensure_destination_for_write: there is nothing to pre-create with,
+        # and the first (micro-)batch carries the schema that creates the
+        # table. Read-only entities still ensure — that path only registers
+        # an existing external table, never creates one.
+        if not entity_metadata.schema and not self._is_read_only(entity_metadata):
+            # Fail fast for merge-family sinks: a merge cannot create a
+            # missing table, so a schema-less merge/insert stream would
+            # otherwise die on its first micro-batch instead of at query
+            # start.
+            write_mode = str((entity_metadata.tags or {}).get("write.mode") or "").strip().lower()
+            wants_merge = write_mode in ("merge", "insert") or (
+                not write_mode and getattr(entity_metadata, "merge_columns", None)
+            )
+            if wants_merge and not self.check_entity_exists(entity_metadata):
+                raise ValueError(
+                    f"Entity '{entity_metadata.entityid}' is a schema-less merge sink "
+                    "and its table does not exist — a merge cannot create it. "
+                    "Provide entity.schema, or create the table once via an "
+                    "append/write before streaming."
+                )
+            self.logger.debug(
+                f"Skipping destination ensure for entity '{entity_metadata.entityid}': "
+                "no entity.schema is defined; the first write creates the table."
+            )
+            return
         self.ensure_entity_table(entity_metadata)
 
     def check_entity_exists(self, entity) -> bool:

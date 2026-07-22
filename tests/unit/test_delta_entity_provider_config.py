@@ -8,13 +8,12 @@ while maintaining backward compatibility with service-based configuration.
 from unittest.mock import MagicMock, Mock
 
 import pytest
-from pyspark.sql.types import StringType, StructField
-
 from kindling.data_entities import EntityMetadata, EntityNameMapper, EntityPathLocator
 from kindling.entity_provider_delta import DeltaEntityProvider, DeltaTableReference
 from kindling.signaling import SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
+from pyspark.sql.types import StringType, StructField
 
 
 class TestDeltaEntityProviderConfig:
@@ -655,7 +654,8 @@ class TestDeltaEntityProviderConfig:
     def test_ensure_destination_for_write_falls_back_for_schema_less_for_path(
         self, mock_dependencies
     ):
-        """Schema-less storage entities should preserve legacy implicit-create behavior."""
+        """Schema-less entities skip ensure up front: the first write carries
+        the schema that creates the table (no exception round-trip)."""
         provider = DeltaEntityProvider(
             config=mock_dependencies["config"],
             entity_name_mapper=mock_dependencies["entity_name_mapper"],
@@ -678,16 +678,11 @@ class TestDeltaEntityProviderConfig:
             access_mode="storage",
         )
 
-        provider._ensure_table_exists = MagicMock(
-            side_effect=ValueError(
-                "Cannot create physical Delta table at 'Tables/default/path' without schema"
-            )
-        )
+        provider._ensure_table_exists = MagicMock()
 
         provider._ensure_destination_for_write(entity, table_ref)
 
-        provider._ensure_table_exists.assert_called_once_with(entity, table_ref)
-        provider.logger.warning.assert_called()
+        provider._ensure_table_exists.assert_not_called()
 
     def test_ensure_destination_for_write_respects_config_opt_out(self, mock_dependencies):
         """Teams can disable ensure-before-write with normal Delta config."""
