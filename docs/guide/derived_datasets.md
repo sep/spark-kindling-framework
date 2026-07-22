@@ -30,6 +30,20 @@ however it natively can:
 )
 ```
 
+Or with the sugar helper, which sets exactly those tags as defaults
+(explicit tags win — see
+[declaration_conventions.md](../contributing/declaration_conventions.md)):
+
+```python
+@DataEntities.derived_entity(
+    entityid="gold.run_summary",
+    name="run_summary",
+    merge_columns=[],
+    schema=None,
+    replace_keys=["run_id"],
+)
+```
+
 - Without `derived.replace_keys`, every write atomically replaces the
   whole table (`mode("overwrite")`). Right for reference data and
   recomputed summaries where the full recompute is proportional to the
@@ -84,6 +98,9 @@ near-free.
     tags={"write.mode": "insert"},
 )
 ```
+
+Sugar form: `@DataEntities.insert_only_entity(...)` sets the
+`write.mode: insert` tag as a default.
 
 - Requires `merge_columns` (the dedup keys); contradicts `scd.type`.
 - Works identically in batch and streaming (each micro-batch runs the
