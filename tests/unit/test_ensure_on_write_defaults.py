@@ -142,3 +142,37 @@ class TestZeroColumnGuard:
             provider._create_managed_table(entity, table_ref)
 
         writer.saveAsTable.assert_called_once_with("silver_orders")
+
+
+class TestStreamingMergeFailFast:
+    def test_schema_less_merge_sink_missing_table_fails_at_query_start(self, provider):
+        entity = _entity(schema=None)  # merge_columns present -> default merge
+
+        with patch.object(provider, "check_entity_exists", return_value=False):
+            with pytest.raises(ValueError, match="merge cannot create"):
+                provider.ensure_destination(entity)
+
+    def test_schema_less_merge_sink_existing_table_skips_quietly(self, provider):
+        entity = _entity(schema=None)
+
+        with (
+            patch.object(provider, "check_entity_exists", return_value=True),
+            patch.object(provider, "ensure_entity_table") as ensure,
+        ):
+            provider.ensure_destination(entity)
+
+        ensure.assert_not_called()
+
+    def test_schema_less_append_sink_skips_without_existence_check(self, provider):
+        entity = EntityMetadata(
+            entityid="silver.orders",
+            name="orders",
+            merge_columns=[],
+            tags={"write.mode": "append"},
+            schema=None,
+        )
+
+        with patch.object(provider, "check_entity_exists") as exists:
+            provider.ensure_destination(entity)
+
+        exists.assert_not_called()

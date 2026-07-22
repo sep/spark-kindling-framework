@@ -1051,8 +1051,9 @@ class DeltaEntityProvider(
             # don't exist. Mirror the physical-table path and refuse.
             raise ValueError(
                 f"Cannot create managed Delta table '{table_ref.table_name}' without "
-                f"schema for entity '{entity.entityid}'. Provide entity.schema or let "
-                "the first write create the table."
+                f"schema for entity '{entity.entityid}'. Provide entity.schema, or "
+                "create the table once via an append/write path first (a merge "
+                "cannot create a missing table)."
             )
         table_ref.table_path = self._resolve_catalog_table_location(table_ref.table_name)
 
@@ -1651,6 +1652,21 @@ class DeltaEntityProvider(
         # table. Read-only entities still ensure — that path only registers
         # an existing external table, never creates one.
         if not entity_metadata.schema and not self._is_read_only(entity_metadata):
+            # Fail fast for merge-family sinks: a merge cannot create a
+            # missing table, so a schema-less merge/insert stream would
+            # otherwise die on its first micro-batch instead of at query
+            # start.
+            write_mode = str((entity_metadata.tags or {}).get("write.mode") or "").strip().lower()
+            wants_merge = write_mode in ("merge", "insert") or (
+                not write_mode and getattr(entity_metadata, "merge_columns", None)
+            )
+            if wants_merge and not self.check_entity_exists(entity_metadata):
+                raise ValueError(
+                    f"Entity '{entity_metadata.entityid}' is a schema-less merge sink "
+                    "and its table does not exist — a merge cannot create it. "
+                    "Provide entity.schema, or create the table once via an "
+                    "append/write before streaming."
+                )
             self.logger.debug(
                 f"Skipping destination ensure for entity '{entity_metadata.entityid}': "
                 "no entity.schema is defined; the first write creates the table."
