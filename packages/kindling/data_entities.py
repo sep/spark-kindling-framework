@@ -562,6 +562,74 @@ class DataEntities:
         return lambda x: x
 
     @classmethod
+    def derived_entity(cls, replace_keys=None, **decorator_params):
+        """Register a derived dataset — sugar for ``dataset.kind: derived``.
+
+        A derived dataset's contents are a pure function of its inputs, so
+        writes replace rather than evolve (see
+        docs/guide/derived_datasets.md). Per the declaration convention
+        (docs/contributing/declaration_conventions.md) this helper only
+        sets the canonical tags as defaults — explicit tags win, and
+        engines read tags, never this helper.
+
+        Args:
+            replace_keys: Optional slice-scope columns (list or
+                comma-separated string) — sets ``derived.replace_keys``.
+
+        Example::
+
+            @DataEntities.derived_entity(
+                entityid="gold.run_summary",
+                name="run_summary",
+                merge_columns=[],
+                schema=None,
+                replace_keys=["run_id"],
+            )
+        """
+        default_tags: Dict[str, str] = {"dataset.kind": "derived"}
+        if replace_keys:
+            if isinstance(replace_keys, str):
+                default_tags["derived.replace_keys"] = replace_keys
+            elif isinstance(replace_keys, (list, tuple)) and all(
+                isinstance(key, str) for key in replace_keys
+            ):
+                # Ordered sequences only: a set would make the tag value —
+                # and thus the declaration — nondeterministic.
+                default_tags["derived.replace_keys"] = ",".join(replace_keys)
+            else:
+                raise ValueError(
+                    "derived_entity replace_keys must be a comma-separated "
+                    "string or a list/tuple of column names, got "
+                    f"{type(replace_keys).__name__}"
+                )
+        decorator_params["tags"] = {**default_tags, **(decorator_params.get("tags") or {})}
+        return cls.entity(**decorator_params)
+
+    @classmethod
+    def insert_only_entity(cls, **decorator_params):
+        """Register an immutable state table — sugar for ``write.mode: insert``.
+
+        Rows are inserted if their ``merge_columns`` keys are absent and
+        left untouched otherwise, so replays of already-landed batches
+        rewrite nothing. Per the declaration convention this helper only
+        sets the canonical tag as a default — explicit tags win.
+
+        Example::
+
+            @DataEntities.insert_only_entity(
+                entityid="silver.readings",
+                name="readings",
+                merge_columns=["reading_id"],
+                schema=None,
+            )
+        """
+        decorator_params["tags"] = {
+            "write.mode": "insert",
+            **(decorator_params.get("tags") or {}),
+        }
+        return cls.entity(**decorator_params)
+
+    @classmethod
     def entity(cls, **decorator_params):
         if cls.deregistry is None:
             try:

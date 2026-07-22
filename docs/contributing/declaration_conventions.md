@@ -31,9 +31,16 @@ The convention for adding higher-level options to Kindling declarations:
 
 | Layer | Role | Examples |
 | --- | --- | --- |
-| Entity/pipe **tags** | Canonical semantics — what the thing *is* | `write.mode`, `scd.type`, `scd.tracked`, `dataset.kind`, `derived.replace_keys`, `sdp.dataset_type` |
+| Entity/pipe **tags** | Canonical semantics — what the thing *is* | Entities: `write.mode`, `scd.type`, `scd.tracked`, `dataset.kind`, `derived.replace_keys`, `sdp.dataset_type`. Pipes: `pipe_type`, `temporal.kind` |
 | **Config keys** (`kindling.*`, `datapipes.<id>.engine.<engine>.*`) | Execution options and just-in-time overrides — how/where it runs | `kindling.temporal.max_generations`, engine `table_properties` blocks |
-| **Annotations / declaration helpers** | Named semantics as sugar — set the tags above as defaults | a derived-dataset declaration setting `dataset.kind: derived`; SCD helpers setting `scd.*` |
+| **Annotations / declaration helpers** | Named semantics as sugar — set the tags above as defaults | `DataEntities.derived_entity` setting `dataset.kind: derived`; `DataEntities.insert_only_entity` setting `write.mode: insert` |
+
+This applies equally to entities and pipes. Existing pipe-level
+instances: the view-pipe declaration merges `pipe_type: view` defaults
+(explicit tags win), and `declare_temporal_chain()` is a higher-level
+declaration that lowers to pipes tagged `temporal.kind:
+chain_events`/`chain_episodes` — engines route on those tags, never on
+how the pipes were declared.
 
 The distinction between the first two rows follows the existing rule:
 semantics belong in the declaration (tags), execution options belong in
