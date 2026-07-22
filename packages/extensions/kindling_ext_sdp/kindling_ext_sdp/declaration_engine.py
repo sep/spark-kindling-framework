@@ -503,6 +503,18 @@ class DeclarationEngine(ABC):
         )
         if entity is not None:
             tag_value = str((entity.tags or {}).get(DATASET_TYPE_TAG, "")).strip()
+            # A derived dataset (core tag dataset.kind='derived') IS a
+            # materialized view — that is precisely what the declaration
+            # means on a declarative engine. An explicit conflicting
+            # sdp.dataset_type is a contradiction, not an override.
+            if str((entity.tags or {}).get("dataset.kind", "")).strip().lower() == "derived":
+                if tag_value and tag_value.lower() != DatasetType.MATERIALIZED_VIEW.value:
+                    raise ValueError(
+                        f"Entity '{entity.entityid}': dataset.kind='derived' "
+                        f"lowers to a materialized view; conflicting "
+                        f"{DATASET_TYPE_TAG}='{tag_value}'"
+                    )
+                return DatasetType.MATERIALIZED_VIEW
             if tag_value:
                 raw, source = tag_value, f"entity tag '{DATASET_TYPE_TAG}'"
 

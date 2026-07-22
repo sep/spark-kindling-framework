@@ -196,6 +196,40 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                 df = _apply_df_transforms(results, df)
 
                 try:
+                    # Derived datasets (dataset.kind='derived') are replaced,
+                    # not evolved: the provider swaps the whole table — or
+                    # only the batch's slices when derived.replace_keys is
+                    # declared — atomically. The state-dataset write.mode
+                    # machinery below never applies (the combination is
+                    # rejected at entity registration).
+                    derived_config = derived_config_from_tags(output_entity)
+                    if derived_config.enabled:
+                        if not hasattr(output_provider, "replace_entity"):
+                            provider_type = (output_entity.tags or {}).get(
+                                "provider_type", "unknown"
+                            )
+                            raise ValueError(
+                                f"Entity '{output_entity.entityid}' is a derived dataset "
+                                f"but provider '{provider_type}' does not support "
+                                "replace writes"
+                            )
+                        with strategy.tp.span(
+                            component="data_utils", operation="replace_entity_table"
+                        ):
+                            output_provider.replace_entity(df, output_entity)
+
+                        duration = time.time() - start_time
+                        strategy.emit(
+                            "persist.after_persist",
+                            df=df,
+                            pipe_id=pipe.pipeid,
+                            source_entity_id=src_input_entity_id,
+                            output_entity_id=pipe.output_entity_id,
+                            duration_seconds=duration,
+                            persist_id=persist_id,
+                        )
+                        return
+
                     # Sink write mode override, shared with the streaming path
                     # (SimplePipeStreamStarter): "append" skips the merge even
                     # when the provider supports it (e.g. append-only fact
@@ -209,16 +243,19 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                     write_mode = (
                         str((output_entity.tags or {}).get("write.mode") or "").strip().lower()
                     )
-                    if write_mode not in ("", "append", "merge"):
+                    if write_mode not in ("", "append", "merge", "insert"):
                         raise ValueError(
                             f"Entity '{output_entity.entityid}': invalid write.mode "
-                            f"'{write_mode}' (expected 'append' or 'merge')"
+                            f"'{write_mode}' (expected 'append', 'merge' or 'insert')"
                         )
-                    if write_mode == "merge" and not hasattr(output_provider, "merge_to_entity"):
+                    if write_mode in ("merge", "insert") and not hasattr(
+                        output_provider, "merge_to_entity"
+                    ):
                         provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
                         raise ValueError(
-                            f"Entity '{output_entity.entityid}': write.mode is 'merge' but "
-                            f"provider '{provider_type}' does not support merge operations"
+                            f"Entity '{output_entity.entityid}': write.mode is "
+                            f"'{write_mode}' but provider '{provider_type}' does not "
+                            "support merge operations"
                         )
 
                     with strategy.tp.span(

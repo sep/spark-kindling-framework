@@ -171,3 +171,75 @@ def test_valid_write_mode_accepted_at_registration(mode):
     )
 
     assert "entity.ok" in manager.registry
+
+
+class _ReplaceCapableProvider(BaseEntityProvider, WritableEntityProvider):
+    """Spec class: batch-writable provider that also supports replace."""
+
+    def replace_entity(self, df, entity): ...
+
+
+def test_derived_dataset_routes_to_replace():
+    dst_entity = Mock(entityid="entity.dst", tags={"dataset.kind": "derived"})
+    out_provider = Mock(spec=_ReplaceCapableProvider)
+
+    persist, _ = _make_strategy(dst_entity, out_provider)
+    persist(Mock(name="df"))
+
+    out_provider.replace_entity.assert_called_once()
+    out_provider.write_to_entity.assert_not_called()
+    out_provider.append_to_entity.assert_not_called()
+
+
+def test_derived_dataset_emits_after_persist():
+    dst_entity = Mock(entityid="entity.dst", tags={"dataset.kind": "derived"})
+    out_provider = Mock(spec=_ReplaceCapableProvider)
+
+    persist, strategy = _make_strategy(dst_entity, out_provider)
+    emitted = _capture_emitted_signals(strategy)
+    persist(Mock(name="df"))
+
+    assert "persist.before_persist" in emitted
+    assert "persist.after_persist" in emitted
+
+
+def test_derived_dataset_requires_replace_capable_provider():
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={"dataset.kind": "derived", "provider_type": "memory"},
+    )
+    out_provider = Mock(spec=_MergeWritableProvider)  # no replace_entity
+
+    persist, strategy = _make_strategy(dst_entity, out_provider)
+    emitted = _capture_emitted_signals(strategy)
+
+    with pytest.raises(ValueError, match="does not support\\s+replace"):
+        persist(Mock(name="df"))
+
+    assert "persist.persist_failed" in emitted
+
+
+def test_write_mode_insert_routes_to_merge_provider():
+    """insert rides the merge path; the provider picks the insert-only
+    strategy from the entity's write.mode tag."""
+    dst_entity = Mock(entityid="entity.dst", tags={"write.mode": "insert"})
+    out_provider = Mock(spec=_MergeWritableProvider)
+    out_provider.check_entity_exists.return_value = True
+
+    persist, _ = _make_strategy(dst_entity, out_provider)
+    persist(Mock(name="df"))
+
+    out_provider.merge_to_entity.assert_called_once()
+    out_provider.append_to_entity.assert_not_called()
+
+
+def test_write_mode_insert_requires_merge_capable_provider():
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={"write.mode": "insert", "provider_type": "memory"},
+    )
+    out_provider = Mock(spec=WritableEntityProvider)
+
+    persist, _ = _make_strategy(dst_entity, out_provider)
+    with pytest.raises(ValueError, match="does not support merge"):
+        persist(Mock(name="df"))

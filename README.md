@@ -23,6 +23,7 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 - [Introduction](./docs/intro.md) - Framework overview and architecture
 - [Data Entities](./docs/guide/data_entities.md) - Data entity management system
 - [Data Pipes](./docs/guide/data_pipes.md) - Transformation pipeline system
+- [Derived Datasets](./docs/guide/derived_datasets.md) - Replacement writes: derived datasets, slice replace, insert-only
 - [Entity Providers](./docs/contributing/entity_providers.md) - Storage abstraction system
 - [Setup Guide](./docs/guide/setup_guide.md) - Installation and configuration
 - [Migrating from runMultiple](./docs/guide/migrating_from_runmultiple.md) - Move Synapse/Fabric notebook DAGs to Kindling pipes
