@@ -514,3 +514,37 @@ class TestWindowedReads:
         tags = {**self.WINDOW_TAGS, "provider.slice": "1h"}
         df, spark, _ = self._read(kusto, tags, schema=schema)
         spark.createDataFrame.assert_called_once_with([], schema=schema)
+
+
+class TestDynamicColumns:
+    """ADX dynamic columns (python dicts/lists in object dtype) must be
+    serialized to JSON strings before Spark conversion — Arrow rejects them
+    (PySparkValueError: converting pandas.Series (object) ... to Arrow)."""
+
+    def test_dynamic_values_become_json_strings(self, kusto):
+        kusto.query_pdf = pd.DataFrame(
+            {
+                "DeviceId": ["a", "b", "c"],
+                "Data": [{"temp": 21.5}, ["x", 1], None],
+                "Note": ["plain", None, "strings survive"],
+            }
+        )
+        provider = _provider()
+        spark = MagicMock()
+        with patch("kindling.entity_provider_adx.get_or_create_spark_session", return_value=spark):
+            provider.read_entity(_entity(BASE_TAGS))
+
+        (converted,) = spark.createDataFrame.call_args[0]
+        assert list(converted["Data"][:2]) == ['{"temp": 21.5}', '["x", 1]']
+        assert pd.isna(converted["Data"][2])  # nulls stay null (NaN/None)
+        assert list(converted["Note"][::2]) == ["plain", "strings survive"]
+
+    def test_plain_string_columns_untouched(self, kusto):
+        kusto.query_pdf = pd.DataFrame({"Name": ["x", "y"]})
+        provider = _provider()
+        spark = MagicMock()
+        with patch("kindling.entity_provider_adx.get_or_create_spark_session", return_value=spark):
+            provider.read_entity(_entity(BASE_TAGS))
+
+        (converted,) = spark.createDataFrame.call_args[0]
+        assert list(converted["Name"]) == ["x", "y"]
