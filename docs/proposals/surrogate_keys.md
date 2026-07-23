@@ -76,10 +76,18 @@ expression, persisted. Properties that make it the default:
 - **Coordination-free**: no max-key lookups, no single-writer constraint,
   streaming-safe (a pure column expression works in `foreachBatch` and
   direct sinks alike).
-- Collision risk at SHA-256 is not a practical concern; a
-  `surrogate.hash.algo: xxhash64` option can offer a compact BIGINT key for
-  join-width-sensitive cases, documented with its (still tiny) collision
-  math.
+- **Uniqueness semantics** (be precise, people ask): distinct inputs
+  colliding is birthday-bounded at ~k²/2²⁵⁷ — ~10⁻⁵⁴ at a trillion distinct
+  keys, i.e. below storage bit-flip rates; no SHA-256 collision has ever
+  been produced. Identical inputs *intentionally* produce identical keys
+  (that is the retry/merge/conformity property). Therefore row-level
+  surrogate uniqueness equals row-level uniqueness of `surrogate.from` —
+  duplicate business keys yield duplicate surrogates, faithfully. Enforce
+  key quality via validation (key-uniqueness checks), not key generation.
+- `surrogate.hash.algo: xxhash64` offers a compact BIGINT key for
+  join-width-sensitive cases with real collision math: 64-bit space is
+  ~50% collision odds near 5 billion keys, ~10⁻⁴ at 100 million — opt-in
+  with documented tradeoff, never the default.
 
 ### `identity` (capability-gated)
 
