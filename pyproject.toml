@@ -44,6 +44,9 @@ pyspark = {version = ">=3.4.0,<4.0.0", optional = true}
 delta-spark = {version = ">=2.4.0,<4.0.0", optional = true}
 pandas = {version = ">=2.0.0", optional = true}
 pyarrow = {version = ">=12.0.0", optional = true}
+# API-based ADX entity provider (provider_type "adx-api").
+azure-kusto-data = {version = ">=4.0.0", optional = true}
+azure-kusto-ingest = {version = ">=4.0.0", optional = true}
 
 [tool.poetry.extras]
 # Install with: pip install 'spark-kindling[synapse]' etc.
@@ -54,6 +57,7 @@ synapse = ["azure-synapse-artifacts"]
 databricks = ["databricks-sdk"]
 fabric = []
 standalone = ["pyspark", "delta-spark", "pandas", "pyarrow"]
+adx = ["azure-kusto-data", "azure-kusto-ingest"]
 all = [
     "azure-synapse-artifacts",
     "databricks-sdk",
@@ -61,6 +65,8 @@ all = [
     "delta-spark",
     "pandas",
     "pyarrow",
+    "azure-kusto-data",
+    "azure-kusto-ingest",
 ]
 
 [tool.poetry.plugins."spark_kindling.platforms"]

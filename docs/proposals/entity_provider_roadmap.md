@@ -56,6 +56,25 @@ this automatically); revisit `ingest-by:` extent-tag dedup keyed on
 **Remaining (optional, demand-driven)**: `DestinationEnsuringProvider` via
 `.create-merge table`; stream *read* is not a natural fit and stays out.
 
+### ADX (API-based) — core, added 2026-07-23
+
+`packages/kindling/entity_provider_adx.py`, provider_type **`adx-api`**,
+registered as a built-in; requires the `[adx]` extra (`azure-kusto-data`,
+`azure-kusto-ingest`). Talks to ADX through the Kusto Python SDKs instead of
+the JVM Spark connector, so it runs where the connector cannot: UC
+shared/standard access mode clusters, serverless, standalone Python, or any
+cluster where library installation is not an option.
+
+Trade-off: data moves through the driver (query results and ingestion
+batches materialize as pandas), so it suits solution *boundaries* — reference
+data, config tables, modest extracts — while the connector extension remains
+the choice for volume and streaming. Same append-oriented semantics
+(queued ingestion, at-least-once, no merge; keep pipe retry off). It also
+implements `DestinationEnsuringProvider` via `.create-merge table` from the
+entity's declared schema — closing the connector's "table could not be
+found" ingestion gap noted above. Auth: managed_identity (default),
+service_principal (tags or `AZURE_*` env), azure_cli, access_token.
+
 ---
 
 ## Cosmos DB — SHIPPED (PR #171)
