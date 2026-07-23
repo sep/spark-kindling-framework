@@ -176,3 +176,49 @@ def test_runtime_version_regex_parses_major_minor(monkeypatch):
     assert config.get("kindling.runtime.features.databricks.runtime_minor") == 4
     # >= 15.2 with a parsing engine: AUTO clustering now detectable
     assert config.get("kindling.runtime.features.delta.auto_clustering") is True
+
+
+def test_discover_runtime_features_sets_jvm_bridge_true_with_bridge(monkeypatch):
+    config = _ConfigStub()
+    spark = _make_spark(version="15.4.x-scala2.12", current_catalog="main", catalogs=["main"])
+    monkeypatch.setattr("kindling.features.get_or_create_spark_session", lambda: spark)
+    monkeypatch.setattr("kindling.features._supports_databricks_volumes", lambda spark: True)
+
+    discover_runtime_features(config)
+
+    assert config.get("kindling.runtime.features.spark.jvm_bridge") is True
+
+
+class _NoJvmSpark:
+    """Delegating wrapper mimicking UC shared/standard access mode sessions."""
+
+    def __init__(self, inner):
+        object.__setattr__(self, "_inner", inner)
+
+    def __getattr__(self, name):
+        if name == "_jvm":
+            raise AttributeError("[JVM_ATTRIBUTE_NOT_SUPPORTED] Attribute `_jvm` is not supported.")
+        return getattr(object.__getattribute__(self, "_inner"), name)
+
+
+def test_discover_runtime_features_sets_jvm_bridge_false_without_bridge(monkeypatch):
+    """UC shared/standard access mode: spark._jvm raises PySparkAttributeError."""
+    config = _ConfigStub()
+    spark = _NoJvmSpark(
+        _make_spark(version="15.4.x-scala2.12", current_catalog="main", catalogs=["main"])
+    )
+    monkeypatch.setattr("kindling.features.get_or_create_spark_session", lambda: spark)
+    monkeypatch.setattr("kindling.features._supports_databricks_volumes", lambda spark: True)
+
+    discover_runtime_features(config)
+
+    assert config.get("kindling.runtime.features.spark.jvm_bridge") is False
+
+
+def test_discovery_false_assumes_jvm_bridge_present():
+    config = _ConfigStub()
+    config.set("kindling.features.discovery", "false")
+
+    discover_runtime_features(config)
+
+    assert config.get("kindling.runtime.features.spark.jvm_bridge") is True

@@ -19,6 +19,7 @@ from kindling.spark_session import *
 from .spark_log_provider import *
 
 _mdc_api_blocked = False
+_local_properties_blocked = False
 
 
 def _is_mdc_api_blocked_exception(exc: Exception) -> bool:
@@ -27,6 +28,39 @@ def _is_mdc_api_blocked_exception(exc: Exception) -> bool:
         return False
     message = str(exc)
     return "Py4JSecurityException" in message and "org.apache.log4j.MDC" in message
+
+
+def _get_log4j_mdc(spark):
+    """Return the log4j MDC handle, or None when the JVM bridge is unavailable.
+
+    Databricks UC shared/standard access mode and Spark Connect raise
+    PySparkAttributeError ([JVM_ATTRIBUTE_NOT_SUPPORTED]) on ``spark._jvm``
+    access; it subclasses AttributeError.
+    """
+    global _mdc_api_blocked
+    if _mdc_api_blocked:
+        return None
+    try:
+        return spark._jvm.org.apache.log4j.MDC
+    except (AttributeError, TypeError):
+        _mdc_api_blocked = True
+        return None
+
+
+def _safe_app_name(spark) -> str:
+    """appName without assuming sparkContext is accessible."""
+    return getattr(getattr(spark, "sparkContext", None), "appName", None) or "unknown"
+
+
+def _set_mdc_local_property(spark, key: str, value) -> None:
+    """Set a Spark local property, no-op when sparkContext is unavailable."""
+    global _local_properties_blocked
+    if _local_properties_blocked:
+        return
+    try:
+        spark.sparkContext.setLocalProperty(key, value)
+    except (AttributeError, TypeError):
+        _local_properties_blocked = True
 
 
 class CustomEventEmitter(ABC):
@@ -68,7 +102,7 @@ class AzureEventEmitter(CustomEventEmitter):
             # Not on Fabric/Synapse - just log instead
             if self.should_print():
                 print(
-                    f"TRACE: ({spark.sparkContext.appName}) Component: {component} Op: {operation} Msg: {custom_message} Id: {eventId} trace_id:{str(traceId)}"
+                    f"TRACE: ({_safe_app_name(spark)}) Component: {component} Op: {operation} Msg: {custom_message} Id: {eventId} trace_id:{str(traceId)}"
                 )
             self.logger.debug(f"Trace event: {component}.{operation} - {custom_message}")
             return
@@ -105,10 +139,10 @@ def mdc_context(**kwargs):
     global _mdc_api_blocked
 
     spark = get_or_create_spark_session()
-    mdc = spark._jvm.org.apache.log4j.MDC if not _mdc_api_blocked else None
+    mdc = _get_log4j_mdc(spark)
     try:
         for key, value in kwargs.items():
-            spark.sparkContext.setLocalProperty("mdc." + key, value)
+            _set_mdc_local_property(spark, "mdc." + key, value)
             if mdc is None:
                 continue
             try:
@@ -131,7 +165,7 @@ def mdc_context(**kwargs):
                         mdc = None
                     else:
                         raise
-            spark.sparkContext.setLocalProperty("mdc." + key, "")
+            _set_mdc_local_property(spark, "mdc." + key, "")
 
 
 @dataclass

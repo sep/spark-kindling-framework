@@ -25,6 +25,10 @@ If you encounter a bug:
 - Ensure compatibility with Spark 3.x (specify minimum version in PR)
 - Test with both local Spark, Azure Synapse, Azure Fabric, and Databricks environments where applicable and possible
 - Document any Spark-specific configuration requirements
+- Never access `spark._jvm`/`spark._jsc` directly — no py4j bridge exists on
+  Databricks UC shared/standard access mode clusters or Spark Connect. See
+  "JVM Bridge Boundary" in `docs/contributing/logging_tracing.md`
+  (enforced by `tests/unit/test_architecture_jvm_boundary.py`)
 
 ## Submitting Pull Requests
 1. **Fork the repository** and create a feature branch

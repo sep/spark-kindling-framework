@@ -307,6 +307,30 @@ config.set("LOG_LEVEL", "DEBUG")
 ```
 
 
+## JVM Bridge Boundary
+
+`spark._jvm` and `spark._jsc` (and `spark.sparkContext` on some runtimes) raise
+`PySparkAttributeError` (`[JVM_ATTRIBUTE_NOT_SUPPORTED]`, an `AttributeError`
+subclass) on Databricks UC shared/standard access mode clusters and Spark
+Connect. Framework code must not assume a py4j bridge exists:
+
+- Route filesystem and platform operations through `PlatformService` instead of
+  the Hadoop JVM API.
+- Telemetry code that optionally uses the JVM must guard access with
+  `except (AttributeError, TypeError)` and latch the result so the probe runs
+  once (see `mdc_context` in `kindling/spark_trace.py`).
+- Runtime capability detection is a probe, not platform sniffing: bootstrap
+  reads the `spark.jvm_bridge` runtime feature (set by
+  `kindling.features.discover_runtime_features`) and rebinds the telemetry
+  providers to the JVM-free implementations in `kindling/plain_telemetry.py`
+  when the bridge is absent. Override with the static
+  `kindling.features.spark.jvm_bridge` config key.
+
+The rule is enforced by `tests/unit/test_architecture_jvm_boundary.py`: any
+new `_jvm`/`_jsc` reference outside its allowlist fails CI. Add a file to the
+allowlist only with a guard or a runtime guarantee, and say which in the
+inline comment.
+
 ## Best Practices
 
 1. **Consistent Component Names**: Use consistent naming conventions for components and operations.
