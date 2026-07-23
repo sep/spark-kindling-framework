@@ -2,6 +2,31 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Added
+
+- `adx-api` provider: **declarative windowed reads** — `provider.time_column`
+  plus `provider.lookback` (e.g. `"30d"`) or explicit `provider.start`/
+  `provider.end` bound the read on the time column, and `provider.slice`
+  (e.g. `"30m"`, `"2h"`) executes the range as multiple bounded queries.
+  Slices that exceed ADX's per-query result-size limit
+  (E_QUERY_RESULT_SET_TOO_LARGE) are bisected automatically down to one
+  minute. Windowing bounds each query, not total driver memory; loop
+  externally with `ConfigService.set_entity_tags` overriding
+  `provider.start`/`provider.end` for ranges too large to hold at once.
+- `adx-api` provider: `provider.auth: "device_code"` — interactive AAD
+  device-code authentication (login URL + code printed on first token
+  acquisition; `provider.tenant_id` selects the authority, default
+  `organizations`).
+
+### Fixed
+
+- `EntityProviderRegistry.register_provider` over an already-registered type
+  now evicts the cached provider instance — previously `get_provider` kept
+  serving the old class, so swapping in a provider subclass after any pipe
+  had run silently had no effect.
+
 ## [0.11.0] - 2026-07-23
 
 ### Changed

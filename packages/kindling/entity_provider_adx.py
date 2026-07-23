@@ -22,6 +22,11 @@ Configuration (entity tags):
     provider.database: target database (required)
     provider.table: target table (required for writes; reads may use query)
     provider.query: KQL for reads (defaults to reading provider.table)
+    provider.time_column: datetime column for windowed reads (enables the four below)
+    provider.lookback: read window as a duration back from now, e.g. "30d"
+    provider.start / provider.end: explicit ISO-8601 window bounds (UTC; end defaults to now)
+    provider.slice: execute the window as bounded queries of this size, e.g. "30m", "2h" —
+        slices exceeding ADX's 64 MB result limit are bisected automatically
     provider.ingest_uri: ingestion endpoint (default: cluster URI with "ingest-" host prefix)
     provider.auth: managed_identity (default) | service_principal | azure_cli | device_code | access_token
     provider.client_id / provider.app_id: SP app id (service_principal; falls back to AZURE_CLIENT_ID)
@@ -106,13 +111,20 @@ class AdxApiEntityProvider(BaseEntityProvider, WritableEntityProvider, Destinati
     def read_entity(self, entity_metadata: EntityMetadata) -> DataFrame:
         """Run the entity's KQL (or read its table) and return a batch DataFrame.
 
-        Results are materialized on the driver via pandas. An empty result
-        needs the entity's declared schema to build a typed empty DataFrame.
-        """
-        from azure.kusto.data.helpers import (  # noqa: PLC0415
-            dataframe_from_result_table,
-        )
+        With ``provider.time_column``, reads are windowed: the configured
+        range (``lookback``, or explicit ``start``/``end``) is filtered on the
+        time column, and when ``provider.slice`` is set the range is executed
+        as multiple bounded queries. Slices that exceed ADX's per-query
+        result-size limit (E_QUERY_RESULT_SET_TOO_LARGE) are bisected
+        automatically down to one minute before giving up.
 
+        Results are materialized on the driver via pandas — windowing bounds
+        each *query*, not total driver memory; loop externally with
+        ``ConfigService.set_entity_tags`` overriding ``provider.start``/
+        ``provider.end`` per run when the full range is too large to hold.
+        An empty result needs the entity's declared schema to build a typed
+        empty DataFrame.
+        """
         config = self._get_provider_config(entity_metadata)
         database = self._require(entity_metadata, config, "database")
         query = config.get("query") or config.get("kusto_query")
@@ -120,12 +132,28 @@ class AdxApiEntityProvider(BaseEntityProvider, WritableEntityProvider, Destinati
             # A bare table name is a valid KQL query.
             query = self._require(entity_metadata, config, "table", alternatives=("table_name",))
 
+        client = self._query_client(entity_metadata, config)
+        window = self._read_window(entity_metadata, config)
+
         self.logger.info(
             f"Reading entity '{entity_metadata.entityid}' from ADX database "
-            f"'{database}' via API"
+            f"'{database}' via API" + (f" (windowed on {window[0]})" if window else "")
         )
-        result = self._query_client(entity_metadata, config).execute(database, str(query))
-        pdf = dataframe_from_result_table(result.primary_results[0])
+
+        if window is None:
+            frames = [self._execute_frame(client, database, str(query))]
+        else:
+            frames = self._windowed_frames(client, database, str(query), window)
+
+        import pandas as pd  # noqa: PLC0415
+
+        frames = [f for f in frames if not f.empty]
+        if len(frames) == 1:
+            pdf = frames[0]
+        elif frames:
+            pdf = pd.concat(frames, ignore_index=True)
+        else:
+            pdf = pd.DataFrame()
 
         spark = get_or_create_spark_session()
         if pdf.empty:
@@ -136,6 +164,132 @@ class AdxApiEntityProvider(BaseEntityProvider, WritableEntityProvider, Destinati
                 "the entity declares no schema to type an empty DataFrame."
             )
         return spark.createDataFrame(pdf)
+
+    # ---- Windowed reads ----
+
+    _MIN_SLICE_SECONDS = 60
+
+    def _read_window(self, entity_metadata: EntityMetadata, config: Dict[str, Any]):
+        """Resolve (time_column, start, end, slice) from tags, or None.
+
+        ``provider.lookback`` (duration, e.g. "30d") or explicit
+        ``provider.start``/``provider.end`` (ISO timestamps, UTC) define the
+        range; ``provider.slice`` (e.g. "30m", "2h") bounds each query.
+        """
+        from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+        time_column = config.get("time_column")
+        windowing_keys = [k for k in ("slice", "lookback", "start", "end") if config.get(k)]
+        if not time_column:
+            if windowing_keys:
+                raise ValueError(
+                    f"ADX entity '{entity_metadata.entityid}' sets provider."
+                    f"{windowing_keys[0]} but not provider.time_column"
+                )
+            return None
+        if not windowing_keys:
+            raise ValueError(
+                f"ADX entity '{entity_metadata.entityid}' sets provider.time_column but "
+                "no range: set provider.lookback or provider.start/provider.end"
+            )
+
+        end = (
+            datetime.fromisoformat(str(config["end"]))
+            if config.get("end")
+            else datetime.now(timezone.utc)
+        )
+        if config.get("start"):
+            start = datetime.fromisoformat(str(config["start"]))
+        elif config.get("lookback"):
+            start = end - self._parse_duration(entity_metadata, config["lookback"], "lookback")
+        else:
+            raise ValueError(
+                f"ADX entity '{entity_metadata.entityid}' needs provider.start or "
+                "provider.lookback to bound the read"
+            )
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+
+        slice_td = (
+            self._parse_duration(entity_metadata, config["slice"], "slice")
+            if config.get("slice")
+            else (end - start)  # single bounded query; bisection still applies
+        )
+        if slice_td <= timedelta(0) or start >= end:
+            raise ValueError(
+                f"ADX entity '{entity_metadata.entityid}' has an empty or negative "
+                f"read window ({start} .. {end}, slice {slice_td})"
+            )
+        return (str(time_column), start, end, slice_td)
+
+    def _windowed_frames(self, client, database: str, base_query: str, window):
+        from datetime import timedelta  # noqa: PLC0415
+
+        time_column, start, end, slice_td = window
+        min_slice = timedelta(seconds=self._MIN_SLICE_SECONDS)
+        frames = []
+        cursor = start
+        while cursor < end:
+            upper = min(cursor + slice_td, end)
+            frames.extend(
+                self._sliced_frame(
+                    client, database, base_query, time_column, cursor, upper, min_slice
+                )
+            )
+            cursor = upper
+        return frames
+
+    def _sliced_frame(self, client, database, base_query, time_column, lo, hi, min_slice):
+        """Execute one slice, bisecting on ADX's result-size limit."""
+        query = (
+            f"{base_query} | where ['{time_column}'] >= datetime({lo.isoformat()}) "
+            f"and ['{time_column}'] < datetime({hi.isoformat()})"
+        )
+        try:
+            return [self._execute_frame(client, database, query)]
+        except ImportError:
+            raise
+        except Exception as e:
+            if "E_QUERY_RESULT_SET_TOO_LARGE" not in str(e):
+                raise
+            if (hi - lo) <= min_slice:
+                raise RuntimeError(
+                    f"ADX slice {lo} .. {hi} still exceeds the result-size limit at the "
+                    f"minimum slice ({min_slice}). Rows are too wide to window by time — "
+                    "project fewer/narrower columns in provider.query."
+                ) from e
+            mid = lo + (hi - lo) / 2
+            self.logger.info(
+                f"ADX slice {lo} .. {hi} exceeded the result-size limit; bisecting at {mid}"
+            )
+            return self._sliced_frame(
+                client, database, base_query, time_column, lo, mid, min_slice
+            ) + self._sliced_frame(client, database, base_query, time_column, mid, hi, min_slice)
+
+    def _execute_frame(self, client, database: str, query: str):
+        from azure.kusto.data.helpers import (  # noqa: PLC0415
+            dataframe_from_result_table,
+        )
+
+        result = client.execute(database, query)
+        return dataframe_from_result_table(result.primary_results[0])
+
+    @staticmethod
+    def _parse_duration(entity_metadata: EntityMetadata, value: Any, key: str):
+        import re  # noqa: PLC0415
+        from datetime import timedelta  # noqa: PLC0415
+
+        match = re.fullmatch(r"\s*(\d+)\s*([smhd])\s*", str(value))
+        if not match:
+            raise ValueError(
+                f"ADX entity '{entity_metadata.entityid}': provider.{key} must be a "
+                f"duration like '30m', '2h', or '7d' (got {value!r})"
+            )
+        amount = int(match.group(1))
+        unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[match.group(2)]
+        return timedelta(**{unit: amount})
 
     def check_entity_exists(self, entity_metadata: EntityMetadata) -> bool:
         """Check table existence via metadata query; fall back to assume_exists."""
