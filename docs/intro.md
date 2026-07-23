@@ -8,11 +8,11 @@ Kindling is a comprehensive framework for building data solutions on top of Apac
 
 The framework consists of core modules that work together:
 
-- **[Data Pipes Module](./data_pipes.md)** - Declarative pipeline definition and execution engine
-- **[Data Entities Module](./data_entities.md)** - Data entity management and storage abstraction layer
-- **[Data Apps Module](./job_deployment.md)** - Package and deploy apps across platforms
-- **[Configuration System](./platform_workspace_config.md)** - Hierarchical multi-level configuration
-- **[Platform Services](./platform_api_architecture.md)** - Unified API for Fabric/Synapse/Databricks
+- **[Data Pipes Module](./guide/data_pipes.md)** - Declarative pipeline definition and execution engine
+- **[Data Entities Module](./guide/data_entities.md)** - Data entity management and storage abstraction layer
+- **[Data Apps Module](./contributing/job_deployment.md)** - Package and deploy apps across platforms
+- **[Configuration System](./contributing/platform_workspace_config.md)** - Hierarchical multi-level configuration
+- **[Platform Services](./contributing/platform_api_architecture.md)** - Unified API for Fabric/Synapse/Databricks
 
 ## Architecture
 
@@ -105,14 +105,14 @@ customer_schema = StructType([
     StructField("region", StringType(), True)
 ])
 
-# Register entity with Kindling
-@DataEntities.entity(
+# Register entity with Kindling (a plain call — registration happens immediately)
+DataEntities.entity(
     entityid="bronze.customers",
     name="Raw Customer Data",
     partition_columns=["region"],
     merge_columns=["customer_id"],
     tags={"layer": "bronze", "domain": "customer"},
-    schema=customer_schema
+    schema=customer_schema,
 )
 ```
 
@@ -173,20 +173,20 @@ executer.run_datapipes(["clean_customers"])
 To start using Kindling in your Spark notebooks:
 
 1. **Set up Configuration**: Create YAML config files or use bootstrap config
-   - [Configuration Guide](./platform_workspace_config.md)
-   - [Setup Guide](./setup_guide.md)
+   - [Configuration Guide](./contributing/platform_workspace_config.md)
+   - [Setup Guide](./guide/setup_guide.md)
 
 2. **Learn the Data Entities Module**: Understand how to define and manage your data structures
-   - [Data Entities Documentation](./data_entities.md)
+   - [Data Entities Documentation](./guide/data_entities.md)
 
 3. **Explore the Data Pipes Module**: Learn to build transformation pipelines
-   - [Data Pipes Documentation](./data_pipes.md)
+   - [Data Pipes Documentation](./guide/data_pipes.md)
 
 4. **Package and Deploy**: Create data apps and deploy as Spark jobs
-   - [Job Deployment Documentation](./job_deployment.md)
+   - [Job Deployment Documentation](./contributing/job_deployment.md)
 
 5. **Extend and Monitor**: Add custom integrations and observability
-   - [Logging & Tracing](./logging_tracing.md)
+   - [Logging & Tracing](./contributing/logging_tracing.md)
    - [Azure Monitor Extension](../packages/extensions/kindling_ext_otel_azure/README.md)
 
 ## Use Cases
@@ -212,4 +212,4 @@ Kindling is built on principles for modern data infrastructure:
 - **Extensible**: Clean abstractions and extension system for customization
 - **Configuration-Driven**: YAML-based hierarchical configs for flexibility
 
-Ready to get started? Dive into the [Setup Guide](./setup_guide.md) to begin building your multi-platform data solutions with Kindling.
+Ready to get started? Dive into the [Setup Guide](./guide/setup_guide.md) to begin building your multi-platform data solutions with Kindling.
