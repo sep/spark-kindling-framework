@@ -177,3 +177,35 @@ class TestBuiltinProviders:
 
             # Registry should initialize successfully
             assert isinstance(registry, EntityProviderRegistry)
+
+
+def test_reregistration_evicts_cached_instance():
+    """register_provider over an existing type must drop the cached instance —
+    otherwise get_provider keeps serving the old class (the exact failure mode
+    of swapping in a provider subclass after a pipe has already run)."""
+    from unittest.mock import MagicMock, patch
+
+    from kindling.entity_provider import BaseEntityProvider
+    from kindling.entity_provider_registry import EntityProviderRegistry
+
+    class _First(BaseEntityProvider):
+        def read_entity(self, entity_metadata):
+            return None
+
+        def check_entity_exists(self, entity_metadata):
+            return False
+
+    class _Second(_First):
+        pass
+
+    with patch("kindling.entity_provider_registry.GlobalInjector") as injector:
+        injector.get.side_effect = lambda cls: cls.__new__(cls)
+        logger_provider = MagicMock()
+        logger_provider.get_logger.return_value = MagicMock()
+        registry = EntityProviderRegistry(logger_provider)
+
+        registry.register_provider("swap-test", _First)
+        assert type(registry.get_provider("swap-test")) is _First
+
+        registry.register_provider("swap-test", _Second)
+        assert type(registry.get_provider("swap-test")) is _Second
