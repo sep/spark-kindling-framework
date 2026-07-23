@@ -3211,14 +3211,16 @@ class TestRuntimeDeploy:
 # ---------------------------------------------------------------------------
 
 
-def _make_fake_migrate_modules(monkeypatch, *, has_changes=False, has_destructive=False):
+def _make_fake_migrate_modules(
+    monkeypatch, *, has_changes=False, has_destructive=False, has_errors=False
+):
     """Wire up fake kindling.migration and kindling.injection for migrate tests."""
     import types
 
     fake_plan = types.SimpleNamespace(
         has_changes=has_changes,
         has_destructive_changes=has_destructive,
-        errors=[],
+        errors=[types.SimpleNamespace(error="inspect failed")] if has_errors else [],
         print_summary=lambda: None,
     )
 
@@ -3303,6 +3305,27 @@ def test_migrate_apply_with_changes(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["migrate", "apply", "--app", "app.py"])
     assert result.exit_code == 0, result.output
     assert "Migration complete" in result.output
+
+
+def test_migrate_plan_fails_on_errors_even_without_changes(tmp_path, monkeypatch):
+    """An errors-only plan has no changes; it must not report 'up to date'."""
+    _make_fake_migrate_modules(monkeypatch, has_changes=False, has_errors=True)
+    result = CliRunner().invoke(cli, ["migrate", "plan", "--app", "app.py"])
+    assert result.exit_code != 0
+    assert "could not be inspected" in result.output
+    assert "up to date" not in result.output
+
+
+def test_migrate_apply_refuses_plan_with_errors(tmp_path, monkeypatch):
+    fake_svc, _, _ = _make_fake_migrate_modules(monkeypatch, has_changes=True, has_errors=True)
+    applied = []
+    fake_svc.apply = lambda *a, **kw: applied.append(True)
+
+    result = CliRunner().invoke(cli, ["migrate", "apply", "--app", "app.py"])
+
+    assert result.exit_code != 0
+    assert "Refusing to apply" in result.output
+    assert not applied, "apply must not run when the plan has inspection errors"
 
 
 def test_migrate_rollback_unknown_entity(tmp_path, monkeypatch):

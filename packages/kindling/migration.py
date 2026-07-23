@@ -130,10 +130,13 @@ class EntityMigrationStatus:
     entity: EntityMetadata
     changes: List[EntityMigrationChange] = field(default_factory=list)
     error: Optional[str] = None
+    # Set when the entity is out of migration's scope (non-Delta provider).
+    # Distinct from up-to-date: nothing was inspected.
+    skipped_reason: Optional[str] = None
 
     @property
     def is_up_to_date(self) -> bool:
-        return not self.changes and self.error is None
+        return not self.changes and self.error is None and self.skipped_reason is None
 
     @property
     def has_destructive_changes(self) -> bool:
@@ -168,6 +171,8 @@ class MigrationPlan:
             kind_label = "view" if status.entity.is_sql_entity else "entity"
             if status.error:
                 print(f"  [ERROR] {entity_id} ({kind_label}): {status.error}")
+            elif status.skipped_reason:
+                print(f"  [SKIP]  {entity_id} ({kind_label}): {status.skipped_reason}")
             elif status.is_up_to_date:
                 print(f"  [OK]    {entity_id} ({kind_label}): up to date")
             else:
@@ -241,10 +246,23 @@ class MigrationPlanner:
         statuses: List[EntityMigrationStatus] = []
         for entity_id in self._registry.get_entity_ids():
             entity = self._registry.get_entity_definition(entity_id)
+            provider_type = (entity.tags or {}).get("provider_type", "delta")
             if entity.is_sql_entity:
                 status = self._plan_sql_entity(entity)
-            else:
+            elif provider_type == "delta":
                 status = self._plan_delta_entity(entity)
+            else:
+                # Migration only understands Delta tables. Without this guard
+                # a memory/parquet/eventhub entity would be planned against
+                # the Delta provider as a *safe* CREATE_TABLE and apply would
+                # create a spurious managed Delta table for it.
+                status = EntityMigrationStatus(
+                    entity=entity,
+                    skipped_reason=(
+                        f"provider_type '{provider_type}' is not supported by "
+                        "migration (Delta tables and SQL views only)"
+                    ),
+                )
             statuses.append(status)
         return MigrationPlan(statuses=statuses)
 
@@ -487,13 +505,16 @@ def _catalog_object_exists(spark, name: str) -> bool:
         return False
 
 
-def _normalize_sql(sql: str) -> str:
-    """Normalize SQL for comparison: collapse whitespace and lowercase."""
-    return " ".join(sql.lower().split())
-
-
 def _sql_hash(sql: str) -> str:
-    """Return a short stable hash of SQL for TBLPROPERTIES storage."""
+    """Return a short stable hash of SQL for TBLPROPERTIES storage.
+
+    Deliberately hashes the raw declared SQL: the hash is written at apply
+    time and compared at plan time, so engine-side reformatting of the stored
+    view DDL never matters. Normalizing (lowercasing, collapsing whitespace)
+    would risk missing real changes inside string literals; the cost of raw
+    hashing is only a benign, idempotent view replace when the declaration's
+    formatting changes.
+    """
     return hashlib.sha256(sql.encode()).hexdigest()[:16]
 
 
@@ -536,14 +557,25 @@ class MigrationApplier:
             backup: Whether to snapshot before applying destructive changes.
             user_transforms: Optional dict of {column_name: Column} for type
                 changes that cannot be auto-cast.
+
+        Raises:
+            RuntimeError: If the plan contains inspection errors. Applying a
+                partial plan silently leaves the application in a mixed state;
+                resolve the plan errors (or unregister the entities) first.
         """
         user_transforms = user_transforms or {}
 
+        errored = [s for s in plan.statuses if s.error]
+        if errored:
+            details = "; ".join(f"{s.entity.entityid}: {s.error}" for s in errored)
+            raise RuntimeError(
+                f"Refusing to apply: {len(errored)} entity/entities could not be "
+                f"inspected during planning ({details})."
+            )
+
         for status in plan.statuses:
-            if status.error:
-                self._logger.warning(
-                    f"Skipping {status.entity.entityid}: plan error — {status.error}"
-                )
+            if status.skipped_reason:
+                self._logger.info(f"{status.entity.entityid}: skipped — {status.skipped_reason}")
                 continue
             if status.is_up_to_date:
                 self._logger.info(f"{status.entity.entityid}: up to date, nothing to do")

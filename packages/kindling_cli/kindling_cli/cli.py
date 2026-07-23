@@ -1124,6 +1124,14 @@ def migrate_plan(
     svc = GlobalInjector.get(MigrationService)
     plan = svc.plan()
 
+    # Errors before the up-to-date short-circuit: a plan containing only
+    # errors has no changes and would otherwise report "up to date".
+    if plan.errors:
+        plan.print_summary()
+        raise click.ClickException(
+            f"{len(plan.errors)} entity/entities could not be inspected (see above)."
+        )
+
     if not plan.has_changes:
         click.echo("All entities are up to date.")
         return
@@ -1134,11 +1142,6 @@ def migrate_plan(
     if plan.has_destructive_changes:
         click.echo()
         click.echo("WARNING: destructive changes present. Pass --destructive to apply them.")
-
-    if plan.errors:
-        raise click.ClickException(
-            f"{len(plan.errors)} entity/entities could not be inspected (see above)."
-        )
 
 
 @migrate_group.command("apply")
@@ -1187,6 +1190,16 @@ def migrate_apply(
 
     svc = GlobalInjector.get(MigrationService)
     plan = svc.plan()
+
+    # Fail before applying anything: partially applying a plan with
+    # inspection errors leaves the application in a mixed state. Checked
+    # before the up-to-date short-circuit for the same reason as in plan.
+    if plan.errors:
+        plan.print_summary()
+        raise click.ClickException(
+            f"{len(plan.errors)} entity/entities could not be inspected (see above). "
+            "Refusing to apply a partial plan."
+        )
 
     if not plan.has_changes:
         click.echo("All entities are up to date.")

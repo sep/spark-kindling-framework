@@ -28,7 +28,6 @@ from kindling.migration import (
     MigrationPlanner,
     MigrationService,
     _is_auto_castable,
-    _normalize_sql,
     _sql_hash,
 )
 
@@ -118,6 +117,13 @@ class TestEntityMigrationStatus:
     def test_is_up_to_date_when_no_changes(self):
         status = EntityMigrationStatus(entity=_entity())
         assert status.is_up_to_date
+
+    def test_not_up_to_date_when_skipped(self):
+        """Skipped means not inspected — it must not read as 'up to date'."""
+        status = EntityMigrationStatus(
+            entity=_entity(), skipped_reason="provider_type 'memory' is not supported"
+        )
+        assert not status.is_up_to_date
 
     def test_not_up_to_date_when_changes_present(self):
         status = EntityMigrationStatus(
@@ -355,8 +361,17 @@ class TestMigrationApplierTransforms:
         applier._logger = tp.get_logger("test")
         return applier
 
-    def test_apply_transforms_auto_casts_widening_type(self):
-        from pyspark.sql.types import IntegerType, LongType, StringType
+    def test_apply_transforms_auto_casts_widening_type(self, monkeypatch):
+        # F.col() asserts an active SparkContext, so building a real Column
+        # here makes the test order-dependent (passes only after some other
+        # test has created a Spark session). Stub the function instead.
+        import pyspark.sql.functions as spark_functions
+        from pyspark.sql.types import LongType, StringType
+
+        cast_result = MagicMock(name="cast_result")
+        col_handle = MagicMock(name="col_handle")
+        col_handle.cast.return_value = cast_result
+        monkeypatch.setattr(spark_functions, "col", MagicMock(return_value=col_handle))
 
         applier = self._make_applier()
 
@@ -380,13 +395,12 @@ class TestMigrationApplierTransforms:
 
         result = applier._apply_transforms(mock_df, entity, [change], {})
 
-        mock_df.withColumn.assert_called_once()
-        call_args = mock_df.withColumn.call_args
-        assert call_args[0][0] == "id"
+        spark_functions.col.assert_called_once_with("id")
+        col_handle.cast.assert_called_once_with(LongType())
+        mock_df.withColumn.assert_called_once_with("id", cast_result)
 
     def test_apply_transforms_uses_user_transform_over_auto_cast(self):
-        from pyspark.sql import functions as F
-        from pyspark.sql.types import LongType, StringType
+        from pyspark.sql.types import StringType
 
         applier = self._make_applier()
 
@@ -404,7 +418,10 @@ class TestMigrationApplierTransforms:
             type_changes=[tc],
         )
 
-        user_expr = F.col("id").cast(StringType())
+        # The applier passes the expression through opaquely, so a sentinel
+        # works — a real F.col() would need an active SparkContext and make
+        # the test order-dependent.
+        user_expr = MagicMock(name="user_transform_expr")
         mock_df = MagicMock()
         mock_df.withColumn.return_value = mock_df
 
@@ -492,14 +509,40 @@ class TestMigrationApplierDestructiveGuard:
         with pytest.raises(RuntimeError, match="allow_destructive"):
             applier.apply(plan, allow_destructive=False)
 
-    def test_skips_entity_with_plan_error(self):
+    def test_apply_refuses_plan_with_errors(self):
+        """Applying around inspection errors silently leaves a mixed state;
+        the applier must fail fast instead of skipping errored entities."""
         applier = self._make_applier()
-        entity = _entity()
-        status = EntityMigrationStatus(entity=entity, error="some error")
+        errored = EntityMigrationStatus(entity=_entity("bad.entity"), error="some error")
+        healthy_entity = _entity("good.entity")
+        healthy = EntityMigrationStatus(
+            entity=healthy_entity,
+            changes=[
+                EntityMigrationChange(
+                    entity=healthy_entity,
+                    kind=ChangeKind.CREATE_TABLE,
+                    destructiveness=ChangeDestructiveness.SAFE,
+                    detail="table does not exist, will be created",
+                )
+            ],
+        )
+        plan = MigrationPlan(statuses=[errored, healthy])
+
+        with pytest.raises(RuntimeError, match="bad.entity"):
+            applier.apply(plan, allow_destructive=False)
+
+        # Nothing was applied, not even the healthy entity.
+        applier._provider._get_table_reference.assert_not_called()
+
+    def test_apply_skips_out_of_scope_entity(self):
+        applier = self._make_applier()
+        status = EntityMigrationStatus(
+            entity=_entity(), skipped_reason="provider_type 'memory' is not supported"
+        )
         plan = MigrationPlan(statuses=[status])
 
-        # Should not raise, just log and skip
         applier.apply(plan, allow_destructive=False)
+        applier._provider._get_table_reference.assert_not_called()
 
     def test_skips_up_to_date_entity(self):
         applier = self._make_applier()
@@ -509,6 +552,65 @@ class TestMigrationApplierDestructiveGuard:
 
         applier.apply(plan, allow_destructive=False)
         applier._provider._get_table_reference.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# MigrationPlanner — provider scope
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationPlannerProviderScope:
+    def _make_planner(self, entities):
+        registry = MagicMock()
+        registry.get_entity_ids.return_value = [e.entityid for e in entities]
+        lookup = {e.entityid: e for e in entities}
+        registry.get_entity_definition.side_effect = lambda eid: lookup[eid]
+        provider = MagicMock()
+        tp = MagicMock()
+        tp.get_logger.return_value = MagicMock()
+        planner = MigrationPlanner.__new__(MigrationPlanner)
+        planner._registry = registry
+        planner._provider = provider
+        planner._logger = tp.get_logger("test")
+        return planner
+
+    def test_non_delta_entity_is_skipped_not_planned(self):
+        """Without the guard, a memory/parquet/eventhub entity is planned
+        against the Delta provider as a safe CREATE_TABLE and apply creates
+        a spurious managed Delta table for it."""
+        entity = _entity("mem.entity")
+        entity.tags = {"provider_type": "memory"}
+        planner = self._make_planner([entity])
+
+        plan = planner.plan()
+
+        status = plan.statuses[0]
+        assert "memory" in status.skipped_reason
+        assert not status.changes
+        assert status.error is None
+        planner._provider._get_table_reference.assert_not_called()
+
+    def test_missing_provider_type_defaults_to_delta_and_is_planned(self):
+        entity = _entity("delta.entity")  # tags={} → provider_type defaults to delta
+        planner = self._make_planner([entity])
+        planner._provider._check_table_exists.return_value = False
+
+        plan = planner.plan()
+
+        status = plan.statuses[0]
+        assert status.skipped_reason is None
+        assert status.changes[0].kind == ChangeKind.CREATE_TABLE
+
+    def test_skipped_entity_prints_skip_marker(self, capsys):
+        entity = _entity("mem.entity")
+        entity.tags = {"provider_type": "memory"}
+        planner = self._make_planner([entity])
+
+        planner.plan().print_summary()
+
+        out = capsys.readouterr().out
+        assert "[SKIP]" in out
+        assert "mem.entity" in out
 
 
 # ---------------------------------------------------------------------------
@@ -564,19 +666,18 @@ class TestMigrationService:
 
 
 # ---------------------------------------------------------------------------
-# SQL normalization
+# SQL hashing
 # ---------------------------------------------------------------------------
 
 
-class TestNormalizeSql:
-    def test_collapses_whitespace(self):
-        assert _normalize_sql("SELECT  a,  b  FROM  t") == _normalize_sql("SELECT a, b FROM t")
+class TestSqlHash:
+    def test_hash_is_stable(self):
+        assert _sql_hash("SELECT 1") == _sql_hash("SELECT 1")
 
-    def test_lowercases(self):
-        assert _normalize_sql("SELECT A FROM T") == _normalize_sql("select a from t")
-
-    def test_strips_leading_trailing(self):
-        assert _normalize_sql("  SELECT 1  ") == "select 1"
+    def test_hash_is_over_raw_sql(self):
+        """Deliberate: normalizing would risk missing changes inside string
+        literals; a formatting-only change just causes a benign view replace."""
+        assert _sql_hash("SELECT  1") != _sql_hash("SELECT 1")
 
 
 # ---------------------------------------------------------------------------
