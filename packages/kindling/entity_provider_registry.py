@@ -206,4 +206,13 @@ class EntityProviderRegistry:
         except ImportError:
             self.logger.debug("Current view provider not available")
 
+        # API-based ADX provider (azure-kusto SDKs; the Spark-connector
+        # variant lives in kindling_ext_adx under provider_type "adx")
+        try:
+            from .entity_provider_adx import AdxApiEntityProvider
+
+            self.register_provider("adx-api", AdxApiEntityProvider)
+        except ImportError:
+            self.logger.debug("ADX API provider not available")
+
         self.logger.info(f"Registered {len(self._provider_classes)} built-in provider(s)")
