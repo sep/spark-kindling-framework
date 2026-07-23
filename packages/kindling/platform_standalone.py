@@ -635,59 +635,9 @@ class StandaloneService(PlatformService):
 
     def _convert_python_to_cells(self, python_content: str) -> List[Dict[str, Any]]:
         """Convert Python file content to notebook cells"""
-        cells = []
-        lines = python_content.split("\n")
-        current_cell = []
-        cell_type = "code"
+        from kindling.notebook_source import python_source_to_cells
 
-        for line in lines:
-            if line.startswith("# MAGIC %md"):
-                # Save current cell if it has content
-                if current_cell:
-                    cells.append(
-                        {
-                            "cell_type": cell_type,
-                            "source": "\n".join(current_cell),
-                            "metadata": {},
-                            "outputs": [] if cell_type == "code" else None,
-                            "execution_count": None if cell_type == "code" else None,
-                        }
-                    )
-                    current_cell = []
-                cell_type = "markdown"
-            elif line.startswith("# COMMAND ----------"):
-                # Save current cell and start new code cell
-                if current_cell:
-                    cells.append(
-                        {
-                            "cell_type": cell_type,
-                            "source": "\n".join(current_cell),
-                            "metadata": {},
-                            "outputs": [] if cell_type == "code" else None,
-                            "execution_count": None if cell_type == "code" else None,
-                        }
-                    )
-                    current_cell = []
-                cell_type = "code"
-            else:
-                # Remove MAGIC prefix for markdown
-                if cell_type == "markdown" and line.startswith("# MAGIC "):
-                    line = line[8:]  # Remove '# MAGIC '
-                current_cell.append(line)
-
-        # Save final cell
-        if current_cell:
-            cells.append(
-                {
-                    "cell_type": cell_type,
-                    "source": "\n".join(current_cell),
-                    "metadata": {},
-                    "outputs": [] if cell_type == "code" else None,
-                    "execution_count": None if cell_type == "code" else None,
-                }
-            )
-
-        return cells
+        return python_source_to_cells(python_content)
 
     def create_notebook(self, notebook_name: str, content: str = None) -> bool:
         """Create a new notebook locally"""
@@ -769,26 +719,9 @@ class StandaloneService(PlatformService):
 
     def _convert_cells_to_python(self, cells: List[Dict[str, Any]]) -> str:
         """Convert notebook cells to Python file format"""
-        lines = []
+        from kindling.notebook_source import cells_to_python_source
 
-        for cell in cells:
-            cell_type = cell.get("cell_type", "code")
-            source = cell.get("source", [])
-
-            if isinstance(source, list):
-                source = "\n".join(source)
-
-            if cell_type == "markdown":
-                # Convert markdown to commented lines
-                for line in source.split("\n"):
-                    lines.append(f"# MAGIC %md {line}")
-            else:
-                # Code cell
-                if lines:  # Add separator if not first cell
-                    lines.append("# COMMAND ----------")
-                lines.append(source)
-
-        return "\n".join(lines)
+        return cells_to_python_source(cells)
 
     def get_folder_name(self, folder_id: str) -> str:
         """Get folder name from folder ID (in local, folder_id is the folder name)"""

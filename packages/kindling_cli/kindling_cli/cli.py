@@ -2757,6 +2757,7 @@ def _import_notebook_to_workspace(
     workspace: str,
     notebook_name: str,
     notebook_data: Dict[str, Any],
+    databricks_folder: Optional[str] = None,
 ) -> None:
     """Import a Jupyter notebook into the target workspace using platform-native APIs."""
     import json
@@ -2777,8 +2778,8 @@ def _import_notebook_to_workspace(
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
         content_b64 = base64.b64encode(json.dumps(notebook_data).encode()).decode()
-        # Default to /Shared/kindling/ folder
-        nb_path = f"/Shared/kindling/{notebook_name}"
+        nb_folder = (databricks_folder or "/Shared/kindling").rstrip("/")
+        nb_path = f"{nb_folder}/{notebook_name}"
 
         resp = requests.post(
             f"{workspace}/api/2.0/workspace/import",
@@ -2889,6 +2890,358 @@ def _import_notebook_to_workspace(
 
     else:
         raise click.ClickException(f"Unsupported platform for notebook import: {platform}")
+
+
+# =============================================================================
+# notebook — round-trip workspace notebooks as local python source
+# =============================================================================
+
+_WORKSPACE_ENV_BY_PLATFORM = {
+    "databricks": "DATABRICKS_HOST",
+    "synapse": "SYNAPSE_WORKSPACE_NAME",
+    "fabric": "FABRIC_WORKSPACE_ID",
+}
+
+
+def _resolve_notebook_target(platform: Optional[str], workspace: Optional[str]) -> Tuple[str, str]:
+    """Resolve (platform, workspace) from options and environment."""
+    resolved_platform = platform or _detect_platform_from_environment()
+    if not resolved_platform:
+        raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
+    env_var = _WORKSPACE_ENV_BY_PLATFORM[resolved_platform]
+    resolved_workspace = workspace or os.getenv(env_var)
+    if not resolved_workspace:
+        raise click.ClickException(
+            f"--workspace is required for {resolved_platform} (or set {env_var})."
+        )
+    return resolved_platform, resolved_workspace
+
+
+def _require_requests():
+    try:
+        import requests
+
+        return requests
+    except ImportError as exc:
+        raise click.ClickException(
+            "Notebook commands require the deploy extra.\n"
+            "Install with: pip install 'spark-kindling-cli[deploy]'"
+        ) from exc
+
+
+def _require_notebook_source():
+    try:
+        from kindling import notebook_source
+
+        return notebook_source
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+
+def _notebook_rest_headers(platform: str) -> Dict[str, str]:
+    credential = create_azure_credential(additionally_allowed_tenants=["*"])
+    if platform == "databricks":
+        token = credential.get_token("2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/.default").token
+    elif platform == "synapse":
+        token = credential.get_token(
+            azure_token_scope("AZURE_SYNAPSE_TOKEN_SCOPE", "https://dev.azuresynapse.net/.default")
+        ).token
+    else:
+        token = credential.get_token(
+            azure_token_scope("FABRIC_TOKEN_SCOPE", "https://api.fabric.microsoft.com/.default")
+        ).token
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def _synapse_base_url(workspace: str) -> str:
+    synapse_suffix = azure_synapse_dev_endpoint_suffix()
+    return f"https://{workspace}.{synapse_suffix.strip().lstrip('.')}"
+
+
+def _fabric_notebook_items(workspace: str, headers: Dict[str, str]) -> List[Dict[str, Any]]:
+    """List Fabric notebook items (id + displayName), following pagination."""
+    requests = _require_requests()
+    items: List[Dict[str, Any]] = []
+    url = f"{fabric_api_base_url()}/workspaces/{workspace}/notebooks"
+    while url:
+        resp = requests.get(url, headers=headers)
+        if resp.status_code != 200:
+            raise click.ClickException(
+                f"Fabric notebook list failed ({resp.status_code}): {resp.text}"
+            )
+        payload = resp.json()
+        items.extend(payload.get("value", []))
+        url = payload.get("continuationUri")
+    return items
+
+
+def _list_workspace_notebooks(platform: str, workspace: str, folder: str) -> List[str]:
+    requests = _require_requests()
+    headers = _notebook_rest_headers(platform)
+
+    if platform == "databricks":
+        resp = requests.get(
+            f"{workspace}/api/2.0/workspace/list", headers=headers, params={"path": folder}
+        )
+        if resp.status_code == 404:
+            return []
+        if resp.status_code != 200:
+            raise click.ClickException(
+                f"Databricks workspace list failed ({resp.status_code}): {resp.text}"
+            )
+        objects = resp.json().get("objects", [])
+        return sorted(
+            obj["path"].rsplit("/", 1)[-1]
+            for obj in objects
+            if obj.get("object_type") == "NOTEBOOK"
+        )
+
+    if platform == "synapse":
+        names: List[str] = []
+        url = f"{_synapse_base_url(workspace)}/notebooks?api-version=2020-12-01"
+        while url:
+            resp = requests.get(url, headers=headers)
+            if resp.status_code != 200:
+                raise click.ClickException(
+                    f"Synapse notebook list failed ({resp.status_code}): {resp.text}"
+                )
+            payload = resp.json()
+            names.extend(item["name"] for item in payload.get("value", []))
+            url = payload.get("nextLink")
+        return sorted(names)
+
+    return sorted(
+        item.get("displayName", "")
+        for item in _fabric_notebook_items(workspace, headers)
+        if item.get("displayName")
+    )
+
+
+def _fetch_notebook_cells(
+    platform: str, workspace: str, name: str, folder: str
+) -> List[Dict[str, Any]]:
+    """Fetch one workspace notebook and return its cells (Jupyter shape)."""
+    import base64
+    import json
+
+    requests = _require_requests()
+    headers = _notebook_rest_headers(platform)
+
+    if platform == "databricks":
+        nb_path = f"{folder.rstrip('/')}/{name}"
+        resp = requests.get(
+            f"{workspace}/api/2.0/workspace/export",
+            headers=headers,
+            params={"path": nb_path, "format": "JUPYTER"},
+        )
+        if resp.status_code != 200:
+            raise click.ClickException(
+                f"Databricks export failed for {nb_path} ({resp.status_code}): {resp.text}"
+            )
+        content = base64.b64decode(resp.json()["content"]).decode("utf-8")
+        return json.loads(content).get("cells", [])
+
+    if platform == "synapse":
+        resp = requests.get(
+            f"{_synapse_base_url(workspace)}/notebooks/{name}?api-version=2020-12-01",
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            raise click.ClickException(
+                f"Synapse notebook get failed for '{name}' ({resp.status_code}): {resp.text}"
+            )
+        return resp.json().get("properties", {}).get("cells", [])
+
+    # Fabric: resolve item id, then export the ipynb definition (may be async).
+    items = _fabric_notebook_items(workspace, headers)
+    match = next((item for item in items if item.get("displayName") == name), None)
+    if match is None:
+        raise click.ClickException(f"Notebook '{name}' not found in workspace {workspace}.")
+
+    resp = requests.post(
+        f"{fabric_api_base_url()}/workspaces/{workspace}/notebooks/{match['id']}"
+        "/getDefinition?format=ipynb",
+        headers=headers,
+    )
+    if resp.status_code == 202:
+        import time
+
+        location = resp.headers.get("Location", "")
+        for _ in range(30):
+            time.sleep(2)
+            resp = requests.get(location, headers=headers)
+            if resp.status_code == 200:
+                break
+        else:
+            raise click.ClickException(f"Fabric definition export timed out for '{name}'.")
+        if "definition" not in resp.json():
+            resp = requests.get(f"{location.rstrip('/')}/result", headers=headers)
+    elif resp.status_code != 200:
+        raise click.ClickException(
+            f"Fabric definition export failed for '{name}' ({resp.status_code}): {resp.text}"
+        )
+
+    parts = resp.json().get("definition", {}).get("parts", [])
+    for part in parts:
+        if part.get("path", "").endswith(".ipynb"):
+            content = base64.b64decode(part["payload"]).decode("utf-8")
+            return json.loads(content).get("cells", [])
+    raise click.ClickException(f"Fabric notebook '{name}' has no ipynb definition part.")
+
+
+@cli.group("notebook")
+def notebook_group() -> None:
+    """Round-trip workspace notebooks as local python source files.
+
+    Local files use the Databricks source format: cells separated by
+    `# COMMAND ----------`, markdown as `# MAGIC` blocks. The standalone
+    platform reads the same format as local workspace notebooks, so pulled
+    files run locally unchanged.
+    """
+
+
+_NB_PLATFORM_OPTION = click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Target platform. Auto-detected from environment if omitted.",
+)
+_NB_WORKSPACE_OPTION = click.option(
+    "--workspace",
+    default=None,
+    help=(
+        "Platform workspace: URL for Databricks, name for Synapse, id for Fabric. "
+        "Falls back to DATABRICKS_HOST / SYNAPSE_WORKSPACE_NAME / FABRIC_WORKSPACE_ID."
+    ),
+)
+_NB_FOLDER_OPTION = click.option(
+    "--folder",
+    default="/Shared/kindling",
+    show_default=True,
+    help="Workspace folder (Databricks only; Synapse and Fabric notebooks are flat).",
+)
+
+
+@notebook_group.command("list")
+@_NB_PLATFORM_OPTION
+@_NB_WORKSPACE_OPTION
+@_NB_FOLDER_OPTION
+def notebook_list(platform: Optional[str], workspace: Optional[str], folder: str) -> None:
+    """List notebooks in the platform workspace.
+
+    \b
+    Examples:
+      kindling notebook list --platform databricks
+      kindling notebook list --platform fabric --workspace <workspace-id>
+    """
+    platform, workspace = _resolve_notebook_target(platform, workspace)
+    names = _list_workspace_notebooks(platform, workspace, folder)
+    if not names:
+        click.echo("No notebooks found.")
+        return
+    for name in names:
+        click.echo(name)
+
+
+@notebook_group.command("pull")
+@click.argument("names", nargs=-1)
+@click.option("--all", "pull_all", is_flag=True, help="Pull every notebook in the workspace.")
+@click.option(
+    "--out",
+    "out_dir",
+    default="notebooks",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Local directory to write .py source files into.",
+)
+@click.option("--overwrite", is_flag=True, help="Replace existing local files.")
+@_NB_PLATFORM_OPTION
+@_NB_WORKSPACE_OPTION
+@_NB_FOLDER_OPTION
+def notebook_pull(
+    names: Tuple[str, ...],
+    pull_all: bool,
+    out_dir: Path,
+    overwrite: bool,
+    platform: Optional[str],
+    workspace: Optional[str],
+    folder: str,
+) -> None:
+    """Export workspace notebooks to local .py source files.
+
+    \b
+    Examples:
+      kindling notebook pull my_pipeline --platform databricks
+      kindling notebook pull --all --out notebooks/ --overwrite
+    """
+    notebook_source = _require_notebook_source()
+    platform, workspace = _resolve_notebook_target(platform, workspace)
+
+    if pull_all:
+        names = tuple(_list_workspace_notebooks(platform, workspace, folder))
+        if not names:
+            click.echo("No notebooks found.")
+            return
+    if not names:
+        raise click.ClickException("Provide notebook names, or --all.")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        target = out_dir / f"{name}.py"
+        if target.exists() and not overwrite:
+            raise click.ClickException(f"{target} exists. Pass --overwrite to replace local files.")
+        cells = _fetch_notebook_cells(platform, workspace, name, folder)
+        target.write_text(notebook_source.cells_to_python_source(cells), encoding="utf-8")
+        click.echo(f"  {name} → {target}")
+    click.echo(f"Pulled {len(names)} notebook(s) from {workspace}.")
+
+
+@notebook_group.command("push")
+@click.argument(
+    "files",
+    nargs=-1,
+    required=True,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+)
+@click.option(
+    "--name",
+    default=None,
+    help="Workspace notebook name (single file only; defaults to the file stem).",
+)
+@_NB_PLATFORM_OPTION
+@_NB_WORKSPACE_OPTION
+@_NB_FOLDER_OPTION
+def notebook_push(
+    files: Tuple[Path, ...],
+    name: Optional[str],
+    platform: Optional[str],
+    workspace: Optional[str],
+    folder: str,
+) -> None:
+    """Import local .py source files into the workspace as notebooks.
+
+    \b
+    Examples:
+      kindling notebook push notebooks/my_pipeline.py --platform databricks
+      kindling notebook push notebooks/*.py --platform synapse
+    """
+    notebook_source = _require_notebook_source()
+    platform, workspace = _resolve_notebook_target(platform, workspace)
+
+    if name and len(files) != 1:
+        raise click.ClickException("--name requires exactly one file.")
+
+    click.echo(f"Notebooks → {workspace}")
+    for file_path in files:
+        nb_name = name or file_path.stem
+        cells = notebook_source.python_source_to_cells(file_path.read_text(encoding="utf-8"))
+        notebook_data = _make_jupyter_notebook(cells)
+        _import_notebook_to_workspace(
+            platform, workspace, nb_name, notebook_data, databricks_folder=folder
+        )
+    click.echo(f"Pushed {len(files)} notebook(s).")
 
 
 @workspace_group.command("deploy")
