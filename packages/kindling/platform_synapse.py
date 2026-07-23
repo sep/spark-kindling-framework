@@ -788,63 +788,57 @@ class SynapseService(PlatformService):
 
         return content
 
-    def _convert_to_synapse_notebook(
-        self, notebook_name: str, notebook_data: Dict[str, Any]
-    ) -> NotebookResource:
-        """Convert notebook data to Synapse NotebookResource
+    def _convert_to_synapse_notebook(self, notebook_name: str, notebook_data: Dict[str, Any]):
+        """Convert notebook data to the Azure SDK's NotebookResource model.
 
-        Note: Returns Azure SDK's NotebookResource with proper Notebook object.
-        This is used when creating/updating notebooks via the Synapse API.
+        Must build ``azure.synapse.artifacts.models`` types, NOT kindling's
+        notebook_framework classes of the same names (which shadow them via
+        star import): the ArtifactsClient serializer only understands its own
+        generated models. Imported here, not at module level, so this module
+        stays importable without the [synapse] extra.
+
+        Accepts either ``{"properties": {...}}`` (Synapse resource shape) or a
+        bare Jupyter document (``{"cells": [...], ...}``).
         """
-        # Extract properties from notebook_data
-        properties = notebook_data.get("properties", {})
+        from azure.synapse.artifacts import models as synapse_models
 
-        # Create cells as NotebookCell objects
+        properties = notebook_data.get("properties", notebook_data)
+
         cells = []
-        if "cells" in properties:
-            for cell_data in properties["cells"]:
-                if isinstance(cell_data, dict):
-                    # Create NotebookCell from dict
-                    cell = NotebookCell(
-                        cell_type=cell_data.get("cell_type", "code"),
-                        source=cell_data.get("source", []),
-                        metadata=cell_data.get("metadata", {}),
-                        outputs=(
-                            cell_data.get("outputs", [])
-                            if cell_data.get("cell_type") == "code"
-                            else None
-                        ),
-                        execution_count=(
-                            cell_data.get("execution_count")
-                            if cell_data.get("cell_type") == "code"
-                            else None
-                        ),
-                    )
-                    cells.append(cell)
-
-        # Create metadata as NotebookMetadata object
-        metadata_dict = self._convert_metadata_to_dict(properties.get("metadata", {}))
-        metadata = NotebookMetadata(**metadata_dict) if metadata_dict else NotebookMetadata()
-
-        # Create folder as NotebookFolder object if provided
-        folder = None
-        folder_info = properties.get("folder", {})
-        if folder_info and isinstance(folder_info, dict):
-            folder = NotebookFolder(
-                name=folder_info.get("name", ""), path=folder_info.get("path", "")
+        for cell_data in properties.get("cells", []):
+            if not isinstance(cell_data, dict):
+                continue
+            source = cell_data.get("source", [])
+            if isinstance(source, str):
+                source = source.splitlines(keepends=True)
+            cells.append(
+                synapse_models.NotebookCell(
+                    cell_type=cell_data.get("cell_type", "code"),
+                    source=source,
+                    metadata=self._convert_metadata_to_dict(cell_data.get("metadata", {})),
+                    outputs=[] if cell_data.get("cell_type", "code") == "code" else None,
+                )
             )
 
-        # Create the Notebook object with proper Azure SDK models
-        notebook = Notebook(
+        metadata_dict = self._convert_metadata_to_dict(properties.get("metadata", {}))
+        metadata = synapse_models.NotebookMetadata(
+            kernelspec=metadata_dict.get("kernelspec"),
+            language_info=metadata_dict.get("language_info"),
+        )
+
+        folder = None
+        folder_info = properties.get("folder", {})
+        if isinstance(folder_info, dict) and folder_info.get("name"):
+            folder = synapse_models.NotebookFolder(name=folder_info["name"])
+
+        notebook = synapse_models.Notebook(
             metadata=metadata,
             nbformat=properties.get("nbformat", 4),
             nbformat_minor=properties.get("nbformat_minor", 2),
             cells=cells,
             folder=folder,
         )
-
-        # Create the NotebookResource with the Notebook object
-        return NotebookResource(name=notebook_name, properties=notebook)
+        return synapse_models.NotebookResource(name=notebook_name, properties=notebook)
 
     def _convert_from_notebook_resource(self, notebook: NotebookResource) -> Dict[str, Any]:
         """Convert NotebookResource to dictionary format"""
