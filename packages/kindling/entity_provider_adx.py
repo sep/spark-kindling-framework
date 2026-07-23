@@ -163,7 +163,27 @@ class AdxApiEntityProvider(BaseEntityProvider, WritableEntityProvider, Destinati
                 f"ADX query for entity '{entity_metadata.entityid}' returned no rows and "
                 "the entity declares no schema to type an empty DataFrame."
             )
-        return spark.createDataFrame(pdf)
+        return spark.createDataFrame(self._arrow_safe(pdf))
+
+    @staticmethod
+    def _arrow_safe(pdf):
+        """Serialize ADX dynamic values so Arrow conversion accepts them.
+
+        Kusto ``dynamic`` columns arrive from the SDK as Python dicts/lists
+        inside object-dtype columns, which pandas→Arrow conversion rejects.
+        They become JSON strings — the mirror of the write path, where
+        complex Spark types map to Kusto ``dynamic``.
+        """
+        import json  # noqa: PLC0415
+
+        for column in pdf.columns:
+            if pdf[column].dtype != object:
+                continue
+            if pdf[column].map(lambda v: isinstance(v, (dict, list))).any():
+                pdf[column] = pdf[column].map(
+                    lambda v: json.dumps(v) if isinstance(v, (dict, list)) else v
+                )
+        return pdf
 
     # ---- Windowed reads ----
 
