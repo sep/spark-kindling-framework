@@ -52,8 +52,10 @@ def rest(monkeypatch):
     holder = types.SimpleNamespace(handler=None)
 
     fake = types.ModuleType("requests")
-    fake.get = lambda url, headers=None, params=None: holder.handler("GET", url, params, None)
-    fake.post = lambda url, headers=None, params=None, json=None: holder.handler(
+    fake.get = lambda url, headers=None, params=None, timeout=None: holder.handler(
+        "GET", url, params, None
+    )
+    fake.post = lambda url, headers=None, params=None, json=None, timeout=None: holder.handler(
         "POST", url, params, json
     )
     monkeypatch.setattr("kindling.platform_databricks.requests", fake)
@@ -146,3 +148,38 @@ class TestGetNotebook:
         assert [c.cell_type for c in cells] == ["markdown", "code"]
         assert cells[1].get_source_as_string() == "x = 1\nprint(x)"
         assert cells[0].get_source_as_string() == "# Title"
+
+
+class TestLazyWorkspaceCache:
+    """The workspace scan (one REST call per directory — minutes on large
+    workspaces) must not run at service construction; deployments with
+    load_workspace_packages=False never need it."""
+
+    def _construct(self, monkeypatch, rest):
+        calls = []
+
+        def handler(method, url, params, body):
+            calls.append((url, dict(params or {})))
+            return _response(200, {"objects": []})
+
+        rest.handler = handler
+        monkeypatch.setattr(
+            DatabricksService, "_build_base_url", lambda self: "https://db.example.net"
+        )
+        svc = DatabricksService(MagicMock(), MagicMock())
+        svc._get_headers = lambda: {"Authorization": "t"}
+        return svc, calls
+
+    def test_construction_makes_no_workspace_calls(self, monkeypatch, rest):
+        _, calls = self._construct(monkeypatch, rest)
+        assert calls == []
+
+    def test_first_notebook_lookup_triggers_scan_once(self, monkeypatch, rest):
+        svc, calls = self._construct(monkeypatch, rest)
+
+        svc._resolve_notebook_path("some_notebook")
+        assert len(calls) == 1  # root listing (no subdirectories in fake)
+        assert calls[0][1].get("path") == "/"
+
+        svc._resolve_notebook_path("another")
+        assert len(calls) == 1  # cache initialized once, not per lookup
