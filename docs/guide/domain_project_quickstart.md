@@ -215,7 +215,7 @@ def initialize(env: str = None, config_dir: Path = None):
 
 ## 7. Add Entities
 
-Entities are named, schema-typed data sets — Delta tables, views, or in-memory frames. They are registered with the `@DataEntities.entity()` decorator and live in `entities.py` (or any module imported by `app.py`).
+Entities are named, schema-typed data sets — Delta tables, views, or in-memory frames. They are registered with the `DataEntities.entity()` decorator and live in `entities.py` (or any module imported by `app.py`).
 
 ### Basic entity
 
@@ -230,7 +230,7 @@ orders_schema = StructType([
     StructField("created_at", TimestampType(), nullable=True),
 ])
 
-@DataEntities.entity(
+DataEntities.entity(
     entityid="bronze.orders",
     name="Raw Orders",
     partition_columns=["status"],
@@ -256,7 +256,7 @@ Key parameters:
 Add `scd.type: "2"` and `scd.tracked` tags; the framework automatically manages `__effective_from`, `__effective_to`, and `__is_current` columns:
 
 ```python
-@DataEntities.entity(
+DataEntities.entity(
     entityid="silver.dim_customer",
     name="Customer Dimension",
     merge_columns=["customer_id"],

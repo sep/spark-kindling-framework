@@ -10,9 +10,12 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 
 ### Key Capabilities
 
-- **Multi-Platform Support** - Unified API across Fabric, Synapse, and Databricks
+- **Multi-Platform Support** - Unified API across Fabric, Synapse, and Databricks (including UC shared/standard access mode clusters) plus local/standalone Spark
 - **Data Apps & Job Deployment** - Package and deploy apps as Spark jobs
-- **Hierarchical Configuration** - Platform, workspace, and environment-specific configs
+- **Batch & Streaming Pipelines** - Incremental watermarked reads, streaming pipes with SCD1/SCD2 merge sinks
+- **Pluggable Entity Providers** - Delta, Parquet, CSV, SQL views, in-memory, Event Hubs, and Azure Data Explorer out of the box
+- **Hierarchical Configuration** - Platform, workspace, and environment-specific configs; execution options resolve config-first
+- **Schema Reconciliation** - `kindling migrate` plans and applies drift between declared entities and live tables
 - **Extensibility** - Plugin system for custom telemetry and integrations
 - **Enterprise Observability** - Built-in logging, tracing, and Azure Monitor integration
 
@@ -20,20 +23,26 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 
 ### Core Features
 - [Introduction](./docs/intro.md) - Framework overview and architecture
+- [Setup Guide](./docs/guide/setup_guide.md) - Installation and configuration
+- [Local Python-First Development](./docs/guide/local_python_first.md) - Scaffold, run, and test without cloud credentials
+- [CLI Reference](./docs/reference/cli_reference.md) - Every `kindling` command (scaffolding, apps, migrate, notebooks, workspace)
 - [Data Entities](./docs/guide/data_entities.md) - Data entity management system
+- [Entity Configuration](./docs/guide/entity_configuration.md) - Tags-first declaration conventions
 - [Data Pipes](./docs/guide/data_pipes.md) - Transformation pipeline system
 - [Derived Datasets](./docs/guide/derived_datasets.md) - Replacement writes: derived datasets, slice replace, insert-only
 - [Entity Providers](./docs/contributing/entity_providers.md) - Storage abstraction system
-- [Setup Guide](./docs/guide/setup_guide.md) - Installation and configuration
 - [Migrating from runMultiple](./docs/guide/migrating_from_runmultiple.md) - Move Synapse/Fabric notebook DAGs to Kindling pipes
 
 ### Advanced Features
 - [Job Deployment](./docs/contributing/job_deployment.md) - Deploy apps as Spark jobs
 - [Hierarchical Configuration](./docs/contributing/platform_workspace_config.md) - Multi-level YAML config system
-- [Logging & Tracing](./docs/contributing/logging_tracing.md) - Observability foundation
+- [Logging & Tracing](./docs/contributing/logging_tracing.md) - Observability foundation (including JVM-free telemetry for UC shared clusters)
 - [Watermarking](./docs/contributing/watermarking.md) - Change tracking and incremental processing
 - [File Ingestion](./docs/guide/file_ingestion.md) - Built-in file ingestion capabilities
 - [Stage Processing](./docs/contributing/stage_processing.md) - Pipeline stage orchestration
+- [Temporal End-to-End](./docs/guide/temporal_end_to_end.md) - Events, conditions, and episodes (kindling-ext-temporal)
+- [Lakeflow App Selection](./docs/guide/lakeflow_app_selection.md) - Run Kindling data apps inside Databricks Lakeflow pipelines
+- [Dynamic Registration](./docs/guide/dynamic_registration.md) - Register entities and pipes at runtime
 
 ### Platform & Development
 - [Platform API Architecture](./docs/contributing/platform_api_architecture.md) - Multi-platform abstraction
@@ -55,6 +64,8 @@ The framework consists of several modular components:
 - **Configuration System** - Hierarchical YAML configuration (platform/workspace/environment)
 - **Platform Services** - Unified abstraction for Fabric/Synapse/Databricks
 - **Watermarking** - Change tracking for incremental processing
+- **Streaming Orchestration** - Streaming queries with health monitoring, recovery, and merge sinks
+- **Migration** - Plan/apply reconciliation of declared entities against live Delta tables and views
 - **File Ingestion** - File pattern discovery and loading
 - **Stage Processing** - Orchestration of multi-stage pipelines
 - **Common Transforms** - Reusable data transformation utilities
@@ -63,8 +74,12 @@ The framework consists of several modular components:
 ## Extensions
 
 - **[kindling-ext-otel-azure](./packages/extensions/kindling_ext_otel_azure/)** - Azure Monitor OpenTelemetry integration
-- **[kindling-ext-sdp](./packages/extensions/kindling_ext_sdp/)** - Spark Declarative Pipelines support
-- **[kindling-ext-databricks](./packages/extensions/kindling_ext_databricks/)** - Databricks Lakeflow extensions
+- **[kindling-ext-sdp](./packages/extensions/kindling_ext_sdp/)** - Spark Declarative Pipelines (SDP) declaration engine
+- **[kindling-ext-databricks](./packages/extensions/kindling_ext_databricks/)** - Databricks Lakeflow adapter for the SDP declaration engine
+- **[kindling-ext-temporal](./packages/extensions/kindling_ext_temporal/)** - Temporal event, condition, and episode primitives
+- **[kindling-ext-adx](./packages/extensions/kindling_ext_adx/)** - Azure Data Explorer entity provider (Kusto Spark connector; an API-based `adx-api` provider ships in core)
+- **[kindling-ext-cosmos](./packages/extensions/kindling_ext_cosmos/)** - Azure Cosmos DB entity provider (idempotent upsert writes)
+- **[kindling-ext-visualization](./packages/extensions/kindling_ext_visualization/)** - Matplotlib visualization helpers
 
 ## Install
 
@@ -75,6 +90,7 @@ pip install 'spark-kindling[synapse]'      # Azure Synapse Analytics
 pip install 'spark-kindling[databricks]'   # Databricks
 pip install 'spark-kindling[fabric]'       # Microsoft Fabric
 pip install 'spark-kindling[standalone]'   # Local development / generic Spark
+pip install 'spark-kindling[adx]'          # + azure-kusto SDKs for the adx-api provider
 ```
 
 The Python import name is `kindling` (unchanged):
@@ -118,14 +134,14 @@ from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.injection import get_kindling_service
 
-# Define data entity
-@DataEntities.entity(
+# Define data entity (a plain call — registration happens immediately)
+DataEntities.entity(
     entityid="customers.raw",
     name="Raw Customer Data",
     partition_columns=["country"],
     merge_columns=["customer_id"],
     tags={"domain": "customer", "layer": "bronze"},
-    schema=customer_schema
+    schema=customer_schema,
 )
 
 # Create data transformation pipe
@@ -149,12 +165,16 @@ executer.run_datapipes(["customers.transform"])
 ## Key Features
 
 ### Core Framework
-- **Declarative definitions** for data entities and transformations
+- **Declarative definitions** for data entities and transformations (tags-first conventions)
 - **Dependency injection** for loose coupling and testability
 - **Delta Lake integration** for reliable storage and time travel
+- **Built-in entity providers** - `delta`, `parquet`, `csv`, `memory`, `sql` (views), `current_view` (SCD2), `eventhub`, `adx-api`; ADX (connector) and Cosmos DB via extensions
 - **Watermarking** for change tracking and incremental loads
-- **Pluggable providers** for storage, paths, and execution strategies
-- **Observability** through logging and tracing
+- **Streaming pipes** with per-micro-batch SCD1/SCD2 merge sinks (`write.mode` tag)
+- **Config-first execution options** - parallelism, error strategies (incl. `skip_dependents`), per-pipe retry via `kindling.execution.*`
+- **Schema reconciliation** - `kindling migrate plan|apply` converges live tables to declared entities
+- **Notebook round-tripping** - `kindling notebook list|pull|push` workspace notebooks as git-friendly `.py` source
+- **Observability** through logging and tracing (JVM-free fallback on UC shared clusters)
 
 ### Multi-Platform Support
 - **Unified API** across Microsoft Fabric, Azure Synapse, and Databricks
@@ -177,20 +197,22 @@ executer.run_datapipes(["customers.transform"])
 ### Extensibility
 - **Extension system** - load custom packages via configuration
 - **Azure Monitor integration** - via kindling-ext-otel-azure extension
+- **Declarative engines** - SDP declaration engine with a Databricks Lakeflow adapter (kindling-ext-sdp / kindling-ext-databricks)
+- **Temporal primitives** - events, conditions, and episode lifecycle (kindling-ext-temporal)
 - **Custom providers** - implement your own storage backends
 - **Signal/event system** - blinker-based pub/sub for custom workflows
 
 ## Requirements
 - Python 3.10+
 - Apache Spark 3.4+
-- One of: Microsoft Fabric, Azure Synapse Analytics, or Databricks
+- Microsoft Fabric, Azure Synapse Analytics, Databricks — or local/standalone Spark for development
 
 ## Dependencies
 This framework builds upon several excellent open source projects:
 
 - **Apache Spark** - Unified analytics engine for large-scale data processing (Apache 2.0)
 - **Delta Lake** - Storage framework for reliable data lakes (Apache 2.0)
-- **inject** - Python dependency injection framework (Apache 2.0)
+- **injector** - Python dependency injection framework (BSD)
 - **blinker** - Python signal/event framework for pub/sub (MIT)
 - **dynaconf** - Configuration management for Python (MIT)
 - **pytest** - Testing framework (MIT)

@@ -22,8 +22,10 @@ This means a read-only CSV provider only implements `BaseEntityProvider`, while 
 Built-in providers: `delta` (all five + merge), `parquet` (all five, no
 merge — plain-parquet interchange at solution boundaries; see
 `entity_provider_parquet.py` for the no-transaction-log caveats), `csv`,
-`memory`, `eventhub`, `sql` (views), and `current_view`. Extensions add
-`adx` and `cosmos`.
+`memory`, `eventhub`, `sql` (views), `current_view`, and `adx-api`
+(Azure Data Explorer via the azure-kusto Python SDKs, `[adx]` extra —
+runs where the JVM Kusto connector cannot). Extensions add `adx`
+(Kusto Spark connector) and `cosmos`.
 
 Capability helpers are provided for runtime checks:
 
@@ -277,7 +279,7 @@ from kindling.injection import get_kindling_service
 entity_provider = get_kindling_service(BaseEntityProvider)
 
 # Define entity with merge columns
-@DataEntities.entity(
+DataEntities.entity(
     entityid="customers.profiles",
     name="Customer Profiles",
     partition_columns=["country"],

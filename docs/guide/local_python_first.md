@@ -252,7 +252,7 @@ Seed rows are a list of dicts (one per row) defined directly in the entity decla
 ```python
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
-@DataEntities.entity(
+DataEntities.entity(
     entityid="ref.statuses",
     name="statuses",
     merge_columns=["id"],

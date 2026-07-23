@@ -42,10 +42,10 @@ class EntityMetadata:
 - `tags`: Key-value pairs for categorization and metadata
 - `schema`: Spark schema definition for the entity
 
-### 2. @DataEntities.entity() Decorator
+### 2. DataEntities.entity() Declaration
 
 ```python
-@DataEntities.entity(
+DataEntities.entity(
     entityid="domain.entity_name",
     name="Human Readable Entity Name",
     partition_columns=["date", "region"],
@@ -320,7 +320,7 @@ customer_schema = StructType([
 ])
 
 # Register entity
-@DataEntities.entity(
+DataEntities.entity(
     entityid="bronze.customers",
     name="Bronze Layer Customers",
     partition_columns=["region"],
@@ -346,7 +346,7 @@ sales_schema = StructType([
     StructField("channel", StringType(), False)
 ])
 
-@DataEntities.entity(
+DataEntities.entity(
     entityid="silver.sales_transactions",
     name="Silver Layer Sales Transactions",
     partition_columns=["transaction_date", "region"],
@@ -514,7 +514,7 @@ and no `spark` parameter (Spark is not injected into batch pipe functions).
     schema=raw_sales_schema
 )
 
-@DataEntities.entity(
+DataEntities.entity(
     entityid="silver.clean_sales",
     name="Clean Sales Data",
     partition_columns=["date", "region"],
@@ -544,7 +544,7 @@ Entities tagged `scd.type: "2"` automatically receive Slowly Changing Dimension 
 ### Declaration
 
 ```python
-@DataEntities.entity(
+DataEntities.entity(
     entityid="silver.dim_customer",
     name="Customer Dimension",
     merge_columns=["customer_id"],          # business key — required for SCD2
@@ -611,7 +611,7 @@ Writing to a companion entity raises `NotImplementedError`.
 - **Registry Access**: Automatic initialization of registry through dependency injection
 - **Schema Validation**: Depends on EntityProvider implementation
 - **Storage Errors**: Handled by concrete EntityProvider implementations
-- **`KindlingNotInitializedError`**: Raised by `@DataEntities.entity()`, `@DataEntities.sql_entity()`, and `@DataPipes.pipe()` decorators when they fire before `initialize()` has been called. This typically means an entity or pipe module was imported before `app.py`'s `register_all()` completed. Fix: ensure `initialize()` runs before any entity or pipe module is imported.
+- **`KindlingNotInitializedError`**: Raised by `DataEntities.entity()`, `@DataEntities.sql_entity()`, and `@DataPipes.pipe()` decorators when they fire before `initialize()` has been called. This typically means an entity or pipe module was imported before `app.py`'s `register_all()` completed. Fix: ensure `initialize()` runs before any entity or pipe module is imported.
 
 ## Data Governance Features
 
