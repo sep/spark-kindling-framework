@@ -23,7 +23,7 @@ Configuration (entity tags):
     provider.table: target table (required for writes; reads may use query)
     provider.query: KQL for reads (defaults to reading provider.table)
     provider.ingest_uri: ingestion endpoint (default: cluster URI with "ingest-" host prefix)
-    provider.auth: managed_identity (default) | service_principal | azure_cli | access_token
+    provider.auth: managed_identity (default) | service_principal | azure_cli | device_code | access_token
     provider.client_id / provider.app_id: SP app id (service_principal; falls back to AZURE_CLIENT_ID)
     provider.client_secret / provider.app_secret: SP secret (falls back to AZURE_CLIENT_SECRET)
     provider.tenant_id / provider.authority_id: SP tenant (falls back to AZURE_TENANT_ID)
@@ -303,6 +303,14 @@ class AdxApiEntityProvider(BaseEntityProvider, WritableEntityProvider, Destinati
         if auth_mode == "azure_cli":
             return kcsb.with_az_cli_authentication(uri)
 
+        if auth_mode == "device_code":
+            # Prompts with a login URL + code on first token acquisition
+            # (once per client — query and ingest authenticate separately).
+            authority = config.get("tenant_id") or config.get("authority_id")
+            if authority:
+                return kcsb.with_aad_device_authentication(uri, authority_id=str(authority))
+            return kcsb.with_aad_device_authentication(uri)
+
         if auth_mode == "access_token":
             token = config.get("access_token")
             if not token:
@@ -314,7 +322,7 @@ class AdxApiEntityProvider(BaseEntityProvider, WritableEntityProvider, Destinati
 
         raise ValueError(
             f"Unsupported ADX auth mode '{auth_mode}'. Supported modes: "
-            "managed_identity, service_principal, azure_cli, access_token."
+            "managed_identity, service_principal, azure_cli, device_code, access_token."
         )
 
     # ---- Helpers ----

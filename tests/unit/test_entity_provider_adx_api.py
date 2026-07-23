@@ -106,6 +106,10 @@ def kusto(monkeypatch):
             return _FakeKcsb("azure_cli", uri)
 
         @classmethod
+        def with_aad_device_authentication(cls, uri, authority_id="organizations"):
+            return _FakeKcsb("device_code", uri, authority_id=authority_id)
+
+        @classmethod
         def with_aad_application_token_authentication(cls, uri, token):
             return _FakeKcsb("access_token", uri, token=token)
 
@@ -367,6 +371,16 @@ class TestAuth:
         kcsb = self._kcsb(kusto, {**BASE_TAGS, "provider.auth": "azure_cli"})
         assert kcsb.mode == "azure_cli"
 
+    def test_device_code_default_authority(self, kusto):
+        kcsb = self._kcsb(kusto, {**BASE_TAGS, "provider.auth": "device_code"})
+        assert kcsb.mode == "device_code"
+        assert kcsb.kwargs["authority_id"] == "organizations"
+
+    def test_device_code_with_tenant(self, kusto):
+        tags = {**BASE_TAGS, "provider.auth": "device_code", "provider.tenant_id": "my-tenant"}
+        kcsb = self._kcsb(kusto, tags)
+        assert kcsb.kwargs["authority_id"] == "my-tenant"
+
     def test_access_token(self, kusto):
         tags = {**BASE_TAGS, "provider.auth": "access_token", "provider.access_token": "tok"}
         kcsb = self._kcsb(kusto, tags)
@@ -380,4 +394,4 @@ class TestAuth:
 
     def test_unsupported_mode_raises(self, kusto):
         with pytest.raises(ValueError, match="Unsupported ADX auth mode"):
-            self._kcsb(kusto, {**BASE_TAGS, "provider.auth": "device_code"})
+            self._kcsb(kusto, {**BASE_TAGS, "provider.auth": "interactive_browser"})
