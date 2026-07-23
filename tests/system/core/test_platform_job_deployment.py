@@ -205,9 +205,14 @@ class TestPlatformJobDeployment:
             assert cancelled, "Job cancellation failed"
             print("✅ Job cancellation requested")
 
-            # Poll for cancellation status (cancellation is asynchronous)
+            # Poll for cancellation status (cancellation is asynchronous).
+            # On a busy shared cluster (parallel xdist test jobs) a cancelled
+            # run can sit in TERMINATING well past 60s — v0.11.0's release
+            # lane failed this twice in a row at 60s with no code change
+            # anywhere near cancellation. The loop exits early on terminal
+            # states, so a generous budget costs nothing on the happy path.
             print("⏳ Waiting for job to stop...")
-            max_wait = 60  # seconds
+            max_wait = int(os.getenv("KINDLING_SYSTEM_TEST_CANCEL_TIMEOUT", "300"))
             poll_interval = 5
             start_time = time.time()
             final_status = None
