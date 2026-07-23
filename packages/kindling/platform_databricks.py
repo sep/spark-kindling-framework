@@ -726,20 +726,19 @@ class DatabricksService(PlatformService):
 
                     try:
                         decoded_content = base64.b64decode(content_data["content"]).decode("utf-8")
-                        # For SOURCE format, content is raw Python/SQL code, not JSON
+                        # SOURCE format is Databricks-style python source.
+                        # Parse real cell boundaries (# COMMAND ----------)
+                        # and markdown MAGIC blocks instead of wrapping the
+                        # whole file as one blob cell — splitting on "\\n"
+                        # without keepends also lost every newline when the
+                        # source was later re-joined.
+                        from kindling.notebook_source import python_source_to_cells
+
                         notebook_data["content"] = {
                             "nbformat": 4,
                             "nbformat_minor": 2,
                             "metadata": {},
-                            "cells": [
-                                {
-                                    "cell_type": "code",
-                                    "source": decoded_content.split("\n"),
-                                    "metadata": {},
-                                    "outputs": [],
-                                    "execution_count": None,
-                                }
-                            ],
+                            "cells": python_source_to_cells(decoded_content),
                         }
                         self.logger.debug("Successfully got notebook content")
                     except Exception as e:
@@ -810,34 +809,66 @@ class DatabricksService(PlatformService):
             return self.get_notebook_by_path(resolved_path)
         return None
 
+    def _normalize_notebook_path(self, notebook_path: str) -> str:
+        """The NotebookManager interface passes bare names on other platforms;
+        the Databricks workspace API needs absolute paths."""
+        if notebook_path.startswith("/"):
+            return notebook_path
+        return f"/Shared/kindling/{notebook_path}"
+
     def create_or_update_notebook(
         self, notebook_path: str, notebook_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Create or update a notebook"""
-        url = f"{self._base_url}/api/2.0/workspace/import"
+        """Create or update a notebook.
 
-        # Convert notebook content to base64
+        Accepts either ``{"content": <jupyter dict or str>}`` or a bare
+        Jupyter document (``{"cells": [...], ...}``). The old content-only
+        handling silently imported an *empty* notebook when passed a bare
+        document.
+        """
         import base64
+
+        notebook_path = self._normalize_notebook_path(notebook_path)
 
         if isinstance(notebook_data.get("content"), dict):
             content_str = json.dumps(notebook_data["content"])
+        elif "content" in notebook_data:
+            content_str = str(notebook_data.get("content") or "")
+        elif "cells" in notebook_data:
+            content_str = json.dumps(notebook_data)
         else:
-            content_str = str(notebook_data.get("content", ""))
+            content_str = ""
+        if not content_str:
+            raise ValueError(
+                f"No notebook content to import for '{notebook_path}': expected a "
+                "'content' entry or a Jupyter document with 'cells'."
+            )
 
         content_base64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
 
-        payload = {
-            "path": notebook_path,
-            "format": "JUPYTER",
-            "content": content_base64,
-            "overwrite": True,
-        }
-
         try:
-            self.logger.debug(f"Creating/updating notebook - URL: {url}")
-            self.logger.debug(f"Notebook path: {notebook_path}")
+            self.logger.debug(f"Creating/updating notebook: {notebook_path}")
 
-            response = requests.post(url, headers=self._get_headers(), json=payload)
+            # Import does not create parent folders; mkdirs is idempotent.
+            parent_folder = notebook_path.rsplit("/", 1)[0]
+            if parent_folder:
+                mkdirs_response = requests.post(
+                    f"{self._base_url}/api/2.0/workspace/mkdirs",
+                    headers=self._get_headers(),
+                    json={"path": parent_folder},
+                )
+                self._handle_response(mkdirs_response)
+
+            response = requests.post(
+                f"{self._base_url}/api/2.0/workspace/import",
+                headers=self._get_headers(),
+                json={
+                    "path": notebook_path,
+                    "format": "JUPYTER",
+                    "content": content_base64,
+                    "overwrite": True,
+                },
+            )
             self.logger.debug(f"Response Status: {response.status_code}")
 
             if response.status_code not in [200, 201]:
@@ -851,7 +882,7 @@ class DatabricksService(PlatformService):
     def delete_notebook(self, notebook_path: str) -> None:
         """Delete a notebook"""
         url = f"{self._base_url}/api/2.0/workspace/delete"
-        payload = {"path": notebook_path}
+        payload = {"path": self._normalize_notebook_path(notebook_path)}
 
         response = requests.post(url, headers=self._get_headers(), json=payload)
         self._handle_response(response)
