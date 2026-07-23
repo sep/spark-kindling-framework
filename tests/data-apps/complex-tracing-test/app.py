@@ -20,14 +20,14 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from kindling.injection import get_kindling_service
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import *
 from kindling.spark_trace import SparkTraceProvider
 
 
 def get_logger():
     """Get logger from Kindling framework"""
-    logger_provider = get_kindling_service(SparkLoggerProvider)
+    logger_provider = get_kindling_service(PythonLoggerProvider)
     return logger_provider.get_logger("complex-tracing-test")
 
 
