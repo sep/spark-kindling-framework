@@ -2,9 +2,27 @@
 
 All notable changes to spark-kindling are documented here.
 
-## Unreleased
+## [0.11.0] - 2026-07-23
 
 ### Changed
+
+- **Extension packages moved and renamed**: extensions now live under
+  `packages/extensions/` with `kindling_ext_*` module naming
+  (`kindling_ext_otel_azure`, `kindling_ext_temporal`, …). Update imports if
+  you referenced extension modules directly; pip package names are unchanged.
+
+- Migration now refuses ambiguity instead of proceeding: the planner skips
+  non-Delta entities with an explicit `[SKIP]` status (previously a
+  memory/parquet/eventhub entity was silently planned as a Delta
+  `CREATE_TABLE`), and `migrate apply` fails fast when the plan contains
+  inspection errors (previously it skipped errored entities, applied the
+  rest, and reported "Migration complete.").
+
+- `persist.before_persist` is now emitted inside the persist failure
+  boundary: a raising handler (the supported validation-gate pattern) blocks
+  the write, propagates, and pairs with `persist.persist_failed`, so
+  watermark bookkeeping discards the pending cursor and a retry re-reads the
+  same slice. Observers no longer see an unpaired `before_persist`.
 
 - DAG execution options (`parallel`, `max_workers`, `error_strategy`,
   `pipe_timeout`, `auto_cache`) now resolve config-first from
@@ -31,6 +49,45 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **JVM-free telemetry for Databricks UC shared/standard access mode
+  clusters**: `spark._jvm` access in the telemetry paths is guarded with
+  latched fallbacks, feature discovery probes a new `spark.jvm_bridge`
+  runtime capability, and bootstrap swaps in plain-python logger/trace
+  providers (`kindling.plain_telemetry`) when the py4j bridge is absent —
+  fixing `[JVM_ATTRIBUTE_NOT_SUPPORTED]` crashes on every span. Override
+  with `kindling.features.spark.jvm_bridge`. An architecture test now bans
+  `_jvm`/`_jsc` outside a justified allowlist.
+- **Notebook round-tripping**: `kindling notebook list|pull|push` round-trips
+  workspace notebooks (Databricks, Synapse, Fabric) as git-friendly `.py`
+  source files (`# COMMAND ----------` cells, markdown as `# MAGIC` blocks —
+  the same format the standalone platform reads locally). Backed by new
+  `kindling.notebook_source` converters and `kindling_sdk.notebooks` REST
+  clients, both usable programmatically. Live-verified byte-identical on all
+  three platforms.
+- **API-based ADX entity provider in core** (`provider_type: "adx-api"`,
+  `[adx]` extra): reads via KQL and append-oriented queued ingestion through
+  the azure-kusto Python SDKs — runs where the JVM Kusto connector cannot
+  (UC shared clusters, serverless, standalone). Creates tables from the
+  declared entity schema via `.create-merge table`. Live-verified round-trip.
+- Temporal ontology and episode runtime (`kindling_ext_temporal`): condition
+  evaluation, episode lifecycle (determination events, open episodes,
+  expiration, invalidation), stateful late real-end revision, validated
+  conditions ingestion with per-row quarantine, and chained lowering with
+  stratified Lakeflow execution on Databricks.
+- Declarative pipelines engine (`kindling_ext_sdp`): declaration-engine
+  interface with read classification and capability gating, OSS emission
+  engine with write-guard provider and dry-run harness, entity-metadata
+  emission with a Databricks Lakeflow adapter, and SCD declared flows
+  mapped to Databricks AUTO CDC.
+- ADX (Kusto Spark connector) and Cosmos DB entity provider extensions
+  (`kindling_ext_adx`, `kindling_ext_cosmos`), both verified against live
+  services; Cosmos writes are idempotent upserts by `(id, partition key)`.
+- Derived datasets (`dataset.kind: derived`) with atomic replacement writes,
+  optionally scoped by `derived.replace_keys`.
+- `schema.drift` policy tag — declared handling of write-time schema drift.
+- Entity declaration sugar per the tags-first convention (annotations set
+  default tags; explicit tags win).
+- Kindling data apps selectable in Databricks Lakeflow pipelines.
 - Streaming merge support: new `StreamMergeableEntityProvider` capability
   interface (`merge_as_stream` + `is_stream_mergeable`), implemented by
   `DeltaEntityProvider` via `foreachBatch` so every micro-batch runs through
@@ -76,6 +133,23 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- Watermarking incremental-read correctness: signal-aspect refactor with
+  opaque cursors; a failed persist discards the pending cursor so retries
+  re-read the same input slice.
+- Runtime platform notebook services, live-verified on all three platforms:
+  Databricks `get_notebook` no longer corrupts content (it wrapped the whole
+  export in one blob cell and dropped every newline) and
+  `create_or_update_notebook` no longer silently imports empty notebooks,
+  creates parent folders, and accepts bare names; Synapse
+  `create_or_update_notebook` now builds Azure SDK models (it previously
+  crashed before reaching the API); Fabric notebook create/update uses the
+  real item endpoints with status-aware long-running-operation polling
+  (async failures were previously reported as success).
+- Runtime feature discovery: `kindling.features.discovery: "false"`
+  off-switch, `SHOW CATALOGS` short-circuit on large metastores, and the
+  DBR version regex.
+- Delta ensure-on-write only runs when there is a schema to ensure from.
+- Databricks temporal execution homed in the databricks extension.
 - Standalone/local Spark sessions created by Kindling now add the available
   Hadoop Azure support JARs from `/tmp/hadoop-jars` to `spark.jars`, not only
   the custom Azure CLI auth provider JAR. This lets local `abfss://` access load
