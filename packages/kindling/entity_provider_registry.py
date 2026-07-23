@@ -72,6 +72,11 @@ class EntityProviderRegistry:
         """
         if provider_type in self._provider_classes:
             self.logger.warning(f"Provider type '{provider_type}' already registered, overwriting")
+            # Evict any cached instance of the previous class: get_provider
+            # serves from the instance cache first, so without this a
+            # re-registration silently keeps handing out the old provider.
+            if self._provider_instances.pop(provider_type, None) is not None:
+                self.logger.info(f"Evicted cached '{provider_type}' provider instance")
 
         self._provider_classes[provider_type] = provider_class
         self.logger.info(f"Registered provider type: {provider_type} -> {provider_class.__name__}")
