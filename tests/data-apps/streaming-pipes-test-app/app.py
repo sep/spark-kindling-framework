@@ -29,12 +29,12 @@ from kindling.execution_orchestrator import ExecutionOrchestrator
 from kindling.injection import get_kindling_service
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 
 # ---- Init ----
 
-logger_provider = get_kindling_service(SparkLoggerProvider)
+logger_provider = get_kindling_service(PythonLoggerProvider)
 logger = logger_provider.get_logger("streaming-pipes-test-app")
 
 config_service = get_kindling_service(ConfigService)

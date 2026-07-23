@@ -13,7 +13,7 @@ from datetime import datetime
 from kindling.injection import get_kindling_service
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import *
 
 
@@ -38,7 +38,7 @@ def get_test_id():
 
 def get_logger():
     """Get logger from Kindling framework via dependency injection"""
-    logger_provider = get_kindling_service(SparkLoggerProvider)
+    logger_provider = get_kindling_service(PythonLoggerProvider)
     return logger_provider.get_logger("universal-test-app")
 
 

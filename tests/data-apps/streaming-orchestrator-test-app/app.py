@@ -24,7 +24,7 @@ from kindling.injection import get_kindling_service
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.signaling import SignalProvider
 from kindling.spark_config import ConfigService
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 from kindling.streaming_listener import KindlingStreamingListener
 from kindling.streaming_orchestrator import StreamingOrchestrator
@@ -197,7 +197,7 @@ def _entity_tags(
 
 def main() -> int:
     config_service = get_kindling_service(ConfigService)
-    logger_provider = get_kindling_service(SparkLoggerProvider)
+    logger_provider = get_kindling_service(PythonLoggerProvider)
     logger = logger_provider.get_logger("streaming-orchestrator-test-app")
     test_id = _get_test_id(config_service)
 

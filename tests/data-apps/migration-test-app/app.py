@@ -30,14 +30,14 @@ from kindling.injection import GlobalInjector, get_kindling_service
 from kindling.migration import BackupStrategy, MigrationService
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
 
-logger_provider = get_kindling_service(SparkLoggerProvider)
+logger_provider = get_kindling_service(PythonLoggerProvider)
 logger = logger_provider.get_logger("migration-test-app")
 
 config_service = get_kindling_service(ConfigService)

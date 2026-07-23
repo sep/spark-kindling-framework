@@ -39,14 +39,6 @@ individual outcomes from streamed stdout.
 import sys
 from datetime import datetime
 
-from kindling.data_entities import DataEntities, DataEntityRegistry, EntityMetadata
-from kindling.data_pipes import DataPipes, DataPipesExecution
-from kindling.entity_provider_registry import EntityProviderRegistry
-from kindling.injection import GlobalInjector, get_kindling_service
-from kindling.platform_provider import PlatformServiceProvider
-from kindling.spark_config import ConfigService
-from kindling.spark_log_provider import SparkLoggerProvider
-from kindling.spark_session import get_or_create_spark_session
 from kindling_ext_temporal import (
     DataEpisodes,
     DataEvents,
@@ -64,11 +56,20 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+from kindling.data_entities import DataEntities, DataEntityRegistry, EntityMetadata
+from kindling.data_pipes import DataPipes, DataPipesExecution
+from kindling.entity_provider_registry import EntityProviderRegistry
+from kindling.injection import GlobalInjector, get_kindling_service
+from kindling.platform_provider import PlatformServiceProvider
+from kindling.spark_config import ConfigService
+from kindling.spark_log_provider import PythonLoggerProvider
+from kindling.spark_session import get_or_create_spark_session
+
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
 
-logger = get_kindling_service(SparkLoggerProvider).get_logger("temporal-test-app")
+logger = get_kindling_service(PythonLoggerProvider).get_logger("temporal-test-app")
 config_service = get_kindling_service(ConfigService)
 
 test_id = str(config_service.get("test_id") or "unknown").replace("-", "_")

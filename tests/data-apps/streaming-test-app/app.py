@@ -18,7 +18,7 @@ import time
 from pyspark.sql.functions import col
 
 from kindling.injection import get_kindling_service
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 from kindling.streaming_health_monitor import StreamingHealthMonitor
 from kindling.streaming_listener import KindlingStreamingListener
@@ -43,7 +43,7 @@ def get_test_id():
 
 def get_logger():
     """Get logger from Kindling framework via DI"""
-    logger_provider = get_kindling_service(SparkLoggerProvider)
+    logger_provider = get_kindling_service(PythonLoggerProvider)
     return logger_provider.get_logger("streaming-test-app")
 
 

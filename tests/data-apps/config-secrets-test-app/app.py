@@ -10,11 +10,11 @@ import sys
 
 from kindling.injection import get_kindling_service
 from kindling.spark_config import ConfigService
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 
 
 def get_logger():
-    logger_provider = get_kindling_service(SparkLoggerProvider)
+    logger_provider = get_kindling_service(PythonLoggerProvider)
     return logger_provider.get_logger("config-secrets-test-app")
 
 

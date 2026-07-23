@@ -9,7 +9,7 @@ from kindling.data_entities import EntityMetadata, EntityNameMapper
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import get_kindling_service
 from kindling.spark_config import ConfigService
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 
 
@@ -269,7 +269,7 @@ def _make_entity(entityid: str, schema: StructType) -> EntityMetadata:
 
 def main() -> int:
     config_service = get_kindling_service(ConfigService)
-    logger_provider = get_kindling_service(SparkLoggerProvider)
+    logger_provider = get_kindling_service(PythonLoggerProvider)
     logger = logger_provider.get_logger("name-mapper-test-app")
     spark = get_or_create_spark_session()
 

@@ -20,7 +20,7 @@ print("=" * 80)
 
 try:
     from kindling.injection import get_kindling_service
-    from kindling.spark_log_provider import SparkLoggerProvider
+    from kindling.spark_log_provider import PythonLoggerProvider, SparkLoggerProvider
     from kindling.spark_session import *
     from kindling.spark_trace import SparkTraceProvider
 
@@ -34,7 +34,7 @@ def get_logger():
     """Get logger from Kindling framework"""
     try:
         print("Attempting to get logger from Kindling framework...")
-        logger_provider = get_kindling_service(SparkLoggerProvider)
+        logger_provider = get_kindling_service(PythonLoggerProvider)
         logger = logger_provider.get_logger("otel-azure-test")
         print("✅ Logger obtained successfully")
         return logger
@@ -73,21 +73,29 @@ def test_provider_override(logger):
 
     # Get the registered providers from DI container
     trace_provider = get_kindling_service(SparkTraceProvider)
-    log_provider = get_kindling_service(SparkLoggerProvider)
+    log_provider = get_kindling_service(PythonLoggerProvider)
+    # Deliberate concrete-class resolution: the extension dual-binds
+    # SparkLoggerProvider for backward compatibility; lock that contract in.
+    legacy_log_provider = get_kindling_service(SparkLoggerProvider)
 
     trace_class = f"{trace_provider.__class__.__module__}.{trace_provider.__class__.__name__}"
     log_class = f"{log_provider.__class__.__module__}.{log_provider.__class__.__name__}"
+    legacy_log_class = (
+        f"{legacy_log_provider.__class__.__module__}.{legacy_log_provider.__class__.__name__}"
+    )
 
     # CRITICAL: Also print() so it appears in stdout/stderr for Fabric
     print(f"PROVIDER_CHECK: Trace Provider: {trace_class}")
     print(f"PROVIDER_CHECK: Log Provider: {log_class}")
+    print(f"PROVIDER_CHECK: Log Provider (legacy concrete bind): {legacy_log_class}")
 
     logger.info(f"Trace Provider: {trace_class}")
     logger.info(f"Log Provider: {log_class}")
+    logger.info(f"Log Provider (legacy concrete bind): {legacy_log_class}")
 
     # Check if Azure Monitor providers are active
     is_azure_trace = "AzureMonitor" in trace_class
-    is_azure_log = "AzureMonitor" in log_class
+    is_azure_log = "AzureMonitor" in log_class and "AzureMonitor" in legacy_log_class
 
     if is_azure_trace and is_azure_log:
         print("✅ TEST 1 PASSED: Azure Monitor providers are active")
@@ -217,7 +225,7 @@ else:
 # Check if extension is actually active (providers registered)
 try:
     trace_provider = get_kindling_service(SparkTraceProvider)
-    log_provider = get_kindling_service(SparkLoggerProvider)
+    log_provider = get_kindling_service(PythonLoggerProvider)
 
     trace_class = f"{trace_provider.__class__.__module__}.{trace_provider.__class__.__name__}"
     log_class = f"{log_provider.__class__.__module__}.{log_provider.__class__.__name__}"
