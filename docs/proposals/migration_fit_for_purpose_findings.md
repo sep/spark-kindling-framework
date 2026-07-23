@@ -20,11 +20,13 @@ This proposal has two parts:
 1. **Guardrail fixes** (landed 2026-07-23, same change as this revision):
    correctness hazards in the existing implementation that did not need new
    design — see "Resolved" below.
-2. **A versioned migration layer** above the existing planner and Delta
-   execution primitives: declarative evolution operations (rename, default,
-   backfill), lifecycle hooks, durable run state, and real post-rewrite
-   validation. This is the part that needs design and is specified here at
-   the level of goals and shape, not committed API.
+2. **Completing the desired-state model** above the existing planner and
+   Delta execution primitives: declaration enrichment so convergence is
+   unambiguous (rename lineage, defaults, backfills), lifecycle hooks,
+   durable run state, and real post-rewrite validation. The declaration
+   describes the world as it should be and kindling converges to it — no
+   versioned migration scripts. Specified here at the level of goals and
+   shape, not committed API.
 
 ## What is implemented today
 
@@ -192,21 +194,45 @@ evolution, especially where a change requires preserved values, defaults,
 historical backfill, semantic validation, auditability, or reliable retry and
 rollback.
 
-## Proposal: a versioned migration layer
+## Proposal: desired-state convergence, completed
+
+**Design commitment:** migration stays a desired-state system — the entity
+declaration describes the world as it should be, and kindling figures out how
+to make it happen. There are no versioned migration scripts and no ledger of
+which steps ran where. This is the model the feature already implements at
+the physical level; the findings above are cases where the declared state is
+*ambiguous* (a rename diffs as drop+add; a backfill value is not derivable
+from the target schema), and the fix is to enrich the declaration until
+convergence is unambiguous — never to switch to transition scripts.
+
+Two properties fall out of holding this line:
+
+- **Environment promotion needs no machinery.** Each environment converges
+  from wherever it currently is; a dev table three renames behind and a prod
+  table one rename behind both converge to the same declaration.
+- **Ambiguity is reported, not guessed.** Where the differ cannot infer a
+  safe transition, the plan says so and names the annotation that would
+  resolve it — the Terraform `moved`-block posture.
 
 Retain the existing planner and Delta execution primitives; build the
 following above them before expanding the product claim. Ordered so each
 piece is independently useful.
 
-### 1. Declarative evolution operations (addresses F-01, F-02, F-04)
+### 1. Declaration enrichment for unambiguous convergence (addresses F-01, F-02, F-04)
 
-Entity declarations gain evolution metadata, following the tags-first
-convention: `rename_from`, `default`, `backfill` (simple expression), and
-nullability/constraint intent. The planner turns these into first-class
-change kinds (RENAME_COLUMN with value preservation, ADD_COLUMN with default
-and backfill) instead of inferring add+remove. A rename detected *without* a
-declaration should be reported as ambiguous, not silently planned as
-add+remove.
+Declared columns gain desired-state attributes: `rename_from` (lineage —
+"this column was previously known as X", naturally carried in StructField
+metadata or `evolution.*` tags per the tags-first convention), `default`
+(part of the column's contract), `backfill` (what pre-existing rows should
+hold — also part of the new column's contract), and nullability/constraint
+intent. These are annotations on the *desired state*, not steps:
+`rename_from` fires only when a column by the old name exists and the new
+one does not, so it is idempotent and self-neutralizing — it can remain in
+the declaration indefinitely without effect once every environment has
+converged. The planner turns them into first-class change kinds
+(RENAME_COLUMN with value preservation, ADD_COLUMN with default and
+backfill). A rename detected *without* lineage is reported as ambiguous
+(drop+add with a pointer to `rename_from`), not silently planned.
 
 ### 2. Lifecycle hooks on the existing signal seam (addresses F-03)
 
@@ -261,11 +287,15 @@ half the safety story; (2) alongside (3); (6) grows with each phase.
 
 ## Open questions
 
-- Where does evolution metadata live: entity tags (tags-first suggests
-  `evolution.rename_from.<col>` style keys), a separate migrations registry
-  keyed by entity, or versioned migration files? Tags are consistent with the
-  repo convention but describe *desired state*, while rename/backfill are
-  *transitions* — a transition may need its own home.
+- ~~Where does evolution metadata live~~ Resolved by the desired-state
+  commitment: in the entity declaration itself (StructField metadata for
+  column-level attributes, `evolution.*` tags for entity-level intent).
+  Versioned migration files are explicitly rejected. Remaining detail:
+  StructField metadata vs tags for the column-level attributes.
+- Some transformations genuinely are not expressible as state (split one
+  column into two with logic, entity merges). These stay as registered
+  convergence hooks on the signal seam (part 2) — the rare escape hatch,
+  not the paradigm. Where is the line documented for users?
 - Does a migration-run entity belong in kindling core or stay platform-side
   (a Delta table per workspace)? It must itself be exempt from migration.
 - Is the storage-mode in-place overwrite worth keeping at all, versus staging
