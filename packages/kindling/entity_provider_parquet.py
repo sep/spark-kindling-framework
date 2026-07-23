@@ -210,17 +210,18 @@ class ParquetEntityProvider(
     # ---- DestinationEnsuringProvider ----
 
     def ensure_destination(self, entity_metadata: EntityMetadata) -> None:
-        """Create the dataset directory if it does not exist."""
+        """Validate destination config; the parquet sink creates the directory itself.
+
+        Deliberately no filesystem work here: directory creation via the JVM
+        Hadoop API breaks on runtimes without a py4j bridge (Databricks UC
+        shared/standard access mode), and both the batch writer and the
+        streaming file sink create missing directories on first write.
+        """
         config = self._get_provider_config(entity_metadata)
         path = self._require_path(entity_metadata, config)
-
-        spark = get_or_create_spark_session()
-        jvm = spark._jvm
-        hadoop_path = jvm.org.apache.hadoop.fs.Path(path)
-        fs = hadoop_path.getFileSystem(spark._jsc.hadoopConfiguration())
-        if not fs.exists(hadoop_path):
-            self.logger.info(f"Creating parquet destination directory: {path}")
-            fs.mkdirs(hadoop_path)
+        self.logger.debug(
+            f"Parquet destination '{path}' is created lazily by the writer; nothing to ensure"
+        )
 
     # ---- Helpers ----
 

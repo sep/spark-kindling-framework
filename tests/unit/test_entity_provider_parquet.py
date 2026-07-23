@@ -188,32 +188,21 @@ def test_check_entity_exists_false_without_path():
     assert _provider().check_entity_exists(_entity({})) is False
 
 
-def test_ensure_destination_creates_missing_directory():
+def test_ensure_destination_never_touches_jvm():
+    """Directory creation is left to the parquet sink: no py4j bridge required."""
     provider = _provider()
     patcher, spark = _patched_spark()
-    fs = MagicMock()
-    hadoop_path = spark._jvm.org.apache.hadoop.fs.Path.return_value
-    hadoop_path.getFileSystem.return_value = fs
-    fs.exists.return_value = False
 
     with patcher:
         provider.ensure_destination(_entity(BASE_TAGS))
 
-    fs.mkdirs.assert_called_once_with(hadoop_path)
+    spark._jvm.org.apache.hadoop.fs.Path.assert_not_called()
+    spark._jsc.hadoopConfiguration.assert_not_called()
 
 
-def test_ensure_destination_noop_when_exists():
-    provider = _provider()
-    patcher, spark = _patched_spark()
-    fs = MagicMock()
-    hadoop_path = spark._jvm.org.apache.hadoop.fs.Path.return_value
-    hadoop_path.getFileSystem.return_value = fs
-    fs.exists.return_value = True
-
-    with patcher:
-        provider.ensure_destination(_entity(BASE_TAGS))
-
-    fs.mkdirs.assert_not_called()
+def test_ensure_destination_requires_path():
+    with pytest.raises(ValueError, match="requires 'path'"):
+        _provider().ensure_destination(_entity({}))
 
 
 def test_registry_registers_parquet_provider():

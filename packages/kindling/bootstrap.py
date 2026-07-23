@@ -725,12 +725,20 @@ def flatten_dynaconf(data: Dict[str, Any], parent_key: str = "", sep: str = ".")
 
 
 def get_spark_log_level():
-    """Get current Spark log level"""
-    return (
-        get_or_create_spark_session()
-        .sparkContext._jvm.org.apache.log4j.LogManager.getRootLogger()
-        .getLevel()
-    )
+    """Get current Spark log level, or None when the JVM bridge is unavailable.
+
+    Databricks UC shared/standard access mode and Spark Connect raise
+    PySparkAttributeError (an AttributeError subclass) on sparkContext/_jvm
+    access; callers fall back to the INFO default.
+    """
+    try:
+        return (
+            get_or_create_spark_session()
+            .sparkContext._jvm.org.apache.log4j.LogManager.getRootLogger()
+            .getLevel()
+        )
+    except Exception:
+        return None
 
 
 def create_console_logger(config):
@@ -1402,6 +1410,30 @@ def _apply_spark_configs(config_service, logger) -> None:
         logger.warning(f"spark_configs application failed: {exc}")
 
 
+def _bind_plain_telemetry_providers(logger=None) -> None:
+    """Rebind telemetry providers to the JVM-free implementations.
+
+    Same forced-rebind pattern as kindling_ext_otel_azure._register_providers:
+    the concrete SparkLoggerProvider stays bound (dual-bind) so callers that
+    resolve the concrete class keep working.
+    """
+    from injector import singleton
+
+    from kindling.plain_telemetry import (
+        PlainPythonLoggerProvider,
+        PlainPythonTraceProvider,
+    )
+    from kindling.spark_log_provider import SparkLoggerProvider
+    from kindling.spark_trace import SparkTraceProvider
+
+    binder = GlobalInjector.get_injector().binder
+    binder.bind(PythonLoggerProvider, to=PlainPythonLoggerProvider, scope=singleton)
+    binder.bind(SparkLoggerProvider, to=PlainPythonLoggerProvider, scope=singleton)
+    binder.bind(SparkTraceProvider, to=PlainPythonTraceProvider, scope=singleton)
+    if logger:
+        logger.info("No py4j JVM bridge detected; using plain-python telemetry providers")
+
+
 def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None):
     """Linear framework initialization with Dynaconf config loading"""
 
@@ -1513,6 +1545,17 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         discover_runtime_features(config_service, logger=logger)
     except Exception as feature_error:
         logger.debug(f"Runtime feature discovery failed (non-fatal): {feature_error}")
+
+    # Capability-based telemetry selection: without a py4j JVM bridge (UC
+    # shared/standard access mode clusters, Spark Connect) the JVM-backed
+    # providers only degrade per call; swap in the plain-python
+    # implementations instead. Overridable via kindling.features.spark.jvm_bridge.
+    try:
+        if get_feature_bool(config_service, "spark.jvm_bridge", default=True) is False:
+            _bind_plain_telemetry_providers(logger)
+            logger = get_kindling_service(PythonLoggerProvider).get_logger("KindlingBootstrap")
+    except Exception as telemetry_error:
+        logger.debug(f"Telemetry provider selection failed (non-fatal): {telemetry_error}")
 
     # Helpful diagnostics for system tests / feature-gated behavior.
     # These keys are safe to log (no secrets) and explain why certain Delta operations

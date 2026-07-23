@@ -586,11 +586,15 @@ currentLevel = "INFO"
 
 
 def get_spark_log_level():
-    return (
-        get_or_create_spark_session()
-        .sparkContext._jvm.org.apache.log4j.LogManager.getRootLogger()
-        .getLevel()
-    )
+    """Get current Spark log level, or None when the JVM bridge is unavailable."""
+    try:
+        return (
+            get_or_create_spark_session()
+            .sparkContext._jvm.org.apache.log4j.LogManager.getRootLogger()
+            .getLevel()
+        )
+    except Exception:
+        return None
 
 
 def create_console_logger(config):

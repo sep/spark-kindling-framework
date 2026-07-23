@@ -32,8 +32,36 @@ def mock_spark_session_for_mdc(mock_spark_for_trace):
 def reset_mdc_block_flag():
     """Ensure MDC fallback state doesn't leak between tests."""
     spark_trace_module._mdc_api_blocked = False
+    spark_trace_module._local_properties_blocked = False
     yield
     spark_trace_module._mdc_api_blocked = False
+    spark_trace_module._local_properties_blocked = False
+
+
+class _PySparkAttributeErrorStub(AttributeError):
+    """Stands in for pyspark.errors.PySparkAttributeError (an AttributeError subclass)."""
+
+
+class _JvmBlockedSpark:
+    """Session shaped like Databricks UC shared/standard access mode (no py4j bridge)."""
+
+    def __init__(self):
+        self.jvm_attempts = 0
+        self.spark_context_attempts = 0
+
+    @property
+    def _jvm(self):
+        self.jvm_attempts += 1
+        raise _PySparkAttributeErrorStub(
+            "[JVM_ATTRIBUTE_NOT_SUPPORTED] Attribute `_jvm` is not supported in Spark Connect."
+        )
+
+    @property
+    def sparkContext(self):
+        self.spark_context_attempts += 1
+        raise _PySparkAttributeErrorStub(
+            "[JVM_ATTRIBUTE_NOT_SUPPORTED] Attribute `sparkContext` is not supported."
+        )
 
 
 class TestCustomEventEmitter:
@@ -323,6 +351,61 @@ class TestMdcContext:
         with pytest.raises(RuntimeError, match="Unexpected MDC failure"):
             with mdc_context(trace_id="trace-123", span_id="span-456"):
                 pass
+
+    def test_mdc_context_degrades_without_jvm_bridge(self):
+        """No py4j bridge (UC shared/standard access mode): no crash, latches set."""
+        spark = _JvmBlockedSpark()
+
+        with patch("kindling.spark_trace.get_or_create_spark_session", return_value=spark):
+            with mdc_context(trace_id="trace-123", span_id="span-1"):
+                pass
+
+        assert spark_trace_module._mdc_api_blocked is True
+        assert spark_trace_module._local_properties_blocked is True
+
+    def test_mdc_context_probes_jvm_only_once_when_blocked(self):
+        """After latching, later spans must not re-attempt JVM access."""
+        spark = _JvmBlockedSpark()
+
+        with patch("kindling.spark_trace.get_or_create_spark_session", return_value=spark):
+            with mdc_context(trace_id="trace-1"):
+                pass
+            with mdc_context(trace_id="trace-2"):
+                pass
+
+        assert spark.jvm_attempts == 1
+        assert spark.spark_context_attempts == 1
+
+    def test_span_completes_without_jvm_bridge(self, mock_emitter):
+        """EventBasedSparkTrace spans still emit START/END without a JVM bridge."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=_JvmBlockedSpark()
+        ):
+            with trace.span(operation="Op", component="Comp"):
+                pass
+
+        operations = [c[0][1] for c in mock_emitter.emit_custom_event.call_args_list]
+        assert operations == ["Op_START", "Op_END"]
+
+    def test_emit_custom_event_print_fallback_without_jvm_bridge(
+        self, mock_logger_provider, mock_config
+    ):
+        """print_trace fallback must not touch sparkContext.appName without a bridge."""
+        mock_config.get = Mock(
+            side_effect=lambda key, default: True if key == "print_trace" else False
+        )
+        emitter = AzureEventEmitter(mock_logger_provider, mock_config)
+
+        with patch(
+            "kindling.spark_trace.get_or_create_spark_session", return_value=_JvmBlockedSpark()
+        ):
+            with patch("builtins.print") as mock_print:
+                emitter.emit_custom_event("Comp", "Op", {"k": "v"}, "event-1", uuid.uuid4())
+
+        printed = mock_print.call_args[0][0]
+        assert "TRACE: (unknown)" in printed
 
     def test_mdc_context_disables_mdc_after_py4j_whitelist_error(self, mock_spark_for_trace):
         """Once blocked, mdc_context should skip direct log4j MDC calls."""

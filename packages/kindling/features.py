@@ -59,6 +59,19 @@ def _supports_databricks_volumes(spark) -> bool:
         return False
 
 
+def _has_jvm_bridge(spark) -> bool:
+    """Best-effort probe for a usable py4j JVM bridge.
+
+    Absent on Databricks UC shared/standard access mode clusters and Spark
+    Connect, where ``spark._jvm`` raises PySparkAttributeError (an
+    AttributeError subclass, so ``getattr`` returns the default).
+    """
+    try:
+        return getattr(spark, "_jvm", None) is not None
+    except Exception:
+        return False
+
+
 def _detect_databricks_uc_enabled(spark) -> bool:
     """Best-effort detection for Unity Catalog support on Databricks."""
     try:
@@ -98,6 +111,10 @@ MODERN_RUNTIME_DEFAULTS = {
     "databricks.volumes_enabled": True,
     "databricks.any_file_required_for_bootstrap": False,
     "databricks.name_mode_catalog_qualified": True,
+    # Assume a JVM bridge when probing is disabled: the JVM-backed telemetry
+    # providers degrade safely per call, whereas swapping providers away is
+    # only worth doing on positive detection of absence.
+    "spark.jvm_bridge": True,
 }
 
 
@@ -134,6 +151,10 @@ def discover_runtime_features(config_service, logger=None) -> None:
         set_runtime_feature(config_service, "spark.version", getattr(spark, "version", None))
     except Exception:
         pass
+
+    # Capability probe, not platform sniffing: UC shared/standard access mode
+    # and Spark Connect have no py4j bridge regardless of vendor.
+    set_runtime_feature(config_service, "spark.jvm_bridge", _has_jvm_bridge(spark))
 
     # Detect whether Spark SQL parser understands ALTER TABLE ... CLUSTER BY syntax.
     try:
