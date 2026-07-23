@@ -4,6 +4,15 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Per-run entity tag overrides**: `run_datapipes(..., entity_tags={"entity.id":
+  {"provider.start": "...", "provider.end": "..."}})` applies JIT tag
+  overrides for that run only (both sequential and DAG modes), then
+  restores — the parameter channel for per-run values like a provider read
+  window in a backfill loop. Overrides win over declared tags and
+  config-level `set_entity_tags`, which remains the durable-config channel.
+
 ### Fixed
 
 - **Databricks startup no longer scans the whole workspace.** The platform

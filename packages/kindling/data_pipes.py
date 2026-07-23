@@ -8,12 +8,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+
 from kindling.injection import *
 from kindling.sentinels import UNSET
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
-from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -313,6 +314,7 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         use_dag: bool = False,
         dag_strategy: Optional[Any] = None,
         no_watermark: bool = False,
+        entity_tags: Optional[Dict[str, Dict[str, str]]] = None,
         **dag_kwargs,
     ):
         """Execute a list of pipes with signal emissions.
@@ -322,12 +324,29 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
             use_dag: If True, delegate execution to DAG orchestrator mode
             dag_strategy: Optional DAG execution strategy override
             no_watermark: If True, disable watermark reads/writes for this run
+            entity_tags: Optional per-run entity tag overrides
+                (entity id -> partial tag dict), applied for this run only —
+                the JIT-parameter channel for values like a provider read
+                window during a backfill loop. Overrides win over declared
+                tags and config-level set_entity_tags for the duration of
+                the call, then restore.
             **dag_kwargs: Additional DAG execution options
         """
         if use_dag:
             return self.run_datapipes_dag(
-                pipes, strategy=dag_strategy, no_watermark=no_watermark, **dag_kwargs
+                pipes,
+                strategy=dag_strategy,
+                no_watermark=no_watermark,
+                entity_tags=entity_tags,
+                **dag_kwargs,
             )
+
+        if entity_tags:
+            with self.dpe.tag_overrides(entity_tags):
+                return self._run_datapipes_sequential(pipes, no_watermark)
+        return self._run_datapipes_sequential(pipes, no_watermark)
+
+    def _run_datapipes_sequential(self, pipes: List[str], no_watermark: bool = False):
 
         run_id = str(uuid.uuid4())
         start_time = time.time()
@@ -453,29 +472,36 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         no_watermark: bool = False,
         retry_attempts: Any = UNSET,  # int | UNSET
         retry_interval_seconds: Any = UNSET,  # float | UNSET
+        entity_tags: Optional[Dict[str, Dict[str, str]]] = None,
     ):
         """Execute pipes via DAG planning/generation execution facade.
 
         Options left UNSET resolve from `kindling.execution.*` config;
         passed values override config just-in-time (an explicit
         ``pipe_timeout=None`` disables the timeout even when config sets one).
+        ``entity_tags`` applies run-scoped entity tag overrides (see
+        ``run_datapipes``).
         """
+        from contextlib import nullcontext
+
         from kindling.execution_orchestrator import ExecutionOrchestrator
 
         orchestrator = GlobalInjector.get(ExecutionOrchestrator)
-        return orchestrator.execute(
-            pipe_ids=pipes,
-            strategy=strategy,
-            parallel=parallel,
-            max_workers=max_workers,
-            error_strategy=error_strategy,
-            pipe_timeout=pipe_timeout,
-            streaming_options=streaming_options,
-            auto_cache=auto_cache,
-            no_watermark=no_watermark,
-            retry_attempts=retry_attempts,
-            retry_interval_seconds=retry_interval_seconds,
-        )
+        overrides = self.dpe.tag_overrides(entity_tags) if entity_tags else nullcontext()
+        with overrides:
+            return orchestrator.execute(
+                pipe_ids=pipes,
+                strategy=strategy,
+                parallel=parallel,
+                max_workers=max_workers,
+                error_strategy=error_strategy,
+                pipe_timeout=pipe_timeout,
+                streaming_options=streaming_options,
+                auto_cache=auto_cache,
+                no_watermark=no_watermark,
+                retry_attempts=retry_attempts,
+                retry_interval_seconds=retry_interval_seconds,
+            )
 
     def _execute_datapipe(
         self,

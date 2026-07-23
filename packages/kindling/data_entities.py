@@ -1,17 +1,19 @@
 import logging
 import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
-from pyspark.sql import DataFrame
 
 ROUTING_KEY_METHODS: tuple[str, ...] = ("hash", "concat")
 
@@ -704,6 +706,17 @@ class DataEntityRegistry(ABC):
     def get_entity_definition(self, name):
         pass
 
+    @contextmanager
+    def tag_overrides(self, overrides):
+        """Run-scoped entity tag overrides (JIT parameters).
+
+        Unlike ``ConfigService.set_entity_tags`` — durable config state —
+        these apply only inside the context, e.g. for a single
+        ``run_datapipes(..., entity_tags=...)`` call. Default: no-op;
+        DataEntityManager implements the overlay.
+        """
+        yield
+
 
 @GlobalInjector.singleton_autobind()
 class DataEntityManager(DataEntityRegistry, SignalEmitter):
@@ -716,6 +729,36 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         self._init_signal_emitter(signal_provider)
         self.registry = {}
         self.config_service = config_service
+        # Run-scoped JIT tag overlays (see tag_overrides); win over both
+        # declared tags and config-level set_entity_tags overrides.
+        self._tag_overlays = {}
+
+    @contextmanager
+    def tag_overrides(self, overrides):
+        """Apply per-entity tag overrides for the duration of the context.
+
+        ``overrides`` maps entity id -> partial tag dict, merged over the
+        declared tags AND config-level overrides at retrieval time, then
+        fully restored on exit. This is the JIT-parameter channel for
+        per-run values (e.g. a backfill window on a provider entity) —
+        distinct from ``ConfigService.set_entity_tags``, which is durable
+        config state. Overlays are instance-level: they are visible to
+        parallel pipe threads within the run (intended), and to concurrent
+        runs on other threads (avoid overlapping concurrent runs that
+        override the same entity).
+        """
+        if not overrides:
+            yield
+            return
+        previous = self._tag_overlays
+        merged = {**previous}
+        for entity_id, tags in overrides.items():
+            merged[entity_id] = {**previous.get(entity_id, {}), **(tags or {})}
+        self._tag_overlays = merged
+        try:
+            yield
+        finally:
+            self._tag_overlays = previous
 
     def register_entity(self, entityid, **decorator_params):
         entity = EntityMetadata(entityid, **decorator_params)
@@ -776,21 +819,29 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         return self.registry.keys()
 
     def get_entity_definition(self, name):
-        """Get entity definition with config-based tag overrides applied.
+        """Get entity definition with tag overrides applied.
 
-        Returns entity with tags merged at retrieval time, allowing config
-        to be loaded before or after entity registration.
+        Tags merge at retrieval time, lowest to highest precedence:
+        declared tags, config-level overrides (``set_entity_tags``), then
+        any active run-scoped overlay (``tag_overrides``). Merging at
+        retrieval allows config to be loaded before or after entity
+        registration.
         """
         base_entity = self.registry.get(name)
         if base_entity is None:
             return None
 
-        # Merge config-based tag overrides if config service is available
+        merged_tags = dict(base_entity.tags)
+
         if self.config_service:
             config_tags = self.config_service.get_entity_tags(name)
             if config_tags:
-                # Merge tags: config overrides base
-                merged_tags = {**base_entity.tags, **config_tags}
-                return replace(base_entity, tags=merged_tags)
+                merged_tags.update(config_tags)
 
-        return base_entity
+        overlay = self._tag_overlays.get(name)
+        if overlay:
+            merged_tags.update(overlay)
+
+        if merged_tags == base_entity.tags:
+            return base_entity
+        return replace(base_entity, tags=merged_tags)
