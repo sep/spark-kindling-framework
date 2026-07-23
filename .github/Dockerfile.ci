@@ -39,5 +39,12 @@ RUN poetry install --with dev --no-root
 # finds the right python/pip/black/poe without explicit activation.
 ENV PATH="/workspace/.venv/bin:${PATH}"
 
+# Workflow jobs check out the repo at a different path (/__w/...) and run as
+# a different HOME, so poetry — invoked implicitly by poe's poetry executor —
+# would otherwise create a fresh EMPTY virtualenv there and resolve bare
+# `python` task commands into it (no azure/pytest → system-test preflight
+# failures). Force poetry to use the active environment: /workspace/.venv.
+ENV POETRY_VIRTUALENVS_CREATE=false
+
 # Default command
 CMD ["/bin/bash"]
