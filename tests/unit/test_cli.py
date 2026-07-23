@@ -3486,3 +3486,272 @@ class TestEnvEnsure:
         result = CliRunner().invoke(cli, ["env", "ensure", "--help"])
         assert result.exit_code == 0
         assert "--cloud" in result.output
+
+
+# ---------------------------------------------------------------------------
+# notebook command group (round-tripping)
+# ---------------------------------------------------------------------------
+
+
+class TestNotebookCommands:
+    def _clear_platform_env(self, monkeypatch):
+        for var in ("DATABRICKS_HOST", "SYNAPSE_WORKSPACE_NAME", "FABRIC_WORKSPACE_ID"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_list_prints_workspace_notebooks(self, monkeypatch):
+        self._clear_platform_env(monkeypatch)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://db.example.net")
+        monkeypatch.setattr(
+            "kindling_cli.cli._list_workspace_notebooks",
+            lambda platform, ws, folder: ["etl_orders", "etl_customers"],
+        )
+        result = CliRunner().invoke(cli, ["notebook", "list"])
+        assert result.exit_code == 0, result.output
+        assert "etl_orders" in result.output
+        assert "etl_customers" in result.output
+
+    def test_commands_error_without_platform(self, monkeypatch):
+        self._clear_platform_env(monkeypatch)
+        result = CliRunner().invoke(cli, ["notebook", "list"])
+        assert result.exit_code != 0
+        assert "platform" in result.output.lower()
+
+    def test_workspace_env_var_must_match_platform(self, monkeypatch):
+        """--platform fabric must not silently use DATABRICKS_HOST as workspace."""
+        self._clear_platform_env(monkeypatch)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://db.example.net")
+        result = CliRunner().invoke(cli, ["notebook", "list", "--platform", "fabric"])
+        assert result.exit_code != 0
+        assert "FABRIC_WORKSPACE_ID" in result.output
+
+    def test_pull_writes_source_file(self, monkeypatch):
+        self._clear_platform_env(monkeypatch)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://db.example.net")
+        cells = [
+            {"cell_type": "markdown", "metadata": {}, "source": ["# Title"]},
+            {"cell_type": "code", "metadata": {}, "outputs": [], "source": ["x = 1"]},
+        ]
+        monkeypatch.setattr(
+            "kindling_cli.cli._fetch_notebook_cells",
+            lambda platform, ws, name, folder: cells,
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["notebook", "pull", "etl_orders", "--out", "nb"])
+            assert result.exit_code == 0, result.output
+            content = Path("nb/etl_orders.py").read_text(encoding="utf-8")
+        assert content.startswith("# Databricks notebook source")
+        assert "# MAGIC %md" in content
+        assert "x = 1" in content
+
+    def test_pull_refuses_existing_file_without_overwrite(self, monkeypatch):
+        self._clear_platform_env(monkeypatch)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://db.example.net")
+        monkeypatch.setattr(
+            "kindling_cli.cli._fetch_notebook_cells",
+            lambda platform, ws, name, folder: [],
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("nb").mkdir()
+            Path("nb/etl_orders.py").write_text("# local edits", encoding="utf-8")
+            result = runner.invoke(cli, ["notebook", "pull", "etl_orders", "--out", "nb"])
+            assert result.exit_code != 0
+            assert "--overwrite" in result.output
+            assert Path("nb/etl_orders.py").read_text(encoding="utf-8") == "# local edits"
+
+    def test_pull_all_uses_workspace_listing(self, monkeypatch):
+        self._clear_platform_env(monkeypatch)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://db.example.net")
+        monkeypatch.setattr(
+            "kindling_cli.cli._list_workspace_notebooks",
+            lambda platform, ws, folder: ["a", "b"],
+        )
+        monkeypatch.setattr(
+            "kindling_cli.cli._fetch_notebook_cells",
+            lambda platform, ws, name, folder: [
+                {"cell_type": "code", "metadata": {}, "outputs": [], "source": [f"# {name}"]}
+            ],
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["notebook", "pull", "--all", "--out", "nb"])
+            assert result.exit_code == 0, result.output
+            assert Path("nb/a.py").exists() and Path("nb/b.py").exists()
+        assert "Pulled 2 notebook(s)" in result.output
+
+    def test_push_imports_parsed_notebook(self, monkeypatch):
+        self._clear_platform_env(monkeypatch)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://db.example.net")
+        imported = []
+        monkeypatch.setattr(
+            "kindling_cli.cli._import_notebook_to_workspace",
+            lambda platform, ws, name, nb, databricks_folder=None: imported.append(
+                (platform, name, nb, databricks_folder)
+            ),
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("etl_orders.py").write_text(
+                "# Databricks notebook source\n"
+                "# MAGIC %md\n# MAGIC # Title\n\n"
+                "# COMMAND ----------\n\nx = 1\n",
+                encoding="utf-8",
+            )
+            result = runner.invoke(cli, ["notebook", "push", "etl_orders.py"])
+        assert result.exit_code == 0, result.output
+        assert len(imported) == 1
+        platform, name, nb, folder = imported[0]
+        assert (platform, name, folder) == ("databricks", "etl_orders", "/Shared/kindling")
+        cell_types = [c["cell_type"] for c in nb["cells"]]
+        assert cell_types == ["markdown", "code"]
+
+    def test_push_name_requires_single_file(self, monkeypatch):
+        self._clear_platform_env(monkeypatch)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://db.example.net")
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("a.py").write_text("x = 1", encoding="utf-8")
+            Path("b.py").write_text("y = 2", encoding="utf-8")
+            result = runner.invoke(cli, ["notebook", "push", "a.py", "b.py", "--name", "combined"])
+        assert result.exit_code != 0
+        assert "exactly one file" in result.output
+
+    def test_pull_then_push_roundtrip(self, monkeypatch):
+        """Pulled source pushed back parses to the same cells."""
+        self._clear_platform_env(monkeypatch)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://db.example.net")
+        cells = [
+            {"cell_type": "markdown", "metadata": {}, "source": ["# Title\n", "\n", "Body"]},
+            {"cell_type": "code", "metadata": {}, "outputs": [], "source": ["x = 1\n", "y = 2"]},
+        ]
+        monkeypatch.setattr(
+            "kindling_cli.cli._fetch_notebook_cells",
+            lambda platform, ws, name, folder: cells,
+        )
+        pushed = []
+        monkeypatch.setattr(
+            "kindling_cli.cli._import_notebook_to_workspace",
+            lambda platform, ws, name, nb, databricks_folder=None: pushed.append(nb),
+        )
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["notebook", "pull", "etl", "--out", "nb"])
+            assert result.exit_code == 0, result.output
+            result = runner.invoke(cli, ["notebook", "push", "nb/etl.py"])
+            assert result.exit_code == 0, result.output
+
+        (nb,) = pushed
+        roundtripped = [(c["cell_type"], "".join(c["source"])) for c in nb["cells"]]
+        original = [(c["cell_type"], "".join(c["source"])) for c in cells]
+        assert roundtripped == original
+
+
+class TestNotebookRestHelpers:
+    """REST-level coverage with a fake requests module."""
+
+    def _fake_requests(self, monkeypatch, handler):
+        import types
+
+        fake = types.ModuleType("requests")
+        fake.get = lambda url, headers=None, params=None: handler("GET", url, params)
+        fake.post = lambda url, headers=None, params=None, json=None: handler("POST", url, params)
+        monkeypatch.setitem(sys.modules, "requests", fake)
+        monkeypatch.setattr(
+            "kindling_cli.cli._notebook_rest_headers", lambda platform: {"Authorization": "t"}
+        )
+        return fake
+
+    @staticmethod
+    def _response(status_code, payload, headers=None):
+        import types
+
+        return types.SimpleNamespace(
+            status_code=status_code,
+            json=lambda: payload,
+            text=str(payload),
+            headers=headers or {},
+        )
+
+    def test_databricks_list_filters_notebooks(self, monkeypatch):
+        from kindling_cli.cli import _list_workspace_notebooks
+
+        def handler(method, url, params):
+            assert url.endswith("/api/2.0/workspace/list")
+            return self._response(
+                200,
+                {
+                    "objects": [
+                        {"object_type": "NOTEBOOK", "path": "/Shared/kindling/etl"},
+                        {"object_type": "DIRECTORY", "path": "/Shared/kindling/sub"},
+                    ]
+                },
+            )
+
+        self._fake_requests(monkeypatch, handler)
+        names = _list_workspace_notebooks(
+            "databricks", "https://db.example.net", "/Shared/kindling"
+        )
+        assert names == ["etl"]
+
+    def test_databricks_export_decodes_jupyter_payload(self, monkeypatch):
+        import base64
+        import json as jsonlib
+
+        from kindling_cli.cli import _fetch_notebook_cells
+
+        nb = {"cells": [{"cell_type": "code", "source": ["x = 1"], "metadata": {}}]}
+        payload = base64.b64encode(jsonlib.dumps(nb).encode()).decode()
+
+        def handler(method, url, params):
+            assert url.endswith("/api/2.0/workspace/export")
+            assert params["format"] == "JUPYTER"
+            assert params["path"] == "/Shared/kindling/etl"
+            return self._response(200, {"content": payload})
+
+        self._fake_requests(monkeypatch, handler)
+        cells = _fetch_notebook_cells(
+            "databricks", "https://db.example.net", "etl", "/Shared/kindling"
+        )
+        assert cells == nb["cells"]
+
+    def test_fabric_fetch_resolves_id_and_decodes_definition(self, monkeypatch):
+        import base64
+        import json as jsonlib
+
+        from kindling_cli.cli import _fetch_notebook_cells
+
+        nb = {"cells": [{"cell_type": "code", "source": ["x = 1"], "metadata": {}}]}
+        part_payload = base64.b64encode(jsonlib.dumps(nb).encode()).decode()
+
+        def handler(method, url, params):
+            if method == "GET" and url.endswith("/notebooks"):
+                return self._response(200, {"value": [{"id": "item-1", "displayName": "etl"}]})
+            if method == "POST" and "item-1/getDefinition" in url:
+                return self._response(
+                    200,
+                    {
+                        "definition": {
+                            "parts": [{"path": "notebook-content.ipynb", "payload": part_payload}]
+                        }
+                    },
+                )
+            raise AssertionError(f"Unexpected request: {method} {url}")
+
+        self._fake_requests(monkeypatch, handler)
+        cells = _fetch_notebook_cells("fabric", "ws-id", "etl", "/Shared/kindling")
+        assert cells == nb["cells"]
+
+    def test_synapse_list_follows_pagination(self, monkeypatch):
+        from kindling_cli.cli import _list_workspace_notebooks
+
+        def handler(method, url, params):
+            if "nextLink" not in url:
+                return self._response(
+                    200, {"value": [{"name": "b"}], "nextLink": url + "&nextLink=1"}
+                )
+            return self._response(200, {"value": [{"name": "a"}]})
+
+        self._fake_requests(monkeypatch, handler)
+        names = _list_workspace_notebooks("synapse", "my-ws", "/Shared/kindling")
+        assert names == ["a", "b"]

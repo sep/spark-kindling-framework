@@ -238,6 +238,66 @@ kindling workspace deploy --platform fabric --storage-account mystorageacct --ov
 
 ---
 
+## notebook
+
+Round-trip workspace notebooks as local python source files. Local files use
+the Databricks source format — cells separated by `# COMMAND ----------`,
+markdown cells as `# MAGIC` blocks — which is git-friendly and is the same
+format the standalone platform reads as local workspace notebooks, so pulled
+files run locally unchanged. Outputs and execution counts are not preserved;
+the round-trip carries code and markdown.
+
+All three commands share these options:
+
+| Option | Default | Description |
+|---|---|---|
+| `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
+| `--workspace TEXT` | platform env var | Workspace: URL (Databricks), name (Synapse), id (Fabric). Falls back to `DATABRICKS_HOST` / `SYNAPSE_WORKSPACE_NAME` / `FABRIC_WORKSPACE_ID` |
+| `--folder TEXT` | `/Shared/kindling` | Workspace folder (Databricks only) |
+
+### `notebook list`
+
+List notebooks in the platform workspace.
+
+```bash
+kindling notebook list --platform databricks
+kindling notebook list --platform fabric --workspace <workspace-id>
+```
+
+### `notebook pull`
+
+Export workspace notebooks to local `.py` source files. Refuses to replace
+existing local files unless `--overwrite` is passed.
+
+| Option | Default | Description |
+|---|---|---|
+| `NAMES...` | — | Notebook names to pull |
+| `--all` | — | Pull every notebook in the workspace |
+| `--out DIR` | `notebooks` | Local directory for the `.py` files |
+| `--overwrite` | — | Replace existing local files |
+
+```bash
+kindling notebook pull my_pipeline --platform databricks
+kindling notebook pull --all --out notebooks/ --overwrite
+```
+
+### `notebook push`
+
+Import local `.py` source files into the workspace as notebooks (created or
+replaced by name; the notebook name defaults to the file stem).
+
+| Option | Default | Description |
+|---|---|---|
+| `FILES...` | — | Local `.py` source files to push |
+| `--name TEXT` | file stem | Workspace notebook name (single file only) |
+
+```bash
+kindling notebook push notebooks/my_pipeline.py --platform databricks
+kindling notebook push notebooks/*.py --platform synapse
+```
+
+---
+
 ## runtime
 
 Manage kindling runtime artifacts.
