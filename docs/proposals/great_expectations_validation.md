@@ -296,17 +296,13 @@ A failed validation gate must behave like a failed pipe:
 - retry behavior must re-read the same input slice;
 - validation results must record the failure.
 
-The current implementation emits `persist.before_persist` before entering the
-strategy's persistence `try` block. If a handler raises at that point, the
-write is prevented, but the strategy-level `persist.persist_failed` signal is
-not emitted from that block. Normal pipe-level failure handling still occurs,
-but this lifecycle pairing should be corrected before validation gates become
-a supported framework contract.
-
-The proposed fix is to place the `persist.before_persist` emission inside the
-same failure-handling boundary as the write, or to add an explicit validation
-failure path that clears pending persistence state and emits the appropriate
-failure signal.
+**Resolved (2026-07-23):** `SimpleReadPersistStrategy` now emits
+`persist.before_persist` inside the same failure-handling boundary as the
+write. A raising handler prevents the write, propagates, and pairs with
+`persist.persist_failed`, so `WatermarkAspect` discards the pending watermark
+and a retry re-reads the same input slice. The gate contract above is
+therefore already supported by the framework; the validation runner can rely
+on it.
 
 ## Performance and evaluation semantics
 
