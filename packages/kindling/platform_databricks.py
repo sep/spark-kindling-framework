@@ -45,20 +45,33 @@ class DatabricksService(PlatformService):
         self._items_cache = []
         self._folders_cache = {}
         self._notebooks_cache = []
+        self._cache_initialized = False
         self.credential = self
 
-        self._initialize_cache()
+        # The workspace cache is populated lazily (_ensure_cache): filling it
+        # walks EVERY workspace directory, one REST call each, which takes
+        # minutes on large workspaces — and deployments with
+        # load_workspace_packages=False never need it at all. It must not
+        # run eagerly at service construction.
+
+    def _ensure_cache(self):
+        """Populate the workspace cache on first use (see __init__ note)."""
+        if not self._cache_initialized:
+            self._initialize_cache()
 
     def _initialize_cache(self):
         """Initialize the cache with all workspace items and folders"""
         try:
-            self.logger.debug("Initializing workspace cache...")
+            self.logger.info(
+                "Scanning workspace notebooks (one API call per directory; "
+                "may take a while on large workspaces)..."
+            )
 
             # Get all items in the workspace using the workspace list API
             url = f"{self._base_url}/api/2.0/workspace/list"
             params = {"path": "/", "fmt": "SOURCE"}
             self.logger.debug(f"Fetching items from: {url}")
-            response = requests.get(url, headers=self._get_headers(), params=params)
+            response = requests.get(url, headers=self._get_headers(), params=params, timeout=60)
 
             if response.status_code == 200:
                 data = self._handle_response(response)
@@ -141,7 +154,7 @@ class DatabricksService(PlatformService):
             try:
                 url = f"{self._base_url}/api/2.0/workspace/list"
                 params = {"path": directory_path, "fmt": "SOURCE"}
-                response = requests.get(url, headers=self._get_headers(), params=params)
+                response = requests.get(url, headers=self._get_headers(), params=params, timeout=60)
 
                 if response.status_code == 200:
                     data = self._handle_response(response)
@@ -637,6 +650,7 @@ class DatabricksService(PlatformService):
     def list_notebooks(self) -> List[Dict[str, Any]]:
         """List all notebooks in the workspace"""
         if hasattr(self, "_notebooks_cache"):
+            self._ensure_cache()
             return self._notebooks_cache
 
         # If cache not available, fetch directly
@@ -757,9 +771,7 @@ class DatabricksService(PlatformService):
 
     def _resolve_notebook_path(self, notebook_name: str) -> Optional[str]:
         """Resolve a notebook name to its full workspace path using the cache"""
-        if not hasattr(self, "_notebooks_cache") or not self._notebooks_cache:
-            self.logger.debug("Cache not available, trying to initialize...")
-            self._initialize_cache()
+        self._ensure_cache()
 
         # Search through cached notebooks
         for notebook in self._notebooks_cache:
@@ -794,8 +806,7 @@ class DatabricksService(PlatformService):
 
     def get_notebook_by_path(self, notebook_path: str) -> Optional[Dict[str, Any]]:
         """Get notebook by its workspace path"""
-        if not hasattr(self, "_notebooks_cache") or not self._notebooks_cache:
-            self._initialize_cache()
+        self._ensure_cache()
 
         for notebook in self._notebooks_cache:
             if notebook.get("path") == notebook_path:
