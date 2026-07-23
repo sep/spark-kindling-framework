@@ -395,3 +395,122 @@ class TestAuth:
     def test_unsupported_mode_raises(self, kusto):
         with pytest.raises(ValueError, match="Unsupported ADX auth mode"):
             self._kcsb(kusto, {**BASE_TAGS, "provider.auth": "interactive_browser"})
+
+
+class TestWindowedReads:
+    """provider.time_column + lookback/start/end/slice windowed reads."""
+
+    WINDOW_TAGS = {
+        **BASE_TAGS,
+        "provider.time_column": "_timestamp",
+        "provider.start": "2026-07-01T00:00:00+00:00",
+        "provider.end": "2026-07-01T04:00:00+00:00",
+    }
+
+    def _read(self, kusto, tags, schema=None):
+        provider = _provider()
+        spark = MagicMock()
+        with patch("kindling.entity_provider_adx.get_or_create_spark_session", return_value=spark):
+            df = provider.read_entity(_entity(tags, schema=schema))
+        return df, spark, kusto.query_clients[-1]
+
+    def test_unwindowed_read_unchanged(self, kusto):
+        _, _, client = self._read(kusto, BASE_TAGS)
+        assert client.executed == [("analytics", "events")]
+
+    def test_start_end_without_slice_is_one_bounded_query(self, kusto):
+        _, _, client = self._read(kusto, self.WINDOW_TAGS)
+        assert len(client.executed) == 1
+        query = client.executed[0][1]
+        assert query.startswith("events | where ['_timestamp'] >= datetime(2026-07-01T00:00:00")
+        assert "< datetime(2026-07-01T04:00:00" in query
+
+    def test_slice_splits_range_into_bounded_queries(self, kusto):
+        tags = {**self.WINDOW_TAGS, "provider.slice": "1h"}
+        _, _, client = self._read(kusto, tags)
+        assert len(client.executed) == 4
+        first, last = client.executed[0][1], client.executed[-1][1]
+        assert ">= datetime(2026-07-01T00:00:00" in first
+        assert "< datetime(2026-07-01T01:00:00" in first
+        assert ">= datetime(2026-07-01T03:00:00" in last
+        assert "< datetime(2026-07-01T04:00:00" in last
+
+    def test_lookback_bounds_from_now(self, kusto):
+        tags = {**BASE_TAGS, "provider.time_column": "_timestamp", "provider.lookback": "2h"}
+        _, _, client = self._read(kusto, tags)
+        assert len(client.executed) == 1
+        assert "['_timestamp'] >= datetime(" in client.executed[0][1]
+
+    def test_too_large_slice_is_bisected(self, kusto):
+        """Slices rejected with E_QUERY_RESULT_SET_TOO_LARGE split until they fit."""
+        tags = {**self.WINDOW_TAGS, "provider.slice": "4h"}
+        provider = _provider()
+        entity = _entity(tags)
+        spark = MagicMock()
+
+        state = {"calls": []}
+
+        def _execute(database, query):
+            state["calls"].append(query)
+            # Reject anything spanning 2h or more (the 4h slice and its 2h halves)
+            import re
+
+            times = re.findall(r"datetime\(([^)]+)\)", query)
+            from datetime import datetime
+
+            lo, hi = (datetime.fromisoformat(t) for t in times)
+            if (hi - lo).total_seconds() >= 2 * 3600:
+                raise RuntimeError("... E_QUERY_RESULT_SET_TOO_LARGE ...")
+            return types.SimpleNamespace(primary_results=[types.SimpleNamespace(name="p")])
+
+        with patch("kindling.entity_provider_adx.get_or_create_spark_session", return_value=spark):
+            client = provider._query_client(entity, provider._get_provider_config(entity))
+            client.execute = _execute
+            provider.read_entity(entity)
+
+        # 1 rejected 4h + 2 rejected 2h halves + 4 accepted 1h quarters
+        assert len(state["calls"]) == 7
+
+    def test_bisection_stops_at_minimum_slice(self, kusto):
+        tags = {
+            **BASE_TAGS,
+            "provider.time_column": "_timestamp",
+            "provider.start": "2026-07-01T00:00:00+00:00",
+            "provider.end": "2026-07-01T00:01:00+00:00",
+        }
+        provider = _provider()
+        entity = _entity(tags)
+
+        def _always_too_large(database, query):
+            raise RuntimeError("E_QUERY_RESULT_SET_TOO_LARGE")
+
+        client = provider._query_client(entity, provider._get_provider_config(entity))
+        client.execute = _always_too_large
+        with pytest.raises(RuntimeError, match="minimum slice"):
+            provider.read_entity(entity)
+
+    def test_windowing_keys_without_time_column_raise(self, kusto):
+        with pytest.raises(ValueError, match="provider.time_column"):
+            self._read(kusto, {**BASE_TAGS, "provider.lookback": "1d"})
+
+    def test_time_column_without_range_raises(self, kusto):
+        with pytest.raises(ValueError, match="provider.lookback or provider.start"):
+            self._read(kusto, {**BASE_TAGS, "provider.time_column": "_timestamp"})
+
+    def test_bad_duration_raises(self, kusto):
+        tags = {
+            **BASE_TAGS,
+            "provider.time_column": "_timestamp",
+            "provider.lookback": "1 fortnight",
+        }
+        with pytest.raises(ValueError, match="duration like"):
+            self._read(kusto, tags)
+
+    def test_empty_windows_with_schema_yield_typed_empty_df(self, kusto):
+        from pyspark.sql.types import LongType, StructField, StructType
+
+        kusto.query_pdf = pd.DataFrame()
+        schema = StructType([StructField("a", LongType(), True)])
+        tags = {**self.WINDOW_TAGS, "provider.slice": "1h"}
+        df, spark, _ = self._read(kusto, tags, schema=schema)
+        spark.createDataFrame.assert_called_once_with([], schema=schema)
