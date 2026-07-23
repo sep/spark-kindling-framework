@@ -101,12 +101,18 @@ def test_partitioned_write_creates_partition_directories(spark, provider, tmp_pa
     assert provider.read_entity(entity).count() == 3
 
 
-def test_ensure_destination_creates_directory(spark, provider, tmp_path):
+def test_ensure_destination_defers_directory_creation_to_writer(spark, provider, tmp_path):
+    """ensure_destination validates config but creates nothing: directory
+    creation via the JVM Hadoop API breaks on runtimes without a py4j bridge,
+    and the parquet sink creates missing directories on first write."""
     path = tmp_path / "ensured"
     entity = _entity(path)
 
     provider.ensure_destination(entity)
+    assert not path.exists()
 
+    df = spark.createDataFrame([(1, "us")], ["id", "region"])
+    provider.write_to_entity(df, entity)
     assert path.is_dir()
 
 
