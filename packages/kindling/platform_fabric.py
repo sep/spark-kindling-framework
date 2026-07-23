@@ -505,20 +505,48 @@ class FabricService(PlatformService):
     def create_or_update_notebook(
         self, notebook_name: str, notebook_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Create or update a notebook"""
-        encoded_name = quote(notebook_name, safe="")
+        """Create or update a notebook.
 
-        url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks/{encoded_name}"
+        Accepts either a Fabric item payload that already carries a
+        ``definition``, or a Jupyter notebook document, which is wrapped into
+        an ipynb definition. Fabric has no upsert-by-name: creation posts to
+        ``/notebooks`` with the name in the body, while replacing an existing
+        notebook requires its item id and the ``updateDefinition`` endpoint.
+        """
+        import base64
+        import json
+
+        if "definition" in notebook_data:
+            definition = notebook_data["definition"]
+        else:
+            payload = base64.b64encode(json.dumps(notebook_data).encode("utf-8")).decode("utf-8")
+            definition = {
+                # Without an explicit format Fabric assumes its native source
+                # part layout and the create operation fails asynchronously.
+                "format": "ipynb",
+                "parts": [
+                    {
+                        "path": "notebook-content.ipynb",
+                        "payload": payload,
+                        "payloadType": "InlineBase64",
+                    }
+                ],
+            }
 
         try:
+            notebook_id = self.get_notebook_id_by_name(notebook_name)
+            if notebook_id:
+                url = (
+                    f"{self._base_url}/workspaces/{self.workspace_id}"
+                    f"/notebooks/{notebook_id}/updateDefinition"
+                )
+                body: Dict[str, Any] = {"definition": definition}
+            else:
+                url = f"{self._base_url}/workspaces/{self.workspace_id}/notebooks"
+                body = {"displayName": notebook_name, "definition": definition}
+
             self.logger.debug(f"Creating/updating notebook - URL: {url}")
-            self.logger.debug(f"Payload keys: {list(notebook_data.keys())}")
-
-            # Validate the payload structure
-            if "displayName" not in notebook_data:
-                notebook_data["displayName"] = notebook_name
-
-            response = requests.post(url, headers=self._get_headers(), json=notebook_data)
+            response = requests.post(url, headers=self._get_headers(), json=body)
             self.logger.debug(f"Response Status: {response.status_code}")
 
             if response.status_code not in [200, 201, 202]:

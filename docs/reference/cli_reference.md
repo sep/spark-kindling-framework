@@ -247,6 +247,12 @@ format the standalone platform reads as local workspace notebooks, so pulled
 files run locally unchanged. Outputs and execution counts are not preserved;
 the round-trip carries code and markdown.
 
+The underlying operations are available programmatically via
+`kindling_sdk.notebooks` (`create_notebook_client(platform, workspace)` →
+`list_notebooks` / `get_notebook_cells` / `import_notebook` /
+`delete_notebook`), paired with `kindling.notebook_source` for the
+cells ↔ python-source conversion.
+
 All three commands share these options:
 
 | Option | Default | Description |
