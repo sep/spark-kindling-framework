@@ -3755,3 +3755,131 @@ class TestNotebookRestHelpers:
         self._fake_requests(monkeypatch, handler)
         names = _list_workspace_notebooks("synapse", "my-ws", "/Shared/kindling")
         assert names == ["a", "b"]
+
+
+class TestNotebookImportRest:
+    """REST-level coverage of _import_notebook_to_workspace fixes."""
+
+    class _FakeCredential:
+        def get_token(self, *scopes):
+            import types
+
+            return types.SimpleNamespace(token="fake-token")
+
+    @staticmethod
+    def _response(status_code, payload=None, headers=None):
+        import types
+
+        return types.SimpleNamespace(
+            status_code=status_code,
+            json=lambda: payload or {},
+            text=str(payload),
+            headers=headers or {},
+        )
+
+    def _install_fakes(self, monkeypatch, handler):
+        import types
+
+        fake = types.ModuleType("requests")
+        fake.get = lambda url, headers=None, params=None: handler("GET", url, None)
+        fake.post = lambda url, headers=None, params=None, json=None: handler("POST", url, json)
+        monkeypatch.setitem(sys.modules, "requests", fake)
+        monkeypatch.setattr(
+            "kindling_cli.cli.create_azure_credential",
+            lambda **kw: self._FakeCredential(),
+        )
+        monkeypatch.setattr(
+            "kindling_cli.cli._notebook_rest_headers", lambda platform: {"Authorization": "t"}
+        )
+        monkeypatch.setattr("time.sleep", lambda seconds: None)
+
+    def test_databricks_import_creates_parent_folder_first(self, monkeypatch):
+        from kindling_cli.cli import _import_notebook_to_workspace
+
+        calls = []
+
+        def handler(method, url, body):
+            calls.append((url.rsplit("/", 1)[-1], body))
+            return self._response(200)
+
+        self._install_fakes(monkeypatch, handler)
+        _import_notebook_to_workspace("databricks", "https://db.example.net", "etl", {"cells": []})
+
+        assert calls[0][0] == "mkdirs"
+        assert calls[0][1] == {"path": "/Shared/kindling"}
+        assert calls[1][0] == "import"
+        assert calls[1][1]["path"] == "/Shared/kindling/etl"
+
+    def test_fabric_import_creates_when_absent(self, monkeypatch):
+        from kindling_cli.cli import _import_notebook_to_workspace
+
+        created = []
+
+        def handler(method, url, body):
+            if method == "GET" and url.endswith("/notebooks"):
+                return self._response(200, {"value": []})
+            if method == "POST" and url.endswith("/notebooks"):
+                created.append(body)
+                return self._response(201)
+            raise AssertionError(f"Unexpected request: {method} {url}")
+
+        self._install_fakes(monkeypatch, handler)
+        _import_notebook_to_workspace("fabric", "ws-id", "etl", {"cells": []})
+
+        (body,) = created
+        assert body["displayName"] == "etl"
+        assert body["definition"]["format"] == "ipynb"
+
+    def test_fabric_import_updates_existing_by_item_id(self, monkeypatch):
+        from kindling_cli.cli import _import_notebook_to_workspace
+
+        updated = []
+
+        def handler(method, url, body):
+            if method == "GET" and url.endswith("/notebooks"):
+                return self._response(200, {"value": [{"id": "item-1", "displayName": "etl"}]})
+            if method == "POST" and url.endswith("item-1/updateDefinition"):
+                updated.append(body)
+                return self._response(200)
+            raise AssertionError(f"Unexpected request: {method} {url}")
+
+        self._install_fakes(monkeypatch, handler)
+        _import_notebook_to_workspace("fabric", "ws-id", "etl", {"cells": []})
+
+        (body,) = updated
+        assert body["definition"]["format"] == "ipynb"
+
+    def test_fabric_async_failure_is_reported(self, monkeypatch):
+        """A 202 whose operation ends Failed must not report success."""
+        from click import ClickException
+        from kindling_cli.cli import _import_notebook_to_workspace
+
+        def handler(method, url, body):
+            if method == "GET" and url.endswith("/notebooks"):
+                return self._response(200, {"value": []})
+            if method == "POST" and url.endswith("/notebooks"):
+                return self._response(202, headers={"Location": "https://ops/op-1"})
+            if method == "GET" and url == "https://ops/op-1":
+                return self._response(
+                    200, {"status": "Failed", "error": {"message": "bad definition"}}
+                )
+            raise AssertionError(f"Unexpected request: {method} {url}")
+
+        self._install_fakes(monkeypatch, handler)
+        with pytest.raises(ClickException, match="bad definition"):
+            _import_notebook_to_workspace("fabric", "ws-id", "etl", {"cells": []})
+
+    def test_fabric_async_success_completes(self, monkeypatch):
+        from kindling_cli.cli import _import_notebook_to_workspace
+
+        def handler(method, url, body):
+            if method == "GET" and url.endswith("/notebooks"):
+                return self._response(200, {"value": []})
+            if method == "POST" and url.endswith("/notebooks"):
+                return self._response(202, headers={"Location": "https://ops/op-1"})
+            if method == "GET" and url == "https://ops/op-1":
+                return self._response(200, {"status": "Succeeded"})
+            raise AssertionError(f"Unexpected request: {method} {url}")
+
+        self._install_fakes(monkeypatch, handler)
+        _import_notebook_to_workspace("fabric", "ws-id", "etl", {"cells": []})

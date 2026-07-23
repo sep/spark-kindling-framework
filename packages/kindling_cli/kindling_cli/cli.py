@@ -2741,13 +2741,16 @@ def _build_fabric_notebook_payload(
         "displayName": notebook_name,
         "type": "Notebook",
         "definition": {
+            # Without an explicit format Fabric assumes its native source
+            # part layout and the create operation fails asynchronously.
+            "format": "ipynb",
             "parts": [
                 {
                     "path": "notebook-content.ipynb",
                     "payload": base64.b64encode(notebook_json).decode("utf-8"),
                     "payloadType": "InlineBase64",
                 }
-            ]
+            ],
         },
     }
 
@@ -2780,6 +2783,18 @@ def _import_notebook_to_workspace(
         content_b64 = base64.b64encode(json.dumps(notebook_data).encode()).decode()
         nb_folder = (databricks_folder or "/Shared/kindling").rstrip("/")
         nb_path = f"{nb_folder}/{notebook_name}"
+
+        # Import does not create parent folders; mkdirs is idempotent.
+        mkdirs_resp = requests.post(
+            f"{workspace}/api/2.0/workspace/mkdirs",
+            headers=headers,
+            json={"path": nb_folder},
+        )
+        if mkdirs_resp.status_code != 200:
+            raise click.ClickException(
+                f"Databricks mkdirs failed for {nb_folder} "
+                f"({mkdirs_resp.status_code}): {mkdirs_resp.text}"
+            )
 
         resp = requests.post(
             f"{workspace}/api/2.0/workspace/import",
@@ -2857,39 +2872,96 @@ def _import_notebook_to_workspace(
                 "Install with: pip install 'spark-kindling-cli[deploy]'"
             ) from exc
 
-        credential = create_azure_credential(additionally_allowed_tenants=["*"])
-        token = credential.get_token(
-            azure_token_scope("FABRIC_TOKEN_SCOPE", "https://api.fabric.microsoft.com/.default")
-        ).token
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        encoded_name = quote(notebook_name, safe="")
+        headers = _notebook_rest_headers("fabric")
+        definition = _build_fabric_notebook_payload(notebook_name, notebook_data)["definition"]
 
-        resp = requests.post(
-            f"{fabric_api_base_url()}/workspaces/{workspace}/notebooks/{encoded_name}",
-            headers=headers,
-            json=_build_fabric_notebook_payload(notebook_name, notebook_data),
-        )
+        # Fabric has no upsert-by-name: create posts to /notebooks with the
+        # name in the body; replacing an existing notebook needs its item id
+        # and the updateDefinition endpoint.
+        def _find_item():
+            return next(
+                (
+                    item
+                    for item in _fabric_notebook_items(workspace, headers)
+                    if item.get("displayName") == notebook_name
+                ),
+                None,
+            )
+
+        def _update_definition(item):
+            return requests.post(
+                f"{fabric_api_base_url()}/workspaces/{workspace}/notebooks/{item['id']}"
+                "/updateDefinition",
+                headers=headers,
+                json={"definition": definition},
+            )
+
+        existing = _find_item()
+        if existing:
+            resp = _update_definition(existing)
+        else:
+            resp = requests.post(
+                f"{fabric_api_base_url()}/workspaces/{workspace}/notebooks",
+                headers=headers,
+                json={"displayName": notebook_name, "definition": definition},
+            )
+            if resp.status_code == 409:
+                # Item listing is eventually consistent: a just-created
+                # notebook reserves its name (409) before it appears in the
+                # list. Wait for the item id, then update instead.
+                import time
+
+                for _ in range(15):
+                    time.sleep(2)
+                    existing = _find_item()
+                    if existing:
+                        break
+                if existing is None:
+                    raise click.ClickException(
+                        f"Fabric notebook '{notebook_name}' conflicted on create but never "
+                        f"appeared in the item list: {resp.text}"
+                    )
+                resp = _update_definition(existing)
         if resp.status_code not in (200, 201, 202):
             raise click.ClickException(
                 f"Fabric notebook create failed ({resp.status_code}): {resp.text}"
             )
 
         if resp.status_code == 202:
-            import time
-
-            location = resp.headers.get("Location", "")
-            for _ in range(30):
-                time.sleep(2)
-                poll = requests.get(location, headers=headers)
-                if poll.status_code == 200:
-                    break
-            else:
-                click.echo(f"  {notebook_name} (accepted, still provisioning)")
-                return
+            _poll_fabric_operation(
+                requests, headers, resp.headers.get("Location", ""), f"notebook '{notebook_name}'"
+            )
         click.echo(f"  {notebook_name}")
 
     else:
         raise click.ClickException(f"Unsupported platform for notebook import: {platform}")
+
+
+def _poll_fabric_operation(requests_mod, headers: Dict[str, str], location: str, what: str) -> None:
+    """Poll a Fabric long-running operation to its terminal status.
+
+    A 200 poll response is not success: the body carries Succeeded / Failed /
+    Running. Treating the first 200 as done reports asynchronously failed
+    operations as successful.
+    """
+    import time
+
+    if not location:
+        raise click.ClickException(f"Fabric accepted {what} but returned no operation URL.")
+    for _ in range(60):
+        time.sleep(2)
+        poll = requests_mod.get(location, headers=headers)
+        if poll.status_code == 404:
+            return  # operation completed and was cleaned up
+        if poll.status_code != 200:
+            continue
+        status = str((poll.json() or {}).get("status", "")).lower()
+        if status == "succeeded":
+            return
+        if status == "failed":
+            error = (poll.json() or {}).get("error", {})
+            raise click.ClickException(f"Fabric operation failed for {what}: {error}")
+    raise click.ClickException(f"Fabric operation timed out for {what}.")
 
 
 # =============================================================================
@@ -3055,8 +3127,18 @@ def _fetch_notebook_cells(
         return resp.json().get("properties", {}).get("cells", [])
 
     # Fabric: resolve item id, then export the ipynb definition (may be async).
-    items = _fabric_notebook_items(workspace, headers)
-    match = next((item for item in items if item.get("displayName") == name), None)
+    # The item listing is eventually consistent — a just-pushed notebook can
+    # take a few seconds to appear, so retry the lookup briefly.
+    match = None
+    for attempt in range(4):
+        if attempt:
+            import time
+
+            time.sleep(3)
+        items = _fabric_notebook_items(workspace, headers)
+        match = next((item for item in items if item.get("displayName") == name), None)
+        if match is not None:
+            break
     if match is None:
         raise click.ClickException(f"Notebook '{name}' not found in workspace {workspace}.")
 
@@ -3066,18 +3148,14 @@ def _fetch_notebook_cells(
         headers=headers,
     )
     if resp.status_code == 202:
-        import time
-
         location = resp.headers.get("Location", "")
-        for _ in range(30):
-            time.sleep(2)
-            resp = requests.get(location, headers=headers)
-            if resp.status_code == 200:
-                break
-        else:
-            raise click.ClickException(f"Fabric definition export timed out for '{name}'.")
-        if "definition" not in resp.json():
-            resp = requests.get(f"{location.rstrip('/')}/result", headers=headers)
+        _poll_fabric_operation(requests, headers, location, f"definition export of '{name}'")
+        resp = requests.get(f"{location.rstrip('/')}/result", headers=headers)
+        if resp.status_code != 200:
+            raise click.ClickException(
+                f"Fabric definition result fetch failed for '{name}' "
+                f"({resp.status_code}): {resp.text}"
+            )
     elif resp.status_code != 200:
         raise click.ClickException(
             f"Fabric definition export failed for '{name}' ({resp.status_code}): {resp.text}"
