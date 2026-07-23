@@ -46,7 +46,7 @@ from pyspark.sql.streaming import StreamingQueryListener
 
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_trace import SparkTraceProvider
 
 # =============================================================================
@@ -129,7 +129,7 @@ class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
     def __init__(
         self,
         signal_provider: SignalProvider,
-        logger_provider: SparkLoggerProvider,
+        logger_provider: PythonLoggerProvider,
         trace_provider: SparkTraceProvider,
         max_queue_size=1000,
         metrics_log_interval=60.0,

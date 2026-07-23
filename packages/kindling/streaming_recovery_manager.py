@@ -55,7 +55,7 @@ from injector import inject
 
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.streaming_query_manager import StreamingQueryManager
 
 # =============================================================================
@@ -193,7 +193,7 @@ class StreamingRecoveryManager(SignalEmitter):
     def __init__(
         self,
         signal_provider: SignalProvider,
-        logger_provider: SparkLoggerProvider,
+        logger_provider: PythonLoggerProvider,
         query_manager: StreamingQueryManager,
         max_retries=5,
         initial_backoff=1.0,

@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from kindling.signaling import SignalProvider
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.streaming_query_manager import StreamingQueryManager
 from kindling.streaming_recovery_manager import (
     RecoveryState,
@@ -45,7 +45,7 @@ def signal_provider():
 @pytest.fixture
 def logger_provider():
     """Create mock logger provider."""
-    provider = MagicMock(spec=SparkLoggerProvider)
+    provider = MagicMock(spec=PythonLoggerProvider)
     logger = MagicMock()
     provider.get_logger = MagicMock(return_value=logger)
     return provider

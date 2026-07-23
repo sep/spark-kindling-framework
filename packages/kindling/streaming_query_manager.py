@@ -49,7 +49,7 @@ from pyspark.sql.streaming import StreamingQuery
 
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 
 # =============================================================================
@@ -162,7 +162,7 @@ class StreamingQueryManager(SignalEmitter):
     def __init__(
         self,
         signal_provider: SignalProvider,
-        logger_provider: SparkLoggerProvider,
+        logger_provider: PythonLoggerProvider,
     ):
         """
         Initialize the streaming query manager.

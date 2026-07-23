@@ -50,7 +50,7 @@ from injector import inject
 
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_log_provider import SparkLoggerProvider
+from kindling.spark_log_provider import PythonLoggerProvider
 
 # =============================================================================
 # Data Structures
@@ -209,7 +209,7 @@ class StreamingHealthMonitor(SignalEmitter):
     def __init__(
         self,
         signal_provider: SignalProvider,
-        logger_provider: SparkLoggerProvider,
+        logger_provider: PythonLoggerProvider,
         stall_threshold=300.0,
         stall_check_interval=60.0,
     ):
