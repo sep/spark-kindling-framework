@@ -90,7 +90,6 @@ pip install 'spark-kindling[synapse]'      # Azure Synapse Analytics
 pip install 'spark-kindling[databricks]'   # Databricks
 pip install 'spark-kindling[fabric]'       # Microsoft Fabric
 pip install 'spark-kindling[standalone]'   # Local development / generic Spark
-pip install 'spark-kindling[adx]'          # + azure-kusto SDKs for the adx-api provider
 ```
 
 The Python import name is `kindling` (unchanged):
