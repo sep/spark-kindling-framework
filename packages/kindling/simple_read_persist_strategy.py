@@ -5,6 +5,8 @@ from functools import reduce
 from pathlib import Path
 from typing import Optional
 
+from pyspark.sql.functions import col
+
 from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.entity_provider_csv import (
@@ -16,7 +18,6 @@ from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log import *
 from kindling.watermarking import *
-from pyspark.sql.functions import col
 
 
 def _is_local_execution() -> bool:
@@ -185,17 +186,23 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
                 strategy.logger.debug(f"persist_lambda - pipe = {pipe.pipeid}")
 
-                results = strategy.emit(
-                    "persist.before_persist",
-                    df=df,
-                    pipe_id=pipe.pipeid,
-                    source_entity_id=src_input_entity_id,
-                    output_entity_id=pipe.output_entity_id,
-                    persist_id=persist_id,
-                )
-                df = _apply_df_transforms(results, df)
-
                 try:
+                    # Emitted inside the failure boundary: a raising handler
+                    # is the supported write gate (e.g. a validation gate) —
+                    # the write must not happen AND the raise must pair with
+                    # persist.persist_failed, so observers like
+                    # WatermarkAspect treat it as a failed persist (pending
+                    # watermark discarded, retry re-reads the same slice).
+                    results = strategy.emit(
+                        "persist.before_persist",
+                        df=df,
+                        pipe_id=pipe.pipeid,
+                        source_entity_id=src_input_entity_id,
+                        output_entity_id=pipe.output_entity_id,
+                        persist_id=persist_id,
+                    )
+                    df = _apply_df_transforms(results, df)
+
                     # Derived datasets (dataset.kind='derived') are replaced,
                     # not evolved: the provider swaps the whole table — or
                     # only the batch's slices when derived.replace_keys is

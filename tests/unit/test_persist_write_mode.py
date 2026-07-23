@@ -11,6 +11,7 @@ The tag is shared with the streaming path (SimplePipeStreamStarter):
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
 from kindling.data_entities import DataEntityManager
 from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
 from kindling.simple_read_persist_strategy import SimpleReadPersistStrategy
@@ -141,6 +142,91 @@ def test_write_mode_failure_pairs_before_persist_with_persist_failed():
 
     assert "persist.before_persist" in emitted
     assert "persist.persist_failed" in emitted
+
+
+def test_before_persist_gate_failure_blocks_write_and_emits_persist_failed():
+    """A raising persist.before_persist handler is the supported write gate
+    (e.g. a validation gate): the write must not happen, the exception must
+    propagate, and persist.persist_failed must still be emitted so observers
+    (WatermarkAspect) treat it as a failed persist."""
+    dst_entity = Mock(entityid="entity.dst", tags={})
+    out_provider = Mock(spec=_MergeWritableProvider)
+    out_provider.check_entity_exists.return_value = True
+
+    persist, strategy = _make_strategy(dst_entity, out_provider)
+
+    emitted = []
+
+    def _gate(signal_name, **kwargs):
+        emitted.append(signal_name)
+        if signal_name == "persist.before_persist":
+            raise ValueError("validation gate rejected batch")
+        return []
+
+    strategy.emit = _gate
+
+    with pytest.raises(ValueError, match="validation gate"):
+        persist(Mock(name="df"))
+
+    assert "persist.persist_failed" in emitted
+    out_provider.merge_to_entity.assert_not_called()
+    out_provider.append_to_entity.assert_not_called()
+    out_provider.write_to_entity.assert_not_called()
+
+
+def test_before_persist_gate_failure_reaches_persist_failed_subscribers():
+    """Same contract through the real blinker signal provider: a raising
+    before_persist subscriber propagates, and persist_failed subscribers
+    still receive the failure (with the gate's error in the payload)."""
+    from kindling.signaling import BlinkerSignalProvider
+
+    dst_entity = Mock(entityid="entity.dst", tags={})
+    out_provider = Mock(spec=_MergeWritableProvider)
+    out_provider.check_entity_exists.return_value = True
+
+    der = Mock()
+    src_entity = Mock(entityid="entity.src", tags={})
+    der.get_entity_definition.side_effect = lambda eid: {
+        "entity.src": src_entity,
+        "entity.dst": dst_entity,
+    }[eid]
+    provider_registry = Mock()
+    provider_registry.get_provider_for_entity.return_value = out_provider
+    lp = Mock()
+    lp.get_logger.return_value = Mock()
+
+    signal_provider = BlinkerSignalProvider()
+    strategy = SimpleReadPersistStrategy(
+        ep=Mock(),
+        der=der,
+        tp=MagicMock(),
+        lp=lp,
+        provider_registry=provider_registry,
+        signal_provider=signal_provider,
+    )
+    pipe = Mock(pipeid="pipe1", input_entity_ids=["entity.src"], output_entity_id="entity.dst")
+    persist = strategy.create_pipe_persist_activator(pipe)
+
+    def _gate(sender, **kwargs):
+        raise ValueError("validation gate rejected batch")
+
+    failures = []
+
+    def _on_failed(sender, **kwargs):
+        failures.append(kwargs)
+
+    signal_provider.create_signal("persist.before_persist").connect(_gate)
+    signal_provider.create_signal("persist.persist_failed").connect(_on_failed)
+
+    with pytest.raises(ValueError, match="validation gate"):
+        persist(Mock(name="df"))
+
+    assert len(failures) == 1
+    assert failures[0]["pipe_id"] == "pipe1"
+    assert failures[0]["error_type"] == "ValueError"
+    assert "validation gate" in failures[0]["error"]
+    out_provider.merge_to_entity.assert_not_called()
+    out_provider.write_to_entity.assert_not_called()
 
 
 def test_invalid_write_mode_rejected_at_registration():
