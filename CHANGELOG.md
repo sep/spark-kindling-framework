@@ -2,6 +2,22 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **Databricks startup no longer scans the whole workspace.** The platform
+  service eagerly walked every workspace directory (one REST call each,
+  recursively, no timeout) at construction to prime its notebook cache —
+  minutes of `initialize()` latency on large workspaces, paid even with
+  `load_workspace_packages: false`. The scan now runs lazily on first
+  actual use, its REST calls carry timeouts, and it logs at INFO when it
+  does run.
+- `adx-api` provider: Kusto `dynamic` columns (dicts/lists in the pandas
+  result) are serialized to JSON strings before Spark conversion —
+  previously reads failed with `PySparkValueError` during Arrow
+  conversion; the `tostring()` KQL workaround is no longer required.
+
 ## [0.11.1] - 2026-07-23
 
 ### Added
