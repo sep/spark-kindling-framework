@@ -152,9 +152,6 @@ do not create a different episode identity.
 
 ## Not yet implemented
 
-The remaining proposal work is tracked here so the current package is not
-mistaken for a full implementation:
-
 - revision of episodes closed by a real end event (a later-arriving end
   earlier than the accepted one never re-pairs a closed episode);
 - late-event grace windows, watermarks, replay/backfill semantics, and
@@ -162,7 +159,4 @@ mistaken for a full implementation:
 - multi-generation orchestration beyond one condition-engine pass;
 - interval hierarchy and temporal-relation reasoning;
 - aggregation, correlation, and inference-derived event paths;
-- cloud platform coverage beyond Databricks (the Fabric/Synapse legs of the
-  platform system test);
 - a `kindling conditions set/remove` CLI on top of `ingest_conditions`;
-- a runnable example data app packaging the end-to-end guide walkthrough.
