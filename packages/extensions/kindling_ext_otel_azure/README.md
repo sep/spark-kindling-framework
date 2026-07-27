@@ -15,10 +15,10 @@ This package provides Azure Monitor-backed implementations of Kindling's telemet
 
 ```bash
 # Latest stable
-pip install kindling-ext-otel-azure
+pip install spark-kindling-ext-otel-azure
 
 # Alpha version with improved Databricks compatibility
-pip install kindling-ext-otel-azure==0.3.0a1
+pip install spark-kindling-ext-otel-azure==0.3.0a1
 ```
 
 ## Usage
@@ -31,7 +31,7 @@ Add the extension to your `settings.yaml` or `BOOTSTRAP_CONFIG`:
 kindling:
   # Extensions are automatically loaded (installed + imported)
   extensions:
-    - kindling-ext-otel-azure>=0.3.0a1  # Alpha with improved cross-platform support
+    - spark-kindling-ext-otel-azure>=0.3.0a1  # Alpha with improved cross-platform support
 
   telemetry:
     azure_monitor:
@@ -45,7 +45,7 @@ kindling:
 Or in bootstrap config:
 ```python
 BOOTSTRAP_CONFIG = {
-    'extensions': ['kindling-ext-otel-azure>=0.1.0'],
+    'extensions': ['spark-kindling-ext-otel-azure>=0.1.0'],
     'kindling': {
         'telemetry': {
             'azure_monitor': {

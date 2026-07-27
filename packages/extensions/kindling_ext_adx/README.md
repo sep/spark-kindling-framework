@@ -1,4 +1,4 @@
-# kindling-ext-adx
+# spark-kindling-ext-adx
 
 Azure Data Explorer entity provider extension for Kindling.
 

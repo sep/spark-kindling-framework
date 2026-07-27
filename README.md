@@ -40,7 +40,7 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 - [Watermarking](./docs/contributing/watermarking.md) - Change tracking and incremental processing
 - [File Ingestion](./docs/guide/file_ingestion.md) - Built-in file ingestion capabilities
 - [Stage Processing](./docs/contributing/stage_processing.md) - Pipeline stage orchestration
-- [Temporal End-to-End](./docs/guide/temporal_end_to_end.md) - Events, conditions, and episodes (kindling-ext-temporal)
+- [Temporal End-to-End](./docs/guide/temporal_end_to_end.md) - Events, conditions, and episodes (spark-kindling-ext-temporal)
 - [Lakeflow App Selection](./docs/guide/lakeflow_app_selection.md) - Run Kindling data apps inside Databricks Lakeflow pipelines
 - [Dynamic Registration](./docs/guide/dynamic_registration.md) - Register entities and pipes at runtime
 
@@ -73,13 +73,13 @@ The framework consists of several modular components:
 
 ## Extensions
 
-- **[kindling-ext-otel-azure](./packages/extensions/kindling_ext_otel_azure/)** - Azure Monitor OpenTelemetry integration
-- **[kindling-ext-sdp](./packages/extensions/kindling_ext_sdp/)** - Spark Declarative Pipelines (SDP) declaration engine
-- **[kindling-ext-databricks](./packages/extensions/kindling_ext_databricks/)** - Databricks Lakeflow adapter for the SDP declaration engine
-- **[kindling-ext-temporal](./packages/extensions/kindling_ext_temporal/)** - Temporal event, condition, and episode primitives
-- **[kindling-ext-adx](./packages/extensions/kindling_ext_adx/)** - Azure Data Explorer entity provider (Kusto Spark connector; an API-based `adx-api` provider ships in core)
-- **[kindling-ext-cosmos](./packages/extensions/kindling_ext_cosmos/)** - Azure Cosmos DB entity provider (idempotent upsert writes)
-- **[kindling-ext-visualization](./packages/extensions/kindling_ext_visualization/)** - Matplotlib visualization helpers
+- **[spark-kindling-ext-otel-azure](./packages/extensions/kindling_ext_otel_azure/)** - Azure Monitor OpenTelemetry integration
+- **[spark-kindling-ext-sdp](./packages/extensions/kindling_ext_sdp/)** - Spark Declarative Pipelines (SDP) declaration engine
+- **[spark-kindling-ext-databricks](./packages/extensions/kindling_ext_databricks/)** - Databricks Lakeflow adapter for the SDP declaration engine
+- **[spark-kindling-ext-temporal](./packages/extensions/kindling_ext_temporal/)** - Temporal event, condition, and episode primitives
+- **[spark-kindling-ext-adx](./packages/extensions/kindling_ext_adx/)** - Azure Data Explorer entity provider (Kusto Spark connector; an API-based `adx-api` provider ships in core)
+- **[spark-kindling-ext-cosmos](./packages/extensions/kindling_ext_cosmos/)** - Azure Cosmos DB entity provider (idempotent upsert writes)
+- **[spark-kindling-ext-visualization](./packages/extensions/kindling_ext_visualization/)** - Matplotlib visualization helpers
 
 ## Install
 
@@ -195,9 +195,9 @@ executer.run_datapipes(["customers.transform"])
 
 ### Extensibility
 - **Extension system** - load custom packages via configuration
-- **Azure Monitor integration** - via kindling-ext-otel-azure extension
-- **Declarative engines** - SDP declaration engine with a Databricks Lakeflow adapter (kindling-ext-sdp / kindling-ext-databricks)
-- **Temporal primitives** - events, conditions, and episode lifecycle (kindling-ext-temporal)
+- **Azure Monitor integration** - via spark-kindling-ext-otel-azure extension
+- **Declarative engines** - SDP declaration engine with a Databricks Lakeflow adapter (spark-kindling-ext-sdp / spark-kindling-ext-databricks)
+- **Temporal primitives** - events, conditions, and episode lifecycle (spark-kindling-ext-temporal)
 - **Custom providers** - implement your own storage backends
 - **Signal/event system** - blinker-based pub/sub for custom workflows
 

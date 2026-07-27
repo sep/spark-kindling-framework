@@ -177,7 +177,7 @@ def main():
     print("   pip install 'spark-kindling[standalone]'  # local dev / CI")
     print("   pip install spark-kindling-cli")
     print("   pip install spark-kindling-sdk")
-    print("   pip install kindling-ext-visualization")
+    print("   pip install spark-kindling-ext-visualization")
     print("\n📤 Next step:")
     print("   poetry run poe deploy       # Deploy to Azure Storage (testing)")
     print("   poetry run poe deploy --release latest  # Deploy from GitHub release (production)")

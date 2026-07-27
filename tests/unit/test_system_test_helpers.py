@@ -132,7 +132,9 @@ def test_apply_env_config_overrides_always_enables_azure_monitor_for_databricks(
 
     kindling = merged["config_overrides"]["kindling"]
     assert "extensions" in kindling
-    assert any(spec.startswith("kindling-ext-otel-azure==") for spec in kindling["extensions"])
+    assert any(
+        spec.startswith("spark-kindling-ext-otel-azure==") for spec in kindling["extensions"]
+    )
     assert kindling["telemetry"]["azure_monitor"]["enable_logging"] is True
     assert kindling["telemetry"]["azure_monitor"]["enable_tracing"] is True
     assert (
@@ -161,7 +163,9 @@ def test_apply_env_config_overrides_explicitly_enables_azure_monitor_for_non_dat
 
     kindling = merged["config_overrides"]["kindling"]
     assert "extensions" in kindling
-    assert any(spec.startswith("kindling-ext-otel-azure==") for spec in kindling["extensions"])
+    assert any(
+        spec.startswith("spark-kindling-ext-otel-azure==") for spec in kindling["extensions"]
+    )
     assert kindling["telemetry"]["azure_monitor"]["enable_logging"] is True
     assert kindling["telemetry"]["azure_monitor"]["enable_tracing"] is True
 
@@ -170,7 +174,7 @@ def test_find_fatal_system_test_log_lines_detects_extension_install_failures():
     content = "\n".join(
         [
             "INFO normal line",
-            "❌ No wheel found matching 'kindling_ext_otel_azure' or 'kindling-ext-otel-azure'",
+            "❌ No wheel found matching 'kindling_ext_otel_azure' or 'spark-kindling-ext-otel-azure'",
             "WARN: (KindlingBootstrap) Failed to import extension kindling_ext_otel_azure: No module named 'kindling_ext_otel_azure'",
         ]
     )
@@ -188,7 +192,7 @@ def test_find_fatal_system_test_log_lines_parses_structured_log_payloads():
             "id": "abc123",
             "log": [
                 "INFO normal line",
-                "ERROR: (KindlingBootstrap) Extension wheel not found: kindling-ext-otel-azure==0.3.2",
+                "ERROR: (KindlingBootstrap) Extension wheel not found: spark-kindling-ext-otel-azure==0.3.2",
                 "❌ Failed to import extension kindling_ext_otel_azure: No module named 'kindling_ext_otel_azure'",
             ],
         }
@@ -218,7 +222,7 @@ def test_find_fatal_system_test_log_lines_ignores_non_bootstrap_error_messages()
 def test_assert_no_fatal_system_test_log_lines_raises_for_extension_failures():
     with pytest.raises(AssertionError, match="Fatal errors found in system test logs"):
         assert_no_fatal_system_test_log_lines(
-            "ERROR: (KindlingBootstrap) Failed to install extension kindling-ext-otel-azure==0.3.2"
+            "ERROR: (KindlingBootstrap) Failed to install extension spark-kindling-ext-otel-azure==0.3.2"
         )
 
 
@@ -248,7 +252,7 @@ def test_stdout_validator_validate_completion_fails_when_fatal_log_lines_present
     validator = StdoutStreamValidator(api_client=None)
     validator.captured_lines = [
         "TEST_ID=abc123 status=COMPLETED result=PASSED",
-        "❌ Failed to install extension kindling-ext-otel-azure==0.3.2",
+        "❌ Failed to install extension spark-kindling-ext-otel-azure==0.3.2",
     ]
 
     result = validator.validate_completion("abc123")

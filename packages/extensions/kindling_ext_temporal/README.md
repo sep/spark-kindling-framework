@@ -1,4 +1,4 @@
-# kindling-ext-temporal
+# spark-kindling-ext-temporal
 
 Temporal event, condition, and episode primitives for Kindling.
 

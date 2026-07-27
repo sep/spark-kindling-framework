@@ -864,6 +864,137 @@ def is_framework_initialized() -> bool:
         return False
 
 
+_EXT_DIST_PREFIX = "spark-kindling-ext-"
+_LEGACY_EXT_DIST_PREFIX = "kindling-ext-"
+
+
+def normalize_dist_name(name: str) -> str:
+    """Normalize a distribution name per PEP 503 (dashes, case)."""
+    import re
+
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+def dist_name_candidates(dist_name: str) -> List[str]:
+    """Distribution names to try for a requested package: the name itself,
+    plus its pre/post-rename alias for kindling extension distributions
+    (kindling-ext-* <-> spark-kindling-ext-*), so configs written against
+    either naming generation keep resolving during the transition.
+    """
+    name = normalize_dist_name(dist_name)
+    candidates = [name]
+    if name.startswith(_EXT_DIST_PREFIX):
+        candidates.append(_LEGACY_EXT_DIST_PREFIX + name[len(_EXT_DIST_PREFIX) :])
+    elif name.startswith(_LEGACY_EXT_DIST_PREFIX):
+        candidates.append(_EXT_DIST_PREFIX + name[len(_LEGACY_EXT_DIST_PREFIX) :])
+    return candidates
+
+
+def find_installed_distribution(dist_name: str):
+    """Return (canonical_name, version) for the installed distribution matching
+    ``dist_name`` or one of its rename aliases; (None, None) if not installed.
+    """
+    from importlib import metadata as importlib_metadata
+
+    for candidate in dist_name_candidates(dist_name):
+        try:
+            dist = importlib_metadata.distribution(candidate)
+            return dist.metadata["Name"], dist.version
+        except importlib_metadata.PackageNotFoundError:
+            continue
+        except Exception as e:
+            _BOOTSTRAP_LOGGER.debug(f"Metadata lookup failed for {candidate}: {e}")
+            continue
+    return None, None
+
+
+def resolve_import_names(dist_name: str) -> List[str]:
+    """Import package names provided by a distribution.
+
+    A distribution's import name is not derivable from its pip name
+    (spark-kindling-ext-sdp installs ``kindling_ext_sdp``), so resolve from
+    installed metadata first: top_level.txt when present, otherwise the
+    distribution's file listing. Falls back to the dash-to-underscore
+    heuristic over the name and its rename aliases when the distribution
+    is not installed or exposes no metadata (e.g. PYTHONPATH dev checkouts).
+    """
+    from importlib import metadata as importlib_metadata
+
+    resolved: List[str] = []
+
+    for candidate in dist_name_candidates(dist_name):
+        try:
+            dist = importlib_metadata.distribution(candidate)
+        except importlib_metadata.PackageNotFoundError:
+            continue
+        except Exception as e:
+            _BOOTSTRAP_LOGGER.debug(f"Metadata lookup failed for {candidate}: {e}")
+            continue
+
+        top_level = None
+        try:
+            top_level = dist.read_text("top_level.txt")
+        except Exception as e:
+            _BOOTSTRAP_LOGGER.debug(f"Could not read top_level.txt for {candidate}: {e}")
+            top_level = None
+        if top_level:
+            resolved.extend(line.strip() for line in top_level.splitlines() if line.strip())
+
+        if not resolved:
+            try:
+                for file in dist.files or []:
+                    parts = file.parts
+                    if len(parts) > 1 and parts[0].endswith((".dist-info", ".data")):
+                        continue
+                    if len(parts) > 1 and parts[1] == "__init__.py":
+                        resolved.append(parts[0])
+                    elif len(parts) == 1 and parts[0].endswith(".py"):
+                        resolved.append(parts[0][:-3])
+            except Exception:
+                pass
+
+        if resolved:
+            break
+
+    # Heuristic fallback (and safety net): dash-to-underscore over all aliases.
+    for candidate in dist_name_candidates(dist_name):
+        resolved.append(candidate.replace("-", "_"))
+
+    seen = set()
+    unique = []
+    for name in resolved:
+        if name and name not in seen:
+            seen.add(name)
+            unique.append(name)
+    return unique
+
+
+def import_distribution_modules(dist_name: str, logger) -> bool:
+    """Import the top-level modules of a distribution so import-time
+    registration hooks (DI bindings, provider registration) run.
+
+    Tries every resolved import-name candidate; returns True if at least
+    one imported. Modules already present in sys.modules count as loaded.
+    """
+    imported_any = False
+    for import_name in resolve_import_names(dist_name):
+        if import_name in sys.modules:
+            imported_any = True
+            continue
+        try:
+            if importlib.util.find_spec(import_name) is None:
+                continue
+        except (ImportError, ValueError):
+            continue
+        try:
+            importlib.import_module(import_name)
+            logger.info(f"Loaded extension module: {import_name}")
+            imported_any = True
+        except ImportError as e:
+            logger.warning(f"Failed to import extension module {import_name}: {e}")
+    return imported_any
+
+
 def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_path=None):
     """Install packages needed for framework bootstrap
 
@@ -872,13 +1003,6 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         bootstrap_config: Bootstrap configuration dict
         artifacts_storage_path: Path to artifacts storage (for loading extension wheels)
     """
-
-    def get_import_name(package_spec: str) -> str:
-        """Convert pip package name to import name (dash to underscore)"""
-        # Strip version specifiers
-        base_package = package_spec.split(">=")[0].split("==")[0].split("[")[0].strip()
-        # Convert dashes to underscores (PEP 8 convention)
-        return base_package.replace("-", "_")
 
     def get_package_name(package_spec: str) -> str:
         """Extract base package name (with dashes) from package spec"""
@@ -904,27 +1028,37 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
             return None
 
     def get_installed_version(package_name: str) -> Optional[str]:
-        """Get installed package version by distribution name."""
-        try:
-            from importlib import metadata as importlib_metadata
+        """Get installed package version by distribution name (rename-alias aware)."""
+        from importlib import metadata as importlib_metadata
 
-            return importlib_metadata.version(package_name)
-        except Exception:
+        for candidate in dist_name_candidates(package_name):
             try:
-                from importlib import metadata as importlib_metadata
-
-                return importlib_metadata.version(package_name.replace("-", "_"))
+                return importlib_metadata.version(candidate)
             except Exception:
-                return None
+                continue
+        return None
 
     def is_package_installed(package_spec, check_version: bool = False):
-        """Check if package is installed and optionally satisfies requested version."""
+        """Check if package is installed and optionally satisfies requested version.
+
+        Presence is judged by distribution metadata first (authoritative even
+        when the import name differs from the pip name), then by locating any
+        of the distribution's import packages — which covers PYTHONPATH-style
+        dev checkouts that have no installed metadata.
+        """
         try:
             package_name = get_package_name(package_spec)
-            import_name = get_import_name(package_spec)
-            spec = importlib.util.find_spec(import_name)
-            if spec is None:
-                return False
+            if get_installed_version(package_name) is None:
+                found = False
+                for import_name in resolve_import_names(package_name):
+                    try:
+                        if importlib.util.find_spec(import_name) is not None:
+                            found = True
+                            break
+                    except (ImportError, ValueError):
+                        continue
+                if not found:
+                    return False
 
             if not check_version:
                 return True
@@ -974,13 +1108,11 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                     logger.debug(f"Moved to front of sys.path: {path}")
 
             # Clear any cached imports of this package to force reload from new location
-            package_name = (
-                package_spec.split(">")[0].split("=")[0].split("<")[0].split("!")[0].strip()
-            )
-            module_name = package_name.replace("-", "_")
-            if module_name in sys.modules:
-                logger.debug(f"Clearing cached import: {module_name}")
-                del sys.modules[module_name]
+            importlib.invalidate_caches()
+            for module_name in resolve_import_names(get_package_name(package_spec)):
+                if module_name in sys.modules:
+                    logger.debug(f"Clearing cached import: {module_name}")
+                    del sys.modules[module_name]
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to install {package_spec}: {e}")
@@ -988,8 +1120,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
     def load_extension_wheel(package_spec, storage_utils, artifacts_path, temp_path=None):
         """Install extension wheel from artifacts storage (like kindling-ext-otel-azure)"""
         if is_package_installed(package_spec, check_version=True):
-            import_name = get_import_name(package_spec)
-            logger.info(f"Extension already installed: {import_name}")
+            logger.info(f"Extension already installed: {get_package_name(package_spec)}")
             return
 
         if is_package_installed(package_spec, check_version=False):
@@ -999,8 +1130,16 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         import tempfile
 
         package_name = get_package_name(package_spec)
-        # Convert to wheel format: kindling-ext-otel-azure -> kindling_ext_otel_azure
-        wheel_prefix = package_name.replace("-", "_")
+        # Wheel filenames derive from the distribution name with dashes
+        # underscored (kindling-ext-otel-azure -> kindling_ext_otel_azure).
+        # Match both forms of the name and of its rename aliases so configs
+        # written against either extension naming generation find wheels
+        # published under either name in the lake.
+        wheel_prefixes: List[str] = []
+        for candidate in dist_name_candidates(package_name):
+            for prefix in (candidate.replace("-", "_"), candidate):
+                if prefix not in wheel_prefixes:
+                    wheel_prefixes.append(prefix)
 
         # Extract version requirement if present
         version_req = None
@@ -1043,7 +1182,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                         continue
 
                     wheel_version = None
-                    for candidate_prefix in (wheel_prefix, package_name):
+                    for candidate_prefix in wheel_prefixes:
                         prefix_with_dash = f"{candidate_prefix}-"
                         prefix_with_platform = f"{candidate_prefix}_"
 
@@ -1183,8 +1322,8 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                             sys.path.insert(0, path)
                             logger.debug(f"Moved to front of sys.path: {path}")
 
-                    stale_modules = [
-                        get_import_name(package_spec),
+                    importlib.invalidate_caches()
+                    stale_modules = resolve_import_names(package_name) + [
                         "typing_extensions",
                         "azure",
                         "azure.monitor",
@@ -1264,13 +1403,13 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                 )
 
                 # Import to trigger @GlobalInjector.singleton_autobind() decorators
-                import_name = get_import_name(extension)
-                logger.debug(f"Importing extension module: {import_name}")
-                try:
-                    importlib.import_module(import_name)
-                    logger.info(f"Loaded extension: {import_name}")
-                except ImportError as e:
-                    logger.warning(f"Failed to import extension {import_name}: {e}")
+                extension_name = get_package_name(extension)
+                logger.debug(f"Importing extension modules for: {extension_name}")
+                if not import_distribution_modules(extension_name, logger):
+                    logger.warning(
+                        f"No importable module found for extension {extension_name}; "
+                        "import-time registration hooks did not run"
+                    )
     elif extensions:
         logger.warning("Extensions specified but no artifacts_storage_path for loading wheels")
 

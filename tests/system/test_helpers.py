@@ -28,7 +28,7 @@ _FATAL_SYSTEM_TEST_LOG_PREFIXES = (
     "❌ No wheel found matching",
     "❌ Failed to install extension",
     "❌ Failed to import extension kindling_ext_otel_azure",
-    "kindling-ext-otel-azure not found - extension not loaded",
+    "spark-kindling-ext-otel-azure not found - extension not loaded",
 )
 
 
@@ -354,7 +354,7 @@ def _get_repo_version() -> Optional[str]:
 
 
 def _get_otel_extension_version() -> Optional[str]:
-    """Return the version from the kindling-ext-otel-azure package for deterministic installs."""
+    """Return the version from the spark-kindling-ext-otel-azure package for deterministic installs."""
     try:
         repo_root = Path(__file__).resolve().parents[2]
         pyproject_path = (
@@ -419,9 +419,9 @@ def _get_system_test_azure_monitor_defaults(
     ).strip()
     extension_version = _get_otel_extension_version()
     extension_spec = (
-        f"kindling-ext-otel-azure=={extension_version}"
+        f"spark-kindling-ext-otel-azure=={extension_version}"
         if extension_version
-        else "kindling-ext-otel-azure"
+        else "spark-kindling-ext-otel-azure"
     )
 
     return (
@@ -737,7 +737,7 @@ class StdoutStreamValidator:
         Validate extension loading markers.
 
         Args:
-            extension_name: Name of extension (e.g., "kindling-ext-otel-azure")
+            extension_name: Name of extension (e.g., "spark-kindling-ext-otel-azure")
 
         Returns:
             Dict with validation results:

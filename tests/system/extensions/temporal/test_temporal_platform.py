@@ -1,5 +1,5 @@
 """
-Platform system test for the temporal extension (kindling-ext-temporal).
+Platform system test for the temporal extension (spark-kindling-ext-temporal).
 
 Deploys tests/data-apps/temporal-test-app once and runs it as TWO separate
 job executions sharing one test_id-scoped storage root:
@@ -68,7 +68,7 @@ EXPECTED_RUN2_TESTS = [
     "run2_gold_aggregation",
 ]
 
-TEMPORAL_EXTENSION_SPEC = "kindling-ext-temporal==0.2.4"
+TEMPORAL_EXTENSION_SPEC = "spark-kindling-ext-temporal==0.2.4"
 
 
 def _run_scenario(
@@ -199,13 +199,15 @@ class TestTemporalExtensionPlatform:
                 expected_tests=EXPECTED_RUN1_TESTS,
             )
 
-            extension_results = stdout_validator.validate_extension_loading("kindling-ext-temporal")
+            extension_results = stdout_validator.validate_extension_loading(
+                "spark-kindling-ext-temporal"
+            )
             stdout_validator.print_validation_summary(
                 extension_results, "Temporal Extension Loading"
             )
             assert extension_results.get(
                 "extension_install"
-            ), "kindling-ext-temporal installation not found in stdout"
+            ), "spark-kindling-ext-temporal installation not found in stdout"
 
             run2 = client.create_job(
                 job_name=f"systest-temporal-run2-{test_id}",

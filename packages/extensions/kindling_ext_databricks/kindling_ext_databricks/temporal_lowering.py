@@ -1,7 +1,7 @@
 """Stratified Lakeflow lowering of the temporal chain pipes.
 
 Lakeflow execution is a capability of THIS (databricks) extension; the
-temporal extension stays engine-agnostic. kindling-ext-temporal is a soft
+temporal extension stays engine-agnostic. spark-kindling-ext-temporal is a soft
 dependency, imported only when an app registered chain pipes.
 
 Lakeflow gives a dataset no access to its own prior state — evaluation-time
@@ -46,8 +46,9 @@ so rule changes alter contents, never shape.
 from functools import reduce
 from typing import Any, Dict, List, Optional
 
-from kindling.injection import GlobalInjector
 from kindling_ext_temporal.translation import TemporalPipeTranslator
+
+from kindling.injection import GlobalInjector
 
 STRATUM_SUFFIX = "__g"
 DETERMINATIONS_SUFFIX = "__determinations"
@@ -108,11 +109,12 @@ def _read_rules(spark, conditions_entity):
     and filter to current rows. Returns (rules_by_generation,
     max_rule_generation).
     """
-    from kindling.data_entities import scd_config_from_tags
     from kindling_ext_temporal.validation import (
         ActiveSparkSqlExpressionParser,
         TemporalConditionValidator,
     )
+
+    from kindling.data_entities import scd_config_from_tags
 
     try:
         table_name = _physical_table_name(conditions_entity)

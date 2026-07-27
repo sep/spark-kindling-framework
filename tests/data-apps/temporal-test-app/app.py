@@ -2,7 +2,7 @@
 """
 Temporal Extension Test App
 
-Validates the kindling-ext-temporal batch contract on a real platform
+Validates the spark-kindling-ext-temporal batch contract on a real platform
 (Delta storage, real providers, real watermark cursors) across TWO separate
 job executions sharing one test_id-scoped storage root:
 
