@@ -303,6 +303,16 @@ identifiers belong in repository examples.
 
 1. Add transport-neutral Kafka configuration and schema tests.
 2. Change `auto` to Kafka and add the explicit legacy warning.
+
+   Step 1 before step 2 is a correctness requirement, not a stylistic
+   ordering. The current Kafka path hardcodes the Databricks-shaded
+   `kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule`
+   JAAS class, which does not exist on Synapse or Fabric runtimes.
+   Flipping `auto` to Kafka before the runtime-aware login-module
+   selection (and the `EntityPath` removal) lands would break every
+   Synapse and Fabric deployment that relies on `auto` in a single
+   release. Reviewers of the implementation PRs should reject any
+   sequencing that inverts these two steps.
 3. Update the provider reference documentation and example entities.
 4. Run platform integration tests on current Synapse, Fabric, and Databricks
    runtimes.
