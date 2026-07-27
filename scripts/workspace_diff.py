@@ -778,11 +778,20 @@ def generate_report(old_data, new_data, old_host, new_host):
 
 
 def main():
+    if len(sys.argv) != 3:
+        print("Usage: workspace_diff.py <old-workspace-url> <new-workspace-url>")
+        print(
+            "Example: workspace_diff.py "
+            "https://adb-1111111111111111.1.azuredatabricks.net "
+            "https://adb-2222222222222222.2.azuredatabricks.net"
+        )
+        sys.exit(1)
+
+    old_host = sys.argv[1].rstrip("/")
+    new_host = sys.argv[2].rstrip("/")
+
     print("Getting fresh AAD token...")
     token = get_token()
-
-    old_host = "https://adb-0000000000000000.6.azuredatabricks.net"
-    new_host = "https://adb-0000000000000000.13.azuredatabricks.net"
 
     old_data = query_workspace(old_host, token, "ORIGINAL (Dev)")
 

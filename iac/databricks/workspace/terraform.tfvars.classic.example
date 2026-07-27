@@ -76,7 +76,7 @@ cluster_permissions = [
   {
     cluster_name     = "Kindling Classic Test Cluster"
     principal_type   = "service_principal"
-    principal        = "12345678-1234-1234-1234-123456789abc"
+    principal        = "12345678-1234-1234-1234-123456789abc"  # service principal application (client) ID
     permission_level = "CAN_MANAGE"
   },
 ]

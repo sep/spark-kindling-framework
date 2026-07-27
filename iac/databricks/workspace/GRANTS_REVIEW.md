@@ -2,7 +2,7 @@
 
 **Date:** 2026-02-12
 **Scope:** `iac/databricks/workspace/` — grants.tf, security.tf, dev.tfvars
-**Workspace:** `adb-0000000000000000.13` (West Central US, dev)
+**Workspace:** the nonprod dev workspace (identifier redacted)
 
 ---
 
@@ -79,7 +79,7 @@ BROWSE, READ_VOLUME, WRITE_VOLUME
 
 ### 5. Secret scope ACL — only one user has MANAGE — GOOD (note implicit access)
 
-Only `jtdossett@sep.com` has `MANAGE` on `myproject-adls-scope`. The admin (`admin@example.com`) has no explicit ACL — they rely on being in the admins group (which gets implicit MANAGE). This works but is implicit. No action needed.
+Only one named user has `MANAGE` on `myproject-adls-scope`. The admin has no explicit ACL — they rely on being in the admins group (which gets implicit MANAGE). This works but is implicit. No action needed.
 
 ---
 
