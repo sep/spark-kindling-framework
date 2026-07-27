@@ -86,6 +86,36 @@ def initialize(config=None, app_name=None, engine=None):
     return result
 
 
+def reset():
+    """Reset Kindling's in-process framework state.
+
+    This is intended for notebook recovery and tests after a failed or
+    intentionally repeated initialization. It clears the dependency-injection
+    container, configuration service, platform service, declaration registries,
+    signal handlers, and active engine reference.
+
+    The active Spark session, Spark streaming queries, files, tables, and other
+    external resources are deliberately not stopped, deleted, or modified.
+    After a reset, declaration modules must be registered again before running
+    a pipeline.
+    """
+    global _active_engine_extension
+
+    from .data_entities import DataEntities
+    from .data_pipes import DataPipes
+    from .injection import GlobalInjector
+    from .signaling import DataSignals
+
+    # Disconnect handlers before discarding the injector that owns their
+    # signal provider. Registry resets prevent stale declarations from being
+    # mixed with the next initialization attempt.
+    DataSignals.reset()
+    DataEntities.reset()
+    DataPipes.reset()
+    GlobalInjector.reset()
+    _active_engine_extension = None
+
+
 def _load_engine_extension(engine_name):
     """Resolve an execution-engine extension by naming convention.
 

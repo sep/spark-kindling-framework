@@ -17,6 +17,11 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **Public `kindling.reset()`**: clears in-process framework state (DI
+  container, config service, declaration registries, signal handlers, active
+  engine reference) for notebook recovery and tests after a failed or repeated
+  initialization. Spark sessions, streaming queries, and external resources
+  are deliberately untouched; declaration modules must re-register afterward.
 - **Per-run entity tag overrides**: `run_datapipes(..., entity_tags={"entity.id":
   {"provider.start": "...", "provider.end": "..."}})` applies JIT tag
   overrides for that run only (both sequential and DAG modes), then
