@@ -902,7 +902,8 @@ def find_installed_distribution(dist_name: str):
             return dist.metadata["Name"], dist.version
         except importlib_metadata.PackageNotFoundError:
             continue
-        except Exception:
+        except Exception as e:
+            _BOOTSTRAP_LOGGER.debug(f"Metadata lookup failed for {candidate}: {e}")
             continue
     return None, None
 
@@ -924,13 +925,17 @@ def resolve_import_names(dist_name: str) -> List[str]:
     for candidate in dist_name_candidates(dist_name):
         try:
             dist = importlib_metadata.distribution(candidate)
-        except Exception:
+        except importlib_metadata.PackageNotFoundError:
+            continue
+        except Exception as e:
+            _BOOTSTRAP_LOGGER.debug(f"Metadata lookup failed for {candidate}: {e}")
             continue
 
         top_level = None
         try:
             top_level = dist.read_text("top_level.txt")
-        except Exception:
+        except Exception as e:
+            _BOOTSTRAP_LOGGER.debug(f"Could not read top_level.txt for {candidate}: {e}")
             top_level = None
         if top_level:
             resolved.extend(line.strip() for line in top_level.splitlines() if line.strip())

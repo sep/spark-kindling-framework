@@ -120,7 +120,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts/deploy_extensions.py spark-kindling-ext-otel-azure
+  poe deploy-extension spark-kindling-ext-otel-azure
 
 Before deploying, build the extension:
   cd packages/extensions/kindling_ext_otel_azure
