@@ -1,0 +1,47 @@
+# Base Kindling configuration for a Unity Catalog-enabled Databricks workspace.
+#
+# Copy this `config` folder beside the notebook that initializes Kindling.
+# This is the environment-neutral base file.  Keep environment-specific Unity
+# Catalog namespaces, Volume paths, and secret-scope names in a companion file
+# such as `settings.development.yaml`, `settings.test.yaml`, or
+# `settings.prod.yaml`.  The notebook bootstrap loads that file when it
+# exists.
+#
+# This file contains runtime behaviour only; entity, pipe, signal, and temporal
+# declarations belong in their respective source folders.
+
+kindling:
+  platform:
+    name: databricks
+
+  # `catalog` writes named Delta tables through Unity Catalog.  Use `storage`
+  # instead only when the workspace intentionally uses direct Delta paths.
+  delta:
+    access_mode: catalog
+
+  # Configure these physical locations in settings.<environment>.yaml.  A
+  # schema is a namespace containing many tables, not a single table; it is
+  # nevertheless normally environment-specific and should not be assumed here.
+  #
+  # storage:
+  #   table_catalog: "REPLACE_WITH_UC_CATALOG"
+  #   table_schema: "REPLACE_WITH_UC_SCHEMA"
+  #   checkpoint_root: "/Volumes/REPLACE_WITH_UC_CATALOG/REPLACE_WITH_UC_SCHEMA/REPLACE_WITH_VOLUME/example/checkpoints"
+  #
+  # databricks:
+  #   volume_staging_root: "/Volumes/REPLACE_WITH_UC_CATALOG/REPLACE_WITH_UC_SCHEMA/REPLACE_WITH_VOLUME/example/staging"
+  #
+  # secrets:
+  #   # A scope name only: never put secret values in configuration.
+  #   secret_scope: "REPLACE_WITH_DATABRICKS_SECRET_SCOPE"
+
+  telemetry:
+    logging:
+      level: INFO
+      print: true
+    tracing:
+      print: false
+
+# Environment-specific physical overrides belong here.  Keep entity semantics
+# in the entity declarations themselves.
+entity_tags: {}

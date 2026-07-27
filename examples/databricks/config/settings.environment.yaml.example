@@ -1,0 +1,18 @@
+# Copy this file to `settings.development.yaml`, `settings.test.yaml`, or
+# `settings.prod.yaml` and replace every REPLACE_WITH_* value.  The base
+# settings.yaml is loaded first, then this environment overlay takes precedence.
+
+kindling:
+  # This is the default namespace for generated physical tables.  It can hold
+  # many entity tables; individual entities can override their target via tags.
+  storage:
+    table_catalog: "REPLACE_WITH_UC_CATALOG"
+    table_schema: "REPLACE_WITH_UC_SCHEMA"
+    checkpoint_root: "/Volumes/REPLACE_WITH_UC_CATALOG/REPLACE_WITH_UC_SCHEMA/REPLACE_WITH_VOLUME/example/checkpoints"
+
+  databricks:
+    volume_staging_root: "/Volumes/REPLACE_WITH_UC_CATALOG/REPLACE_WITH_UC_SCHEMA/REPLACE_WITH_VOLUME/example/staging"
+
+  secrets:
+    # This identifies a Databricks scope; never put a secret value in YAML.
+    secret_scope: "REPLACE_WITH_DATABRICKS_SECRET_SCOPE"
