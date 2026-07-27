@@ -4,6 +4,17 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Changed
+
+- **Extension distributions renamed to `spark-kindling-ext-*`.** The five
+  extensions still published as `kindling-ext-*` (adx, cosmos, otel-azure,
+  temporal, visualization) now share the `spark-kindling-ext-*` namespace
+  with sdp and databricks. Import names are unchanged (`kindling_ext_*`).
+  `kindling.extensions` entries written against either naming generation
+  keep working: the loader treats `kindling-ext-X` and
+  `spark-kindling-ext-X` as aliases when checking installed distributions
+  and when matching wheel filenames in artifacts storage.
+
 ### Added
 
 - **Per-run entity tag overrides**: `run_datapipes(..., entity_tags={"entity.id":
@@ -15,6 +26,16 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **Extension import no longer guesses the module name from the pip name.**
+  Extension loading derived import names by dash-to-underscore substitution,
+  so distributions whose import package differs from their pip name
+  (`spark-kindling-ext-sdp` installs `kindling_ext_sdp`) installed
+  successfully but their import-time DI registration silently never ran,
+  and the already-installed check missed them, re-downloading the wheel on
+  every bootstrap. Import names now resolve from installed distribution
+  metadata (`top_level.txt`, then the file listing), with the underscore
+  heuristic over the name and its rename aliases kept as a fallback for
+  PYTHONPATH dev checkouts.
 - **Databricks startup no longer scans the whole workspace.** The platform
   service eagerly walked every workspace directory (one REST call each,
   recursively, no timeout) at construction to prime its notebook cache —

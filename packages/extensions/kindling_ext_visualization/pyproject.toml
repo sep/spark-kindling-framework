@@ -3,7 +3,7 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "kindling-ext-visualization"
+name = "spark-kindling-ext-visualization"
 version = "0.1.0"
 description = "Matplotlib visualization extension for the Kindling framework"
 authors = ["SEP Engineering <engineering@sep.com>"]

@@ -3,7 +3,7 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "kindling-ext-adx"
+name = "spark-kindling-ext-adx"
 version = "0.1.0"
 description = "Azure Data Explorer entity provider extension for Kindling"
 authors = ["SEP Engineering <engineering@sep.com>"]

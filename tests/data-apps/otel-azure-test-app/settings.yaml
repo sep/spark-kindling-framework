@@ -1,6 +1,6 @@
 kindling:
   extensions:
-    - kindling-ext-otel-azure>=0.3.0a3
+    - spark-kindling-ext-otel-azure>=0.3.0a3
 
   bootstrap:
     databricks_volume_path: "/Volumes/medallion/default/temp"

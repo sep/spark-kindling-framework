@@ -6,7 +6,7 @@ Deploys a specific extension wheel from packages/ to the same storage location
 as the main framework wheels.
 
 Usage:
-    python scripts/deploy_extensions.py kindling-ext-otel-azure
+    python scripts/deploy_extensions.py spark-kindling-ext-otel-azure
 """
 
 import argparse
@@ -44,7 +44,7 @@ def find_extension_wheels(extension_name: str, platform: Optional[str] = None) -
     Find extension wheels in dist/ directory
 
     Args:
-        extension_name: Extension name (e.g., 'kindling-ext-otel-azure')
+        extension_name: Extension name (e.g., 'spark-kindling-ext-otel-azure')
         platform: Optional platform filter (e.g., 'fabric')
 
     Returns:
@@ -120,7 +120,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts/deploy_extensions.py kindling-ext-otel-azure
+  python scripts/deploy_extensions.py spark-kindling-ext-otel-azure
 
 Before deploying, build the extension:
   cd packages/extensions/kindling_ext_otel_azure
@@ -129,7 +129,7 @@ Before deploying, build the extension:
     )
     parser.add_argument(
         "extension",
-        help="Extension to deploy (e.g., kindling-ext-otel-azure)",
+        help="Extension to deploy (e.g., spark-kindling-ext-otel-azure)",
     )
 
     args = parser.parse_args()

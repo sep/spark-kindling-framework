@@ -4,14 +4,14 @@ Matplotlib visualization extension for the Kindling Spark framework.
 
 ## Overview
 
-`kindling-ext-visualization` adds declarative chart rendering for Kindling data apps.
+`spark-kindling-ext-visualization` adds declarative chart rendering for Kindling data apps.
 Visualizations are registered like Kindling entities and pipes, then rendered from
 Kindling entities through the existing entity provider registry.
 
 ## Installation
 
 ```bash
-pip install kindling-ext-visualization
+pip install spark-kindling-ext-visualization
 ```
 
 In a Kindling app, add the extension to your settings:
@@ -19,7 +19,7 @@ In a Kindling app, add the extension to your settings:
 ```yaml
 kindling:
   extensions:
-    - kindling-ext-visualization>=0.1.0
+    - spark-kindling-ext-visualization>=0.1.0
 ```
 
 ## Usage

@@ -3,7 +3,7 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "kindling-ext-otel-azure"
+name = "spark-kindling-ext-otel-azure"
 version = "0.4.0"
 description = "Azure Monitor OpenTelemetry integration for Kindling framework"
 authors = ["SEP Engineering <engineering@sep.com>"]
