@@ -60,6 +60,8 @@ def test_detect_platform_can_fall_back_to_standalone():
 
 def test_initialize_framework_uses_explicit_config_files_for_standalone():
     from kindling.bootstrap import initialize_framework
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
     from kindling.platform_provider import PlatformServiceProvider
     from kindling.spark_config import ConfigService
     from kindling.spark_log_provider import PythonLoggerProvider
@@ -71,6 +73,8 @@ def test_initialize_framework_uses_explicit_config_files_for_standalone():
     config_service = _config_service_with_defaults()
     platform_service_provider = MagicMock(spec=PlatformServiceProvider)
     standalone_service = MagicMock()
+    pipes_registry = MagicMock()
+    entity_registry = MagicMock()
 
     def _get_service(iface):
         if iface is ConfigService:
@@ -79,6 +83,10 @@ def test_initialize_framework_uses_explicit_config_files_for_standalone():
             return logger_provider
         if iface is PlatformServiceProvider:
             return platform_service_provider
+        if iface is DataPipesRegistry:
+            return pipes_registry
+        if iface is DataEntityRegistry:
+            return entity_registry
         raise AssertionError(f"Unexpected service lookup: {iface}")
 
     with (

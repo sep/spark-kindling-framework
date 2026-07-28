@@ -37,6 +37,25 @@ All notable changes to spark-kindling are documented here.
   contaminates JSON stdout with per-wheel progress echoes. Requires
   databricks-sdk >= 0.20.0 (Files API directory operations) for volume
   roots.
+- **Config override overlay for pipes and entities**: top-level
+  `datapipes:`/`dataentities:` config sections now overlay registered
+  `PipeMetadata`/`EntityMetadata` via `ConfigPatternMatcher` glob patterns
+  (gh#30). Bootstrap applies the overlay once after local package
+  registrations import; the compiled patterns persist on the managers, so
+  later registrations (workspace packages, app `register_all()`, notebook
+  cells) are overlaid at registration — before anything executes.
+  Resolution always starts from the original declaration params, so the
+  pass is idempotent and re-callable for hot reload
+  (`config_service.reload()` + `bootstrap.apply_config_overrides()`).
+  Identity and structural fields (`pipeid`/`execute`,
+  `entityid`/`schema`/`sql`) are never overridable; underscore keys
+  (`_enabled`, `_remove_tags`, ...) are carried inertly until gh#32.
+  Entity validation re-runs on overlaid metadata (failing fast at
+  bootstrap with config-overlay context), and SCD2 current-row companions
+  converge with config — enabling SCD by config creates the companion,
+  disabling it removes the auto-created one. Runtime channels keep their
+  per-read precedence above baked patterns: `set_entity_tags`, then
+  `tag_overrides`.
 - **Wildcard config pattern engine**: new `kindling.config_patterns` module
   with `ConfigPatternMatcher` — glob patterns (`*`, `?`, `**`) over
   dot-segmented pipe/entity ids, tiered specificity (exact > single

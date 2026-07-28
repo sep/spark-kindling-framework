@@ -171,6 +171,42 @@ def _import_local_package_registrations(logger) -> None:
     )
 
 
+def apply_config_overrides() -> None:
+    """Overlay ``datapipes:``/``dataentities:`` config sections onto
+    registered pipe/entity metadata.
+
+    Called from ``initialize_framework`` right after local package
+    registrations import, and safely re-callable after
+    ``config_service.reload()`` for hot reload. The managers keep the
+    compiled patterns, so items registered later (workspace packages, app
+    ``register_all``, notebook cells) are overlaid at registration.
+    """
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
+
+    config_service = get_kindling_service(ConfigService)
+    # Fetch by the registry ABCs: decorators register into the interface
+    # singletons, and the injector caches interface and concrete-class
+    # bindings separately.
+    pipes_registry = get_kindling_service(DataPipesRegistry)
+    entity_registry = get_kindling_service(DataEntityRegistry)
+    for registry in (pipes_registry, entity_registry):
+        overlay = getattr(registry, "apply_config_overrides", None)
+        if overlay is None:
+            # Custom registry binding without overlay support.
+            _BOOTSTRAP_LOGGER.debug(
+                "%s does not support config overrides — skipping overlay",
+                type(registry).__name__,
+            )
+            continue
+        overlay(config_service)
+    _BOOTSTRAP_LOGGER.debug(
+        "Config overrides applied to %s pipe(s) and %s entit(y/ies)",
+        sum(1 for _ in pipes_registry.get_pipe_ids()),
+        sum(1 for _ in entity_registry.get_entity_ids()),
+    )
+
+
 def _merge_with_spark_kindling_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Merge SparkConf-derived config with explicit config (explicit wins)."""
     spark_kindling_config = _get_spark_kindling_config()
@@ -1557,7 +1593,6 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
     resolve the concrete class keep working.
     """
     from injector import singleton
-
     from kindling.plain_telemetry import (
         PlainPythonLoggerProvider,
         PlainPythonTraceProvider,
@@ -1817,6 +1852,13 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # This must happen after the session exists so conf.set() works.
         _apply_spark_configs(config_service, logger)
         _import_local_package_registrations(logger)
+
+        # Overlay datapipes:/dataentities: config sections onto everything
+        # registered so far; the managers keep the compiled patterns so
+        # later registrations (workspace packages, app register_all) are
+        # overlaid at registration — before any pipe executes.
+        apply_config_overrides()
+        logger.info("Config overrides applied to registered pipes and entities")
 
         # Resolve any @secret references now that platform services are available.
         try:
