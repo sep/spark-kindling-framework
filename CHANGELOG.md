@@ -17,6 +17,12 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **Wildcard config pattern engine**: new `kindling.config_patterns` module
+  with `ConfigPatternMatcher` — glob patterns (`*`, `?`, `**`) over
+  dot-segmented pipe/entity ids, tiered specificity (exact > single
+  wildcard > multi wildcard, last-declared wins ties), and copy-on-merge
+  override resolution. Groundwork for wildcard `datapipes:`/`dataentities:`
+  config overrides (gh#31); no behavior change until consumers wire it in.
 - **Public `kindling.reset()`**: clears in-process framework state (DI
   container, config service, declaration registries, signal handlers, active
   engine reference) for notebook recovery and tests after a failed or repeated
