@@ -22,6 +22,15 @@ from urllib.parse import quote, urlparse
 import click
 import yaml
 from kindling_cli.test_runner import SUPPORTED_PLATFORMS
+from kindling_sdk.artifact_store import (
+    AbfssArtifactStore,
+    ArtifactStore,
+    artifact_store_for,
+    create_blob_service_client,
+    parse_abfss_uri,
+    resolve_artifacts_path,
+    resolve_blob_account_url,
+)
 from kindling_sdk.platform_provider import (
     azure_cloud_config,
     azure_synapse_dev_endpoint_suffix,
@@ -2016,10 +2025,20 @@ def workspace_group() -> None:
     help="Target platform. Auto-detected from environment if omitted.",
 )
 @click.option(
+    "--artifacts-path",
+    "artifacts_path",
+    default=None,
+    help=(
+        "Artifacts root (abfss://…, /Volumes/…, or a local directory). "
+        "Overrides KINDLING_ARTIFACTS_STORAGE_PATH. Legacy --storage-account/"
+        "--container/--base-path remain supported for abfss."
+    ),
+)
+@click.option(
     "--storage-account",
     "storage_account",
     default=None,
-    help="Storage account: name, name.domain, or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
+    help="[legacy] Storage account: name, name.domain, or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
 )
 @click.option(
     "--container",
@@ -2065,6 +2084,7 @@ def workspace_group() -> None:
 )
 def workspace_init(
     platform: Optional[str],
+    artifacts_path: Optional[str],
     storage_account: Optional[str],
     container: Optional[str],
     base_path: Optional[str],
@@ -2074,15 +2094,17 @@ def workspace_init(
     workspace: Optional[str],
     overwrite: bool,
 ) -> None:
-    """Initialize the platform workspace: deploy config to storage.
+    """Initialize the platform workspace: deploy config to artifact storage.
 
-    Deploys settings.yaml and overlay configs to {base}/config/ in storage.
-    With --notebook-bootstrap, also generates and imports notebook bootstrap
-    files into the platform workspace via platform APIs.
+    Deploys settings.yaml and overlay configs to config/ under the artifacts
+    root. With --notebook-bootstrap, also generates and imports notebook
+    bootstrap files into the platform workspace via platform APIs.
 
     \b
     Examples:
       kindling workspace init --platform fabric --storage-account myacct
+      kindling workspace init --platform databricks \\
+          --artifacts-path /Volumes/main/kindling/artifacts
       kindling workspace init --platform fabric --storage-account myacct \\
           --notebook-bootstrap --workspace <workspace-id>
     """
@@ -2091,17 +2113,10 @@ def workspace_init(
         raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
     resolved_environment = environment or os.getenv("KINDLING_ENV")
 
-    resolved_account, resolved_container, resolved_base = _resolve_storage_env(
-        storage_account, container, base_path
-    )
+    store = _open_store(_resolve_destination(artifacts_path, storage_account, container, base_path))
 
-    click.echo(
-        f"Initializing workspace on {resolved_platform} "
-        f"({resolved_account}/{resolved_container}/)"
-    )
+    click.echo(f"Initializing workspace on {resolved_platform} ({store.describe()})")
     click.echo()
-
-    blob_service_client = _get_blob_service_client(resolved_account)
 
     # -- Config ----------------------------------------------------------------
     resolved_config = config_path.expanduser()
@@ -2111,12 +2126,9 @@ def workspace_init(
             "Run `kindling config init` first to generate one."
         )
 
-    config_dest = f"{resolved_base}/config" if resolved_base else "config"
-    click.echo(f"Config → {config_dest}/")
+    click.echo("Config → config/")
     _deploy_config(
-        blob_service_client,
-        resolved_container,
-        resolved_base,
+        store,
         resolved_config,
         overwrite=overwrite,
         platform=resolved_platform,
@@ -2160,76 +2172,56 @@ def workspace_init(
 # workspace deploy
 # =============================================================================
 
-_DEPLOY_ENV_VARS = ("AZURE_STORAGE_ACCOUNT", "AZURE_CONTAINER", "AZURE_BASE_PATH")
-
-
-def _resolve_storage_env(
-    storage_account_override: Optional[str] = None,
-    container_override: Optional[str] = None,
-    base_path_override: Optional[str] = None,
-) -> Tuple[str, str, str]:
-    """Return (storage_account, container, base_path) from overrides or environment."""
-    account = storage_account_override or os.getenv("AZURE_STORAGE_ACCOUNT", "")
-    container = container_override or os.getenv("AZURE_CONTAINER", "artifacts")
-    base_path = (
-        base_path_override if base_path_override is not None else os.getenv("AZURE_BASE_PATH", "")
-    )
-    if not account:
-        raise click.ClickException(
-            "Storage account is required. Use --storage-account or set AZURE_STORAGE_ACCOUNT."
-        )
-    return account, container, base_path
-
-
-def _storage_account_name(storage_account: str) -> str:
-    raw = (storage_account or "").strip()
-    if not raw:
-        return raw
-    parsed = urlparse(raw if "://" in raw else f"//{raw}")
-    host = parsed.hostname or raw.split("/", 1)[0]
-    return host.split(".", 1)[0]
-
 
 def _resolve_account_url(storage_account: str) -> str:
-    """Resolve a storage account name or URL to a full blob endpoint URL.
-
-    Accepts:
-      - Just the account name: "mystorageacct" -> configured cloud blob endpoint
-      - Name with custom domain: "mystorageacct.blob.core.usgovcloudapi.net" → "https://..."
-      - Full URL: "https://mystorageacct.blob.core.usgovcloudapi.net" → passed through
-    """
-    if storage_account.startswith("https://"):
-        return storage_account
-    if "." in storage_account:
-        return f"https://{storage_account}"
-    endpoint_suffix = os.getenv("AZURE_STORAGE_BLOB_ENDPOINT_SUFFIX")
-    if endpoint_suffix:
-        endpoint_suffix = endpoint_suffix.strip().rstrip("/").lstrip(".")
-        return f"https://{storage_account}.{endpoint_suffix.lstrip('.')}"
-    endpoint_suffix = azure_cloud_config()["storage_suffix"]
-    return f"https://{storage_account}.blob.{endpoint_suffix.lstrip('.')}"
+    """Thin alias for the moved implementation (kindling_sdk.artifact_store)."""
+    return resolve_blob_account_url(storage_account)
 
 
 def _get_blob_service_client(storage_account: str):
-    """Create a BlobServiceClient using DefaultAzureCredential."""
+    """Create a BlobServiceClient. Kept in the CLI as the seam tests patch."""
     try:
-        from azure.storage.blob import BlobServiceClient
+        return create_blob_service_client(storage_account)
     except ImportError as exc:
-        raise click.ClickException(
-            "azure-identity and azure-storage-blob are required for deploy.\n"
-            "Install with: pip install 'spark-kindling-cli[deploy]'"
-        ) from exc
-
-    account_url = _resolve_account_url(storage_account)
-    credential = create_azure_credential(additionally_allowed_tenants=["*"])
-    return BlobServiceClient(account_url=account_url, credential=credential)
+        raise click.ClickException(str(exc)) from exc
 
 
-def _warn_if_runtime_outdated(
-    blob_service_client,
-    container: str,
-    packages_path: str,
-) -> None:
+def _resolve_destination(
+    artifacts_path: Optional[str] = None,
+    storage_account: Optional[str] = None,
+    container: Optional[str] = None,
+    base_path: Optional[str] = None,
+) -> str:
+    """Resolve the artifacts destination path (see resolve_artifacts_path)."""
+    try:
+        return resolve_artifacts_path(
+            artifacts_path,
+            storage_account=storage_account,
+            container=container,
+            base_path=base_path,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _open_store(path: str) -> ArtifactStore:
+    """Open the artifact store declared by ``path``'s shape.
+
+    abfss:// stores get their blob client through _get_blob_service_client so
+    existing test seams (and any credential overrides) keep working.
+    """
+    try:
+        if path.strip().startswith("abfss://"):
+            _, account, _ = parse_abfss_uri(path.strip())
+            return AbfssArtifactStore(
+                path.strip(), blob_service_client=_get_blob_service_client(account)
+            )
+        return artifact_store_for(path)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _warn_if_runtime_outdated(store: ArtifactStore) -> None:
     """Emit a warning if the deployed runtime wheel is older than the CLI."""
     try:
         from packaging.version import Version
@@ -2237,15 +2229,13 @@ def _warn_if_runtime_outdated(
         return
 
     try:
-        container_client = blob_service_client.get_container_client(container)
-        prefix = f"{packages_path}/" if packages_path else "packages/"
-        blobs = list(container_client.list_blobs(name_starts_with=prefix))
+        files = store.list_files("packages")
     except Exception:
         return
 
     deployed_version = None
-    for blob in blobs:
-        name = blob.name.split("/")[-1]
+    for file_path in files:
+        name = file_path.split("/")[-1]
         if name.startswith("spark_kindling-") and name.endswith(".whl"):
             parts = name.split("-")
             if len(parts) >= 2:
@@ -2272,25 +2262,6 @@ def _warn_if_runtime_outdated(
         )
 
 
-def _upload_blob(
-    blob_service_client,
-    container: str,
-    blob_path: str,
-    data: bytes,
-    overwrite: bool = True,
-) -> bool:
-    """Upload a blob. Returns True if uploaded, False if skipped."""
-    blob_client = blob_service_client.get_blob_client(container=container, blob=blob_path)
-    if not overwrite:
-        try:
-            blob_client.get_blob_properties()
-            return False  # exists, skip
-        except Exception:
-            pass  # doesn't exist, proceed
-    blob_client.upload_blob(data, overwrite=True)
-    return True
-
-
 def _find_wheels(dist_dir: Path, platform: Optional[str] = None) -> List[Path]:
     """Find runtime wheels, preferring the combined spark-kindling artifact."""
     combined_wheels = sorted(dist_dir.glob("spark_kindling-*.whl"))
@@ -2306,18 +2277,16 @@ def _find_wheels(dist_dir: Path, platform: Optional[str] = None) -> List[Path]:
     return sorted(legacy_wheels)
 
 
-def _deploy_wheels(
-    blob_service_client,
-    container: str,
-    packages_path: str,
-    wheels: List[Path],
-) -> int:
-    """Upload wheel files. Always overwrites (wheels are versioned)."""
+def _deploy_wheels(store: ArtifactStore, wheels: List[Path], quiet: bool = False) -> int:
+    """Upload wheel files to packages/. Always overwrites (wheels are versioned).
+
+    ``quiet`` suppresses the per-wheel echo so --json stdout stays parseable.
+    """
     count = 0
     for wheel in wheels:
-        dest = f"{packages_path}/{wheel.name}" if packages_path else wheel.name
-        click.echo(f"  {wheel.name}")
-        _upload_blob(blob_service_client, container, dest, wheel.read_bytes(), overwrite=True)
+        if not quiet:
+            click.echo(f"  {wheel.name}")
+        store.upload_file(f"packages/{wheel.name}", wheel.read_bytes(), overwrite=True)
         count += 1
     return count
 
@@ -2409,19 +2378,16 @@ def _build_package_wheel(package_root: Path, dist_dir: Path) -> Path:
 
 
 def _deploy_bootstrap_script(
-    blob_service_client,
-    container: str,
-    scripts_path: str,
+    store: ArtifactStore,
     repo_root: Path,
     overwrite: bool = True,
 ) -> bool:
-    """Upload kindling_bootstrap.py. Returns True if found and uploaded."""
+    """Upload kindling_bootstrap.py to scripts/. Returns True if found and uploaded."""
     bootstrap = repo_root / "runtime" / "scripts" / "kindling_bootstrap.py"
     if not bootstrap.exists():
         return False
-    dest = f"{scripts_path}/kindling_bootstrap.py" if scripts_path else "kindling_bootstrap.py"
-    if _upload_blob(
-        blob_service_client, container, dest, bootstrap.read_bytes(), overwrite=overwrite
+    if store.upload_file(
+        "scripts/kindling_bootstrap.py", bootstrap.read_bytes(), overwrite=overwrite
     ):
         click.echo("  kindling_bootstrap.py")
     else:
@@ -2594,15 +2560,13 @@ print(f"Framework initialized for {{BOOTSTRAP_CONFIG['app_name']}}")
 
 
 def _deploy_config(
-    blob_service_client,
-    container: str,
-    base_path: str,
+    store: ArtifactStore,
     config_path: Path,
     overwrite: bool = True,
     platform: Optional[str] = None,
     environment: Optional[str] = None,
 ) -> None:
-    """Upload settings.yaml and selected dot-style settings overlays to storage."""
+    """Upload settings.yaml and selected dot-style settings overlays to config/."""
     config_dir = config_path.parent
     config_files = [config_path]
     if platform:
@@ -2628,10 +2592,8 @@ def _deploy_config(
             seen.add(resolved)
             unique.append(f)
 
-    config_dest = f"{base_path}/config" if base_path else "config"
     for f in unique:
-        dest = f"{config_dest}/{f.name}"
-        if _upload_blob(blob_service_client, container, dest, f.read_bytes(), overwrite=overwrite):
+        if store.upload_file(f"config/{f.name}", f.read_bytes(), overwrite=overwrite):
             click.echo(f"  {f.name}")
         else:
             click.echo(f"  {f.name} (exists, skipped)")
@@ -2979,10 +2941,20 @@ def notebook_push(
     help="Environment settings overlay to deploy. Defaults to KINDLING_ENV when set.",
 )
 @click.option(
+    "--artifacts-path",
+    "artifacts_path",
+    default=None,
+    help=(
+        "Artifacts root (abfss://…, /Volumes/…, or a local directory). "
+        "Overrides KINDLING_ARTIFACTS_STORAGE_PATH. Legacy --storage-account/"
+        "--container/--base-path remain supported for abfss."
+    ),
+)
+@click.option(
     "--storage-account",
     "storage_account",
     default=None,
-    help="Storage account: name, name.domain, or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
+    help="[legacy] Storage account: name, name.domain, or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
 )
 @click.option(
     "--container",
@@ -3015,6 +2987,7 @@ def workspace_deploy(
     platform: Optional[str],
     config_path: Path,
     environment: Optional[str],
+    artifacts_path: Optional[str],
     storage_account: Optional[str],
     container: Optional[str],
     base_path: Optional[str],
@@ -3022,11 +2995,11 @@ def workspace_deploy(
     overwrite: bool,
     allow_missing_config: bool,
 ) -> None:
-    """Re-deploy config to Azure Storage after settings.yaml changes.
+    """Re-deploy config to artifact storage after settings.yaml changes.
 
     \b
-    Deploys settings.yaml and overlay configs to {base}/config/ in storage.
-    Use this to push config updates after initial workspace setup.
+    Deploys settings.yaml and overlay configs to config/ under the artifacts
+    root. Use this to push config updates after initial workspace setup.
 
     \b
     For first-time setup (including notebook bootstrap), use:
@@ -3038,7 +3011,8 @@ def workspace_deploy(
     \b
     Examples:
       kindling workspace deploy --platform synapse --storage-account mystorageacct
-      kindling workspace deploy --platform fabric --storage-account mystorageacct --overwrite
+      kindling workspace deploy --platform databricks \\
+          --artifacts-path /Volumes/main/kindling/artifacts --overwrite
     """
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
@@ -3048,18 +3022,10 @@ def workspace_deploy(
         )
     resolved_environment = environment or os.getenv("KINDLING_ENV")
 
-    resolved_account, resolved_container, resolved_base = _resolve_storage_env(
-        storage_account,
-        container,
-        base_path,
-    )
+    store = _open_store(_resolve_destination(artifacts_path, storage_account, container, base_path))
 
-    click.echo(
-        f"Deploying config to {resolved_account}/{resolved_container}/ (platform: {resolved_platform})"
-    )
+    click.echo(f"Deploying config to {store.describe()} (platform: {resolved_platform})")
     click.echo()
-
-    blob_service_client = _get_blob_service_client(resolved_account)
 
     # -- Config ----------------------------------------------------------------
     if not skip_config:
@@ -3073,12 +3039,9 @@ def workspace_deploy(
                     f"{message} Use --skip-config or --allow-missing-config."
                 )
         else:
-            config_dest = f"{resolved_base}/config" if resolved_base else "config"
-            click.echo(f"Config → {config_dest}/")
+            click.echo("Config → config/")
             _deploy_config(
-                blob_service_client,
-                resolved_container,
-                resolved_base,
+                store,
                 resolved_config,
                 overwrite=overwrite,
                 platform=resolved_platform,
@@ -3483,9 +3446,7 @@ def _run_remote_app(
         _set_nested_key(parameters, key, _coerce_value(value))
 
     try:
-        _account, _container, _base = _resolve_storage_env()
-        _packages_path = f"{_base}/packages" if _base else "packages"
-        _warn_if_runtime_outdated(_get_blob_service_client(_account), _container, _packages_path)
+        _warn_if_runtime_outdated(_open_store(_resolve_destination()))
     except Exception:
         pass
 
@@ -5790,10 +5751,20 @@ def package_init(
     ),
 )
 @click.option(
+    "--artifacts-path",
+    "artifacts_path",
+    default=None,
+    help=(
+        "Artifacts root (abfss://…, /Volumes/…, or a local directory). "
+        "Overrides KINDLING_ARTIFACTS_STORAGE_PATH. Legacy --storage-account/"
+        "--container/--base-path remain supported for abfss."
+    ),
+)
+@click.option(
     "--storage-account",
     "storage_account",
     default=None,
-    help="Storage account: name, name.domain, or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
+    help="[legacy] Storage account: name, name.domain, or full URL. Overrides AZURE_STORAGE_ACCOUNT.",
 )
 @click.option(
     "--container",
@@ -5812,6 +5783,7 @@ def package_deploy(
     package_name: str,
     local_folder: Optional[Path],
     dist_dir: Path,
+    artifacts_path: Optional[str],
     storage_account: Optional[str],
     container: Optional[str],
     base_path: Optional[str],
@@ -5822,8 +5794,8 @@ def package_deploy(
     \b
     PACKAGE_NAME is used to locate packages/<package_name>/ by convention.
     Use --local-folder to override for non-standard layouts.
-    The wheel is uploaded to {base}/packages/ so apps can reference it from
-    lake-reqs.txt.
+    The wheel is uploaded to packages/ under the artifacts root so apps can
+    reference it from lake-reqs.txt.
     """
     if local_folder:
         package_root = local_folder.expanduser().resolve()
@@ -5831,31 +5803,28 @@ def package_deploy(
         package_root = _resolve_by_convention(package_name, "packages", "package")
     wheel = _build_package_wheel(package_root, dist_dir)
 
-    resolved_account, resolved_container, resolved_base = _resolve_storage_env(
-        storage_account,
-        container,
-        base_path,
-    )
-    packages_path = f"{resolved_base}/packages" if resolved_base else "packages"
+    store = _open_store(_resolve_destination(artifacts_path, storage_account, container, base_path))
 
     if not json_output:
-        click.echo(f"Packages → {packages_path}/")
-    blob_service_client = _get_blob_service_client(resolved_account)
-    count = _deploy_wheels(blob_service_client, resolved_container, packages_path, [wheel])
+        click.echo("Packages → packages/")
+    count = _deploy_wheels(store, [wheel], quiet=json_output)
 
     payload = {
         "package_path": str(package_root),
         "wheel": str(wheel),
-        "storage_account": resolved_account,
-        "container": resolved_container,
-        "packages_path": packages_path,
+        "artifacts_path": store.root,
+        "packages_path": "packages",
         "uploaded_count": count,
     }
+    if isinstance(store, AbfssArtifactStore):
+        # Deprecated fields, kept for one minor release for abfss consumers.
+        payload["storage_account"] = store.account
+        payload["container"] = store.container
+        payload["packages_path"] = f"{store.base_path}/packages" if store.base_path else "packages"
     _emit_result(
         payload,
         json_output,
-        f"Deployed `{wheel.name}` to "
-        f"`{resolved_account}/{resolved_container}/{packages_path}/`.",
+        f"Deployed `{wheel.name}` to `{store.describe()}/packages/`.",
     )
 
 
@@ -5865,45 +5834,15 @@ def package_deploy(
 
 
 def _parse_abfss_uri(uri: str) -> Tuple[str, str, str]:
-    """Parse an abfss:// URI into (container, account, path).
+    """Thin alias for the moved implementation (kindling_sdk.artifact_store).
 
-    Expected format: abfss://container@account.dfs.core.windows.net/path
-    The storage account name is the part before '.dfs.' in the host.
-
-    Returns (container, storage_account_name, blob_path_prefix).
-    Raises click.ClickException on malformed URIs.
+    Returns (container, storage_account_name, blob_path_prefix); raises
+    click.ClickException with the same messages as before on malformed URIs.
     """
-    if not uri.startswith("abfss://"):
-        raise click.ClickException(
-            f"Invalid destination URI `{uri}`. Expected abfss://container@account.dfs.core.windows.net/path"
-        )
-    rest = uri[len("abfss://") :]
-    if "@" not in rest:
-        raise click.ClickException(
-            f"Invalid abfss URI `{uri}`. Missing '@' separator between container and account."
-        )
-    container, host_and_path = rest.split("@", 1)
-    if not container:
-        raise click.ClickException(f"Invalid abfss URI `{uri}`. Container name is empty.")
-
-    if "/" in host_and_path:
-        host, path = host_and_path.split("/", 1)
-    else:
-        host = host_and_path
-        path = ""
-
-    # Extract storage account name: part before the first '.'
-    if "." not in host:
-        raise click.ClickException(
-            f"Invalid abfss URI `{uri}`. Host `{host}` does not contain a domain suffix."
-        )
-    account_name = host.split(".", 1)[0]
-    if not account_name:
-        raise click.ClickException(f"Invalid abfss URI `{uri}`. Storage account name is empty.")
-
-    # Normalize path: strip leading slashes
-    blob_path = path.lstrip("/")
-    return container, account_name, blob_path
+    try:
+        return parse_abfss_uri(uri)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _github_api_json(path: str) -> Dict[str, Any]:
@@ -6015,38 +5954,27 @@ def _resolve_github_version(version: Optional[str], repo: str = KINDLING_GITHUB_
     return tag.lstrip("v")
 
 
-def _adls_copy_path(
-    src_blob_service_client,
-    src_container: str,
+def _copy_between_stores(
+    src_store: ArtifactStore,
     src_prefix: str,
-    dest_blob_service_client,
-    dest_container: str,
+    dest_store: ArtifactStore,
     dest_prefix: str,
     overwrite: bool = True,
 ) -> int:
-    """Copy blobs from an ADLS source prefix to a dest prefix.
+    """Copy files under a source prefix to a dest prefix, across any backends.
 
-    Returns the count of blobs copied.
+    Each file is buffered in memory (fine at wheel/config sizes). Returns the
+    count of files copied.
     """
-    src_container_client = src_blob_service_client.get_container_client(src_container)
-    list_prefix = f"{src_prefix}/" if src_prefix and not src_prefix.endswith("/") else src_prefix
-    blobs = list(src_container_client.list_blobs(name_starts_with=list_prefix))
     count = 0
-    for blob in blobs:
-        # Compute relative path from source prefix
-        rel = blob.name[len(list_prefix) :] if blob.name.startswith(list_prefix) else blob.name
-        dest_blob_path = f"{dest_prefix}/{rel}" if dest_prefix else rel
-
-        # Download
-        blob_client = src_blob_service_client.get_blob_client(
-            container=src_container, blob=blob.name
+    for file_path in src_store.list_files(src_prefix):
+        rel = (
+            file_path[len(src_prefix) + 1 :]
+            if src_prefix and file_path.startswith(f"{src_prefix}/")
+            else file_path
         )
-        data = blob_client.download_blob().readall()
-
-        # Upload
-        _upload_blob(
-            dest_blob_service_client, dest_container, dest_blob_path, data, overwrite=overwrite
-        )
+        dest_path = f"{dest_prefix}/{rel}" if dest_prefix else rel
+        dest_store.upload_file(dest_path, src_store.download_file(file_path), overwrite=overwrite)
         click.echo(f"  {rel}")
         count += 1
     return count
@@ -6066,14 +5994,18 @@ def runtime_group() -> None:
         "Source specifier. One of:\n\n"
         "  github:VERSION or github:latest — download from GitHub release\n\n"
         "  local:PATH — read wheels from a local directory\n\n"
-        "  abfss://container@account.dfs.core.windows.net/path — copy from ADLS"
+        "  an artifacts root (abfss://…, /Volumes/…, file://…) — copy from "
+        "another store (e.g. staging → prod)"
     ),
 )
 @click.option(
     "--dest",
     "dest",
     required=True,
-    help="Destination abfss:// URI (e.g. abfss://artifacts@myacct.dfs.core.windows.net/kindling).",
+    help=(
+        "Destination artifacts root: abfss://container@account.dfs.<suffix>/path, "
+        "/Volumes/<catalog>/<schema>/<volume>/path, or a local directory."
+    ),
 )
 @click.option(
     "--version",
@@ -6104,14 +6036,15 @@ def runtime_deploy(
     skip_bootstrap: bool,
     overwrite: bool,
 ) -> None:
-    """Deploy kindling runtime artifacts (wheels + bootstrap script) to Azure Data Lake Storage.
+    """Deploy kindling runtime artifacts (wheels + bootstrap script) to artifact storage.
 
     \b
     Source types:
       github:latest            — download from the latest GitHub release
       github:0.10.15           — download from a specific release
       local:./dist             — read wheels from a local directory
-      abfss://...              — copy from another ADLS path (e.g. staging → prod)
+      abfss:// | /Volumes/ | file://
+                               — copy from another artifacts root (e.g. staging → prod)
 
     \b
     Destination layout under --dest:
@@ -6121,17 +6054,19 @@ def runtime_deploy(
     \b
     Examples:
       kindling runtime deploy --source github:latest --dest abfss://artifacts@myprod.dfs.core.windows.net/kindling
-      kindling runtime deploy --source local:./dist --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling
-      kindling runtime deploy --source abfss://artifacts@staging.dfs.core.windows.net/k --dest abfss://artifacts@prod.dfs.core.windows.net/k
+      kindling runtime deploy --source local:./dist --dest /Volumes/main/kindling/artifacts
+      kindling runtime deploy --source abfss://artifacts@staging.dfs.core.windows.net/k --dest /Volumes/main/kindling/artifacts
     """
     import tempfile
 
-    # ---- Validate and parse dest ------------------------------------------------
-    dest_container, dest_account, dest_base = _parse_abfss_uri(dest)
-    dest_packages_path = f"{dest_base}/packages" if dest_base else "packages"
-    dest_scripts_path = f"{dest_base}/scripts" if dest_base else "scripts"
-
-    dest_blob_client = _get_blob_service_client(dest_account)
+    # ---- Validate dest and open its store ----------------------------------------
+    try:
+        dest_store = _open_store(dest)
+    except click.ClickException as exc:
+        message = str(exc.message)
+        if not message.startswith("Invalid"):
+            message = f"Invalid destination URI `{dest}`. {message}"
+        raise click.ClickException(message) from exc
 
     # ---- Determine source type --------------------------------------------------
     if source.startswith("github:"):
@@ -6154,23 +6089,17 @@ def runtime_deploy(
                     "Expected spark_kindling-*.whl attachments."
                 )
 
-            click.echo(f"Packages → {dest_packages_path}/")
-            count = _deploy_wheels(dest_blob_client, dest_container, dest_packages_path, wheels)
+            click.echo("Packages → packages/")
+            count = _deploy_wheels(dest_store, wheels)
             click.echo(f"  ({count} wheel(s) uploaded)")
             click.echo()
 
             if not skip_bootstrap:
                 bootstrap_in_release = tmp_path / "kindling_bootstrap.py"
                 if bootstrap_in_release.exists():
-                    click.echo(f"Scripts → {dest_scripts_path}/")
-                    dest_blob_name = f"{dest_scripts_path}/kindling_bootstrap.py"
-                    script_overwrite = (
-                        overwrite or True
-                    )  # wheels always overwrite; scripts follow overwrite flag
-                    if _upload_blob(
-                        dest_blob_client,
-                        dest_container,
-                        dest_blob_name,
+                    click.echo("Scripts → scripts/")
+                    if dest_store.upload_file(
+                        "scripts/kindling_bootstrap.py",
                         bootstrap_in_release.read_bytes(),
                         overwrite=overwrite,
                     ):
@@ -6203,14 +6132,14 @@ def runtime_deploy(
                 "Expected spark_kindling-*.whl or kindling_<platform>-*.whl."
             )
 
-        click.echo(f"Packages → {dest_packages_path}/")
-        count = _deploy_wheels(dest_blob_client, dest_container, dest_packages_path, wheels)
+        click.echo("Packages → packages/")
+        count = _deploy_wheels(dest_store, wheels)
         click.echo(f"  ({count} wheel(s) uploaded)")
         click.echo()
 
         if not skip_bootstrap:
             # Look for bootstrap in runtime/scripts/ relative to local_dir or its parents
-            click.echo(f"Scripts → {dest_scripts_path}/")
+            click.echo("Scripts → scripts/")
             repo_root = local_dir
             bootstrap_found = False
             for candidate in (repo_root, repo_root.parent, repo_root.parent.parent):
@@ -6219,71 +6148,58 @@ def runtime_deploy(
                     bootstrap_found = True
                     break
             if bootstrap_found:
-                if _deploy_bootstrap_script(
-                    dest_blob_client,
-                    dest_container,
-                    dest_scripts_path,
-                    repo_root,
-                    overwrite=overwrite,
-                ):
+                if _deploy_bootstrap_script(dest_store, repo_root, overwrite=overwrite):
                     click.echo()
             else:
                 click.echo("  kindling_bootstrap.py not found in runtime/scripts/ — skipping.")
                 click.echo()
 
-    elif source.startswith("abfss://"):
-        # ADLS-to-ADLS copy
-        src_container, src_account, src_base = _parse_abfss_uri(source)
-        src_packages_prefix = f"{src_base}/packages" if src_base else "packages"
-        src_scripts_prefix = f"{src_base}/scripts" if src_base else "scripts"
+    else:
+        # Store-to-store copy (abfss://, /Volumes/, file://, local directory)
+        try:
+            src_store = _open_store(source)
+        except click.ClickException as exc:
+            raise click.ClickException(
+                f"Unrecognized source specifier: `{source}`.\n"
+                "Expected one of:\n"
+                "  github:VERSION or github:latest\n"
+                "  local:PATH\n"
+                "  an artifacts root (abfss://…, /Volumes/…, file://…)\n"
+                f"({exc.message})"
+            ) from exc
 
-        click.echo(f"Publishing from ADLS {source} → {dest}")
+        click.echo(f"Publishing from {src_store.describe()} → {dest_store.describe()}")
         click.echo()
 
-        src_blob_client = _get_blob_service_client(src_account)
-
         # Copy packages
-        click.echo(f"Packages → {dest_packages_path}/")
-        pkg_count = _adls_copy_path(
-            src_blob_client,
-            src_container,
-            src_packages_prefix,
-            dest_blob_client,
-            dest_container,
-            dest_packages_path,
+        click.echo("Packages → packages/")
+        pkg_count = _copy_between_stores(
+            src_store,
+            "packages",
+            dest_store,
+            "packages",
             overwrite=True,  # wheels always overwrite
         )
         if pkg_count == 0:
-            click.echo("  (no wheel blobs found at source packages path)")
+            click.echo("  (no wheel files found at source packages path)")
         else:
-            click.echo(f"  ({pkg_count} blob(s) copied)")
+            click.echo(f"  ({pkg_count} file(s) copied)")
         click.echo()
 
         if not skip_bootstrap:
-            click.echo(f"Scripts → {dest_scripts_path}/")
-            script_count = _adls_copy_path(
-                src_blob_client,
-                src_container,
-                src_scripts_prefix,
-                dest_blob_client,
-                dest_container,
-                dest_scripts_path,
+            click.echo("Scripts → scripts/")
+            script_count = _copy_between_stores(
+                src_store,
+                "scripts",
+                dest_store,
+                "scripts",
                 overwrite=overwrite,
             )
             if script_count == 0:
-                click.echo("  (no script blobs found at source scripts path)")
+                click.echo("  (no script files found at source scripts path)")
             else:
-                click.echo(f"  ({script_count} blob(s) copied)")
+                click.echo(f"  ({script_count} file(s) copied)")
             click.echo()
-
-    else:
-        raise click.ClickException(
-            f"Unrecognized source specifier: `{source}`.\n"
-            "Expected one of:\n"
-            "  github:VERSION or github:latest\n"
-            "  local:PATH\n"
-            "  abfss://container@account.dfs.core.windows.net/path"
-        )
 
     click.echo("Deploy complete.")
 

@@ -17,6 +17,26 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **Artifact store abstraction — UC Volumes and local artifacts roots**
+  (gh#207, Phase 1): new `kindling_sdk.artifact_store` module. The CLI's
+  deploy commands (`workspace init`, `workspace deploy`, `package deploy`,
+  `runtime deploy`, plus `app run`'s version check) now write through a
+  store dispatched on the artifacts path's shape: `abfss://…` (existing
+  Azure behavior, unchanged), `/Volumes/<catalog>/<schema>/<volume>/…`
+  (Databricks Files API), or a local directory / `file://` (tests, local
+  dev). The destination resolves from one value — `--artifacts-path`, then
+  `KINDLING_ARTIFACTS_STORAGE_PATH` (the env spelling of the runtime's
+  existing `artifacts_storage_path` config key, so one variable configures
+  both sides), then the legacy `AZURE_STORAGE_ACCOUNT`/`AZURE_CONTAINER`/
+  `AZURE_BASE_PATH` triple (deprecated but fully supported, synthesized to
+  abfss). `runtime deploy --source/--dest` accept any store root, so
+  staging→prod promotion works across backends; `dbfs:/` roots are
+  rejected with a Unity Catalog volume hint. `package deploy --json` now
+  reports a scheme-neutral `artifacts_path` (legacy `storage_account`/
+  `container` fields kept for abfss for one minor release) and no longer
+  contaminates JSON stdout with per-wheel progress echoes. Requires
+  databricks-sdk >= 0.20.0 (Files API directory operations) for volume
+  roots.
 - **Wildcard config pattern engine**: new `kindling.config_patterns` module
   with `ConfigPatternMatcher` — glob patterns (`*`, `?`, `**`) over
   dot-segmented pipe/entity ids, tiered specificity (exact > single

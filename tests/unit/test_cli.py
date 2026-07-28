@@ -1039,10 +1039,8 @@ def test_package_deploy_builds_wheel_and_uploads_to_artifacts_packages(
         (dist / "domain_records-1.2.3-py3-none-any.whl").write_bytes(b"wheel")
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    def fake_deploy_wheels(blob_service_client, container, packages_path, wheels):
-        calls["blob_service_client"] = blob_service_client
-        calls["container"] = container
-        calls["packages_path"] = packages_path
+    def fake_deploy_wheels(store, wheels, quiet=False):
+        calls["store"] = store
         calls["wheels"] = wheels
         return len(wheels)
 
@@ -1093,8 +1091,8 @@ version = "1.2.3"
             str(package_dir.resolve() / "dist"),
         ]
         assert calls["build_cwd"] == package_dir.resolve()
-        assert calls["container"] == "artifacts"
-        assert calls["packages_path"] == "dev/packages"
+        assert calls["store"].container == "artifacts"
+        assert calls["store"].base_path == "dev"
         assert [wheel.name for wheel in calls["wheels"]] == [
             "domain_records-1.2.3-py3-none-any.whl"
         ]
@@ -1322,9 +1320,7 @@ class TestWorkspaceInit:
         deployed = []
         monkeypatch.setattr(
             "kindling_cli.cli._deploy_config",
-            lambda client, container, base, config, overwrite=False, **kwargs: deployed.append(
-                config
-            ),
+            lambda store, config, overwrite=False, **kwargs: deployed.append(config),
         )
         runner = CliRunner()
         with runner.isolated_filesystem():
@@ -1366,9 +1362,7 @@ class TestWorkspaceInit:
         calls = []
         monkeypatch.setattr(
             "kindling_cli.cli._deploy_config",
-            lambda client, container, base, config, overwrite=False, **kwargs: calls.append(
-                overwrite
-            ),
+            lambda store, config, overwrite=False, **kwargs: calls.append(overwrite),
         )
         runner = CliRunner()
         with runner.isolated_filesystem():
@@ -3366,6 +3360,7 @@ def test_deploy_config_uploads_only_selected_overlays(tmp_path):
     from unittest.mock import MagicMock
 
     from kindling_cli.cli import _deploy_config
+    from kindling_sdk.artifact_store import AbfssArtifactStore
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -3393,10 +3388,12 @@ def test_deploy_config_uploads_only_selected_overlays(tmp_path):
     blob_service_client = MagicMock()
     blob_service_client.get_blob_client.side_effect = get_blob_client
 
+    store = AbfssArtifactStore(
+        "abfss://artifacts@acct.dfs.core.windows.net/base",
+        blob_service_client=blob_service_client,
+    )
     _deploy_config(
-        blob_service_client,
-        "artifacts",
-        "base",
+        store,
         config_dir / "settings.yaml",
         platform="fabric",
         environment="prod",
@@ -3667,3 +3664,232 @@ class TestNotebookCommands:
         roundtripped = [(c["cell_type"], "".join(c["source"])) for c in nb["cells"]]
         original = [(c["cell_type"], "".join(c["source"])) for c in cells]
         assert roundtripped == original
+
+
+# ---------------------------------------------------------------------------
+# artifact store destinations (gh#207)
+# ---------------------------------------------------------------------------
+
+_ARTIFACTS_ENV_VARS = (
+    "KINDLING_ARTIFACTS_STORAGE_PATH",
+    "AZURE_STORAGE_ACCOUNT",
+    "AZURE_CONTAINER",
+    "AZURE_BASE_PATH",
+)
+
+
+def _clear_artifacts_env(monkeypatch):
+    for var in _ARTIFACTS_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+class TestArtifactStoreDestinations:
+    """CLI deploy commands against non-Azure artifact roots — no Azure mocks."""
+
+    def test_workspace_init_deploys_config_to_local_store(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        monkeypatch.setenv("KINDLING_ARTIFACTS_STORAGE_PATH", str(tmp_path))
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("kindling:\n  name: test\n")
+            result = runner.invoke(cli, ["workspace", "init", "--platform", "fabric"])
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "config" / "settings.yaml").read_text() == "kindling:\n  name: test\n"
+
+    def test_workspace_deploy_respects_overwrite_on_local_store(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        monkeypatch.setenv("KINDLING_ARTIFACTS_STORAGE_PATH", str(tmp_path))
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "settings.yaml").write_text("existing")
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("settings.yaml").write_text("updated")
+            skipped = runner.invoke(cli, ["workspace", "deploy", "--platform", "fabric"])
+            overwritten = runner.invoke(
+                cli, ["workspace", "deploy", "--platform", "fabric", "--overwrite"]
+            )
+
+        assert skipped.exit_code == 0, skipped.output
+        assert "(exists, skipped)" in skipped.output
+        assert overwritten.exit_code == 0, overwritten.output
+        assert (tmp_path / "config" / "settings.yaml").read_text() == "updated"
+
+    def test_package_deploy_uploads_to_local_store_with_scheme_neutral_json(
+        self, tmp_path, monkeypatch
+    ):
+        _clear_artifacts_env(monkeypatch)
+        monkeypatch.setenv("KINDLING_ARTIFACTS_STORAGE_PATH", str(tmp_path))
+
+        def fake_run(cmd, cwd=None, capture_output=False, text=False):
+            dist = Path(cwd) / "dist"
+            dist.mkdir(exist_ok=True)
+            (dist / "domain_records-1.2.3-py3-none-any.whl").write_bytes(b"wheel")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("kindling_cli.cli.subprocess.run", fake_run)
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            package_dir = Path("packages/domain_records")
+            package_dir.mkdir(parents=True)
+            (package_dir / "pyproject.toml").write_text(
+                '[tool.poetry]\nname = "domain-records"\nversion = "1.2.3"\n',
+                encoding="utf-8",
+            )
+            result = runner.invoke(
+                cli,
+                [
+                    "package",
+                    "deploy",
+                    "domain-records",
+                    "--local-folder",
+                    str(package_dir),
+                    "--json",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "packages" / "domain_records-1.2.3-py3-none-any.whl").exists()
+        payload = json.loads(result.output[result.output.index("{") :])
+        assert payload["artifacts_path"] == str(tmp_path)
+        assert payload["packages_path"] == "packages"
+        assert "storage_account" not in payload
+        assert "container" not in payload
+
+    def test_package_deploy_json_keeps_legacy_fields_for_abfss(self, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+
+        def fake_run(cmd, cwd=None, capture_output=False, text=False):
+            dist = Path(cwd) / "dist"
+            dist.mkdir(exist_ok=True)
+            (dist / "domain_records-1.2.3-py3-none-any.whl").write_bytes(b"wheel")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("kindling_cli.cli.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "kindling_cli.cli._deploy_wheels",
+            lambda store, wheels, quiet=False: len(wheels),
+        )
+        monkeypatch.setattr("kindling_cli.cli._get_blob_service_client", lambda account: object())
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            package_dir = Path("packages/domain_records")
+            package_dir.mkdir(parents=True)
+            (package_dir / "pyproject.toml").write_text(
+                '[tool.poetry]\nname = "domain-records"\nversion = "1.2.3"\n',
+                encoding="utf-8",
+            )
+            result = runner.invoke(
+                cli,
+                [
+                    "package",
+                    "deploy",
+                    "domain-records",
+                    "--local-folder",
+                    str(package_dir),
+                    "--storage-account",
+                    "acct",
+                    "--base-path",
+                    "dev",
+                    "--json",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output[result.output.index("{") :])
+        assert payload["artifacts_path"] == "abfss://artifacts@acct.dfs.core.windows.net/dev"
+        assert payload["storage_account"] == "acct"
+        assert payload["container"] == "artifacts"
+        assert payload["packages_path"] == "dev/packages"
+
+    def test_runtime_deploy_local_source_to_local_store(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        source_dir.mkdir()
+        (source_dir / "spark_kindling-0.9.25-py3-none-any.whl").write_bytes(b"fake-wheel")
+        dest_dir = tmp_path / "artifacts"
+        dest_dir.mkdir()
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "deploy",
+                "--source",
+                f"local:{source_dir}",
+                "--dest",
+                str(dest_dir),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (dest_dir / "packages" / "spark_kindling-0.9.25-py3-none-any.whl").exists()
+
+    def test_runtime_deploy_accepts_volumes_dest(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        source_dir.mkdir()
+        (source_dir / "spark_kindling-0.9.25-py3-none-any.whl").write_bytes(b"fake-wheel")
+
+        uploaded = {}
+
+        class _FilesStub:
+            def upload(self, path, contents, overwrite=None):
+                uploaded[path] = contents.read()
+
+            def get_metadata(self, path):
+                from databricks.sdk.errors import NotFound
+
+                raise NotFound(path)
+
+        monkeypatch.setattr(
+            "kindling_sdk.artifact_store.create_databricks_workspace_client",
+            lambda host=None: types.SimpleNamespace(files=_FilesStub()),
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "deploy",
+                "--source",
+                f"local:{source_dir}",
+                "--dest",
+                "/Volumes/main/kindling/artifacts",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            "/Volumes/main/kindling/artifacts/packages/spark_kindling-0.9.25-py3-none-any.whl"
+            in uploaded
+        )
+
+    def test_runtime_deploy_rejects_dbfs_dest(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        result = CliRunner().invoke(
+            cli,
+            [
+                "runtime",
+                "deploy",
+                "--source",
+                f"local:{tmp_path}",
+                "--dest",
+                "dbfs:/FileStore/kindling",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Unity Catalog volume" in result.output
+
+    def test_legacy_azure_env_resolves_to_same_abfss_destination(self, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "acct")
+        monkeypatch.setenv("AZURE_CONTAINER", "deploy")
+        monkeypatch.setenv("AZURE_BASE_PATH", "kindling")
+
+        from kindling_cli.cli import _resolve_destination
+
+        assert _resolve_destination() == "abfss://deploy@acct.dfs.core.windows.net/kindling"
