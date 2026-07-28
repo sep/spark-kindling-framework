@@ -20,7 +20,6 @@ from datetime import datetime
 from typing import Optional
 
 from injector import inject
-
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_trace import SparkSpan, SparkTraceProvider
@@ -152,14 +151,14 @@ class PlainPythonTraceProvider(SparkTraceProvider):
             start_time=datetime.now(),
             traceId=parent.traceId if parent else uuid.uuid4(),
             reraise=reraise or (parent.reraise if parent else None),
+            parent_id=parent.id if parent else None,
         )
         self.current_span = current_span
 
-        self._emit(
-            current_span,
-            f"{current_span.operation}_START",
-            self._with_timestamp(live_details, "startTime", current_span.start_time),
-        )
+        start_details = self._with_timestamp(live_details, "startTime", current_span.start_time)
+        if current_span.parent_id is not None:
+            start_details["parentSpanId"] = current_span.parent_id
+        self._emit(current_span, f"{current_span.operation}_START", start_details)
         try:
             yield self
         except Exception:
@@ -176,6 +175,8 @@ class PlainPythonTraceProvider(SparkTraceProvider):
             end_details["totalTime"] = self._total_time(
                 current_span.start_time, current_span.end_time
             )
+            if current_span.parent_id is not None:
+                end_details["parentSpanId"] = current_span.parent_id
             self._emit(current_span, f"{current_span.operation}_END", end_details)
             self.current_span = parent
 
@@ -194,12 +195,12 @@ class PlainPythonTraceProvider(SparkTraceProvider):
             start_time=datetime.now(),
             traceId=self.current_span.traceId if self.current_span else uuid.uuid4(),
             reraise=False,
+            parent_id=self.current_span.id if self.current_span else None,
         )
-        self._emit(
-            span,
-            f"{span.operation}_START",
-            self._with_timestamp(live_details, "startTime", span.start_time),
-        )
+        start_details = self._with_timestamp(live_details, "startTime", span.start_time)
+        if span.parent_id is not None:
+            start_details["parentSpanId"] = span.parent_id
+        self._emit(span, f"{span.operation}_START", start_details)
         return span
 
     def add_event(
