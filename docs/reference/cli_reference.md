@@ -135,15 +135,25 @@ Check whether the local environment is ready for Kindling.
 |---|---|---|
 | `--config PATH` | `settings.yaml` | Settings file to validate |
 | `--local` | — | Also check Java, PySpark, delta-spark, and hadoop-azure JARs |
-| `--platform databricks\|fabric\|synapse` | auto-detected | Check platform credential env vars; reports each as SET or MISSING with `export` hints. Exits 1 if any are missing |
+| `--platform databricks\|fabric\|synapse` | auto-detected | Check platform pre-flight readiness: required vars are reported as SET or MISSING with `export` hints, and authentication alternatives are listed in the SDK's resolution order. Exits 1 unless the platform is ready |
 
-Platform credential vars checked:
+Platform pre-flight requirements:
 
-| Platform | Required vars |
-|---|---|
-| `databricks` | `DATABRICKS_HOST`, `DATABRICKS_TOKEN` |
-| `fabric` | `FABRIC_WORKSPACE_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |
-| `synapse` | `SYNAPSE_WORKSPACE_NAME`, `SYNAPSE_SPARK_POOL_NAME`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |
+| Platform | Required vars | Auth — one of |
+|---|---|---|
+| `databricks` | `DATABRICKS_HOST` | `DATABRICKS_TOKEN`; the `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` service principal triple; or a usable Azure CLI session (`az login`) |
+| `fabric` | `FABRIC_WORKSPACE_ID` | the service principal triple, or `az login` / managed identity at run time |
+| `synapse` | `SYNAPSE_WORKSPACE_NAME`, `SYNAPSE_SPARK_POOL_NAME` | the service principal triple, or `az login` / managed identity at run time |
+
+A partially set service principal triple fails the check naming the missing
+vars. For Databricks workspaces with personal access tokens disabled, mint a
+short-lived Microsoft Entra ID token instead:
+
+```bash
+export DATABRICKS_TOKEN=$(az account get-access-token \
+  --resource 2ff814a6-3304-4ab8-85cb-cd0e6f879c1d \
+  --query accessToken -o tsv)
+```
 
 ```bash
 kindling env check --local
@@ -795,7 +805,7 @@ Re-run after pulling a new devcontainer image to pick up updated documentation.
 | `AZURE_CLIENT_SECRET` | all Azure auth | Service principal secret |
 | `AZURE_CLOUD` | Azure auth | Cloud environment (`AzureUSGovernment`, `AzureChinaCloud`, etc.) |
 | `DATABRICKS_HOST` | databricks platform | Databricks workspace URL |
-| `DATABRICKS_TOKEN` | databricks platform | Databricks PAT |
+| `DATABRICKS_TOKEN` | databricks platform | Databricks PAT (or Entra ID token) — one auth alternative; the `AZURE_*` service principal triple or an `az login` session also works |
 | `FABRIC_WORKSPACE_ID` | fabric platform | Fabric workspace GUID |
 | `FABRIC_LAKEHOUSE_ID` | fabric platform | Fabric lakehouse GUID |
 | `SYNAPSE_WORKSPACE_NAME` | synapse platform | Synapse workspace name |

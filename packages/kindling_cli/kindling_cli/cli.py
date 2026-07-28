@@ -304,12 +304,7 @@ def _wait_for_app_run(
 
 def _create_platform_api(platform: str):
     """Construct a remote platform API client from the current environment."""
-    missing = _missing_platform_vars(platform)
-    if missing:
-        raise click.ClickException(
-            f"Missing required environment variables for {platform}: {', '.join(missing)}.\n"
-            f"Run `kindling env check --platform {platform}` to verify your credentials."
-        )
+    _require_platform_credentials(platform)
 
     try:
         from kindling_sdk.platform_provider import create_platform_api_from_env
@@ -715,18 +710,13 @@ _PLATFORM_NOT_FOUND_MSG = (
 
 
 def _resolve_remote_platform(platform: Optional[str], require_credentials: bool = False) -> str:
-    """Resolve remote platform and optionally enforce base credential variables."""
+    """Resolve remote platform and optionally enforce pre-flight credentials."""
     resolved_platform = platform or _detect_platform_from_environment()
     if not resolved_platform:
         raise click.ClickException(_PLATFORM_NOT_FOUND_MSG)
 
     if require_credentials:
-        missing = _missing_platform_vars(resolved_platform)
-        if missing:
-            raise click.ClickException(
-                f"Missing required environment variables for {resolved_platform}: {', '.join(missing)}.\n"
-                f"Run `kindling env check --platform {resolved_platform}` to verify your credentials."
-            )
+        _require_platform_credentials(resolved_platform)
 
     return resolved_platform
 
@@ -1458,8 +1448,10 @@ _ABFSS_LOCAL_AUTH_JAR_URL = "https://github.com/sep/spark-kindling-framework/rel
 _ABFSS_LOCAL_AUTH_JAR_SHA256 = "feb6236b362f717c79a11eecd05da0b16260799b255a19f5f3575eb3184f67cc"
 
 
+# Resource locators only — authentication is modeled separately as
+# per-platform alternatives (see _PLATFORM_AUTH_ALTERNATIVES).
 _PLATFORM_BASE_VARS: Dict[str, List[str]] = {
-    "databricks": ["DATABRICKS_HOST", "DATABRICKS_TOKEN"],
+    "databricks": ["DATABRICKS_HOST"],
     "fabric": ["FABRIC_WORKSPACE_ID", "FABRIC_LAKEHOUSE_ID"],
     "synapse": ["SYNAPSE_WORKSPACE_NAME"],
 }
@@ -1468,40 +1460,212 @@ _PLATFORM_BASE_VARS: Dict[str, List[str]] = {
 _AZURE_SP_VARS: List[str] = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"]
 _AZURE_SP_PLATFORMS: frozenset = frozenset({"fabric", "synapse"})
 
-# [implementer] required credential vars for platform pre-flight check — ki-0nq
+# Non-auth env vars reported by `env check --platform <name>`; auth is
+# reported separately from _evaluate_platform_auth.
 _PLATFORM_CREDENTIAL_VARS: Dict[str, List[str]] = {
-    "synapse": [
-        "SYNAPSE_WORKSPACE_NAME",
-        "SYNAPSE_SPARK_POOL_NAME",
-        "AZURE_TENANT_ID",
-        "AZURE_CLIENT_ID",
-        "AZURE_CLIENT_SECRET",
-    ],
+    "synapse": ["SYNAPSE_WORKSPACE_NAME", "SYNAPSE_SPARK_POOL_NAME"],
+    "databricks": ["DATABRICKS_HOST"],
+    "fabric": ["FABRIC_WORKSPACE_ID"],
+}
+
+_AZ_PROBE_TIMEOUT_SECONDS = 15
+
+# Azure Databricks first-party application ID (public cloud) — the resource
+# AAD tokens must be minted for when workspace PATs are disabled.
+_DATABRICKS_AAD_RESOURCE_ID = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
+
+_DATABRICKS_TOKEN_TIP = (
+    "Tip (PAT-disabled workspaces): export DATABRICKS_TOKEN=$(az account get-access-token "
+    f"--resource {_DATABRICKS_AAD_RESOURCE_ID} --query accessToken -o tsv)"
+)
+
+# Auth alternative kinds. "env": satisfied when every listed var is set.
+# "az-cli-probe": satisfied when `az account get-access-token` succeeds; a
+# valid pre-flight gate because the Azure CLI is the SDK's terminal fallback
+# for the platform, so a failed probe means a certain run failure.
+# "default-azure-credential": satisfied only when NO service-principal var is
+# set (a partial triple is a misconfiguration to surface, not a fallback).
+# Never probed: DefaultAzureCredential is broader than the az CLI — managed
+# identity can succeed where every pre-flight signal fails.
+_AUTH_ENV = "env"
+_AUTH_AZ_CLI_PROBE = "az-cli-probe"
+_AUTH_DEFAULT_AZURE_CREDENTIAL = "default-azure-credential"
+
+# (kind, label, env vars) per platform, in the SDK's credential resolution
+# order (token → service principal → Azure CLI / DefaultAzureCredential).
+_PLATFORM_AUTH_ALTERNATIVES: Dict[str, List[Tuple[str, str, List[str]]]] = {
     "databricks": [
-        "DATABRICKS_HOST",
-        "DATABRICKS_TOKEN",
+        (_AUTH_ENV, "DATABRICKS_TOKEN", ["DATABRICKS_TOKEN"]),
+        (_AUTH_ENV, "service principal", list(_AZURE_SP_VARS)),
+        (_AUTH_AZ_CLI_PROBE, "Azure CLI session (az login)", []),
     ],
     "fabric": [
-        "FABRIC_WORKSPACE_ID",
-        "AZURE_TENANT_ID",
-        "AZURE_CLIENT_ID",
-        "AZURE_CLIENT_SECRET",
+        (_AUTH_ENV, "service principal", list(_AZURE_SP_VARS)),
+        (_AUTH_DEFAULT_AZURE_CREDENTIAL, "az login / managed identity", []),
+    ],
+    "synapse": [
+        (_AUTH_ENV, "service principal", list(_AZURE_SP_VARS)),
+        (_AUTH_DEFAULT_AZURE_CREDENTIAL, "az login / managed identity", []),
     ],
 }
 
 
-def _print_platform_credential_check(platform: str) -> bool:
-    """Print a human-readable credential check for the given platform.
+def _azure_cli_session_available(timeout: float = _AZ_PROBE_TIMEOUT_SECONDS) -> bool:
+    """Return True when the Azure CLI holds a usable login session.
 
-    Each required env var is reported as SET or MISSING.  Missing vars include
-    an ``export`` hint.  Returns ``True`` when all vars are set, ``False``
-    when one or more are missing.
+    Probes with ``az account get-access-token --output none`` so no token
+    material ever reaches stdout or logs. Conservative on every failure
+    mode: a missing az binary, a non-zero exit, a timeout, or an OS error
+    all report False.
     """
-    vars_for_platform = _PLATFORM_CREDENTIAL_VARS.get(platform, [])
+    if shutil.which("az") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["az", "account", "get-access-token", "--output", "none"],
+            capture_output=True,
+            timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return result.returncode == 0
+
+
+def _evaluate_platform_auth(platform: str) -> Tuple[Optional[str], List[Dict[str, Any]]]:
+    """Evaluate the platform's auth alternatives against the environment.
+
+    Returns ``(satisfied_by, details)``: ``satisfied_by`` is the label of the
+    first satisfied alternative in SDK resolution order (None when no
+    alternative is satisfied), and ``details`` holds one entry per
+    alternative with keys ``kind``, ``label``, ``vars``, ``missing``,
+    ``satisfied``, ``probed``, and ``sp_partial``.
+
+    The az-cli probe is lazy: it only runs when no earlier alternative is
+    satisfied, so fully configured environments never pay the subprocess
+    cost.
+    """
+    satisfied_by: Optional[str] = None
+    details: List[Dict[str, Any]] = []
+    for kind, label, alt_vars in _PLATFORM_AUTH_ALTERNATIVES.get(platform, []):
+        entry: Dict[str, Any] = {
+            "kind": kind,
+            "label": label,
+            "vars": alt_vars,
+            "missing": [],
+            "satisfied": False,
+            "probed": False,
+            "sp_partial": False,
+        }
+        if kind == _AUTH_ENV:
+            entry["missing"] = [v for v in alt_vars if not os.getenv(v)]
+            entry["satisfied"] = not entry["missing"]
+        elif kind == _AUTH_AZ_CLI_PROBE:
+            if satisfied_by is None:
+                entry["probed"] = True
+                entry["satisfied"] = _azure_cli_session_available()
+        else:  # _AUTH_DEFAULT_AZURE_CREDENTIAL
+            sp_missing = [v for v in _AZURE_SP_VARS if not os.getenv(v)]
+            entry["satisfied"] = len(sp_missing) == len(_AZURE_SP_VARS)
+            entry["sp_partial"] = 0 < len(sp_missing) < len(_AZURE_SP_VARS)
+        if entry["satisfied"] and satisfied_by is None:
+            satisfied_by = label
+        details.append(entry)
+    return satisfied_by, details
+
+
+def _auth_alternative_display_name(entry: Dict[str, Any]) -> str:
+    if entry["kind"] == _AUTH_ENV:
+        return " + ".join(entry["vars"])
+    return entry["label"]
+
+
+def _platform_auth_error(platform: str, details: List[Dict[str, Any]]) -> str:
+    """Build the run-gate failure message listing every auth alternative."""
+    lines = [f"No {platform} authentication configured. Set one of:"]
+    for entry in details:
+        bullet = _auth_alternative_display_name(entry)
+        if entry["kind"] == _AUTH_ENV and entry["label"] != bullet:
+            bullet += f" ({entry['label']})"
+        if entry["missing"] and entry["missing"] != entry["vars"]:
+            bullet += f" — missing: {', '.join(entry['missing'])}"
+        lines.append(f"  - {bullet}")
+    if platform == "databricks":
+        lines.append(_DATABRICKS_TOKEN_TIP)
+    lines.append(f"Run `kindling env check --platform {platform}` to verify your credentials.")
+    return "\n".join(lines)
+
+
+def _require_platform_credentials(platform: str) -> None:
+    """Pre-flight gate: base env vars present and authentication available.
+
+    Auth is only enforced for platforms whose alternatives are all decidable
+    in pre-flight (databricks: token → service principal → az-cli probe, the
+    SDK's exact chain). Platforms whose chain ends in DefaultAzureCredential
+    (fabric/synapse) are not auth-gated here — managed identity can succeed
+    where every pre-flight signal fails.
+    """
+    missing = _missing_platform_vars(platform)
+    if missing:
+        raise click.ClickException(
+            f"Missing required environment variables for {platform}: {', '.join(missing)}.\n"
+            f"Run `kindling env check --platform {platform}` to verify your credentials."
+        )
+
+    alternatives = _PLATFORM_AUTH_ALTERNATIVES.get(platform, [])
+    if not alternatives or any(
+        kind == _AUTH_DEFAULT_AZURE_CREDENTIAL for kind, _, _ in alternatives
+    ):
+        return
+    satisfied_by, details = _evaluate_platform_auth(platform)
+    if satisfied_by is None:
+        raise click.ClickException(_platform_auth_error(platform, details))
+
+
+def _render_auth_alternative_status(entry: Dict[str, Any], auth_ok: bool) -> str:
+    """Status text for one auth alternative line in `env check --platform`."""
+    if entry["kind"] == _AUTH_ENV:
+        if entry["satisfied"]:
+            return "SET"
+        partial = 0 < len(entry["missing"]) < len(entry["vars"])
+        if auth_ok:
+            if partial:
+                return f"partial — missing: {', '.join(entry['missing'])}"
+            return "not set"
+        if len(entry["vars"]) == 1:
+            var = entry["vars"][0]
+            hint = var.lower().replace("_", "-")
+            return f"MISSING  → set via: export {var}=<your-{hint}>"
+        return f"MISSING: {', '.join(entry['missing'])}"
+    if entry["kind"] == _AUTH_AZ_CLI_PROBE:
+        if not entry["probed"]:
+            return "not checked (earlier alternative satisfied)"
+        return "AVAILABLE" if entry["satisfied"] else "UNAVAILABLE — run: az login"
+    # _AUTH_DEFAULT_AZURE_CREDENTIAL
+    if entry["satisfied"]:
+        return "OK — resolved at run time"
+    if entry["sp_partial"]:
+        return "skipped — complete the service principal vars above or unset them"
+    return "not needed (service principal set)"
+
+
+def _print_platform_credential_check(platform: str) -> bool:
+    """Print a human-readable pre-flight check for the given platform.
+
+    Required (non-auth) env vars are reported as SET or MISSING with an
+    ``export`` hint. Authentication is reported as a list of alternatives in
+    the SDK's credential resolution order — the check passes when any one
+    alternative is satisfied. Returns ``True`` when the platform is ready.
+    """
+    base_vars = _PLATFORM_CREDENTIAL_VARS.get(platform, [])
+    satisfied_by, auth_details = _evaluate_platform_auth(platform)
+    auth_ok = satisfied_by is not None or not auth_details
+
     click.echo(f"Platform: {platform}")
+    names = list(base_vars) + [_auth_alternative_display_name(e) for e in auth_details]
+    col_width = max((len(n) for n in names), default=0) + 2
+
     missing_count = 0
-    col_width = max((len(v) for v in vars_for_platform), default=0) + 2
-    for var in vars_for_platform:
+    for var in base_vars:
         val = os.getenv(var)
         if val:
             click.echo(f"  {var:<{col_width}} SET")
@@ -1509,12 +1673,28 @@ def _print_platform_credential_check(platform: str) -> bool:
             missing_count += 1
             hint = var.lower().replace("_", "-")
             click.echo(f"  {var:<{col_width}} MISSING  → set via: export {var}=<your-{hint}>")
+
+    if auth_details:
+        click.echo("  Auth — one of:")
+        for entry in auth_details:
+            name = _auth_alternative_display_name(entry)
+            status = _render_auth_alternative_status(entry, auth_ok)
+            click.echo(f"    {name:<{col_width}} {status}")
+        if satisfied_by:
+            click.echo(f"  Auth satisfied via: {satisfied_by}")
+
     if missing_count:
         click.echo(
             f"\n{missing_count} missing."
             f" Run 'kindling env check --platform {platform}' again after setting them."
         )
-    return missing_count == 0
+    if not auth_ok:
+        click.echo(
+            f"\nNo {platform} authentication configured — set one of the alternatives above."
+        )
+        if platform == "databricks":
+            click.echo(_DATABRICKS_TOKEN_TIP)
+    return missing_count == 0 and auth_ok
 
 
 def _missing_platform_vars(platform: str) -> List[str]:
@@ -1735,15 +1915,21 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
       - hadoop-azure JARs present in /tmp/hadoop-jars/
 
     \b
-    With --platform <name>, checks that the required credential env vars for
-    the given platform are set and reports each as SET or MISSING.  Missing
-    vars include an export hint.  Exits 1 if any vars are missing.
+    With --platform <name>, checks that the required env vars for the given
+    platform are set and that at least one authentication alternative is
+    satisfied.  Vars are reported as SET or MISSING with an export hint;
+    auth alternatives are listed in the SDK's credential resolution order.
+    Exits 1 unless the platform is ready.
 
-      --platform databricks  DATABRICKS_HOST, DATABRICKS_TOKEN
-      --platform fabric      FABRIC_WORKSPACE_ID, AZURE_TENANT_ID,
-                             AZURE_CLIENT_ID
+      --platform databricks  DATABRICKS_HOST, plus one of: DATABRICKS_TOKEN,
+                             the AZURE_TENANT_ID/AZURE_CLIENT_ID/
+                             AZURE_CLIENT_SECRET service principal triple,
+                             or a usable Azure CLI session (az login)
+      --platform fabric      FABRIC_WORKSPACE_ID, plus the service principal
+                             triple or az login / managed identity
       --platform synapse     SYNAPSE_WORKSPACE_NAME, SYNAPSE_SPARK_POOL_NAME,
-                             AZURE_TENANT_ID, AZURE_CLIENT_ID
+                             plus the service principal triple or az login /
+                             managed identity
 
     \b
     To download all required JARs run:
@@ -1806,7 +1992,18 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
         for var in _PLATFORM_BASE_VARS.get(auto_platform, []):
             val = os.getenv(var)
             checks.append((f"env:{var}", bool(val), "set" if val else "missing"))
-        if auto_platform in _AZURE_SP_PLATFORMS:
+        if auto_platform == "databricks":
+            satisfied_by, _ = _evaluate_platform_auth(auto_platform)
+            checks.append(
+                (
+                    "databricks_auth",
+                    satisfied_by is not None,
+                    satisfied_by
+                    or "missing — set DATABRICKS_TOKEN, the AZURE_* service principal"
+                    " vars, or run az login",
+                )
+            )
+        elif auto_platform in _AZURE_SP_PLATFORMS:
             sp_vals = [os.getenv(v) for v in _AZURE_SP_VARS]
             if any(sp_vals):
                 for var, val in zip(_AZURE_SP_VARS, sp_vals):
