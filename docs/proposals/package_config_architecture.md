@@ -832,6 +832,51 @@ class ConfigPatternMatcher:
 
 ### Phase 2: Registry with Config Overlay
 
+> **Implementation note (2026-07-28):** Phase 2 shipped in
+> `data_pipes.py`/`data_entities.py`/`bootstrap.py` (gh#30). The reference
+> sketches below are kept unchanged for history; the shipped semantics
+> follow them except for four deliberate deltas:
+>
+> 1. **Overlay-at-registration, not only one bootstrap pass.** The
+>    compiled matcher persists on each manager after
+>    `apply_config_overrides()`, and `register_pipe`/`register_entity`
+>    build stored metadata through the same overlay path. Registrations
+>    keep happening after bootstrap's pass (workspace packages, app
+>    `register_all()`, notebook cells); the acceptance criterion is
+>    overrides applied before anything *executes*, and the persisted
+>    matcher makes that invariant structural. With no
+>    `datapipes:`/`dataentities:` config the matcher is empty and
+>    registration behavior is byte-for-byte unchanged.
+> 2. **The per-read runtime channels are retained, not retired.** The
+>    durable file-config channel (`dataentities:` patterns) is baked into
+>    stored metadata as proposed, but `get_entity_definition()` keeps its
+>    retrieval-time merges for `set_entity_tags` (runtime-mutable — the
+>    ADX provider's documented per-run windowing loop depends on it) and
+>    the `tag_overrides` context (JIT parameters). Precedence, lowest to
+>    highest: declared params < `dataentities:` patterns (baked) <
+>    `set_entity_tags` (per-read) < `tag_overrides` (per-read).
+> 3. **Underscore keys are carried inertly, not interpreted.** `_enabled`
+>    and friends resolve through the matcher but are dropped (with a
+>    debug log) when metadata is constructed — Phase 3 (gh#32) interprets
+>    them at exactly that seam. The sketch's `_internal_enabled` field
+>    does not exist. Identity/structural fields (`pipeid`+`execute`;
+>    `entityid`+`schema`+`sql`) are never config-overridable.
+> 4. **Bootstrap fetches the managers by their registry ABCs.** The
+>    Phase 3 sketch resolves `DataPipesManager`/`DataEntityManager`
+>    directly, but the injector caches interface and concrete-class
+>    bindings as *separate* singletons — decorators register into the
+>    `DataPipesRegistry`/`DataEntityRegistry` instances, so the shipped
+>    `bootstrap.apply_config_overrides()` resolves those (and skips a
+>    custom-bound registry that lacks the method).
+>
+> SCD2 current-row companions converge as derived state on every apply
+> pass: config enabling SCD creates the companion (with registration
+> signals), disabling it or changing `scd.current_entity_id` removes the
+> stale auto-created one, and a still-desired companion is rebuilt
+> silently from its overlaid base. Entity validation re-runs on overlaid
+> metadata at registration and at every apply pass, wrapping failures
+> with the entity id and config-overlay context.
+
 ```python
 # packages/kindling/data_pipes.py (revised)
 
@@ -1150,12 +1195,13 @@ dataentities:
 ### Phase 2: Config Overlay (Week 3-4)
 
 ```
-- [ ] Add apply_config_overrides() to DataPipesManager (retain raw params, overlay on top)
-- [ ] Add apply_config_overrides() to DataEntityManager (same pattern; retire the
-      existing lazy per-read merge in get_entity_definition() in favor of this)
-- [ ] Call apply_config_overrides() from bootstrap after config load
-- [ ] Ensure backward compatibility (registration behavior is unchanged)
-- [ ] Write integration tests, including hot-reload re-overlay
+- [x] Add apply_config_overrides() to DataPipesManager (retain raw params, overlay on top)
+- [x] Add apply_config_overrides() to DataEntityManager (same pattern; the per-read
+      merge in get_entity_definition() is retained for the runtime channels — see
+      the Phase 2 implementation note)
+- [x] Call apply_config_overrides() from bootstrap after config load
+- [x] Ensure backward compatibility (registration behavior is unchanged)
+- [x] Write integration tests, including hot-reload re-overlay
 ```
 
 ### Phase 3: Tag Management & Features (Week 5)

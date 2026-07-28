@@ -8,12 +8,14 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-
+from kindling.config_patterns import ConfigPatternMatcher
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
+from pyspark.sql import DataFrame
+
+_ENTITY_LOGGER = logging.getLogger("kindling.data_entities")
 
 ROUTING_KEY_METHODS: tuple[str, ...] = ("hash", "concat")
 
@@ -722,6 +724,11 @@ class DataEntityRegistry(ABC):
 class DataEntityManager(DataEntityRegistry, SignalEmitter):
     """Manages entity registrations with signal emissions."""
 
+    # Identity and structural fields are never config-overridable; every
+    # other EntityMetadata field is, so new fields become overridable
+    # without code changes here.
+    _NON_OVERRIDABLE_FIELDS = ("entityid", "schema", "sql")
+
     @inject
     def __init__(
         self, signal_provider: SignalProvider = None, config_service: ConfigService = None
@@ -732,6 +739,16 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         # Run-scoped JIT tag overlays (see tag_overrides); win over both
         # declared tags and config-level set_entity_tags overrides.
         self._tag_overlays = {}
+        # Original registration params per entity (shallow copies). Config
+        # overlay always re-resolves from these, never from overlaid
+        # metadata, so re-applying is idempotent and never accumulates.
+        # SCD2 current-row companions are derived state and never appear
+        # here.
+        self._raw_params = {}
+        # Compiled dataentities: config section; persisted so entities
+        # registered after bootstrap's overlay pass (workspace packages,
+        # app register_all, notebook cells) are overlaid at registration.
+        self._matcher = None
 
     @contextmanager
     def tag_overrides(self, overrides):
@@ -761,48 +778,109 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             self._tag_overlays = previous
 
     def register_entity(self, entityid, **decorator_params):
-        entity = EntityMetadata(entityid, **decorator_params)
-        # Derived-vs-state exclusivity first: a derived entity carrying
-        # state tags should fail with "does not apply to a derived
-        # dataset", not with a downstream state-vocabulary complaint.
-        _validate_derived_config(entity)
-        _validate_scd_config(entity)
-        _validate_write_mode_tag(entity)
-        _validate_schema_drift_tag(entity)
+        self._raw_params[entityid] = dict(decorator_params)
+        entity = self._build_metadata(entityid, decorator_params)
+        self._validate_entity(entity)
 
         self.registry[entityid] = entity
         self.emit(
             "entity.registered",
             entity_id=entityid,
-            entity_name=decorator_params.get("name", entityid),
+            entity_name=entity.name,
         )
 
         scd_config = scd_config_from_tags(entity)
         if scd_config.enabled:
             self._register_scd2_current_companion(entity, scd_config)
 
+    def apply_config_overrides(self, config_service: ConfigService) -> None:
+        """Overlay the ``dataentities:`` config section onto registered entities.
+
+        Rebuilds every explicitly-registered entity from its original
+        registration params through the section's glob patterns
+        (``ConfigPatternMatcher`` semantics: mappings deep-merge, scalars
+        and lists replace, exact > single-wildcard > multi-wildcard),
+        re-validates the overlaid metadata, and re-derives SCD2 current-row
+        companions from the result (desired-state convergence). A missing
+        or empty section compiles to a matcher with zero patterns, making
+        the pass a structural no-op. The matcher persists on the manager so
+        later registrations self-overlay.
+
+        Idempotent and safely re-callable (hot reload: ``reload()`` config,
+        then call again). Not synchronized with running DAGs — a concurrent
+        run may observe a mix of old and new metadata across entities (same
+        caveat as ``tag_overrides``).
+        """
+        self._matcher = ConfigPatternMatcher(config_service.get("dataentities"))
+        for entityid, raw_params in self._raw_params.items():
+            entity = self._build_metadata(entityid, raw_params)
+            self._validate_entity(entity)
+            self.registry[entityid] = entity
+        self._converge_scd2_companions()
+        _ENTITY_LOGGER.debug("Config overrides applied to %s entit(y/ies)", len(self._raw_params))
+
+    def _build_metadata(self, entityid, raw_params):
+        """Construct EntityMetadata from raw registration params plus any
+        config overrides matching ``entityid`` (no matcher yet -> raw as-is)."""
+        if self._matcher is None:
+            return EntityMetadata(entityid, **raw_params)
+
+        base = {
+            key: value
+            for key, value in raw_params.items()
+            if key not in self._NON_OVERRIDABLE_FIELDS
+        }
+        resolved = self._matcher.resolve_overrides(entityid, base)
+        overridable = {field.name for field in fields(EntityMetadata)} - set(
+            self._NON_OVERRIDABLE_FIELDS
+        )
+        params = {}
+        dropped = []
+        for key, value in resolved.items():
+            if key in self._NON_OVERRIDABLE_FIELDS:
+                dropped.append(key)
+            elif key in overridable or key in raw_params:
+                params[key] = value
+            else:
+                # Underscore keys (_enabled, _remove_tags, ...) ride along
+                # inertly until tag management interprets them; anything else
+                # is an unknown config key. Neither reaches the dataclass.
+                dropped.append(key)
+        if dropped:
+            _ENTITY_LOGGER.debug(
+                "Entity %s: config override keys not applied to metadata: %s",
+                entityid,
+                sorted(dropped),
+            )
+        for key in self._NON_OVERRIDABLE_FIELDS:
+            if key in raw_params:
+                params[key] = raw_params[key]
+        return EntityMetadata(entityid, **params)
+
+    def _validate_entity(self, entity: EntityMetadata) -> None:
+        """Run registration-time validations on (possibly overlaid) metadata."""
+        try:
+            # Derived-vs-state exclusivity first: a derived entity carrying
+            # state tags should fail with "does not apply to a derived
+            # dataset", not with a downstream state-vocabulary complaint.
+            _validate_derived_config(entity)
+            _validate_scd_config(entity)
+            _validate_write_mode_tag(entity)
+            _validate_schema_drift_tag(entity)
+        except ValueError as error:
+            if self._matcher is not None and self._matcher.get_matching_overrides(entity.entityid):
+                raise ValueError(
+                    f"Config overrides applied to entity '{entity.entityid}' "
+                    f"produced invalid metadata: {error}"
+                ) from error
+            raise
+
     def _register_scd2_current_companion(self, base: EntityMetadata, cfg: SCDConfig) -> None:
         """Register the read-only current-row companion for an SCD2 entity."""
         if cfg.current_entity_id in self.registry:
             return
 
-        companion_tags = {
-            key: value for key, value in (base.tags or {}).items() if not key.startswith("scd.")
-        }
-        companion_tags.update(
-            {
-                "scd.companion_of": base.entityid,
-                "scd.view_type": "current",
-                "provider.read_only": "true",
-                "provider_type": "current_view",
-            }
-        )
-        companion = replace(
-            base,
-            entityid=cfg.current_entity_id,
-            name=f"{base.name} (current)",
-            tags=companion_tags,
-        )
+        companion = self._build_companion_metadata(base, cfg)
         self.registry[cfg.current_entity_id] = companion
         self.emit(
             "entity.registered",
@@ -815,17 +893,98 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             companion_entity_id=cfg.current_entity_id,
         )
 
+    def _build_companion_metadata(self, base: EntityMetadata, cfg: SCDConfig) -> EntityMetadata:
+        """Derive the current-row companion's metadata from its (overlaid) base.
+
+        The companion id itself goes through pattern resolution with the
+        derived params as its base, so ``dataentities:`` patterns can target
+        companions directly — matching how ``entity_tags`` can target them
+        per-read. Companions stay unvalidated (parity with the previous
+        ``replace()`` derivation).
+        """
+        companion_tags = {
+            key: value for key, value in (base.tags or {}).items() if not key.startswith("scd.")
+        }
+        companion_tags.update(
+            {
+                "scd.companion_of": base.entityid,
+                "scd.view_type": "current",
+                "provider.read_only": "true",
+                "provider_type": "current_view",
+            }
+        )
+        derived_params = {
+            metadata_field.name: getattr(base, metadata_field.name)
+            for metadata_field in fields(EntityMetadata)
+            if metadata_field.name != "entityid"
+        }
+        derived_params["name"] = f"{base.name} (current)"
+        derived_params["tags"] = companion_tags
+        return self._build_metadata(cfg.current_entity_id, derived_params)
+
+    def _converge_scd2_companions(self) -> None:
+        """Re-derive SCD2 current-row companions after an overlay pass.
+
+        Companions are derived state (never in ``_raw_params``), so each
+        pass converges them onto the overlaid bases: SCD newly enabled by
+        config creates the companion (with registration signals), SCD
+        disabled or a changed ``current_entity_id`` removes the stale
+        auto-created one, and a still-desired companion is rebuilt in place
+        silently (no signal re-emission).
+        """
+        desired = {}
+        for entityid in self._raw_params:
+            base = self.registry.get(entityid)
+            cfg = scd_config_from_tags(base)
+            if cfg.enabled and cfg.current_entity_id not in self._raw_params:
+                desired[cfg.current_entity_id] = (base, cfg)
+
+        stale = [
+            companion_id
+            for companion_id, metadata in self.registry.items()
+            if companion_id not in self._raw_params
+            and (metadata.tags or {}).get("scd.companion_of")
+            and companion_id not in desired
+        ]
+        for companion_id in stale:
+            del self.registry[companion_id]
+            _ENTITY_LOGGER.debug("Removed stale SCD2 companion entity %s", companion_id)
+
+        for companion_id, (base, cfg) in desired.items():
+            already_registered = companion_id in self.registry
+            self.registry[companion_id] = self._build_companion_metadata(base, cfg)
+            if not already_registered:
+                self.emit(
+                    "entity.registered",
+                    entity_id=companion_id,
+                    entity_name=self.registry[companion_id].name,
+                )
+                self.emit(
+                    "entity.scd2_companion_registered",
+                    entity_id=base.entityid,
+                    companion_entity_id=companion_id,
+                )
+
     def get_entity_ids(self):
         return self.registry.keys()
 
     def get_entity_definition(self, name):
         """Get entity definition with tag overrides applied.
 
-        Tags merge at retrieval time, lowest to highest precedence:
-        declared tags, config-level overrides (``set_entity_tags``), then
-        any active run-scoped overlay (``tag_overrides``). Merging at
-        retrieval allows config to be loaded before or after entity
-        registration.
+        Tags layer lowest to highest precedence:
+
+        1. declared registration params,
+        2. ``dataentities:`` config patterns — durable file config, baked
+           into the stored metadata by ``apply_config_overrides`` (and by
+           registration itself once the matcher is set),
+        3. exact-id config map (``ConfigService.set_entity_tags``), merged
+           per-read because it is runtime-mutable (e.g. the ADX provider's
+           per-run windowing loop),
+        4. run-scoped ``tag_overrides`` context (JIT parameters), merged
+           per-read and restored on exit.
+
+        Layers 3 and 4 merge at retrieval time; that also allows config to
+        be loaded before or after entity registration.
         """
         base_entity = self.registry.get(name)
         if base_entity is None:

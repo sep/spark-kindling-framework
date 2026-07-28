@@ -8,13 +8,14 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-
+from kindling.config_patterns import ConfigPatternMatcher
 from kindling.injection import *
 from kindling.sentinels import UNSET
 from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
+from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -270,15 +271,85 @@ class DataPipesExecution(ABC):
 
 @GlobalInjector.singleton_autobind()
 class DataPipesManager(DataPipesRegistry):
+    # Identity and the execute callable are never config-overridable; every
+    # other PipeMetadata field is, so new fields become overridable without
+    # code changes here.
+    _NON_OVERRIDABLE_FIELDS = ("pipeid", "execute")
+
     @inject
     def __init__(self, lp: PythonLoggerProvider):
         self.registry = {}
+        # Original decorator params per pipe (shallow copies). Config overlay
+        # always re-resolves from these, never from overlaid metadata, so
+        # re-applying is idempotent and never accumulates.
+        self._raw_params = {}
+        # Compiled datapipes: config section; persisted so pipes registered
+        # after bootstrap's overlay pass (workspace packages, app
+        # register_all, notebook cells) are overlaid at registration.
+        self._matcher = None
         self.logger = lp.get_logger("data_pipes_manager")
         self.logger.debug("Data pipes manager initialized ...")
 
     def register_pipe(self, pipeid, **decorator_params):
-        self.registry[pipeid] = PipeMetadata(pipeid, **decorator_params)
+        self._raw_params[pipeid] = dict(decorator_params)
+        self.registry[pipeid] = self._build_metadata(pipeid, decorator_params)
         self.logger.debug(f"Pipe registered: {pipeid}")
+
+    def apply_config_overrides(self, config_service: ConfigService) -> None:
+        """Overlay the ``datapipes:`` config section onto registered pipes.
+
+        Rebuilds every registered pipe from its original decorator params
+        through the section's glob patterns (``ConfigPatternMatcher``
+        semantics: mappings deep-merge, scalars and lists replace, exact >
+        single-wildcard > multi-wildcard). A missing or empty section
+        compiles to a matcher with zero patterns, making the pass a
+        structural no-op. The matcher persists on the manager so later
+        registrations self-overlay.
+
+        Idempotent and safely re-callable (hot reload: ``reload()`` config,
+        then call again). Not synchronized with running DAGs — a concurrent
+        run may observe a mix of old and new metadata across pipes.
+        """
+        self._matcher = ConfigPatternMatcher(config_service.get("datapipes"))
+        for pipeid, raw_params in self._raw_params.items():
+            self.registry[pipeid] = self._build_metadata(pipeid, raw_params)
+        self.logger.debug(f"Config overrides applied to {len(self._raw_params)} pipe(s)")
+
+    def _build_metadata(self, pipeid, raw_params):
+        """Construct PipeMetadata from raw decorator params plus any config
+        overrides matching ``pipeid`` (no matcher yet -> raw as-is)."""
+        if self._matcher is None:
+            return PipeMetadata(pipeid, **raw_params)
+
+        base = {
+            key: value
+            for key, value in raw_params.items()
+            if key not in self._NON_OVERRIDABLE_FIELDS
+        }
+        resolved = self._matcher.resolve_overrides(pipeid, base)
+        overridable = {field.name for field in fields(PipeMetadata)} - set(
+            self._NON_OVERRIDABLE_FIELDS
+        )
+        params = {}
+        dropped = []
+        for key, value in resolved.items():
+            if key in self._NON_OVERRIDABLE_FIELDS:
+                dropped.append(key)
+            elif key in overridable or key in raw_params:
+                params[key] = value
+            else:
+                # Underscore keys (_enabled, _remove_tags, ...) ride along
+                # inertly until tag management interprets them; anything else
+                # is an unknown config key. Neither reaches the dataclass.
+                dropped.append(key)
+        if dropped:
+            self.logger.debug(
+                f"Pipe {pipeid}: config override keys not applied to metadata: {sorted(dropped)}"
+            )
+        for key in self._NON_OVERRIDABLE_FIELDS:
+            if key in raw_params:
+                params[key] = raw_params[key]
+        return PipeMetadata(pipeid, **params)
 
     def get_pipe_ids(self):
         return self.registry.keys()
