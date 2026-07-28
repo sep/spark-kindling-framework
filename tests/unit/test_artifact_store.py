@@ -366,3 +366,53 @@ class TestVolumesArtifactStore:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         with pytest.raises(ValueError, match="DATABRICKS_HOST.*Files API"):
             VolumesArtifactStore("/Volumes/main/kindling/artifacts")
+
+
+_ROOT_ESCAPING_PATHS = (
+    "/etc/passwd",  # posix absolute discards the joined root
+    "../outside.txt",
+    "packages/../../outside.txt",
+    "..",
+    "..\\outside.txt",  # Windows-style traversal
+    "C:\\outside.txt",  # Windows drive-absolute
+    "C:outside.txt",  # Windows drive-relative
+    "\\\\server\\share\\x",  # UNC
+)
+
+
+class TestRelPathValidation:
+    """Root-relative contract: paths from remote listings (store-to-store
+    copies) must not be able to address anything outside the artifacts root."""
+
+    @pytest.mark.parametrize("bad", _ROOT_ESCAPING_PATHS)
+    def test_local_store_rejects_root_escaping_paths(self, tmp_path, bad):
+        store = LocalArtifactStore(str(tmp_path / "root"))
+        with pytest.raises(ValueError, match="Artifact path"):
+            store.upload_file(bad, b"x")
+        with pytest.raises(ValueError, match="Artifact path"):
+            store.exists(bad)
+        with pytest.raises(ValueError, match="Artifact path"):
+            store.delete_prefix(bad)
+
+    @pytest.mark.parametrize("bad", _ROOT_ESCAPING_PATHS)
+    def test_abfss_store_rejects_root_escaping_paths(self, bad):
+        client = _make_fake_blob_service_client()
+        store = AbfssArtifactStore(
+            "abfss://artifacts@acct.dfs.core.windows.net/kindling",
+            blob_service_client=client,
+        )
+        with pytest.raises(ValueError, match="Artifact path"):
+            store.upload_file(bad, b"x")
+        assert client._blobs == {}
+
+    @pytest.mark.parametrize("bad", _ROOT_ESCAPING_PATHS)
+    def test_volumes_store_rejects_root_escaping_paths(self, bad):
+        store, files_api = _make_volumes_store()
+        with pytest.raises(ValueError, match="Artifact path"):
+            store.upload_file(bad, b"x")
+        assert files_api.files == {}
+
+    def test_nested_relative_paths_still_accepted(self, tmp_path):
+        store = LocalArtifactStore(str(tmp_path))
+        assert store.upload_file("data-apps/app/config/settings.yaml", b"x") is True
+        assert store.download_file("data-apps/app/config/settings.yaml") == b"x"

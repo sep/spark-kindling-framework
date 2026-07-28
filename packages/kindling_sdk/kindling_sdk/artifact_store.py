@@ -35,7 +35,7 @@ import io
 import os
 import posixpath
 from abc import ABC, abstractmethod
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, List, Optional, Tuple
 
 from kindling_sdk.platform_provider import (
@@ -173,6 +173,23 @@ def create_databricks_workspace_client(host: Optional[str] = None):
     return WorkspaceClient(host=resolved_host, auth_type="azure-cli")
 
 
+def _validate_rel_path(rel_path: str) -> str:
+    """Reject paths that would escape the artifacts root.
+
+    Store paths are root-relative by contract, but they can originate
+    outside the caller (e.g. remote listings during store-to-store copies),
+    so absolute forms and ``..`` traversal are rejected rather than joined.
+    Both posix and Windows interpretations are checked so a path that is
+    merely odd on one platform cannot traverse on the other.
+    """
+    posix, windows = PurePosixPath(rel_path), PureWindowsPath(rel_path)
+    if posix.is_absolute() or windows.is_absolute() or windows.drive:
+        raise ValueError(f"Artifact path `{rel_path}` must be root-relative.")
+    if ".." in posix.parts or ".." in windows.parts:
+        raise ValueError(f"Artifact path `{rel_path}` must not contain `..`.")
+    return rel_path
+
+
 class ArtifactStore(ABC):
     """One artifacts root and the writes/reads the design-time tooling needs.
 
@@ -219,7 +236,7 @@ class LocalArtifactStore(ArtifactStore):
         self.root = str(self._root_path)
 
     def _full(self, rel_path: str) -> Path:
-        return self._root_path / rel_path
+        return self._root_path / _validate_rel_path(rel_path)
 
     def upload_file(self, rel_path: str, data: bytes, overwrite: bool = True) -> bool:
         target = self._full(rel_path)
@@ -278,6 +295,7 @@ class AbfssArtifactStore(ArtifactStore):
         return self._client
 
     def _blob(self, rel_path: str) -> str:
+        _validate_rel_path(rel_path)
         return f"{self.base_path}/{rel_path}" if self.base_path else rel_path
 
     def _rel(self, blob_name: str) -> str:
@@ -367,6 +385,7 @@ class VolumesArtifactStore(ArtifactStore):
         return self._workspace_client.files
 
     def _full(self, rel_path: str) -> str:
+        _validate_rel_path(rel_path)
         return posixpath.join(self.root, rel_path) if rel_path else self.root
 
     def _rel(self, full_path: str) -> str:
