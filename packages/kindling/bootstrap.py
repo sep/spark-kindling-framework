@@ -1848,6 +1848,19 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             GlobalInjector.get(WatermarkAspect).register()
             logger.info("Watermark aspect registered")
 
+        # Registration-gated tracing wiring (WatermarkAspect pattern): read
+        # kindling.telemetry.tracing.* once and enable provider-op tracing at
+        # the registry chokepoint. Runs on every platform — standalone pipe
+        # runs must produce span trees too. A config reload does not
+        # un-register. Extensions have already imported by now, so the
+        # resolved SparkTraceProvider is the final one for this process.
+        try:
+            from kindling.trace_ops import configure_op_tracing
+
+            configure_op_tracing(config_service, logger)
+        except Exception as tracing_error:
+            logger.debug(f"Provider op tracing wiring failed (non-fatal): {tracing_error}")
+
         # Apply spark_configs to the live Spark session.
         # This must happen after the session exists so conf.set() works.
         _apply_spark_configs(config_service, logger)

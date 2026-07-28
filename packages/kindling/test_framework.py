@@ -17,6 +17,169 @@ try:
 except ImportError:
     pytest = None  # Will be checked before use in test functions
 
+from kindling.spark_trace import SparkSpan, SparkTraceProvider
+
+# ==============================================================================
+# Recording trace provider (test support)
+# ==============================================================================
+
+
+@dataclass
+class RecordedSpan:
+    """One span captured by RecordingTraceProvider."""
+
+    component: Optional[str]
+    operation: Optional[str]
+    details: Dict[str, Any]
+    span_id: str
+    trace_id: Any
+    parent_id: Optional[str]
+    open_index: int
+    close_index: Optional[int] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    error: Optional[str] = None
+    events: List[Dict[str, Any]] = field(default_factory=list)
+    children: List["RecordedSpan"] = field(default_factory=list)
+
+    @property
+    def closed(self) -> bool:
+        return self.close_index is not None
+
+
+class RecordingTraceProvider(SparkTraceProvider):
+    """In-memory SparkTraceProvider for asserting span structure in tests.
+
+    Records every span with open/close order, component, operation, details,
+    parent_id, events, and errors. ``find()`` filters spans; ``tree()``
+    reconstructs the parent/child hierarchy from parent_id links. Matches the
+    built-in providers' semantics: nested spans inherit component/operation/
+    trace id, exceptions are swallowed unless ``reraise=True``, and
+    ``record_span`` honors explicit timestamps.
+    """
+
+    def __init__(self, logger_provider=None):
+        # logger_provider accepted (and ignored) for constructor
+        # compatibility with the notebook test-environment shims.
+        self.spans: List[RecordedSpan] = []
+        self.current_span: Optional[SparkSpan] = None
+        self._id_counter = 0
+        self._order_counter = 0
+        self._records_by_span: Dict[str, RecordedSpan] = {}
+
+    def _next_id(self) -> str:
+        self._id_counter += 1
+        return str(self._id_counter)
+
+    def _next_order(self) -> int:
+        self._order_counter += 1
+        return self._order_counter
+
+    def _open(self, operation, component, details, reraise) -> SparkSpan:
+        parent = self.current_span
+        span = SparkSpan(
+            id=self._next_id(),
+            component=component or (parent.component if parent else None),
+            operation=operation or (parent.operation if parent else None),
+            attributes=details if details is not None else {},
+            start_time=datetime.now(),
+            traceId=parent.traceId if parent else uuid.uuid4(),
+            reraise=reraise,
+            parent_id=parent.id if parent else None,
+        )
+        record = RecordedSpan(
+            component=span.component,
+            operation=span.operation,
+            details=span.attributes,
+            span_id=span.id,
+            trace_id=span.traceId,
+            parent_id=span.parent_id,
+            open_index=self._next_order(),
+            start_time=span.start_time,
+        )
+        self.spans.append(record)
+        self._records_by_span[span.id] = record
+        return span
+
+    def _close(self, span: SparkSpan, error: Optional[str] = None) -> None:
+        record = self._records_by_span[span.id]
+        record.close_index = self._next_order()
+        span.end_time = span.end_time or datetime.now()
+        record.end_time = span.end_time
+        if error:
+            record.error = error
+
+    @contextmanager
+    def span(self, operation=None, component=None, details=None, reraise=False):
+        span = self._open(operation, component, details, reraise)
+        parent = self.current_span
+        self.current_span = span
+        try:
+            yield self
+        except Exception as span_error:
+            self._records_by_span[span.id].error = str(span_error)
+            if reraise:
+                raise
+        finally:
+            self._close(span)
+            self.current_span = parent
+
+    def start_span(self, operation, component, details=None) -> SparkSpan:
+        return self._open(operation, component, details, reraise=False)
+
+    def add_event(self, span: SparkSpan, name: str, attributes=None) -> None:
+        self._records_by_span[span.id].events.append(
+            {"name": name, "attributes": dict(attributes) if attributes else {}}
+        )
+
+    def end_span(self, span: SparkSpan, error: Optional[str] = None) -> None:
+        span.end_time = datetime.now()
+        self._close(span, error=error)
+
+    def record_span(
+        self, operation, component, start_time, end_time, details=None, error=None
+    ) -> None:
+        parent = self.current_span
+        record = RecordedSpan(
+            component=component,
+            operation=operation,
+            details=dict(details or {}),
+            span_id=self._next_id(),
+            trace_id=parent.traceId if parent else uuid.uuid4(),
+            parent_id=parent.id if parent else None,
+            open_index=self._next_order(),
+            close_index=self._next_order(),
+            start_time=start_time,
+            end_time=end_time,
+            error=error,
+        )
+        self.spans.append(record)
+        self._records_by_span[record.span_id] = record
+
+    def find(self, component=None, operation=None) -> List[RecordedSpan]:
+        """Spans matching the given component and/or operation, in open order."""
+        return [
+            record
+            for record in self.spans
+            if (component is None or record.component == component)
+            and (operation is None or record.operation == operation)
+        ]
+
+    def tree(self) -> List[RecordedSpan]:
+        """Root spans with children rebuilt from parent_id links."""
+        for record in self.spans:
+            record.children = []
+        by_id = {record.span_id: record for record in self.spans}
+        roots = []
+        for record in self.spans:
+            parent = by_id.get(record.parent_id) if record.parent_id else None
+            if parent is not None:
+                parent.children.append(record)
+            else:
+                roots.append(record)
+        return roots
+
+
 # ==============================================================================
 # Service Wrapper for Dependency Injection
 # ==============================================================================
@@ -650,30 +813,9 @@ class NotebookTestEnvironment:
             globals()["WatermarkService"] = MockWatermarkManager
             globals()["MockWatermarkService"] = MockWatermarkManager
 
-        if "SparkTraceProvider" not in globals():
-
-            class MockSparkTraceProvider:
-                def __init__(self, logger_provider=None):
-                    if logger_provider:
-                        self.logger = logger_provider.get_logger("SparkTraceProvider")
-                    else:
-                        self.logger = MagicMock()
-
-                    self.create_span = MagicMock(return_value=self._create_mock_span())
-                    self.get_current_trace_id = MagicMock(return_value="test-trace-id")
-                    self.set_trace_context = MagicMock()
-                    self.create_spark_span = MagicMock(return_value=self._create_mock_span())
-                    self.span = MagicMock(return_value=self._create_mock_span())
-
-                def _create_mock_span(self):
-                    span = MagicMock()
-                    span.id = "test-span-id"
-                    span.trace_id = "test-trace-id"
-                    span.__enter__ = MagicMock(return_value=span)
-                    span.__exit__ = MagicMock(return_value=None)
-                    return span
-
-            globals()["SparkTraceProvider"] = MockSparkTraceProvider
+        # The ad-hoc MockSparkTraceProvider shim is gone: SparkTraceProvider
+        # is now imported at module scope, and RecordingTraceProvider is the
+        # public, constructible provider for tests.
 
         if "DataPipesExecution" not in globals():
 

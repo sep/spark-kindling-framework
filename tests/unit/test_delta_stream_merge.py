@@ -129,8 +129,13 @@ class TestDeltaMergeAsStream:
     def test_each_micro_batch_runs_batch_merge(self, provider, monkeypatch):
         entity = self._make_entity()
         merge_calls = []
+        # Patch the class, not the instance: _merge_batch calls
+        # type(self).merge_to_entity(self, ...) so per-instance tracing
+        # wrappers (trace_ops) never span the micro-batch hot loop.
         monkeypatch.setattr(
-            provider, "merge_to_entity", lambda df, ent: merge_calls.append((df, ent))
+            type(provider),
+            "merge_to_entity",
+            lambda self, df, ent: merge_calls.append((df, ent)),
         )
         df = MagicMock()
         writer = df.writeStream.outputMode.return_value.option.return_value
