@@ -662,6 +662,39 @@ This keeps registration behavior unchanged and adds one small, testable post-pro
 
 ### Phase 1: Wildcard Pattern Matcher
 
+> **Implementation note (2026-07-28):** Phase 1 shipped as
+> `packages/kindling/config_patterns.py` (gh#31). The module follows the
+> reference sketch below except for three deliberate corrections — the
+> sketch is kept unchanged for history; the shipped semantics are:
+>
+> 1. **Specificity is tiered, not per-segment-summed.** The sketch scores
+>    wildcard patterns by summing per-segment values (exact segment
+>    +1000), so `bronze.*` (1100) would outrank the *exact* pattern
+>    `bronze.ingest_orders` (1000), violating the precedence rule above
+>    and Resolved Decision #3 (which makes `bronze.*` and `*.orders`
+>    EQUAL). Shipped: `EXACT_MATCH`/`SINGLE_WILDCARD`/`MULTI_WILDCARD`
+>    are tier ranks — exact (no wildcards) > single (`*`/`?` only) >
+>    multi (contains `**`).
+> 2. **One ascending sort, declaration order preserved within a tier.**
+>    The sketch sorts descending and then iterates `reversed(...)`, which
+>    also flips declaration order within equal scores, making the
+>    first-declared pattern win ties instead of the last (contradicting
+>    Resolved Decision #3). Shipped: compiled patterns sort once,
+>    ascending by `(tier, declaration_index)`, and apply in that order.
+> 3. **Copy-on-merge; `base` is never mutated.** The sketch's
+>    `_merge_override` can alias and mutate the caller's nested dicts
+>    (e.g. `result['tags'].pop(...)`). Shipped: `resolve_overrides`
+>    copies nested containers on write and returns plain dicts.
+>
+> Additionally, underscore keys (`_enabled`, `_remove_tags`,
+> `_remove_all_tags`) get no special handling in the matcher — they merge
+> like any other key (upsert model, Resolved Decision #2) and are
+> interpreted by Phase 3 tag management. The matcher operates on the
+> already-Dynaconf-merged section, so per-layer sequential application
+> (resolution-trace steps 6–7) collapses per pattern key before the
+> matcher runs; a pattern re-declared in a later layer keeps its
+> first-seen position in the merged mapping.
+
 ```python
 # packages/kindling/config_patterns.py
 
@@ -1107,11 +1140,11 @@ dataentities:
 ### Phase 1: Core Pattern Matching (Week 1-2)
 
 ```
-- [ ] Create config_patterns.py module
-- [ ] Implement ConfigPatternMatcher with glob support
-- [ ] Implement pattern scoring/precedence
-- [ ] Write comprehensive pattern matching tests
-- [ ] Test edge cases (overlapping patterns, escaping)
+- [x] Create config_patterns.py module
+- [x] Implement ConfigPatternMatcher with glob support
+- [x] Implement pattern scoring/precedence
+- [x] Write comprehensive pattern matching tests
+- [x] Test edge cases (overlapping patterns, escaping)
 ```
 
 ### Phase 2: Config Overlay (Week 3-4)
