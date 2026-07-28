@@ -1,16 +1,16 @@
 """Azure Monitor OpenTelemetry trace provider implementation."""
 
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 from injector import inject
-from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
-
 from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
 from kindling.spark_trace import SparkSpan, SparkTraceProvider
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from .config import AzureMonitorConfig
 
@@ -154,11 +154,18 @@ class AzureMonitorTraceProvider(SparkTraceProvider):
                 otel_span.set_attribute("operation", operation)
             self._set_span_attributes(otel_span, details)
 
+        trace_id = None
+        if otel_span is not None:
+            span_context = otel_span.get_span_context()
+            if span_context is not None and span_context.trace_id:
+                trace_id = uuid.UUID(int=span_context.trace_id)
+
         spark_span = SparkSpan(
             id=str(id(otel_span)) if otel_span else "noop",
             component=component or "",
             operation=operation or "",
             attributes=details or {},
+            traceId=trace_id or uuid.uuid4(),
             start_time=datetime.now(),
             reraise=False,
         )
@@ -196,3 +203,35 @@ class AzureMonitorTraceProvider(SparkTraceProvider):
             else:
                 otel_span.set_status(Status(StatusCode.OK))
             otel_span.end()
+
+    def record_span(
+        self,
+        operation: str,
+        component: str,
+        start_time: datetime,
+        end_time: datetime,
+        details: dict = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Record an already-completed span, honoring the given timestamps."""
+        if not self._tracer:
+            return
+        span_name = (
+            f"{component}.{operation}"
+            if component and operation
+            else (operation or component or "span")
+        )
+        otel_span = self._tracer.start_span(
+            span_name, start_time=int(start_time.timestamp() * 1_000_000_000)
+        )
+        if component:
+            otel_span.set_attribute("component", component)
+        if operation:
+            otel_span.set_attribute("operation", operation)
+        self._set_span_attributes(otel_span, details)
+        if error:
+            otel_span.set_status(Status(StatusCode.ERROR, error))
+            otel_span.add_event("error", attributes={"exception.message": error})
+        else:
+            otel_span.set_status(Status(StatusCode.OK))
+        otel_span.end(end_time=int(end_time.timestamp() * 1_000_000_000))

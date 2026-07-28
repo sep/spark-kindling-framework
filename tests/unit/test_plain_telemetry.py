@@ -1,11 +1,13 @@
 """Unit tests for the JVM-free telemetry providers (kindling.plain_telemetry)."""
 
+import json
 import logging
+import re
 import uuid
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.plain_telemetry import (
     PlainPythonLogger,
     PlainPythonLoggerProvider,
@@ -182,3 +184,125 @@ class TestPlainPythonTraceProvider:
 
         standalone = trace.start_span(operation="Solo", component="Comp")
         assert isinstance(standalone.traceId, uuid.UUID)
+
+
+def _emitted(logger, event):
+    """Return (line, details) pairs for a given emitted event name."""
+    results = []
+    for c in logger.debug.call_args_list:
+        line = c[0][0]
+        if f"Op: {event} " not in line:
+            continue
+        match = re.search(r"Msg: (\{.*\}|None) Id:", line)
+        details = json.loads(match.group(1)) if match and match.group(1) != "None" else {}
+        results.append((line, details))
+    return results
+
+
+class TestPlainTraceParenting:
+    """Parent restore and parentSpanId emission (gh#210 Phase 0)."""
+
+    def test_parent_restored_after_nested_exit(self):
+        trace, _ = _trace_provider()
+
+        with trace.span(operation="Outer", component="Comp"):
+            outer_span = trace.current_span
+            with trace.span(operation="Inner", component="Comp"):
+                assert trace.current_span is not outer_span
+            assert trace.current_span is outer_span
+
+        assert trace.current_span is None
+
+    def test_consecutive_top_level_spans_get_distinct_trace_ids(self):
+        trace, _ = _trace_provider()
+
+        with trace.span(operation="Op1", component="Comp"):
+            first_trace_id = trace.current_span.traceId
+        with trace.span(operation="Op2", component="Comp"):
+            second_trace_id = trace.current_span.traceId
+
+        assert first_trace_id != second_trace_id
+
+    def test_child_events_carry_parent_span_id(self):
+        trace, logger = _trace_provider()
+
+        with trace.span(operation="Outer", component="Comp"):
+            outer_id = trace.current_span.id
+            with trace.span(operation="Inner", component="Comp"):
+                pass
+
+        for event in ("Inner_START", "Inner_END"):
+            emitted = _emitted(logger, event)
+            assert len(emitted) == 1
+            assert emitted[0][1].get("parentSpanId") == outer_id
+
+    def test_root_span_events_have_no_parent_span_id(self):
+        trace, logger = _trace_provider()
+
+        with trace.span(operation="Op", component="Comp"):
+            pass
+
+        for event in ("Op_START", "Op_END"):
+            emitted = _emitted(logger, event)
+            assert len(emitted) == 1
+            assert "parentSpanId" not in emitted[0][1]
+
+    def test_manual_span_events_carry_parent_span_id(self):
+        trace, logger = _trace_provider()
+
+        with trace.span(operation="Outer", component="Comp"):
+            outer_id = trace.current_span.id
+            manual = trace.start_span(operation="Inner", component="Comp")
+            assert manual.parent_id == outer_id
+            trace.end_span(manual)
+
+        for event in ("Inner_START", "Inner_END"):
+            emitted = _emitted(logger, event)
+            assert len(emitted) == 1
+            assert emitted[0][1].get("parentSpanId") == outer_id
+
+
+class TestPlainRecordSpan:
+    """record_span: retroactive spans with explicit timestamps (gh#210 Phase 0)."""
+
+    def test_record_span_honors_given_timestamps(self):
+        trace, logger = _trace_provider()
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        end = datetime(2026, 1, 1, 12, 0, 2, 500000)
+
+        trace.record_span("phase", "kindling.bootstrap", start, end, details={"k": "v"})
+
+        start_emitted = _emitted(logger, "phase_START")
+        end_emitted = _emitted(logger, "phase_END")
+        assert len(start_emitted) == 1 and len(end_emitted) == 1
+        assert start_emitted[0][1]["startTime"] == "2026-01-01 12:00:00.000"
+        assert start_emitted[0][1]["k"] == "v"
+        assert end_emitted[0][1]["endTime"] == "2026-01-01 12:00:02.500"
+        assert end_emitted[0][1]["totalTime"] == "2.500"
+
+    def test_record_span_with_error_emits_error_event(self):
+        trace, logger = _trace_provider()
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        end = datetime(2026, 1, 1, 12, 0, 1)
+
+        trace.record_span("phase", "kindling.bootstrap", start, end, error="boom")
+
+        error_emitted = _emitted(logger, "phase_ERROR")
+        assert len(error_emitted) == 1
+        assert error_emitted[0][1]["exception"] == "boom"
+        assert error_emitted[0][1]["errorTime"] == "2026-01-01 12:00:01.000"
+
+    def test_record_span_parents_to_current_span(self):
+        trace, logger = _trace_provider()
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        end = datetime(2026, 1, 1, 12, 0, 1)
+
+        with trace.span(operation="Outer", component="Comp"):
+            outer_id = trace.current_span.id
+            expected_trace_id = str(trace.current_span.traceId)
+            trace.record_span("phase", "kindling.bootstrap", start, end)
+
+        for event in ("phase_START", "phase_END"):
+            line, details = _emitted(logger, event)[0]
+            assert details.get("parentSpanId") == outer_id
+            assert f"trace_id:{expected_trace_id}" in line

@@ -230,4 +230,47 @@ class PlainPythonTraceProvider(SparkTraceProvider):
         end_details = self._with_timestamp({}, "startTime", span.start_time)
         end_details = self._with_timestamp(end_details, "endTime", span.end_time)
         end_details["totalTime"] = self._total_time(span.start_time, span.end_time)
+        if span.parent_id is not None:
+            end_details["parentSpanId"] = span.parent_id
+        self._emit(span, f"{span.operation}_END", end_details)
+
+    def record_span(
+        self,
+        operation: str,
+        component: str,
+        start_time: datetime,
+        end_time: datetime,
+        details: dict = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Emit START/END (and ERROR) for a completed span with the given timestamps."""
+        live_details = dict(details or {})
+        span = SparkSpan(
+            id=str(self._increment_activity()),
+            component=component,
+            operation=operation,
+            attributes=live_details,
+            start_time=start_time,
+            end_time=end_time,
+            traceId=self.current_span.traceId if self.current_span else uuid.uuid4(),
+            reraise=False,
+            parent_id=self.current_span.id if self.current_span else None,
+        )
+
+        start_details = self._with_timestamp(live_details, "startTime", start_time)
+        if span.parent_id is not None:
+            start_details["parentSpanId"] = span.parent_id
+        self._emit(span, f"{span.operation}_START", start_details)
+
+        if error:
+            error_details = self._with_timestamp(live_details, "startTime", start_time)
+            error_details = self._with_timestamp(error_details, "errorTime", end_time)
+            error_details["exception"] = error
+            self._emit(span, f"{span.operation}_ERROR", error_details)
+
+        end_details = self._with_timestamp(live_details, "startTime", start_time)
+        end_details = self._with_timestamp(end_details, "endTime", end_time)
+        end_details["totalTime"] = self._total_time(start_time, end_time)
+        if span.parent_id is not None:
+            end_details["parentSpanId"] = span.parent_id
         self._emit(span, f"{span.operation}_END", end_details)
