@@ -202,8 +202,8 @@ def apply_config_overrides() -> None:
         overlay(config_service)
     _BOOTSTRAP_LOGGER.debug(
         "Config overrides applied to %s pipe(s) and %s entit(y/ies)",
-        len(list(pipes_registry.get_pipe_ids())),
-        len(list(entity_registry.get_entity_ids())),
+        sum(1 for _ in pipes_registry.get_pipe_ids()),
+        sum(1 for _ in entity_registry.get_entity_ids()),
     )
 
 
