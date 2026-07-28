@@ -67,6 +67,12 @@ class TestPatternTranslation:
             ("**.ingest", "bronze.ingest", True),
             ("**.ingest", "silver.etl.ingest", True),
             ("**.ingest", "ingest", False),
+            # ** never accepts ids with empty segments (review finding)
+            ("**", "a..b", False),
+            ("**", "a.", False),
+            ("**", ".a", False),
+            ("bronze.**", "bronze..x", False),
+            ("bronze.**", "bronze.x.", False),
             # Regex metacharacters in ids are literal
             ("raw.a+b", "raw.a+b", True),
             ("raw.a+b", "raw.aab", False),
@@ -221,6 +227,28 @@ class TestMergeSemantics:
         }
         ConfigPatternMatcher(section).resolve_overrides("bronze.orders", base)
         assert base == snapshot
+
+    def test_result_shares_no_nested_containers_with_base(self):
+        # Review finding: dict(base) was a shallow copy — nested containers
+        # untouched by any override leaked through and mutating the result
+        # mutated base. The result must be a full plain-dict deep copy.
+        base = {"tags": {"domain": "sales"}, "cols": ["a"]}
+        snapshot = copy.deepcopy(base)
+        result = ConfigPatternMatcher({"silver.*": {"x": 1}}).resolve_overrides(
+            "bronze.orders", base  # no pattern matches; nested keys untouched
+        )
+        result["tags"]["injected"] = "x"
+        result["cols"].append("b")
+        assert base == snapshot
+
+    def test_result_converts_custom_mappings_to_plain_dicts(self):
+        class Box(dict):
+            pass
+
+        base = {"tags": Box({"domain": "sales"})}
+        result = ConfigPatternMatcher(None).resolve_overrides("any.id", base)
+        assert type(result["tags"]) is dict
+        assert result["tags"] == {"domain": "sales"}
 
     def test_results_are_isolated_from_matcher_state(self):
         section = {"bronze.*": {"tags": {"layer": "bronze"}, "cols": ["a"]}}

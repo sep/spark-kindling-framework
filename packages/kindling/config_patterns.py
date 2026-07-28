@@ -136,13 +136,16 @@ class ConfigPatternMatcher:
         ]
 
     def resolve_overrides(self, item_id: str, base: Mapping) -> Dict[str, Any]:
-        """Return ``dict(base)`` with every matching override merged in order.
+        """Return a plain-dict deep copy of ``base`` with every matching
+        override merged in order.
 
         Mapping values deep-merge recursively; scalars and lists replace.
-        ``base`` is never mutated. Underscore keys (``_enabled``,
-        ``_remove_tags``, ...) merge like any other key.
+        ``base`` is never mutated — the result shares no nested containers
+        with it (non-dict Mappings such as Dynaconf boxes are converted to
+        plain dicts). Underscore keys (``_enabled``, ``_remove_tags``, ...)
+        merge like any other key.
         """
-        result: Dict[str, Any] = dict(base)
+        result: Dict[str, Any] = _clone(base)
         for compiled in self._patterns:
             if compiled.regex.match(item_id):
                 result = _merge(result, compiled.overrides)
@@ -186,7 +189,9 @@ class ConfigPatternMatcher:
                 _LOGGER.warning("Config pattern %r has an empty segment — skipping", pattern)
                 return None
             if segment == "**":
-                segment_sources.append(".+")  # one or more whole segments
+                # One or more whole (non-empty, dot-free) segments — ids with
+                # empty segments like "a..b" or "a." must not match.
+                segment_sources.append(r"[^.]+(?:\.[^.]+)*")
                 continue
             if "**" in segment:
                 _LOGGER.warning(
