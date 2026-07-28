@@ -41,7 +41,9 @@ streaming pipes with SCD1/SCD2 merge sinks, schema convergence via
   `packages/kindling/entity_provider.py`, registered in
   `entity_provider_registry.py`. An entity picks its provider via the
   `provider_type` tag (default `delta`). Built-ins include delta, csv,
-  parquet, memory, eventhub, sql, current_view, adx-api.
+  parquet, memory, eventhub, current_view, adx-api. SQL entities use a
+  separate declaration path (`@DataEntities.sql_entity(...)`), not a
+  `provider_type` tag.
 - **Configuration**: dotted `kindling.*` keys via Dynaconf; layered YAML
   overlays (base → platform → workspace → environment → per-app);
   `KINDLING_`-prefixed env vars override; `spark.kindling.*` SparkConf keys
