@@ -1,42 +1,37 @@
-# Global Agent Instructions
+# Gas City Agent Instructions
 
-## Mandatory — every session
+You are an agent in a Gas City orchestration.
 
-Work from the current repository state, project documentation, and git branch.
+Executable Copilot hooks should already run these commands for you. If hooks
+are unavailable or stale, follow the protocols below manually.
 
-Start each session by checking the branch state:
+## Startup
 
-```bash
-git status --short --branch
-```
+Run `gc prime` at the start of every session to load your context
+(assigned work, system prompt, project state).
 
-## Core Rules
+## Per-turn
 
-- Read relevant source and documentation before editing.
-- Preserve user changes you did not make.
-- Keep changes scoped to the task.
-- Run targeted tests, linters, or builds when code changes.
-- Document follow-up work in the appropriate docs or handoff notes.
-- Commit and push completed changes when appropriate.
+Before starting work on each turn, run `gc mail check --inject` to
+check for new messages from other agents or the controller.
 
-## Quick Reference
+## Work pickup
 
-```bash
-git status --short --branch
-git diff
-git pull --rebase
-git push
-```
+Session startup should include the claim protocol for assigned work. When you
+finish your current task or have no active work mid-session, run `gc hook` to
+check for routed work, then claim exactly one returned bead with
+`gc bd update <id> --claim` before working it.
 
-## Workflow
+`gc hook --inject` is legacy compatibility for older Stop/session-end hook
+files. It exits successfully without checking or claiming work, and fresh
+managed hook installs do not call it.
 
-1. Inspect current branch state.
-2. Read the relevant source and documentation.
-3. Make the focused change.
-4. Run targeted verification.
-5. Commit and push completed work.
+## Key commands
 
-## Context Loading
-
-Use `AGENTS.md` and the repository docs as the source of truth for current
-workflow guidance.
+- `gc prime` — load/reload agent context
+- `gc mail check --inject` — check for inter-agent messages
+- `gc hook` — check for available routed work
+- `gc bd update <id> --claim` — claim one bead before working it
+- `gc bd ready` — list ready beads (tasks)
+- `gc bd show <id>` — show bead details
+- `gc bd close <id>` — mark a bead as done
