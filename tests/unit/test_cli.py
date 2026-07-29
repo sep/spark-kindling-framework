@@ -2133,6 +2133,7 @@ class TestAppRunCommand:
 
 _BLANK_PLATFORM_DETECT_VARS = {
     "FABRIC_WORKSPACE_ID": "",
+    "FABRIC_LAKEHOUSE_ID": "",
     "SYNAPSE_WORKSPACE_NAME": "",
     "DATABRICKS_HOST": "",
     # Blank out SP creds so real .env values don't leak into platform env-check tests
@@ -2251,6 +2252,7 @@ class TestEnvCheckPlatform:
             "fabric",
             {
                 "FABRIC_WORKSPACE_ID": "ws-1",
+                "FABRIC_LAKEHOUSE_ID": "lh-1",
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
                 "AZURE_CLIENT_SECRET": "secret-1",
@@ -2270,7 +2272,9 @@ class TestEnvCheckPlatform:
 
     def test_fabric_no_sp_passes_with_informational_auth_line(self, az_probe_calls):
         """A wholly absent SP triple is fine — DefaultAzureCredential covers it."""
-        result = self._run_with_env("fabric", {"FABRIC_WORKSPACE_ID": "ws-1"})
+        result = self._run_with_env(
+            "fabric", {"FABRIC_WORKSPACE_ID": "ws-1", "FABRIC_LAKEHOUSE_ID": "lh-1"}
+        )
         assert result.exit_code == 0
         assert "MISSING" not in result.output
         assert "az login / managed identity" in result.output
