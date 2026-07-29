@@ -6,9 +6,8 @@ import uuid
 from datetime import datetime
 from unittest.mock import MagicMock, Mock, call, patch
 
-import pytest
-
 import kindling.spark_trace as spark_trace_module
+import pytest
 from kindling.spark_trace import (
     AzureEventEmitter,
     CustomEventEmitter,
@@ -961,6 +960,203 @@ class TestEdgeCases:
             assert isinstance(args[4], uuid.UUID), "Trace ID should be UUID"
 
 
+class TestSpanParenting:
+    """Parent restore and parentSpanId emission (gh#210 Phase 0)."""
+
+    def test_parent_restored_after_nested_exit(self, mock_emitter):
+        """Exiting a nested span should restore the enclosing span as current."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with trace.span(operation="Outer", component="Comp"):
+            outer_span = trace.current_span
+
+            with trace.span(operation="Inner", component="Comp"):
+                assert trace.current_span is not outer_span
+
+            assert trace.current_span is outer_span, "Inner exit should restore outer span"
+
+        assert trace.current_span is None, "Top-level exit should restore None"
+
+    def test_parent_restored_after_exception(self, mock_emitter):
+        """Parent restore must happen even when the span body raises."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with pytest.raises(ValueError):
+            with trace.span(operation="Op", component="Comp", reraise=True):
+                raise ValueError("boom")
+
+        assert trace.current_span is None, "current_span should be restored after error exit"
+
+    def test_consecutive_top_level_spans_get_distinct_trace_ids(self, mock_emitter):
+        """Each top-level span should start its own trace."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with trace.span(operation="Op1", component="Comp"):
+            first_trace_id = trace.current_span.traceId
+
+        with trace.span(operation="Op2", component="Comp"):
+            second_trace_id = trace.current_span.traceId
+
+        assert first_trace_id != second_trace_id, "Consecutive runs must not share a trace"
+
+    def test_child_events_carry_parent_span_id(self, mock_emitter):
+        """Nested span START/END events should emit parentSpanId."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with trace.span(operation="Outer", component="Comp"):
+            outer_id = trace.current_span.id
+            with trace.span(operation="Inner", component="Comp"):
+                pass
+
+        inner_calls = [
+            c for c in mock_emitter.emit_custom_event.call_args_list if c[0][1].startswith("Inner")
+        ]
+        assert len(inner_calls) == 2, "Inner span should emit START and END"
+        for c in inner_calls:
+            assert c[0][2].get("parentSpanId") == outer_id
+
+    def test_root_span_events_have_no_parent_span_id(self, mock_emitter):
+        """Top-level span events should not carry parentSpanId."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with trace.span(operation="Op", component="Comp"):
+            pass
+
+        for c in mock_emitter.emit_custom_event.call_args_list:
+            assert "parentSpanId" not in c[0][2]
+
+    def test_start_span_parents_to_current_span(self, mock_emitter):
+        """Manual spans opened inside a CM span should record it as parent."""
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with trace.span(operation="Outer", component="Comp"):
+            outer_id = trace.current_span.id
+            manual = trace.start_span(operation="Inner", component="Comp")
+
+        assert manual.parent_id == outer_id
+        start_call = [
+            c for c in mock_emitter.emit_custom_event.call_args_list if c[0][1] == "Inner_START"
+        ][0]
+        assert start_call[0][2].get("parentSpanId") == outer_id
+
+        trace.end_span(manual)
+        end_call = [
+            c for c in mock_emitter.emit_custom_event.call_args_list if c[0][1] == "Inner_END"
+        ][0]
+        assert end_call[0][2].get("parentSpanId") == outer_id
+
+
+class TestRecordSpan:
+    """record_span: retroactive spans with explicit timestamps (gh#210 Phase 0)."""
+
+    def test_record_span_emits_start_and_end_with_given_timestamps(self, mock_emitter):
+        """record_span should honor the provided timestamps, not the wall clock."""
+        trace = EventBasedSparkTrace(mock_emitter)
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        end = datetime(2026, 1, 1, 12, 0, 2, 500000)
+
+        trace.record_span("phase", "kindling.bootstrap", start, end, details={"k": "v"})
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        operations = [c[0][1] for c in calls]
+        assert operations == ["phase_START", "phase_END"]
+
+        start_details = calls[0][0][2]
+        end_details = calls[1][0][2]
+        assert start_details["startTime"] == "2026-01-01 12:00:00.000"
+        assert start_details["k"] == "v"
+        assert end_details["endTime"] == "2026-01-01 12:00:02.500"
+        assert end_details["totalTime"] == "2.500"
+
+    def test_record_span_with_error_emits_error_event(self, mock_emitter):
+        """record_span with an error should emit ERROR between START and END."""
+        trace = EventBasedSparkTrace(mock_emitter)
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        end = datetime(2026, 1, 1, 12, 0, 1)
+
+        trace.record_span("phase", "kindling.bootstrap", start, end, error="boom")
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        operations = [c[0][1] for c in calls]
+        assert operations == ["phase_START", "phase_ERROR", "phase_END"]
+        error_details = calls[1][0][2]
+        assert error_details["exception"] == "boom"
+        assert error_details["errorTime"] == "2026-01-01 12:00:01.000"
+
+    def test_record_span_parents_to_current_span(self, mock_emitter):
+        """record_span inside an active span should join its trace and parent to it."""
+        trace = EventBasedSparkTrace(mock_emitter)
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        end = datetime(2026, 1, 1, 12, 0, 1)
+
+        with trace.span(operation="Outer", component="Comp"):
+            outer_id = trace.current_span.id
+            outer_trace_id = trace.current_span.traceId
+            trace.record_span("phase", "kindling.bootstrap", start, end)
+
+        recorded_calls = [
+            c for c in mock_emitter.emit_custom_event.call_args_list if c[0][1].startswith("phase")
+        ]
+        assert len(recorded_calls) == 2
+        for c in recorded_calls:
+            assert c[0][2].get("parentSpanId") == outer_id
+            assert c[0][4] == outer_trace_id
+
+    def test_record_span_without_context_gets_own_trace_id(self, mock_emitter):
+        """record_span with no active span should mint a fresh trace id."""
+        trace = EventBasedSparkTrace(mock_emitter)
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        end = datetime(2026, 1, 1, 12, 0, 1)
+
+        trace.record_span("phase", "kindling.bootstrap", start, end)
+
+        calls = mock_emitter.emit_custom_event.call_args_list
+        assert isinstance(calls[0][0][4], uuid.UUID)
+        assert "parentSpanId" not in calls[0][0][2]
+
+    def test_default_record_span_routes_through_start_and_end(self):
+        """The ABC default should serve providers that only implement the abstract API."""
+
+        class MinimalProvider(SparkTraceProvider):
+            def __init__(self):
+                self.started = []
+                self.ended = []
+
+            def span(self, operation=None, component=None, details=None, reraise=False):
+                raise NotImplementedError
+
+            def start_span(self, operation, component, details=None):
+                self.started.append((operation, component, details))
+                return SparkSpan(
+                    id="1",
+                    component=component,
+                    operation=operation,
+                    attributes=details or {},
+                    traceId=uuid.uuid4(),
+                    reraise=False,
+                    start_time=datetime.now(),
+                )
+
+            def add_event(self, span, name, attributes=None):
+                raise NotImplementedError
+
+            def end_span(self, span, error=None):
+                self.ended.append((span, error))
+
+        provider = MinimalProvider()
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        end = datetime(2026, 1, 1, 12, 0, 2)
+
+        provider.record_span("phase", "kindling.bootstrap", start, end, error="late failure")
+
+        assert len(provider.started) == 1
+        operation, component, details = provider.started[0]
+        assert (operation, component) == ("phase", "kindling.bootstrap")
+        assert details["recordedStartTime"] == "2026-01-01 12:00:00.000"
+        assert details["recordedEndTime"] == "2026-01-01 12:00:02.000"
+        assert provider.ended[0][1] == "late failure"
+
+
 class TestManualSpanLifecycle:
     """Test start_span(), add_event(), end_span() manual span API."""
 
@@ -1181,3 +1377,36 @@ class TestManualSpanLifecycle:
         span = trace.start_span(operation="TestOp", component="TestComp")
 
         assert isinstance(span.traceId, uuid.UUID)
+
+
+class TestSpanEmitterRobustness:
+    """A failing telemetry backend must never break caller control flow."""
+
+    def test_failing_end_emission_does_not_break_caller_or_span_stack(self, mock_emitter):
+        def emit(component, operation, *args, **kwargs):
+            if operation.endswith("_END"):
+                raise RuntimeError("telemetry backend down")
+
+        mock_emitter.emit_custom_event.side_effect = emit
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        ran = False
+        with trace.span(operation="Op", component="Comp"):
+            ran = True
+
+        assert ran
+        assert trace.current_span is None
+
+    def test_failing_error_emission_preserves_original_exception(self, mock_emitter):
+        def emit(component, operation, *args, **kwargs):
+            if operation.endswith("_ERROR") or operation.endswith("_END"):
+                raise RuntimeError("telemetry backend down")
+
+        mock_emitter.emit_custom_event.side_effect = emit
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with pytest.raises(ValueError, match="user failure"):
+            with trace.span(operation="Op", component="Comp", reraise=True):
+                raise ValueError("user failure")
+
+        assert trace.current_span is None

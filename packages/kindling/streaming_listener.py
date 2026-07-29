@@ -42,12 +42,12 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 from injector import inject
-from pyspark.sql.streaming import StreamingQueryListener
-
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_trace import SparkTraceProvider
+from kindling.trace_ops import COMPONENT_STREAMING
+from pyspark.sql.streaming import StreamingQueryListener
 
 # =============================================================================
 # Event Data Structures
@@ -463,14 +463,18 @@ class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
             f"(query_id={event.query_id}, run_id={event.run_id})"
         )
 
-        # Open a trace span for this query's lifecycle
+        # Open a trace span for this query's lifecycle. Long-lived queries
+        # stay one manual span with batch_progress events — batches are
+        # events, never spans. The query label is an attribute, not part of
+        # the component name (span-name cardinality stays bounded).
         span = self._trace_provider.start_span(
-            operation="streaming_query",
-            component=f"query-{query_label}",
+            operation="query",
+            component=COMPONENT_STREAMING,
             details={
                 "query_id": event.query_id,
                 "run_id": event.run_id,
                 "name": event.name or "",
+                "query_label": query_label,
             },
         )
         self._query_spans[event.query_id] = span

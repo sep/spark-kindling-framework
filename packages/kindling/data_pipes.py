@@ -3,6 +3,7 @@ import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass, fields
 from typing import Any, Callable, Dict, List, Optional
 
@@ -15,6 +16,7 @@ from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
+from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
 from pyspark.sql import DataFrame
 
 from .data_entities import *
@@ -371,6 +373,7 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         erps: EntityReadPersistStrategy,
         tp: SparkTraceProvider,
         signal_provider: SignalProvider = None,
+        config: ConfigService = None,
     ):
         self._init_signal_emitter(signal_provider)
         self.erps = erps
@@ -378,6 +381,7 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         self.dpe = dpe
         self.logger = lp.get_logger("data_pipes_executer")
         self.tp = tp
+        self._trace_gates = tracing_gates(config)
 
     def run_datapipes(
         self,
@@ -434,9 +438,17 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         try:
             # reraise=True: a swallowed span exception would leave the failed
             # run looking successful to the caller.
-            with self.tp.span(
-                component="data_pipes_executer", operation="execute_datapipes", reraise=True
-            ):
+            run_span = (
+                self.tp.span(
+                    component=COMPONENT_PIPES,
+                    operation="run",
+                    details={"run_id": run_id, "pipe_count": len(pipes)},
+                    reraise=True,
+                )
+                if self._trace_gates.minimal
+                else nullcontext()
+            )
+            with run_span:
                 for index, pipeid in enumerate(pipes):
                     pipe = self.dpr.get_pipe_definition(pipeid)
                     if no_watermark and pipe.use_watermark:
@@ -453,12 +465,24 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
                     )
 
                     try:
-                        with self.tp.span(
-                            operation="execute_datapipe",
-                            component=f"pipe-{pipeid}",
-                            details=pipe.tags,
-                            reraise=True,
-                        ):
+                        # Whitelisted attributes only — pipe.tags may carry
+                        # credential references and must never be exported
+                        # wholesale as span attributes.
+                        pipe_span = (
+                            self.tp.span(
+                                operation="pipe.run",
+                                component=COMPONENT_PIPES,
+                                details={
+                                    "pipe_id": pipeid,
+                                    "pipe_name": pipe.name,
+                                    "run_id": run_id,
+                                },
+                                reraise=True,
+                            )
+                            if self._trace_gates.minimal
+                            else nullcontext()
+                        )
+                        with pipe_span:
                             was_skipped = self._execute_datapipe(
                                 pipe_entity_reader(pipe), pipe_activator(pipe), pipe
                             )

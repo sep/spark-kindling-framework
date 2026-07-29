@@ -1830,7 +1830,11 @@ class DeltaEntityProvider(
                     .filter(col("__row_rank") == 1)
                     .drop("__row_rank")
                 )
-            self.merge_to_entity(batch_df, entity)
+            # Class-attribute lookup deliberately bypasses the per-instance
+            # tracing wrapper (trace_ops): a span per micro-batch would blow
+            # the hot-loop budget. Per-batch visibility comes from the
+            # streaming listener's batch_progress events instead.
+            type(self).merge_to_entity(self, batch_df, entity)
 
         writer = (
             df.writeStream.outputMode("update")

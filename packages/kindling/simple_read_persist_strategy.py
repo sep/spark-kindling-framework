@@ -1,11 +1,10 @@
 import os
 import time
 import uuid
+from contextlib import nullcontext
 from functools import reduce
 from pathlib import Path
 from typing import Optional
-
-from pyspark.sql.functions import col
 
 from kindling.data_entities import *
 from kindling.data_pipes import *
@@ -16,8 +15,11 @@ from kindling.entity_provider_csv import (
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import ConfigService
 from kindling.spark_log import *
+from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
 from kindling.watermarking import *
+from pyspark.sql.functions import col
 
 
 def _is_local_execution() -> bool:
@@ -100,67 +102,86 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         lp: PythonLoggerProvider,
         provider_registry: EntityProviderRegistry,
         signal_provider: Optional[SignalProvider] = None,
+        config: Optional[ConfigService] = None,
     ):
         self.der = der
         self.ep = ep  # Legacy EntityProvider for backward compatibility
         self.provider_registry = provider_registry  # New multi-provider registry
         self.tp = tp
         self.logger = lp.get_logger("SimpleReadPersistStrategy")
+        self._trace_gates = tracing_gates(config)
         self._init_signal_emitter(signal_provider)
 
     def create_pipe_entity_reader(self, pipe):
         strategy = self
 
         def entity_reader(entity, usewm):
-            # Interdiction point: a handler (e.g. WatermarkAspect) may take
-            # ownership of the read entirely — including deciding there is
-            # no new data (df=None). Distinct from read.after_read, which
-            # can only transform a DataFrame that was already read.
-            resolved = None
-            for _, retval in strategy.emit(
-                "read.resolve_read",
-                entity=entity,
-                entity_id=entity.entityid,
-                pipe=pipe,
-                pipe_id=pipe.pipeid,
-                use_watermark=usewm,
+            if not strategy._trace_gates.minimal:
+                return strategy._read_for_pipe(pipe, entity, usewm, details=None)
+            details = {
+                "entity_id": entity.entityid,
+                "pipe_id": pipe.pipeid,
+                "watermarked": bool(usewm),
+            }
+            with strategy.tp.span(
+                operation="read", component=COMPONENT_PIPES, details=details, reraise=True
             ):
-                if retval is not None and hasattr(retval, "df"):
-                    resolved = retval
-
-            if resolved is not None:
-                df = resolved.df
-            elif _is_local_execution():
-                # [implementer] tests/entities/ auto-discovery convention — ki-bsi
-                # Priority: explicit --source > kindling.yaml env mapping > fixture CSV > registry
-                # Fixture discovery applies only when running locally (standalone platform).
-                cwd = Path(os.getcwd())
-                fixture_path = resolve_fixture_csv_path(entity.entityid, cwd)
-                if fixture_path is not None:
-                    strategy.logger.info(
-                        f"Using fixture CSV for entity '{entity.entityid}': {fixture_path}"
-                    )
-                    df = FixtureCSVEntityProvider(fixture_path).read_entity(entity)
-                else:
-                    provider = strategy.provider_registry.get_provider_for_entity(entity)
-                    df = provider.read_entity(entity)
-            else:
-                provider = strategy.provider_registry.get_provider_for_entity(entity)
-                df = provider.read_entity(entity)
-
-            if df is not None:
-                results = strategy.emit(
-                    "read.after_read",
-                    df=df,
-                    entity_id=entity.entityid,
-                    pipe_id=pipe.pipeid,
-                    used_watermark=usewm,
-                )
-                df = _apply_df_transforms(results, df)
-
-            return df
+                return strategy._read_for_pipe(pipe, entity, usewm, details=details)
 
         return entity_reader
+
+    def _read_for_pipe(self, pipe, entity, usewm, details=None):
+        """One pipe-input read: resolve_read → provider/fixture read → after_read."""
+        # Interdiction point: a handler (e.g. WatermarkAspect) may take
+        # ownership of the read entirely — including deciding there is
+        # no new data (df=None). Distinct from read.after_read, which
+        # can only transform a DataFrame that was already read.
+        resolved = None
+        for _, retval in self.emit(
+            "read.resolve_read",
+            entity=entity,
+            entity_id=entity.entityid,
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=usewm,
+        ):
+            if retval is not None and hasattr(retval, "df"):
+                resolved = retval
+
+        if details is not None:
+            details["resolved"] = resolved is not None
+
+        if resolved is not None:
+            df = resolved.df
+        elif _is_local_execution():
+            # [implementer] tests/entities/ auto-discovery convention — ki-bsi
+            # Priority: explicit --source > kindling.yaml env mapping > fixture CSV > registry
+            # Fixture discovery applies only when running locally (standalone platform).
+            cwd = Path(os.getcwd())
+            fixture_path = resolve_fixture_csv_path(entity.entityid, cwd)
+            if fixture_path is not None:
+                self.logger.info(
+                    f"Using fixture CSV for entity '{entity.entityid}': {fixture_path}"
+                )
+                df = FixtureCSVEntityProvider(fixture_path).read_entity(entity)
+            else:
+                provider = self.provider_registry.get_provider_for_entity(entity)
+                df = provider.read_entity(entity)
+        else:
+            provider = self.provider_registry.get_provider_for_entity(entity)
+            df = provider.read_entity(entity)
+
+        if df is not None:
+            results = self.emit(
+                "read.after_read",
+                df=df,
+                entity_id=entity.entityid,
+                pipe_id=pipe.pipeid,
+                used_watermark=usewm,
+            )
+            df = _apply_df_transforms(results, df)
+
+        return df
 
     def create_pipe_persist_activator(self, pipe):
         # Capture self for use in closure
@@ -186,157 +207,177 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
                 strategy.logger.debug(f"persist_lambda - pipe = {pipe.pipeid}")
 
-                try:
-                    # Emitted inside the failure boundary: a raising handler
-                    # is the supported write gate (e.g. a validation gate) —
-                    # the write must not happen AND the raise must pair with
-                    # persist.persist_failed, so observers like
-                    # WatermarkAspect treat it as a failed persist (pending
-                    # watermark discarded, retry re-reads the same slice).
-                    results = strategy.emit(
-                        "persist.before_persist",
-                        df=df,
-                        pipe_id=pipe.pipeid,
-                        source_entity_id=src_input_entity_id,
-                        output_entity_id=pipe.output_entity_id,
-                        persist_id=persist_id,
+                # One consolidated persist span — the provider-op tracer
+                # supplies the child op span (merge/append/write/replace).
+                # reraise=True is load-bearing: a swallowed merge failure
+                # would let persist.after_persist fire and the watermark
+                # advance past unpersisted data.
+                span_details = {
+                    "pipe_id": pipe.pipeid,
+                    "source_entity_id": src_input_entity_id,
+                    "output_entity_id": pipe.output_entity_id,
+                    "persist_id": persist_id,
+                }
+                persist_span = (
+                    strategy.tp.span(
+                        operation="persist",
+                        component=COMPONENT_PIPES,
+                        details=span_details,
+                        reraise=True,
                     )
-                    df = _apply_df_transforms(results, df)
-
-                    # Derived datasets (dataset.kind='derived') are replaced,
-                    # not evolved: the provider swaps the whole table — or
-                    # only the batch's slices when derived.replace_keys is
-                    # declared — atomically. The state-dataset write.mode
-                    # machinery below never applies (the combination is
-                    # rejected at entity registration).
-                    derived_config = derived_config_from_tags(output_entity)
-                    if derived_config.enabled:
-                        if not hasattr(output_provider, "replace_entity"):
-                            provider_type = (output_entity.tags or {}).get(
-                                "provider_type", "unknown"
-                            )
-                            raise ValueError(
-                                f"Entity '{output_entity.entityid}' is a derived dataset "
-                                f"but provider '{provider_type}' does not support "
-                                "replace writes"
-                            )
-                        with strategy.tp.span(
-                            component="data_utils", operation="replace_entity_table"
-                        ):
-                            output_provider.replace_entity(df, output_entity)
-
-                        duration = time.time() - start_time
-                        strategy.emit(
-                            "persist.after_persist",
-                            df=df,
-                            pipe_id=pipe.pipeid,
-                            source_entity_id=src_input_entity_id,
-                            output_entity_id=pipe.output_entity_id,
-                            duration_seconds=duration,
-                            persist_id=persist_id,
-                        )
-                        return
-
-                    # Sink write mode override, shared with the streaming path
-                    # (SimplePipeStreamStarter): "append" skips the merge even
-                    # when the provider supports it (e.g. append-only fact
-                    # tables); "merge" makes the merge requirement explicit —
-                    # no silent append fallback. Unset keeps the default:
-                    # merge when the provider can, append otherwise. The
-                    # static tag value is validated at entity-registration
-                    # time (data_entities._validate_write_mode_tag); checking
-                    # inside the try keeps any raise paired with
-                    # persist.persist_failed after persist.before_persist.
-                    write_mode = (
-                        str((output_entity.tags or {}).get("write.mode") or "").strip().lower()
+                    if strategy._trace_gates.minimal
+                    else nullcontext()
+                )
+                with persist_span:
+                    strategy._persist_output(
+                        pipe,
+                        df,
+                        src_input_entity_id,
+                        output_entity,
+                        output_provider,
+                        persist_id,
+                        start_time,
                     )
-                    if write_mode not in ("", "append", "merge", "insert"):
-                        raise ValueError(
-                            f"Entity '{output_entity.entityid}': invalid write.mode "
-                            f"'{write_mode}' (expected 'append', 'merge' or 'insert')"
-                        )
-                    if write_mode in ("merge", "insert") and not hasattr(
-                        output_provider, "merge_to_entity"
-                    ):
-                        provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
-                        raise ValueError(
-                            f"Entity '{output_entity.entityid}': write.mode is "
-                            f"'{write_mode}' but provider '{provider_type}' does not "
-                            "support merge operations"
-                        )
-
-                    with strategy.tp.span(
-                        component="data_utils", operation="merge_and_watermark", reraise=False
-                    ):
-                        # Check if entity exists using provider
-                        if output_provider.check_entity_exists(output_entity):
-                            # Merge operation (Delta-specific, fallback to write for other providers)
-                            with strategy.tp.span(operation="merge_to_entity_table"):
-                                if write_mode != "append" and hasattr(
-                                    output_provider, "merge_to_entity"
-                                ):
-                                    output_provider.merge_to_entity(df, output_entity)
-                                else:
-                                    # Append mode, or provider doesn't support merge
-                                    from kindling.entity_provider import (
-                                        WritableEntityProvider,
-                                    )
-
-                                    if isinstance(output_provider, WritableEntityProvider):
-                                        if not write_mode:
-                                            provider_type = (output_entity.tags or {}).get(
-                                                "provider_type", "delta"
-                                            )
-                                            strategy.logger.info(
-                                                f"Provider '{provider_type}' does not support merge, using append"
-                                            )
-                                        output_provider.append_to_entity(df, output_entity)
-                                    else:
-                                        provider_type = (output_entity.tags or {}).get(
-                                            "provider_type", "unknown"
-                                        )
-                                        raise ValueError(
-                                            f"Provider '{provider_type}' does not support write operations"
-                                        )
-                        else:
-                            with strategy.tp.span(operation="write_to_entity_table", reraise=True):
-                                from kindling.entity_provider import (
-                                    WritableEntityProvider,
-                                )
-
-                                if isinstance(output_provider, WritableEntityProvider):
-                                    output_provider.write_to_entity(df, output_entity)
-                                else:
-                                    provider_type = (output_entity.tags or {}).get(
-                                        "provider_type", "unknown"
-                                    )
-                                    raise ValueError(
-                                        f"Provider '{provider_type}' does not support write operations"
-                                    )
-
-                    duration = time.time() - start_time
-                    strategy.emit(
-                        "persist.after_persist",
-                        df=df,
-                        pipe_id=pipe.pipeid,
-                        source_entity_id=src_input_entity_id,
-                        output_entity_id=pipe.output_entity_id,
-                        duration_seconds=duration,
-                        persist_id=persist_id,
-                    )
-
-                except Exception as e:
-                    duration = time.time() - start_time
-                    strategy.emit(
-                        "persist.persist_failed",
-                        pipe_id=pipe.pipeid,
-                        source_entity_id=src_input_entity_id,
-                        output_entity_id=pipe.output_entity_id,
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        duration_seconds=duration,
-                        persist_id=persist_id,
-                    )
-                    raise
 
         return persist_lambda
+
+    def _persist_output(
+        self,
+        pipe,
+        df,
+        src_input_entity_id,
+        output_entity,
+        output_provider,
+        persist_id,
+        start_time,
+    ):
+        """Write one pipe output, pairing signals with the failure boundary.
+
+        Every raise pairs persist.persist_failed with the earlier
+        persist.before_persist and propagates — the enclosing persist span
+        uses reraise=True, so no failure is ever swallowed between
+        before_persist and after_persist.
+        """
+        try:
+            # Emitted inside the failure boundary: a raising handler
+            # is the supported write gate (e.g. a validation gate) —
+            # the write must not happen AND the raise must pair with
+            # persist.persist_failed, so observers like
+            # WatermarkAspect treat it as a failed persist (pending
+            # watermark discarded, retry re-reads the same slice).
+            results = self.emit(
+                "persist.before_persist",
+                df=df,
+                pipe_id=pipe.pipeid,
+                source_entity_id=src_input_entity_id,
+                output_entity_id=pipe.output_entity_id,
+                persist_id=persist_id,
+            )
+            df = _apply_df_transforms(results, df)
+
+            # Derived datasets (dataset.kind='derived') are replaced,
+            # not evolved: the provider swaps the whole table — or
+            # only the batch's slices when derived.replace_keys is
+            # declared — atomically. The state-dataset write.mode
+            # machinery below never applies (the combination is
+            # rejected at entity registration).
+            derived_config = derived_config_from_tags(output_entity)
+            if derived_config.enabled:
+                if not hasattr(output_provider, "replace_entity"):
+                    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
+                    raise ValueError(
+                        f"Entity '{output_entity.entityid}' is a derived dataset "
+                        f"but provider '{provider_type}' does not support "
+                        "replace writes"
+                    )
+                output_provider.replace_entity(df, output_entity)
+
+                duration = time.time() - start_time
+                self.emit(
+                    "persist.after_persist",
+                    df=df,
+                    pipe_id=pipe.pipeid,
+                    source_entity_id=src_input_entity_id,
+                    output_entity_id=pipe.output_entity_id,
+                    duration_seconds=duration,
+                    persist_id=persist_id,
+                )
+                return
+
+            # Sink write mode override, shared with the streaming path
+            # (SimplePipeStreamStarter): "append" skips the merge even
+            # when the provider supports it (e.g. append-only fact
+            # tables); "merge" makes the merge requirement explicit —
+            # no silent append fallback. Unset keeps the default:
+            # merge when the provider can, append otherwise. The
+            # static tag value is validated at entity-registration
+            # time (data_entities._validate_write_mode_tag); checking
+            # inside the try keeps any raise paired with
+            # persist.persist_failed after persist.before_persist.
+            write_mode = str((output_entity.tags or {}).get("write.mode") or "").strip().lower()
+            if write_mode not in ("", "append", "merge", "insert"):
+                raise ValueError(
+                    f"Entity '{output_entity.entityid}': invalid write.mode "
+                    f"'{write_mode}' (expected 'append', 'merge' or 'insert')"
+                )
+            if write_mode in ("merge", "insert") and not hasattr(
+                output_provider, "merge_to_entity"
+            ):
+                provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
+                raise ValueError(
+                    f"Entity '{output_entity.entityid}': write.mode is "
+                    f"'{write_mode}' but provider '{provider_type}' does not "
+                    "support merge operations"
+                )
+
+            from kindling.entity_provider import WritableEntityProvider
+
+            if output_provider.check_entity_exists(output_entity):
+                # Merge (Delta-specific), fall back to append for other providers
+                if write_mode != "append" and hasattr(output_provider, "merge_to_entity"):
+                    output_provider.merge_to_entity(df, output_entity)
+                elif isinstance(output_provider, WritableEntityProvider):
+                    if not write_mode:
+                        provider_type = (output_entity.tags or {}).get("provider_type", "delta")
+                        self.logger.info(
+                            f"Provider '{provider_type}' does not support merge, using append"
+                        )
+                    output_provider.append_to_entity(df, output_entity)
+                else:
+                    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
+                    raise ValueError(
+                        f"Provider '{provider_type}' does not support write operations"
+                    )
+            else:
+                if isinstance(output_provider, WritableEntityProvider):
+                    output_provider.write_to_entity(df, output_entity)
+                else:
+                    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
+                    raise ValueError(
+                        f"Provider '{provider_type}' does not support write operations"
+                    )
+
+            duration = time.time() - start_time
+            self.emit(
+                "persist.after_persist",
+                df=df,
+                pipe_id=pipe.pipeid,
+                source_entity_id=src_input_entity_id,
+                output_entity_id=pipe.output_entity_id,
+                duration_seconds=duration,
+                persist_id=persist_id,
+            )
+
+        except Exception as e:
+            duration = time.time() - start_time
+            self.emit(
+                "persist.persist_failed",
+                pipe_id=pipe.pipeid,
+                source_entity_id=src_input_entity_id,
+                output_entity_id=pipe.output_entity_id,
+                error=str(e),
+                error_type=type(e).__name__,
+                duration_seconds=duration,
+                persist_id=persist_id,
+            )
+            raise

@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +41,89 @@ _BOOTSTRAP_STAGE_ID = uuid.uuid4().hex[:12]
 _BOOTSTRAP_LOGGER = logging.getLogger("kindling.bootstrap")
 _LOCAL_PACKAGE_MODULES_ENV = "KINDLING_LOCAL_PACKAGE_MODULES"
 _LOCAL_PACKAGE_REGISTRATION_NAMESPACES = ("entities", "pipes", "ingestion")
+
+
+class _BootstrapPhaseRecorder:
+    """Collects bootstrap phase timings before any trace provider can exist.
+
+    Early bootstrap phases predate a usable ConfigService, and the final
+    trace-provider identity is only settled once extensions have imported —
+    live spans are impossible by construction. Phases are recorded here
+    (plain list, no DI, no JVM) and retro-flushed as one span tree at the
+    end of a full initialization via SparkTraceProvider.record_span.
+    """
+
+    def __init__(self):
+        self.phases: List[Dict[str, Any]] = []
+        self.start_time: Optional[datetime] = None
+
+    def reset(self, start_time: datetime) -> None:
+        self.phases = []
+        self.start_time = start_time
+
+
+_PHASE_RECORDER = _BootstrapPhaseRecorder()
+
+
+@contextmanager
+def _bootstrap_phase(name: str):
+    """Record one bootstrap phase's wall-clock window (and error, if any)."""
+    entry: Dict[str, Any] = {"name": name, "start": datetime.now(), "end": None, "error": None}
+    _PHASE_RECORDER.phases.append(entry)
+    try:
+        yield
+    except Exception as phase_error:
+        entry["error"] = str(phase_error)
+        raise
+    finally:
+        entry["end"] = datetime.now()
+
+
+def _flush_bootstrap_trace(config_service, error: Optional[str] = None) -> None:
+    """Retro-record the bootstrap span tree once a provider is resolvable.
+
+    Emits a root kindling.bootstrap/initialize span (a live CM span so the
+    per-phase children parent to it and share its trace id on every
+    provider) whose true window rides in attributes, plus one record_span
+    child per phase with the faithful timestamps. Failures preceding a
+    usable ConfigService never reach this point — that tree is lost and
+    only stdlib-logged (documented limitation). Flushing must never break
+    bootstrap.
+    """
+    recorder = _PHASE_RECORDER
+    if recorder.start_time is None or not recorder.phases:
+        return
+    try:
+        from kindling.spark_trace import SparkTraceProvider
+        from kindling.trace_ops import COMPONENT_BOOTSTRAP, tracing_gates
+
+        if not tracing_gates(config_service).minimal:
+            return
+        tp = GlobalInjector.get(SparkTraceProvider)
+        end_time = recorder.phases[-1]["end"] or datetime.now()
+        root_details = {
+            "started_at": recorder.start_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+            "duration_seconds": f"{(end_time - recorder.start_time).total_seconds():.3f}",
+            "phase_count": len(recorder.phases),
+        }
+        if error:
+            root_details["error"] = error
+        with tp.span(operation="initialize", component=COMPONENT_BOOTSTRAP, details=root_details):
+            for entry in recorder.phases:
+                tp.record_span(
+                    entry["name"],
+                    COMPONENT_BOOTSTRAP,
+                    entry["start"],
+                    entry["end"] or end_time,
+                    error=entry["error"],
+                )
+    except Exception as flush_error:
+        _BOOTSTRAP_LOGGER.debug("Bootstrap trace flush failed (non-fatal): %s", flush_error)
+    finally:
+        # One flush per recorded initialization — a later failed/aborted
+        # init must not re-emit this tree.
+        recorder.phases = []
+        recorder.start_time = None
 
 
 def _parse_spark_conf_value(value: Any) -> Any:
@@ -1623,6 +1708,11 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         _import_local_package_registrations(logger_provider.get_logger("KindlingBootstrap"))
         return existing_service
 
+    # Full (non-short-circuited) initialization: record phase timings for the
+    # retro-flushed bootstrap span tree. Short-circuited re-inits above
+    # deliberately record nothing.
+    _PHASE_RECORDER.reset(start_time=datetime.now())
+
     # Extract bootstrap settings
     artifacts_storage_path = config.get("artifacts_storage_path")
     explicit_platform = config.get("platform_environment") or config.get("platform")
@@ -1661,30 +1751,46 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             # Continue without platform/workspace-specific configs
 
     if use_lake_packages and artifacts_storage_path:
-        initial_temp_path = _resolve_initial_download_temp_path(config, platform)
-        downloaded_config_files = download_config_files(
-            artifacts_storage_path=artifacts_storage_path,
-            environment=environment,
-            platform=platform,
-            workspace_id=workspace_id,
-            app_name=app_name,
-            temp_path=initial_temp_path,
-        )
-        if config_files:
-            config_files = downloaded_config_files + config_files
-        else:
-            config_files = downloaded_config_files
+        with _bootstrap_phase("config_download"):
+            initial_temp_path = _resolve_initial_download_temp_path(config, platform)
+            downloaded_config_files = download_config_files(
+                artifacts_storage_path=artifacts_storage_path,
+                environment=environment,
+                platform=platform,
+                workspace_id=workspace_id,
+                app_name=app_name,
+                temp_path=initial_temp_path,
+            )
+            if config_files:
+                config_files = downloaded_config_files + config_files
+            else:
+                config_files = downloaded_config_files
 
     from kindling.spark_config import configure_injector_with_config
 
     # Check if ConfigService is already properly initialized
-    try:
-        config_service = get_kindling_service(ConfigService)
-        # Check if it's actually initialized (dynaconf will be None if not)
-        if hasattr(config_service, "dynaconf") and config_service.dynaconf is not None:
-            _BOOTSTRAP_LOGGER.debug("Config service already initialized, skipping configuration")
-        else:
-            # ConfigService exists but not initialized yet, set it up
+    with _bootstrap_phase("config_init"):
+        try:
+            config_service = get_kindling_service(ConfigService)
+            # Check if it's actually initialized (dynaconf will be None if not)
+            if hasattr(config_service, "dynaconf") and config_service.dynaconf is not None:
+                _BOOTSTRAP_LOGGER.debug(
+                    "Config service already initialized, skipping configuration"
+                )
+            else:
+                # ConfigService exists but not initialized yet, set it up
+                injector = configure_injector_with_config(
+                    config_files=config_files,
+                    initial_config=config,  # BOOTSTRAP_CONFIG as overrides
+                    environment=environment,
+                    artifacts_storage_path=artifacts_storage_path,
+                    platform=platform,
+                    workspace_id=workspace_id,
+                    app_name=app_name,
+                )
+                config_service = get_kindling_service(ConfigService)
+        except Exception:
+            # ConfigService doesn't exist yet, set it up
             injector = configure_injector_with_config(
                 config_files=config_files,
                 initial_config=config,  # BOOTSTRAP_CONFIG as overrides
@@ -1695,41 +1801,31 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 app_name=app_name,
             )
             config_service = get_kindling_service(ConfigService)
-    except Exception:
-        # ConfigService doesn't exist yet, set it up
-        injector = configure_injector_with_config(
-            config_files=config_files,
-            initial_config=config,  # BOOTSTRAP_CONFIG as overrides
-            environment=environment,
-            artifacts_storage_path=artifacts_storage_path,
-            platform=platform,
-            workspace_id=workspace_id,
-            app_name=app_name,
-        )
-        config_service = get_kindling_service(ConfigService)
 
     logger = get_kindling_service(PythonLoggerProvider).get_logger("KindlingBootstrap")
     logger.info("Starting framework initialization")
 
     # Best-effort runtime feature discovery. These values are written into
     # kindling.runtime.features.* and can be overridden by kindling.features.*.
-    try:
-        from kindling.features import discover_runtime_features
+    with _bootstrap_phase("feature_discovery"):
+        try:
+            from kindling.features import discover_runtime_features
 
-        discover_runtime_features(config_service, logger=logger)
-    except Exception as feature_error:
-        logger.debug(f"Runtime feature discovery failed (non-fatal): {feature_error}")
+            discover_runtime_features(config_service, logger=logger)
+        except Exception as feature_error:
+            logger.debug(f"Runtime feature discovery failed (non-fatal): {feature_error}")
 
     # Capability-based telemetry selection: without a py4j JVM bridge (UC
     # shared/standard access mode clusters, Spark Connect) the JVM-backed
     # providers only degrade per call; swap in the plain-python
     # implementations instead. Overridable via kindling.features.spark.jvm_bridge.
-    try:
-        if get_feature_bool(config_service, "spark.jvm_bridge", default=True) is False:
-            _bind_plain_telemetry_providers(logger)
-            logger = get_kindling_service(PythonLoggerProvider).get_logger("KindlingBootstrap")
-    except Exception as telemetry_error:
-        logger.debug(f"Telemetry provider selection failed (non-fatal): {telemetry_error}")
+    with _bootstrap_phase("telemetry_binding"):
+        try:
+            if get_feature_bool(config_service, "spark.jvm_bridge", default=True) is False:
+                _bind_plain_telemetry_providers(logger)
+                logger = get_kindling_service(PythonLoggerProvider).get_logger("KindlingBootstrap")
+        except Exception as telemetry_error:
+            logger.debug(f"Telemetry provider selection failed (non-fatal): {telemetry_error}")
 
     # Helpful diagnostics for system tests / feature-gated behavior.
     # These keys are safe to log (no secrets) and explain why certain Delta operations
@@ -1757,6 +1853,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     except Exception:
         pass
 
+    _bootstrap_error = None
     try:
         # Read from general kindling config (not bootstrap namespace)
         # bootstrap is just for temp backwards compatibility mapping
@@ -1820,16 +1917,18 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         if install_bootstrap_dependencies_flag is None:
             install_bootstrap_dependencies_flag = platform != "standalone"
 
-        if install_bootstrap_dependencies_flag:
-            install_bootstrap_dependencies(
-                logger,
-                bootstrap_deps_config,
-                artifacts_storage_path=artifacts_storage_path,
-            )
-        else:
-            logger.info("Skipping bootstrap dependency installation")
+        with _bootstrap_phase("dependency_install"):
+            if install_bootstrap_dependencies_flag:
+                install_bootstrap_dependencies(
+                    logger,
+                    bootstrap_deps_config,
+                    artifacts_storage_path=artifacts_storage_path,
+                )
+            else:
+                logger.info("Skipping bootstrap dependency installation")
 
-        platformservice = initialize_platform_services(platform, config_service, logger)
+        with _bootstrap_phase("platform_init"):
+            platformservice = initialize_platform_services(platform, config_service, logger)
         logger.info("Platform services initialized")
 
         # Attach the watermark aspect: incremental reads and watermark
@@ -1841,34 +1940,52 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # owns_incrementality capability, surfaced here as config by
         # initialize()) also runs without it — the aspect is simply never
         # registered.
-        if platform != "standalone" and not config.get("engine_owns_incrementality"):
-            from kindling.injection import GlobalInjector
-            from kindling.watermarking import WatermarkAspect
+        with _bootstrap_phase("aspect_registration"):
+            if platform != "standalone" and not config.get("engine_owns_incrementality"):
+                from kindling.injection import GlobalInjector
+                from kindling.watermarking import WatermarkAspect
 
-            GlobalInjector.get(WatermarkAspect).register()
-            logger.info("Watermark aspect registered")
+                GlobalInjector.get(WatermarkAspect).register()
+                logger.info("Watermark aspect registered")
+
+            # Registration-gated tracing wiring (WatermarkAspect pattern):
+            # read kindling.telemetry.tracing.* once and enable provider-op
+            # tracing at the registry chokepoint. Runs on every platform —
+            # standalone pipe runs must produce span trees too. A config
+            # reload does not un-register. Extensions have already imported
+            # by now, so the resolved SparkTraceProvider is the final one
+            # for this process.
+            try:
+                from kindling.trace_ops import configure_op_tracing
+
+                configure_op_tracing(config_service, logger)
+            except Exception as tracing_error:
+                logger.debug(f"Provider op tracing wiring failed (non-fatal): {tracing_error}")
 
         # Apply spark_configs to the live Spark session.
         # This must happen after the session exists so conf.set() works.
-        _apply_spark_configs(config_service, logger)
-        _import_local_package_registrations(logger)
+        with _bootstrap_phase("registrations_import"):
+            _apply_spark_configs(config_service, logger)
+            _import_local_package_registrations(logger)
 
         # Overlay datapipes:/dataentities: config sections onto everything
         # registered so far; the managers keep the compiled patterns so
         # later registrations (workspace packages, app register_all) are
         # overlaid at registration — before any pipe executes.
-        apply_config_overrides()
+        with _bootstrap_phase("config_overlay"):
+            apply_config_overrides()
         logger.info("Config overrides applied to registered pipes and entities")
 
         # Resolve any @secret references now that platform services are available.
-        try:
-            from kindling.config_loaders import load_secrets_from_provider
+        with _bootstrap_phase("secret_resolution"):
+            try:
+                from kindling.config_loaders import load_secrets_from_provider
 
-            if hasattr(config_service, "dynaconf") and config_service.dynaconf is not None:
-                load_secrets_from_provider(config_service.dynaconf, silent=True)
-                logger.debug("Resolved @secret references with platform secret provider")
-        except Exception as secret_resolution_error:
-            logger.warning(f"Secret resolution pass failed: {secret_resolution_error}")
+                if hasattr(config_service, "dynaconf") and config_service.dynaconf is not None:
+                    load_secrets_from_provider(config_service.dynaconf, silent=True)
+                    logger.debug("Resolved @secret references with platform secret provider")
+            except Exception as secret_resolution_error:
+                logger.warning(f"Secret resolution pass failed: {secret_resolution_error}")
 
         load_workspace_packages_default = False if platform == "standalone" else True
         load_workspace_packages_value = config_service.get(
@@ -1896,48 +2013,59 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             f"(type: {type(load_workspace_packages_flat).__name__})"
         )
 
-        if load_workspace_packages_value:
-            ignored_folders = config_service.get("kindling.bootstrap.ignored_folders", [])
-            workspace_packages = get_kindling_service(NotebookManager).get_all_packages(
-                ignored_folders=ignored_folders
-            )
-            logger.debug(
-                f"Found {len(workspace_packages)} workspace packages: {workspace_packages}"
-            )
-            load_workspace_packages(platformservice, workspace_packages, logger)
-            logger.info(f"Loaded {len(workspace_packages)} workspace packages")
-        else:
-            logger.info("Skipping workspace package loading (load_workspace_packages=False)")
-            # Pre-seed the notebook cache so any subsequent call to get_all_notebooks()
-            # returns immediately instead of hitting the platform API, which may be
-            # unavailable from the Spark cluster in some environments.
-            try:
-                loader = get_kindling_service(NotebookManager)
-                if loader._notebook_cache is None:
-                    loader._notebook_cache = []
-                    loader._folder_cache = set()
-                    logger.debug("Notebook cache pre-seeded empty (load_workspace_packages=False)")
-            except Exception as _pre_seed_err:
-                logger.debug(f"Could not pre-seed notebook cache: {_pre_seed_err}")
+        with _bootstrap_phase("workspace_packages"):
+            if load_workspace_packages_value:
+                ignored_folders = config_service.get("kindling.bootstrap.ignored_folders", [])
+                workspace_packages = get_kindling_service(NotebookManager).get_all_packages(
+                    ignored_folders=ignored_folders
+                )
+                logger.debug(
+                    f"Found {len(workspace_packages)} workspace packages: {workspace_packages}"
+                )
+                load_workspace_packages(platformservice, workspace_packages, logger)
+                logger.info(f"Loaded {len(workspace_packages)} workspace packages")
+            else:
+                logger.info("Skipping workspace package loading (load_workspace_packages=False)")
+                # Pre-seed the notebook cache so any subsequent call to get_all_notebooks()
+                # returns immediately instead of hitting the platform API, which may be
+                # unavailable from the Spark cluster in some environments.
+                try:
+                    loader = get_kindling_service(NotebookManager)
+                    if loader._notebook_cache is None:
+                        loader._notebook_cache = []
+                        loader._folder_cache = set()
+                        logger.debug(
+                            "Notebook cache pre-seeded empty (load_workspace_packages=False)"
+                        )
+                except Exception as _pre_seed_err:
+                    logger.debug(f"Could not pre-seed notebook cache: {_pre_seed_err}")
 
         logger.info("Framework initialization complete")
 
         if app_name:
             logger.info(f"Auto-running app: {app_name}")
-            try:
-                runner = get_kindling_service(DataAppRunner)
-                logger.debug(f"Got DataAppRunner: {type(runner).__name__}")
-                runner.run_app(app_name)
-                logger.warning(f"App '{app_name}' completed successfully")
-            except Exception as app_error:
-                logger.exception(f"App execution failed: {str(app_error)}")
-                raise
+            with _bootstrap_phase("app_run"):
+                try:
+                    runner = get_kindling_service(DataAppRunner)
+                    logger.debug(f"Got DataAppRunner: {type(runner).__name__}")
+                    runner.run_app(app_name)
+                    logger.warning(f"App '{app_name}' completed successfully")
+                except Exception as app_error:
+                    logger.exception(f"App execution failed: {str(app_error)}")
+                    raise
 
         return platformservice
 
     except Exception as e:
         logger.error(f"Framework initialization failed: {str(e)}")
+        _bootstrap_error = str(e)
         raise
+    finally:
+        # Retro-flush the bootstrap span tree now that the final trace
+        # provider is settled. On failure the failing phase (and root)
+        # carry the error; failures before a usable ConfigService never
+        # reach this try and their tree is lost (stdlib logs only).
+        _flush_bootstrap_trace(config_service, error=_bootstrap_error)
 
 
 def bootstrap_framework(config: Dict[str, Any], logger=None):

@@ -29,7 +29,23 @@ class EntityProviderRegistry:
         self._provider_classes: Dict[str, Type[BaseEntityProvider]] = {}
         self._provider_instances: Dict[str, BaseEntityProvider] = {}
         self._provider_decorator = None
+        self._op_tracing = None
         self._register_builtin_providers()
+
+    def enable_op_tracing(self, trace_provider, level: str) -> None:
+        """Trace provider op methods on every instance — cached and future.
+
+        Wrapping happens per instance at resolution time via
+        ``trace_ops.wrap_provider_ops`` (bound-method shadowing: identity,
+        isinstance, and hasattr probes are preserved). Idempotent; set once
+        by bootstrap wiring — the registry itself never reads config.
+        """
+        from .trace_ops import wrap_provider_ops
+
+        self._op_tracing = (trace_provider, level)
+        for provider_type, instance in self._provider_instances.items():
+            wrap_provider_ops(instance, trace_provider, provider_type)
+        self.logger.info(f"Provider op tracing enabled (level={level})")
 
     def set_provider_decorator(self, decorator) -> None:
         """Wrap every provider instance — cached and future — in `decorator`.
@@ -118,6 +134,10 @@ class EntityProviderRegistry:
             provider_instance = GlobalInjector.get(provider_class)
             if self._provider_decorator is not None:
                 provider_instance = self._provider_decorator(provider_instance)
+            if self._op_tracing is not None:
+                from .trace_ops import wrap_provider_ops
+
+                wrap_provider_ops(provider_instance, self._op_tracing[0], provider_type)
             self._provider_instances[provider_type] = provider_instance
             self.logger.info(f"Created provider instance: {provider_type}")
             return provider_instance

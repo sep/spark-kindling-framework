@@ -152,18 +152,40 @@ YAML keys:
 - `kindling.telemetry.logging.level`: Logging level (INFO/WARN/DEBUG).
 - `kindling.telemetry.logging.print`: If true, print logs to stdout.
 - `kindling.telemetry.tracing.print`: If true, print trace spans to stdout.
+- `kindling.telemetry.tracing.enabled` (default `true`): Master switch for
+  the framework's span instrumentation — provider-op tracing, structural
+  seam spans, and the bootstrap span tree. Read once at initialization
+  (registration-gated); a config hot-reload does not re-gate a running
+  process. Set `false` to opt out of instrumentation added in 0.13.
+- `kindling.telemetry.tracing.level` (`minimal` | `standard` | `verbose`,
+  default `standard`): Span volume tier. `minimal` keeps bootstrap, pipe
+  run/read/persist, migration, app, deploy, and CLI spans. `standard` adds
+  entity-provider operation spans, watermark spans, config reload,
+  streaming lifecycle, and orchestrator plan/generation spans. `verbose`
+  adds per-file ingestion spans.
+- `kindling.telemetry.azure_monitor.enable_logging` /
+  `kindling.telemetry.azure_monitor.enable_tracing`: Enable the Azure
+  Monitor OpenTelemetry providers (requires the `kindling-ext-otel-azure`
+  extension).
+- `kindling.telemetry.azure_monitor.connection_string`: Application
+  Insights connection string used by the Azure Monitor providers. Without
+  it the extension's providers no-op.
 
 Flat keys (supported for bootstrap/back-compat):
 
 - `log_level`: Logging level.
 - `print_logging`: Print logs to stdout.
-- `print_trace`: Print traces to stdout.
+- `print_trace` / `print_tracing`: Print traces to stdout.
 
 Legacy/compat keys (translated into flat keys):
 
 - `kindling.TELEMETRY.logging.level`
 - `kindling.TELEMETRY.logging.print`
 - `kindling.TELEMETRY.tracing.print`
+
+Design-time CLI tracing (no ConfigService exists before an app loads) is
+env-gated instead: `KINDLING_TRACE=1` enables `kindling.cli` spans and
+`KINDLING_KINDLING__TELEMETRY__TRACING__PRINT=true` prints them.
 
 ### Secrets
 

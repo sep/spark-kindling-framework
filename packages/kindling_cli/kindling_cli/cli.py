@@ -21,6 +21,7 @@ from urllib.parse import quote, urlparse
 
 import click
 import yaml
+from kindling_cli._tracing import traced_command
 from kindling_cli.test_runner import SUPPORTED_PLATFORMS
 from kindling_sdk.artifact_store import (
     AbfssArtifactStore,
@@ -2280,6 +2281,7 @@ def workspace_group() -> None:
     is_flag=True,
     help="Overwrite existing config and notebooks in storage.",
 )
+@traced_command("workspace.init")
 def workspace_init(
     platform: Optional[str],
     artifacts_path: Optional[str],
@@ -3181,6 +3183,7 @@ def notebook_push(
     is_flag=True,
     help="Do not fail if the selected settings file cannot be found.",
 )
+@traced_command("workspace.deploy")
 def workspace_deploy(
     platform: Optional[str],
     config_path: Path,
@@ -3552,6 +3555,7 @@ def app_package(
     help="Target environment overlay to include.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+@traced_command("app.deploy")
 def app_deploy(
     app_name: str,
     local_folder: Optional[Path],
@@ -3917,6 +3921,7 @@ def _run_standalone_app(
         "locally. By default, locally installed packages are used without contacting the lake."
     ),
 )
+@traced_command("app.run")
 def app_run(
     app: str,
     app_name: Optional[str],
@@ -5977,6 +5982,7 @@ def package_init(
     help="Base path within container (overrides AZURE_BASE_PATH env var).",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+@traced_command("package.deploy")
 def package_deploy(
     package_name: str,
     local_folder: Optional[Path],
@@ -6227,6 +6233,7 @@ def runtime_group() -> None:
         "scripts are skipped if already present."
     ),
 )
+@traced_command("runtime.deploy")
 def runtime_deploy(
     source: str,
     dest: str,

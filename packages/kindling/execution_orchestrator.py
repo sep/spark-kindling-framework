@@ -7,7 +7,6 @@ generation-based execution while preserving existing executor options.
 from typing import Any, List, Optional
 
 from injector import inject
-
 from kindling.execution_strategy import ExecutionPlanGenerator, ExecutionStrategy
 from kindling.generation_executor import (
     UNSET,
@@ -16,7 +15,10 @@ from kindling.generation_executor import (
 )
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
+from kindling.spark_trace import SparkTraceProvider
+from kindling.trace_ops import COMPONENT_ORCHESTRATOR, tracing_gates
 
 
 @GlobalInjector.singleton_autobind()
@@ -38,10 +40,14 @@ class ExecutionOrchestrator(SignalEmitter):
         generation_executor: GenerationExecutor,
         logger_provider: PythonLoggerProvider,
         signal_provider: SignalProvider = None,
+        tp: Optional[SparkTraceProvider] = None,
+        config: Optional[ConfigService] = None,
     ):
         self.plan_generator = plan_generator
         self.generation_executor = generation_executor
         self.logger = logger_provider.get_logger("execution_orchestrator")
+        self.tp = tp
+        self._trace_gates = tracing_gates(config)
         self._init_signal_emitter(signal_provider)
 
     def execute(
@@ -63,7 +69,18 @@ class ExecutionOrchestrator(SignalEmitter):
         Execution options left UNSET resolve from `kindling.execution.*`
         config inside GenerationExecutor; passed values override config.
         """
-        plan = self.plan_generator.generate_plan(pipe_ids, strategy=strategy)
+        if self.tp is not None and self._trace_gates.standard:
+            plan_details = {"pipe_count": len(pipe_ids)}
+            with self.tp.span(
+                operation="plan",
+                component=COMPONENT_ORCHESTRATOR,
+                details=plan_details,
+                reraise=True,
+            ):
+                plan = self.plan_generator.generate_plan(pipe_ids, strategy=strategy)
+                plan_details["generation_count"] = plan.total_generations()
+        else:
+            plan = self.plan_generator.generate_plan(pipe_ids, strategy=strategy)
 
         self.emit(
             "orchestrator.plan_generated",

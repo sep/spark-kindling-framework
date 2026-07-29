@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
-from packaging.version import InvalidVersion, Version
-
 from kindling.injection import *
 from kindling.platform_provider import *
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
+from kindling.trace_ops import COMPONENT_APPS
+from packaging.version import InvalidVersion, Version
 
 from .app_files import is_deployable_app_file, is_settings_overlay
 from .notebook_framework import *
@@ -451,7 +451,10 @@ class DataAppManager(DataAppRunner):
         """Run an app with full lifecycle management"""
         self.logger.info(f"DataAppManager.run_app() starting for app: {app_name}")
         with self.tp.span(
-            component=f"kindling-app-{app_name}", operation="running", details={}, reraise=True
+            component=COMPONENT_APPS,
+            operation="run",
+            details={"app_name": app_name},
+            reraise=True,
         ):
             temp_dir = None
             try:
@@ -468,9 +471,9 @@ class DataAppManager(DataAppRunner):
                 # Install dependencies
                 self.logger.info(f"Step 2: Installing dependencies for: {app_name}")
                 with self.tp.span(
-                    component=f"kindling-app-{app_name}",
-                    operation="loading_dependencies",
-                    details={},
+                    component=COMPONENT_APPS,
+                    operation="install_dependencies",
+                    details={"app_name": app_name},
                     reraise=True,
                 ):
                     temp_dir = self._install_app_dependencies(
@@ -481,9 +484,9 @@ class DataAppManager(DataAppRunner):
                 # Load and execute app code
                 self.logger.info(f"Step 3: Loading app code for: {app_name}")
                 with self.tp.span(
-                    component=f"kindling-app-{app_name}",
-                    operation="loading_code",
-                    details={},
+                    component=COMPONENT_APPS,
+                    operation="load_code",
+                    details={"app_name": app_name},
                     reraise=True,
                 ):
                     code, loaded_entry_point = self._load_app_code(
@@ -495,9 +498,9 @@ class DataAppManager(DataAppRunner):
 
                 self.logger.info(f"Step 4: Executing app code for: {app_name}")
                 with self.tp.span(
-                    component=f"kindling-app-{app_name}",
-                    operation="executing_code",
-                    details={},
+                    component=COMPONENT_APPS,
+                    operation="execute_code",
+                    details={"app_name": app_name},
                     reraise=True,
                 ):
                     result = self._execute_app(app_name, code, loaded_entry_point)

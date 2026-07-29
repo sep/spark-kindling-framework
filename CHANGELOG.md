@@ -2,6 +2,70 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Added
+
+- **Comprehensive tracing instrumentation** (gh#210): every major framework
+  operation now produces a coherent span tree on all three trace providers.
+  - Entity-provider operations (read/write/append/merge/replace/ensure/
+    stream setup) are traced automatically at the `EntityProviderRegistry`
+    chokepoint (`kindling.trace_ops`) — object identity, `isinstance`
+    capability probes, and `hasattr` checks are preserved; micro-batch hot
+    loops never produce spans.
+  - Structural seam spans: pipe read/persist, watermark
+    get_cursor/save_cursor/read_changes, config reload, migration
+    plan/apply/per-entity/per-change/blue-green sub-steps/snapshot,
+    orchestrator plan/generation/pipe (covering retries), streaming
+    orchestrator start/stop and recovery attempts, file ingestion
+    (per-file at verbose level), and job deploy/create/run.
+  - Bootstrap span tree: phase windows (config download → app run) are
+    recorded and retro-flushed as `kindling.bootstrap/initialize` plus one
+    child per phase with faithful timestamps via the new
+    `SparkTraceProvider.record_span` (concrete ABC default, so third-party
+    providers keep working).
+  - Design-time CLI spans (`kindling.cli`) around workspace init/deploy,
+    app deploy/run, package deploy, and runtime deploy, gated by
+    `KINDLING_TRACE=1` (no ConfigService exists pre-app-load).
+  - New config keys `kindling.telemetry.tracing.enabled` (default true)
+    and `kindling.telemetry.tracing.level` (minimal/standard/verbose,
+    default standard), read once at initialization.
+  - Spans now carry `parent_id`/`parentSpanId`, so trees are linked
+    explicitly rather than inferred from time containment.
+  - Public `kindling.test_framework.RecordingTraceProvider` for asserting
+    span structure in tests (`find()`/`tree()` helpers).
+  - Decision record: `docs/proposals/comprehensive_tracing_instrumentation.md`.
+
+### Changed
+
+- **Span names normalized to the `kindling.<area>` convention** (gh#210):
+  `data_pipes_executer/execute_datapipes` → `kindling.pipes/run`,
+  `pipe-{pipeid}/execute_datapipe` → `kindling.pipes/pipe.run` (+`pipe_id`
+  attr), `data_utils/merge_and_watermark|replace_entity_table` → single
+  `kindling.pipes/persist` span, stage spans → `kindling.pipes/stage`,
+  `kindling-app-{name}/*` → `kindling.apps/*` (+`app_name` attr),
+  `SimpleFileIngestionProcessor/process_path` → `kindling.ingestion/process`,
+  `query-{label}/streaming_query` → `kindling.streaming/query` (+ label
+  attr), generation executor `execute_{mode}` → `kindling.orchestrator/run`.
+  Dashboards keyed on the old names must re-key. Span attributes are now
+  whitelisted per seam — `pipe.tags`/caller-supplied stage details are no
+  longer exported wholesale (tags may carry credential references).
+- `EventBasedSparkTrace` restores the enclosing span on exit: consecutive
+  top-level operations in one session now get distinct trace ids (matching
+  the plain and OTel providers) instead of blurring into one trace.
+
+### Fixed
+
+- **Failed merges can no longer advance the watermark past unpersisted
+  data**: the batch persist path swallowed merge/append failures inside a
+  `reraise=False` span, fired `persist.after_persist`, and let
+  WatermarkAspect record the pending cursor. The consolidated persist span
+  propagates failures, pairing `persist.persist_failed` with the raise.
+- `AzureMonitorTraceProvider.start_span` constructed `SparkSpan` without
+  the required `traceId` (TypeError on first manual span under the otel
+  provider); it now adopts the OTel trace id when available.
+- File ingestion's trace component no longer names a nonexistent class.
+
 ## [0.12.1] - 2026-07-29
 
 ### Fixed

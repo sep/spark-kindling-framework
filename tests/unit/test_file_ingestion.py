@@ -207,3 +207,23 @@ def test_entry_decorator_omitting_static_values_stores_none():
 
     entry = mgr.get_entry_definition("e2")
     assert entry.static_values is None
+
+
+def test_process_path_disabled_tracing_emits_no_spans():
+    """kindling.telemetry.tracing.enabled=false suppresses the process span."""
+    from kindling.file_ingestion import ParallelizingFileIngestionProcessor
+    from kindling.trace_ops import TracingGates
+
+    proc = object.__new__(ParallelizingFileIngestionProcessor)
+    proc.logger = MagicMock()
+    proc.tp = MagicMock()
+    proc._trace_gates = TracingGates(False, "standard")
+    proc.emit = MagicMock()
+    proc.config = MagicMock()
+    proc.config.get.return_value = 3
+    proc.env = MagicMock()
+    proc.env.list.return_value = []
+
+    proc.process_path("/data")
+
+    proc.tp.span.assert_not_called()

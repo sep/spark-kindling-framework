@@ -9,12 +9,11 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
 from injector import Binder, Injector, inject, singleton
-from py4j.java_gateway import JavaObject
-from py4j.protocol import Py4JError
-
 from kindling.injection import *
 from kindling.spark_config import *
 from kindling.spark_session import *
+from py4j.java_gateway import JavaObject
+from py4j.protocol import Py4JError
 
 from .spark_log_provider import *
 
@@ -178,6 +177,9 @@ class SparkSpan:
     reraise: bool
     start_time: datetime = None
     end_time: datetime = None
+    # Id of the enclosing span at open time (None for roots). Appended with a
+    # default so existing positional constructions keep working.
+    parent_id: Optional[str] = None
 
 
 class SparkTraceProvider(ABC):
@@ -220,6 +222,28 @@ class SparkTraceProvider(ABC):
         """End a manually started span. Optionally record an error."""
         pass
 
+    def record_span(
+        self,
+        operation: str,
+        component: str,
+        start_time: datetime,
+        end_time: datetime,
+        details: dict = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Record an already-completed span with explicit timestamps.
+
+        Concrete default so third-party/duck-typed providers keep working:
+        routes through start_span/end_span and carries the true timestamps in
+        the details. Built-in providers override to honor the given
+        timestamps natively.
+        """
+        recorded_details = dict(details or {})
+        recorded_details["recordedStartTime"] = start_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        recorded_details["recordedEndTime"] = end_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        span = self.start_span(operation, component, details=recorded_details)
+        self.end_span(span, error=error)
+
 
 @GlobalInjector.singleton_autobind()
 class EventBasedSparkTrace(SparkTraceProvider):
@@ -260,18 +284,20 @@ class EventBasedSparkTrace(SparkTraceProvider):
         id = str(self._increment_activity())
         live_details = details if details is not None else {}
 
+        parent_span = self.current_span
         current_span = SparkSpan(
             id=id,
-            component=component or (self.current_span.component if self.current_span else None),
-            operation=operation or (self.current_span.operation if self.current_span else None),
+            component=component or (parent_span.component if parent_span else None),
+            operation=operation or (parent_span.operation if parent_span else None),
             attributes=(
                 live_details
                 if details is not None
-                else (self.current_span.attributes if self.current_span else None)
+                else (parent_span.attributes if parent_span else None)
             ),
             start_time=datetime.now(),
-            traceId=self.current_span.traceId if self.current_span else uuid.uuid4(),
-            reraise=reraise or (self.current_span.reraise if self.current_span else None),
+            traceId=parent_span.traceId if parent_span else uuid.uuid4(),
+            reraise=reraise or (parent_span.reraise if parent_span else None),
+            parent_id=parent_span.id if parent_span else None,
         )
 
         self.current_span = current_span
@@ -285,6 +311,8 @@ class EventBasedSparkTrace(SparkTraceProvider):
             start_details = self._add_timestamp_to_dict(
                 live_details, "startTime", current_span.start_time
             )
+            if current_span.parent_id is not None:
+                start_details["parentSpanId"] = current_span.parent_id
             try:
                 self.emitter.emit_custom_event(
                     current_span.component,
@@ -302,34 +330,51 @@ class EventBasedSparkTrace(SparkTraceProvider):
                 )
                 error_details = self._add_timestamp_to_dict(error_base, "errorTime", error_time)
                 error_details["exception"] = traceback.format_exc()
-                self.emitter.emit_custom_event(
-                    current_span.component,
-                    f"{current_span.operation}_ERROR",
-                    error_details,
-                    current_span.id,
-                    current_span.traceId,
-                )
+                try:
+                    self.emitter.emit_custom_event(
+                        current_span.component,
+                        f"{current_span.operation}_ERROR",
+                        error_details,
+                        current_span.id,
+                        current_span.traceId,
+                    )
+                except Exception:
+                    # A failing emitter must not replace the span's own
+                    # exception on the reraise path.
+                    pass
                 if reraise:
                     raise
 
             finally:
-                current_span.end_time = datetime.now()
-                end_base = self._add_timestamp_to_dict(
-                    live_details, "startTime", current_span.start_time
-                )
-                end_details = self._add_timestamp_to_dict(
-                    end_base, "endTime", current_span.end_time
-                )
-                end_details["totalTime"] = self._calculate_time_diff(
-                    current_span.start_time, current_span.end_time
-                )
-                self.emitter.emit_custom_event(
-                    current_span.component,
-                    f"{current_span.operation}_END",
-                    end_details,
-                    current_span.id,
-                    current_span.traceId,
-                )
+                try:
+                    current_span.end_time = datetime.now()
+                    end_base = self._add_timestamp_to_dict(
+                        live_details, "startTime", current_span.start_time
+                    )
+                    end_details = self._add_timestamp_to_dict(
+                        end_base, "endTime", current_span.end_time
+                    )
+                    end_details["totalTime"] = self._calculate_time_diff(
+                        current_span.start_time, current_span.end_time
+                    )
+                    if current_span.parent_id is not None:
+                        end_details["parentSpanId"] = current_span.parent_id
+                    self.emitter.emit_custom_event(
+                        current_span.component,
+                        f"{current_span.operation}_END",
+                        end_details,
+                        current_span.id,
+                        current_span.traceId,
+                    )
+                except Exception:
+                    # A failing END emission must not break caller control
+                    # flow (or clobber an in-flight exception).
+                    pass
+                finally:
+                    # Restore the enclosing span so sibling spans and
+                    # subsequent runs in the same session do not blur into
+                    # one tree — even when the END emission fails.
+                    self.current_span = parent_span
 
     def start_span(
         self,
@@ -348,9 +393,12 @@ class EventBasedSparkTrace(SparkTraceProvider):
             start_time=datetime.now(),
             traceId=self.current_span.traceId if self.current_span else uuid.uuid4(),
             reraise=False,
+            parent_id=self.current_span.id if self.current_span else None,
         )
 
         start_details = self._add_timestamp_to_dict(live_details, "startTime", span.start_time)
+        if span.parent_id is not None:
+            start_details["parentSpanId"] = span.parent_id
         self.emitter.emit_custom_event(
             span.component,
             f"{span.operation}_START",
@@ -401,10 +449,61 @@ class EventBasedSparkTrace(SparkTraceProvider):
         end_details = self._add_timestamp_to_dict({}, "startTime", span.start_time)
         end_details = self._add_timestamp_to_dict(end_details, "endTime", span.end_time)
         end_details["totalTime"] = self._calculate_time_diff(span.start_time, span.end_time)
+        if span.parent_id is not None:
+            end_details["parentSpanId"] = span.parent_id
         self.emitter.emit_custom_event(
             span.component,
             f"{span.operation}_END",
             end_details,
             span.id,
             span.traceId,
+        )
+
+    def record_span(
+        self,
+        operation: str,
+        component: str,
+        start_time: datetime,
+        end_time: datetime,
+        details: dict = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Emit START/END (and ERROR) for a completed span with the given timestamps."""
+        span_id = str(self._increment_activity())
+        live_details = dict(details or {})
+
+        span = SparkSpan(
+            id=span_id,
+            component=component,
+            operation=operation,
+            attributes=live_details,
+            start_time=start_time,
+            end_time=end_time,
+            traceId=self.current_span.traceId if self.current_span else uuid.uuid4(),
+            reraise=False,
+            parent_id=self.current_span.id if self.current_span else None,
+        )
+
+        start_details = self._add_timestamp_to_dict(live_details, "startTime", start_time)
+        if span.parent_id is not None:
+            start_details["parentSpanId"] = span.parent_id
+        self.emitter.emit_custom_event(
+            span.component, f"{span.operation}_START", start_details, span.id, span.traceId
+        )
+
+        if error:
+            error_details = self._add_timestamp_to_dict(live_details, "startTime", start_time)
+            error_details = self._add_timestamp_to_dict(error_details, "errorTime", end_time)
+            error_details["exception"] = error
+            self.emitter.emit_custom_event(
+                span.component, f"{span.operation}_ERROR", error_details, span.id, span.traceId
+            )
+
+        end_details = self._add_timestamp_to_dict(live_details, "startTime", start_time)
+        end_details = self._add_timestamp_to_dict(end_details, "endTime", end_time)
+        end_details["totalTime"] = self._calculate_time_diff(start_time, end_time)
+        if span.parent_id is not None:
+            end_details["parentSpanId"] = span.parent_id
+        self.emitter.emit_custom_event(
+            span.component, f"{span.operation}_END", end_details, span.id, span.traceId
         )

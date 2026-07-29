@@ -1,6 +1,7 @@
 import time
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -15,6 +16,8 @@ from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_session import *
+from kindling.spark_trace import SparkTraceProvider
+from kindling.trace_ops import COMPONENT_WATERMARK, tracing_gates
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, date_format, lit
@@ -181,15 +184,33 @@ class WatermarkManager(WatermarkService, SignalEmitter):
         lp: PythonLoggerProvider,
         signal_provider: Optional[SignalProvider] = None,
         provider_registry: Optional[EntityProviderRegistry] = None,
+        tp: Optional[SparkTraceProvider] = None,
+        config: Optional[ConfigService] = None,
     ):
         self.wef = wef
         self.ep = ep
         self.provider_registry = provider_registry
         self.logger = lp.get_logger("watermark")
         self.spark = get_or_create_spark_session()
+        self.tp = tp
+        self._trace_gates = tracing_gates(config)
         self._init_signal_emitter(signal_provider)
 
+    def _trace(self, operation: str, details: Dict[str, Any]):
+        """Standard-tier watermark span, or a no-op CM when not traced."""
+        if self.tp is None or not self._trace_gates.standard:
+            return nullcontext()
+        return self.tp.span(
+            operation=operation, component=COMPONENT_WATERMARK, details=details, reraise=True
+        )
+
     def get_cursor(self, source_entity_id: str, reader_id: str) -> Optional[str]:
+        with self._trace(
+            "get_cursor", {"source_entity_id": source_entity_id, "reader_id": reader_id}
+        ):
+            return self._get_cursor(source_entity_id, reader_id)
+
+    def _get_cursor(self, source_entity_id: str, reader_id: str) -> Optional[str]:
         self.logger.debug(f"Getting watermark cursor for {source_entity_id}-{reader_id}")
 
         self.emit("watermark.before_get", source_entity_id=source_entity_id, reader_id=reader_id)
@@ -247,6 +268,19 @@ class WatermarkManager(WatermarkService, SignalEmitter):
         return cursor
 
     def save_cursor(
+        self,
+        source_entity_id: str,
+        reader_id: str,
+        cursor: str,
+        last_execution_id: str,
+    ) -> DataFrame:
+        with self._trace(
+            "save_cursor",
+            {"source_entity_id": source_entity_id, "reader_id": reader_id, "cursor": cursor},
+        ):
+            return self._save_cursor(source_entity_id, reader_id, cursor, last_execution_id)
+
+    def _save_cursor(
         self,
         source_entity_id: str,
         reader_id: str,
@@ -314,6 +348,10 @@ class WatermarkManager(WatermarkService, SignalEmitter):
             raise
 
     def read_changes(self, entity, pipe) -> Tuple[Optional[DataFrame], Optional[str]]:
+        with self._trace("read_changes", {"entity_id": entity.entityid, "pipe_id": pipe.pipeid}):
+            return self._read_changes(entity, pipe)
+
+    def _read_changes(self, entity, pipe) -> Tuple[Optional[DataFrame], Optional[str]]:
         self.logger.debug(f"read_changes - {entity.entityid} for {pipe.name}")
 
         self.emit(
