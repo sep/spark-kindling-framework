@@ -65,6 +65,12 @@ All notable changes to spark-kindling are documented here.
   the required `traceId` (TypeError on first manual span under the otel
   provider); it now adopts the OTel trace id when available.
 - File ingestion's trace component no longer names a nonexistent class.
+- **Databricks ad-hoc app runs no longer raise `AttributeError`** (gh#214).
+  `DatabricksAPI._submit_one_time_run` called
+  `self.client.jobs.runs.submit(...)`, but `WorkspaceClient.jobs` has no
+  `.runs` sub-namespace — `submit` is a direct method on `jobs`, matching
+  every other call site in the file. This broke `kindling app run
+  --platform databricks` for every ad-hoc run.
 
 ## [0.12.1] - 2026-07-29
 
