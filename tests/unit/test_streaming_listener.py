@@ -13,7 +13,6 @@ import time
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
-
 from kindling.streaming_listener import (
     KindlingStreamingListener,
     StreamingEvent,
@@ -575,10 +574,9 @@ class TestTracing:
 
         mock_trace_provider.start_span.assert_called_once()
         call_kwargs = mock_trace_provider.start_span.call_args
-        assert (
-            call_kwargs[1]["operation"] == "streaming_query"
-            or call_kwargs[0][0] == "streaming_query"
-        )
+        assert call_kwargs[1]["operation"] == "query"
+        assert call_kwargs[1]["component"] == "kindling.streaming"
+        assert call_kwargs[1]["details"]["query_label"] == "test_query"
 
     def test_query_progress_adds_span_event(self, started_listener, mock_trace_provider):
         """onQueryProgress should add an event to the query's trace span."""

@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 from injector import inject
-
 from kindling.execution_strategy import ExecutionPlan
 from kindling.generation_executor import (
     ErrorStrategy,
@@ -28,7 +28,9 @@ from kindling.generation_executor import (
 from kindling.injection import GlobalInjector
 from kindling.pipe_streaming import PipeStreamStarter
 from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
+from kindling.spark_trace import SparkTraceProvider
 from kindling.streaming_health_monitor import StreamingHealthMonitor
 from kindling.streaming_listener import KindlingStreamingListener
 from kindling.streaming_query_manager import (
@@ -37,6 +39,7 @@ from kindling.streaming_query_manager import (
     StreamingQueryState,
 )
 from kindling.streaming_recovery_manager import StreamingRecoveryManager
+from kindling.trace_ops import COMPONENT_STREAMING, tracing_gates
 
 
 @dataclass
@@ -77,6 +80,8 @@ class StreamingOrchestrator(SignalEmitter):
         recovery_manager: StreamingRecoveryManager,
         logger_provider: PythonLoggerProvider,
         signal_provider: SignalProvider = None,
+        tp: Optional[SparkTraceProvider] = None,
+        config: Optional[ConfigService] = None,
     ):
         self.pipe_stream_starter = pipe_stream_starter
         self.query_manager = query_manager
@@ -84,11 +89,21 @@ class StreamingOrchestrator(SignalEmitter):
         self.health_monitor = health_monitor
         self.recovery_manager = recovery_manager
         self.logger = logger_provider.get_logger("StreamingOrchestrator")
+        self.tp = tp
+        self._trace_gates = tracing_gates(config)
         self._init_signal_emitter(signal_provider)
 
         self._current_result: Optional[ExecutionResult] = None
         self._query_ids_by_pipe: Dict[str, str] = {}
         self._listener_registered = False
+
+    def _trace(self, operation: str, details: Optional[Dict[str, Any]] = None):
+        """Standard-tier streaming-lifecycle span, or a no-op CM."""
+        if self.tp is None or not self._trace_gates.standard:
+            return nullcontext()
+        return self.tp.span(
+            operation=operation, component=COMPONENT_STREAMING, details=details, reraise=True
+        )
 
     def start(
         self,
@@ -97,6 +112,18 @@ class StreamingOrchestrator(SignalEmitter):
         error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
     ) -> ExecutionResult:
         """Start all streaming pipes in a plan and return immediately."""
+        details = {"pipe_count": plan.total_pipes()}
+        with self._trace("start", details):
+            result = self._start(plan, streaming_options, error_strategy)
+            details["run_id"] = result.run_id
+            return result
+
+    def _start(
+        self,
+        plan: ExecutionPlan,
+        streaming_options: Optional[Dict[str, Any]] = None,
+        error_strategy: ErrorStrategy = ErrorStrategy.FAIL_FAST,
+    ) -> ExecutionResult:
         if self._current_result is not None and self.get_status().active_query_count > 0:
             raise RuntimeError("StreamingOrchestrator already has active queries")
 
@@ -239,19 +266,20 @@ class StreamingOrchestrator(SignalEmitter):
 
     def stop(self, await_termination: bool = True) -> None:
         """Stop all managed streaming queries and monitoring components."""
-        for query_id in reversed(list(self._query_ids_by_pipe.values())):
-            try:
-                query_info = self.query_manager.get_query_status(query_id)
-            except Exception:
-                continue
+        with self._trace("stop", {"query_count": len(self._query_ids_by_pipe)}):
+            for query_id in reversed(list(self._query_ids_by_pipe.values())):
+                try:
+                    query_info = self.query_manager.get_query_status(query_id)
+                except Exception:
+                    continue
 
-            if query_info.spark_query is None:
-                continue
+                if query_info.spark_query is None:
+                    continue
 
-            if getattr(query_info.spark_query, "isActive", False):
-                self.query_manager.stop_query(query_id, await_termination=await_termination)
+                if getattr(query_info.spark_query, "isActive", False):
+                    self.query_manager.stop_query(query_id, await_termination=await_termination)
 
-        self.stop_runtime()
+            self.stop_runtime()
 
         self.emit(
             "streaming.orchestrator_stopped",

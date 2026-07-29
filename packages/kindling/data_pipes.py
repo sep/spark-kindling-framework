@@ -15,6 +15,7 @@ from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
+from kindling.trace_ops import COMPONENT_PIPES
 from pyspark.sql import DataFrame
 
 from .data_entities import *
@@ -435,7 +436,10 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
             # reraise=True: a swallowed span exception would leave the failed
             # run looking successful to the caller.
             with self.tp.span(
-                component="data_pipes_executer", operation="execute_datapipes", reraise=True
+                component=COMPONENT_PIPES,
+                operation="run",
+                details={"run_id": run_id, "pipe_count": len(pipes)},
+                reraise=True,
             ):
                 for index, pipeid in enumerate(pipes):
                     pipe = self.dpr.get_pipe_definition(pipeid)
@@ -453,10 +457,17 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
                     )
 
                     try:
+                        # Whitelisted attributes only — pipe.tags may carry
+                        # credential references and must never be exported
+                        # wholesale as span attributes.
                         with self.tp.span(
-                            operation="execute_datapipe",
-                            component=f"pipe-{pipeid}",
-                            details=pipe.tags,
+                            operation="pipe.run",
+                            component=COMPONENT_PIPES,
+                            details={
+                                "pipe_id": pipeid,
+                                "pipe_name": pipe.name,
+                                "run_id": run_id,
+                            },
                             reraise=True,
                         ):
                             was_skipped = self._execute_datapipe(

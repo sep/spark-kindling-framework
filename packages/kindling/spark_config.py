@@ -330,6 +330,30 @@ class DynaconfConfig(ConfigService):
             raise AttributeError(f"No configuration found for '{name}'")
         return value
 
+    def _reload_trace_span(self):
+        """Standard-tier span for hot reloads.
+
+        Resolved lazily: the trace providers inject ConfigService, so the
+        config service cannot hold one from construction. Reloads are rare;
+        per-call resolution is fine. Never lets tracing break a reload.
+        """
+        try:
+            from contextlib import nullcontext
+
+            from kindling.trace_ops import COMPONENT_CONFIG, tracing_gates
+
+            if not tracing_gates(self).standard:
+                return nullcontext()
+            from kindling.injection import GlobalInjector
+            from kindling.spark_trace import SparkTraceProvider
+
+            tp = GlobalInjector.get(SparkTraceProvider)
+            return tp.span(operation="reload", component=COMPONENT_CONFIG, reraise=True)
+        except Exception:
+            from contextlib import nullcontext
+
+            return nullcontext()
+
     def reload(self) -> Dict[str, Any]:
         """Hot-reload configuration from storage.
 
@@ -339,6 +363,10 @@ class DynaconfConfig(ConfigService):
         Raises:
             ConfigReloadError: If reload fails and cannot rollback
         """
+        with self._reload_trace_span():
+            return self._reload()
+
+    def _reload(self) -> Dict[str, Any]:
         with self._config_lock:
             old_config = self.get_all()
             old_dynaconf = self.dynaconf

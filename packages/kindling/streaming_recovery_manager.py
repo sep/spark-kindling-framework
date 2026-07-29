@@ -46,17 +46,20 @@ Example:
 
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Callable, Dict, Optional
 
 from injector import inject
-
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
+from kindling.spark_trace import SparkTraceProvider
 from kindling.streaming_query_manager import StreamingQueryManager
+from kindling.trace_ops import COMPONENT_STREAMING, tracing_gates
 
 # =============================================================================
 # Data Structures
@@ -199,6 +202,8 @@ class StreamingRecoveryManager(SignalEmitter):
         initial_backoff=1.0,
         max_backoff=300.0,
         check_interval=5.0,
+        tp: Optional[SparkTraceProvider] = None,
+        config: Optional[ConfigService] = None,
     ):
         """
         Initialize the streaming recovery manager.
@@ -217,6 +222,8 @@ class StreamingRecoveryManager(SignalEmitter):
         self.logger = logger_provider.get_logger("StreamingRecoveryManager")
         self.signal_provider = signal_provider
         self.query_manager = query_manager
+        self.tp = tp
+        self._trace_gates = tracing_gates(config)
         # No type annotations on primitives — injector only resolves annotated params
         self.max_retries = max_retries
         self.initial_backoff = initial_backoff
@@ -558,10 +565,27 @@ class StreamingRecoveryManager(SignalEmitter):
             attempt_time=attempt_time,
         )
 
+        recovery_span = (
+            self.tp.span(
+                operation="recover",
+                component=COMPONENT_STREAMING,
+                details={
+                    "query_id": query_id,
+                    "query_name": query_name,
+                    "retry": retry_count,
+                },
+                reraise=True,
+            )
+            if self.tp is not None and self._trace_gates.standard
+            else nullcontext()
+        )
         try:
             # Execute restart outside the state lock to avoid lock contention.
-            if restart_function:
-                restart_function()
+            # The span reraises so the existing failure handling below still
+            # runs; recovery itself never dies to tracing.
+            with recovery_span:
+                if restart_function:
+                    restart_function()
 
             with self._state_lock:
                 current_state = self._recovery_states.get(state.query_id)

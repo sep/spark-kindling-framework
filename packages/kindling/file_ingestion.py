@@ -5,15 +5,13 @@ import uuid
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass, fields
 from functools import reduce
 from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import current_timestamp, lit
-
 from kindling.data_entities import *
 from kindling.file_ingestion import *
 from kindling.injection import *
@@ -23,6 +21,9 @@ from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_session import *
 from kindling.spark_trace import *
+from kindling.trace_ops import COMPONENT_INGESTION, tracing_gates
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import current_timestamp, lit
 
 
 @dataclass
@@ -174,6 +175,7 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
         self.logger = lp.get_logger("SimpleFileIngestionProcessor")
         self.spark = get_or_create_spark_session()
         self.env = pep.get_service()
+        self._trace_gates = tracing_gates(config)
 
     def _build_df_plan(self, fn: str, path: str, transform: Optional[Callable] = None):
         """Build DataFrame plan without executing - keep it lazy.
@@ -259,10 +261,11 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
             for df in dfs[1:]:
                 combined_df = combined_df.unionByName(df, allowMissingColumns=True)
 
-        # Spark reads all files for THIS table in parallel during write
+        # Spark reads all files for THIS table in parallel during write.
+        # No dedicated span here: the provider-op tracer (trace_ops) supplies
+        # the append_to_entity child span.
         try:
-            with self.tp.span(operation="append_to_entity"):
-                self.ep.append_to_entity(combined_df, de)
+            self.ep.append_to_entity(combined_df, de)
 
             self.logger.info(f"Successfully wrote {len(df_list)} files to {dest_entity_id}")
 
@@ -308,10 +311,13 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
         success_files = 0
         failed_files = 0
 
+        # Component previously named a nonexistent class
+        # ("SimpleFileIngestionProcessor"); normalized to the naming
+        # convention (gh#210).
         with self.tp.span(
-            component="SimpleFileIngestionProcessor",
-            operation="process_path",
-            details={"path": path},
+            component=COMPONENT_INGESTION,
+            operation="process",
+            details={"path": path, "batch_id": batch_id},
             reraise=True,
         ):
             filenames = self.env.list(path)
@@ -333,8 +339,21 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
                     # Emit before_file signal
                     self.emit("file_ingestion.before_file", filename=fn, batch_id=batch_id)
 
+                    # Per-file spans only at verbose level: paths can hold
+                    # thousands of files and standard runs must stay lean.
+                    file_span = (
+                        self.tp.span(
+                            operation="file",
+                            component=COMPONENT_INGESTION,
+                            details={"filename": fn, "batch_id": batch_id},
+                            reraise=True,
+                        )
+                        if self._trace_gates.verbose
+                        else nullcontext()
+                    )
                     try:
-                        result = self._build_df_plan(fn, path, transform)
+                        with file_span:
+                            result = self._build_df_plan(fn, path, transform)
                         if result:
                             dest_entity_id, df, file_info = result
                             df_plans[dest_entity_id].append((df, file_info))

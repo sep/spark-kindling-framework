@@ -34,16 +34,39 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from injector import inject
-
 from kindling.data_entities import DataEntityRegistry, EntityMetadata
 from kindling.entity_provider_delta import DeltaEntityProvider, DeltaTableReference
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
+
+
+def _migration_span(operation: str, details: Optional[Dict[str, Any]] = None):
+    """Minimal-tier migration span; no-op when tracing is off or unresolvable.
+
+    Migrations are rare design-time/ops runs, so the trace provider is
+    resolved per call instead of threading it through the planner/applier/
+    manager constructors. Tracing must never break a migration.
+    """
+    try:
+        from kindling.spark_config import ConfigService
+        from kindling.spark_trace import SparkTraceProvider
+        from kindling.trace_ops import COMPONENT_MIGRATION, tracing_gates
+
+        if not tracing_gates(GlobalInjector.get(ConfigService)).minimal:
+            return nullcontext()
+        tp = GlobalInjector.get(SparkTraceProvider)
+        return tp.span(
+            operation=operation, component=COMPONENT_MIGRATION, details=details, reraise=True
+        )
+    except Exception:
+        return nullcontext()
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -580,10 +603,11 @@ class MigrationApplier:
             if status.is_up_to_date:
                 self._logger.info(f"{status.entity.entityid}: up to date, nothing to do")
                 continue
-            if status.entity.is_sql_entity:
-                self._apply_sql_entity(status)
-            else:
-                self._apply_delta_entity(status, allow_destructive, backup, user_transforms)
+            with _migration_span("entity.apply", {"entity_id": status.entity.entityid}):
+                if status.entity.is_sql_entity:
+                    self._apply_sql_entity(status)
+                else:
+                    self._apply_delta_entity(status, allow_destructive, backup, user_transforms)
 
     def _apply_sql_entity(self, status: EntityMigrationStatus) -> None:
         """Apply CREATE_VIEW or UPDATE_VIEW — always safe, always idempotent."""
@@ -646,7 +670,11 @@ class MigrationApplier:
         # Apply safe changes first (they don't need a rewrite)
         for change in status.changes:
             if change.destructiveness == ChangeDestructiveness.SAFE:
-                self._apply_safe_delta_change(entity, table_ref, change)
+                with _migration_span(
+                    "change.apply",
+                    {"entity_id": entity.entityid, "change_kind": change.kind.value},
+                ):
+                    self._apply_safe_delta_change(entity, table_ref, change)
 
         # Collect destructive changes and apply via rewrite if needed
         destructive = [
@@ -746,33 +774,37 @@ class MigrationApplier:
             f"Blue-green rewrite for {entity.entityid}: building green table {green_name}"
         )
 
-        # Read existing data and apply transforms
-        old_df = spark.read.table(original_name)
-        new_df = self._apply_transforms(old_df, entity, changes, user_transforms)
+        # Read existing data and apply transforms, then write green
+        with _migration_span("rewrite.build", {"entity_id": entity.entityid}):
+            old_df = spark.read.table(original_name)
+            new_df = self._apply_transforms(old_df, entity, changes, user_transforms)
 
-        # Write green
-        writer = new_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true")
-        if entity.partition_columns:
-            writer = writer.partitionBy(*entity.partition_columns)
-        writer.saveAsTable(green_name)
+            writer = (
+                new_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true")
+            )
+            if entity.partition_columns:
+                writer = writer.partitionBy(*entity.partition_columns)
+            writer.saveAsTable(green_name)
 
         # Validate
-        old_count = old_df.count()
-        new_count = spark.read.table(green_name).count()
-        if new_count != old_count:
-            self._logger.warning(
-                f"Row count mismatch after rewrite for {entity.entityid}: "
-                f"old={old_count}, new={new_count}. Green table preserved at {green_name}."
-            )
-            raise RuntimeError(
-                f"Migration validation failed for '{entity.entityid}': "
-                f"row count changed from {old_count} to {new_count}."
-            )
+        with _migration_span("rewrite.validate", {"entity_id": entity.entityid}):
+            old_count = old_df.count()
+            new_count = spark.read.table(green_name).count()
+            if new_count != old_count:
+                self._logger.warning(
+                    f"Row count mismatch after rewrite for {entity.entityid}: "
+                    f"old={old_count}, new={new_count}. Green table preserved at {green_name}."
+                )
+                raise RuntimeError(
+                    f"Migration validation failed for '{entity.entityid}': "
+                    f"row count changed from {old_count} to {new_count}."
+                )
 
         # Swap: archive blue, promote green
         self._logger.info(f"Swapping tables: {original_name} -> blue archive, {green_name} -> live")
-        spark.sql(f"ALTER TABLE {quoted_original} RENAME TO {quoted_blue}")
-        spark.sql(f"ALTER TABLE {quoted_green} RENAME TO {quoted_original}")
+        with _migration_span("rewrite.swap", {"entity_id": entity.entityid}):
+            spark.sql(f"ALTER TABLE {quoted_original} RENAME TO {quoted_blue}")
+            spark.sql(f"ALTER TABLE {quoted_green} RENAME TO {quoted_original}")
         self._logger.info(
             f"Rewrite complete for {entity.entityid}. "
             f"Old data archived at {blue_archive_name}. "
@@ -795,13 +827,16 @@ class MigrationApplier:
         spark = get_or_create_spark_session()
 
         self._logger.info(f"In-place rewrite for {entity.entityid} at {table_ref.table_path}")
-        old_df = spark.read.format("delta").load(table_ref.table_path)
-        new_df = self._apply_transforms(old_df, entity, changes, user_transforms)
+        with _migration_span("rewrite.inplace", {"entity_id": entity.entityid}):
+            old_df = spark.read.format("delta").load(table_ref.table_path)
+            new_df = self._apply_transforms(old_df, entity, changes, user_transforms)
 
-        writer = new_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true")
-        if entity.partition_columns:
-            writer = writer.partitionBy(*entity.partition_columns)
-        writer.save(table_ref.table_path)
+            writer = (
+                new_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true")
+            )
+            if entity.partition_columns:
+                writer = writer.partitionBy(*entity.partition_columns)
+            writer.save(table_ref.table_path)
         self._logger.info(f"In-place rewrite complete for {entity.entityid}")
 
     # ------------------------------------------------------------------
@@ -816,15 +851,16 @@ class MigrationApplier:
         stamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         target = self._table_target(table_ref)
 
-        if self._provider._is_for_name_mode(table_ref.access_mode):
-            snapshot_name = f"{table_ref.table_name}_snapshot_{stamp}"
-            quoted_snap = self._provider._quote_table_identifier(snapshot_name)
-            self._logger.info(f"Snapshotting {entity.entityid} -> {snapshot_name}")
-            spark.sql(f"CREATE TABLE {quoted_snap} CLONE {target}")
-        else:
-            snapshot_path = f"{table_ref.table_path}/_snapshots/{stamp}"
-            self._logger.info(f"Snapshotting {entity.entityid} -> {snapshot_path}")
-            spark.sql(f"CREATE TABLE delta.`{snapshot_path}` CLONE {target}")
+        with _migration_span("snapshot", {"entity_id": entity.entityid}):
+            if self._provider._is_for_name_mode(table_ref.access_mode):
+                snapshot_name = f"{table_ref.table_name}_snapshot_{stamp}"
+                quoted_snap = self._provider._quote_table_identifier(snapshot_name)
+                self._logger.info(f"Snapshotting {entity.entityid} -> {snapshot_name}")
+                spark.sql(f"CREATE TABLE {quoted_snap} CLONE {target}")
+            else:
+                snapshot_path = f"{table_ref.table_path}/_snapshots/{stamp}"
+                self._logger.info(f"Snapshotting {entity.entityid} -> {snapshot_path}")
+                spark.sql(f"CREATE TABLE delta.`{snapshot_path}` CLONE {target}")
 
     # ------------------------------------------------------------------
     # Transform application
@@ -976,7 +1012,12 @@ class MigrationService:
 
     def plan(self) -> MigrationPlan:
         """Inspect all registered entities and return a MigrationPlan."""
-        return self._planner.plan()
+        details: Dict[str, Any] = {}
+        with _migration_span("plan", details):
+            plan = self._planner.plan()
+            details["entity_count"] = len(plan.statuses)
+            details["change_count"] = sum(len(s.changes) for s in plan.statuses)
+            return plan
 
     def apply(
         self,
@@ -986,12 +1027,20 @@ class MigrationService:
         user_transforms: Optional[Dict[str, object]] = None,
     ) -> None:
         """Apply a MigrationPlan."""
-        self._applier.apply(
-            plan,
-            allow_destructive=allow_destructive,
-            backup=backup,
-            user_transforms=user_transforms,
-        )
+        with _migration_span(
+            "apply",
+            {
+                "entity_count": len(plan.statuses),
+                "allow_destructive": allow_destructive,
+                "backup": backup.value,
+            },
+        ):
+            self._applier.apply(
+                plan,
+                allow_destructive=allow_destructive,
+                backup=backup,
+                user_transforms=user_transforms,
+            )
 
     def rollback(self, entity: EntityMetadata) -> None:
         """Restore the pre-migration blue archive to live (CATALOG mode only)."""

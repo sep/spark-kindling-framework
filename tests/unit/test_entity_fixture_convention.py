@@ -12,7 +12,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_csv import (
     FixtureCSVEntityProvider,
@@ -207,6 +206,8 @@ class TestCreatePipeEntityReaderFixtureConvention:
         provider_registry = MagicMock()
         signal_provider = MagicMock()
 
+        from kindling.trace_ops import tracing_gates
+
         strategy = SimpleReadPersistStrategy.__new__(SimpleReadPersistStrategy)
         strategy.wms = wms
         strategy.ep = ep
@@ -216,6 +217,7 @@ class TestCreatePipeEntityReaderFixtureConvention:
         strategy.provider_registry = provider_registry
         strategy._signal_provider = signal_provider
         strategy._listeners = {}
+        strategy._trace_gates = tracing_gates(None)
         return strategy
 
     def test_fixture_csv_used_when_present_and_local(self, tmp_path):

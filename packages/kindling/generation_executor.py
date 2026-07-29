@@ -50,6 +50,7 @@ from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_trace import SparkTraceProvider
+from kindling.trace_ops import COMPONENT_ORCHESTRATOR, COMPONENT_PIPES, tracing_gates
 
 
 class ErrorStrategy(Enum):
@@ -243,6 +244,7 @@ class GenerationExecutor(SignalEmitter):
         self.persist_strategy = persist_strategy
         self.tp = trace_provider
         self.logger = logger_provider.get_logger("generation_executor")
+        self._trace_gates = tracing_gates(config_service)
         self._init_signal_emitter(signal_provider)
         # Optional: used only for the retry-safety warning (merge-capable
         # output providers make retried persists idempotent).
@@ -344,8 +346,9 @@ class GenerationExecutor(SignalEmitter):
 
         try:
             with self.tp.span(
-                component="generation_executor",
-                operation=f"execute_{mode}",
+                component=COMPONENT_ORCHESTRATOR,
+                operation="run",
+                details={"run_id": run_id, "mode": mode},
             ):
                 blocked: Dict[str, str] = {}  # pipe_id -> upstream pipe that failed
                 for generation in plan.generations:
@@ -789,6 +792,56 @@ class GenerationExecutor(SignalEmitter):
         Pipes present in `blocked` (skip_dependents poisoning: pipe_id ->
         failed upstream pipe) are skipped without executing.
         """
+        if not self._trace_gates.standard:
+            return self._run_generation(
+                generation,
+                run_id,
+                is_streaming,
+                parallel,
+                max_workers,
+                error_strategy,
+                pipe_timeout,
+                streaming_options,
+                no_watermark,
+                blocked,
+            )
+        details = {
+            "run_id": run_id,
+            "generation": generation.number,
+            "pipe_count": len(generation.pipe_ids),
+        }
+        with self.tp.span(
+            operation="generation", component=COMPONENT_ORCHESTRATOR, details=details, reraise=True
+        ):
+            gen_result = self._run_generation(
+                generation,
+                run_id,
+                is_streaming,
+                parallel,
+                max_workers,
+                error_strategy,
+                pipe_timeout,
+                streaming_options,
+                no_watermark,
+                blocked,
+            )
+            details["failed_count"] = gen_result.failed_count
+            details["skipped_count"] = gen_result.skipped_count
+            return gen_result
+
+    def _run_generation(
+        self,
+        generation: Generation,
+        run_id: str,
+        is_streaming: bool,
+        parallel: bool,
+        max_workers: int,
+        error_strategy: ErrorStrategy,
+        pipe_timeout: Optional[float],
+        streaming_options: Optional[Dict[str, Any]],
+        no_watermark: bool = False,
+        blocked: Optional[Dict[str, str]] = None,
+    ) -> GenerationResult:
         gen_start = time.time()
         blocked = blocked or {}
 
@@ -948,6 +1001,37 @@ class GenerationExecutor(SignalEmitter):
         no_watermark: bool = False,
     ) -> PipeResult:
         """Execute a single pipe (batch or streaming), with retry per policy.
+
+        One pipe.run span covers all attempts; a failed pipe returns a
+        PipeResult rather than raising, so the outcome is carried in the
+        status/attempts attributes. Under parallel execution this runs on a
+        worker thread — spans inherit the shared current_span trace id.
+        """
+        if not self._trace_gates.minimal:
+            return self._execute_pipe_attempts(
+                pipe_id, run_id, is_streaming, pipe_timeout, streaming_options, no_watermark
+            )
+        details = {"pipe_id": pipe_id, "run_id": run_id, "streaming": is_streaming}
+        with self.tp.span(
+            operation="pipe.run", component=COMPONENT_PIPES, details=details, reraise=True
+        ):
+            result = self._execute_pipe_attempts(
+                pipe_id, run_id, is_streaming, pipe_timeout, streaming_options, no_watermark
+            )
+            details["status"] = result.status
+            details["attempts"] = result.attempts
+            return result
+
+    def _execute_pipe_attempts(
+        self,
+        pipe_id: str,
+        run_id: str,
+        is_streaming: bool,
+        pipe_timeout: Optional[float],
+        streaming_options: Optional[Dict[str, Any]],
+        no_watermark: bool = False,
+    ) -> PipeResult:
+        """The retry loop for one pipe.
 
         Only exceptions raised inside an attempt are retried. Timeouts
         surfaced by the parallel wrapper (`future.result`) are never retried

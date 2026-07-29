@@ -5,15 +5,15 @@ from typing import Dict, Optional
 
 from delta.tables import *
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql.functions import current_timestamp, lit, row_number, when
-from pyspark.sql.window import Window
-
 from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_trace import *
+from kindling.trace_ops import COMPONENT_PIPES
+from pyspark.sql.functions import current_timestamp, lit, row_number, when
+from pyspark.sql.window import Window
 
 from .simple_read_persist_strategy import *
 
@@ -85,10 +85,17 @@ class StageProcessor(StageProcessingService, SignalEmitter):
         )
 
         try:
+            # Structured, whitelisted attributes: stage_details is caller-
+            # supplied free-form data and must not be exported wholesale.
             with self.tp.span(
-                component=stage_description,
-                operation=stage_description,
-                details=stage_details,
+                component=COMPONENT_PIPES,
+                operation="stage",
+                details={
+                    "stage": stage,
+                    "layer": layer,
+                    "execution_id": execution_id,
+                    "pipe_count": len(stage_pipe_ids),
+                },
                 reraise=True,
             ):
                 if any(self.dpr.get_pipe_definition(pid).use_watermark for pid in stage_pipe_ids):

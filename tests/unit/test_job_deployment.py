@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
 import pytest
+from kindling.trace_ops import tracing_gates
 
 
 class TestDataAppDeployer:
@@ -33,6 +34,8 @@ class TestDataAppDeployer:
         deployer = DataAppDeployer.__new__(DataAppDeployer)
         deployer.platform = mock_platform
         deployer.logger = mock_logger
+        deployer.tp = None
+        deployer._trace_gates = tracing_gates(None)
 
         # Initialize utilities
         deployer.packager = AppPackager()
@@ -70,6 +73,8 @@ class TestDataAppDeployer:
             deployer = DataAppDeployer.__new__(DataAppDeployer)
             deployer.platform = mock_platform
             deployer.logger = mock_logger
+            deployer.tp = None
+            deployer._trace_gates = tracing_gates(None)
             deployer.packager = AppPackager()
             deployer.validator = JobConfigValidator()
 
@@ -110,6 +115,8 @@ class TestDataAppDeployer:
             deployer = DataAppDeployer.__new__(DataAppDeployer)
             deployer.platform = mock_platform
             deployer.logger = Mock()
+            deployer.tp = None
+            deployer._trace_gates = tracing_gates(None)
             deployer.packager = AppPackager()
             deployer.validator = JobConfigValidator()
 
@@ -135,6 +142,8 @@ class TestDataAppDeployer:
         deployer = DataAppDeployer.__new__(DataAppDeployer)
         deployer.platform = mock_platform
         deployer.logger = mock_logger
+        deployer.tp = None
+        deployer._trace_gates = tracing_gates(None)
         deployer.validator = JobConfigValidator()
 
         result = deployer.create_job({"job_name": "test-job", "app_name": "my-app"})
@@ -168,6 +177,8 @@ class TestDataAppDeployer:
             deployer = DataAppDeployer.__new__(DataAppDeployer)
             deployer.platform = mock_platform
             deployer.logger = mock_logger
+            deployer.tp = None
+            deployer._trace_gates = tracing_gates(None)
             deployer.packager = AppPackager()
             deployer.validator = JobConfigValidator()
 
@@ -208,6 +219,8 @@ class TestDataAppDeployer:
         deployer = DataAppDeployer.__new__(DataAppDeployer)
         deployer.platform = mock_platform
         deployer.logger = mock_logger
+        deployer.tp = None
+        deployer._trace_gates = tracing_gates(None)
 
         # Run job
         run_id = deployer.run_job("job-123", {"param1": "value1"})
@@ -250,6 +263,8 @@ class TestDataAppDeployer:
         deployer = DataAppDeployer.__new__(DataAppDeployer)
         deployer.platform = mock_platform
         deployer.logger = mock_logger
+        deployer.tp = None
+        deployer._trace_gates = tracing_gates(None)
 
         # Cancel job
         result = deployer.cancel_job("run-123")
@@ -270,6 +285,8 @@ class TestDataAppDeployer:
         deployer = DataAppDeployer.__new__(DataAppDeployer)
         deployer.platform = mock_platform
         deployer.logger = mock_logger
+        deployer.tp = None
+        deployer._trace_gates = tracing_gates(None)
 
         result = deployer.cleanup_app("my-app")
 

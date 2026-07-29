@@ -21,6 +21,7 @@ import os
 import time
 import uuid
 import zipfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -29,7 +30,10 @@ from injector import inject
 from .app_files import is_deployable_app_file
 from .platform_provider import PlatformServiceProvider
 from .signaling import SignalEmitter, SignalProvider
+from .spark_config import ConfigService
 from .spark_log_provider import PythonLoggerProvider
+from .spark_trace import SparkTraceProvider
+from .trace_ops import COMPONENT_DEPLOY, tracing_gates
 
 # ============================================================================
 # UTILITIES - Pure functions for mechanical operations
@@ -222,6 +226,8 @@ class DataAppDeployer(SignalEmitter):
         platform_provider: PlatformServiceProvider,
         logger_provider: PythonLoggerProvider,
         signal_provider: Optional[SignalProvider] = None,
+        tp: Optional[SparkTraceProvider] = None,
+        config: Optional[ConfigService] = None,
     ):
         """Initialize deployer with injected dependencies
 
@@ -229,14 +235,26 @@ class DataAppDeployer(SignalEmitter):
             platform_provider: Provider for platform service
             logger_provider: Provider for logger
             signal_provider: Optional signal provider for event emissions
+            tp: Optional trace provider for deploy/run spans
+            config: Optional config service (tracing gates)
         """
         self.platform = platform_provider.get()
         self.logger = logger_provider.get()
+        self.tp = tp
+        self._trace_gates = tracing_gates(config)
         self._init_signal_emitter(signal_provider)
 
         # Initialize utilities (no DI needed - pure utilities)
         self.packager = AppPackager()
         self.validator = JobConfigValidator()
+
+    def _trace(self, operation: str, details: Optional[Dict[str, Any]] = None):
+        """Deploy spans are minimal-tier; no-op CM when tracing is off."""
+        if self.tp is None or not self._trace_gates.minimal:
+            return nullcontext()
+        return self.tp.span(
+            operation=operation, component=COMPONENT_DEPLOY, details=details, reraise=True
+        )
 
     def deploy_app(
         self,
@@ -257,6 +275,15 @@ class DataAppDeployer(SignalEmitter):
         Returns:
             Storage path where app was deployed
         """
+        with self._trace("app.deploy", {"app_name": app_name, "environment": environment or ""}):
+            return self._deploy_app(app_path, app_name, environment)
+
+    def _deploy_app(
+        self,
+        app_path: str,
+        app_name: str,
+        environment: Optional[str] = None,
+    ) -> str:
         platform_name = self.platform.get_platform_name()
         environment_name = (
             environment
@@ -325,6 +352,10 @@ class DataAppDeployer(SignalEmitter):
         Returns:
             Dictionary with job info including 'job_id'
         """
+        with self._trace("job.create", {"job_name": job_config.get("job_name", "unknown")}):
+            return self._create_job(job_config)
+
+    def _create_job(self, job_config: Dict[str, Any]) -> Dict[str, Any]:
         platform_name = self.platform.get_platform_name()
         job_name = job_config.get("job_name", "unknown")
 
@@ -411,6 +442,10 @@ class DataAppDeployer(SignalEmitter):
         Returns:
             Run ID for monitoring
         """
+        with self._trace("job.run", {"job_id": job_id}):
+            return self._run_job(job_id, parameters)
+
+    def _run_job(self, job_id: str, parameters: Dict[str, Any] = None) -> str:
         self.logger.info(f"Running job: {job_id}")
 
         self.emit("job.before_run", job_id=job_id, parameters=parameters)

@@ -18,6 +18,7 @@ un-register tracing.
 """
 
 import functools
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from kindling.features import _coerce_bool
@@ -95,6 +96,42 @@ def read_tracing_settings(config_service) -> Tuple[bool, str]:
     if level not in _LEVEL_ORDER:
         level = LEVEL_STANDARD
     return enabled, level
+
+
+@dataclass(frozen=True)
+class TracingGates:
+    """Cached per-service span gates (read once at construction; config-first).
+
+    ``minimal`` spans emit whenever tracing is enabled; ``standard`` and
+    ``verbose`` require the corresponding level. A config reload does not
+    re-gate a constructed service.
+    """
+
+    enabled: bool
+    level: str
+
+    @property
+    def minimal(self) -> bool:
+        return self.enabled
+
+    @property
+    def standard(self) -> bool:
+        return self.enabled and level_at_least(self.level, LEVEL_STANDARD)
+
+    @property
+    def verbose(self) -> bool:
+        return self.enabled and level_at_least(self.level, LEVEL_VERBOSE)
+
+
+def tracing_gates(config_service=None) -> TracingGates:
+    """Gates from config; defaults (enabled, standard) when no config exists.
+
+    Accepting ``None`` keeps directly-constructed services (tests, shims)
+    working without a ConfigService.
+    """
+    if config_service is None:
+        return TracingGates(True, LEVEL_STANDARD)
+    return TracingGates(*read_tracing_settings(config_service))
 
 
 def whitelist_details(mapping: Optional[Dict[str, Any]], keys) -> Dict[str, Any]:
