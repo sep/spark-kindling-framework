@@ -38,6 +38,16 @@ declarations; the per-declaration pipes stay registered and independently
 executable — the chain is an alternative lowering over the same metadata,
 not a replacement.
 
+``collapse_temporal_chain`` (below) is the one apps should reach for in
+practice: it does everything ``declare_temporal_chain`` does, then also
+unregisters the per-declaration pipes the chain supersedes, so a run over
+"every registered pipe" doesn't execute both lowerings at once. It runs
+automatically before every ``run_datapipes`` call that touches a
+per-declaration temporal pipe — see ``kindling.temporal.autocollapse`` —
+so most apps never need to call either function directly; keep
+``declare_temporal_chain`` around when you deliberately want both
+lowerings registered side by side (e.g. inspecting one hop in isolation).
+
 Phase-1 constraint: all base events must share one input entity (the
 chain's driving source). Heterogeneous bronze sources should normalize
 into a shared staging entity first; native multi-source chaining is a
@@ -53,12 +63,21 @@ from kindling.injection import GlobalInjector
 
 from .entities import TemporalEntityResolver
 from .registry import TemporalEpisodeRegistry, TemporalEventRegistry
-from .translation import TemporalPipeTranslator
+from .translation import (
+    TEMPORAL_LOWERING_CHAIN,
+    TEMPORAL_LOWERING_DECLARED,
+    TEMPORAL_LOWERING_TAG,
+    TemporalPipeTranslator,
+    parse_bool_config,
+)
 
 CHAIN_EVENTS_PIPE_PREFIX = "temporal.chain.events."
 CHAIN_EPISODES_PIPE_PREFIX = "temporal.chain.episodes."
 MAX_GENERATIONS_CONFIG_KEY = "kindling.temporal.max_generations"
 DEFAULT_MAX_GENERATIONS = 10
+
+AUTOCOLLAPSE_CONFIG_KEY = "kindling.temporal.autocollapse"
+DEFAULT_AUTOCOLLAPSE = True
 
 
 def chain_events_pipe_id(chainid: str) -> str:
@@ -281,6 +300,7 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
         tags={
             "pipe_type": "temporal.chain_events",
             "temporal.kind": "chain_events",
+            TEMPORAL_LOWERING_TAG: TEMPORAL_LOWERING_CHAIN,
             "temporal.chain_id": chainid,
             "temporal.reads_prior_state": "true",
         },
@@ -302,6 +322,7 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
             tags={
                 "pipe_type": "temporal.chain_episodes",
                 "temporal.kind": "chain_episodes",
+                TEMPORAL_LOWERING_TAG: TEMPORAL_LOWERING_CHAIN,
                 "temporal.chain_id": chainid,
                 "temporal.reads_prior_state": "true",
             },
@@ -313,3 +334,153 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
         pipe_ids.append(episodes_pipe)
 
     return pipe_ids
+
+
+def _pipe_tags(pipe_registry: DataPipesRegistry, pipeid: str) -> Dict[str, str]:
+    definition = pipe_registry.get_pipe_definition(pipeid)
+    return (definition.tags or {}) if definition is not None else {}
+
+
+def _pipe_ids_tagged(pipe_registry: DataPipesRegistry, lowering: str) -> List[str]:
+    """Every currently-registered pipe tagged ``temporal.lowering=<lowering>``.
+
+    Never by pipeid prefix: a declaration's ``pipeid`` is user-overridable
+    (``BaseEventMetadata.pipeid`` etc.), so the tag set in translation.py/
+    chain.py is the only reliable signal. Registry order preserved (Python
+    dicts are insertion-ordered) so callers that care about relative order
+    -- e.g. the events chain pipe must run before the episodes chain pipe
+    -- can rely on it; never route this through a ``set``.
+    """
+    return [
+        pipeid
+        for pipeid in pipe_registry.get_pipe_ids()
+        if _pipe_tags(pipe_registry, pipeid).get(TEMPORAL_LOWERING_TAG) == lowering
+    ]
+
+
+def collapse_temporal_chain(chainid: str = "default") -> List[str]:
+    """Lower the registered temporal declarations into the chain pipes AND
+    retire the per-declaration pipes they supersede.
+
+    ``declare_temporal_chain`` only ever adds the two composite chain pipes,
+    leaving every base-event/condition-engine/episode/episode-event pipe
+    ``DataEvents``/``DataEpisodes`` registered eagerly still sitting in the
+    registry -- so a naive "run everything registered" ends up executing
+    both lowerings over the same declarations. That combination is never
+    wanted: the per-declaration pipes are the broken, cyclic, multi-writer
+    lowering the chain exists to replace (see the module docstring).
+
+    This collapses: every pipe tagged ``temporal.lowering=declared`` is
+    unregistered, and the two chain pipes take their place. Returns every
+    pipe id left in the registry afterward (untouched pipes + the chain
+    pipes), in registry order -- pass it straight to ``run_datapipes``.
+
+    Idempotent: a second call finds nothing left tagged ``declared`` and
+    just re-confirms the chain pipes.
+    """
+    pipe_registry = GlobalInjector.get(DataPipesRegistry)
+    superseded = _pipe_ids_tagged(pipe_registry, TEMPORAL_LOWERING_DECLARED)
+
+    declare_temporal_chain(chainid)
+
+    for pipeid in superseded:
+        pipe_registry.unregister_pipe(pipeid)
+
+    return list(pipe_registry.get_pipe_ids())
+
+
+def _autocollapse_enabled() -> bool:
+    try:
+        from kindling.spark_config import ConfigService
+
+        value = GlobalInjector.get(ConfigService).get(AUTOCOLLAPSE_CONFIG_KEY, None)
+    except Exception:  # noqa: BLE001 - config service unavailable in bare tests
+        return DEFAULT_AUTOCOLLAPSE
+    return parse_bool_config(value, default=DEFAULT_AUTOCOLLAPSE)
+
+
+def _autocollapse_before_run(sender, *, pipe_ids=None, **kwargs) -> None:
+    """``datapipes.before_run`` handler: auto-collapse a run that touches
+    per-declaration temporal pipes, in place, before execution starts.
+
+    Scoped to the run at hand: only fires when THIS run's requested
+    ``pipe_ids`` actually reference a ``declared`` pipe -- an unrelated run
+    (some other pipe entirely) is left untouched even if temporal
+    declarations exist elsewhere in the process. ``pipe_ids`` is the exact
+    list object the emitting call site is about to iterate; mutating it in
+    place (rather than returning a new list, which a signal receiver's
+    return value can't feed back in) is what makes the swap land before
+    that iteration starts -- see ``run_datapipes``/``run_datapipes_dag`` in
+    ``kindling.data_pipes``, both of which now emit this signal before
+    handing ``pipes`` to their respective execution path.
+
+    ``collapse_temporal_chain`` can raise (e.g. episodes/condition-engines
+    declared with zero base events) -- caught here so a declaration gap
+    elsewhere never crashes an otherwise-unrelated run; the requested pipes
+    just execute uncollapsed, same as if autocollapse were off.
+
+    Disable with ``kindling.temporal.autocollapse: false`` (e.g. to run one
+    granular per-declaration pipe standalone for debugging).
+    """
+    if pipe_ids is None or not _autocollapse_enabled():
+        return
+
+    pipe_registry = GlobalInjector.get(DataPipesRegistry)
+    requested = list(pipe_ids)
+    if not any(
+        _pipe_tags(pipe_registry, pipeid).get(TEMPORAL_LOWERING_TAG) == TEMPORAL_LOWERING_DECLARED
+        for pipeid in requested
+    ):
+        return
+
+    try:
+        remaining_ordered = collapse_temporal_chain()
+    except Exception:  # noqa: BLE001 - a declaration gap must not crash an unrelated run
+        return
+
+    remaining = set(remaining_ordered)
+    survivors = [pipeid for pipeid in requested if pipeid in remaining]
+    # Iterate remaining_ordered (registry/insertion order), not the `remaining`
+    # set, so the events-chain pipe always lands before the episodes-chain
+    # pipe -- a set would scramble that via hash randomization.
+    chain_additions = [
+        pipeid
+        for pipeid in remaining_ordered
+        if pipeid not in requested
+        and _pipe_tags(pipe_registry, pipeid).get(TEMPORAL_LOWERING_TAG) == TEMPORAL_LOWERING_CHAIN
+    ]
+    pipe_ids[:] = survivors + chain_additions
+
+
+_autocollapse_connected_provider = None
+
+
+def ensure_autocollapse_connected() -> None:
+    """Wire the autocollapse handler onto ``datapipes.before_run``. Idempotent.
+
+    Called from every ``DataEvents``/``DataEpisodes`` declaration (see
+    registry.py) rather than at module import time: by the time any
+    temporal primitive has been successfully declared, the DI container and
+    signal provider are guaranteed configured, so there's no bootstrap-
+    ordering risk to reason about.
+
+    Tracks the specific ``SignalProvider`` instance connected, not just
+    whether a connection has ever happened -- a test or app that rebuilds
+    the DI container (``GlobalInjector`` reset) gets a new provider, and
+    this reconnects to it rather than silently staying attached to the old
+    (now-orphaned) one.
+    """
+    global _autocollapse_connected_provider
+    from kindling.signaling import SignalProvider
+
+    try:
+        signal_provider = GlobalInjector.get(SignalProvider)
+    except Exception:  # noqa: BLE001 - no signal provider bound (bare tests)
+        return
+    if signal_provider is _autocollapse_connected_provider:
+        return
+    signal = signal_provider.get_signal("datapipes.before_run") or signal_provider.create_signal(
+        "datapipes.before_run"
+    )
+    signal.connect(_autocollapse_before_run, weak=False)
+    _autocollapse_connected_provider = signal_provider

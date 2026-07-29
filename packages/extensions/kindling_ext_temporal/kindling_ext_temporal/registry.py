@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from injector import inject
+
 from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import DataPipesRegistry
 from kindling.injection import GlobalInjector
@@ -178,6 +179,7 @@ class DataEvents:
                 entity_registry=cls._data_entity_registry(),
                 output_entity=events_entity,
             )
+            _ensure_autocollapse_connected()
             return func
 
         return decorator
@@ -213,6 +215,7 @@ class DataEvents:
             events_entity=events_entity,
             conditions_entity=conditions_entity,
         )
+        _ensure_autocollapse_connected()
 
 
 class DataEpisodes:
@@ -290,6 +293,7 @@ class DataEpisodes:
             entity_registry=entity_registry,
             events_entity=events_entity,
         )
+        _ensure_autocollapse_connected()
 
 
 class TemporalEventRegistryManager(TemporalEventRegistry):
@@ -337,6 +341,18 @@ class TemporalEpisodeRegistryManager(TemporalEpisodeRegistry):
 
     def get_episode_definition(self, episodeid: str) -> Optional[EpisodeMetadata]:
         return self.episodes.get(episodeid)
+
+
+def _ensure_autocollapse_connected() -> None:
+    """Wire the ``collapse_temporal_chain`` autocollapse hook. Idempotent.
+
+    Deferred import: chain.py imports this module at top level, so this
+    module must reach chain.py lazily (call time, not import time) to avoid
+    a circular top-level import.
+    """
+    from .chain import ensure_autocollapse_connected
+
+    ensure_autocollapse_connected()
 
 
 def _infer_condition_id(start_event: str) -> str:

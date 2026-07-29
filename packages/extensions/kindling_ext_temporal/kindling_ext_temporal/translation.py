@@ -8,6 +8,22 @@ from kindling.data_pipes import DataPipesRegistry
 if TYPE_CHECKING:
     from .registry import BaseEventMetadata, ConditionEngineMetadata, EpisodeMetadata
 
+# Tag key + values shared between the pipes that set them (here) and the
+# pipes/queries that read them back (chain.py's ``collapse_temporal_chain``).
+# Defined once, here, so setter and reader can never drift out of sync --
+# never matched by pipeid prefix/name, since ``pipeid`` is user-overridable
+# via ``metadata.pipeid``.
+TEMPORAL_LOWERING_TAG = "temporal.lowering"
+TEMPORAL_LOWERING_DECLARED = "declared"
+TEMPORAL_LOWERING_CHAIN = "chain"
+
+
+def parse_bool_config(value: Any, default: bool) -> bool:
+    """Shared ``"false"/"0"/"no"/"off"`` parsing for config-driven boolean flags."""
+    if value is None:
+        return default
+    return str(value).strip().lower() not in ("false", "0", "no", "off")
+
 
 class TemporalPipeTranslator:
     """Translate temporal declarations to native Kindling execution metadata."""
@@ -123,6 +139,7 @@ class TemporalPipeTranslator:
                 **(metadata.tags or {}),
                 "pipe_type": "temporal.base_event",
                 "temporal.kind": "base_event",
+                TEMPORAL_LOWERING_TAG: TEMPORAL_LOWERING_DECLARED,
                 "temporal.event_id": metadata.eventid,
                 "temporal.event_type": metadata.event_type,
                 "temporal.subject_type": metadata.subject_type,
@@ -142,6 +159,7 @@ class TemporalPipeTranslator:
                 **(metadata.tags or {}),
                 "pipe_type": "temporal.condition_engine",
                 "temporal.kind": "condition_engine",
+                TEMPORAL_LOWERING_TAG: TEMPORAL_LOWERING_DECLARED,
                 "temporal.engine_id": metadata.engineid,
             },
             "input_entity_ids": [
@@ -162,6 +180,7 @@ class TemporalPipeTranslator:
                 **(metadata.tags or {}),
                 "pipe_type": "temporal.episode",
                 "temporal.kind": "episode",
+                TEMPORAL_LOWERING_TAG: TEMPORAL_LOWERING_DECLARED,
                 "temporal.episode_id": metadata.episodeid,
                 "temporal.start_event": metadata.start_event,
                 "temporal.end_event": metadata.end_event,
@@ -182,6 +201,7 @@ class TemporalPipeTranslator:
                 **(metadata.tags or {}),
                 "pipe_type": "temporal.episode_event",
                 "temporal.kind": "episode_event",
+                TEMPORAL_LOWERING_TAG: TEMPORAL_LOWERING_DECLARED,
                 "temporal.episode_id": metadata.episodeid,
                 "temporal.event_type": metadata.determination_event,
                 "temporal.expiration_event_type": metadata.expiration_event,
@@ -259,7 +279,7 @@ class TemporalPipeTranslator:
             from kindling.spark_config import ConfigService
 
             enabled = GlobalInjector.get(ConfigService).get(cls.PRIOR_STATE_CONFIG_KEY, True)
-            if str(enabled).strip().lower() in ("false", "0", "no", "off"):
+            if not parse_bool_config(enabled, default=True):
                 return None
         except Exception:
             pass

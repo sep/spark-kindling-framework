@@ -2,6 +2,30 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **`collapse_temporal_chain()`** (`kindling_ext_temporal`): supersedes
+  `declare_temporal_chain()` for the common case. `declare_temporal_chain`
+  only ever added the two composite chain pipes, leaving the per-declaration
+  base-event/condition-engine/episode/episode-event pipes still registered
+  alongside them; `collapse_temporal_chain` additionally unregisters those
+  superseded pipes and returns the corrected pipe id list.
+- New `kindling.temporal.autocollapse` config key (default `true`): any
+  `run_datapipes`/`run_datapipes_dag` call whose requested pipes reference a
+  per-declaration temporal pipe is automatically collapsed before execution
+  starts, so most apps never need to call `collapse_temporal_chain()`
+  directly. Disable with `kindling.temporal.autocollapse: false` to run one
+  granular per-declaration pipe standalone (e.g. for debugging).
+- Every temporal pipe now carries a `temporal.lowering` tag (`declared` for
+  per-declaration pipes, `chain` for the composite chain pipes), exported as
+  `TEMPORAL_LOWERING_TAG`/`TEMPORAL_LOWERING_DECLARED`/`TEMPORAL_LOWERING_CHAIN`
+  — the reliable way to distinguish the two lowerings, since `pipeid` itself
+  is user-overridable.
+- `DataPipesRegistry.unregister_pipe()` (`kindling.data_pipes`): the registry
+  previously had no removal primitive at all.
+
 ## [0.12.2] - 2026-07-29
 
 ### Added
