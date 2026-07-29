@@ -10,9 +10,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.types import IntegerType, StringType, StructField, StructType
-
 from kindling.data_entities import (
     DataEntities,
     DataEntityManager,
@@ -26,6 +23,8 @@ from kindling.data_pipes import (
     EntityReadPersistStrategy,
     PipeMetadata,
 )
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 
 @pytest.fixture(scope="module")
@@ -652,16 +651,19 @@ class TestTraceIntegration:
         # Verify trace spans were created
         assert mock_trace_provider.span.call_count >= 2, "Should create at least 2 spans"
 
-        # Verify outer span for overall execution
+        # Verify outer span for overall execution (kindling.<area> convention)
         first_call = mock_trace_provider.span.call_args_list[0]
-        assert first_call[1]["component"] == "data_pipes_executer"
-        assert first_call[1]["operation"] == "execute_datapipes"
+        assert first_call[1]["component"] == "kindling.pipes"
+        assert first_call[1]["operation"] == "run"
+        assert first_call[1]["details"]["pipe_count"] == 1
 
-        # Verify inner span for specific pipe
+        # Verify inner span for specific pipe: ids are whitelisted
+        # attributes, and pipe.tags are never exported wholesale.
         second_call = mock_trace_provider.span.call_args_list[1]
-        assert second_call[1]["operation"] == "execute_datapipe"
-        assert second_call[1]["component"] == "pipe-test_pipe"
-        assert second_call[1]["details"] == {"env": "test"}
+        assert second_call[1]["operation"] == "pipe.run"
+        assert second_call[1]["component"] == "kindling.pipes"
+        assert second_call[1]["details"]["pipe_id"] == "test_pipe"
+        assert "env" not in second_call[1]["details"]
 
 
 class TestComplexTransformations:

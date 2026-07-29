@@ -110,6 +110,41 @@ logger = lp.get_logger("custom_logger").with_pattern(
 
 The tracing system provides distributed tracing capabilities to track operations across multiple components, including capturing timing, errors, and context information.
 
+### Span naming convention
+
+Spans follow a fixed naming scheme so the exported span-name set stays small
+(an OTel export cardinality constraint) and dashboards stay stable:
+
+- **component** = `kindling.<area>`: `kindling.pipes`, `kindling.entity.<provider_type>`,
+  `kindling.watermark`, `kindling.config`, `kindling.migration`,
+  `kindling.bootstrap`, `kindling.streaming`, `kindling.orchestrator`,
+  `kindling.ingestion`, `kindling.apps`, `kindling.deploy`, `kindling.cli`.
+  The constants live in `kindling.trace_ops`.
+- **operation** = a short stable verb (`run`, `pipe.run`, `read`, `persist`,
+  `get_cursor`, `apply`, …). Ids, names, and counts are span **attributes**,
+  never part of the component or operation.
+- **attributes are whitelisted per seam**: ids (`pipe_id`, `entity_id`,
+  `run_id`, `persist_id`, …), `provider_type`, durations, counts, booleans,
+  and cursors. Never export `entity.tags`/`pipe.tags` wholesale (tags may
+  carry credential references), never DataFrames, and never call
+  `df.count()` just to record a size — actions in span details run real
+  Spark jobs.
+- **levels**: spans are tiered `minimal` (bootstrap, pipes run/pipe/read/
+  persist, migration, apps, deploy, cli), `standard` (adds provider ops,
+  watermark, config reload, streaming lifecycle, orchestrator
+  plan/generation), and `verbose` (adds per-file ingestion spans). See the
+  `kindling.telemetry.tracing.*` keys in the configuration reference.
+- All framework instrumentation passes `reraise=True`: a span must never
+  swallow the exception it observed.
+
+Provider entity operations (`read_entity`, `merge_to_entity`, …) are traced
+automatically at the `EntityProviderRegistry` chokepoint — do not add
+per-provider spans for them. Hot loops never produce spans: streaming
+micro-batches are span *events* on the long-lived query span
+(`kindling.streaming`/`query`), and `DeltaEntityProvider._merge_batch`
+deliberately bypasses the per-instance op wrapper via
+`type(self).merge_to_entity(self, ...)`.
+
 ### Core Components
 
 #### CustomEventEmitter
@@ -184,7 +219,32 @@ class SparkTraceProvider(ABC):
     ) -> None:
         """End a manually started span. Optionally record an error."""
         pass
+
+    def record_span(
+        self,
+        operation: str,
+        component: str,
+        start_time: datetime,
+        end_time: datetime,
+        details: dict = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Record an already-completed span with explicit timestamps."""
 ```
+
+`record_span` is a **concrete default** on the ABC (it routes through
+`start_span`/`end_span` and carries the true timestamps in
+`recordedStartTime`/`recordedEndTime` details), so third-party or
+duck-typed providers keep working without changes. The built-in providers
+override it to honor the given timestamps natively — bootstrap uses this to
+retro-flush its phase tree once a provider is finally resolvable.
+
+Spans also carry a `parent_id` (the enclosing span's id at open time, `None`
+for roots), emitted as `parentSpanId` in START/END event details by the
+event-based providers. Trees are therefore reconstructable by explicit
+links, not just time containment. The OTel provider parents natively.
+Exiting a span restores the enclosing span as current, so consecutive
+top-level operations get distinct trace ids.
 
 #### EventBasedSparkTrace
 
@@ -341,12 +401,15 @@ inline comment.
    - WARN: Warning conditions
    - ERROR: Error conditions
 
-3. **Structured Details**: Include structured details in traces for easier analysis:
+3. **Structured, whitelisted details**: Include structured details in traces
+   for easier analysis — ids, counts you already have, booleans, cursors.
+   Never trigger Spark actions to fill an attribute (`df.count()` runs a
+   real job), and never pass tag dictionaries wholesale:
    ```python
    details = {
        "entity_id": entity.entityid,
-       "record_count": df.count(),
-       "execution_id": execution_id
+       "row_count": already_computed_count,  # never df.count() here
+       "execution_id": execution_id,
    }
    ```
 
@@ -356,4 +419,17 @@ inline comment.
    ```python
    with trace_provider.span(component="Processing", operation="TransformData", reraise=True):
        # With reraise=True, exceptions will be captured in the trace and then re-thrown
+   ```
+
+6. **Testing spans**: assert span structure with the public
+   `kindling.test_framework.RecordingTraceProvider` — it records every span
+   (component, operation, details, parent_id, events, errors, open/close
+   order) and offers `find(component=, operation=)` and `tree()` helpers:
+   ```python
+   from kindling.test_framework import RecordingTraceProvider
+
+   tp = RecordingTraceProvider()
+   service = MyService(tp=tp, ...)
+   service.do_work()
+   assert tp.find(component="kindling.pipes", operation="persist")[0].closed
    ```
