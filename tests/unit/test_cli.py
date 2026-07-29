@@ -288,6 +288,23 @@ def test_env_check_platform_partial_set_reports_correctly(monkeypatch):
     assert "AZURE_CLIENT_SECRET" in result.output
 
 
+def test_env_check_fabric_requires_lakehouse_id(monkeypatch):
+    """env check must gate on every var the run gate and FabricAPI.from_env
+    require — a passing check with FABRIC_LAKEHOUSE_ID unset would let the
+    subsequent remote command fail."""
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "wid")
+    monkeypatch.delenv("FABRIC_LAKEHOUSE_ID", raising=False)
+    for var, value in zip(_AZURE_SP_VARS, ("tid", "cid", "secret")):
+        monkeypatch.setenv(var, value)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "fabric"])
+
+    assert result.exit_code != 0
+    assert "FABRIC_LAKEHOUSE_ID" in result.output
+    assert "export FABRIC_LAKEHOUSE_ID=" in result.output
+
+
 def test_env_check_platform_help_shows_flag():
     """--help output should mention --platform."""
     runner = CliRunner()

@@ -142,7 +142,7 @@ Platform pre-flight requirements:
 | Platform | Required vars | Auth — one of |
 |---|---|---|
 | `databricks` | `DATABRICKS_HOST` | `DATABRICKS_TOKEN`; the `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` service principal triple; or a usable Azure CLI session (`az login`) |
-| `fabric` | `FABRIC_WORKSPACE_ID` | the service principal triple, or `az login` / managed identity at run time |
+| `fabric` | `FABRIC_WORKSPACE_ID`, `FABRIC_LAKEHOUSE_ID` | the service principal triple, or `az login` / managed identity at run time |
 | `synapse` | `SYNAPSE_WORKSPACE_NAME`, `SYNAPSE_SPARK_POOL_NAME` | the service principal triple, or `az login` / managed identity at run time |
 
 A partially set service principal triple fails the check naming the missing

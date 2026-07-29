@@ -1465,7 +1465,7 @@ _AZURE_SP_PLATFORMS: frozenset = frozenset({"fabric", "synapse"})
 _PLATFORM_CREDENTIAL_VARS: Dict[str, List[str]] = {
     "synapse": ["SYNAPSE_WORKSPACE_NAME", "SYNAPSE_SPARK_POOL_NAME"],
     "databricks": ["DATABRICKS_HOST"],
-    "fabric": ["FABRIC_WORKSPACE_ID"],
+    "fabric": ["FABRIC_WORKSPACE_ID", "FABRIC_LAKEHOUSE_ID"],
 }
 
 _AZ_PROBE_TIMEOUT_SECONDS = 15
