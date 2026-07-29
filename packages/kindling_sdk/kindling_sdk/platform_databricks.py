@@ -389,7 +389,7 @@ class DatabricksAPI(PlatformAPI):
         environment: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Submit a one-time app run via runs.submit() — no persistent job definition."""
+        """Submit a one-time app run via jobs.submit() — no persistent job definition."""
         config_overrides: Dict[str, Any] = dict(parameters or {})
         if environment:
             config_overrides["environment"] = environment
@@ -521,7 +521,7 @@ class DatabricksAPI(PlatformAPI):
         }
 
     def _submit_one_time_run(self, app_name: str, job_config: Dict[str, Any]) -> str:
-        """Submit a one-time Databricks run via runs.submit() — no persistent job created."""
+        """Submit a one-time Databricks run via jobs.submit() — no persistent job created."""
         try:
             from databricks.sdk.service.jobs import SparkPythonTask, SubmitTask
         except ImportError:
@@ -545,7 +545,7 @@ class DatabricksAPI(PlatformAPI):
                 libraries=spec["libraries"] or None,
             )
 
-        run_response = self.client.jobs.runs.submit(
+        run_response = self.client.jobs.submit(
             run_name=f"kindling-adhoc-{app_name}",
             tasks=[task],
         )

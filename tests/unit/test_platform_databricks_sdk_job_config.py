@@ -219,3 +219,33 @@ def test_create_job_sets_cluster_log_conf_when_uc_volume_provided():
     assert cluster.cluster_log_conf is not None
     assert "test-job" in cluster.cluster_log_conf.volumes.destination
     assert cluster.data_security_mode == DataSecurityMode.SINGLE_USER
+
+
+# --- Bug fix: _submit_one_time_run calls jobs.submit, not jobs.runs.submit ---
+
+
+def test_submit_one_time_run_calls_jobs_submit_not_runs_submit():
+    """WorkspaceClient.jobs has no .runs sub-namespace; submit() is a direct method."""
+    api = _make_api_for_create_job()
+    api._client.jobs.submit.return_value = MagicMock(run_id=12345)
+
+    run_id = api._submit_one_time_run("myapp", {})
+
+    submit_call = api._client.jobs.submit.call_args
+    assert submit_call.kwargs["run_name"] == "kindling-adhoc-myapp"
+    tasks = submit_call.kwargs["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0].task_key == "main"
+    assert run_id == "12345"
+
+
+def test_submit_app_run_delegates_to_one_time_run():
+    """submit_app_run (the CLI's ad-hoc run entry point) reaches jobs.submit."""
+    api = _make_api_for_create_job()
+    api._client.jobs.submit.return_value = MagicMock(run_id=67890)
+
+    run_id = api.submit_app_run("myapp", environment="dev", parameters={"foo": "bar"})
+
+    submit_call = api._client.jobs.submit.call_args
+    assert submit_call.kwargs["run_name"] == "kindling-adhoc-myapp"
+    assert run_id == "67890"
