@@ -9,6 +9,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+
 from kindling.config_patterns import ConfigPatternMatcher
 from kindling.injection import *
 from kindling.sentinels import UNSET
@@ -17,7 +19,6 @@ from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
 from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
-from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -231,6 +232,10 @@ class DataPipesRegistry(ABC):
         pass
 
     @abstractmethod
+    def unregister_pipe(self, pipeid):
+        pass
+
+    @abstractmethod
     def get_pipe_ids(self):
         pass
 
@@ -296,6 +301,11 @@ class DataPipesManager(DataPipesRegistry):
         self._raw_params[pipeid] = dict(decorator_params)
         self.registry[pipeid] = self._build_metadata(pipeid, decorator_params)
         self.logger.debug(f"Pipe registered: {pipeid}")
+
+    def unregister_pipe(self, pipeid):
+        self.registry.pop(pipeid, None)
+        self._raw_params.pop(pipeid, None)
+        self.logger.debug(f"Pipe unregistered: {pipeid}")
 
     def apply_config_overrides(self, config_service: ConfigService) -> None:
         """Overlay the ``datapipes:`` config section onto registered pipes.
@@ -580,6 +590,17 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         from contextlib import nullcontext
 
         from kindling.execution_orchestrator import ExecutionOrchestrator
+
+        # Mirrors the emission in _run_datapipes_sequential: DAG-mode runs
+        # never reach that method, so without this, before_run subscribers
+        # (e.g. the temporal extension's autocollapse hook) would never see
+        # a DAG-mode run at all.
+        self.emit(
+            "datapipes.before_run",
+            pipe_ids=pipes,
+            pipe_count=len(pipes),
+            run_id=str(uuid.uuid4()),
+        )
 
         orchestrator = GlobalInjector.get(ExecutionOrchestrator)
         overrides = self.dpe.tag_overrides(entity_tags) if entity_tags else nullcontext()

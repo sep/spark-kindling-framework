@@ -715,6 +715,7 @@ class NotebookTestEnvironment:
                         self.logger = MagicMock()
 
                     self.register_pipe = MagicMock()
+                    self.unregister_pipe = MagicMock()
                     self.get_pipe_ids = MagicMock(return_value=[])
                     self.get_pipe_definition = MagicMock(return_value=MagicMock())
 

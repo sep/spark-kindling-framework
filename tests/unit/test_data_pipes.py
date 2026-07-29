@@ -8,6 +8,7 @@ from typing import Callable, Dict, List
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+
 from kindling.data_entities import KindlingNotInitializedError
 from kindling.data_pipes import (
     DataPipes,
@@ -942,6 +943,35 @@ class TestDataPipesExecuter:
         assert kwargs["auto_cache"] is True
         assert kwargs["no_watermark"] is True
         assert kwargs["error_strategy"] is not None
+
+    def test_run_datapipes_dag_emits_before_run_signal(self):
+        """DAG-mode runs must emit datapipes.before_run too.
+
+        run_datapipes_dag never reaches _run_datapipes_sequential (the only
+        other emitter of this signal), so before_run subscribers -- e.g. the
+        temporal extension's autocollapse hook -- would otherwise never see
+        a DAG-mode run at all.
+        """
+        executer = DataPipesExecuter(
+            self.mock_logger_provider,
+            self.mock_entity_registry,
+            self.mock_pipes_registry,
+            self.mock_erps,
+            self.mock_trace_provider,
+        )
+        executer.emit = Mock(return_value=[])
+
+        with patch.object(
+            GlobalInjector, "get", return_value=Mock(execute=Mock(return_value="ok"))
+        ):
+            executer.run_datapipes_dag(["pipe1", "pipe2"])
+
+        executer.emit.assert_called_once()
+        args, kwargs = executer.emit.call_args
+        assert args[0] == "datapipes.before_run"
+        assert kwargs["pipe_ids"] == ["pipe1", "pipe2"]
+        assert kwargs["pipe_count"] == 2
+        assert "run_id" in kwargs
 
 
 class TestAbstractBaseClasses:

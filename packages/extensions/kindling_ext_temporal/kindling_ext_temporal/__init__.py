@@ -1,9 +1,11 @@
 """Temporal event, condition, and episode primitives for Kindling."""
 
 from .chain import (
+    AUTOCOLLAPSE_CONFIG_KEY,
     MAX_GENERATIONS_CONFIG_KEY,
     chain_episodes_pipe_id,
     chain_events_pipe_id,
+    collapse_temporal_chain,
     declare_temporal_chain,
 )
 from .conditions import (
@@ -33,7 +35,12 @@ from .registry import (
     TemporalEventRegistry,
     TemporalEventRegistryManager,
 )
-from .translation import TemporalPipeTranslator
+from .translation import (
+    TEMPORAL_LOWERING_CHAIN,
+    TEMPORAL_LOWERING_DECLARED,
+    TEMPORAL_LOWERING_TAG,
+    TemporalPipeTranslator,
+)
 from .validation import (
     ActiveSparkSqlExpressionParser,
     ConditionRule,
@@ -45,10 +52,12 @@ from .validation import (
 
 __all__ = [
     "ActiveSparkSqlExpressionParser",
+    "AUTOCOLLAPSE_CONFIG_KEY",
     "BaseEventMetadata",
     "MAX_GENERATIONS_CONFIG_KEY",
     "chain_episodes_pipe_id",
     "chain_events_pipe_id",
+    "collapse_temporal_chain",
     "conditions_entity_schema",
     "declare_temporal_chain",
     "ConditionEngineRunner",
@@ -64,6 +73,9 @@ __all__ = [
     "EpisodeRunner",
     "InvalidCondition",
     "SimpleTemporalEntityResolver",
+    "TEMPORAL_LOWERING_CHAIN",
+    "TEMPORAL_LOWERING_DECLARED",
+    "TEMPORAL_LOWERING_TAG",
     "TemporalConditionValidator",
     "TemporalEntityResolver",
     "TemporalEpisodeRegistry",
@@ -85,6 +97,7 @@ __version__ = "0.1.0"
 def _register_services():
     """Register extension services with Kindling's DI container."""
     from injector import singleton
+
     from kindling.injection import GlobalInjector
 
     injector = GlobalInjector.get_injector()

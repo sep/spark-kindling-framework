@@ -243,6 +243,9 @@ class _NullPipeRegistry(DataPipesRegistry):
     def register_pipe(self, pipeid, **decorator_params):
         raise NotImplementedError("Temporal condition validation builds event-type graphs directly")
 
+    def unregister_pipe(self, pipeid):
+        raise NotImplementedError("Temporal condition validation builds event-type graphs directly")
+
     def get_pipe_ids(self):
         return []
 
