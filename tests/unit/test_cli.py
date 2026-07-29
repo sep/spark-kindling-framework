@@ -305,6 +305,22 @@ def test_env_check_fabric_requires_lakehouse_id(monkeypatch):
     assert "export FABRIC_LAKEHOUSE_ID=" in result.output
 
 
+def test_env_check_synapse_requires_spark_pool_name(monkeypatch):
+    """The run gate and env check must require the pool name: SynapseAPI
+    interpolates it unconditionally into Livy batch URLs, so a passing
+    pre-flight without it yields requests against sparkPools/None."""
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "my-ws")
+    monkeypatch.delenv("SYNAPSE_SPARK_POOL_NAME", raising=False)
+    for var, value in zip(_AZURE_SP_VARS, ("tid", "cid", "secret")):
+        monkeypatch.setenv(var, value)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "synapse"])
+
+    assert result.exit_code != 0
+    assert "SYNAPSE_SPARK_POOL_NAME" in result.output
+
+
 def test_env_check_platform_help_shows_flag():
     """--help output should mention --platform."""
     runner = CliRunner()
@@ -2135,6 +2151,7 @@ _BLANK_PLATFORM_DETECT_VARS = {
     "FABRIC_WORKSPACE_ID": "",
     "FABRIC_LAKEHOUSE_ID": "",
     "SYNAPSE_WORKSPACE_NAME": "",
+    "SYNAPSE_SPARK_POOL_NAME": "",
     "DATABRICKS_HOST": "",
     # Blank out SP creds so real .env values don't leak into platform env-check tests
     "AZURE_TENANT_ID": "",

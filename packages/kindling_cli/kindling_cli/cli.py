@@ -1453,7 +1453,7 @@ _ABFSS_LOCAL_AUTH_JAR_SHA256 = "feb6236b362f717c79a11eecd05da0b16260799b255a19f5
 _PLATFORM_BASE_VARS: Dict[str, List[str]] = {
     "databricks": ["DATABRICKS_HOST"],
     "fabric": ["FABRIC_WORKSPACE_ID", "FABRIC_LAKEHOUSE_ID"],
-    "synapse": ["SYNAPSE_WORKSPACE_NAME"],
+    "synapse": ["SYNAPSE_WORKSPACE_NAME", "SYNAPSE_SPARK_POOL_NAME"],
 }
 
 # Only required when using service-principal auth; az login / managed identity needs none of these.
@@ -1925,8 +1925,9 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
                              the AZURE_TENANT_ID/AZURE_CLIENT_ID/
                              AZURE_CLIENT_SECRET service principal triple,
                              or a usable Azure CLI session (az login)
-      --platform fabric      FABRIC_WORKSPACE_ID, plus the service principal
-                             triple or az login / managed identity
+      --platform fabric      FABRIC_WORKSPACE_ID and FABRIC_LAKEHOUSE_ID, plus
+                             the service principal triple or az login /
+                             managed identity
       --platform synapse     SYNAPSE_WORKSPACE_NAME, SYNAPSE_SPARK_POOL_NAME,
                              plus the service principal triple or az login /
                              managed identity

@@ -23,6 +23,14 @@ All notable changes to spark-kindling are documented here.
   of failing (a partial triple still fails naming the missing vars). CI
   jobs that relied on `env check --platform fabric|synapse` to enforce
   service-principal presence will now pass in that no-SP case.
+  Pre-flight resource vars are also reconciled with what the SDK clients
+  actually require: `env check --platform fabric` now checks
+  `FABRIC_LAKEHOUSE_ID` alongside `FABRIC_WORKSPACE_ID` (matching the run
+  gate and `FabricAPI.from_env`), and the synapse run gate now requires
+  `SYNAPSE_SPARK_POOL_NAME` alongside `SYNAPSE_WORKSPACE_NAME` (matching
+  `env check` and the Livy batch URLs `SynapseAPI` builds) — synapse runs
+  without a pool name previously passed pre-flight and then failed
+  against `sparkPools/None`.
 
 ## [0.12.0] - 2026-07-28
 
