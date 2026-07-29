@@ -330,39 +330,51 @@ class EventBasedSparkTrace(SparkTraceProvider):
                 )
                 error_details = self._add_timestamp_to_dict(error_base, "errorTime", error_time)
                 error_details["exception"] = traceback.format_exc()
-                self.emitter.emit_custom_event(
-                    current_span.component,
-                    f"{current_span.operation}_ERROR",
-                    error_details,
-                    current_span.id,
-                    current_span.traceId,
-                )
+                try:
+                    self.emitter.emit_custom_event(
+                        current_span.component,
+                        f"{current_span.operation}_ERROR",
+                        error_details,
+                        current_span.id,
+                        current_span.traceId,
+                    )
+                except Exception:
+                    # A failing emitter must not replace the span's own
+                    # exception on the reraise path.
+                    pass
                 if reraise:
                     raise
 
             finally:
-                current_span.end_time = datetime.now()
-                end_base = self._add_timestamp_to_dict(
-                    live_details, "startTime", current_span.start_time
-                )
-                end_details = self._add_timestamp_to_dict(
-                    end_base, "endTime", current_span.end_time
-                )
-                end_details["totalTime"] = self._calculate_time_diff(
-                    current_span.start_time, current_span.end_time
-                )
-                if current_span.parent_id is not None:
-                    end_details["parentSpanId"] = current_span.parent_id
-                self.emitter.emit_custom_event(
-                    current_span.component,
-                    f"{current_span.operation}_END",
-                    end_details,
-                    current_span.id,
-                    current_span.traceId,
-                )
-                # Restore the enclosing span so sibling spans and subsequent
-                # runs in the same session do not blur into one tree.
-                self.current_span = parent_span
+                try:
+                    current_span.end_time = datetime.now()
+                    end_base = self._add_timestamp_to_dict(
+                        live_details, "startTime", current_span.start_time
+                    )
+                    end_details = self._add_timestamp_to_dict(
+                        end_base, "endTime", current_span.end_time
+                    )
+                    end_details["totalTime"] = self._calculate_time_diff(
+                        current_span.start_time, current_span.end_time
+                    )
+                    if current_span.parent_id is not None:
+                        end_details["parentSpanId"] = current_span.parent_id
+                    self.emitter.emit_custom_event(
+                        current_span.component,
+                        f"{current_span.operation}_END",
+                        end_details,
+                        current_span.id,
+                        current_span.traceId,
+                    )
+                except Exception:
+                    # A failing END emission must not break caller control
+                    # flow (or clobber an in-flight exception).
+                    pass
+                finally:
+                    # Restore the enclosing span so sibling spans and
+                    # subsequent runs in the same session do not blur into
+                    # one tree — even when the END emission fails.
+                    self.current_span = parent_span
 
     def start_span(
         self,

@@ -8,7 +8,6 @@ from typing import Callable, Dict, List
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
-
 from kindling.data_entities import KindlingNotInitializedError
 from kindling.data_pipes import (
     DataPipes,
@@ -618,6 +617,35 @@ class TestDataPipesExecuter:
 
         # Verify trace spans were created
         assert self.mock_trace_provider.span.call_count >= 2
+
+    def test_run_datapipes_disabled_tracing_emits_no_spans(self):
+        """kindling.telemetry.tracing.enabled=false suppresses run/pipe.run spans."""
+        config = Mock()
+        config.get.side_effect = lambda key, default=None: (
+            "false" if key == "kindling.telemetry.tracing.enabled" else default
+        )
+        executer = DataPipesExecuter(
+            self.mock_logger_provider,
+            self.mock_entity_registry,
+            self.mock_pipes_registry,
+            self.mock_erps,
+            self.mock_trace_provider,
+            config=config,
+        )
+
+        mock_pipe = Mock(spec=PipeMetadata)
+        mock_pipe.pipeid = "test_pipe"
+        mock_pipe.name = "Test Pipe"
+        mock_pipe.tags = {"env": "test"}
+        mock_pipe.input_entity_ids = ["entity1"]
+        mock_pipe.execute = Mock(return_value=Mock())
+        self.mock_pipes_registry.get_pipe_definition.return_value = mock_pipe
+        self.mock_erps.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        self.mock_erps.create_pipe_persist_activator.return_value = Mock()
+
+        executer.run_datapipes(["test_pipe"])
+
+        self.mock_trace_provider.span.assert_not_called()
 
     def test_run_datapipes_multiple_pipes(self):
         """Test running multiple data pipes"""

@@ -1377,3 +1377,36 @@ class TestManualSpanLifecycle:
         span = trace.start_span(operation="TestOp", component="TestComp")
 
         assert isinstance(span.traceId, uuid.UUID)
+
+
+class TestSpanEmitterRobustness:
+    """A failing telemetry backend must never break caller control flow."""
+
+    def test_failing_end_emission_does_not_break_caller_or_span_stack(self, mock_emitter):
+        def emit(component, operation, *args, **kwargs):
+            if operation.endswith("_END"):
+                raise RuntimeError("telemetry backend down")
+
+        mock_emitter.emit_custom_event.side_effect = emit
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        ran = False
+        with trace.span(operation="Op", component="Comp"):
+            ran = True
+
+        assert ran
+        assert trace.current_span is None
+
+    def test_failing_error_emission_preserves_original_exception(self, mock_emitter):
+        def emit(component, operation, *args, **kwargs):
+            if operation.endswith("_ERROR") or operation.endswith("_END"):
+                raise RuntimeError("telemetry backend down")
+
+        mock_emitter.emit_custom_event.side_effect = emit
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with pytest.raises(ValueError, match="user failure"):
+            with trace.span(operation="Op", component="Comp", reraise=True):
+                raise ValueError("user failure")
+
+        assert trace.current_span is None

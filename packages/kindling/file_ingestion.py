@@ -314,12 +314,17 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
         # Component previously named a nonexistent class
         # ("SimpleFileIngestionProcessor"); normalized to the naming
         # convention (gh#210).
-        with self.tp.span(
-            component=COMPONENT_INGESTION,
-            operation="process",
-            details={"path": path, "batch_id": batch_id},
-            reraise=True,
-        ):
+        process_span = (
+            self.tp.span(
+                component=COMPONENT_INGESTION,
+                operation="process",
+                details={"path": path, "batch_id": batch_id},
+                reraise=True,
+            )
+            if self._trace_gates.minimal
+            else nullcontext()
+        )
+        with process_span:
             filenames = self.env.list(path)
             self.logger.info(f"Found {len(filenames)} files in {path}")
 
