@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import subprocess
 import sys
 import types
 import zipfile
@@ -11,6 +12,8 @@ import pytest
 import yaml
 from click.testing import CliRunner
 from kindling_cli.cli import (
+    _AZURE_SP_VARS,
+    _azure_cli_session_available,
     _find_wheels,
     _generate_bootstrap_notebook,
     _generate_sample_notebook,
@@ -20,6 +23,7 @@ from kindling_cli.cli import (
     _render_environment_bootstrap_source,
     _render_starter_notebook_source,
     _resolve_account_url,
+    _resolve_remote_platform,
     cli,
 )
 
@@ -249,13 +253,15 @@ def test_env_check_platform_all_vars_set_exits_zero(monkeypatch):
     assert "MISSING" not in result.output
     output_lines = [l.strip() for l in result.output.splitlines() if l.strip()]
     set_lines = [l for l in output_lines if "SET" in l]
-    assert len(set_lines) == 5
+    # Two base vars plus the satisfied service-principal auth alternative.
+    assert len(set_lines) == 3
 
 
 def test_env_check_platform_missing_shows_export_hint(monkeypatch):
     """Missing vars should include 'export VAR=<your-...' hint."""
-    for var in ("DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+    for var in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", *_AZURE_SP_VARS):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("kindling_cli.cli._azure_cli_session_available", lambda **kw: False)
     runner = CliRunner()
     with runner.isolated_filesystem():
         result = runner.invoke(cli, ["env", "check", "--platform", "databricks"])
@@ -267,7 +273,8 @@ def test_env_check_platform_missing_shows_export_hint(monkeypatch):
 def test_env_check_platform_partial_set_reports_correctly(monkeypatch):
     """If only some vars are set, SET and MISSING are both reported."""
     monkeypatch.setenv("FABRIC_WORKSPACE_ID", "wid")
-    for var in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
+    monkeypatch.setenv("AZURE_TENANT_ID", "tid")
+    for var in ("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)
     runner = CliRunner()
     with runner.isolated_filesystem():
@@ -277,6 +284,41 @@ def test_env_check_platform_partial_set_reports_correctly(monkeypatch):
     assert "FABRIC_WORKSPACE_ID" in result.output
     assert "SET" in result.output
     assert "MISSING" in result.output
+    assert "AZURE_CLIENT_ID" in result.output
+    assert "AZURE_CLIENT_SECRET" in result.output
+
+
+def test_env_check_fabric_requires_lakehouse_id(monkeypatch):
+    """env check must gate on every var the run gate and FabricAPI.from_env
+    require — a passing check with FABRIC_LAKEHOUSE_ID unset would let the
+    subsequent remote command fail."""
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "wid")
+    monkeypatch.delenv("FABRIC_LAKEHOUSE_ID", raising=False)
+    for var, value in zip(_AZURE_SP_VARS, ("tid", "cid", "secret")):
+        monkeypatch.setenv(var, value)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "fabric"])
+
+    assert result.exit_code != 0
+    assert "FABRIC_LAKEHOUSE_ID" in result.output
+    assert "export FABRIC_LAKEHOUSE_ID=" in result.output
+
+
+def test_env_check_synapse_requires_spark_pool_name(monkeypatch):
+    """The run gate and env check must require the pool name: SynapseAPI
+    interpolates it unconditionally into Livy batch URLs, so a passing
+    pre-flight without it yields requests against sparkPools/None."""
+    monkeypatch.setenv("SYNAPSE_WORKSPACE_NAME", "my-ws")
+    monkeypatch.delenv("SYNAPSE_SPARK_POOL_NAME", raising=False)
+    for var, value in zip(_AZURE_SP_VARS, ("tid", "cid", "secret")):
+        monkeypatch.setenv(var, value)
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["env", "check", "--platform", "synapse"])
+
+    assert result.exit_code != 0
+    assert "SYNAPSE_SPARK_POOL_NAME" in result.output
 
 
 def test_env_check_platform_help_shows_flag():
@@ -2107,7 +2149,9 @@ class TestAppRunCommand:
 
 _BLANK_PLATFORM_DETECT_VARS = {
     "FABRIC_WORKSPACE_ID": "",
+    "FABRIC_LAKEHOUSE_ID": "",
     "SYNAPSE_WORKSPACE_NAME": "",
+    "SYNAPSE_SPARK_POOL_NAME": "",
     "DATABRICKS_HOST": "",
     # Blank out SP creds so real .env values don't leak into platform env-check tests
     "AZURE_TENANT_ID": "",
@@ -2117,6 +2161,22 @@ _BLANK_PLATFORM_DETECT_VARS = {
 
 
 class TestEnvCheckPlatform:
+    @pytest.fixture(autouse=True)
+    def az_probe_calls(self, monkeypatch):
+        """Record az-cli probe calls and answer False — tests never shell out.
+
+        Tests that need a live az session monkeypatch the probe again to
+        return True.
+        """
+        calls = []
+
+        def fake_probe(**kwargs):
+            calls.append(kwargs)
+            return False
+
+        monkeypatch.setattr("kindling_cli.cli._azure_cli_session_available", fake_probe)
+        return calls
+
     def _run_with_env(self, platform: str, env: dict):
         runner = CliRunner()
         merged = {**_BLANK_PLATFORM_DETECT_VARS, **env}
@@ -2127,7 +2187,7 @@ class TestEnvCheckPlatform:
             )
         return result
 
-    def test_databricks_all_vars_set_passes(self):
+    def test_databricks_all_vars_set_passes(self, az_probe_calls):
         result = self._run_with_env(
             "databricks",
             {
@@ -2140,8 +2200,37 @@ class TestEnvCheckPlatform:
         assert "SET" in result.output
         assert "MISSING" not in result.output
         assert result.exit_code == 0
+        # Token satisfied the check — the lazy probe must not run.
+        assert az_probe_calls == []
+
+    def test_databricks_sp_only_passes(self, az_probe_calls):
+        result = self._run_with_env(
+            "databricks",
+            {
+                "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+                "AZURE_TENANT_ID": "tenant-1",
+                "AZURE_CLIENT_ID": "client-1",
+                "AZURE_CLIENT_SECRET": "secret-1",
+            },
+        )
+        assert result.exit_code == 0
+        assert "MISSING" not in result.output
+        assert "service principal" in result.output
+        assert az_probe_calls == []
+
+    def test_databricks_az_cli_session_only_passes(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._azure_cli_session_available", lambda **kw: True)
+        result = self._run_with_env(
+            "databricks",
+            {"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net"},
+        )
+        assert result.exit_code == 0
+        assert "MISSING" not in result.output
+        assert "Azure CLI session (az login)" in result.output
+        assert "AVAILABLE" in result.output
 
     def test_databricks_missing_token_fails(self):
+        """No token, no service principal, no az session — pre-flight fails."""
         result = self._run_with_env(
             "databricks",
             {"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net"},
@@ -2150,11 +2239,37 @@ class TestEnvCheckPlatform:
         assert "MISSING" in result.output
         assert result.exit_code != 0
 
+    def test_databricks_no_auth_lists_alternatives_and_workaround(self):
+        result = self._run_with_env(
+            "databricks",
+            {"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net"},
+        )
+        assert result.exit_code != 0
+        assert "DATABRICKS_TOKEN" in result.output
+        assert "AZURE_TENANT_ID + AZURE_CLIENT_ID + AZURE_CLIENT_SECRET" in result.output
+        assert "Azure CLI session (az login)" in result.output
+        assert "UNAVAILABLE" in result.output
+        # PAT-disabled workaround: mint an AAD token for the Databricks resource.
+        assert "az account get-access-token" in result.output
+        assert "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d" in result.output
+
+    def test_databricks_partial_sp_fails_naming_missing_vars(self):
+        result = self._run_with_env(
+            "databricks",
+            {
+                "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+                "AZURE_TENANT_ID": "tenant-1",
+            },
+        )
+        assert result.exit_code != 0
+        assert "MISSING: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET" in result.output
+
     def test_fabric_all_vars_set_passes(self):
         result = self._run_with_env(
             "fabric",
             {
                 "FABRIC_WORKSPACE_ID": "ws-1",
+                "FABRIC_LAKEHOUSE_ID": "lh-1",
                 "AZURE_TENANT_ID": "tenant-1",
                 "AZURE_CLIENT_ID": "client-1",
                 "AZURE_CLIENT_SECRET": "secret-1",
@@ -2171,6 +2286,62 @@ class TestEnvCheckPlatform:
         assert "FABRIC_WORKSPACE_ID" in result.output
         assert "MISSING" in result.output
         assert result.exit_code != 0
+
+    def test_fabric_no_sp_passes_with_informational_auth_line(self, az_probe_calls):
+        """A wholly absent SP triple is fine — DefaultAzureCredential covers it."""
+        result = self._run_with_env(
+            "fabric", {"FABRIC_WORKSPACE_ID": "ws-1", "FABRIC_LAKEHOUSE_ID": "lh-1"}
+        )
+        assert result.exit_code == 0
+        assert "MISSING" not in result.output
+        assert "az login / managed identity" in result.output
+        # DefaultAzureCredential is broader than the az CLI — never probed.
+        assert az_probe_calls == []
+
+    def test_fabric_partial_sp_fails_naming_missing_vars(self, az_probe_calls):
+        result = self._run_with_env(
+            "fabric",
+            {"FABRIC_WORKSPACE_ID": "ws-1", "AZURE_TENANT_ID": "tenant-1"},
+        )
+        assert result.exit_code != 0
+        assert "MISSING: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET" in result.output
+        assert az_probe_calls == []
+
+    def test_fabric_missing_base_var_fails_even_with_full_sp(self):
+        result = self._run_with_env(
+            "fabric",
+            {
+                "AZURE_TENANT_ID": "tenant-1",
+                "AZURE_CLIENT_ID": "client-1",
+                "AZURE_CLIENT_SECRET": "secret-1",
+            },
+        )
+        assert result.exit_code != 0
+        assert "FABRIC_WORKSPACE_ID" in result.output
+        assert "MISSING" in result.output
+
+    def test_synapse_no_sp_passes_with_informational_auth_line(self, az_probe_calls):
+        result = self._run_with_env(
+            "synapse",
+            {"SYNAPSE_WORKSPACE_NAME": "my-ws", "SYNAPSE_SPARK_POOL_NAME": "my-pool"},
+        )
+        assert result.exit_code == 0
+        assert "MISSING" not in result.output
+        assert "az login / managed identity" in result.output
+        assert az_probe_calls == []
+
+    def test_synapse_partial_sp_fails_naming_missing_vars(self, az_probe_calls):
+        result = self._run_with_env(
+            "synapse",
+            {
+                "SYNAPSE_WORKSPACE_NAME": "my-ws",
+                "SYNAPSE_SPARK_POOL_NAME": "my-pool",
+                "AZURE_CLIENT_ID": "client-1",
+            },
+        )
+        assert result.exit_code != 0
+        assert "MISSING: AZURE_TENANT_ID, AZURE_CLIENT_SECRET" in result.output
+        assert az_probe_calls == []
 
     def test_synapse_all_vars_set_passes(self):
         result = self._run_with_env(
@@ -2241,6 +2412,152 @@ class TestEnvCheckPlatform:
             )
         assert "[PASS] platform: databricks" in result.output
         assert "env:DATABRICKS_HOST" in result.output
+        assert "[PASS] databricks_auth: DATABRICKS_TOKEN" in result.output
+
+    def _auto_detect_databricks_no_token(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            runner.invoke(cli, ["config", "init"])
+            return runner.invoke(
+                cli,
+                ["env", "check"],
+                env={
+                    **_BLANK_PLATFORM_DETECT_VARS,
+                    "DATABRICKS_HOST": "https://adb-123.azuredatabricks.net",
+                },
+                catch_exceptions=False,
+            )
+
+    def test_auto_detect_databricks_az_session_passes_auth_check(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._azure_cli_session_available", lambda **kw: True)
+        result = self._auto_detect_databricks_no_token()
+        assert "[PASS] databricks_auth: Azure CLI session (az login)" in result.output
+        assert result.exit_code == 0
+
+    def test_auto_detect_databricks_no_auth_fails_auth_check(self):
+        result = self._auto_detect_databricks_no_token()
+        assert "[FAIL] databricks_auth" in result.output
+        assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# _azure_cli_session_available — az-cli auth probe (gh#211)
+# ---------------------------------------------------------------------------
+
+
+class TestAzureCliSessionAvailable:
+    def test_false_when_az_not_installed(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli.shutil.which", lambda _name: None)
+        assert _azure_cli_session_available() is False
+
+    def test_true_on_zero_exit_with_no_token_on_stdout(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli.shutil.which", lambda _name: "/usr/bin/az")
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return types.SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr("kindling_cli.cli.subprocess.run", fake_run)
+        assert _azure_cli_session_available() is True
+        # --output none keeps token material off stdout/logs; output is captured.
+        assert captured["cmd"] == ["az", "account", "get-access-token", "--output", "none"]
+        assert captured["kwargs"]["capture_output"] is True
+        assert captured["kwargs"]["timeout"] > 0
+
+    def test_false_on_nonzero_exit(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli.shutil.which", lambda _name: "/usr/bin/az")
+        monkeypatch.setattr(
+            "kindling_cli.cli.subprocess.run",
+            lambda *a, **kw: types.SimpleNamespace(returncode=1),
+        )
+        assert _azure_cli_session_available() is False
+
+    def test_false_on_timeout(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli.shutil.which", lambda _name: "/usr/bin/az")
+
+        def fake_run(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired(cmd="az", timeout=15)
+
+        monkeypatch.setattr("kindling_cli.cli.subprocess.run", fake_run)
+        assert _azure_cli_session_available() is False
+
+    def test_false_on_oserror(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli.shutil.which", lambda _name: "/usr/bin/az")
+
+        def fake_run(*_args, **_kwargs):
+            raise OSError("broken pipe")
+
+        monkeypatch.setattr("kindling_cli.cli.subprocess.run", fake_run)
+        assert _azure_cli_session_available() is False
+
+
+# ---------------------------------------------------------------------------
+# Run gate — _resolve_remote_platform(require_credentials=True) (gh#211)
+# ---------------------------------------------------------------------------
+
+
+class TestDatabricksRunGate:
+    @pytest.fixture(autouse=True)
+    def _databricks_host_only_env(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+        for var in ("DATABRICKS_TOKEN", *_AZURE_SP_VARS):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_az_cli_session_satisfies_gate(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._azure_cli_session_available", lambda **kw: True)
+        assert _resolve_remote_platform("databricks", require_credentials=True) == "databricks"
+
+    def test_token_satisfies_gate_without_probe(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "kindling_cli.cli._azure_cli_session_available",
+            lambda **kw: calls.append(kw) or False,
+        )
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-abc")
+        assert _resolve_remote_platform("databricks", require_credentials=True) == "databricks"
+        assert calls == []
+
+    def test_no_auth_raises_listing_alternatives(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._azure_cli_session_available", lambda **kw: False)
+        with pytest.raises(click.ClickException) as excinfo:
+            _resolve_remote_platform("databricks", require_credentials=True)
+        message = excinfo.value.message
+        assert "DATABRICKS_TOKEN" in message
+        assert "AZURE_TENANT_ID + AZURE_CLIENT_ID + AZURE_CLIENT_SECRET" in message
+        assert "Azure CLI session (az login)" in message
+        assert "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d" in message
+        assert "env check --platform databricks" in message
+
+    def test_partial_sp_failure_names_missing_vars(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._azure_cli_session_available", lambda **kw: False)
+        monkeypatch.setenv("AZURE_TENANT_ID", "tenant-1")
+        with pytest.raises(click.ClickException) as excinfo:
+            _resolve_remote_platform("databricks", require_credentials=True)
+        assert "missing: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET" in excinfo.value.message
+
+    def test_missing_host_message_unchanged(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        with pytest.raises(click.ClickException) as excinfo:
+            _resolve_remote_platform("databricks", require_credentials=True)
+        assert (
+            "Missing required environment variables for databricks: DATABRICKS_HOST"
+            in excinfo.value.message
+        )
+
+    def test_fabric_gate_stays_base_vars_only(self, monkeypatch):
+        """fabric/synapse never required SP vars at the run gate — unchanged."""
+        calls = []
+        monkeypatch.setattr(
+            "kindling_cli.cli._azure_cli_session_available",
+            lambda **kw: calls.append(kw) or False,
+        )
+        monkeypatch.setenv("FABRIC_WORKSPACE_ID", "ws-1")
+        monkeypatch.setenv("FABRIC_LAKEHOUSE_ID", "lake-1")
+        monkeypatch.setenv("AZURE_TENANT_ID", "tenant-1")  # partial SP on purpose
+        assert _resolve_remote_platform("fabric", require_credentials=True) == "fabric"
+        assert calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -2388,15 +2705,18 @@ def test_runner_register_json_output(monkeypatch):
     assert payload["job_id"] == "job-my-app"
 
 
-def test_runner_register_fails_when_platform_vars_missing(monkeypatch):
+def test_runner_register_fails_when_platform_auth_missing(monkeypatch):
     monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
-    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    for var in ("DATABRICKS_TOKEN", *_AZURE_SP_VARS):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("kindling_cli.cli._azure_cli_session_available", lambda **kw: False)
     runner = CliRunner()
     result = runner.invoke(
         cli, ["runner", "register", "--app", "my-app", "--platform", "databricks"]
     )
     assert result.exit_code != 0
-    assert "Missing required environment variables" in result.output
+    assert "No databricks authentication configured" in result.output
+    assert "DATABRICKS_TOKEN" in result.output
 
 
 def test_runner_status_summary(monkeypatch):

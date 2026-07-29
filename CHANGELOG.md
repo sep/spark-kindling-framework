@@ -2,6 +2,36 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **Databricks pre-flight no longer hard-requires `DATABRICKS_TOKEN`**
+  (gh#211). The CLI run gate and `env check` now accept any of the SDK's
+  auth alternatives, evaluated in the SDK's resolution order:
+  `DATABRICKS_TOKEN`, the `AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/
+  `AZURE_CLIENT_SECRET` service principal triple, or a usable Azure CLI
+  session (probed lazily and secret-safely with
+  `az account get-access-token --output none`). Pre-flight failures list
+  all three alternatives plus the PAT-disabled workaround (minting an
+  Entra ID token for the Databricks first-party resource). A partial
+  service principal triple is called out by name — the SDK silently
+  ignores it and falls through, so pre-flight is where users learn this.
+  `env check --platform fabric|synapse` is now aligned with the run gate
+  and the auto-detect path: a wholly absent service principal triple
+  passes with an informational `az login / managed identity` line instead
+  of failing (a partial triple still fails naming the missing vars). CI
+  jobs that relied on `env check --platform fabric|synapse` to enforce
+  service-principal presence will now pass in that no-SP case.
+  Pre-flight resource vars are also reconciled with what the SDK clients
+  actually require: `env check --platform fabric` now checks
+  `FABRIC_LAKEHOUSE_ID` alongside `FABRIC_WORKSPACE_ID` (matching the run
+  gate and `FabricAPI.from_env`), and the synapse run gate now requires
+  `SYNAPSE_SPARK_POOL_NAME` alongside `SYNAPSE_WORKSPACE_NAME` (matching
+  `env check` and the Livy batch URLs `SynapseAPI` builds) — synapse runs
+  without a pool name previously passed pre-flight and then failed
+  against `sparkPools/None`.
+
 ## [0.12.0] - 2026-07-28
 
 ### Changed
