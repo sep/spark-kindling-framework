@@ -200,6 +200,41 @@ def test_autocollapse_before_run_preserves_registry_order_for_chain_additions():
     assert pipe_ids == [episodes_chain, events_chain]
 
 
+def test_autocollapse_before_run_preserves_unknown_pipe_ids_verbatim():
+    """Copilot review finding on PR #218: survivors must drop exactly the
+    declared pipes collapse_temporal_chain removed -- never everything not
+    present in the post-collapse registry. An unrelated/typo'd pipe id in
+    the request (never registered at all, so also absent from the
+    post-collapse registry) must survive untouched, so run_datapipes still
+    fails loudly on it instead of autocollapse silently swallowing it."""
+    from kindling_ext_temporal import chain as chain_module
+
+    declared_pipe = "temporal.event.telemetry"
+    events_chain = "temporal.chain.events.default"
+    unknown_pipe = "typo.does_not_exist"
+
+    registry = _FakePipeRegistry(
+        {
+            declared_pipe: _FakePipeDef({"temporal.lowering": "declared"}),
+            events_chain: _FakePipeDef({"temporal.lowering": "chain"}),
+        }
+    )
+
+    with (
+        patch.object(chain_module, "_autocollapse_enabled", return_value=True),
+        patch("kindling.injection.GlobalInjector.get", return_value=registry),
+        patch.object(
+            chain_module,
+            "collapse_temporal_chain",
+            return_value=[events_chain],
+        ),
+    ):
+        pipe_ids = [declared_pipe, unknown_pipe]
+        chain_module._autocollapse_before_run(None, pipe_ids=pipe_ids)
+
+    assert pipe_ids == [unknown_pipe, events_chain]
+
+
 def test_autocollapse_before_run_ignores_unrelated_runs():
     """A run whose pipe_ids never touch a declared pipe must be untouched,
     even if declared pipes exist elsewhere in the registry."""

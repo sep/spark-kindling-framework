@@ -419,6 +419,14 @@ def _autocollapse_before_run(sender, *, pipe_ids=None, **kwargs) -> None:
     elsewhere never crashes an otherwise-unrelated run; the requested pipes
     just execute uncollapsed, same as if autocollapse were off.
 
+    Survivors are computed by removing exactly the pipe ids tagged
+    ``declared`` *in this request* (captured before collapsing) -- never by
+    intersecting the request with "what's still in the registry after
+    collapse". The latter would also silently drop any unrelated/typo'd
+    pipe id the caller passed (never registered to begin with, so absent
+    from the post-collapse registry too), swallowing a bug that would
+    otherwise fail loudly when ``run_datapipes`` tries to resolve it.
+
     Disable with ``kindling.temporal.autocollapse: false`` (e.g. to run one
     granular per-declaration pipe standalone for debugging).
     """
@@ -427,10 +435,13 @@ def _autocollapse_before_run(sender, *, pipe_ids=None, **kwargs) -> None:
 
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
     requested = list(pipe_ids)
-    if not any(
-        _pipe_tags(pipe_registry, pipeid).get(TEMPORAL_LOWERING_TAG) == TEMPORAL_LOWERING_DECLARED
+    declared_requested = {
+        pipeid
         for pipeid in requested
-    ):
+        if _pipe_tags(pipe_registry, pipeid).get(TEMPORAL_LOWERING_TAG)
+        == TEMPORAL_LOWERING_DECLARED
+    }
+    if not declared_requested:
         return
 
     try:
@@ -438,11 +449,10 @@ def _autocollapse_before_run(sender, *, pipe_ids=None, **kwargs) -> None:
     except Exception:  # noqa: BLE001 - a declaration gap must not crash an unrelated run
         return
 
-    remaining = set(remaining_ordered)
-    survivors = [pipeid for pipeid in requested if pipeid in remaining]
-    # Iterate remaining_ordered (registry/insertion order), not the `remaining`
-    # set, so the events-chain pipe always lands before the episodes-chain
-    # pipe -- a set would scramble that via hash randomization.
+    survivors = [pipeid for pipeid in requested if pipeid not in declared_requested]
+    # Iterate remaining_ordered (registry/insertion order), not a set, so the
+    # events-chain pipe always lands before the episodes-chain pipe -- a set
+    # would scramble that via hash randomization.
     chain_additions = [
         pipeid
         for pipeid in remaining_ordered
