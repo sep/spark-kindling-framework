@@ -8,12 +8,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+
 from kindling.config_patterns import ConfigPatternMatcher
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
-from pyspark.sql import DataFrame
 
 _ENTITY_LOGGER = logging.getLogger("kindling.data_entities")
 
@@ -701,7 +702,14 @@ class DataEntityRegistry(ABC):
         pass
 
     @abstractmethod
-    def get_entity_ids(self):
+    def get_entity_ids(self) -> List[str]:
+        """Every registered entity id, as a plain list.
+
+        Implementations must return a real ``list``, never a live view
+        (e.g. ``dict.keys()``) over internal state -- see
+        ``DataPipesRegistry.get_pipe_ids()`` for why this matters even
+        when nothing currently mutates the result in place.
+        """
         pass
 
     @abstractmethod
@@ -965,8 +973,8 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
                     companion_entity_id=companion_id,
                 )
 
-    def get_entity_ids(self):
-        return self.registry.keys()
+    def get_entity_ids(self) -> List[str]:
+        return list(self.registry.keys())
 
     def get_entity_definition(self, name):
         """Get entity definition with tag overrides applied.

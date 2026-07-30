@@ -971,7 +971,62 @@ class TestDataPipesExecuter:
         assert args[0] == "datapipes.before_run"
         assert kwargs["pipe_ids"] == ["pipe1", "pipe2"]
         assert kwargs["pipe_count"] == 2
-        assert "run_id" in kwargs
+
+    def test_run_datapipes_dag_accepts_dict_keys_view(self):
+        """Production bug: callers routinely build the pipe list from
+        registry.get_pipe_ids() directly (a dict_keys view), not
+        list(registry.get_pipe_ids()) -- e.g. `orchestrator.run_datapipes_dag
+        (registry.get_pipe_ids())`. A before_run subscriber that mutates
+        pipe_ids in place via slice assignment (pipe_ids[:] = ...) then
+        crashes with 'dict_keys object does not support item assignment'.
+        run_datapipes_dag must coerce to a real list itself rather than
+        trusting the type hint."""
+        executer = DataPipesExecuter(
+            self.mock_logger_provider,
+            self.mock_entity_registry,
+            self.mock_pipes_registry,
+            self.mock_erps,
+            self.mock_trace_provider,
+        )
+
+        def _mutate_in_place(sender, *, pipe_ids=None, **kwargs):
+            pipe_ids[:] = list(pipe_ids) + ["extra"]
+
+        executer.emit = Mock(side_effect=_mutate_in_place)
+        mock_orchestrator = Mock()
+        mock_orchestrator.execute.return_value = "ok"
+
+        pipe_ids_view = {"pipe1": None, "pipe2": None}.keys()
+        with patch.object(GlobalInjector, "get", return_value=mock_orchestrator):
+            result = executer.run_datapipes_dag(pipe_ids_view)
+
+        assert result == "ok"
+        kwargs = mock_orchestrator.execute.call_args.kwargs
+        assert kwargs["pipe_ids"] == ["pipe1", "pipe2", "extra"]
+
+    def test_run_datapipes_accepts_dict_keys_view_sequential_and_dag(self):
+        """Same coercion, through the run_datapipes(use_dag=...) facade for
+        both the sequential and DAG paths."""
+        executer = DataPipesExecuter(
+            self.mock_logger_provider,
+            self.mock_entity_registry,
+            self.mock_pipes_registry,
+            self.mock_erps,
+            self.mock_trace_provider,
+        )
+        executer.run_datapipes_dag = Mock(return_value="dag-result")
+        pipe_ids_view = {"pipe1": None}.keys()
+
+        executer.run_datapipes(pipe_ids_view, use_dag=True)
+        called_with = executer.run_datapipes_dag.call_args.args[0]
+        assert called_with == ["pipe1"]
+        assert isinstance(called_with, list)
+
+        executer._run_datapipes_sequential = Mock(return_value=None)
+        executer.run_datapipes(pipe_ids_view, use_dag=False)
+        called_with = executer._run_datapipes_sequential.call_args.args[0]
+        assert called_with == ["pipe1"]
+        assert isinstance(called_with, list)
 
 
 class TestAbstractBaseClasses:

@@ -35,6 +35,34 @@ def test_metadata_accepts_static_values_dict():
     assert m.static_values == {"source": "system_a", "region": "us-east-1"}
 
 
+def test_file_ingestion_manager_get_entry_ids_returns_a_plain_list_snapshot():
+    """get_entry_ids() must return a real list, not a dict.keys() view.
+
+    A live view is exactly the antipattern that caused a production bug in
+    the equivalent DataPipesRegistry.get_pipe_ids(): a signal handler
+    mutating the returned collection in place (slice assignment) crashes on
+    dict_keys, which doesn't support item assignment. The contract is a
+    static snapshot at call time -- it must NOT reflect later registrations.
+    """
+    from kindling.file_ingestion import FileIngestionManager
+
+    manager = FileIngestionManager(MagicMock())
+    manager.register_entry(
+        "entry1", name="E1", patterns=[".*\\.csv"], dest_entity_id="dest", tags={}
+    )
+
+    entry_ids = manager.get_entry_ids()
+
+    assert isinstance(entry_ids, list)
+    entry_ids[:] = entry_ids  # must support slice assignment
+
+    manager.register_entry(
+        "entry2", name="E2", patterns=[".*\\.json"], dest_entity_id="dest", tags={}
+    )
+
+    assert entry_ids == ["entry1"]
+
+
 def test_metadata_field_is_optional():
     """static_values must have a default so it is not in the required-fields set."""
     from kindling.file_ingestion import FileIngestionMetadata

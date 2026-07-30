@@ -236,7 +236,14 @@ class DataPipesRegistry(ABC):
         pass
 
     @abstractmethod
-    def get_pipe_ids(self):
+    def get_pipe_ids(self) -> List[str]:
+        """Every registered pipe id, as a plain list.
+
+        Implementations must return a real ``list``, never a live view
+        (e.g. ``dict.keys()``) over internal state -- callers routinely
+        pass this straight into ``run_datapipes``/``run_datapipes_dag``,
+        which pass it on to signal handlers that mutate it in place.
+        """
         pass
 
     @abstractmethod
@@ -363,8 +370,8 @@ class DataPipesManager(DataPipesRegistry):
                 params[key] = raw_params[key]
         return PipeMetadata(pipeid, **params)
 
-    def get_pipe_ids(self):
-        return self.registry.keys()
+    def get_pipe_ids(self) -> List[str]:
+        return list(self.registry.keys())
 
     def get_pipe_definition(self, name):
         return self.registry.get(name)
@@ -417,6 +424,11 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
                 the call, then restore.
             **dag_kwargs: Additional DAG execution options
         """
+        # Enforce the List[str] contract the signature promises: callers
+        # routinely pass registry.get_pipe_ids() directly (a dict_keys view,
+        # not a list), which downstream code -- signal handlers mutating
+        # pipe_ids in place, index-based access -- cannot assume.
+        pipes = list(pipes)
         if use_dag:
             return self.run_datapipes_dag(
                 pipes,
@@ -590,6 +602,14 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         from contextlib import nullcontext
 
         from kindling.execution_orchestrator import ExecutionOrchestrator
+
+        # Enforce the List[str] contract the signature promises: this is a
+        # public entry point callers invoke directly (not only via
+        # run_datapipes(use_dag=True)), and registry.get_pipe_ids() -- a
+        # dict_keys view, not a list -- is a common way to build the pipe
+        # list. before_run subscribers that mutate pipe_ids in place (e.g.
+        # the temporal extension's autocollapse hook) require a real list.
+        pipes = list(pipes)
 
         # Mirrors the emission in _run_datapipes_sequential: DAG-mode runs
         # never reach that method, so without this, before_run subscribers
