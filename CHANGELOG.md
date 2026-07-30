@@ -2,6 +2,37 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Added
+
+- **Registry-declared temporal conditions** (`kindling_ext_temporal`, gh#222):
+  a second, explicit `condition_source` for condition engines, alongside the
+  existing table-backed rules-as-data path.
+  - `DataConditions.register(...)`: declares a static, application-owned
+    condition directly in Python — `enter_when`/`exit_when` are
+    `Callable[[DataFrame], Column]` predicate builders invoked with the
+    scoped events DataFrame at execution time, rather than serialized SQL
+    strings. Required fields and duplicate `condition_id`s raise
+    `ConditionValidationError` immediately (registry conditions are code,
+    not data, and fail fast rather than being quarantined).
+  - `DataEvents.condition_engine(..., condition_source="registry")`:
+    evaluates the condition registry's current contents instead of the
+    table-backed conditions entity — zero conditions table/entity
+    involvement. `condition_source="table"` (the default, unchanged) keeps
+    reading rows from the configured current conditions entity.
+    Event-type graph cycles in the registry are rejected at this
+    declaration call. `declare_temporal_chain()`/`collapse_temporal_chain()`
+    omit the conditions-current input entirely for a chain whose declared
+    condition engines are all registry-sourced, and raise if a table rule
+    and a registry rule combine into a cross-source event-type cycle.
+  - Both sources normalize to the same `ConditionRule` representation and
+    emit the same `{condition_id}.entered`/`.exited` boundary events through
+    `ConditionEngineRunner`, so a table rule and a registry rule can execute
+    side by side in the same pass.
+  - Existing table-backed declarations, entities, schemas, and chain
+    behavior are unchanged.
+
 ## [0.12.3] - 2026-07-29
 
 ### Added

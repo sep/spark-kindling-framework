@@ -33,19 +33,20 @@ def _temporal_service_get(
     *,
     event_registry=None,
     episode_registry=None,
+    condition_registry=None,
     entity_registry=None,
     pipe_registry=None,
 ):
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
     from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
+        TemporalConditionRegistry,
         TemporalEntityResolver,
         TemporalEpisodeRegistry,
         TemporalEpisodeRegistryManager,
         TemporalEventRegistry,
     )
-
-    from kindling.data_entities import DataEntityRegistry
-    from kindling.data_pipes import DataPipesRegistry
 
     # declare_temporal_chain always consults the episode registry (for zero
     # declared episodes, an empty one is correct), even when a test only
@@ -59,6 +60,8 @@ def _temporal_service_get(
             return event_registry
         if dep is TemporalEpisodeRegistry:
             return episode_registry
+        if dep is TemporalConditionRegistry and condition_registry is not None:
+            return condition_registry
         if dep is DataEntityRegistry and entity_registry is not None:
             return entity_registry
         if dep is DataPipesRegistry and pipe_registry is not None:
@@ -94,14 +97,13 @@ def _register_base_event(event_registry, entity_registry, pipe_registry, eventid
 
 
 def test_collapse_temporal_chain_unregisters_declared_pipes():
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
     from kindling_ext_temporal import TemporalEventRegistryManager
     from kindling_ext_temporal.chain import (
         chain_events_pipe_id,
         collapse_temporal_chain,
     )
-
-    from kindling.data_entities import DataEntityManager
-    from kindling.data_pipes import DataPipesManager
 
     event_registry = TemporalEventRegistryManager(_logger_provider())
     entity_registry = DataEntityManager()
@@ -138,6 +140,106 @@ def test_collapse_temporal_chain_unregisters_declared_pipes():
     ):
         remaining_again = collapse_temporal_chain("t1")
     assert remaining_again == remaining
+
+
+# --- gh#222: registry-declared temporal conditions in declare_temporal_chain -
+
+
+def test_declare_temporal_chain_with_zero_condition_engines_still_includes_conditions_current():
+    """Pre-existing behavior, deliberately left untouched by gh#222: a chain
+    with no declared condition engine at all still wires the conditions
+    entity unconditionally. Only a chain with at least one declared engine,
+    every one of them registry-sourced, omits it (see the next test)."""
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import TemporalEventRegistryManager
+    from kindling_ext_temporal.chain import declare_temporal_chain
+
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    _register_base_event(event_registry, entity_registry, pipe_registry, "telemetry.base")
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            event_registry=event_registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+        ),
+    ):
+        declare_temporal_chain("t1")
+
+    events_pipe = pipe_registry.get_pipe_definition("temporal.chain.events.t1")
+    assert events_pipe.input_entity_ids == ["bronze.telemetry", "silver.conditions.current"]
+
+
+def test_declare_temporal_chain_registry_only_omits_conditions_current():
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+    from kindling_ext_temporal.chain import declare_temporal_chain
+
+    DataEvents.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+    condition_registry = MagicMock()
+    condition_registry.get_all_conditions.return_value = []
+
+    _register_base_event(event_registry, entity_registry, pipe_registry, "telemetry.base")
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            event_registry=event_registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+            condition_registry=condition_registry,
+        ),
+    ):
+        DataEvents.condition_engine(engineid="static_conditions", condition_source="registry")
+        declare_temporal_chain("t1")
+
+    events_pipe = pipe_registry.get_pipe_definition("temporal.chain.events.t1")
+    assert events_pipe.input_entity_ids == ["bronze.telemetry"]
+    assert entity_registry.get_entity_definition("silver.conditions") is None
+    assert entity_registry.get_entity_definition("silver.conditions.current") is None
+
+
+def test_declare_temporal_chain_mixed_sources_still_includes_conditions_current():
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+    from kindling_ext_temporal.chain import declare_temporal_chain
+
+    DataEvents.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+    condition_registry = MagicMock()
+    condition_registry.get_all_conditions.return_value = []
+
+    _register_base_event(event_registry, entity_registry, pipe_registry, "telemetry.base")
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            event_registry=event_registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+            condition_registry=condition_registry,
+        ),
+    ):
+        DataEvents.condition_engine(engineid="dynamic_conditions", condition_source="table")
+        DataEvents.condition_engine(engineid="static_conditions", condition_source="registry")
+        declare_temporal_chain("t1")
+
+    events_pipe = pipe_registry.get_pipe_definition("temporal.chain.events.t1")
+    assert events_pipe.input_entity_ids == ["bronze.telemetry", "silver.conditions.current"]
+    assert entity_registry.get_entity_definition("silver.conditions") is not None
+    assert entity_registry.get_entity_definition("silver.conditions.current") is not None
 
 
 class _FakePipeDef:

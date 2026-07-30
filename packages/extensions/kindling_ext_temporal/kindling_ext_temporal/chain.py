@@ -62,7 +62,11 @@ from kindling.data_pipes import DataPipesRegistry
 from kindling.injection import GlobalInjector
 
 from .entities import TemporalEntityResolver
-from .registry import TemporalEpisodeRegistry, TemporalEventRegistry
+from .registry import (
+    TemporalConditionRegistry,
+    TemporalEpisodeRegistry,
+    TemporalEventRegistry,
+)
 from .translation import (
     TEMPORAL_LOWERING_CHAIN,
     TEMPORAL_LOWERING_DECLARED,
@@ -119,25 +123,46 @@ def _resolve_max_generations(entity_dfs: Dict[str, Any]) -> int:
     return int(value)
 
 
-def _chain_events_execute(driving_entity_id, conditions_current_id, base_defs, episode_defs):
-    """Build the events-chain body: strata in memory, one returned frame."""
+def _chain_events_execute(
+    driving_entity_id,
+    conditions_current_id,
+    base_defs,
+    episode_defs,
+    *,
+    has_table_engine,
+    has_registry_engine,
+):
+    """Build the events-chain body: strata in memory, one returned frame.
+
+    ``conditions_current_id`` is ``None`` for a purely-registry chain (at
+    least one condition engine declared, none of them table-sourced) — the
+    conditions entity is never read at all in that case. A chain with zero
+    declared condition engines still receives a real
+    ``conditions_current_id`` (pre-existing behavior, left untouched — that
+    edge case isn't part of this feature), so gating the table read on
+    ``conditions_current_id is not None`` (rather than on
+    ``has_table_engine``) is what keeps it unchanged.
+
+    ``has_table_engine``/``has_registry_engine`` reflect which kinds of
+    condition engine are actually declared for this chain; they gate
+    whether registry rules are pulled in and whether the cross-source cycle
+    check below runs.
+    """
 
     def execute(**entity_dfs):
         driving_key = driving_entity_id.replace(".", "_")
-        conditions_key = conditions_current_id.replace(".", "_")
         try:
             driving_df = entity_dfs[driving_key]
-            conditions_df = entity_dfs[conditions_key]
         except KeyError as exc:
             available = ", ".join(sorted(entity_dfs.keys()))
             raise ValueError(
-                f"Temporal events chain expected inputs '{driving_key}' and "
-                f"'{conditions_key}', got: {available}"
+                f"Temporal events chain expected input '{driving_key}', got: {available}"
             ) from exc
 
         from .engine import ConditionEngineRunner, EpisodeRunner
         from .validation import (
             ActiveSparkSqlExpressionParser,
+            ConditionValidationError,
             TemporalConditionValidator,
         )
 
@@ -155,10 +180,41 @@ def _chain_events_execute(driving_entity_id, conditions_current_id, base_defs, e
             )
         )
 
-        validator = TemporalConditionValidator(
-            expression_parser=ActiveSparkSqlExpressionParser(driving_df.sparkSession)
+        table_rules: List[Any] = []
+        if conditions_current_id is not None:
+            conditions_key = conditions_current_id.replace(".", "_")
+            try:
+                conditions_df = entity_dfs[conditions_key]
+            except KeyError as exc:
+                available = ", ".join(sorted(entity_dfs.keys()))
+                raise ValueError(
+                    f"Temporal events chain expected input '{conditions_key}', got: {available}"
+                ) from exc
+            validator = TemporalConditionValidator(
+                expression_parser=ActiveSparkSqlExpressionParser(driving_df.sparkSession)
+            )
+            table_rules = validator.validate_or_raise(conditions_df.collect()).valid_rules
+
+        registry_rules = (
+            GlobalInjector.get(TemporalConditionRegistry).get_all_conditions()
+            if has_registry_engine
+            else []
         )
-        valid_rules = validator.validate_or_raise(conditions_df.collect()).valid_rules
+        combined_rules = table_rules + registry_rules
+
+        # Each source validates its own rules in isolation -- table rows via
+        # validate_or_raise above, registry rules at condition_engine()
+        # declaration time (registry.py). Neither ever checks a rule from
+        # ONE source consuming a produced event type from the OTHER: the one
+        # genuinely new cross-source interaction this feature introduces, so
+        # it is checked here, once, whenever both kinds of engine are
+        # declared on this chain.
+        if has_table_engine and has_registry_engine and combined_rules:
+            cross_validator = TemporalConditionValidator()
+            graph = cross_validator.build_event_type_graph(combined_rules)
+            cycles = cross_validator.graph_builder.detect_cycles(graph)
+            if cycles:
+                raise ConditionValidationError(f"Conditions set is not ingestible:\n{cycles[0]}")
 
         # Prior episode state is resolved ONCE, before anything persists —
         # both this pipe's determination events and (later) the episodes
@@ -174,8 +230,8 @@ def _chain_events_execute(driving_entity_id, conditions_current_id, base_defs, e
         for _ in range(_resolve_max_generations(entity_dfs)):
             fresh: List[Any] = []
 
-            if valid_rules:
-                boundaries = _checkpoint(engine.execute_rules(stratum, valid_rules))
+            if combined_rules:
+                boundaries = _checkpoint(engine.execute_rules(stratum, combined_rules))
                 if not boundaries.isEmpty():
                     accumulated = accumulated.unionByName(boundaries)
                     fresh.append(boundaries)
@@ -281,21 +337,44 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
         )
     driving_entity_id = driving_entities[0]
 
+    # A chain with zero declared condition engines still wires the
+    # conditions entity unconditionally -- pre-existing behavior, left
+    # untouched (that edge case isn't part of this feature). A chain with at
+    # least one declared engine omits it only when EVERY declared engine is
+    # registry-sourced: a purely-registry chain reads events only, per the
+    # proposal's compatibility section.
+    engine_defs = [
+        event_registry.get_condition_engine_definition(engineid)
+        for engineid in event_registry.get_condition_engine_ids()
+    ]
+    has_table_engine = any(metadata.condition_source == "table" for metadata in engine_defs)
+    has_registry_engine = any(metadata.condition_source == "registry" for metadata in engine_defs)
+    include_conditions_current = not engine_defs or has_table_engine
+
     events_entity = resolver.get_events_entity()
-    conditions_entity = resolver.get_conditions_entity()
-    conditions_tags = conditions_entity.tags or {}
-    conditions_current_id = conditions_tags.get(
-        "scd.current_entity_id", f"{conditions_entity.entityid}.current"
-    )
     TemporalPipeTranslator.ensure_entity(entity_registry, events_entity)
-    TemporalPipeTranslator.ensure_entity(entity_registry, conditions_entity)
+
+    conditions_current_id = None
+    if include_conditions_current:
+        conditions_entity = resolver.get_conditions_entity()
+        conditions_current_id = resolver.get_conditions_current_entity_id()
+        TemporalPipeTranslator.ensure_entity(entity_registry, conditions_entity)
+
+    events_input_entity_ids = [driving_entity_id]
+    if conditions_current_id is not None:
+        events_input_entity_ids.append(conditions_current_id)
 
     events_pipe = chain_events_pipe_id(chainid)
     pipe_registry.register_pipe(
         events_pipe,
         name=f"Temporal events chain: {chainid}",
         execute=_chain_events_execute(
-            driving_entity_id, conditions_current_id, base_defs, episode_defs
+            driving_entity_id,
+            conditions_current_id,
+            base_defs,
+            episode_defs,
+            has_table_engine=has_table_engine,
+            has_registry_engine=has_registry_engine,
         ),
         tags={
             "pipe_type": "temporal.chain_events",
@@ -304,7 +383,7 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
             "temporal.chain_id": chainid,
             "temporal.reads_prior_state": "true",
         },
-        input_entity_ids=[driving_entity_id, conditions_current_id],
+        input_entity_ids=events_input_entity_ids,
         output_entity_id=events_entity.entityid,
         output_type=(events_entity.tags or {}).get("provider_type", "delta"),
         use_watermark=True,

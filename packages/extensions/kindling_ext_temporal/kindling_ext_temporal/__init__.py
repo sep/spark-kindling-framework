@@ -27,9 +27,12 @@ from .entities import (
 from .registry import (
     BaseEventMetadata,
     ConditionEngineMetadata,
+    DataConditions,
     DataEpisodes,
     DataEvents,
     EpisodeMetadata,
+    TemporalConditionRegistry,
+    TemporalConditionRegistryManager,
     TemporalEpisodeRegistry,
     TemporalEpisodeRegistryManager,
     TemporalEventRegistry,
@@ -67,6 +70,7 @@ __all__ = [
     "ConditionValidationReport",
     "ConditionsIngestionResult",
     "QUARANTINE_ENTITY_CONFIG_KEY",
+    "DataConditions",
     "DataEpisodes",
     "DataEvents",
     "EpisodeMetadata",
@@ -76,6 +80,8 @@ __all__ = [
     "TEMPORAL_LOWERING_CHAIN",
     "TEMPORAL_LOWERING_DECLARED",
     "TEMPORAL_LOWERING_TAG",
+    "TemporalConditionRegistry",
+    "TemporalConditionRegistryManager",
     "TemporalConditionValidator",
     "TemporalEntityResolver",
     "TemporalEpisodeRegistry",
@@ -97,13 +103,15 @@ __version__ = "0.2.5"
 def _register_services():
     """Register extension services with Kindling's DI container."""
     from injector import singleton
-
     from kindling.injection import GlobalInjector
 
     injector = GlobalInjector.get_injector()
     injector.binder.bind(TemporalEventRegistry, to=TemporalEventRegistryManager, scope=singleton)
     injector.binder.bind(
         TemporalEpisodeRegistry, to=TemporalEpisodeRegistryManager, scope=singleton
+    )
+    injector.binder.bind(
+        TemporalConditionRegistry, to=TemporalConditionRegistryManager, scope=singleton
     )
 
 
