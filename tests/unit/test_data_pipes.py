@@ -971,6 +971,7 @@ class TestDataPipesExecuter:
         assert args[0] == "datapipes.before_run"
         assert kwargs["pipe_ids"] == ["pipe1", "pipe2"]
         assert kwargs["pipe_count"] == 2
+        assert "run_id" in kwargs
 
     def test_run_datapipes_dag_accepts_dict_keys_view(self):
         """Production bug: callers routinely build the pipe list from
