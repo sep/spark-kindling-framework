@@ -91,7 +91,7 @@ __all__ = [
     "validated_conditions_transform",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.5"
 
 
 def _register_services():
