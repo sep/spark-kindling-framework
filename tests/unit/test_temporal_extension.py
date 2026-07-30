@@ -738,3 +738,105 @@ def test_conditions_ingestion_result_and_config_key():
     assert QUARANTINE_ENTITY_CONFIG_KEY == "kindling.temporal.conditions.quarantine_entity_id"
     assert ConditionsIngestionResult(ingested_count=3).is_clean is True
     assert ConditionsIngestionResult(ingested_count=0, quarantined=[object()]).is_clean is False
+
+
+@pytest.fixture(scope="module")
+def _memory_spark_session():
+    """Plain (non-Delta) SparkSession — see test_entity_provider_memory_scd2.py's
+    module docstring for why this avoids conftest.py's shared, Delta-configured
+    spark_session fixture (MemoryEntityProvider never needs Delta, and that
+    fixture forces Delta config onto whatever SparkSession is already active
+    in the process, which breaks if an earlier, unrelated test created a plain
+    one first)."""
+    from pyspark.sql import SparkSession
+
+    from tests.conftest import _sockets_permitted
+
+    if not _sockets_permitted():
+        pytest.skip(
+            "Sockets are not permitted in this environment; cannot start a real SparkSession."
+        )
+    spark = (
+        SparkSession.builder.appName("TemporalConditionsIngestTests")
+        .master("local[2]")
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("ERROR")
+    yield spark
+
+
+def test_ingest_conditions_end_to_end_against_memory_provider(_memory_spark_session, monkeypatch):
+    """Acceptance criterion #2: ingest_conditions() against a real MemoryEntityProvider
+    — validation/quarantine on first ingest, then an SCD2 re-ingest that changes a
+    tracked field (enabled) closes the old version and opens exactly one new one."""
+    from kindling.entity_provider_memory import MemoryEntityProvider
+    from kindling_ext_temporal import (
+        SimpleTemporalEntityResolver,
+        conditions_schema,
+        ingest_conditions,
+    )
+
+    spark = _memory_spark_session
+    monkeypatch.setattr(
+        "kindling.entity_provider_memory.get_or_create_spark_session", lambda: MagicMock()
+    )
+    memory_provider = MemoryEntityProvider(_logger_provider())
+    memory_provider.spark = spark
+
+    resolver = SimpleTemporalEntityResolver()
+    valid_from = datetime(2026, 1, 1)
+
+    df = spark.createDataFrame(
+        [
+            _condition_row(condition_id="condition.temperature_high", valid_from=valid_from),
+            _condition_row(
+                condition_id="condition.bad",
+                valid_from=valid_from,
+                parameters={
+                    "enter_when": "",
+                    "exit_when": "cast(payload['temperature'] as double) <= 90",
+                },
+            ),
+        ],
+        conditions_schema(),
+    )
+
+    result = ingest_conditions(
+        df,
+        resolver=resolver,
+        provider_factory=lambda entity: memory_provider,
+        quarantine_entity_id=None,
+    )
+
+    assert result.ingested_count == 1
+    assert [invalid.condition_id for invalid in result.quarantined] == ["condition.bad"]
+
+    stored = memory_provider.read_entity(resolver.get_conditions_entity()).collect()
+    current = [row for row in stored if row["__is_current"]]
+    assert len(current) == 1
+    assert current[0]["condition_id"] == "condition.temperature_high"
+    assert current[0]["enabled"] is True
+
+    # Re-ingest the same condition with a tracked field (enabled) flipped.
+    changed_df = spark.createDataFrame(
+        [
+            _condition_row(
+                condition_id="condition.temperature_high", enabled=False, valid_from=valid_from
+            )
+        ],
+        conditions_schema(),
+    )
+    ingest_conditions(
+        changed_df,
+        resolver=resolver,
+        provider_factory=lambda entity: memory_provider,
+        quarantine_entity_id=None,
+    )
+
+    all_rows = memory_provider.read_entity(resolver.get_conditions_entity()).collect()
+    current_rows = [row for row in all_rows if row["__is_current"]]
+    closed_rows = [row for row in all_rows if not row["__is_current"]]
+    assert len(current_rows) == 1
+    assert current_rows[0]["enabled"] is False
+    assert len(closed_rows) == 1, "exactly one prior version must be closed, not duplicated"
+    assert closed_rows[0]["enabled"] is True
