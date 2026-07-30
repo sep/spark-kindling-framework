@@ -6,6 +6,15 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **`MemoryEntityProvider.merge_to_entity()`** (gh#220): the in-memory
+  provider now supports the same `merge_to_entity` contract as
+  `DeltaEntityProvider` — SCD Type 2 upsert (`scd.type=2`), insert-only
+  (`write.mode=insert`), and full-row SCD1 upsert (default) — implemented as
+  plain DataFrame joins/unions rather than a Delta `MERGE INTO`. This lets
+  `kindling_ext_temporal.ingest_conditions()` (and any other caller that
+  merges into an entity) be exercised against Memory, the framework's
+  no-external-dependency test provider, instead of only against a real Delta
+  table.
 - **Registry-declared temporal conditions** (`kindling_ext_temporal`, gh#222):
   a second, explicit `condition_source` for condition engines, alongside the
   existing table-backed rules-as-data path.
@@ -32,6 +41,15 @@ All notable changes to spark-kindling are documented here.
     side by side in the same pass.
   - Existing table-backed declarations, entities, schemas, and chain
     behavior are unchanged.
+
+### Changed
+
+- `augment_schema_for_scd2`, `quote_sql_identifier`, and
+  `build_null_safe_change_condition` moved from `entity_provider_delta.py`
+  (as private, Delta-only helpers) to `data_entities.py` as public,
+  provider-agnostic functions. `DeltaEntityProvider` behavior is unchanged;
+  `_augment_schema_for_scd2` is now a one-line delegate to the shared
+  function.
 
 ### Fixed
 

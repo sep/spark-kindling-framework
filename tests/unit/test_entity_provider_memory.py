@@ -7,7 +7,6 @@ Tests in-memory operations, rate streams, and memory sinks.
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_memory import MemoryEntityProvider
 
@@ -16,8 +15,11 @@ class TestMemoryEntityProvider:
     """Tests for MemoryEntityProvider"""
 
     @pytest.fixture
-    def provider(self):
+    def provider(self, monkeypatch):
         """Create Memory provider with mocked dependencies"""
+        monkeypatch.setattr(
+            "kindling.entity_provider_memory.get_or_create_spark_session", lambda: MagicMock()
+        )
         logger_provider = MagicMock()
         logger_provider.get_logger.return_value = MagicMock()
         provider = MemoryEntityProvider(logger_provider)
@@ -291,7 +293,10 @@ class TestMemoryProviderSeedRows:
     """Tests for provider.seed.rows inline seeding."""
 
     @pytest.fixture
-    def provider(self):
+    def provider(self, monkeypatch):
+        monkeypatch.setattr(
+            "kindling.entity_provider_memory.get_or_create_spark_session", lambda: MagicMock()
+        )
         logger_provider = MagicMock()
         logger_provider.get_logger.return_value = MagicMock()
         provider = MemoryEntityProvider(logger_provider)
@@ -426,8 +431,11 @@ class TestMemoryProviderErrorHandling:
     """Tests for error handling in MemoryEntityProvider"""
 
     @pytest.fixture
-    def provider(self):
+    def provider(self, monkeypatch):
         """Create Memory provider"""
+        monkeypatch.setattr(
+            "kindling.entity_provider_memory.get_or_create_spark_session", lambda: MagicMock()
+        )
         logger_provider = MagicMock()
         logger_provider.get_logger.return_value = MagicMock()
         provider = MemoryEntityProvider(logger_provider)

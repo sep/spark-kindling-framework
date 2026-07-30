@@ -8,13 +8,19 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-
 from kindling.config_patterns import ConfigPatternMatcher
 from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
+from pyspark.sql import DataFrame
+from pyspark.sql.types import (
+    BooleanType,
+    MapType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 _ENTITY_LOGGER = logging.getLogger("kindling.data_entities")
 
@@ -316,6 +322,67 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
         source_kind=source_kind,
         delete_when=delete_when,
     )
+
+
+def quote_sql_identifier(name: str, alias: Optional[str] = None) -> str:
+    """Backtick-quote a column name for a raw SQL expression, optionally alias-qualified."""
+    escaped = name.replace("`", "``")
+    if alias:
+        return f"{alias}.`{escaped}`"
+    return f"`{escaped}`"
+
+
+def build_null_safe_change_condition(
+    source_alias: str, target_alias: str, tracked_columns: List[str], schema=None
+) -> str:
+    """Null-safe OR-of-changed-columns SQL condition for MERGE/join change detection."""
+    if not tracked_columns:
+        return "false"
+
+    unorderable = {
+        field.name
+        for field in (schema.fields if schema else [])
+        if isinstance(field.dataType, MapType)
+    }
+
+    def _comparable(column: str, alias: str) -> str:
+        ident = quote_sql_identifier(column, alias)
+        # Spark's binary comparison does not support ordering on MAP types;
+        # compare their JSON projection instead (same approach as the
+        # optimize_unchanged hash path).
+        if column in unorderable:
+            return f"to_json({ident})"
+        return ident
+
+    return " OR ".join(
+        [
+            f"({_comparable(column, source_alias)} != "
+            f"{_comparable(column, target_alias)} OR "
+            f"({quote_sql_identifier(column, source_alias)} IS NULL) != "
+            f"({quote_sql_identifier(column, target_alias)} IS NULL))"
+            for column in tracked_columns
+        ]
+    )
+
+
+def augment_schema_for_scd2(schema: StructType, cfg: SCDConfig) -> StructType:
+    """Add SCD2 temporal columns (effective_from/to, is_current) to a schema when enabled."""
+    schema_struct = schema if isinstance(schema, StructType) else StructType(schema)
+    if not cfg.enabled:
+        return schema_struct
+
+    existing_names = {field.name for field in schema_struct.fields}
+    extra_fields = []
+    if cfg.effective_from_column not in existing_names:
+        extra_fields.append(StructField(cfg.effective_from_column, TimestampType(), False))
+    if cfg.effective_to_column not in existing_names:
+        extra_fields.append(StructField(cfg.effective_to_column, TimestampType(), True))
+    if cfg.is_current_column not in existing_names:
+        extra_fields.append(StructField(cfg.is_current_column, BooleanType(), False))
+
+    if not extra_fields:
+        return schema_struct
+    return StructType(schema_struct.fields + extra_fields)
 
 
 @dataclass(frozen=True)
