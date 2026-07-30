@@ -56,6 +56,7 @@ class DatabricksAPI(PlatformAPI):
         storage_account: Optional[str] = None,
         container: Optional[str] = None,
         base_path: Optional[str] = None,
+        artifacts_path: Optional[str] = None,
         default_cluster_id: Optional[str] = None,
         azure_tenant_id: Optional[str] = None,
         azure_client_id: Optional[str] = None,
@@ -70,6 +71,9 @@ class DatabricksAPI(PlatformAPI):
             storage_account: Optional storage account for ABFSS cluster logs
             container: Optional container name for ABFSS cluster logs
             base_path: Optional base path within container
+            artifacts_path: Optional artifacts storage root (e.g. a Databricks
+                Volumes path) that takes precedence over the legacy
+                storage_account/container/base_path ABFSS synthesis
             default_cluster_id: Optional existing cluster ID to use when job config omits cluster
             azure_tenant_id: Optional Azure tenant ID for service principal auth
             azure_client_id: Optional Azure client ID for service principal auth
@@ -86,6 +90,7 @@ class DatabricksAPI(PlatformAPI):
         self.storage_account = storage_account
         self.container = container
         self.base_path = base_path
+        self.artifacts_path = (artifacts_path or "").strip() or None
         self.default_cluster_id = default_cluster_id
         self.azure_tenant_id = azure_tenant_id
         self.azure_client_id = azure_client_id
@@ -133,6 +138,8 @@ class DatabricksAPI(PlatformAPI):
             - DATABRICKS_HOST
 
         Optional environment variables:
+            - KINDLING_ARTIFACTS_STORAGE_PATH (e.g. /Volumes/<catalog>/<schema>/
+              <volume>/kindling; takes precedence over AZURE_STORAGE_ACCOUNT)
             - AZURE_STORAGE_ACCOUNT (for file uploads)
             - AZURE_CONTAINER (default: "artifacts")
             - AZURE_BASE_PATH (default: "system-tests")
@@ -160,6 +167,7 @@ class DatabricksAPI(PlatformAPI):
             storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
             container=os.getenv("AZURE_CONTAINER", "artifacts"),
             base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+            artifacts_path=os.getenv("KINDLING_ARTIFACTS_STORAGE_PATH"),
             default_cluster_id=os.getenv("DATABRICKS_CLUSTER_ID"),
             azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
             azure_client_id=os.getenv("AZURE_CLIENT_ID"),
@@ -197,13 +205,22 @@ class DatabricksAPI(PlatformAPI):
             if classic_override:
                 return classic_override
 
+        resolved_artifacts_path = (getattr(self, "artifacts_path", None) or "").strip()
+        if resolved_artifacts_path:
+            return resolved_artifacts_path
+
         if self.storage_account and self.container:
             base_url = azure_abfss_uri(self.container, self.storage_account)
             if self.base_path:
                 return f"{base_url}/{self.base_path.strip('/')}"
             return base_url
 
-        return "artifacts"
+        raise ValueError(
+            "Databricks artifacts location is not configured. Set "
+            "KINDLING_ARTIFACTS_STORAGE_PATH (e.g. /Volumes/<catalog>/<schema>/"
+            "<volume>/kindling or abfss://...) or the legacy AZURE_STORAGE_ACCOUNT "
+            "(+ optional AZURE_CONTAINER, AZURE_BASE_PATH)."
+        )
 
     @staticmethod
     def _join_storage_path(root: str, *parts: str) -> str:
