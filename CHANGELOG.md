@@ -33,6 +33,17 @@ All notable changes to spark-kindling are documented here.
   - Existing table-backed declarations, entities, schemas, and chain
     behavior are unchanged.
 
+### Fixed
+
+- **`ingest_conditions()` no longer crashes with a raw `AttributeError`
+  against a non-merge-capable provider** (gh#221):
+  `kindling_ext_temporal.conditions.ingest_conditions()` called
+  `provider_factory(entity).merge_to_entity(...)` unconditionally. It now
+  raises a clear `ValueError` naming the entity and provider type when the
+  resolved provider does not implement `merge_to_entity` (csv, parquet, sql,
+  adx today), matching the existing guard in
+  `simple_read_persist_strategy.py`.
+
 ## [0.12.3] - 2026-07-29
 
 ### Added
