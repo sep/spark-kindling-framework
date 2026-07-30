@@ -116,6 +116,19 @@ def test_resolve_python_file_uses_abfss_for_uc():
     )
 
 
+def test_is_uc_volume_path_matches_volumes_root_and_prefix():
+    api = _make_api()
+
+    assert api._is_uc_volume_path("/Volumes")
+    assert api._is_uc_volume_path("/Volumes/cat/schema/vol")
+    assert not api._is_uc_volume_path("/Volume/cat")
+    assert not api._is_uc_volume_path(
+        "abfss://artifacts@mystorageaccount.dfs.core.windows.net/artifacts"
+    )
+    assert not api._is_uc_volume_path("")
+    assert not api._is_uc_volume_path(None)
+
+
 # --- Bug fix: DATABRICKS_TOKEN respected in _create_sdk_client ---
 
 
@@ -219,6 +232,97 @@ def test_create_job_sets_cluster_log_conf_when_uc_volume_provided():
     assert cluster.cluster_log_conf is not None
     assert "test-job" in cluster.cluster_log_conf.volumes.destination
     assert cluster.data_security_mode == DataSecurityMode.SINGLE_USER
+
+
+# --- gh#217: UC-compatible access mode is driven by resolved path shape, ---
+# --- not only the cluster_logs_volume opt-in ---
+
+
+def test_create_job_sets_single_user_mode_for_uc_volume_artifacts_path():
+    """artifacts_storage_path under /Volumes/... → SINGLE_USER even with no cluster_logs_volume."""
+    api = _make_api_for_create_job()
+
+    api.create_job(
+        "test-job",
+        {
+            "artifacts_storage_path": "/Volumes/cat/schema/vol",
+            "spark_config": {
+                "spark.databricks.cluster.profile": "singleNode",
+                "spark.other.setting": "keep-me",
+            },
+        },
+    )
+
+    from databricks.sdk.service.compute import DataSecurityMode
+
+    create_call = api._client.jobs.create.call_args
+    task = create_call.kwargs["tasks"][0]
+    cluster = task.new_cluster
+    assert cluster.data_security_mode == DataSecurityMode.SINGLE_USER
+    assert cluster.cluster_log_conf is None
+    assert cluster.spark_conf == {"spark.other.setting": "keep-me"}
+
+
+def test_create_job_sets_single_user_mode_for_explicit_python_file_volume_override():
+    """python_file explicitly overridden to /Volumes/... → SINGLE_USER even when
+    artifacts_storage_path itself is a non-Volumes abfss path."""
+    api = _make_api_for_create_job()
+
+    api.create_job(
+        "test-job",
+        {
+            "artifacts_storage_path": "abfss://c@sa.dfs.core.windows.net/artifacts",
+            "python_file": "/Volumes/cat/schema/vol/boot.py",
+        },
+    )
+
+    from databricks.sdk.service.compute import DataSecurityMode
+
+    create_call = api._client.jobs.create.call_args
+    task = create_call.kwargs["tasks"][0]
+    cluster = task.new_cluster
+    assert cluster.data_security_mode == DataSecurityMode.SINGLE_USER
+
+
+def test_create_job_sets_single_user_mode_for_classic_bootstrap_root_volume(monkeypatch):
+    """Classic-mode bootstrap_script_root resolving under /Volumes/... → SINGLE_USER,
+    even though artifacts_storage_path itself is not a Volumes path."""
+    api = _make_api_for_create_job()
+    monkeypatch.setenv("KINDLING_DATABRICKS_CLASSIC_BOOTSTRAP_ROOT", "/Volumes/cat/schema/vol")
+
+    api.create_job(
+        "test-job",
+        {
+            "system_test_mode": "classic",
+            "artifacts_storage_path": "dbfs:/mnt/artifacts",
+        },
+    )
+
+    from databricks.sdk.service.compute import DataSecurityMode
+
+    create_call = api._client.jobs.create.call_args
+    task = create_call.kwargs["tasks"][0]
+    cluster = task.new_cluster
+    assert cluster.data_security_mode == DataSecurityMode.SINGLE_USER
+
+
+def test_build_job_spec_existing_cluster_id_with_uc_volume_path_is_harmless():
+    """existing_cluster_id set alongside a /Volumes/... path: cluster_spec still picks up
+    SINGLE_USER (harmless, unused), and existing_cluster_id is what actually gets used."""
+    api = _make_api_for_create_job()
+
+    spec = api._build_job_spec(
+        "test-job",
+        {
+            "artifacts_storage_path": "/Volumes/cat/schema/vol",
+            "existing_cluster_id": "1234-567890-abcde123",
+        },
+    )
+
+    from databricks.sdk.service.compute import DataSecurityMode
+
+    assert spec["existing_cluster_id"] == "1234-567890-abcde123"
+    assert spec["cluster_spec"].data_security_mode == DataSecurityMode.SINGLE_USER
 
 
 # --- Bug fix: _submit_one_time_run calls jobs.submit, not jobs.runs.submit ---

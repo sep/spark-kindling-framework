@@ -2,6 +2,22 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **Databricks job clusters now get a UC-compatible access mode whenever the
+  resolved job paths point at Unity Catalog Volumes** (gh#217). `_build_job_spec`
+  previously only set `data_security_mode=SINGLE_USER` when the opt-in
+  `cluster_logs_volume` was provided, so any other new-cluster submission
+  whose `artifacts_storage_path` or `python_file` resolved to `/Volumes/...`
+  (directly, via an explicit `python_file`/`bootstrap_script_root` override,
+  or via classic-mode env vars) still got a legacy "No Isolation Shared"
+  cluster, which cannot read Unity Catalog Volumes regardless of grants.
+  Detection now also checks the shape of the resolved `artifacts_storage_path`
+  and `python_file`; cluster log delivery (`cluster_log_conf`) remains a
+  separate, still-opt-in decision.
+
 ## [0.12.3] - 2026-07-29
 
 ### Added
