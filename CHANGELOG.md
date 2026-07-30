@@ -2,6 +2,25 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **Databricks SDK job submission ignored `KINDLING_ARTIFACTS_STORAGE_PATH`**
+  (gh#216): `DatabricksAPI.from_env()` only ever read the legacy
+  `AZURE_STORAGE_ACCOUNT`/`AZURE_CONTAINER`/`AZURE_BASE_PATH` triple, so
+  `kindling app run --platform databricks` / `kindling app job register`
+  failed job submission with `InvalidParameterValue: Invalid python file
+  reference: artifacts/scripts/kindling_bootstrap.py` on any workspace
+  configured with `KINDLING_ARTIFACTS_STORAGE_PATH=/Volumes/...` and no
+  legacy Azure storage vars set. `DatabricksAPI` now accepts an
+  `artifacts_path` (populated from `KINDLING_ARTIFACTS_STORAGE_PATH`) that
+  takes precedence over the legacy ABFSS synthesis; a Databricks Volumes
+  path now resolves to a valid, non-bare `python_file`. Existing
+  `AZURE_STORAGE_ACCOUNT`-only configurations are unaffected. When neither
+  is configured, artifact resolution now raises an actionable `ValueError`
+  instead of silently falling back to the bare `"artifacts"` literal.
+
 ## [0.12.6] - 2026-08-10
 
 ### Added
