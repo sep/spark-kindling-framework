@@ -1006,8 +1006,16 @@ class TestDataEntitiesEdgeCases:
         assert entity is not None
         assert entity.entityid == "manual_entry"
 
-    def test_data_entity_manager_get_entity_ids_returns_dict_keys(self):
-        """Test that get_entity_ids returns a dict_keys view"""
+    def test_data_entity_manager_get_entity_ids_returns_a_plain_list_snapshot(self):
+        """get_entity_ids() must return a real list, not a dict.keys() view.
+
+        A live view is exactly the antipattern that caused a production bug
+        in the equivalent DataPipesRegistry.get_pipe_ids(): a signal handler
+        mutating the returned collection in place (slice assignment) crashes
+        on dict_keys, which doesn't support item assignment. The contract is
+        a static snapshot at call time -- it must NOT reflect later registry
+        changes.
+        """
         manager = DataEntityManager()
         manager.register_entity(
             "entity1", name="E1", partition_columns=[], merge_columns=[], tags={}, schema={}
@@ -1015,13 +1023,12 @@ class TestDataEntitiesEdgeCases:
 
         entity_ids = manager.get_entity_ids()
 
-        # Should be dict_keys type
-        assert hasattr(entity_ids, "__iter__"), "get_entity_ids should return iterable"
+        assert isinstance(entity_ids, list)
+        entity_ids[:] = entity_ids  # must support slice assignment
 
-        # Should be dynamically updated when registry changes
         manager.register_entity(
             "entity2", name="E2", partition_columns=[], merge_columns=[], tags={}, schema={}
         )
 
-        # The dict_keys view should reflect the change
-        assert len(list(entity_ids)) == 2, "dict_keys view should reflect registry updates"
+        # Snapshot at call time -- later registrations must NOT appear.
+        assert entity_ids == ["entity1"]

@@ -12,6 +12,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import current_timestamp, lit
+
 from kindling.data_entities import *
 from kindling.file_ingestion import *
 from kindling.injection import *
@@ -22,8 +25,6 @@ from kindling.spark_log_provider import *
 from kindling.spark_session import *
 from kindling.spark_trace import *
 from kindling.trace_ops import COMPONENT_INGESTION, tracing_gates
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import current_timestamp, lit
 
 
 @dataclass
@@ -78,7 +79,14 @@ class FileIngestionRegistry(ABC):
         pass
 
     @abstractmethod
-    def get_entry_ids(self):
+    def get_entry_ids(self) -> List[str]:
+        """Every registered entry id, as a plain list.
+
+        Implementations must return a real ``list``, never a live view
+        (e.g. ``dict.keys()``) over internal state -- see
+        ``DataPipesRegistry.get_pipe_ids()`` for why this matters even
+        when nothing currently mutates the result in place.
+        """
         pass
 
     @abstractmethod
@@ -97,8 +105,8 @@ class FileIngestionManager(FileIngestionRegistry):
     def register_entry(self, entryId, **decorator_params):
         self.registry[entryId] = FileIngestionMetadata(entryId, **decorator_params)
 
-    def get_entry_ids(self):
-        return self.registry.keys()
+    def get_entry_ids(self) -> List[str]:
+        return list(self.registry.keys())
 
     def get_entry_definition(self, entryId):
         return self.registry.get(entryId)
