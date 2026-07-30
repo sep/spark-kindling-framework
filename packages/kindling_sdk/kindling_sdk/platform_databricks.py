@@ -238,6 +238,11 @@ class DatabricksAPI(PlatformAPI):
             return root.rstrip("/")
         return "/".join([root.rstrip("/"), *cleaned_parts])
 
+    @staticmethod
+    def _is_uc_volume_path(path: str) -> bool:
+        candidate = str(path or "").strip()
+        return candidate == "/Volumes" or candidate.startswith("/Volumes/")
+
     def _resolve_python_file(
         self,
         main_file: str,
@@ -457,6 +462,12 @@ class DatabricksAPI(PlatformAPI):
         main_file = job_config.get("main_file", "kindling_bootstrap.py")
         system_test_mode = self._resolve_system_test_mode(job_config)
         artifacts_storage_path = self._resolve_artifacts_storage_path(job_config, system_test_mode)
+        python_file = self._resolve_python_file(
+            main_file=main_file,
+            job_config=job_config,
+            mode=system_test_mode,
+            artifacts_storage_path=artifacts_storage_path,
+        )
 
         bootstrap_params = {
             "app_name": app_name,
@@ -505,15 +516,24 @@ class DatabricksAPI(PlatformAPI):
         spark_conf = job_config.get("spark_config", {}).copy()
 
         uc_volume_path = job_config.get("cluster_logs_volume")
+        needs_uc_mode = (
+            bool(uc_volume_path)
+            or self._is_uc_volume_path(artifacts_storage_path)
+            or self._is_uc_volume_path(python_file)
+        )
+
         if uc_volume_path:
             from databricks.sdk.service.compute import VolumesStorageInfo
 
             log_path = f"{uc_volume_path}/cluster-logs/kindling-jobs/{job_name}"
             cluster_log_conf = ClusterLogConf(volumes=VolumesStorageInfo(destination=log_path))
+        else:
+            cluster_log_conf = None
+
+        if needs_uc_mode:
             spark_conf.pop("spark.databricks.cluster.profile", None)
             data_security_mode = DataSecurityMode.SINGLE_USER
         else:
-            cluster_log_conf = None
             data_security_mode = None
 
         cluster_spec = ClusterSpec(
@@ -523,13 +543,6 @@ class DatabricksAPI(PlatformAPI):
             cluster_log_conf=cluster_log_conf,
             data_security_mode=data_security_mode,
             spark_conf=spark_conf if spark_conf else None,
-        )
-
-        python_file = self._resolve_python_file(
-            main_file=main_file,
-            job_config=job_config,
-            mode=system_test_mode,
-            artifacts_storage_path=artifacts_storage_path,
         )
 
         existing_cluster_id = (
