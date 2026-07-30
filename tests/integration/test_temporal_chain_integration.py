@@ -306,3 +306,266 @@ def test_chain_cross_run_revision_with_prior_state(spark, temporal_graph):
     # The corrective .closed determination event is in run 2's event output.
     types_2 = {row.event_type for row in events_2.collect()}
     assert "episode.temperature_high_active.closed" in types_2
+
+
+# --- gh#222: registry-declared temporal conditions in the chain lowering -----
+
+
+def _base_event_services(
+    event_registry, episode_registry, condition_registry, entity_registry, pipe_registry
+):
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
+    from kindling_ext_temporal import (
+        SimpleTemporalEntityResolver,
+        TemporalConditionRegistry,
+        TemporalEntityResolver,
+        TemporalEpisodeRegistry,
+        TemporalEventRegistry,
+    )
+
+    return _service_get(
+        {
+            TemporalEntityResolver: SimpleTemporalEntityResolver(),
+            TemporalEventRegistry: event_registry,
+            TemporalEpisodeRegistry: episode_registry,
+            TemporalConditionRegistry: condition_registry,
+            DataEntityRegistry: entity_registry,
+            DataPipesRegistry: pipe_registry,
+        }
+    )
+
+
+def test_chain_registry_only_produces_boundary_events_without_conditions_table(spark):
+    """End-to-end registry-only chain: DataConditions.register(...) +
+    DataEvents.condition_engine(condition_source="registry") ->
+    declare_temporal_chain() -> execute -> {condition_id}.entered/.exited
+    boundary events appear, with no conditions table ever created or read."""
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import (
+        DataConditions,
+        DataEvents,
+        TemporalConditionRegistryManager,
+        TemporalEpisodeRegistryManager,
+        TemporalEventRegistryManager,
+        declare_temporal_chain,
+    )
+
+    DataEvents.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
+    condition_registry = TemporalConditionRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    services = _base_event_services(
+        event_registry, episode_registry, condition_registry, entity_registry, pipe_registry
+    )
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=services):
+
+        @DataEvents.base_event(
+            eventid="telemetry.base",
+            input_entity_id="bronze.telemetry",
+            subject_type="machine",
+            subject_keys=["machine_id"],
+            time_column="reading_ts",
+            event_type="telemetry.observed",
+            payload_columns=["temperature"],
+        )
+        def normalize(df):
+            return df
+
+        DataConditions.register(
+            condition_id="condition.registry_overheat",
+            consumes_event_type=["telemetry.observed"],
+            subject_type="machine",
+            enter_when=lambda events: events["payload"]["temperature"].cast("double") > 90,
+            exit_when=lambda events: events["payload"]["temperature"].cast("double") <= 90,
+        )
+        DataEvents.condition_engine(engineid="static_conditions", condition_source="registry")
+
+        chain_pipe_ids = declare_temporal_chain("registry_only")
+        events_pipe = pipe_registry.get_pipe_definition(chain_pipe_ids[0])
+
+        # Wiring: no conditions table/entity is ever created or read.
+        assert events_pipe.input_entity_ids == ["bronze.telemetry"]
+        assert entity_registry.get_entity_definition("silver.conditions") is None
+        assert entity_registry.get_entity_definition("silver.conditions.current") is None
+
+        telemetry = spark.createDataFrame([("machine-1", T0, 95.0)], TELEMETRY_COLUMNS)
+        result = events_pipe.execute(bronze_telemetry=telemetry)
+
+    event_types = {row.event_type for row in result.collect()}
+    assert "condition.registry_overheat.entered" in event_types
+
+
+def test_chain_mixed_table_and_registry_engines_both_produce_boundary_events(spark):
+    """Both rule sets independently produce correct boundary events in a
+    single combined chain-events run."""
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import (
+        DataConditions,
+        DataEvents,
+        TemporalConditionRegistryManager,
+        TemporalEpisodeRegistryManager,
+        TemporalEventRegistryManager,
+        conditions_schema,
+        declare_temporal_chain,
+    )
+
+    DataEvents.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
+    condition_registry = TemporalConditionRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    services = _base_event_services(
+        event_registry, episode_registry, condition_registry, entity_registry, pipe_registry
+    )
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=services):
+
+        @DataEvents.base_event(
+            eventid="telemetry.base",
+            input_entity_id="bronze.telemetry",
+            subject_type="machine",
+            subject_keys=["machine_id"],
+            time_column="reading_ts",
+            event_type="telemetry.observed",
+            payload_columns=["temperature"],
+        )
+        def normalize(df):
+            return df
+
+        DataConditions.register(
+            condition_id="condition.registry_overheat",
+            consumes_event_type=["telemetry.observed"],
+            subject_type="machine",
+            enter_when=lambda events: events["payload"]["temperature"].cast("double") > 90,
+            exit_when=lambda events: events["payload"]["temperature"].cast("double") <= 90,
+        )
+        DataEvents.condition_engine(engineid="static_conditions", condition_source="registry")
+        DataEvents.condition_engine(engineid="dynamic_conditions", condition_source="table")
+
+        chain_pipe_ids = declare_temporal_chain("mixed")
+        events_pipe = pipe_registry.get_pipe_definition(chain_pipe_ids[0])
+        assert events_pipe.input_entity_ids == ["bronze.telemetry", "silver.conditions.current"]
+
+        telemetry = spark.createDataFrame([("machine-1", T0, 95.0)], TELEMETRY_COLUMNS)
+        # valid_from is non-nullable in conditions_schema(); a time strictly
+        # before the telemetry event keeps the rule in scope for it.
+        valid_from = datetime(2026, 7, 14, 11, 0, 0)
+        conditions_df = spark.createDataFrame(
+            [
+                (
+                    "condition.table_humidity",
+                    ["telemetry.observed"],
+                    "machine",
+                    {
+                        "enter_when": "cast(payload['temperature'] as double) > 80",
+                        "exit_when": "cast(payload['temperature'] as double) <= 80",
+                    },
+                    True,
+                    valid_from,
+                    None,
+                ),
+            ],
+            conditions_schema(),
+        )
+        result = events_pipe.execute(
+            bronze_telemetry=telemetry, silver_conditions_current=conditions_df
+        )
+
+    event_types = {row.event_type for row in result.collect()}
+    assert "condition.registry_overheat.entered" in event_types
+    assert "condition.table_humidity.entered" in event_types
+
+
+def test_chain_cross_source_cycle_raises_even_though_neither_rule_is_cyclic_alone(spark):
+    """A table rule consuming a registry rule's produced event type (or vice
+    versa) is the one interaction neither source's own isolated validation
+    ever checks: table rows validate via validate_or_raise, registry rules
+    validate at condition_engine() declaration time, and neither looks at
+    the OTHER source's current rules. The combined graph is only checked
+    once both kinds of engine are declared AND the events-chain pipe
+    actually executes (chain.py's _chain_events_execute)."""
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import (
+        ConditionValidationError,
+        DataConditions,
+        DataEvents,
+        TemporalConditionRegistryManager,
+        TemporalEpisodeRegistryManager,
+        TemporalEventRegistryManager,
+        conditions_schema,
+        declare_temporal_chain,
+    )
+
+    DataEvents.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
+    condition_registry = TemporalConditionRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    services = _base_event_services(
+        event_registry, episode_registry, condition_registry, entity_registry, pipe_registry
+    )
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=services):
+
+        @DataEvents.base_event(
+            eventid="telemetry.base",
+            input_entity_id="bronze.telemetry",
+            subject_type="machine",
+            subject_keys=["machine_id"],
+            time_column="reading_ts",
+            event_type="telemetry.observed",
+            payload_columns=["temperature"],
+        )
+        def normalize(df):
+            return df
+
+        # condition.table_rule consumes condition.registry_rule's produced
+        # boundary type, and vice versa -- a 2-node cycle spanning both
+        # sources. Neither rule is cyclic when checked against its own
+        # source alone (confirmed by the declaration calls below succeeding).
+        DataConditions.register(
+            condition_id="condition.registry_rule",
+            consumes_event_type=["condition.table_rule.entered"],
+            subject_type="machine",
+            enter_when=lambda events: events["payload"]["temperature"].cast("double") > 90,
+            exit_when=lambda events: events["payload"]["temperature"].cast("double") <= 90,
+        )
+        DataEvents.condition_engine(engineid="dynamic_conditions", condition_source="table")
+        DataEvents.condition_engine(engineid="static_conditions", condition_source="registry")
+
+        chain_pipe_ids = declare_temporal_chain("cross")
+        events_pipe = pipe_registry.get_pipe_definition(chain_pipe_ids[0])
+
+        # valid_from is non-nullable in conditions_schema(); a time strictly
+        # before the telemetry event keeps the rule in scope for it.
+        valid_from = datetime(2026, 7, 14, 11, 0, 0)
+        conditions_df = spark.createDataFrame(
+            [
+                (
+                    "condition.table_rule",
+                    ["condition.registry_rule.entered"],
+                    "machine",
+                    {"enter_when": "true", "exit_when": "false"},
+                    True,
+                    valid_from,
+                    None,
+                ),
+            ],
+            conditions_schema(),
+        )
+        telemetry = spark.createDataFrame([("machine-1", T0, 95.0)], TELEMETRY_COLUMNS)
+
+        with pytest.raises(ConditionValidationError, match="Conditions set is not ingestible"):
+            events_pipe.execute(bronze_telemetry=telemetry, silver_conditions_current=conditions_df)

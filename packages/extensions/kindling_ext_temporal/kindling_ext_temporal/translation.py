@@ -152,6 +152,14 @@ class TemporalPipeTranslator:
 
     @classmethod
     def condition_engine_pipe_params(cls, metadata: "ConditionEngineMetadata") -> Dict[str, Any]:
+        if metadata.condition_source == "registry":
+            input_entity_ids = [metadata.events_entity_id]
+        else:
+            input_entity_ids = [
+                metadata.events_entity_id,
+                metadata.conditions_current_entity_id,
+            ]
+
         return {
             "name": metadata.name or f"Temporal condition engine: {metadata.engineid}",
             "execute": cls.condition_engine_execute(metadata),
@@ -162,10 +170,7 @@ class TemporalPipeTranslator:
                 TEMPORAL_LOWERING_TAG: TEMPORAL_LOWERING_DECLARED,
                 "temporal.engine_id": metadata.engineid,
             },
-            "input_entity_ids": [
-                metadata.events_entity_id,
-                metadata.conditions_current_entity_id,
-            ],
+            "input_entity_ids": input_entity_ids,
             "output_entity_id": metadata.events_entity_id,
             "output_type": metadata.output_type,
             "use_watermark": metadata.use_watermark,
@@ -351,9 +356,27 @@ class TemporalPipeTranslator:
 
         def execute(**entity_dfs):
             events_key = metadata.events_entity_id.replace(".", "_")
-            conditions_key = metadata.conditions_current_entity_id.replace(".", "_")
             try:
                 events_df = entity_dfs[events_key]
+            except KeyError as exc:
+                available = ", ".join(sorted(entity_dfs.keys()))
+                raise ValueError(
+                    f"Temporal condition engine '{metadata.engineid}' expected "
+                    f"input '{events_key}', got: {available}"
+                ) from exc
+
+            from .engine import ConditionEngineRunner
+
+            if metadata.condition_source == "registry":
+                from kindling.injection import GlobalInjector
+
+                from .registry import TemporalConditionRegistry
+
+                registry_rules = GlobalInjector.get(TemporalConditionRegistry).get_all_conditions()
+                return ConditionEngineRunner().execute_rules(events_df, registry_rules)
+
+            conditions_key = metadata.conditions_current_entity_id.replace(".", "_")
+            try:
                 conditions_df = entity_dfs[conditions_key]
             except KeyError as exc:
                 available = ", ".join(sorted(entity_dfs.keys()))
@@ -361,8 +384,6 @@ class TemporalPipeTranslator:
                     f"Temporal condition engine '{metadata.engineid}' expected "
                     f"inputs '{events_key}' and '{conditions_key}', got: {available}"
                 ) from exc
-
-            from .engine import ConditionEngineRunner
 
             return ConditionEngineRunner().execute(events_df, conditions_df)
 
