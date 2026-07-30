@@ -260,7 +260,15 @@ def ingest_conditions(
             for row in valid_rows
         ]
         valid_df = conditions_df.sparkSession.createDataFrame(stamped, conditions_entity_schema())
-        provider_factory(entity).merge_to_entity(valid_df, entity)
+        provider = provider_factory(entity)
+        if not hasattr(provider, "merge_to_entity"):
+            provider_type = (entity.tags or {}).get("provider_type", "unknown")
+            raise ValueError(
+                f"Entity '{entity.entityid}': ingest_conditions() requires a "
+                f"merge-capable provider, but provider '{provider_type}' does "
+                "not support merge operations"
+            )
+        provider.merge_to_entity(valid_df, entity)
 
     quarantined = duplicates + list(report.invalid_conditions) + too_deep
     if quarantine_entity_id is UNSET:
