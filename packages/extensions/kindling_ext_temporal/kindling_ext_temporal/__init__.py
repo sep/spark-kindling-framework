@@ -97,12 +97,13 @@ __all__ = [
     "validated_conditions_transform",
 ]
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 
 def _register_services():
     """Register extension services with Kindling's DI container."""
     from injector import singleton
+
     from kindling.injection import GlobalInjector
 
     injector = GlobalInjector.get_injector()
