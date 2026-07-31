@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "spark-kindling"
-version = "0.12.4"
+version = "0.12.5"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -20,7 +20,14 @@ python = "^3.10"
 # on cloud Spark runtimes (Synapse, Fabric, Databricks) without pip trying
 # to upgrade packages the runtime already provides via non-pip mechanisms.
 injector = ">=0.20.1"
-dynaconf = ">=3.1.0"
+# Upper bound is load-bearing: dynaconf 3.3.4 changed object_merge/handle_metavalues
+# so that merging a dict into an existing namespace can eagerly evaluate an unrelated
+# sibling `@format` lazy value (one not part of the merge) before its referenced key
+# is ever set, raising DynaconfFormatError. Verified present in 3.3.4, absent in 3.3.1
+# and 3.2.13. Since cloud Spark runtimes (Fabric/Synapse) don't ship dynaconf
+# themselves, an unbounded range lets pip resolve whatever is newest on PyPI at
+# install time, independently of what's pinned in poetry.lock for local/CI use.
+dynaconf = ">=3.1.0,<3.3.2"
 pyyaml = ">=6.0"
 packaging = ">=23.0"
 blinker = ">=1.6.0"
