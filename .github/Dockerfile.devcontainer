@@ -53,10 +53,18 @@ RUN python3 create_simple_index.py
 
 # Pre-install the kindling wheels into the system Python so that Poetry's
 # environment resolution (and plain `import kindling`) works immediately.
+#
+# Glob for the actual built filenames rather than assuming they match
+# KINDLING_VERSION: the wheels are built from whatever version is in
+# pyproject.toml at RUN time (line 46), which only equals KINDLING_VERSION
+# when this image is built from a release tag. A workflow_dispatch dev
+# build tags the image `dev-<sha>` (a non-PEP-440 string poetry never
+# produces as a wheel version), so the exact-filename form silently found
+# no file and failed the whole build.
 RUN pip install --no-cache-dir \
-    "/opt/kindling-packages/wheels/spark_kindling-${KINDLING_VERSION}-py3-none-any.whl[standalone]" \
-    "/opt/kindling-packages/wheels/spark_kindling_cli-${KINDLING_VERSION}-py3-none-any.whl" \
-    "/opt/kindling-packages/wheels/spark_kindling_sdk-${KINDLING_VERSION}-py3-none-any.whl"
+    $(ls /opt/kindling-packages/wheels/spark_kindling-*-py3-none-any.whl | head -1)"[standalone]" \
+    $(ls /opt/kindling-packages/wheels/spark_kindling_cli-*-py3-none-any.whl | head -1) \
+    $(ls /opt/kindling-packages/wheels/spark_kindling_sdk-*-py3-none-any.whl | head -1)
 
 # Pre-download Hadoop Azure JARs needed for local ABFSS integration tests.
 # Stored in /opt/hadoop-jars (stable image layer).
