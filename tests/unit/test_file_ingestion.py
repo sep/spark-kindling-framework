@@ -288,6 +288,8 @@ def test_process_path_disabled_tracing_emits_no_spans():
     proc.config.get.return_value = 3
     proc.env = MagicMock()
     proc.env.list.return_value = []
+    proc.fir = MagicMock()
+    proc.fir.get_entry_ids.return_value = []
 
     proc.process_path("/data")
 

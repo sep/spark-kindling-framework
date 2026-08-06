@@ -76,6 +76,7 @@ The framework consists of several modular components:
 - **[spark-kindling-ext-otel-azure](./packages/extensions/kindling_ext_otel_azure/)** - Azure Monitor OpenTelemetry integration
 - **[spark-kindling-ext-sdp](./packages/extensions/kindling_ext_sdp/)** - Spark Declarative Pipelines (SDP) declaration engine
 - **[spark-kindling-ext-databricks](./packages/extensions/kindling_ext_databricks/)** - Databricks Lakeflow adapter for the SDP declaration engine
+- **[spark-kindling-ext-databricks-autoloader](./packages/extensions/kindling_ext_databricks_autoloader/)** - Auto Loader (`cloudFiles`) discovery for file ingestion
 - **[spark-kindling-ext-temporal](./packages/extensions/kindling_ext_temporal/)** - Temporal event, condition, and episode primitives
 - **[spark-kindling-ext-adx](./packages/extensions/kindling_ext_adx/)** - Azure Data Explorer entity provider (Kusto Spark connector; an API-based `adx-api` provider ships in core)
 - **[spark-kindling-ext-cosmos](./packages/extensions/kindling_ext_cosmos/)** - Azure Cosmos DB entity provider (idempotent upsert writes)
