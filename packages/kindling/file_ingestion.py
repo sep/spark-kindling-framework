@@ -12,9 +12,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import current_timestamp, lit
-
 from kindling.data_entities import *
 from kindling.file_ingestion import *
 from kindling.injection import *
@@ -25,6 +22,8 @@ from kindling.spark_log_provider import *
 from kindling.spark_session import *
 from kindling.spark_trace import *
 from kindling.trace_ops import COMPONENT_INGESTION, tracing_gates
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import current_timestamp, lit
 
 
 @dataclass
@@ -148,6 +147,26 @@ class FileIngestionProcessorProvider(ABC):
         pass
 
 
+def enrich_file_dataframe(
+    df: DataFrame,
+    named_groups: Dict[str, str],
+    static_values: Optional[Dict[str, Any]] = None,
+) -> DataFrame:
+    """Add regex named-group, static-value, and ingestion-timestamp columns.
+
+    Pure DataFrame transform with no processor state, so it is usable from
+    both the batch _build_df_plan path and a future foreachBatch callback.
+    """
+    for group_name, group_value in named_groups.items():
+        df = df.withColumn(group_name, lit(group_value))
+
+    if static_values:
+        for col_name, col_value in static_values.items():
+            df = df.withColumn(col_name, lit(col_value))
+
+    return df.withColumn("ingestion_timestamp", current_timestamp())
+
+
 @GlobalInjector.singleton_autobind()
 class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter):
     """Advanced file ingestion processor with batching, parallelism, and signal support.
@@ -218,17 +237,8 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
                     .load(f"{path}/{fn}")
                 )
 
-                # Add named groups as columns (still lazy)
-                for group_name, group_value in named_groups.items():
-                    df = df.withColumn(group_name, lit(group_value))
-
-                # Add static values defined on the ingestion entry
-                if fe.static_values:
-                    for col_name, col_value in fe.static_values.items():
-                        df = df.withColumn(col_name, lit(col_value))
-
-                # Add ingestion timestamp
-                df = df.withColumn("ingestion_timestamp", current_timestamp())
+                # Add named groups, static values, and ingestion timestamp (still lazy)
+                df = enrich_file_dataframe(df, named_groups, fe.static_values)
 
                 # Apply custom transformation if provided
                 if transform:
