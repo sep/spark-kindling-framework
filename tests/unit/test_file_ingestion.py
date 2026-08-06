@@ -274,6 +274,87 @@ def test_entry_decorator_omitting_static_values_stores_none():
     assert entry.static_values is None
 
 
+# ── FileIngestionEntries.entry() discovery-field validation ─────────────────
+#
+# Unlike the tests above (which call FileIngestionManager.register_entry
+# directly), these exercise FileIngestionEntries.entry() itself -- the
+# classmethod that actually validates the "discovery" field and its
+# source_glob dependency before handing off to the registry.
+
+
+def _entries_kwargs(**overrides):
+    kwargs = dict(
+        entry_id="e1",
+        name="test entry",
+        patterns=[r".*\.csv"],
+        dest_entity_id="my_entity",
+        tags={},
+        filetype="csv",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_entries_entry_rejects_invalid_discovery_value(monkeypatch):
+    from kindling.file_ingestion import FileIngestionEntries
+
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", MagicMock())
+
+    with pytest.raises(ValueError, match="invalid discovery"):
+        FileIngestionEntries.entry(**_entries_kwargs(discovery="streaming"))
+
+
+def test_entries_entry_autoloader_requires_source_glob(monkeypatch):
+    from kindling.file_ingestion import FileIngestionEntries
+
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", MagicMock())
+
+    with pytest.raises(ValueError, match="requires an explicit source_glob"):
+        FileIngestionEntries.entry(**_entries_kwargs(discovery="autoloader"))
+
+
+def test_entries_entry_autoloader_with_source_glob_registers_successfully(monkeypatch):
+    from kindling.file_ingestion import FileIngestionEntries
+
+    mock_registry = MagicMock()
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", mock_registry)
+
+    FileIngestionEntries.entry(
+        **_entries_kwargs(
+            discovery="autoloader",
+            source_glob="*.csv",
+            schema_evolution_mode="addNewColumns",
+        )
+    )
+
+    mock_registry.register_entry.assert_called_once()
+    args, kwargs = mock_registry.register_entry.call_args
+    assert args[0] == "e1"
+    assert kwargs["dest_entity_id"] == "my_entity"
+    assert kwargs["discovery"] == "autoloader"
+    assert kwargs["source_glob"] == "*.csv"
+    assert kwargs["schema_evolution_mode"] == "addNewColumns"
+    assert "entry_id" not in kwargs
+
+
+def test_entries_entry_omitting_discovery_defaults_to_batch_and_needs_no_source_glob(monkeypatch):
+    """Existing (pre-autoloader) callers that never pass discovery/source_glob
+    must keep registering exactly as they did before -- regression-safe
+    default."""
+    from kindling.file_ingestion import FileIngestionEntries
+
+    mock_registry = MagicMock()
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", mock_registry)
+
+    FileIngestionEntries.entry(**_entries_kwargs())
+
+    args, kwargs = mock_registry.register_entry.call_args
+    assert args[0] == "e1"
+    assert kwargs["discovery"] == "batch"
+    assert kwargs["source_glob"] is None
+    assert kwargs["schema_evolution_mode"] is None
+
+
 # ── schema_evolution_mode ─────────────────────────────────────────────────────
 
 
