@@ -27,6 +27,13 @@ class ConditionEngineRunner:
         The chain executor validates the conditions set once per run and
         drives this per generation stratum; ``execute`` keeps the
         validate-every-call behavior for independent pipe execution.
+
+        A rule's ``enter_when``/``exit_when`` is either a table row's
+        serialized Spark SQL string (already parsed at validation time) or a
+        registry rule's ``Callable[[DataFrame], Column]`` predicate builder
+        (see ``DataConditions.register``) -- ``_condition_column`` resolves
+        either shape to a boolean ``Column``, so both sources execute
+        side by side through the exact same loop below.
         """
         if not valid_rules:
             return events_df.sparkSession.createDataFrame([], events_schema())
@@ -36,7 +43,7 @@ class ConditionEngineRunner:
             scoped = self._scope_events(events_df, rule)
             outputs.append(
                 self._boundary_events(
-                    scoped.filter(rule.parameters["enter_when"]),
+                    scoped.filter(self._condition_column(scoped, rule, "enter_when")),
                     rule,
                     boundary="entered",
                     event_type=rule.entered_event_type,
@@ -44,7 +51,7 @@ class ConditionEngineRunner:
             )
             outputs.append(
                 self._boundary_events(
-                    scoped.filter(rule.parameters["exit_when"]),
+                    scoped.filter(self._condition_column(scoped, rule, "exit_when")),
                     rule,
                     boundary="exited",
                     event_type=rule.exited_event_type,
@@ -52,6 +59,30 @@ class ConditionEngineRunner:
             )
 
         return reduce(lambda left, right: left.unionByName(right), outputs)
+
+    @staticmethod
+    def _condition_column(scoped, rule, key: str):
+        """Resolve ``rule.parameters[key]`` to a boolean Column.
+
+        A table row's predicate is already a Spark SQL string (passed
+        through unchanged -- ``DataFrame.filter`` accepts either a string or
+        a ``Column``). A registry rule's predicate is a callable; it is
+        invoked here, against the scoped events frame, so the builder is
+        called at execution time, never at declaration time.
+        """
+        from pyspark.sql import Column
+
+        predicate = rule.parameters[key]
+        if not callable(predicate):
+            return predicate
+
+        condition_col = predicate(scoped)
+        if not isinstance(condition_col, Column):
+            raise TypeError(
+                f"Condition '{rule.condition_id}' {key} builder returned "
+                f"{type(condition_col).__name__}, expected a Column"
+            )
+        return condition_col
 
     @staticmethod
     def _scope_events(events_df, rule):

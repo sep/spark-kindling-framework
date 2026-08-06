@@ -21,6 +21,66 @@ All notable changes to spark-kindling are documented here.
   is configured, artifact resolution now raises an actionable `ValueError`
   instead of silently falling back to the bare `"artifacts"` literal.
 
+## [0.12.4] - 2026-07-30
+
+### Added
+
+- **`MemoryEntityProvider.merge_to_entity()`** (gh#220): the in-memory
+  provider now supports the same `merge_to_entity` contract as
+  `DeltaEntityProvider` — SCD Type 2 upsert (`scd.type=2`), insert-only
+  (`write.mode=insert`), and full-row SCD1 upsert (default) — implemented as
+  plain DataFrame joins/unions rather than a Delta `MERGE INTO`. This lets
+  `kindling_ext_temporal.ingest_conditions()` (and any other caller that
+  merges into an entity) be exercised against Memory, the framework's
+  no-external-dependency test provider, instead of only against a real Delta
+  table.
+- **Registry-declared temporal conditions** (`kindling_ext_temporal`, gh#222):
+  a second, explicit `condition_source` for condition engines, alongside the
+  existing table-backed rules-as-data path.
+  - `DataConditions.register(...)`: declares a static, application-owned
+    condition directly in Python — `enter_when`/`exit_when` are
+    `Callable[[DataFrame], Column]` predicate builders invoked with the
+    scoped events DataFrame at execution time, rather than serialized SQL
+    strings. Required fields and duplicate `condition_id`s raise
+    `ConditionValidationError` immediately (registry conditions are code,
+    not data, and fail fast rather than being quarantined).
+  - `DataEvents.condition_engine(..., condition_source="registry")`:
+    evaluates the condition registry's current contents instead of the
+    table-backed conditions entity — zero conditions table/entity
+    involvement. `condition_source="table"` (the default, unchanged) keeps
+    reading rows from the configured current conditions entity.
+    Event-type graph cycles in the registry are rejected at this
+    declaration call. `declare_temporal_chain()`/`collapse_temporal_chain()`
+    omit the conditions-current input entirely for a chain whose declared
+    condition engines are all registry-sourced, and raise if a table rule
+    and a registry rule combine into a cross-source event-type cycle.
+  - Both sources normalize to the same `ConditionRule` representation and
+    emit the same `{condition_id}.entered`/`.exited` boundary events through
+    `ConditionEngineRunner`, so a table rule and a registry rule can execute
+    side by side in the same pass.
+  - Existing table-backed declarations, entities, schemas, and chain
+    behavior are unchanged.
+
+### Changed
+
+- `augment_schema_for_scd2`, `quote_sql_identifier`, and
+  `build_null_safe_change_condition` moved from `entity_provider_delta.py`
+  (as private, Delta-only helpers) to `data_entities.py` as public,
+  provider-agnostic functions. `DeltaEntityProvider` behavior is unchanged;
+  `_augment_schema_for_scd2` is now a one-line delegate to the shared
+  function.
+
+### Fixed
+
+- **`ingest_conditions()` no longer crashes with a raw `AttributeError`
+  against a non-merge-capable provider** (gh#221):
+  `kindling_ext_temporal.conditions.ingest_conditions()` called
+  `provider_factory(entity).merge_to_entity(...)` unconditionally. It now
+  raises a clear `ValueError` naming the entity and provider type when the
+  resolved provider does not implement `merge_to_entity` (csv, parquet, sql,
+  adx today), matching the existing guard in
+  `simple_read_persist_strategy.py`.
+
 ## [0.12.3] - 2026-07-29
 
 ### Added

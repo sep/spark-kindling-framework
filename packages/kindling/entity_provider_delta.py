@@ -27,7 +27,7 @@ from pyspark.sql.functions import (
     struct,
     to_json,
 )
-from pyspark.sql.types import BooleanType, StructField, StructType, TimestampType
+from pyspark.sql.types import StructType
 
 from .data_entities import *
 from .entity_provider import (
@@ -193,47 +193,6 @@ class SCD2MergeStrategy(DeltaMergeStrategy):
         _execute_scd2_merge(delta_table, df, entity)
 
 
-def _quote_sql_identifier(name: str, alias: Optional[str] = None) -> str:
-    escaped = name.replace("`", "``")
-    if alias:
-        return f"{alias}.`{escaped}`"
-    return f"`{escaped}`"
-
-
-def _build_null_safe_change_condition(
-    source_alias: str, target_alias: str, tracked_columns: list[str], schema=None
-) -> str:
-    if not tracked_columns:
-        return "false"
-
-    from pyspark.sql.types import MapType
-
-    unorderable = {
-        field.name
-        for field in (schema.fields if schema else [])
-        if isinstance(field.dataType, MapType)
-    }
-
-    def _comparable(column: str, alias: str) -> str:
-        ident = _quote_sql_identifier(column, alias)
-        # Spark's binary comparison does not support ordering on MAP types;
-        # compare their JSON projection instead (same approach as the
-        # optimize_unchanged hash path).
-        if column in unorderable:
-            return f"to_json({ident})"
-        return ident
-
-    return " OR ".join(
-        [
-            f"({_comparable(column, source_alias)} != "
-            f"{_comparable(column, target_alias)} OR "
-            f"({_quote_sql_identifier(column, source_alias)} IS NULL) != "
-            f"({_quote_sql_identifier(column, target_alias)} IS NULL))"
-            for column in tracked_columns
-        ]
-    )
-
-
 def _routing_key_column_expr(business_keys: list[str], method: str):
     if method == "concat":
         # Coalesce to sentinel so (None, "x") and ("x", None) produce distinct keys.
@@ -247,7 +206,7 @@ def _routing_key_column_expr(business_keys: list[str], method: str):
 def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
     if method == "concat":
         key_exprs = [
-            f"COALESCE(CAST({_quote_sql_identifier(key, 'target')} AS STRING), '{_SCD2_NULL_SENTINEL}')"
+            f"COALESCE(CAST({quote_sql_identifier(key, 'target')} AS STRING), '{_SCD2_NULL_SENTINEL}')"
             for key in business_keys
         ]
         return f"concat_ws('||', {', '.join(key_exprs)})"
@@ -256,7 +215,7 @@ def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
     for key in business_keys:
         safe_key = key.replace("'", "''")
         named_struct_args.append(f"'{safe_key}'")
-        named_struct_args.append(_quote_sql_identifier(key, "target"))
+        named_struct_args.append(quote_sql_identifier(key, "target"))
     return f"sha2(to_json(named_struct({', '.join(named_struct_args)})), 256)"
 
 
@@ -331,24 +290,24 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     seq_guard = None
     if cfg.sequence_by:
         seq_guard = (
-            f"({_quote_sql_identifier(cfg.sequence_by, 'source')} > "
-            f"{_quote_sql_identifier(cfg.effective_from_column, 'target')})"
+            f"({quote_sql_identifier(cfg.sequence_by, 'source')} > "
+            f"{quote_sql_identifier(cfg.effective_from_column, 'target')})"
         )
 
     close_expr = (
-        _quote_sql_identifier(cfg.sequence_by, "staged")
+        quote_sql_identifier(cfg.sequence_by, "staged")
         if cfg.sequence_by
         else "current_timestamp()"
     )
     close_set = {
-        _quote_sql_identifier(cfg.effective_to_column): close_expr,
-        _quote_sql_identifier(cfg.is_current_column): "false",
+        quote_sql_identifier(cfg.effective_to_column): close_expr,
+        quote_sql_identifier(cfg.is_current_column): "false",
     }
     # Missing-key closes (snapshot) have no staged row to read a sequence
     # value from; they always close at processing time.
     close_set_missing = {
-        _quote_sql_identifier(cfg.effective_to_column): "current_timestamp()",
-        _quote_sql_identifier(cfg.is_current_column): "false",
+        quote_sql_identifier(cfg.effective_to_column): "current_timestamp()",
+        quote_sql_identifier(cfg.is_current_column): "false",
     }
 
     if cfg.optimize_unchanged:
@@ -358,7 +317,7 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         # names) must match on both sides or the JSON — and thus the hash —
         # never compares equal.
         tgt_hash_sql = "sha2(to_json(struct({})), 256)".format(
-            ", ".join(_quote_sql_identifier(c, "target") for c in tracked_columns)
+            ", ".join(quote_sql_identifier(c, "target") for c in tracked_columns)
         )
         changed_where = f"source.{_SCD2_SRC_HASH_COLUMN} != {tgt_hash_sql}"
         if seq_guard:
@@ -381,7 +340,7 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
             )
         new_rows = upserts_df.join(current_target, on=business_keys, how="left_anti")
     else:
-        change_condition = _build_null_safe_change_condition(
+        change_condition = build_null_safe_change_condition(
             "source", "target", tracked_columns, schema=upserts_df.schema
         )
         changed_where = change_condition
@@ -444,20 +403,20 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
 
     source_columns = [column for column in df.columns if column not in temporal_columns]
     insert_values = {
-        _quote_sql_identifier(column): _quote_sql_identifier(column, "staged")
+        quote_sql_identifier(column): quote_sql_identifier(column, "staged")
         for column in source_columns
     }
-    insert_values[_quote_sql_identifier(cfg.effective_from_column)] = (
-        _quote_sql_identifier(cfg.sequence_by, "staged")
+    insert_values[quote_sql_identifier(cfg.effective_from_column)] = (
+        quote_sql_identifier(cfg.sequence_by, "staged")
         if cfg.sequence_by
         else "current_timestamp()"
     )
-    insert_values[_quote_sql_identifier(cfg.effective_to_column)] = "NULL"
-    insert_values[_quote_sql_identifier(cfg.is_current_column)] = "true"
+    insert_values[quote_sql_identifier(cfg.effective_to_column)] = "NULL"
+    insert_values[quote_sql_identifier(cfg.is_current_column)] = "true"
     target_routing_key_sql = _routing_key_target_sql(business_keys, cfg.routing_key_method)
     merge_condition = (
         f"{target_routing_key_sql} = staged.__merge_key "
-        f"AND {_quote_sql_identifier(cfg.is_current_column, 'target')} = true"
+        f"AND {quote_sql_identifier(cfg.is_current_column, 'target')} = true"
     )
 
     builder = delta_table.alias("target").merge(
@@ -1546,22 +1505,7 @@ class DeltaEntityProvider(
 
     def _augment_schema_for_scd2(self, schema: StructType, cfg: SCDConfig) -> StructType:
         """Add SCD2 temporal columns to a schema when SCD2 is enabled."""
-        schema_struct = schema if isinstance(schema, StructType) else StructType(schema)
-        if not cfg.enabled:
-            return schema_struct
-
-        existing_names = {field.name for field in schema_struct.fields}
-        extra_fields = []
-        if cfg.effective_from_column not in existing_names:
-            extra_fields.append(StructField(cfg.effective_from_column, TimestampType(), False))
-        if cfg.effective_to_column not in existing_names:
-            extra_fields.append(StructField(cfg.effective_to_column, TimestampType(), True))
-        if cfg.is_current_column not in existing_names:
-            extra_fields.append(StructField(cfg.is_current_column, BooleanType(), False))
-
-        if not extra_fields:
-            return schema_struct
-        return StructType(schema_struct.fields + extra_fields)
+        return augment_schema_for_scd2(schema, cfg)
 
     def _append_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Append DataFrame to existing Delta table"""

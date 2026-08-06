@@ -122,6 +122,19 @@ class TemporalEntityResolver(ABC):
     def get_episodes_entity(self) -> Any:
         pass
 
+    def get_conditions_current_entity_id(self) -> str:
+        """Return the id of this app's current-conditions view entity.
+
+        Concrete (not abstract): a resolver gets a working default derived
+        from ``get_conditions_entity()`` for free and only needs to override
+        this when its current-view naming convention differs. Kept as one
+        shared helper so table-sourced condition-engine registration
+        (``registry.py``) and chain lowering (``chain.py``) can never derive
+        this id differently from each other.
+        """
+        entity = self.get_conditions_entity()
+        return (entity.tags or {}).get("scd.current_entity_id", f"{entity.entityid}.current")
+
 
 @GlobalInjector.singleton_autobind()
 class SimpleTemporalEntityResolver(TemporalEntityResolver):

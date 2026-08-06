@@ -104,11 +104,20 @@ class TestConfigOverrides:
             )
 
             final_status = wait_for_job_not_pending(api_client, run_id)
-            assert final_status in [
-                "TERMINATED",
-                "COMPLETED",
-                "SUCCESS",
-            ], f"Unexpected final status: {final_status}"
+            if final_status not in ["TERMINATED", "COMPLETED", "SUCCESS"]:
+                status_info = api_client.get_job_status(run_id=run_id)
+                failure_detail = (
+                    status_info.get("failureReason")
+                    or status_info.get("error")
+                    or status_info.get("message")
+                    or final_status
+                )
+                stdout_tail = "\n".join(validator.captured_lines[-80:])
+                pytest.fail(
+                    f"Unexpected final status: {final_status}. "
+                    f"failure_detail={failure_detail}\n"
+                    f"--- stdout tail ---\n{stdout_tail}"
+                )
 
             test_id = job_config["test_id"]
             expected_tests = [

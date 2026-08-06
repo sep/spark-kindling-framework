@@ -878,6 +878,16 @@ class _RecordingProvider:
         self.appended.append((df, entity))
 
 
+class _NonMergingProvider:
+    """A provider double with no merge_to_entity — e.g. csv/parquet/sql/adx today."""
+
+    def __init__(self):
+        self.appended = []
+
+    def append_to_entity(self, df, entity):
+        self.appended.append((df, entity))
+
+
 def _conditions_rows_df(spark, rows):
     from kindling_ext_temporal import conditions_schema
 
@@ -1023,6 +1033,41 @@ def test_ingest_conditions_raises_on_event_type_graph_cycle(spark):
             provider_factory=lambda entity: provider,
         )
     assert provider.merged == []
+
+
+@pytest.mark.requires_spark
+def test_ingest_conditions_raises_for_non_merge_capable_provider(spark):
+    from kindling_ext_temporal import SimpleTemporalEntityResolver, ingest_conditions
+
+    observed_at = datetime(2026, 7, 14, 12, 0, 0)
+    rows = [
+        (
+            "condition.temperature_high",
+            ["telemetry.observed"],
+            "machine",
+            {
+                "enter_when": "cast(payload['temperature'] as double) > 90",
+                "exit_when": "cast(payload['temperature'] as double) <= 90",
+            },
+            True,
+            observed_at,
+            None,
+        ),
+    ]
+    provider = _NonMergingProvider()
+
+    with pytest.raises(ValueError) as exc_info:
+        ingest_conditions(
+            _conditions_rows_df(spark, rows),
+            resolver=SimpleTemporalEntityResolver(),
+            provider_factory=lambda entity: provider,
+            quarantine_entity_id=None,
+        )
+
+    message = str(exc_info.value)
+    assert "silver.conditions" in message
+    assert "merge-capable provider" in message
+    assert provider.appended == []
 
 
 @pytest.mark.requires_spark

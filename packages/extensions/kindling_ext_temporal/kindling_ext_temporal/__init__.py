@@ -27,9 +27,12 @@ from .entities import (
 from .registry import (
     BaseEventMetadata,
     ConditionEngineMetadata,
+    DataConditions,
     DataEpisodes,
     DataEvents,
     EpisodeMetadata,
+    TemporalConditionRegistry,
+    TemporalConditionRegistryManager,
     TemporalEpisodeRegistry,
     TemporalEpisodeRegistryManager,
     TemporalEventRegistry,
@@ -67,6 +70,7 @@ __all__ = [
     "ConditionValidationReport",
     "ConditionsIngestionResult",
     "QUARANTINE_ENTITY_CONFIG_KEY",
+    "DataConditions",
     "DataEpisodes",
     "DataEvents",
     "EpisodeMetadata",
@@ -76,6 +80,8 @@ __all__ = [
     "TEMPORAL_LOWERING_CHAIN",
     "TEMPORAL_LOWERING_DECLARED",
     "TEMPORAL_LOWERING_TAG",
+    "TemporalConditionRegistry",
+    "TemporalConditionRegistryManager",
     "TemporalConditionValidator",
     "TemporalEntityResolver",
     "TemporalEpisodeRegistry",
@@ -91,7 +97,7 @@ __all__ = [
     "validated_conditions_transform",
 ]
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 
 def _register_services():
@@ -104,6 +110,9 @@ def _register_services():
     injector.binder.bind(TemporalEventRegistry, to=TemporalEventRegistryManager, scope=singleton)
     injector.binder.bind(
         TemporalEpisodeRegistry, to=TemporalEpisodeRegistryManager, scope=singleton
+    )
+    injector.binder.bind(
+        TemporalConditionRegistry, to=TemporalConditionRegistryManager, scope=singleton
     )
 
 

@@ -534,7 +534,12 @@ class TestConfigTranslation:
     def test_translate_bootstrap_to_nested_maps_canonical_load_workspace_packages(
         self, mock_dynaconf_class, mock_spark_fn
     ):
-        """Flat load_workspace_packages should translate to nested BOOTSTRAP.load_workspace_packages."""
+        """Flat load_workspace_packages should translate to nested BOOTSTRAP.load_workspace_packages.
+
+        Applied via one batched dynaconf.set("BOOTSTRAP", {...}) call rather
+        than a flat dotted-key set() per leaf -- see _merge_dotted_key's
+        docstring for why namespaces are batched.
+        """
         mock_spark = MagicMock()
         mock_spark_fn.return_value = mock_spark
         mock_dynaconf = MagicMock()
@@ -545,7 +550,7 @@ class TestConfigTranslation:
         config.initialize(initial_config={"load_workspace_packages": True})
 
         set_calls = [call[0] for call in mock_dynaconf.set.call_args_list]
-        assert ("BOOTSTRAP.load_workspace_packages", True) in set_calls
+        assert ("BOOTSTRAP", {"load_workspace_packages": True}) in set_calls
 
     @patch("kindling.spark_config.get_or_create_spark_session")
     @patch("kindling.spark_config.Dynaconf")

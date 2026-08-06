@@ -187,25 +187,69 @@ class DynaconfConfig(ConfigService):
             pass
 
     def _translate_bootstrap_to_nested(self):
-        """Translate bootstrap flat keys to nested structure"""
+        """Translate bootstrap flat keys to nested structure.
+
+        Bootstrap keys may be dot-separated flat strings (e.g.
+        ``"kindling.secrets.service.api_token"``, as produced by flattening
+        a job's ``config_overrides`` for command-line transport) or already-
+        nested dicts. Both forms get consolidated into one nested tree per
+        top-level namespace, then each namespace is applied with exactly
+        one ``dynaconf.set()`` call.
+
+        Setting the whole namespace in one call (instead of one per leaf)
+        minimizes the number of merges Dynaconf's own merge/lazy-resolution
+        machinery performs against the existing tree, which is the surface
+        a known Dynaconf regression (merging into an existing namespace can
+        eagerly evaluate an unrelated sibling ``@format`` lazy value, e.g. a
+        settings YAML's ``secret_templates.auth_header`` referencing
+        ``this.kindling.secrets.service.api_token``, before its target is
+        ever set, raising ``DynaconfFormatError``) can trigger. That
+        regression is confirmed present in dynaconf 3.3.4 and absent in
+        3.3.1/3.2.13; the real fix is the version constraint in
+        ``pyproject.toml``, which pins dynaconf below the affected range.
+        """
         merged_initial = self._apply_bootstrap_overrides(self.initial_config)
 
-        # Apply all bootstrap values
+        nested: Dict[str, Any] = {}
         for key, value in merged_initial.items():
-            self._set_nested(key, value)
+            self._merge_dotted_key(nested, key, value)
 
-        # Also preserve original flat keys
+        # Preserve original flat keys too (kept alongside their transformed
+        # form for any caller reading the literal flat key) -- merged into
+        # the SAME tree, never a second pass of individual .set() calls.
         for key, value in self.initial_config.items():
-            if key not in ["spark_configs"]:  # Already handled specially
-                self.dynaconf.set(key, value)
+            if key != "spark_configs":  # Already handled specially
+                self._merge_dotted_key(nested, key, value)
 
-    def _set_nested(self, key: str, value):
-        """Set nested dict values recursively"""
+        for top_level_key, value in nested.items():
+            self.dynaconf.set(top_level_key, value)
+
+    @staticmethod
+    def _merge_dotted_key(target: Dict[str, Any], dotted_key: str, value: Any) -> None:
+        """Merge a dot-separated key (or a nested-dict value) into `target`.
+
+        Builds/merges intermediate dicts along the path rather than
+        overwriting a sibling already placed there by an earlier key in
+        the same batch.
+        """
+        parts = dotted_key.split(".")
+        current = target
+        for part in parts[:-1]:
+            existing = current.get(part)
+            if not isinstance(existing, dict):
+                existing = {}
+                current[part] = existing
+            current = existing
+
+        leaf_key = parts[-1]
         if isinstance(value, dict):
+            existing_leaf = current.get(leaf_key)
+            merged = existing_leaf if isinstance(existing_leaf, dict) else {}
             for nested_key, nested_value in value.items():
-                self._set_nested(f"{key}.{nested_key}", nested_value)
+                DynaconfConfig._merge_dotted_key(merged, nested_key, nested_value)
+            current[leaf_key] = merged
         else:
-            self.dynaconf.set(key, value)
+            current[leaf_key] = value
 
     def _apply_bootstrap_overrides(self, bootstrap_config: Dict) -> Dict:
         """

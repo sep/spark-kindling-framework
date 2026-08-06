@@ -4425,7 +4425,7 @@ files = [
 
 [[package]]
 name = "spark-kindling-cli"
-version = "0.11.0"
+version = "0.12.5"
 description = "Command-line tooling for Kindling"
 optional = false
 python-versions = "^3.10"
@@ -4449,7 +4449,7 @@ url = "packages/kindling_cli"
 
 [[package]]
 name = "spark-kindling-sdk"
-version = "0.11.0"
+version = "0.12.5"
 description = "Design-time platform SDK for Kindling"
 optional = false
 python-versions = "^3.10"
@@ -4461,7 +4461,7 @@ develop = true
 azure-core = ">=1.30.0,<1.31.0"
 azure-identity = ">=1.15.0"
 azure-storage-file-datalake = ">=12.14.0"
-databricks-sdk = ">=0.12.0"
+databricks-sdk = ">=0.20.0"
 requests = ">=2.31.0"
 
 [package.source]
@@ -4816,4 +4816,4 @@ synapse = ["azure-synapse-artifacts"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "c4f9f1c9f38de2cefac5ed899b62f01b46a58ee1528b67211f1f854daea29756"
+content-hash = "14398da86643b3fc2ecbfbb17d5bb34486bfea094715b8f2b95f0b4acb94ace2"
