@@ -34,13 +34,15 @@ class DatabricksAutoLoaderFileIngestionRunner(AutoLoaderFileIngestionRunner):
     ) -> None:
         spark = get_or_create_spark_session()
 
-        stream = (
+        reader = (
             spark.readStream.format("cloudFiles")
             .option("cloudFiles.format", entry.filetype)
             .option("cloudFiles.schemaLocation", schema_location)
             .option("pathGlobFilter", entry.source_glob)
-            .load(path)
         )
+        if entry.schema_evolution_mode:
+            reader = reader.option("cloudFiles.schemaEvolutionMode", entry.schema_evolution_mode)
+        stream = reader.load(path)
 
         query = (
             stream.writeStream.foreachBatch(

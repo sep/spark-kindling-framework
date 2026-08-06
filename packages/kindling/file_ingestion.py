@@ -38,6 +38,7 @@ class FileIngestionMetadata:
     static_values: Optional[Dict[str, Any]] = None
     discovery: str = "batch"
     source_glob: Optional[str] = None
+    schema_evolution_mode: Optional[str] = None
 
 
 class FileIngestionEntries:
@@ -59,6 +60,7 @@ class FileIngestionEntries:
         decorator_params.setdefault("static_values", None)
         decorator_params.setdefault("discovery", "batch")
         decorator_params.setdefault("source_glob", None)
+        decorator_params.setdefault("schema_evolution_mode", None)
 
         missing_fields = required_fields - decorator_params.keys()
 

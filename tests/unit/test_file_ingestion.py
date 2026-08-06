@@ -274,6 +274,65 @@ def test_entry_decorator_omitting_static_values_stores_none():
     assert entry.static_values is None
 
 
+# ── schema_evolution_mode ─────────────────────────────────────────────────────
+
+
+def test_metadata_schema_evolution_mode_defaults_to_none():
+    from kindling.file_ingestion import FileIngestionMetadata
+
+    m = FileIngestionMetadata(
+        entry_id="e1",
+        name="test",
+        patterns=[".*\\.csv"],
+        dest_entity_id="my_entity",
+        tags={},
+    )
+    assert m.schema_evolution_mode is None
+
+
+def test_entry_decorator_accepts_schema_evolution_mode_without_error():
+    from kindling.file_ingestion import FileIngestionManager
+
+    mgr = FileIngestionManager.__new__(FileIngestionManager)
+    mgr.logger = MagicMock()
+    mgr.registry = {}
+
+    mgr.register_entry(
+        "e1",
+        name="my entry",
+        patterns=[".*\\.csv"],
+        dest_entity_id="my_entity",
+        tags={},
+        discovery="autoloader",
+        source_glob="*.csv",
+        schema_evolution_mode="addNewColumns",
+    )
+
+    entry = mgr.get_entry_definition("e1")
+    assert entry.schema_evolution_mode == "addNewColumns"
+
+
+def test_entry_decorator_omitting_schema_evolution_mode_stores_none():
+    from kindling.file_ingestion import FileIngestionManager
+
+    mgr = FileIngestionManager.__new__(FileIngestionManager)
+    mgr.logger = MagicMock()
+    mgr.registry = {}
+
+    mgr.register_entry(
+        "e2",
+        name="another entry",
+        patterns=[".*\\.csv"],
+        dest_entity_id="other_entity",
+        tags={},
+        discovery="autoloader",
+        source_glob="*.csv",
+    )
+
+    entry = mgr.get_entry_definition("e2")
+    assert entry.schema_evolution_mode is None
+
+
 def test_process_path_disabled_tracing_emits_no_spans():
     """kindling.telemetry.tracing.enabled=false suppresses the process span."""
     from kindling.file_ingestion import ParallelizingFileIngestionProcessor
