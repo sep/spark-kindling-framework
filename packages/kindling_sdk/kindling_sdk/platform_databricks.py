@@ -239,7 +239,7 @@ class DatabricksAPI(PlatformAPI):
         return "/".join([root.rstrip("/"), *cleaned_parts])
 
     @staticmethod
-    def _is_uc_volume_path(path: str) -> bool:
+    def _is_uc_volume_path(path: Optional[str]) -> bool:
         candidate = str(path or "").strip()
         return candidate == "/Volumes" or candidate.startswith("/Volumes/")
 
