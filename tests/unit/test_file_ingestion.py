@@ -193,6 +193,43 @@ def test_build_df_plan_no_match_returns_none():
     assert result is None
 
 
+# ── enrich_file_dataframe (standalone helper) ────────────────────────────────
+
+
+def test_enrich_file_dataframe_isolated_from_spark_read_path():
+    """No SparkSession, no .read, no processor instance -- just a DataFrame-like
+    object and plain dicts, proving the helper is reusable from a future
+    foreachBatch callback."""
+    from kindling.file_ingestion import enrich_file_dataframe
+
+    mock_df = MagicMock()
+    mock_df.withColumn.return_value = mock_df
+
+    with patch("kindling.file_ingestion.lit", side_effect=lambda v: f"LIT({v})"):
+        with patch("kindling.file_ingestion.current_timestamp", return_value="NOW"):
+            result = enrich_file_dataframe(
+                mock_df,
+                named_groups={"filetype": "csv"},
+                static_values={"region": "eu"},
+            )
+
+    assert result is mock_df
+    assert _captured_columns(mock_df) == ["filetype", "region", "ingestion_timestamp"]
+
+
+def test_enrich_file_dataframe_no_static_values_skips_that_step():
+    from kindling.file_ingestion import enrich_file_dataframe
+
+    mock_df = MagicMock()
+    mock_df.withColumn.return_value = mock_df
+
+    with patch("kindling.file_ingestion.lit", side_effect=lambda v: f"LIT({v})"):
+        with patch("kindling.file_ingestion.current_timestamp", return_value="NOW"):
+            enrich_file_dataframe(mock_df, named_groups={"filetype": "csv"}, static_values=None)
+
+    assert _captured_columns(mock_df) == ["filetype", "ingestion_timestamp"]
+
+
 # ── FileIngestionEntries.entry() ─────────────────────────────────────────────
 
 
