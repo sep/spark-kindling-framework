@@ -6,7 +6,7 @@ Each entry discovers files one of two ways: a one-shot directory listing on ever
 
 ## Registering an ingestion entry
 
-Use `FileIngestionEntries.entry()` to declare a mapping. All parameters must be provided except `infer_schema` (defaults to `True`), `static_values` (defaults to `None`), `discovery` (defaults to `"batch"`), and `source_glob` (defaults to `None`; required when `discovery="autoloader"`).
+Use `FileIngestionEntries.entry()` to declare a mapping. All parameters must be provided except `infer_schema` (defaults to `True`), `static_values` (defaults to `None`), `discovery` (defaults to `"batch"`), `source_glob` (defaults to `None`; required when `discovery="autoloader"`), and `schema_evolution_mode` (defaults to `None`).
 
 ```python
 FileIngestionEntries.entry(
@@ -33,6 +33,7 @@ FileIngestionEntries.entry(
 | `static_values` | `Dict[str, Any]` | No | Literal column values added to every matched row |
 | `discovery` | `str` | No | `"batch"` (default) or `"autoloader"` — see [Auto Loader discovery](#auto-loader-discovery-databricks) |
 | `source_glob` | `str` | Only for `discovery="autoloader"` | Glob passed to Auto Loader's `pathGlobFilter`; scopes that entry's own stream |
+| `schema_evolution_mode` | `str` | No | Only applied for `discovery="autoloader"` entries — passed through as `cloudFiles.schemaEvolutionMode`. Unset (`None`) leaves Auto Loader's own default in effect |
 
 > **For `discovery="batch"` entries, `filetype` is not read by the processor.** The Spark format is driven entirely by the `filetype` named regex group in the matched pattern (e.g. `(?P<filetype>csv)`), falling back to `"csv"` when that group is absent. The `filetype` parameter stored on the entry is never consulted. **`discovery="autoloader"` entries are the exception** — see [Auto Loader discovery](#auto-loader-discovery-databricks).
 
@@ -109,6 +110,7 @@ FileIngestionEntries.entry(
 | Requires | Nothing extra | `kindling_ext_databricks_autoloader` installed and imported; a Databricks runtime (`cloudFiles` is Databricks-only) |
 | `source_glob` | Not used | Required |
 | `filetype` | Ignored (see [Controlling the read format](#controlling-the-read-format)) | Read — passed as `cloudFiles.format` |
+| `schema_evolution_mode` | Not used | Optional — passed as `cloudFiles.schemaEvolutionMode` when set |
 
 Prefer `autoloader` on Databricks once a landing path accumulates enough files that listing it on every run gets expensive, or when you want checkpointed discovery instead of relying on `movepath` to avoid duplicate rows. Otherwise, `batch` (the default) needs no extra dependency and works on any engine.
 
@@ -116,6 +118,7 @@ Prefer `autoloader` on Databricks once a landing path accumulates enough files t
 
 - `source_glob` (required) scopes the entry's own `cloudFiles` stream via `pathGlobFilter`, so multiple entries can watch the same landing path without each one discovering files meant for another entry. `patterns[0]` keeps its normal job on top of that — it's still matched per file for named-group extraction, `dest_entity_id` templating, and (for `discovery="batch"` entries) `filetype` fallback. Glob and regex are different languages: a file can pass an entry's `source_glob` and still miss its own `patterns[0]`, in which case it's skipped like any other non-matching file.
 - `filetype` is passed straight through as `cloudFiles.format` for `autoloader` entries — unlike `discovery="batch"`, where it's ignored in favor of a `filetype` named regex group (see [Controlling the read format](#controlling-the-read-format)).
+- `schema_evolution_mode` is optional and only consulted for `autoloader` entries. When set, it's passed straight through as `cloudFiles.schemaEvolutionMode` — Databricks' own values (`"addNewColumns"`, `"rescue"`, `"failOnNewColumns"`, `"none"`) are accepted verbatim rather than remapped to a kindling-specific vocabulary. Left unset (the default), `cloudFiles` applies its own default evolution behavior. Not read at all for `discovery="batch"` entries.
 
 ### Checkpoint and schema locations
 
