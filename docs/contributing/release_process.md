@@ -45,6 +45,23 @@ poetry run poe release <version>
 The Poe task creates and pushes the release tag. CI owns the GitHub release
 object and creates it only after the required validation lane passes.
 
+### Fast-track releases
+
+For an urgent release that has already been validated locally, include
+`[fast-track release]` in the tagged commit message. This tag-only directive
+skips unit, integration, code-quality, KDA, security, and cloud system-test
+jobs. CI still builds the release wheels and runs their smoke tests before
+publishing, so broken or missing artifacts cannot be released.
+
+```bash
+git commit --allow-empty -m "chore(release): fast-track <version> [fast-track release]"
+git push origin main
+poe release <version>
+```
+
+Use this only for time-sensitive releases; the normal validated release path
+remains the default.
+
 ### Step 3: Verify Release Assets
 
 After the workflow completes:

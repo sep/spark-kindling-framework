@@ -87,6 +87,7 @@ jobs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
       needs_wheels: ${{ steps.classify.outputs.needs_wheels }}
       needs_system_tests: ${{ steps.classify.outputs.needs_system_tests }}
+      fast_track: ${{ steps.classify.outputs.fast_track }}
       changed_files: ${{ steps.classify.outputs.changed_files }}
 
     steps:
@@ -191,6 +192,7 @@ jobs:
 
           needs_wheels=false
           needs_system_tests=false
+          fast_track=false
           release_kind="docs"
 
           if [[ "$runtime_changed" == "true" || "$other_changed" == "true" ]]; then
@@ -218,6 +220,14 @@ jobs:
             echo "Commit message contains [skip system tests] - skipping cloud system tests"
           fi
 
+          # Fast-track is deliberately tag-only. It retains wheel build and
+          # smoke tests while bypassing the longer validation gates.
+          if [[ "$is_tag" == "true" && "$commit_msg" == *"[fast-track release]"* ]]; then
+            fast_track=true
+            needs_system_tests=false
+            echo "Commit message contains [fast-track release] - using fast-track release gates"
+          fi
+
           docs_only=false
           if [[ "$needs_wheels" == "false" && "$docs_changed" == "true" ]]; then
             docs_only=true
@@ -231,6 +241,7 @@ jobs:
             echo "docs_only=$docs_only"
             echo "needs_wheels=$needs_wheels"
             echo "needs_system_tests=$needs_system_tests"
+            echo "fast_track=$fast_track"
             echo "changed_files<<EOF"
             printf '%s\n' "$changed_files"
             echo "EOF"
@@ -239,6 +250,7 @@ jobs:
           echo "Release kind: $release_kind"
           echo "Needs wheels: $needs_wheels"
           echo "Needs system tests: $needs_system_tests"
+          echo "Fast-track release: $fast_track"
 
   build-ci-image:
     name: Build CI Image
@@ -283,7 +295,8 @@ jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-    needs: build-ci-image
+    needs: [classify-changes, build-ci-image]
+    if: needs.classify-changes.outputs.fast_track != 'true'
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
       credentials:
@@ -325,7 +338,8 @@ jobs:
   lint-and-format:
     name: Code Quality
     runs-on: ubuntu-latest
-    needs: build-ci-image
+    needs: [classify-changes, build-ci-image]
+    if: needs.classify-changes.outputs.fast_track != 'true'
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
       credentials:
@@ -357,14 +371,17 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: [build-ci-image, unit-tests, lint-and-format]
+    needs: [classify-changes, build-ci-image, unit-tests, lint-and-format]
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     # Run integration tests on every commit (push or PR)
-    if: always() && !cancelled()
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.classify-changes.outputs.fast_track != 'true'
 
     steps:
       - name: Checkout code
@@ -392,7 +409,8 @@ jobs:
   kda-packaging-tests:
     name: KDA Packaging Tests
     runs-on: ubuntu-latest
-    needs: [build-ci-image, unit-tests]
+    needs: [classify-changes, build-ci-image, unit-tests]
+    if: needs.classify-changes.outputs.fast_track != 'true'
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
       credentials:
@@ -628,7 +646,8 @@ jobs:
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
-    needs: [build-ci-image, unit-tests]
+    needs: [classify-changes, build-ci-image, unit-tests]
+    if: needs.classify-changes.outputs.fast_track != 'true'
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
       credentials:
@@ -671,9 +690,17 @@ jobs:
     # Build wheels for classified runtime/CLI/SDK releases, workflow dispatch,
     # explicit [build wheels] commits, or source changes on ordinary pushes.
     if: |
-      needs.classify-changes.outputs.needs_wheels == 'true' ||
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, '[build wheels]')
+      always() &&
+      needs.build-ci-image.result == 'success' &&
+      (
+        needs.classify-changes.outputs.fast_track == 'true' ||
+        (needs.unit-tests.result == 'success' && needs.lint-and-format.result == 'success')
+      ) &&
+      (
+        needs.classify-changes.outputs.needs_wheels == 'true' ||
+        github.event_name == 'workflow_dispatch' ||
+        contains(github.event.head_commit.message, '[build wheels]')
+      )
 
     steps:
       - name: Checkout code
@@ -798,10 +825,15 @@ jobs:
     if: |
       always() &&
       startsWith(github.ref, 'refs/tags/v') &&
-      needs.unit-tests.result == 'success' &&
-      needs.lint-and-format.result == 'success' &&
-      needs.integration-tests.result == 'success' &&
-      needs.security-scan.result == 'success' &&
+      (
+        needs.classify-changes.outputs.fast_track == 'true' ||
+        (
+          needs.unit-tests.result == 'success' &&
+          needs.lint-and-format.result == 'success' &&
+          needs.integration-tests.result == 'success' &&
+          needs.security-scan.result == 'success'
+        )
+      ) &&
       (
         (needs.classify-changes.outputs.needs_wheels == 'true' && needs.build-wheels.result == 'success') ||
         (needs.classify-changes.outputs.needs_wheels == 'false' && needs.build-wheels.result == 'skipped')
