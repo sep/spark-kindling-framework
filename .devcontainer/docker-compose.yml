@@ -7,11 +7,8 @@ services:
       - ..:/workspaces/kindling:cached
       # Optional persistent store for local agent tooling state (task
       # ledgers, orchestration config). Harmless if unused.
-      - agent-state:/workspaces/kindling-city
+
     command: sleep infinity
     environment:
       - PYTHONPATH=/workspaces/kindling
       - SPARK_LOCAL_IP=127.0.0.1
-
-volumes:
-  agent-state:
