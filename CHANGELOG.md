@@ -2,6 +2,13 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [0.12.6] - 2026-08-10
+
+### Added
+
+- Added `--param KEY=VALUE` and `--parameters` runtime configuration overrides to standalone
+  `kindling app run` executions, matching remote app runs.
+
 ## [0.12.4] - 2026-07-30
 
 ### Added

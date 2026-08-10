@@ -251,8 +251,13 @@ def main() -> None:
     try:
         from kindling.bootstrap import initialize_framework
 
+        raw_parameters = os.getenv("KINDLING_RUN_PARAMETERS", "")
+        parameters = json.loads(raw_parameters) if raw_parameters else {}
+        if not isinstance(parameters, dict):
+            raise ValueError("KINDLING_RUN_PARAMETERS must contain a JSON object")
         initialize_framework(
             {
+                **parameters,
                 "platform": "standalone",
                 "environment": args.env,
                 "config_files": config_files,

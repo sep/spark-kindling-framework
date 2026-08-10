@@ -3611,6 +3611,22 @@ def app_deploy(
     )
 
 
+def _resolve_runtime_parameters(
+    parameters_path: Optional[Path], param_overrides: Tuple[str, ...]
+) -> Dict[str, Any]:
+    """Load runtime parameters and apply repeatable dotted-key overrides."""
+    parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else {}
+    for raw_param in param_overrides:
+        if "=" not in raw_param:
+            raise click.ClickException("--param values must use KEY=VALUE syntax.")
+        key, value = raw_param.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise click.ClickException("--param keys must not be empty.")
+        _set_nested_key(parameters, key, _coerce_value(value))
+    return parameters
+
+
 def _run_remote_app(
     app_ref: str,
     app_name: Optional[str],
@@ -3637,15 +3653,7 @@ def _run_remote_app(
         raise click.ClickException("App name resolved to an empty string.")
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else {}
-    for raw_param in param_overrides:
-        if "=" not in raw_param:
-            raise click.ClickException("--param values must use KEY=VALUE syntax.")
-        key, value = raw_param.split("=", 1)
-        key = key.strip()
-        if not key:
-            raise click.ClickException("--param keys must not be empty.")
-        _set_nested_key(parameters, key, _coerce_value(value))
+    parameters = _resolve_runtime_parameters(parameters_path, param_overrides)
 
     try:
         _warn_if_runtime_outdated(_open_store(_resolve_destination()))
@@ -3728,10 +3736,6 @@ def _run_standalone_app(
     load_lake: bool = False,
 ) -> None:
     """Run an app locally by executing its entrypoint as a subprocess."""
-    if parameters_path or param_overrides:
-        raise click.ClickException(
-            "Runtime parameters are not supported for standalone app runs yet."
-        )
     if no_logs:
         raise click.ClickException("--no-logs is only valid for remote app runs.")
     if no_wait:
@@ -3801,6 +3805,10 @@ def _run_standalone_app(
             )
     if quiet:
         run_env["KINDLING_LOG_LEVEL"] = "WARNING"
+    run_env.pop("KINDLING_RUN_PARAMETERS", None)
+    parameters = _resolve_runtime_parameters(parameters_path, param_overrides)
+    if parameters:
+        run_env["KINDLING_RUN_PARAMETERS"] = json.dumps(parameters)
 
     runner_cmd = [
         sys.executable,

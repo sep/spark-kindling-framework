@@ -1734,6 +1734,44 @@ class TestAppRunCommand:
         assert env["KINDLING_LOG_LEVEL"] == "WARNING"
         assert "KINDLING_CONFIG_DIR" not in env
 
+    def test_standalone_passes_runtime_parameters_to_runner(self, tmp_path, monkeypatch):
+        import subprocess
+
+        app_dir = tmp_path / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.py").write_text("# stub\n", encoding="utf-8")
+        params_file = tmp_path / "params.yaml"
+        params_file.write_text("kindling:\n  execution:\n    parallel: false\n", encoding="utf-8")
+        captured_env = {}
+
+        def fake_run(cmd, env=None, **kwargs):
+            captured_env.update(env or {})
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "app",
+                "run",
+                "myapp",
+                "--local-folder",
+                str(app_dir),
+                "--parameters",
+                str(params_file),
+                "--param",
+                "kindling.execution.parallel=true",
+                "--param",
+                "kindling.execution.retries=3",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(captured_env["KINDLING_RUN_PARAMETERS"]) == {
+            "kindling": {"execution": {"parallel": True, "retries": 3}}
+        }
+
     def test_standalone_config_args_include_selected_platform_then_env(self, tmp_path, monkeypatch):
         import subprocess
 
