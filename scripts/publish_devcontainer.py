@@ -19,6 +19,7 @@ REGISTRY = "ghcr.io"
 REPO = "sep/spark-kindling-framework"
 IMAGE = f"{REGISTRY}/{REPO}/devcontainer"
 DOCKERFILE = Path(".github/Dockerfile.devcontainer")
+DEFAULT_PLATFORMS = "linux/amd64,linux/arm64"
 
 
 def _current_version() -> str:
@@ -98,7 +99,7 @@ def _ensure_builder(env: dict) -> None:
         )
 
 
-def main(version: str = "", push: bool = True) -> int:
+def main(version: str = "", push: bool = True, platforms: str = DEFAULT_PLATFORMS) -> int:
     try:
         resolved_version = version or _current_version()
         print(f"Building devcontainer image version {resolved_version}")
@@ -118,6 +119,8 @@ def main(version: str = "", push: bool = True) -> int:
                 "build",
                 "--file",
                 str(DOCKERFILE),
+                "--platform",
+                platforms,
                 "--build-arg",
                 f"KINDLING_VERSION={resolved_version}",
                 "--tag",
@@ -168,5 +171,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-push", dest="push", action="store_false", help="Build only, do not push"
     )
+    parser.add_argument(
+        "--platforms",
+        default=DEFAULT_PLATFORMS,
+        help=("Comma-separated target platforms for buildx (default: " f"{DEFAULT_PLATFORMS})"),
+    )
     args = parser.parse_args()
-    sys.exit(main(version=args.version, push=args.push))
+    sys.exit(main(version=args.version, push=args.push, platforms=args.platforms))
