@@ -29,7 +29,12 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+# Resolve JAVA_HOME dynamically so the image works on both amd64 and arm64.
+RUN JAVA_BIN="$(readlink -f "$(command -v java)")" \
+    && JAVA_HOME_REAL="$(dirname "$(dirname "$JAVA_BIN")")" \
+    && ln -sfn "$JAVA_HOME_REAL" /usr/lib/jvm/java-21-openjdk-current
+
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-current
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Install Poetry and Poe globally (version-pinned for reproducibility)
