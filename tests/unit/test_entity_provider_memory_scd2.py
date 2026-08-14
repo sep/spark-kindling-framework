@@ -44,6 +44,7 @@ def spark_session():
     spark = SparkSession.builder.appName("MemorySCD2Tests").master("local[2]").getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     yield spark
+    spark.stop()
 
 
 BUSINESS_SCHEMA = StructType(
