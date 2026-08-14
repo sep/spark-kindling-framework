@@ -155,6 +155,11 @@ class TemporalPipeTranslator:
         if metadata.condition_source == "registry":
             input_entity_ids = [metadata.events_entity_id]
         else:
+            if not metadata.conditions_current_entity_id:
+                raise ValueError(
+                    f"Temporal condition engine '{metadata.engineid}': table-sourced "
+                    "condition engines require conditions_current_entity_id to be set"
+                )
             input_entity_ids = [
                 metadata.events_entity_id,
                 metadata.conditions_current_entity_id,
