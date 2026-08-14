@@ -10,14 +10,29 @@ See `docs/config_reference.md` for an exhaustive list of Kindling config keys an
 
 Configuration files are loaded in the following order (lowest to highest priority):
 
-1. **`settings.yaml`** - Base framework settings (lowest priority)
-2. **`settings.{platform}.yaml`** - Platform-specific settings (fabric, synapse, databricks)
-3. **`workspace_{workspace_id}.yaml`** - Workspace-specific settings
-4. **`settings.{environment}.yaml`** - Environment-specific settings (dev, prod, etc.)
-5. **SparkConf** - `spark.kindling.*` pool/session settings
-6. **Bootstrap Config** - In-memory overrides from BOOTSTRAP_CONFIG dict (highest priority)
+1. **`config/settings.yaml`** - Base framework settings (lowest priority)
+2. **`config/settings.{platform}.yaml`** - Platform-specific settings (fabric, synapse, databricks)
+3. **`config/workspace_{workspace_id}.yaml`** - Workspace-specific settings
+4. **`config/settings.{environment}.yaml`** - Environment-specific settings (dev, prod, etc.)
+5. **`data-apps/{app_name}/settings.yaml`** - App-specific base settings
+6. **`data-apps/{app_name}/settings.{platform}.yaml`** - App-specific platform settings
+7. **`data-apps/{app_name}/settings.{environment}.yaml`** - App-specific environment settings
+8. **SparkConf** - `spark.kindling.*` pool/session settings
+9. **Bootstrap Config** - In-memory overrides from the BOOTSTRAP_CONFIG dict (highest priority).
+   Populated via `kindling app run`'s `--param KEY=VALUE` / a parameters file, or
+   automatically from `CONFIG__`-prefixed environment variables (e.g. a shell-sourced
+   `.env` file) — see `kindling_sdk.env_config`. `--param`/the parameters file win
+   over `CONFIG__` env vars when both set the same key.
 
-Each layer can override values from previous layers, allowing precise control over configuration at different organizational levels.
+Each layer can override values from previous layers, allowing precise control over
+configuration at different organizational levels. App-specific settings (5-7) are
+loaded after and win over the corresponding global platform/environment files (2, 4),
+so an app's own overlay always takes precedence over workspace/global config for the
+same key.
+
+Legacy filenames are still checked as a fallback when the canonical name above isn't
+found: `platform_{platform}.yaml`, `env_{environment}.yaml`, `app.{platform}.yaml`,
+and `app.{environment}.yaml` (app-scoped). Prefer the canonical names for anything new.
 
 ## Configuration Files
 
