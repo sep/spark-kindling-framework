@@ -1410,3 +1410,48 @@ class TestSpanEmitterRobustness:
                 raise ValueError("user failure")
 
         assert trace.current_span is None
+
+    def test_start_span_survives_failing_emitter(self, mock_emitter):
+        """A failing emitter must not raise out of start_span (manual span API).
+
+        Regression test: callers like the streaming listener's long-lived
+        query span (streaming_listener.py) call start_span() directly, and a
+        down telemetry backend must degrade to a no-op rather than breaking
+        query-lifecycle bookkeeping.
+        """
+        mock_emitter.emit_custom_event.side_effect = RuntimeError("telemetry backend down")
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span(operation="query", component="Comp")
+
+        assert isinstance(span, SparkSpan)
+
+    def test_end_span_survives_failing_emitter(self, mock_emitter):
+        """A failing emitter must not raise out of end_span (manual span API)."""
+        trace = EventBasedSparkTrace(mock_emitter)
+        span = trace.start_span(operation="query", component="Comp")
+
+        mock_emitter.emit_custom_event.side_effect = RuntimeError("telemetry backend down")
+
+        # Must not raise, with or without an error payload.
+        trace.end_span(span)
+        trace.end_span(span, error="boom")
+
+    def test_add_event_survives_failing_emitter(self, mock_emitter):
+        """A failing emitter must not raise out of add_event (manual span API)."""
+        trace = EventBasedSparkTrace(mock_emitter)
+        span = trace.start_span(operation="query", component="Comp")
+
+        mock_emitter.emit_custom_event.side_effect = RuntimeError("telemetry backend down")
+
+        trace.add_event(span, "batch_progress", {"rows": 10})
+
+    def test_record_span_survives_failing_emitter(self, mock_emitter):
+        """A failing emitter must not raise out of record_span."""
+        mock_emitter.emit_custom_event.side_effect = RuntimeError("telemetry backend down")
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        start = datetime.now()
+        end = datetime.now()
+        trace.record_span("Op", "Comp", start, end)
+        trace.record_span("Op", "Comp", start, end, error="boom")

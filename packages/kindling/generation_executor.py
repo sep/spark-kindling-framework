@@ -349,6 +349,7 @@ class GenerationExecutor(SignalEmitter):
                 component=COMPONENT_ORCHESTRATOR,
                 operation="run",
                 details={"run_id": run_id, "mode": mode},
+                reraise=True,
             ):
                 blocked: Dict[str, str] = {}  # pipe_id -> upstream pipe that failed
                 for generation in plan.generations:

@@ -11,7 +11,6 @@ from concurrent.futures import Future
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
-
 from kindling.data_pipes import PipeMetadata
 from kindling.entity_provider import (
     StreamableEntityProvider,
@@ -1860,3 +1859,67 @@ class TestSkipDependents:
 
         statuses = {r.pipe_id: r.status for g in result.generation_results for r in g.pipe_results}
         assert statuses == {"a": "failed", "x": "success", "b": "skipped", "c": "skipped"}
+
+
+class TestOrchestrationSpanReraise:
+    """Regression test for gh#210 (Copilot review on the now-closed dup PR #231).
+
+    The run-level orchestration span (component=kindling.orchestrator,
+    operation="run") must pass reraise=True. `SparkTraceProvider.span()`
+    implementations swallow exceptions by default (reraise=False) — without
+    reraise=True, an unexpected failure inside `execute()`'s body (outside
+    the already-guarded per-pipe execution path) would be silently absorbed
+    by the span and `execute()` would return as if the run had succeeded.
+    """
+
+    def test_unexpected_error_inside_execute_is_not_swallowed(
+        self,
+        pipes_registry,
+        entity_registry,
+        provider_registry,
+        config_service,
+        persist_strategy,
+        logger_provider,
+        signal_provider,
+    ):
+        from kindling.test_framework import RecordingTraceProvider
+
+        executor = GenerationExecutor(
+            pipes_registry=pipes_registry,
+            entity_registry=entity_registry,
+            pipe_stream_starter=Mock(),
+            config_service=config_service,
+            persist_strategy=persist_strategy,
+            trace_provider=RecordingTraceProvider(),
+            logger_provider=logger_provider,
+            signal_provider=signal_provider,
+            provider_registry=provider_registry,
+        )
+
+        entity_registry.get_entity_definition.return_value = Mock()
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(return_value=Mock())
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        # Poison pipe "a" so SKIP_DEPENDENTS' bookkeeping runs, then make the
+        # graph lookup it depends on blow up with an unrelated bug — this is
+        # a failure inside execute()'s body that has nothing to do with any
+        # individual pipe's own try/except handling.
+        failing_pipe = make_pipe("a", inputs=[], output="entity.a")
+        failing_pipe.execute = Mock(side_effect=RuntimeError("a boom"))
+        pipes_registry.get_pipe_definition.side_effect = lambda pid: (
+            failing_pipe if pid == "a" else make_pipe(pid, inputs=[], output=f"entity.{pid}")
+        )
+
+        graph = make_chain_graph()
+        graph.get_dependents = Mock(side_effect=RuntimeError("graph lookup exploded"))
+
+        plan = ExecutionPlan(
+            pipe_ids=["a"],
+            generations=[Generation(number=0, pipe_ids=["a"], dependencies=[])],
+            graph=graph,
+            strategy="batch",
+            metadata={},
+        )
+
+        with pytest.raises(RuntimeError, match="graph lookup exploded"):
+            executor.execute(plan, error_strategy=ErrorStrategy.SKIP_DEPENDENTS)

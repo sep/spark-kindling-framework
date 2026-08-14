@@ -8,6 +8,7 @@ import tempfile
 import uuid
 import zipfile
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +20,7 @@ from kindling.platform_provider import *
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
-from kindling.trace_ops import COMPONENT_APPS
+from kindling.trace_ops import COMPONENT_APPS, tracing_gates
 from packaging.version import InvalidVersion, Version
 
 from .app_files import is_deployable_app_file, is_settings_overlay
@@ -423,6 +424,15 @@ class DataAppManager(DataAppRunner):
         self.framework = nm
         self.logger = lp.get_logger("AppManager")
         self.artifacts_path = config.get("artifacts_storage_path")
+        self._trace_gates = tracing_gates(config)
+
+    def _trace(self, operation: str, details: Optional[Dict[str, Any]] = None):
+        """App lifecycle spans are minimal-tier; no-op CM when tracing is off."""
+        if self.tp is None or not self._trace_gates.minimal:
+            return nullcontext()
+        return self.tp.span(
+            component=COMPONENT_APPS, operation=operation, details=details, reraise=True
+        )
 
     def get_platform_service(self):
         if not self.es:
@@ -450,12 +460,7 @@ class DataAppManager(DataAppRunner):
     def run_app(self, app_name: str) -> Any:
         """Run an app with full lifecycle management"""
         self.logger.info(f"DataAppManager.run_app() starting for app: {app_name}")
-        with self.tp.span(
-            component=COMPONENT_APPS,
-            operation="run",
-            details={"app_name": app_name},
-            reraise=True,
-        ):
+        with self._trace("run", {"app_name": app_name}):
             temp_dir = None
             try:
                 # Prepare app context
@@ -470,12 +475,7 @@ class DataAppManager(DataAppRunner):
 
                 # Install dependencies
                 self.logger.info(f"Step 2: Installing dependencies for: {app_name}")
-                with self.tp.span(
-                    component=COMPONENT_APPS,
-                    operation="install_dependencies",
-                    details={"app_name": app_name},
-                    reraise=True,
-                ):
+                with self._trace("install_dependencies", {"app_name": app_name}):
                     temp_dir = self._install_app_dependencies(
                         app_name, app_context.pypi_dependencies, app_context.lake_requirements
                     )
@@ -483,12 +483,7 @@ class DataAppManager(DataAppRunner):
 
                 # Load and execute app code
                 self.logger.info(f"Step 3: Loading app code for: {app_name}")
-                with self.tp.span(
-                    component=COMPONENT_APPS,
-                    operation="load_code",
-                    details={"app_name": app_name},
-                    reraise=True,
-                ):
+                with self._trace("load_code", {"app_name": app_name}):
                     code, loaded_entry_point = self._load_app_code(
                         app_name, app_context.config.entry_point
                     )
@@ -497,12 +492,7 @@ class DataAppManager(DataAppRunner):
                 )
 
                 self.logger.info(f"Step 4: Executing app code for: {app_name}")
-                with self.tp.span(
-                    component=COMPONENT_APPS,
-                    operation="execute_code",
-                    details={"app_name": app_name},
-                    reraise=True,
-                ):
+                with self._trace("execute_code", {"app_name": app_name}):
                     result = self._execute_app(app_name, code, loaded_entry_point)
                 self.logger.info(f"Step 4 complete: result_type={type(result)}")
 

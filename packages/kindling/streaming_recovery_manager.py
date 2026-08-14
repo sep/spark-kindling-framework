@@ -202,8 +202,8 @@ class StreamingRecoveryManager(SignalEmitter):
         initial_backoff=1.0,
         max_backoff=300.0,
         check_interval=5.0,
-        tp: Optional[SparkTraceProvider] = None,
-        config: Optional[ConfigService] = None,
+        tp: SparkTraceProvider = None,
+        config: ConfigService = None,
     ):
         """
         Initialize the streaming recovery manager.

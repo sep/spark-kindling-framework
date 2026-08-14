@@ -4,7 +4,6 @@ import uuid
 from contextlib import nullcontext
 from functools import reduce
 from pathlib import Path
-from typing import Optional
 
 from kindling.data_entities import *
 from kindling.data_pipes import *
@@ -101,8 +100,8 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         tp: SparkTraceProvider,
         lp: PythonLoggerProvider,
         provider_registry: EntityProviderRegistry,
-        signal_provider: Optional[SignalProvider] = None,
-        config: Optional[ConfigService] = None,
+        signal_provider: SignalProvider = None,
+        config: ConfigService = None,
     ):
         self.der = der
         self.ep = ep  # Legacy EntityProvider for backward compatibility

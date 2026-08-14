@@ -399,13 +399,18 @@ class EventBasedSparkTrace(SparkTraceProvider):
         start_details = self._add_timestamp_to_dict(live_details, "startTime", span.start_time)
         if span.parent_id is not None:
             start_details["parentSpanId"] = span.parent_id
-        self.emitter.emit_custom_event(
-            span.component,
-            f"{span.operation}_START",
-            start_details,
-            span.id,
-            span.traceId,
-        )
+        try:
+            self.emitter.emit_custom_event(
+                span.component,
+                f"{span.operation}_START",
+                start_details,
+                span.id,
+                span.traceId,
+            )
+        except Exception:
+            # A failing emitter must not break the caller of a manual span
+            # (e.g. the streaming listener's long-lived query span).
+            pass
 
         return span
 
@@ -419,13 +424,18 @@ class EventBasedSparkTrace(SparkTraceProvider):
         event_details = self._add_timestamp_to_dict(event_details, "eventTime", datetime.now())
         event_details = self._add_timestamp_to_dict(event_details, "spanStartTime", span.start_time)
 
-        self.emitter.emit_custom_event(
-            span.component,
-            f"{span.operation}_EVENT_{name}",
-            event_details,
-            span.id,
-            span.traceId,
-        )
+        try:
+            self.emitter.emit_custom_event(
+                span.component,
+                f"{span.operation}_EVENT_{name}",
+                event_details,
+                span.id,
+                span.traceId,
+            )
+        except Exception:
+            # A failing emitter must not break the caller (e.g. streaming
+            # query progress updates degrade to a no-op instead of raising).
+            pass
 
     def end_span(
         self,
@@ -438,26 +448,36 @@ class EventBasedSparkTrace(SparkTraceProvider):
             error_details = self._add_timestamp_to_dict({}, "startTime", span.start_time)
             error_details = self._add_timestamp_to_dict(error_details, "errorTime", span.end_time)
             error_details["exception"] = error
-            self.emitter.emit_custom_event(
-                span.component,
-                f"{span.operation}_ERROR",
-                error_details,
-                span.id,
-                span.traceId,
-            )
+            try:
+                self.emitter.emit_custom_event(
+                    span.component,
+                    f"{span.operation}_ERROR",
+                    error_details,
+                    span.id,
+                    span.traceId,
+                )
+            except Exception:
+                # A failing emitter must not replace/suppress the caller's
+                # own error handling for a manual span.
+                pass
 
         end_details = self._add_timestamp_to_dict({}, "startTime", span.start_time)
         end_details = self._add_timestamp_to_dict(end_details, "endTime", span.end_time)
         end_details["totalTime"] = self._calculate_time_diff(span.start_time, span.end_time)
         if span.parent_id is not None:
             end_details["parentSpanId"] = span.parent_id
-        self.emitter.emit_custom_event(
-            span.component,
-            f"{span.operation}_END",
-            end_details,
-            span.id,
-            span.traceId,
-        )
+        try:
+            self.emitter.emit_custom_event(
+                span.component,
+                f"{span.operation}_END",
+                end_details,
+                span.id,
+                span.traceId,
+            )
+        except Exception:
+            # A failing emitter must not break the caller of a manual span
+            # (e.g. the streaming listener's long-lived query span).
+            pass
 
     def record_span(
         self,
@@ -487,23 +507,33 @@ class EventBasedSparkTrace(SparkTraceProvider):
         start_details = self._add_timestamp_to_dict(live_details, "startTime", start_time)
         if span.parent_id is not None:
             start_details["parentSpanId"] = span.parent_id
-        self.emitter.emit_custom_event(
-            span.component, f"{span.operation}_START", start_details, span.id, span.traceId
-        )
+        try:
+            self.emitter.emit_custom_event(
+                span.component, f"{span.operation}_START", start_details, span.id, span.traceId
+            )
+        except Exception:
+            # A failing emitter must not break the caller of a recorded span.
+            pass
 
         if error:
             error_details = self._add_timestamp_to_dict(live_details, "startTime", start_time)
             error_details = self._add_timestamp_to_dict(error_details, "errorTime", end_time)
             error_details["exception"] = error
-            self.emitter.emit_custom_event(
-                span.component, f"{span.operation}_ERROR", error_details, span.id, span.traceId
-            )
+            try:
+                self.emitter.emit_custom_event(
+                    span.component, f"{span.operation}_ERROR", error_details, span.id, span.traceId
+                )
+            except Exception:
+                pass
 
         end_details = self._add_timestamp_to_dict(live_details, "startTime", start_time)
         end_details = self._add_timestamp_to_dict(end_details, "endTime", end_time)
         end_details["totalTime"] = self._calculate_time_diff(start_time, end_time)
         if span.parent_id is not None:
             end_details["parentSpanId"] = span.parent_id
-        self.emitter.emit_custom_event(
-            span.component, f"{span.operation}_END", end_details, span.id, span.traceId
-        )
+        try:
+            self.emitter.emit_custom_event(
+                span.component, f"{span.operation}_END", end_details, span.id, span.traceId
+            )
+        except Exception:
+            pass
