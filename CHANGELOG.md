@@ -64,10 +64,13 @@ All notable changes to spark-kindling are documented here.
   against a non-merge-capable provider** (gh#221):
   `kindling_ext_temporal.conditions.ingest_conditions()` called
   `provider_factory(entity).merge_to_entity(...)` unconditionally. It now
-  raises a clear `ValueError` naming the entity and provider type when the
-  resolved provider does not implement `merge_to_entity` (csv, parquet, sql,
-  adx today), matching the existing guard in
-  `simple_read_persist_strategy.py`.
+  raises a clear `ValueError` naming the entity and the concrete provider
+  implementation class when the resolved provider does not implement
+  `merge_to_entity` (csv, parquet, sql, adx today), matching the existing
+  guard in `simple_read_persist_strategy.py`. The message names the
+  provider's class rather than the entity's `provider_type` tag, since
+  that tag is always `"delta"` for `silver.conditions` regardless of the
+  actual provider resolved.
 
 ## [0.12.3] - 2026-07-29
 
