@@ -2,14 +2,13 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from injector import inject
 from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import DataPipesRegistry
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
-from pyspark.sql import Column, DataFrame
 
 from .entities import TemporalEntityResolver
 from .translation import TemporalPipeTranslator
@@ -18,6 +17,14 @@ from .validation import (
     ConditionValidationError,
     TemporalConditionValidator,
 )
+
+if TYPE_CHECKING:
+    # Deferred: the rest of kindling_ext_temporal keeps PySpark imports out of
+    # module scope so importing the extension in a non-Spark context doesn't
+    # hard-require pyspark. DataFrame/Column are only ever used here as
+    # annotations on ``DataConditions.register``'s callables (quoted below),
+    # never evaluated at runtime.
+    from pyspark.sql import Column, DataFrame
 
 
 @dataclass
@@ -325,8 +332,8 @@ class DataConditions:
         condition_id: str,
         consumes_event_type: List[str],
         subject_type: str,
-        enter_when: Callable[[DataFrame], Column],
-        exit_when: Callable[[DataFrame], Column],
+        enter_when: Callable[["DataFrame"], "Column"],
+        exit_when: Callable[["DataFrame"], "Column"],
         enabled: bool = True,
         valid_from: Optional[Any] = None,
         valid_to: Optional[Any] = None,
