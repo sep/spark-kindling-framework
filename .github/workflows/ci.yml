@@ -66,6 +66,18 @@ on:
         default: false
         type: boolean
 
+# Releasing pushes a version-bump commit to main (triggering a standard run
+# via the `push: branches: [main]` trigger above), then pushes a v* tag
+# pointing at that same commit (triggering a second, full release-flow run
+# via `push: tags: ["v*"]`). Both events share github.sha since the tag
+# points at the identical commit, so grouping concurrency by sha lets the
+# tag-triggered run cancel the now-redundant branch-triggered one instead of
+# both running the full suite back to back. Different commits always get
+# different groups, so this has no effect on normal per-commit CI.
+concurrency:
+  group: kindling-ci-${{ github.sha }}
+  cancel-in-progress: true
+
 env:
   PYTHON_VERSION: "3.11"
   REGISTRY: ghcr.io
