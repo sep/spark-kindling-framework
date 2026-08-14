@@ -39,11 +39,16 @@ from tests.system.test_helpers import (
 
 
 def _test_artifacts_storage_path() -> str:
-    """Construct the abfss:// path that matches where the test wheels are uploaded.
+    """Return an explicit artifacts root or the default wheel-upload path.
 
-    Uses the same storage account/container/base_path as the lake_test_wheels fixture
-    so the cloud app's artifacts_storage_path points at exactly the right location.
+    ``KINDLING_ARTIFACTS_STORAGE_PATH`` permits a UC Volume test against an
+    external Volume backed by the same storage location as the wheel fixture.
+    Without it, use the ABFSS path where the fixture uploads test wheels.
     """
+    explicit_path = os.getenv("KINDLING_ARTIFACTS_STORAGE_PATH", "").strip()
+    if explicit_path:
+        return explicit_path.rstrip("/")
+
     storage_account = os.getenv("AZURE_STORAGE_ACCOUNT", "")
     container = os.getenv("AZURE_CONTAINER", "artifacts")
     base_path = os.getenv("AZURE_BASE_PATH", "").rstrip("/")
@@ -259,6 +264,7 @@ def bfs_test_app(platform_client, lake_test_wheels):
         "app_name": app_name,
         "entry_point": "app.py",
         "test_id": suffix,
+        "artifacts_storage_path": artifacts_path,
         # Tell the running executor where to find lake packages.  This must
         # match the path where lake_test_wheels uploads the test wheels.
         "config_overrides": {"kindling": {"artifacts_storage_path": artifacts_path}},
