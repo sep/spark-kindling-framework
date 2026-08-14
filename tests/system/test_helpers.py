@@ -16,6 +16,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from kindling_sdk.env_config import (
+    get_env_config_overrides as _shared_get_env_config_overrides,
+)
+
 DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
     "InstrumentationKey=00000000-0000-0000-0000-000000000000;"
     "IngestionEndpoint=https://westus-0.in.applicationinsights.azure.com/"
@@ -115,16 +119,6 @@ def get_system_test_completion_timeout(default: float = 600.0) -> float:
     return float(
         _get_nonempty_env("KINDLING_SYSTEM_TEST_COMPLETION_TIMEOUT", "TEST_TIMEOUT") or str(default)
     )
-
-
-def _coerce_env_config_value(raw_value: str) -> Any:
-    """Coerce CONFIG__ env values to primitive Python types when obvious."""
-    lowered = raw_value.strip().lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    return raw_value
 
 
 def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -251,46 +245,11 @@ def get_env_config_overrides(platform_name: str) -> Dict[str, Any]:
     - CONFIG__platform_databricks__kindling__temp_path=/... (platform-specific)
 
     Platform-specific entries are only applied when the platform prefix matches.
+    Thin wrapper over the shared kindling_sdk.env_config implementation --
+    system tests read from the live process environment (os.environ), unlike
+    callers that parse an already-loaded mapping.
     """
-    platform_prefix = f"platform_{platform_name}"
-    overrides: Dict[str, Any] = {}
-    global_entries: List[tuple[List[str], Any]] = []
-    platform_entries: List[tuple[List[str], Any]] = []
-
-    for env_key, raw_value in os.environ.items():
-        if not env_key.startswith("CONFIG__"):
-            continue
-
-        path = env_key[len("CONFIG__") :]
-        parts = [part for part in path.split("__") if part]
-        if not parts:
-            continue
-
-        value = _coerce_env_config_value(raw_value)
-        first = parts[0]
-        if first.startswith("platform_"):
-            if first != platform_prefix:
-                continue
-            scoped_parts = parts[1:]
-            if scoped_parts:
-                platform_entries.append((scoped_parts, value))
-            continue
-
-        global_entries.append((parts, value))
-
-    # Apply global entries first, then matching platform-specific entries
-    # so platform overrides are deterministic regardless os.environ iteration order.
-    for parts, value in global_entries + platform_entries:
-        current = overrides
-        for part in parts[:-1]:
-            existing = current.get(part)
-            if not isinstance(existing, dict):
-                current[part] = {}
-            current = current[part]
-
-        current[parts[-1]] = value
-
-    return overrides
+    return _shared_get_env_config_overrides(os.environ, platform_name)
 
 
 def _remove_nested_key(config: Dict[str, Any], path: List[str]) -> None:

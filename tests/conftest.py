@@ -220,6 +220,24 @@ def pytest_collection_modifyitems(config, items):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.fixture(autouse=True)
+def _clear_config_env_overrides(monkeypatch):
+    """Isolate tests from CONFIG__* environment variables.
+
+    kindling_cli.cli._resolve_runtime_parameters (via kindling_sdk.env_config)
+    and the system-test harness both read CONFIG__-prefixed env vars as a
+    config base layer -- real by design (e.g. sourced from a dev .env file),
+    but that means any local dev environment with real CONFIG__* vars set
+    (common for anyone actively running Databricks/Fabric/Synapse system
+    tests) silently changes unrelated unit tests' behavior. Tests that
+    specifically want CONFIG__ vars present should set them explicitly via
+    monkeypatch.setenv within the test itself.
+    """
+    for key in list(os.environ):
+        if key.startswith("CONFIG__"):
+            monkeypatch.delenv(key, raising=False)
+
+
 @pytest.fixture(scope="session")
 def spark_session():
     """

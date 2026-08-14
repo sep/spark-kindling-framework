@@ -3611,11 +3611,33 @@ def app_deploy(
     )
 
 
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Deep merge dictionaries, with override values winning."""
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _resolve_runtime_parameters(
-    parameters_path: Optional[Path], param_overrides: Tuple[str, ...]
+    parameters_path: Optional[Path], param_overrides: Tuple[str, ...], platform: str = ""
 ) -> Dict[str, Any]:
-    """Load runtime parameters and apply repeatable dotted-key overrides."""
-    parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else {}
+    """Load runtime parameters and apply repeatable dotted-key overrides.
+
+    CONFIG__ environment variables (see kindling_sdk.env_config; e.g.
+    CONFIG__kindling__temp_path or CONFIG__platform_databricks__kindling__temp_path,
+    typically sourced from a shell .env file) form a base layer, so common
+    overrides don't need --param on every invocation. The parameters file
+    and --param values win over env vars when both set the same key.
+    """
+    from kindling_sdk.env_config import get_env_config_overrides
+
+    parameters = get_env_config_overrides(os.environ, platform)
+    file_parameters = _load_mapping_file(parameters_path, "parameters") if parameters_path else {}
+    parameters = _deep_merge_dict(parameters, file_parameters)
     for raw_param in param_overrides:
         if "=" not in raw_param:
             raise click.ClickException("--param values must use KEY=VALUE syntax.")
@@ -3653,7 +3675,7 @@ def _run_remote_app(
         raise click.ClickException("App name resolved to an empty string.")
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
-    parameters = _resolve_runtime_parameters(parameters_path, param_overrides)
+    parameters = _resolve_runtime_parameters(parameters_path, param_overrides, resolved_platform)
 
     try:
         _warn_if_runtime_outdated(_open_store(_resolve_destination()))
@@ -3806,7 +3828,7 @@ def _run_standalone_app(
     if quiet:
         run_env["KINDLING_LOG_LEVEL"] = "WARNING"
     run_env.pop("KINDLING_RUN_PARAMETERS", None)
-    parameters = _resolve_runtime_parameters(parameters_path, param_overrides)
+    parameters = _resolve_runtime_parameters(parameters_path, param_overrides, platform)
     if parameters:
         run_env["KINDLING_RUN_PARAMETERS"] = json.dumps(parameters)
 
