@@ -324,8 +324,30 @@ def test_resolve_artifacts_storage_path_raises_when_nothing_configured():
     api.base_path = None
     api.artifacts_path = None
 
-    with pytest.raises(ValueError, match="not configured"):
+    with pytest.raises(ValueError, match="not configured") as exc_info:
         api._resolve_artifacts_storage_path({}, "uc")
+
+    assert "KINDLING_ARTIFACTS_STORAGE_PATH" in str(exc_info.value)
+    assert "KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH" not in str(exc_info.value)
+
+
+def test_resolve_artifacts_storage_path_raises_mentions_classic_override_in_classic_mode(
+    monkeypatch,
+):
+    """In classic mode, the error should also point at the classic-specific override."""
+    api = DatabricksAPI.__new__(DatabricksAPI)
+    api.storage_account = None
+    api.container = None
+    api.base_path = None
+    api.artifacts_path = None
+    monkeypatch.delenv("KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH", raising=False)
+
+    with pytest.raises(ValueError, match="not configured") as exc_info:
+        api._resolve_artifacts_storage_path({}, "classic")
+
+    message = str(exc_info.value)
+    assert "KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH" in message
+    assert "KINDLING_ARTIFACTS_STORAGE_PATH" in message
 
 
 def test_resolve_python_file_uses_volumes_path_for_uc():

@@ -215,6 +215,15 @@ class DatabricksAPI(PlatformAPI):
                 return f"{base_url}/{self.base_path.strip('/')}"
             return base_url
 
+        if mode == "classic":
+            raise ValueError(
+                "Databricks artifacts location is not configured. Set "
+                "KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH, "
+                "KINDLING_ARTIFACTS_STORAGE_PATH (e.g. /Volumes/<catalog>/<schema>/"
+                "<volume>/kindling or abfss://...), or the legacy AZURE_STORAGE_ACCOUNT "
+                "(+ optional AZURE_CONTAINER, AZURE_BASE_PATH)."
+            )
+
         raise ValueError(
             "Databricks artifacts location is not configured. Set "
             "KINDLING_ARTIFACTS_STORAGE_PATH (e.g. /Volumes/<catalog>/<schema>/"
