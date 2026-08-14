@@ -773,6 +773,7 @@ def _memory_spark_session():
     )
     spark.sparkContext.setLogLevel("ERROR")
     yield spark
+    spark.stop()
 
 
 def test_ingest_conditions_end_to_end_against_memory_provider(_memory_spark_session, monkeypatch):
