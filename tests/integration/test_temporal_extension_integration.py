@@ -1067,6 +1067,7 @@ def test_ingest_conditions_raises_for_non_merge_capable_provider(spark):
     message = str(exc_info.value)
     assert "silver.conditions" in message
     assert "merge-capable provider" in message
+    assert f"{type(provider).__module__}.{type(provider).__qualname__}" in message
     assert provider.appended == []
 
 
