@@ -41,8 +41,36 @@ from kindling.file_ingestion import (
     ParallelizingFileIngestionProcessor,
 )
 from kindling.trace_ops import TracingGates
+from pyspark.sql import SparkSession
+
+from tests.conftest import _sockets_permitted
 
 pytestmark = [pytest.mark.integration]
+
+
+@pytest.fixture(scope="module")
+def spark_session():
+    """Plain (non-Delta) SparkSession, module-scoped and self-contained.
+
+    Shadows conftest.py's shared, session-scoped ``spark_session`` fixture
+    rather than requesting it -- see test_autoloader_schema_evolution.py's
+    identical fixture for why: these tests only need genuine Spark
+    DataFrames for a CSV read path, and the shared fixture stays alive for
+    the rest of the pytest process once instantiated, which corrupts later
+    plain-session fixtures elsewhere in the suite.
+    """
+    if not _sockets_permitted():
+        pytest.skip(
+            "Sockets are not permitted in this environment; cannot start a real SparkSession."
+        )
+    spark = (
+        SparkSession.builder.appName("AutoloaderIncrementalDiscoveryTests")
+        .master("local[2]")
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("ERROR")
+    yield spark
+    spark.stop()
 
 
 def _make_entry(patterns=None):
