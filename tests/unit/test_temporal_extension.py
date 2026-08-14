@@ -1105,6 +1105,27 @@ def test_condition_engine_pipe_params_registry_source_omits_conditions_current()
     assert params["output_entity_id"] == "silver.events"
 
 
+def test_condition_engine_pipe_params_table_source_requires_conditions_current_entity_id():
+    """``ConditionEngineMetadata.conditions_current_entity_id`` defaults to
+    ``None``; a table-sourced engine built without it must fail loudly here
+    instead of producing an ``input_entity_ids`` entry of ``None`` that only
+    crashes later, deep inside a ``.replace()`` call.
+    """
+    from kindling_ext_temporal import ConditionEngineMetadata, TemporalPipeTranslator
+
+    metadata = ConditionEngineMetadata(
+        engineid="static_conditions",
+        events_entity_id="silver.events",
+        condition_source="table",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="table-sourced condition engines require conditions_current_entity_id",
+    ):
+        TemporalPipeTranslator.condition_engine_pipe_params(metadata)
+
+
 def test_condition_engine_execute_registry_source_calls_execute_rules_directly():
     from kindling_ext_temporal import (
         ConditionEngineMetadata,
