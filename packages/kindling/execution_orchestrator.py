@@ -40,8 +40,8 @@ class ExecutionOrchestrator(SignalEmitter):
         generation_executor: GenerationExecutor,
         logger_provider: PythonLoggerProvider,
         signal_provider: SignalProvider = None,
-        tp: Optional[SparkTraceProvider] = None,
-        config: Optional[ConfigService] = None,
+        tp: SparkTraceProvider = None,
+        config: ConfigService = None,
     ):
         self.plan_generator = plan_generator
         self.generation_executor = generation_executor

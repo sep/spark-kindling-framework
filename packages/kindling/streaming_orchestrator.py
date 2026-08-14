@@ -80,8 +80,8 @@ class StreamingOrchestrator(SignalEmitter):
         recovery_manager: StreamingRecoveryManager,
         logger_provider: PythonLoggerProvider,
         signal_provider: SignalProvider = None,
-        tp: Optional[SparkTraceProvider] = None,
-        config: Optional[ConfigService] = None,
+        tp: SparkTraceProvider = None,
+        config: ConfigService = None,
     ):
         self.pipe_stream_starter = pipe_stream_starter
         self.query_manager = query_manager

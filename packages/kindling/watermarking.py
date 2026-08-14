@@ -182,10 +182,10 @@ class WatermarkManager(WatermarkService, SignalEmitter):
         ep: EntityProvider,
         wef: WatermarkEntityFinder,
         lp: PythonLoggerProvider,
-        signal_provider: Optional[SignalProvider] = None,
-        provider_registry: Optional[EntityProviderRegistry] = None,
-        tp: Optional[SparkTraceProvider] = None,
-        config: Optional[ConfigService] = None,
+        signal_provider: SignalProvider = None,
+        provider_registry: EntityProviderRegistry = None,
+        tp: SparkTraceProvider = None,
+        config: ConfigService = None,
     ):
         self.wef = wef
         self.ep = ep

@@ -1,7 +1,7 @@
 import time
 import uuid
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Dict
 
 from delta.tables import *
 from injector import Binder, Injector, inject, singleton
@@ -57,7 +57,7 @@ class StageProcessor(StageProcessingService, SignalEmitter):
         dep: DataPipesExecution,
         wef: WatermarkEntityFinder,
         tp: SparkTraceProvider,
-        signal_provider: Optional[SignalProvider] = None,
+        signal_provider: SignalProvider = None,
     ):
         self.wef = wef
         self.ep = ep
