@@ -252,8 +252,10 @@ not a single `.csv` file — merge them downstream if a single file is required.
 - `provider.maxEventsPerTrigger`: Max events per micro-batch (streaming only).
 - `provider.receiverTimeout`: Receiver timeout (ms).
 - `provider.operationTimeout`: Operation timeout (ms).
-- `provider.includeHeaders`: If true, include Kafka record headers as a
-  `headers` column (Kafka transport only).
+- `provider.kafka.<option>`: Any Kafka transport connector option, passed
+  through verbatim with the `kafka.` prefix stripped (e.g.
+  `provider.kafka.includeHeaders: true` includes Kafka record headers as a
+  `headers` column; Kafka transport only).
 
 ### Memory Provider (`provider_type: memory`)
 

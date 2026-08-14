@@ -191,7 +191,7 @@ def test_build_kafka_config_maps_eventhub_settings(provider):
     assert "EntityPath=my-hub" in kafka_config["kafka.sasl.jaas.config"]
 
 
-def test_build_kafka_config_maps_include_headers(provider):
+def test_build_kafka_config_passes_through_kafka_prefixed_options(provider):
     config = {
         "eventhub.connectionString": (
             "Endpoint=sb://example.servicebus.windows.net/;"
@@ -199,12 +199,14 @@ def test_build_kafka_config_maps_include_headers(provider):
             "SharedAccessKey=abc123;"
         ),
         "eventhub.name": "my-hub",
-        "includeHeaders": True,
+        "kafka.includeHeaders": True,
+        "kafka.minPartitions": 10,
     }
 
     kafka_config = provider._build_kafka_config(config, streaming=True)
 
     assert kafka_config["includeHeaders"] == "true"
+    assert kafka_config["minPartitions"] == "10"
 
 
 def test_build_kafka_config_omits_include_headers_when_unset(provider):

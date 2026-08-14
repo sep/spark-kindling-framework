@@ -119,6 +119,38 @@ class BaseEntityProvider(ABC):
                 return int(value)
         return value
 
+    @staticmethod
+    def _extract_prefixed_options(config: Dict[str, Any], prefix: str) -> Dict[str, str]:
+        """
+        Extract config entries under `{prefix}.` as connector options, prefix stripped.
+
+        For generic passthrough to an underlying connector (Spark reader/writer
+        options) that provider-specific config doesn't otherwise name explicitly --
+        e.g. provider.kafka.includeHeaders=true in entity tags becomes
+        config["kafka.includeHeaders"] = True via _get_provider_config(), and
+        _extract_prefixed_options(config, "kafka") returns
+        {"includeHeaders": "true"} ready to merge into a Kafka options dict.
+
+        Args:
+            config: Config dict, e.g. from _get_provider_config()
+            prefix: Prefix to match, without trailing dot (e.g. "kafka")
+
+        Returns:
+            Dict of stripped-key -> stringified-value for every entry under the prefix
+        """
+        full_prefix = f"{prefix}."
+
+        def _stringify(value: Any) -> str:
+            if isinstance(value, bool):
+                return "true" if value else "false"
+            return str(value)
+
+        return {
+            key[len(full_prefix) :]: _stringify(value)
+            for key, value in config.items()
+            if key.startswith(full_prefix) and len(key) > len(full_prefix)
+        }
+
 
 class StreamableEntityProvider(ABC):
     """

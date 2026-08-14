@@ -6,11 +6,13 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
-- **`provider.includeHeaders` for the Event Hub provider's Kafka transport**:
-  set to `true` to include Kafka record headers as a `headers` column,
-  matching the same "explicit `provider.*` tag, converted and applied as a
-  named connector option" convention already used for `startingPosition`/
-  `maxEventsPerTrigger`/`operationTimeout`.
+- **Generic `provider.kafka.<option>` passthrough for the Event Hub
+  provider's Kafka transport**: any tag under that prefix is forwarded
+  verbatim as a Kafka connector option (prefix stripped) instead of
+  requiring a named mapping per option — e.g. `provider.kafka.includeHeaders:
+  true` includes Kafka record headers as a `headers` column. Backed by a new
+  shared `BaseEntityProvider._extract_prefixed_options()` helper other
+  providers can reuse for the same pattern.
 
 ### Changed
 

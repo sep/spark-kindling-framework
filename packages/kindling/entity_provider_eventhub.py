@@ -247,9 +247,12 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             kafka_config["kafka.request.timeout.ms"] = timeout_ms
             kafka_config["kafka.session.timeout.ms"] = timeout_ms
 
-        include_headers = provider_config.get("includeHeaders")
-        if include_headers is not None:
-            kafka_config["includeHeaders"] = "true" if include_headers else "false"
+        # Generic passthrough: any provider.kafka.<option> tag is forwarded
+        # verbatim as a Kafka connector option (prefix stripped), e.g.
+        # provider.kafka.includeHeaders=true -> .option("includeHeaders", "true").
+        # This covers any Kafka reader/writer option without each one
+        # needing its own named mapping above.
+        kafka_config.update(self._extract_prefixed_options(provider_config, "kafka"))
 
         return kafka_config
 
