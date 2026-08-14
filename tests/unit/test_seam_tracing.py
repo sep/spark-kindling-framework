@@ -15,6 +15,34 @@ from kindling.injection import GlobalInjector
 from kindling.simple_read_persist_strategy import SimpleReadPersistStrategy
 from kindling.test_framework import RecordingTraceProvider
 from kindling.trace_ops import COMPONENT_PIPES, TracingGates
+from pyspark.sql import SparkSession
+
+from tests.conftest import _sockets_permitted
+
+
+@pytest.fixture(scope="module")
+def spark_session():
+    """Plain (non-Delta), module-scoped, self-contained SparkSession.
+
+    Deliberately shadows conftest.py's shared, session-scoped fixture rather
+    than requesting it: TestWatermarkSpans only needs an active SparkContext
+    for pyspark.sql.functions.col(...) to build a Column against a mocked
+    DataFrame, not a real Delta-capable session. Depending on the shared
+    fixture would leave it (and conftest's get_local_spark_session Delta
+    catalog config, which sets the DeltaCatalog class without loading the
+    Delta JAR) active for the rest of the process -- silently corrupting any
+    later plain-session fixture that reuses it via getOrCreate(). See
+    test_entity_provider_memory_scd2.py's module docstring for the same
+    hazard from the other direction.
+    """
+    if not _sockets_permitted():
+        pytest.skip(
+            "Sockets are not permitted in this environment; cannot start a real SparkSession."
+        )
+    spark = SparkSession.builder.appName("SeamTracingTests").master("local[2]").getOrCreate()
+    spark.sparkContext.setLogLevel("ERROR")
+    yield spark
+    spark.stop()
 
 
 class _MergeWritableProvider(BaseEntityProvider, WritableEntityProvider):
@@ -206,7 +234,12 @@ class TestWatermarkSpans:
             )
         return manager
 
-    def test_get_cursor_emits_span_with_ids(self):
+    def test_get_cursor_emits_span_with_ids(self, spark_session):
+        # get_cursor() builds a real pyspark.sql.functions.col(...) predicate
+        # against the (mocked) DataFrame, which needs an active SparkContext
+        # regardless of the DataFrame itself being a MagicMock. Request the
+        # shared fixture explicitly rather than relying on some earlier,
+        # unrelated test in the suite happening to leave a session active.
         tp = RecordingTraceProvider()
         manager = self._manager(tp)
         df = MagicMock()
@@ -242,7 +275,8 @@ class TestWatermarkSpans:
         assert span.closed
         assert "merge failed" in span.error
 
-    def test_no_spans_when_tp_absent(self):
+    def test_no_spans_when_tp_absent(self, spark_session):
+        # Same real-SparkContext dependency as test_get_cursor_emits_span_with_ids.
         manager = self._manager(None)
         df = MagicMock()
         df.isEmpty.return_value = True
