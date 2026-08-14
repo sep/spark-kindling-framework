@@ -1,9 +1,7 @@
 """Unit tests for signaling module."""
 
-# Import to ensure decorator runs
 import pytest
 
-import kindling.signaling  # noqa: F401
 from kindling.injection import GlobalInjector
 from kindling.signaling import (
     BlinkerSignalProvider,
@@ -17,10 +15,14 @@ from kindling.signaling import (
 def reset_injector():
     """Reset injector before each test."""
     GlobalInjector.reset()
-    # Re-import to re-register after reset
-    import importlib
-
-    importlib.reload(kindling.signaling)
+    # Re-apply the decorator directly to re-register BlinkerSignalProvider
+    # against the fresh injector. Avoid importlib.reload(kindling.signaling)
+    # here -- reloading replaces DataSignals/SignalProvider/etc. with
+    # brand-new class objects for the rest of the process, which silently
+    # breaks identity checks (e.g. isinstance/dict-key comparisons against a
+    # class imported before the reload) in any test that runs afterward in
+    # the same worker/process.
+    GlobalInjector.singleton_autobind()(BlinkerSignalProvider)
     yield
     GlobalInjector.reset()
 

@@ -8,7 +8,6 @@ These tests codify the expected runtime behavior:
 4. Kindling registers its custom secret loader during config setup.
 """
 
-import importlib
 import os
 import tempfile
 from pathlib import Path
@@ -328,8 +327,17 @@ class TestSecretLoaderRegistration:
         os.environ.pop("LOADERS_FOR_DYNACONF", None)
 
         import kindling.spark_config as spark_config_module
+        from kindling.spark_config import DynaconfConfig
 
-        importlib.reload(spark_config_module)
+        # Re-apply the decorator directly to re-register DynaconfConfig
+        # against the fresh injector (setup_method calls GlobalInjector.reset()
+        # above, which drops the binding singleton_autobind made at
+        # kindling.spark_config's original import time). Avoid
+        # importlib.reload(spark_config_module) here: reloading replaces
+        # ConfigService/DynaconfConfig with brand-new class objects for the
+        # rest of the process, silently breaking identity checks in any test
+        # that runs afterward in the same worker/process.
+        GlobalInjector.singleton_autobind()(DynaconfConfig)
         with (
             patch.object(
                 spark_config_module, "get_or_create_spark_session", return_value=MagicMock()

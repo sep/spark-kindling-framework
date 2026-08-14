@@ -73,13 +73,14 @@ class TestDynaconfConfigInitialization:
 
     def test_dynaconf_config_has_singleton_decorator(self):
         """Test that DynaconfConfig is decorated with singleton_autobind"""
-        # Re-import to re-register decorators after clearing injector
-        import importlib
-
-        import kindling.spark_config
-
-        importlib.reload(kindling.spark_config)
-        from kindling.spark_config import ConfigService, DynaconfConfig
+        # Re-apply the decorator directly to re-register DynaconfConfig
+        # against the current injector, rather than importlib.reload()-ing
+        # kindling.spark_config: reloading replaces ConfigService/
+        # DynaconfConfig with brand-new class objects for the rest of the
+        # process, which silently breaks identity checks (e.g. dict keys
+        # built from a fresh import) in any test that runs afterward in the
+        # same worker/process.
+        GlobalInjector.singleton_autobind()(DynaconfConfig)
 
         # Get two instances via GlobalInjector
         config1 = GlobalInjector.get(ConfigService)
