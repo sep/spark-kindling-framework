@@ -165,7 +165,12 @@ def _memory_scd2_merge(
         ).withColumn(cfg.is_current_column, lit(False))
 
     closed_versions_from_deletes = None
-    if deletes_df is not None:
+    if deletes_df is not None and not cfg.close_on_missing:
+        # Mirrors DeltaEntityProvider._execute_scd2_merge: delete_when is
+        # documented as change-feed only. Under close_on_missing (snapshot)
+        # semantics, a deleted key is simply absent from upserts_df and is
+        # already closed by closed_versions_from_missing above; closing it
+        # again here would double-close the same key.
         delete_match = deletes_df.alias("source").join(
             current_rows.alias("target"), on=business_keys, how="inner"
         )
