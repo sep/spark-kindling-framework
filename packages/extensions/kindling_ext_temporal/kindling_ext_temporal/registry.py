@@ -16,6 +16,7 @@ from .validation import (
     ConditionRule,
     ConditionValidationError,
     TemporalConditionValidator,
+    _normalize_event_types,
 )
 
 if TYPE_CHECKING:
@@ -356,9 +357,14 @@ class DataConditions:
             raise ConditionValidationError("condition_id is required")
         if not subject_type or not subject_type.strip():
             raise ConditionValidationError("subject_type is required")
-        if not consumes_event_type:
+        # Same strip/dedupe/reject-empty normalization the table-backed path
+        # applies via ConditionRule.from_row -- otherwise e.g. [" "] would
+        # pass the truthiness check below and register a condition that
+        # consumes an effectively empty event type.
+        normalized_event_types = _normalize_event_types(consumes_event_type)
+        if not normalized_event_types:
             raise ConditionValidationError(
-                "consumes_event_type must contain at least one event type"
+                "consumes_event_type must contain at least one non-empty event type"
             )
         if not callable(enter_when):
             raise ConditionValidationError("enter_when must be callable")
@@ -367,7 +373,7 @@ class DataConditions:
 
         rule = ConditionRule(
             condition_id=condition_id,
-            consumes_event_type=list(consumes_event_type),
+            consumes_event_type=normalized_event_types,
             subject_type=subject_type,
             parameters={"enter_when": enter_when, "exit_when": exit_when},
             enabled=enabled,
