@@ -4,6 +4,15 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Changed
+
+- **`kindling.bootstrap.load_workspace_packages` now defaults to `false` on
+  every platform**, not just `standalone`. Previously fabric/synapse/
+  databricks defaulted to `true`, silently scanning and loading
+  workspace/notebook packages during bootstrap unless an app explicitly
+  opted out. Apps that rely on workspace-package loading must now set
+  `kindling.bootstrap.load_workspace_packages: true` explicitly.
+
 ### Fixed
 
 - **Databricks SDK job submission ignored `KINDLING_ARTIFACTS_STORAGE_PATH`**

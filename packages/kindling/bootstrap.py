@@ -815,7 +815,7 @@ default:
 
     bootstrap:
       load_lake: false
-      load_workspace_packages: true
+      load_workspace_packages: false
       required_packages: []
       extensions: []
       ignored_folders: []
@@ -1678,6 +1678,7 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
     resolve the concrete class keep working.
     """
     from injector import singleton
+
     from kindling.plain_telemetry import (
         PlainPythonLoggerProvider,
         PlainPythonTraceProvider,
@@ -1987,7 +1988,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             except Exception as secret_resolution_error:
                 logger.warning(f"Secret resolution pass failed: {secret_resolution_error}")
 
-        load_workspace_packages_default = False if platform == "standalone" else True
+        load_workspace_packages_default = False
         load_workspace_packages_value = config_service.get(
             "kindling.bootstrap.load_workspace_packages"
         )
