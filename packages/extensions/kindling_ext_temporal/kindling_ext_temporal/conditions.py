@@ -261,11 +261,11 @@ def ingest_conditions(
         ]
         valid_df = conditions_df.sparkSession.createDataFrame(stamped, conditions_entity_schema())
         provider = provider_factory(entity)
-        if not hasattr(provider, "merge_to_entity"):
-            provider_type = (entity.tags or {}).get("provider_type", "unknown")
+        if not callable(getattr(provider, "merge_to_entity", None)):
+            provider_class = f"{type(provider).__module__}.{type(provider).__qualname__}"
             raise ValueError(
                 f"Entity '{entity.entityid}': ingest_conditions() requires a "
-                f"merge-capable provider, but provider '{provider_type}' does "
+                f"merge-capable provider, but provider '{provider_class}' does "
                 "not support merge operations"
             )
         provider.merge_to_entity(valid_df, entity)
