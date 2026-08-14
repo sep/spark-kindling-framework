@@ -326,7 +326,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
         run: |
-          poe test-unit-ci
+          poe test-unit-ci --workers "${KINDLING_UNIT_TEST_CI_WORKERS:-4}"
 
       - name: Create output directory for backwards compatibility
         run: mkdir -p output && cp -r htmlcov test-results/unit-test-results.xml output/ 2>/dev/null || true
@@ -409,7 +409,7 @@ jobs:
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
           AZURE_BASE_PATH: ci-tests/${{ github.run_id }}
         run: |
-          poe test-integration-ci
+          poe test-integration-ci --workers "${KINDLING_INTEGRATION_TEST_CI_WORKERS:-4}"
 
       - name: Upload integration test results
         uses: actions/upload-artifact@v4

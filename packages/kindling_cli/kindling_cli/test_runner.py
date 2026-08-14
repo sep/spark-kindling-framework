@@ -150,6 +150,18 @@ def build_pytest_args(options: TestRunOptions) -> List[str]:
     if workers and workers not in {"0", "1"}:
         ensure_xdist_available(workers)
         args.extend(["-n", workers])
+        if options.suite in {"unit", "integration"}:
+            # Several unit/integration test files self-register a provider
+            # (or similar module-level side effect) at first import inside
+            # one test, then rely on a plain import hitting sys.modules'
+            # cache in later tests in the same file (e.g.
+            # test_cosmos_entity_provider_extension.py,
+            # test_adx_entity_provider_extension.py). Default `-n` load
+            # balancing can split those tests across workers/processes with
+            # no shared sys.modules cache, breaking that implicit ordering.
+            # loadscope keeps every test from one file on the same worker,
+            # so within-file execution order matches a serial run.
+            args.extend(["--dist", "loadscope"])
 
     args.extend(options.pytest_args)
     return args
