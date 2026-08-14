@@ -226,8 +226,8 @@ class DataAppDeployer(SignalEmitter):
         platform_provider: PlatformServiceProvider,
         logger_provider: PythonLoggerProvider,
         signal_provider: Optional[SignalProvider] = None,
-        tp: Optional[SparkTraceProvider] = None,
-        config: Optional[ConfigService] = None,
+        tp: SparkTraceProvider = None,
+        config: ConfigService = None,
     ):
         """Initialize deployer with injected dependencies
 
