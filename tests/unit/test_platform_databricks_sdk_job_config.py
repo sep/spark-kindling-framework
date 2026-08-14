@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
 from kindling_sdk.platform_databricks import DatabricksAPI
 
 
@@ -249,3 +250,140 @@ def test_submit_app_run_delegates_to_one_time_run():
     submit_call = api._client.jobs.submit.call_args
     assert submit_call.kwargs["run_name"] == "kindling-adhoc-myapp"
     assert run_id == "67890"
+
+
+# --- gh#216: KINDLING_ARTIFACTS_STORAGE_PATH (Volumes) support ---
+
+
+def test_from_env_resolves_volumes_artifacts_path(monkeypatch):
+    """from_env() reads KINDLING_ARTIFACTS_STORAGE_PATH into artifacts_path."""
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    monkeypatch.setenv("KINDLING_ARTIFACTS_STORAGE_PATH", "/Volumes/cat/schema/vol/kindling")
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT", raising=False)
+
+    with patch("databricks.sdk.WorkspaceClient"):
+        api = DatabricksAPI.from_env()
+
+    assert api.artifacts_path == "/Volumes/cat/schema/vol/kindling"
+
+
+def test_from_env_artifacts_path_none_when_unconfigured(monkeypatch):
+    """from_env() leaves artifacts_path None (and doesn't raise) when unset."""
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    monkeypatch.delenv("KINDLING_ARTIFACTS_STORAGE_PATH", raising=False)
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT", raising=False)
+
+    with patch("databricks.sdk.WorkspaceClient"):
+        api = DatabricksAPI.from_env()
+
+    assert api.artifacts_path is None
+
+
+def test_from_env_legacy_azure_storage_account_unaffected(monkeypatch):
+    """Regression guard: AZURE_STORAGE_ACCOUNT-only setups are untouched by this fix."""
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "mystorageaccount")
+    monkeypatch.delenv("KINDLING_ARTIFACTS_STORAGE_PATH", raising=False)
+
+    with patch("databricks.sdk.WorkspaceClient"):
+        api = DatabricksAPI.from_env()
+
+    assert api.artifacts_path is None
+    assert api.storage_account == "mystorageaccount"
+
+
+def test_resolve_artifacts_storage_path_prefers_artifacts_path_over_legacy_triple():
+    """KINDLING_ARTIFACTS_STORAGE_PATH wins over the legacy abfss synthesis."""
+    api = _make_api()
+    api.artifacts_path = "/Volumes/cat/schema/vol/kindling"
+
+    path = api._resolve_artifacts_storage_path({}, "uc")
+
+    assert path == "/Volumes/cat/schema/vol/kindling"
+
+
+def test_resolve_artifacts_storage_path_missing_attribute_falls_back(monkeypatch):
+    """Test doubles that never set .artifacts_path must not raise AttributeError."""
+    api = _make_api()
+    monkeypatch.delenv("AZURE_STORAGE_DFS_ENDPOINT_SUFFIX", raising=False)
+    monkeypatch.delenv("AZURE_CLOUD", raising=False)
+
+    path = api._resolve_artifacts_storage_path({}, "uc")
+
+    assert (
+        path
+        == "abfss://artifacts@mystorageaccount.dfs.core.windows.net/system-tests/run-123/databricks"
+    )
+
+
+def test_resolve_artifacts_storage_path_raises_when_nothing_configured():
+    """No explicit path, no artifacts_path, no legacy triple -> actionable error, not a bare literal."""
+    api = DatabricksAPI.__new__(DatabricksAPI)
+    api.storage_account = None
+    api.container = None
+    api.base_path = None
+    api.artifacts_path = None
+
+    with pytest.raises(ValueError, match="not configured") as exc_info:
+        api._resolve_artifacts_storage_path({}, "uc")
+
+    assert "KINDLING_ARTIFACTS_STORAGE_PATH" in str(exc_info.value)
+    assert "KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH" not in str(exc_info.value)
+
+
+def test_resolve_artifacts_storage_path_raises_mentions_classic_override_in_classic_mode(
+    monkeypatch,
+):
+    """In classic mode, the error should also point at the classic-specific override."""
+    api = DatabricksAPI.__new__(DatabricksAPI)
+    api.storage_account = None
+    api.container = None
+    api.base_path = None
+    api.artifacts_path = None
+    monkeypatch.delenv("KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH", raising=False)
+
+    with pytest.raises(ValueError, match="not configured") as exc_info:
+        api._resolve_artifacts_storage_path({}, "classic")
+
+    message = str(exc_info.value)
+    assert "KINDLING_DATABRICKS_CLASSIC_ARTIFACTS_PATH" in message
+    assert "KINDLING_ARTIFACTS_STORAGE_PATH" in message
+
+
+def test_resolve_python_file_uses_volumes_path_for_uc():
+    """_resolve_python_file has no abfss-only assumption -- a Volumes root works too."""
+    api = _make_api()
+
+    python_file = api._resolve_python_file(
+        main_file="kindling_bootstrap.py",
+        job_config={},
+        mode="uc",
+        artifacts_storage_path="/Volumes/cat/schema/vol/kindling",
+    )
+
+    assert python_file == "/Volumes/cat/schema/vol/kindling/scripts/kindling_bootstrap.py"
+
+
+def test_submit_one_time_run_produces_valid_volumes_python_file():
+    """End-to-end regression guard for the reported bug: a Volumes-only config must
+    produce a valid, non-bare python_file for jobs.submit()."""
+    api = DatabricksAPI.__new__(DatabricksAPI)
+    api.storage_account = None
+    api.container = None
+    api.base_path = None
+    api.artifacts_path = "/Volumes/cat/schema/vol/kindling"
+    api.workspace_url = "https://adb-123.azuredatabricks.net"
+    api.default_cluster_id = None
+    api._client = MagicMock()
+    api._client.jobs.submit.return_value = MagicMock(run_id=555)
+    api._job_mapping = {}
+
+    run_id = api._submit_one_time_run("myapp", {})
+
+    submit_call = api._client.jobs.submit.call_args
+    tasks = submit_call.kwargs["tasks"]
+    assert (
+        tasks[0].spark_python_task.python_file
+        == "/Volumes/cat/schema/vol/kindling/scripts/kindling_bootstrap.py"
+    )
+    assert run_id == "555"
