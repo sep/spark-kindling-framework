@@ -29,6 +29,24 @@ from kindling.streaming_recovery_manager import (
     StreamingRecoveryManager,
 )
 
+
+def _wait_until(condition, timeout=2.0, interval=0.02):
+    """Poll `condition` (a zero-arg callable) until it returns truthy or
+    `timeout` elapses. Recovery attempts run on a background thread, so a
+    fixed `time.sleep()` races the thread's own check_interval poll loop --
+    tight margins (e.g. a 0.2s sleep against a 0.1s check_interval) pass
+    reliably on an idle machine but flake under CI/xdist load. Returns the
+    last (falsy) value on timeout so callers still get a normal assertion
+    failure rather than a bare timeout error.
+    """
+    deadline = time.time() + timeout
+    result = condition()
+    while not result and time.time() < deadline:
+        time.sleep(interval)
+        result = condition()
+    return result
+
+
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -605,8 +623,8 @@ class TestRecoveryManagerIntegration:
             state.restart_function = Mock()
             state.next_attempt_time = dt.datetime.now() - dt.timedelta(seconds=1)
 
-            # Wait for recovery attempt
-            time.sleep(0.2)
+            # Wait for the background recovery thread to attempt and succeed
+            _wait_until(lambda: state.restart_function.call_count >= 1)
 
             # Should have attempted and succeeded
             assert state.restart_function.call_count >= 1
@@ -637,8 +655,8 @@ class TestRecoveryManagerIntegration:
             state.initial_backoff = 0.05  # Fast backoff for testing
             state.next_attempt_time = dt.datetime.now() - dt.timedelta(seconds=1)
 
-            # Wait for all retry attempts
-            time.sleep(1.0)
+            # Wait for all retry attempts to exhaust
+            _wait_until(lambda: "test-query" in recovery_manager._dead_letter, timeout=3.0)
 
             # Should have exhausted retries and moved to dead letter
             assert "test-query" not in recovery_manager._recovery_states
@@ -670,8 +688,8 @@ class TestRecoveryManagerIntegration:
                 state.restart_function = Mock()
                 state.next_attempt_time = dt.datetime.now() - dt.timedelta(seconds=1)
 
-            # Wait for recovery attempts
-            time.sleep(0.3)
+            # Wait for all recovery attempts to succeed
+            _wait_until(lambda: len(recovery_manager._recovery_states) == 0)
 
             # All should have succeeded
             assert len(recovery_manager._recovery_states) == 0
