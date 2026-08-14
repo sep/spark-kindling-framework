@@ -254,14 +254,20 @@ class DatabricksAPI(PlatformAPI):
         if explicit_python_file:
             return explicit_python_file
 
-        if mode == "classic":
-            explicit_bootstrap_root = (
-                str(job_config.get("bootstrap_script_root") or "").strip()
-                or str(os.getenv("KINDLING_DATABRICKS_CLASSIC_BOOTSTRAP_ROOT") or "").strip()
-            )
-            if explicit_bootstrap_root:
-                return f"{explicit_bootstrap_root.rstrip('/')}/scripts/{main_file}"
+        # Applies regardless of classic vs. UC mode: the bootstrap script
+        # itself may need to live somewhere other than the artifacts
+        # location (e.g. a Databricks Workspace path) when that location is
+        # a UC Volume, since Volumes aren't mounted until the Spark session
+        # starts -- the job can't read the bootstrap script from there
+        # before the cluster is even up.
+        explicit_bootstrap_root = (
+            str(job_config.get("bootstrap_script_root") or "").strip()
+            or str(os.getenv("KINDLING_DATABRICKS_CLASSIC_BOOTSTRAP_ROOT") or "").strip()
+        )
+        if explicit_bootstrap_root:
+            return f"{explicit_bootstrap_root.rstrip('/')}/scripts/{main_file}"
 
+        if mode == "classic":
             if self.storage_account and self.container:
                 base_url = azure_abfss_uri(self.container, self.storage_account)
                 if self.base_path:

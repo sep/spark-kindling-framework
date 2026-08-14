@@ -101,6 +101,38 @@ def test_resolve_python_file_honors_explicit_classic_bootstrap_root(monkeypatch)
     assert python_file == "dbfs:/mnt/artifacts/scripts/kindling_bootstrap.py"
 
 
+def test_resolve_python_file_honors_bootstrap_root_in_uc_mode(monkeypatch):
+    # The bootstrap script may need to live outside the artifacts location
+    # (e.g. a Databricks Workspace path) when that location is a UC Volume,
+    # since Volumes aren't mounted until the Spark session starts. The
+    # override must apply regardless of classic vs. UC mode.
+    api = _make_api()
+    monkeypatch.setenv("KINDLING_DATABRICKS_CLASSIC_BOOTSTRAP_ROOT", "/Workspace/kindling")
+
+    python_file = api._resolve_python_file(
+        main_file="kindling_bootstrap.py",
+        job_config={},
+        mode="uc",
+        artifacts_storage_path="/Volumes/main/kindling/artifacts",
+    )
+
+    assert python_file == "/Workspace/kindling/scripts/kindling_bootstrap.py"
+
+
+def test_resolve_python_file_job_config_bootstrap_root_wins_over_env_in_uc_mode(monkeypatch):
+    api = _make_api()
+    monkeypatch.setenv("KINDLING_DATABRICKS_CLASSIC_BOOTSTRAP_ROOT", "/Workspace/env-default")
+
+    python_file = api._resolve_python_file(
+        main_file="kindling_bootstrap.py",
+        job_config={"bootstrap_script_root": "/Workspace/explicit"},
+        mode="uc",
+        artifacts_storage_path="/Volumes/main/kindling/artifacts",
+    )
+
+    assert python_file == "/Workspace/explicit/scripts/kindling_bootstrap.py"
+
+
 def test_resolve_python_file_uses_abfss_for_uc():
     api = _make_api()
 
