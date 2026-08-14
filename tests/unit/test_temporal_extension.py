@@ -932,7 +932,7 @@ def test_data_conditions_register_requires_consumes_event_type():
     ):
         with pytest.raises(
             ConditionValidationError,
-            match="consumes_event_type must contain at least one event type",
+            match="consumes_event_type must contain at least one non-empty event type",
         ):
             DataConditions.register(
                 condition_id="condition.overheat",
@@ -941,6 +941,58 @@ def test_data_conditions_register_requires_consumes_event_type():
                 enter_when=lambda events: events,
                 exit_when=lambda events: events,
             )
+
+
+def test_data_conditions_register_rejects_effectively_empty_event_types():
+    """Whitespace-only entries must be rejected, not silently accepted.
+
+    Table-backed rules normalize/strip/dedupe event types via
+    ``ConditionRule.from_row`` -- registry-declared rules must reject the
+    same effectively-empty values (e.g. a single blank string) rather than
+    passing a bare truthiness check and registering a condition that
+    consumes an empty event type.
+    """
+    from kindling_ext_temporal import ConditionValidationError, DataConditions
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(condition_registry=_condition_registry()),
+    ):
+        with pytest.raises(
+            ConditionValidationError,
+            match="consumes_event_type must contain at least one non-empty event type",
+        ):
+            DataConditions.register(
+                condition_id="condition.overheat",
+                consumes_event_type=[" "],
+                subject_type="machine",
+                enter_when=lambda events: events,
+                exit_when=lambda events: events,
+            )
+
+
+def test_data_conditions_register_normalizes_event_types():
+    """Duplicate/whitespace-padded event types are deduped and stripped,
+    mirroring the table-backed path's ``ConditionRule.from_row`` behavior.
+    """
+    from kindling_ext_temporal import DataConditions
+
+    condition_registry = _condition_registry()
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(condition_registry=condition_registry),
+    ):
+        DataConditions.register(
+            condition_id="condition.overheat",
+            consumes_event_type=[" telemetry.observed ", "telemetry.observed", "telemetry.alert"],
+            subject_type="machine",
+            enter_when=lambda events: events,
+            exit_when=lambda events: events,
+        )
+
+    rule = condition_registry.get_condition_definition("condition.overheat")
+    assert rule.consumes_event_type == ["telemetry.observed", "telemetry.alert"]
 
 
 def test_data_conditions_register_requires_callable_enter_when():
