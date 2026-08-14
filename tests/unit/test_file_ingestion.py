@@ -193,6 +193,43 @@ def test_build_df_plan_no_match_returns_none():
     assert result is None
 
 
+# ── enrich_file_dataframe (standalone helper) ────────────────────────────────
+
+
+def test_enrich_file_dataframe_isolated_from_spark_read_path():
+    """No SparkSession, no .read, no processor instance -- just a DataFrame-like
+    object and plain dicts, proving the helper is reusable from a future
+    foreachBatch callback."""
+    from kindling.file_ingestion import enrich_file_dataframe
+
+    mock_df = MagicMock()
+    mock_df.withColumn.return_value = mock_df
+
+    with patch("kindling.file_ingestion.lit", side_effect=lambda v: f"LIT({v})"):
+        with patch("kindling.file_ingestion.current_timestamp", return_value="NOW"):
+            result = enrich_file_dataframe(
+                mock_df,
+                named_groups={"filetype": "csv"},
+                static_values={"region": "eu"},
+            )
+
+    assert result is mock_df
+    assert _captured_columns(mock_df) == ["filetype", "region", "ingestion_timestamp"]
+
+
+def test_enrich_file_dataframe_no_static_values_skips_that_step():
+    from kindling.file_ingestion import enrich_file_dataframe
+
+    mock_df = MagicMock()
+    mock_df.withColumn.return_value = mock_df
+
+    with patch("kindling.file_ingestion.lit", side_effect=lambda v: f"LIT({v})"):
+        with patch("kindling.file_ingestion.current_timestamp", return_value="NOW"):
+            enrich_file_dataframe(mock_df, named_groups={"filetype": "csv"}, static_values=None)
+
+    assert _captured_columns(mock_df) == ["filetype", "ingestion_timestamp"]
+
+
 # ── FileIngestionEntries.entry() ─────────────────────────────────────────────
 
 
@@ -237,6 +274,146 @@ def test_entry_decorator_omitting_static_values_stores_none():
     assert entry.static_values is None
 
 
+# ── FileIngestionEntries.entry() discovery-field validation ─────────────────
+#
+# Unlike the tests above (which call FileIngestionManager.register_entry
+# directly), these exercise FileIngestionEntries.entry() itself -- the
+# classmethod that actually validates the "discovery" field and its
+# source_glob dependency before handing off to the registry.
+
+
+def _entries_kwargs(**overrides):
+    kwargs = dict(
+        entry_id="e1",
+        name="test entry",
+        patterns=[r".*\.csv"],
+        dest_entity_id="my_entity",
+        tags={},
+        filetype="csv",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_entries_entry_rejects_invalid_discovery_value(monkeypatch):
+    from kindling.file_ingestion import FileIngestionEntries
+
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", MagicMock())
+
+    with pytest.raises(ValueError, match="invalid discovery"):
+        FileIngestionEntries.entry(**_entries_kwargs(discovery="streaming"))
+
+
+def test_entries_entry_autoloader_requires_source_glob(monkeypatch):
+    from kindling.file_ingestion import FileIngestionEntries
+
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", MagicMock())
+
+    with pytest.raises(ValueError, match="requires an explicit source_glob"):
+        FileIngestionEntries.entry(**_entries_kwargs(discovery="autoloader"))
+
+
+def test_entries_entry_autoloader_with_source_glob_registers_successfully(monkeypatch):
+    from kindling.file_ingestion import FileIngestionEntries
+
+    mock_registry = MagicMock()
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", mock_registry)
+
+    FileIngestionEntries.entry(
+        **_entries_kwargs(
+            discovery="autoloader",
+            source_glob="*.csv",
+            schema_evolution_mode="addNewColumns",
+        )
+    )
+
+    mock_registry.register_entry.assert_called_once()
+    args, kwargs = mock_registry.register_entry.call_args
+    assert args[0] == "e1"
+    assert kwargs["dest_entity_id"] == "my_entity"
+    assert kwargs["discovery"] == "autoloader"
+    assert kwargs["source_glob"] == "*.csv"
+    assert kwargs["schema_evolution_mode"] == "addNewColumns"
+    assert "entry_id" not in kwargs
+
+
+def test_entries_entry_omitting_discovery_defaults_to_batch_and_needs_no_source_glob(monkeypatch):
+    """Existing (pre-autoloader) callers that never pass discovery/source_glob
+    must keep registering exactly as they did before -- regression-safe
+    default."""
+    from kindling.file_ingestion import FileIngestionEntries
+
+    mock_registry = MagicMock()
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", mock_registry)
+
+    FileIngestionEntries.entry(**_entries_kwargs())
+
+    args, kwargs = mock_registry.register_entry.call_args
+    assert args[0] == "e1"
+    assert kwargs["discovery"] == "batch"
+    assert kwargs["source_glob"] is None
+    assert kwargs["schema_evolution_mode"] is None
+
+
+# ── schema_evolution_mode ─────────────────────────────────────────────────────
+
+
+def test_metadata_schema_evolution_mode_defaults_to_none():
+    from kindling.file_ingestion import FileIngestionMetadata
+
+    m = FileIngestionMetadata(
+        entry_id="e1",
+        name="test",
+        patterns=[".*\\.csv"],
+        dest_entity_id="my_entity",
+        tags={},
+    )
+    assert m.schema_evolution_mode is None
+
+
+def test_entry_decorator_accepts_schema_evolution_mode_without_error():
+    from kindling.file_ingestion import FileIngestionManager
+
+    mgr = FileIngestionManager.__new__(FileIngestionManager)
+    mgr.logger = MagicMock()
+    mgr.registry = {}
+
+    mgr.register_entry(
+        "e1",
+        name="my entry",
+        patterns=[".*\\.csv"],
+        dest_entity_id="my_entity",
+        tags={},
+        discovery="autoloader",
+        source_glob="*.csv",
+        schema_evolution_mode="addNewColumns",
+    )
+
+    entry = mgr.get_entry_definition("e1")
+    assert entry.schema_evolution_mode == "addNewColumns"
+
+
+def test_entry_decorator_omitting_schema_evolution_mode_stores_none():
+    from kindling.file_ingestion import FileIngestionManager
+
+    mgr = FileIngestionManager.__new__(FileIngestionManager)
+    mgr.logger = MagicMock()
+    mgr.registry = {}
+
+    mgr.register_entry(
+        "e2",
+        name="another entry",
+        patterns=[".*\\.csv"],
+        dest_entity_id="other_entity",
+        tags={},
+        discovery="autoloader",
+        source_glob="*.csv",
+    )
+
+    entry = mgr.get_entry_definition("e2")
+    assert entry.schema_evolution_mode is None
+
+
 def test_process_path_disabled_tracing_emits_no_spans():
     """kindling.telemetry.tracing.enabled=false suppresses the process span."""
     from kindling.file_ingestion import ParallelizingFileIngestionProcessor
@@ -251,6 +428,8 @@ def test_process_path_disabled_tracing_emits_no_spans():
     proc.config.get.return_value = 3
     proc.env = MagicMock()
     proc.env.list.return_value = []
+    proc.fir = MagicMock()
+    proc.fir.get_entry_ids.return_value = []
 
     proc.process_path("/data")
 

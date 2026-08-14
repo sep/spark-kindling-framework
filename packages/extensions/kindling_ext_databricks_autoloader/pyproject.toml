@@ -1,0 +1,27 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "spark-kindling-ext-databricks-autoloader"
+version = "0.1.0"
+description = "Databricks Auto Loader (cloudFiles) discovery extension for Kindling file ingestion"
+authors = ["SEP Engineering <engineering@sep.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [
+    {include = "kindling_ext_databricks_autoloader"},
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+# cloudFiles is a Databricks-runtime Spark option, not a separate Python
+# SDK -- this extension only needs core kindling, not
+# spark-kindling-ext-databricks (that package is the unrelated Lakeflow
+# SDP adapter; see plans/autoloader-file-ingestion/implementation-plan.md
+# Decision Addendum #1).
+spark-kindling = ">=0.10.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+black = ">=23.0.0"

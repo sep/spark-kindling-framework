@@ -7,7 +7,7 @@ artifact_root: /workspaces/kindling/plans
 requirements_file: /workspaces/kindling/plans/autoloader-file-ingestion/requirements.md
 status: draft
 created_at: 2026-08-06T16:55:02Z
-updated_at: 2026-08-06T16:55:02Z
+updated_at: 2026-08-06T18:45:23Z
 ---
 
 # Implementation Plan: Wire Databricks Auto Loader into file ingestion
@@ -177,3 +177,155 @@ re-scope during implementation, not silently pick an answer.)
    for existing per-file signal consumers on this path).
 5. Schema-evolution policy field name/values — reuse `infer_schema` broadened
    in meaning, or a new field entirely.
+
+## Decision Addendum (2026-08-06)
+
+Resolved while triaging `kind-5i2`. Each decision is grounded in what the
+codebase actually does today, not asserted from first principles — see the
+rationale for what was checked.
+
+### 1. Exact package/module home
+
+**Decision**: A new, narrow extension package, `kindling_ext_databricks_autoloader`
+(Poetry name `spark-kindling-ext-databricks-autoloader`), containing a single
+module `autoloader_file_ingestion.py`. It depends on `spark-kindling>=0.10.0`
+only — not on `spark-kindling-ext-databricks`.
+
+**Rationale**: `packages/extensions/kindling_ext_databricks/pyproject.toml`
+scopes that package explicitly to "Databricks Lakeflow adapter for Kindling's
+SDP declaration engine" and hard-depends on `spark-kindling-ext-sdp`. Auto
+Loader file-discovery has nothing to do with declarative-pipeline lowering;
+folding it into that package would mix two unrelated capabilities under one
+dependency graph for no benefit. The established convention for
+capability-scoped extensions is one package per capability —
+`kindling_ext_adx` → `entity_provider_adx.py`, `kindling_ext_cosmos` →
+`entity_provider_cosmos.py`, `kindling_ext_sdp` → the SDP engine,
+`kindling_ext_databricks` → the Lakeflow adapter — each with its own
+`pyproject.toml` scoped to exactly one thing. A new package matches that
+convention instead of breaking it. None of the existing extensions keep a
+package-local `tests/` directory; tests live centrally
+(`tests/unit/test_adx_entity_provider_extension.py`,
+`test_cosmos_entity_provider_extension.py`), so the tests bead should add
+e.g. `tests/unit/test_databricks_autoloader_file_ingestion.py` rather than a
+new test tree under the extension package.
+
+### 2. Regex `patterns` vs. Auto Loader glob syntax
+
+**Decision**: A second, explicit field — `source_glob: Optional[str] = None`
+on `FileIngestionMetadata`, required (validated at
+`FileIngestionEntries.entry()` registration time) when `discovery="autoloader"`.
+`patterns[0]` keeps its exact current meaning and stays in use, evaluated
+per-file inside `foreachBatch`, purely for named-group extraction,
+`dest_entity_id.format(**named_groups)`, and `filetype` resolution — the same
+job it does in `_build_df_plan` today. `source_glob` is passed to the
+per-entry `cloudFiles` stream as `.option("pathGlobFilter", source_glob)`.
+
+**Rationale**: Regex and glob are not generally convertible. Entries rely on
+named capture groups (`fe.dest_entity_id.format(**named_groups)`, per-file
+column injection from `named_groups.items()`), which have no glob equivalent
+— "restrict patterns to a glob-compatible subset" would silently drop that
+capability rather than translate it, and reusing the field would change its
+type contract for existing `discovery="batch"` entries reading the same
+attribute. The stream-level filter is not optional overhead, either: the plan
+scopes one Auto Loader stream per *entry*, not per landing path, and multiple
+entries can watch the same physical path (multiple patterns/destinations over
+one directory is the existing fan-out model). Without a glob filter at the
+source, every entry's stream would list and read every file in the shared
+path and only discard non-matches post hoc inside `foreachBatch` — reading
+file content Auto Loader had no need to read, which reintroduces exactly the
+cost profile requirements.md calls out avoiding ("A file matching no entry's
+pattern is never read/parsed"). `pathGlobFilter` filters at listing time
+before content is read; the regex re-match against `patterns[0]` still runs
+per-row afterward, unchanged, purely for enrichment.
+
+### 3. Checkpoint/schema-location root convention
+
+**Decision**: Reuse the existing `kindling.storage.checkpoint_root` config
+key (documented in `docs/reference/config_reference.md`, and already the
+checkpoint root `SimplePipeStreamStarter` reads for streaming-pipe
+checkpoints in `packages/kindling/pipe_streaming.py`). Derive per-entry paths
+as `f"{checkpoint_root}/file_ingestion/{entry_id}/checkpoint"` and
+`f"{checkpoint_root}/file_ingestion/{entry_id}/schema"`, mirroring the
+existing `f"{base_chkpt_path}/{pipe.pipeid}"` pattern in `pipe_streaming.py`
+(with a `file_ingestion/` namespace segment so entry IDs can't collide with
+pipe IDs sharing the same root). No new config key.
+
+**Rationale**: The "no repo-wide derivation convention" note under Current
+System is about callers of `entity_provider_delta.py`/`entity_provider_parquet.py`
+supplying `checkpointLocation` themselves — it is not a statement that no root
+config key exists. `kindling.storage.checkpoint_root` already is that root,
+read the same way (`self.cs.get("kindling.storage.checkpoint_root")`) by
+`pipe_streaming.py`'s `SimplePipeStreamStarter.start_pipe_stream`, and already
+documented for exactly this purpose in `config_reference.md`. A second,
+`ingestion`-namespaced root key would fork configuration surface for a
+problem that already has one deployment-wide answer, leaving operators to set
+two checkpoint roots for what is conceptually one concern.
+
+The "derived from `dest_entity_id`'s own storage location" alternative does
+not work by construction: `dest_entity_id` on an entry can itself be a
+template resolved per file (`fe.dest_entity_id.format(**named_groups)` in
+`_build_df_plan`), so a single entry's destination — and therefore its
+storage location — is not knowable until a file is matched and its named
+groups extracted. A stream's checkpoint/schema location has to exist before
+the stream starts, i.e. before any file has been matched, so deriving it from
+a per-file-resolved value is circular. `entry_id` is stable at registration
+time and has no such problem.
+
+### 4. Per-file signal (`before_file`/`after_file`) semantics under `foreachBatch`
+
+**Decision**: Enumerate distinct files within each microbatch (via the same
+`_metadata.file_path` column already needed for enrichment re-derivation) and
+emit `before_file`/`after_file` per file with the same payload shape used
+today (`filename`, `dest_entity_id`, `matched`, `batch_id`). Use the
+microbatch's own id (from `foreachBatch(batch_df, batch_id)`, coerced to
+`str`) instead of minting a fresh UUID. `before_process`/`after_process`
+continue to wrap one `process_path()` call end-to-end — one full
+`Trigger.AvailableNow` run, aggregating totals across however many
+microbatches that run produces — matching today's one-call-one-process-pair
+contract.
+
+This is a documented, intentional semantic shift, not a silent one: for
+`discovery="autoloader"` entries, `before_file` no longer precedes the
+physical read of that file. Auto Loader has already read the file's rows into
+the microbatch before `foreachBatch` runs, so both signals now fire together,
+post hoc, around this file's enrichment/grouping step rather than bracketing
+its read. The docs bead should call this out explicitly for signal
+consumers.
+
+**Rationale**: Dropping per-file signals for Auto Loader entries (the
+batch-level-only alternative) is a silent observability regression for
+anyone consuming `file_ingestion.after_file` for lineage/audit — `discovery`
+is opt-in per entry, so a consumer would quietly lose per-file visibility for
+some entries but not others, with nothing telling them it happened. The
+performance argument against enumerating files per microbatch is weak here:
+Auto Loader delivers only newly-discovered files per microbatch (small,
+incremental), not the full landing directory, so a `distinct()` over
+`_metadata.file_path` is bounded by new-file count, not landing-path size —
+it does not reintroduce the O(directory size) cost this plan exists to
+eliminate. Reusing Spark's own microbatch id costs nothing and lets emitted
+signals correlate directly with Structured Streaming's own batch bookkeeping.
+
+### 5. Schema-evolution policy field name/values
+
+**Decision**: A new field — `schema_evolution_mode: Optional[str] = None` on
+`FileIngestionMetadata` — passed straight through as
+`.option("cloudFiles.schemaEvolutionMode", schema_evolution_mode)` for
+`discovery="autoloader"` entries when set. Accept Databricks' own values
+verbatim (`"addNewColumns"`, `"rescue"`, `"failOnNewColumns"`, `"none"`)
+rather than inventing a kindling-specific vocabulary; leaving it unset lets
+`cloudFiles` apply its own default. `infer_schema` is untouched.
+
+**Rationale**: `infer_schema` is a `bool` today and, per this plan's own
+Current System note, already dead code on the batch path (`_build_df_plan`
+hardcodes `inferSchema=false` regardless of its value).
+`cloudFiles.schemaEvolutionMode` is a four-value enum controlling a different
+lifecycle moment — how a running stream reacts to new columns after its
+schema is established — than "infer column types from file content at
+initial read," which is what `infer_schema`'s name and type currently imply.
+Overloading a dead, differently-typed, differently-scoped bool field for this
+is the same shape of problem as `patterns` vs. glob in decision 2, decided
+the same way for consistency: add a field rather than silently reinterpret an
+existing one. Passing Databricks' own option values straight through, instead
+of mapping to a kindling-specific enum, keeps the new field a thin,
+predictable wrapper that will not drift from Databricks' own documented
+behavior.

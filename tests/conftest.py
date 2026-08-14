@@ -27,6 +27,15 @@ sys.path.insert(
 sys.path.insert(
     0, str(Path(__file__).parent.parent / "packages" / "extensions" / "kindling_ext_databricks")
 )
+sys.path.insert(
+    0,
+    str(
+        Path(__file__).parent.parent
+        / "packages"
+        / "extensions"
+        / "kindling_ext_databricks_autoloader"
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
