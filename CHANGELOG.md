@@ -4,6 +4,14 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- **`provider.includeHeaders` for the Event Hub provider's Kafka transport**:
+  set to `true` to include Kafka record headers as a `headers` column,
+  matching the same "explicit `provider.*` tag, converted and applied as a
+  named connector option" convention already used for `startingPosition`/
+  `maxEventsPerTrigger`/`operationTimeout`.
+
 ### Changed
 
 - **`kindling.bootstrap.load_workspace_packages` now defaults to `false` on

@@ -247,6 +247,10 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             kafka_config["kafka.request.timeout.ms"] = timeout_ms
             kafka_config["kafka.session.timeout.ms"] = timeout_ms
 
+        include_headers = provider_config.get("includeHeaders")
+        if include_headers is not None:
+            kafka_config["includeHeaders"] = "true" if include_headers else "false"
+
         return kafka_config
 
     def _build_source_config(self, provider_config: dict, *, streaming: bool) -> tuple[str, dict]:

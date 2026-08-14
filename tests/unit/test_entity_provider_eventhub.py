@@ -191,6 +191,37 @@ def test_build_kafka_config_maps_eventhub_settings(provider):
     assert "EntityPath=my-hub" in kafka_config["kafka.sasl.jaas.config"]
 
 
+def test_build_kafka_config_maps_include_headers(provider):
+    config = {
+        "eventhub.connectionString": (
+            "Endpoint=sb://example.servicebus.windows.net/;"
+            "SharedAccessKeyName=test;"
+            "SharedAccessKey=abc123;"
+        ),
+        "eventhub.name": "my-hub",
+        "includeHeaders": True,
+    }
+
+    kafka_config = provider._build_kafka_config(config, streaming=True)
+
+    assert kafka_config["includeHeaders"] == "true"
+
+
+def test_build_kafka_config_omits_include_headers_when_unset(provider):
+    config = {
+        "eventhub.connectionString": (
+            "Endpoint=sb://example.servicebus.windows.net/;"
+            "SharedAccessKeyName=test;"
+            "SharedAccessKey=abc123;"
+        ),
+        "eventhub.name": "my-hub",
+    }
+
+    kafka_config = provider._build_kafka_config(config, streaming=True)
+
+    assert "includeHeaders" not in kafka_config
+
+
 def test_build_kafka_config_rejects_custom_json_offsets(provider):
     config = {
         "eventhub.connectionString": (
