@@ -583,13 +583,18 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
         if not autoloader_entries:
             return 0, 0, 0
 
-        runner = self._get_autoloader_runner()
+        # Validate config before touching DI: a missing checkpoint root is a
+        # plain config error and should fail fast with that message rather
+        # than being masked by (or made contingent on) the extension
+        # binding/DI lookup in _get_autoloader_runner() succeeding first.
         checkpoint_root = self.config.get("kindling.storage.checkpoint_root")
         if not checkpoint_root:
             raise ValueError(
                 "Missing kindling.storage.checkpoint_root config -- required to "
                 "derive per-entry Auto Loader checkpoint/schema locations."
             )
+
+        runner = self._get_autoloader_runner()
 
         totals = {"success": 0, "failed": 0, "tables": 0}
 
