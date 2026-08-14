@@ -369,6 +369,18 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
             raise
             raise
 
+    def _has_batch_entries(self) -> bool:
+        """Whether any registered entry still relies on discovery="batch" listing.
+
+        process_path() only needs env.list(path) -- the per-run directory
+        listing discovery="autoloader" entries exist to avoid (gh#228) --
+        when at least one entry hasn't opted into Auto Loader discovery.
+        """
+        return any(
+            self.fir.get_entry_definition(fi).discovery == "batch"
+            for fi in self.fir.get_entry_ids()
+        )
+
     def process_path(
         self, path: str, movepath: Optional[str] = None, transform: Optional[Callable] = None
     ):
@@ -398,8 +410,21 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
             else nullcontext()
         )
         with process_span:
-            filenames = self.env.list(path)
-            self.logger.info(f"Found {len(filenames)} files in {path}")
+            if self._has_batch_entries():
+                filenames = self.env.list(path)
+                self.logger.info(f"Found {len(filenames)} files in {path}")
+            else:
+                # No discovery="batch" entries are registered, so there is
+                # nothing for a listing to match against -- skip env.list()
+                # entirely. Auto Loader entries discover files via their own
+                # cloudFiles stream (_process_autoloader_entries), so an
+                # autoloader-only registry actually avoids the per-run
+                # directory listing cost that motivated the feature (gh#228).
+                filenames = []
+                self.logger.debug(
+                    f'No discovery="batch" entries registered -- skipping '
+                    f"directory listing for {path}"
+                )
 
             # Emit before_process signal
             self.emit(
