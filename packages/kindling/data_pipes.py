@@ -9,8 +9,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-
 from kindling.config_patterns import ConfigPatternMatcher
 from kindling.injection import *
 from kindling.sentinels import UNSET
@@ -19,6 +17,7 @@ from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
 from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
+from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -611,20 +610,23 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         # the temporal extension's autocollapse hook) require a real list.
         pipes = list(pipes)
 
-        # Mirrors the emission in _run_datapipes_sequential: DAG-mode runs
-        # never reach that method, so without this, before_run subscribers
-        # (e.g. the temporal extension's autocollapse hook) would never see
-        # a DAG-mode run at all.
-        self.emit(
-            "datapipes.before_run",
-            pipe_ids=pipes,
-            pipe_count=len(pipes),
-            run_id=str(uuid.uuid4()),
-        )
-
         orchestrator = GlobalInjector.get(ExecutionOrchestrator)
         overrides = self.dpe.tag_overrides(entity_tags) if entity_tags else nullcontext()
         with overrides:
+            # Mirrors the emission in _run_datapipes_sequential: DAG-mode runs
+            # never reach that method, so without this, before_run subscribers
+            # (e.g. the temporal extension's autocollapse hook) would never see
+            # a DAG-mode run at all. Emitted inside the tag_overrides context
+            # (like the sequential path emits inside run_datapipes' override)
+            # so before_run subscribers observe the same overridden entity
+            # tags regardless of run mode.
+            self.emit(
+                "datapipes.before_run",
+                pipe_ids=pipes,
+                pipe_count=len(pipes),
+                run_id=str(uuid.uuid4()),
+            )
+
             return orchestrator.execute(
                 pipe_ids=pipes,
                 strategy=strategy,
