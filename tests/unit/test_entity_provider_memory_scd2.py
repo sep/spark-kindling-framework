@@ -21,6 +21,7 @@ import pytest
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_memory import MemoryEntityProvider
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit
 from pyspark.sql.types import (
     IntegerType,
     StringType,
@@ -44,6 +45,7 @@ def spark_session():
     spark = SparkSession.builder.appName("MemorySCD2Tests").master("local[2]").getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     yield spark
+    spark.stop()
 
 
 BUSINESS_SCHEMA = StructType(
@@ -255,6 +257,54 @@ class TestMemoryProviderMergeSCD2:
         assert "a" not in closed_ids
         assert "b" in closed_ids, "vanished key must be closed"
         assert "b" not in current_ids
+
+    def test_close_on_missing_with_delete_when_does_not_double_close(self, spark_session):
+        """Regression test for the double-close bug flagged by a Copilot review on
+        a since-closed duplicate PR (#234) for this same SCD2 feature (issue #220).
+
+        ``scd_config_from_tags`` rejects scd.delete_when combined with
+        scd.close_on_missing/scd.source_kind=snapshot at the tag layer, so this
+        combination cannot arise through the public entity-tag configuration
+        path today. But ``_memory_scd2_merge`` accepts an ``SCDConfig`` directly
+        and, before this fix, unconditionally staged ``closed_versions_from_deletes``
+        whenever ``delete_when`` was set — with no ``and not cfg.close_on_missing``
+        guard. A key satisfying delete_when is absent from ``upserts_df``, so it
+        is *also* picked up by the close_on_missing "missing key" pass, producing
+        two closed rows for the same business key. Delta's ``_execute_scd2_merge``
+        computes ``delete_close_rows`` but only stages it in the non-snapshot
+        (``else``) branch, precisely to avoid this. This test calls the merge
+        function directly with a manually constructed ``SCDConfig`` to exercise
+        that DataFrame-level guard regardless of what the tag layer currently
+        allows."""
+        from kindling.data_entities import SCDConfig
+        from kindling.entity_provider_memory import _memory_scd2_merge
+
+        entity = self._entity("silver.scd2_com_delete_direct")
+        cfg = SCDConfig(
+            enabled=True,
+            tracked_columns=None,
+            effective_from_column="__effective_from",
+            effective_to_column="__effective_to",
+            is_current_column="__is_current",
+            current_entity_id="silver.scd2_com_delete_direct.current",
+            routing_key_method="hash",
+            close_on_missing=True,
+            delete_when="status = 'DELETED'",
+        )
+        now_ts = datetime(2026, 7, 1, 0, 0, 0)
+        current_df = (
+            _make_df(spark_session, [("a", "bronze", "x", TS(1))], SCD2_SCHEMA)
+            .withColumn("__effective_from", lit(TS(1)))
+            .withColumn("__effective_to", lit(None).cast(TimestampType()))
+            .withColumn("__is_current", lit(True))
+        )
+        incoming_df = _make_df(spark_session, [("a", "DELETED", "x", TS(1))], SCD2_SCHEMA)
+
+        result = _memory_scd2_merge(current_df, incoming_df, entity, cfg, now_ts)
+
+        rows = [r for r in result.collect() if r["id"] == "a"]
+        assert len(rows) == 1, "must not double-close: only one row for key 'a' is expected"
+        assert rows[0]["__is_current"] is False
 
     def test_sequence_by_stale_row_is_ignored(self, spark_session):
         provider = _make_provider(spark_session)

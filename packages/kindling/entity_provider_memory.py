@@ -165,7 +165,12 @@ def _memory_scd2_merge(
         ).withColumn(cfg.is_current_column, lit(False))
 
     closed_versions_from_deletes = None
-    if deletes_df is not None:
+    if deletes_df is not None and not cfg.close_on_missing:
+        # Mirrors DeltaEntityProvider._execute_scd2_merge: delete_close_rows is
+        # computed but only staged in the non-close_on_missing branch. When
+        # close_on_missing is enabled, a deleted key is simply absent from the
+        # incoming snapshot and gets closed via closed_versions_from_missing;
+        # staging it again here would double-close the same current row.
         delete_match = deletes_df.alias("source").join(
             current_rows.alias("target"), on=business_keys, how="inner"
         )
