@@ -569,3 +569,88 @@ def test_chain_cross_source_cycle_raises_even_though_neither_rule_is_cyclic_alon
 
         with pytest.raises(ConditionValidationError, match="Conditions set is not ingestible"):
             events_pipe.execute(bronze_telemetry=telemetry, silver_conditions_current=conditions_df)
+
+
+def test_chain_cross_source_duplicate_condition_id_raises(spark):
+    """A condition_id declared in BOTH the table and the registry must be
+    rejected once the combined chain-events pipe executes, even though
+    each source's own isolated validation has no way to see the other
+    source's rules. condition_id drives the {condition_id}.entered/.exited
+    boundary event types, so a collision would silently produce ambiguous,
+    duplicated events rather than erroring anywhere else."""
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import (
+        ConditionValidationError,
+        DataConditions,
+        DataEvents,
+        TemporalConditionRegistryManager,
+        TemporalEpisodeRegistryManager,
+        TemporalEventRegistryManager,
+        conditions_schema,
+        declare_temporal_chain,
+    )
+
+    DataEvents.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
+    condition_registry = TemporalConditionRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    services = _base_event_services(
+        event_registry, episode_registry, condition_registry, entity_registry, pipe_registry
+    )
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=services):
+
+        @DataEvents.base_event(
+            eventid="telemetry.base",
+            input_entity_id="bronze.telemetry",
+            subject_type="machine",
+            subject_keys=["machine_id"],
+            time_column="reading_ts",
+            event_type="telemetry.observed",
+            payload_columns=["temperature"],
+        )
+        def normalize(df):
+            return df
+
+        # Same condition_id declared in both sources -- neither source's own
+        # isolated validation (registry at declaration time, table rows via
+        # validate_or_raise) has visibility into the other source's rules.
+        DataConditions.register(
+            condition_id="condition.overheat",
+            consumes_event_type=["telemetry.observed"],
+            subject_type="machine",
+            enter_when=lambda events: events["payload"]["temperature"].cast("double") > 90,
+            exit_when=lambda events: events["payload"]["temperature"].cast("double") <= 90,
+        )
+        DataEvents.condition_engine(engineid="static_conditions", condition_source="registry")
+        DataEvents.condition_engine(engineid="dynamic_conditions", condition_source="table")
+
+        chain_pipe_ids = declare_temporal_chain("dup")
+        events_pipe = pipe_registry.get_pipe_definition(chain_pipe_ids[0])
+
+        valid_from = datetime(2026, 7, 14, 11, 0, 0)
+        conditions_df = spark.createDataFrame(
+            [
+                (
+                    "condition.overheat",
+                    ["telemetry.observed"],
+                    "machine",
+                    {
+                        "enter_when": "cast(payload['temperature'] as double) > 80",
+                        "exit_when": "cast(payload['temperature'] as double) <= 80",
+                    },
+                    True,
+                    valid_from,
+                    None,
+                ),
+            ],
+            conditions_schema(),
+        )
+        telemetry = spark.createDataFrame([("machine-1", T0, 95.0)], TELEMETRY_COLUMNS)
+
+        with pytest.raises(ConditionValidationError, match="condition.overheat"):
+            events_pipe.execute(bronze_telemetry=telemetry, silver_conditions_current=conditions_df)

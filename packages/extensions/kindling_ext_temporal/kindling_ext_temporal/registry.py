@@ -2,14 +2,13 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from injector import inject
 from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import DataPipesRegistry
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
-from pyspark.sql import Column, DataFrame
 
 from .entities import TemporalEntityResolver
 from .translation import TemporalPipeTranslator
@@ -17,7 +16,16 @@ from .validation import (
     ConditionRule,
     ConditionValidationError,
     TemporalConditionValidator,
+    _normalize_event_types,
 )
+
+if TYPE_CHECKING:
+    # Deferred: the rest of kindling_ext_temporal keeps PySpark imports out of
+    # module scope so importing the extension in a non-Spark context doesn't
+    # hard-require pyspark. DataFrame/Column are only ever used here as
+    # annotations on ``DataConditions.register``'s callables (quoted below),
+    # never evaluated at runtime.
+    from pyspark.sql import Column, DataFrame
 
 
 @dataclass
@@ -325,8 +333,8 @@ class DataConditions:
         condition_id: str,
         consumes_event_type: List[str],
         subject_type: str,
-        enter_when: Callable[[DataFrame], Column],
-        exit_when: Callable[[DataFrame], Column],
+        enter_when: Callable[["DataFrame"], "Column"],
+        exit_when: Callable[["DataFrame"], "Column"],
         enabled: bool = True,
         valid_from: Optional[Any] = None,
         valid_to: Optional[Any] = None,
@@ -349,9 +357,14 @@ class DataConditions:
             raise ConditionValidationError("condition_id is required")
         if not subject_type or not subject_type.strip():
             raise ConditionValidationError("subject_type is required")
-        if not consumes_event_type:
+        # Same strip/dedupe/reject-empty normalization the table-backed path
+        # applies via ConditionRule.from_row -- otherwise e.g. [" "] would
+        # pass the truthiness check below and register a condition that
+        # consumes an effectively empty event type.
+        normalized_event_types = _normalize_event_types(consumes_event_type)
+        if not normalized_event_types:
             raise ConditionValidationError(
-                "consumes_event_type must contain at least one event type"
+                "consumes_event_type must contain at least one non-empty event type"
             )
         if not callable(enter_when):
             raise ConditionValidationError("enter_when must be callable")
@@ -360,7 +373,7 @@ class DataConditions:
 
         rule = ConditionRule(
             condition_id=condition_id,
-            consumes_event_type=list(consumes_event_type),
+            consumes_event_type=normalized_event_types,
             subject_type=subject_type,
             parameters={"enter_when": enter_when, "exit_when": exit_when},
             enabled=enabled,
