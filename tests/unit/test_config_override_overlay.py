@@ -9,6 +9,7 @@ the bootstrap.apply_config_overrides() helper.
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
 from kindling.data_entities import DataEntityManager, EntityMetadata
 from kindling.data_pipes import DataPipesManager, PipeMetadata
 
@@ -346,6 +347,135 @@ class TestEntityConfigOverlay:
             register_sample_entity(manager, merge_columns=[], tags={"write.mode": "insert"})
 
         assert "Config overrides" not in str(exc_info.value)
+
+
+class TestEntityTagBasedConfigOverlay:
+    """DataEntityManager.apply_config_overrides via dataentities_by_tag:
+
+    General-purpose counterpart to dataentities:, matching by the entity's
+    own declared tag VALUE instead of its id.
+    """
+
+    def test_tag_rule_merges_tags_for_matching_entity(self):
+        manager = make_entity_manager()
+        register_sample_entity(
+            manager, entityid="staging.device_telemetry", tags={"tier": "bronze"}
+        )
+        config_service = make_config_service(
+            {
+                "dataentities_by_tag": {
+                    "tier": {"bronze": {"tags": {"provider.table_catalog": "dev_bronze"}}}
+                }
+            }
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        entity = manager.get_entity_definition("staging.device_telemetry")
+        assert entity.tags == {"tier": "bronze", "provider.table_catalog": "dev_bronze"}
+
+    def test_tag_rule_does_not_apply_to_non_matching_entity(self):
+        manager = make_entity_manager()
+        register_sample_entity(manager, entityid="staging.device_telemetry", tags={"tier": "gold"})
+        config_service = make_config_service(
+            {
+                "dataentities_by_tag": {
+                    "tier": {"bronze": {"tags": {"provider.table_catalog": "dev_bronze"}}}
+                }
+            }
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        entity = manager.get_entity_definition("staging.device_telemetry")
+        assert entity.tags == {"tier": "gold"}
+
+    def test_tag_rule_can_set_any_overridable_field_not_just_tags(self):
+        manager = make_entity_manager()
+        register_sample_entity(manager, entityid="staging.device_telemetry", tags={"tier": "gold"})
+        config_service = make_config_service(
+            {
+                "dataentities_by_tag": {
+                    "tier": {"gold": {"partition_columns": ["date"], "name": "renamed_by_tag"}}
+                }
+            }
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        entity = manager.get_entity_definition("staging.device_telemetry")
+        assert entity.partition_columns == ["date"]
+        assert entity.name == "renamed_by_tag"
+
+    def test_id_glob_pattern_overrides_broader_tag_based_default(self):
+        """dataentities_by_tag: applies first (broad default); dataentities:
+        applies on top (specific override) for the same field."""
+        manager = make_entity_manager()
+        register_sample_entity(
+            manager, entityid="staging.device_telemetry", tags={"tier": "bronze"}
+        )
+        config_service = make_config_service(
+            {
+                "dataentities_by_tag": {
+                    "tier": {"bronze": {"tags": {"provider.table_catalog": "dev_bronze"}}}
+                },
+                "dataentities": {
+                    "staging.device_telemetry": {"tags": {"provider.table_catalog": "special_cat"}}
+                },
+            }
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        entity = manager.get_entity_definition("staging.device_telemetry")
+        assert entity.tags["provider.table_catalog"] == "special_cat"
+
+    def test_schema_and_sql_never_overridable_via_tag_rule(self):
+        manager = make_entity_manager()
+        schema_sentinel = object()
+        register_sample_entity(
+            manager,
+            entityid="staging.device_telemetry",
+            tags={"tier": "gold"},
+            schema=schema_sentinel,
+        )
+        config_service = make_config_service(
+            {"dataentities_by_tag": {"tier": {"gold": {"schema": "clobber", "sql": "SELECT 1"}}}}
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        entity = manager.get_entity_definition("staging.device_telemetry")
+        assert entity.schema is schema_sentinel
+        assert entity.sql is None
+
+    def test_invalid_metadata_from_tag_rule_is_blamed_on_config(self):
+        manager = make_entity_manager()
+        manager.apply_config_overrides(
+            make_config_service(
+                {"dataentities_by_tag": {"tier": {"bronze": {"tags": {"write.mode": "insert"}}}}}
+            )
+        )
+
+        with pytest.raises(ValueError, match="Config overrides"):
+            register_sample_entity(
+                manager,
+                entityid="staging.device_telemetry",
+                merge_columns=[],
+                tags={"tier": "bronze"},
+            )
+
+    def test_no_tag_rule_section_is_a_no_op(self):
+        manager = make_entity_manager()
+        register_sample_entity(
+            manager, entityid="staging.device_telemetry", tags={"tier": "bronze"}
+        )
+        config_service = make_config_service({})
+
+        manager.apply_config_overrides(config_service)
+
+        entity = manager.get_entity_definition("staging.device_telemetry")
+        assert entity.tags == {"tier": "bronze"}
 
 
 class TestScd2CompanionConvergence:

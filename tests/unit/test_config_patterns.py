@@ -15,7 +15,8 @@ from collections.abc import Mapping
 
 import pytest
 from dynaconf import Dynaconf
-from kindling.config_patterns import ConfigPatternMatcher
+
+from kindling.config_patterns import ConfigPatternMatcher, TagRuleMatcher
 
 
 def _matches(pattern: str, item_id: str) -> bool:
@@ -455,3 +456,94 @@ class TestRealPipeConfigIntegration:
         assert other["retry_count"] == 5
         assert other["timeout_seconds"] == 300
         assert other["tags"]["layer"] == "bronze"
+
+
+class TestTagRuleMatcher:
+    """General-purpose tag-value routing: {tag_key: {tag_value: overrides}},
+    matched against an entity's own already-declared tags rather than its id."""
+
+    def test_no_section_matches_nothing(self):
+        matcher = TagRuleMatcher(None)
+        assert matcher.get_matching_overrides({"tier": "bronze"}) == []
+        assert matcher.resolve_overrides({"tier": "bronze"}, {"tags": {}}) == {"tags": {}}
+
+    def test_matching_tag_value_applies_overrides(self):
+        matcher = TagRuleMatcher({"tier": {"bronze": {"tags": {"team": "core"}}}})
+
+        result = matcher.resolve_overrides({"tier": "bronze"}, {"tags": {"owner": "a"}})
+
+        assert result == {"tags": {"owner": "a", "team": "core"}}
+
+    def test_non_matching_tag_value_is_a_no_op(self):
+        matcher = TagRuleMatcher({"tier": {"bronze": {"tags": {"team": "core"}}}})
+
+        result = matcher.resolve_overrides({"tier": "gold"}, {"tags": {"owner": "a"}})
+
+        assert result == {"tags": {"owner": "a"}}
+
+    def test_entity_without_the_tag_key_is_a_no_op(self):
+        matcher = TagRuleMatcher({"tier": {"bronze": {"tags": {"team": "core"}}}})
+
+        result = matcher.resolve_overrides({}, {"tags": {"owner": "a"}})
+
+        assert result == {"tags": {"owner": "a"}}
+
+    def test_overrides_can_set_any_field_not_just_tags(self):
+        matcher = TagRuleMatcher({"tier": {"gold": {"partition_columns": ["date"]}}})
+
+        result = matcher.resolve_overrides({"tier": "gold"}, {})
+
+        assert result == {"partition_columns": ["date"]}
+
+    def test_scalars_replace_and_mappings_deep_merge(self):
+        matcher = TagRuleMatcher(
+            {"tier": {"bronze": {"tags": {"team": "core"}, "name": "renamed"}}}
+        )
+
+        result = matcher.resolve_overrides(
+            {"tier": "bronze"}, {"tags": {"owner": "a"}, "name": "original"}
+        )
+
+        assert result == {"tags": {"owner": "a", "team": "core"}, "name": "renamed"}
+
+    def test_multiple_matching_tag_keys_apply_in_declaration_order(self):
+        matcher = TagRuleMatcher(
+            {
+                "tier": {"bronze": {"tags": {"a": "1"}}},
+                "domain": {"sales": {"tags": {"a": "2"}}},
+            }
+        )
+
+        result = matcher.resolve_overrides({"tier": "bronze", "domain": "sales"}, {"tags": {}})
+
+        # domain declared after tier -> later-declared wins the conflicting key.
+        assert result == {"tags": {"a": "2"}}
+
+    def test_base_is_never_mutated(self):
+        matcher = TagRuleMatcher({"tier": {"bronze": {"tags": {"team": "core"}}}})
+        base = {"tags": {"owner": "a"}}
+
+        matcher.resolve_overrides({"tier": "bronze"}, base)
+
+        assert base == {"tags": {"owner": "a"}}
+
+    def test_non_mapping_tag_value_entry_is_skipped_with_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            matcher = TagRuleMatcher({"tier": {"bronze": "not-a-mapping"}})
+
+        assert matcher.get_matching_overrides({"tier": "bronze"}) == []
+        assert "not a mapping" in caplog.text
+
+    def test_non_mapping_tag_key_entry_is_skipped_with_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            matcher = TagRuleMatcher({"tier": "not-a-mapping"})
+
+        assert matcher.get_matching_overrides({"tier": "bronze"}) == []
+        assert "not a mapping" in caplog.text
+
+    def test_tag_value_coerced_to_string_for_lookup(self):
+        matcher = TagRuleMatcher({"priority": {"1": {"tags": {"escalate": "true"}}}})
+
+        result = matcher.resolve_overrides({"priority": 1}, {"tags": {}})
+
+        assert result == {"tags": {"escalate": "true"}}

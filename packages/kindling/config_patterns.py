@@ -1,14 +1,19 @@
-"""Wildcard pattern matching for per-item configuration override sections.
+"""Matching engines for per-item configuration override sections.
 
 Config sections such as ``datapipes:`` / ``dataentities:`` (and existing
 per-item maps like ``kindling.execution.pipes``) key overrides by pipe or
-entity id. This module provides the pattern engine that lets those keys be
-glob patterns over dot-segmented ids, so one entry can target a family of
-items (``bronze.*``) instead of every id individually. It is pure stdlib —
-no framework imports, no Spark, no Dynaconf dependency. Any ``Mapping``
-(including a Dynaconf ``DynaBox``) works as the config section; it is
-indexed by literal pattern string, never dotted-key traversal, because ids
-routinely contain dots (same rationale as ``kindling.execution.pipes``).
+entity id. :class:`ConfigPatternMatcher` provides the pattern engine that
+lets those keys be glob patterns over dot-segmented ids, so one entry can
+target a family of items (``bronze.*``) instead of every id individually.
+:class:`TagRuleMatcher` is the general-purpose counterpart for
+``dataentities_by_tag:``-style sections: it matches by one of the item's own
+already-declared tag VALUES instead of its id, and (like
+``ConfigPatternMatcher``) can set any overridable field, not just a specific
+namespace. Both are pure stdlib — no framework imports, no Spark, no
+Dynaconf dependency. Any ``Mapping`` (including a Dynaconf ``DynaBox``)
+works as the config section; ``ConfigPatternMatcher`` is indexed by literal
+pattern string, never dotted-key traversal, because ids routinely contain
+dots (same rationale as ``kindling.execution.pipes``).
 
 Pattern language (full-string anchored ``^...$``, case-sensitive, over
 dot-segmented ids):
@@ -209,3 +214,106 @@ class ConfigPatternMatcher:
                     source += re.escape(char)
             segment_sources.append(source)
         return re.compile("^" + r"\.".join(segment_sources) + "$")
+
+
+class TagRuleMatcher:
+    """General-purpose counterpart to :class:`ConfigPatternMatcher`, matching
+    by an entity's own already-declared tag VALUE instead of its id.
+
+    Config shape: ``{tag_key: {tag_value: overrides}}``, e.g.::
+
+        dataentities_by_tag:
+          tier:
+            bronze:
+              tags:
+                provider.table_catalog: dev_bronze
+            gold:
+              tags:
+                provider.table_catalog: dev_gold
+                schema.drift: fail
+
+    Every entity whose ``tier`` tag is ``bronze`` picks up
+    ``provider.table_catalog: dev_bronze`` (merged into its existing tags);
+    every ``tier: gold`` entity additionally gets a stricter drift policy.
+    ``overrides`` can set any overridable field, not just ``tags`` — same
+    deep-merge semantics as :class:`ConfigPatternMatcher`
+    (:func:`resolve_overrides`): mappings deep-merge recursively, scalars and
+    lists replace, ``base`` is never mutated.
+
+    Reach for this when placement/config follows a semantic tag rather than
+    an entityid naming convention; reach for :class:`ConfigPatternMatcher`
+    (``dataentities:``) when it follows an entityid convention. The two
+    compose: apply this matcher first (broad, tag-driven defaults), then
+    :class:`ConfigPatternMatcher` on top (specific, id-driven overrides) so a
+    targeted ``dataentities:`` entry can still override a broader tag-based
+    default for one entity.
+
+    Multiple tag keys can match the same entity; declaration order (top to
+    bottom in the config section) determines application order, so a
+    later-declared tag key's overrides win ties on the same field — same
+    "declaration order, last-in wins" rule as :class:`ConfigPatternMatcher`.
+    An entity can only have one value for a given tag key, so there's no tie
+    to break *within* a single tag key.
+    """
+
+    def __init__(self, config_section: Optional[Mapping] = None):
+        """Compile and order a ``{tag_key: {tag_value: overrides}}`` section once.
+
+        Args:
+            config_section: Mapping keyed by tag key, each value itself a
+                mapping of tag value -> overrides. ``None``/empty means no
+                rules. Non-mapping entries at either level log a warning and
+                are skipped.
+        """
+        self._rules = self._compile(config_section)
+
+    def get_matching_overrides(self, entity_tags: Mapping) -> List[Dict[str, Any]]:
+        """Return all override dicts whose tag key/value matches ``entity_tags``,
+        in declaration order. The returned dicts are copies; apply them in
+        list order to get correct precedence.
+        """
+        matches = []
+        for tag_key, value_map, _index in self._rules:
+            tag_value = entity_tags.get(tag_key)
+            if tag_value is None:
+                continue
+            overrides = value_map.get(str(tag_value))
+            if overrides is not None:
+                matches.append(_clone(overrides))
+        return matches
+
+    def resolve_overrides(self, entity_tags: Mapping, base: Mapping) -> Dict[str, Any]:
+        """Return a plain-dict deep copy of ``base`` with every matching
+        tag rule's overrides merged in, in declaration order.
+        """
+        result: Dict[str, Any] = _clone(base)
+        for overrides in self.get_matching_overrides(entity_tags):
+            result = _merge(result, overrides)
+        return result
+
+    def _compile(self, config_section: Optional[Mapping]) -> List[tuple]:
+        compiled: List[tuple] = []
+        if not config_section:
+            return compiled
+        for index, (tag_key, value_map) in enumerate(config_section.items()):
+            if not isinstance(value_map, Mapping):
+                _LOGGER.warning(
+                    "Tag rule %r: value %r is not a mapping of tag-value -> overrides — skipping",
+                    tag_key,
+                    value_map,
+                )
+                continue
+            cleaned_map: Dict[str, Any] = {}
+            for tag_value, overrides in value_map.items():
+                if not isinstance(overrides, Mapping):
+                    _LOGGER.warning(
+                        "Tag rule %r=%r: override value %r is not a mapping — skipping",
+                        tag_key,
+                        tag_value,
+                        overrides,
+                    )
+                    continue
+                cleaned_map[str(tag_value)] = overrides
+            if cleaned_map:
+                compiled.append((str(tag_key), cleaned_map, index))
+        return compiled

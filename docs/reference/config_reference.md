@@ -103,13 +103,32 @@ These keys are used by the config-driven `EntityNameMapper`/`EntityPathLocator` 
 - `kindling.storage.table_name_prefix`: Optional prefix added to the generated leaf table name.
 - `kindling.storage.table_root`: Default path root for `storage` access mode entities (default `Tables`).
 - `kindling.storage.checkpoint_root`: Default checkpoint root used by system test apps (common default `Files/checkpoints`).
-- `kindling.storage.catalog_by_tag` / `kindling.storage.schema_by_tag`: Tag-value routing tables — map a tag key to a `{tag_value: catalog_or_schema}` dict, e.g. `catalog_by_tag: {tier: {bronze: dev_bronze}}` routes every entity tagged `tier=bronze` to catalog `dev_bronze`, regardless of its entityid. This is the tag-value-keyed counterpart to `dataentities:` glob patterns (`ConfigPatternMatcher`), which match by entityid convention instead. Overrides `table_catalog`/`table_schema` when a matching tag is present; falls back to them otherwise.
 - `kindling.databricks.volume_staging_root`: Optional Databricks-specific governed staging root for bootstrap wheel/config temp files. When omitted, Databricks bootstrap will try to derive a volume-backed staging root from `kindling.storage.checkpoint_root` or `kindling.storage.table_root` before falling back to DBFS.
 
 Per-entity tags (highest precedence, override all of the above):
 
 - `provider.table_catalog` / `provider.table_schema`: Explicit catalog/schema override for a single entity.
 - `provider.table_name`: Full table-name override, bypassing catalog/schema resolution entirely.
+
+These tags can be set directly on an entity's `tags=`, or assigned to a whole family of entities by tag value via `dataentities_by_tag:` (see "Tag-Based Config Overrides" below) — e.g. tagging every `tier: bronze` entity with `provider.table_catalog: dev_bronze` without needing an entityid naming convention.
+
+### Tag-Based Config Overrides
+
+`dataentities_by_tag:` is a general-purpose counterpart to the `dataentities:` config section (`ConfigPatternMatcher`, documented in `packages/kindling/data_entities.py`): instead of matching entities by an entityid glob pattern, it matches by one of the entity's own already-declared tag values, and can set **any** overridable `EntityMetadata` field — not just storage/catalog config.
+
+```yaml
+dataentities_by_tag:
+  tier:
+    bronze:
+      tags:
+        provider.table_catalog: dev_bronze
+    gold:
+      tags:
+        provider.table_catalog: dev_gold
+        schema.drift: fail
+```
+
+Every entity tagged `tier: bronze` picks up `provider.table_catalog: dev_bronze` (merged into its existing tags, same deep-merge semantics as `dataentities:`); every entity tagged `tier: gold` additionally gets a stricter drift policy. Applied before `dataentities:` glob-pattern overrides, so a specific `dataentities:` entry can still override a broader tag-based default for one entity. Reach for `dataentities_by_tag:` when placement/config follows a semantic tag; reach for `dataentities:` when it follows an entityid naming convention.
 
 ### Databricks Without Unity Catalog
 

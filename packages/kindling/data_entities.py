@@ -8,11 +8,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from kindling.config_patterns import ConfigPatternMatcher
-from kindling.injection import *
-from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_config import *
-from kindling.spark_log_provider import *
 from pyspark.sql import DataFrame
 from pyspark.sql.types import (
     BooleanType,
@@ -21,6 +16,12 @@ from pyspark.sql.types import (
     StructType,
     TimestampType,
 )
+
+from kindling.config_patterns import ConfigPatternMatcher, TagRuleMatcher
+from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import *
+from kindling.spark_log_provider import *
 
 _ENTITY_LOGGER = logging.getLogger("kindling.data_entities")
 
@@ -824,6 +825,10 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         # registered after bootstrap's overlay pass (workspace packages,
         # app register_all, notebook cells) are overlaid at registration.
         self._matcher = None
+        # Compiled dataentities_by_tag: config section -- same persistence
+        # rationale as _matcher, but matches by the entity's own declared
+        # tag value instead of its id.
+        self._tag_matcher = None
 
     @contextmanager
     def tag_overrides(self, overrides):
@@ -869,17 +874,22 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             self._register_scd2_current_companion(entity, scd_config)
 
     def apply_config_overrides(self, config_service: ConfigService) -> None:
-        """Overlay the ``dataentities:`` config section onto registered entities.
+        """Overlay the ``dataentities:``/``dataentities_by_tag:`` config
+        sections onto registered entities.
 
         Rebuilds every explicitly-registered entity from its original
-        registration params through the section's glob patterns
-        (``ConfigPatternMatcher`` semantics: mappings deep-merge, scalars
-        and lists replace, exact > single-wildcard > multi-wildcard),
-        re-validates the overlaid metadata, and re-derives SCD2 current-row
-        companions from the result (desired-state convergence). A missing
-        or empty section compiles to a matcher with zero patterns, making
-        the pass a structural no-op. The matcher persists on the manager so
-        later registrations self-overlay.
+        registration params through ``dataentities_by_tag:``'s tag-value
+        rules first, then ``dataentities:``'s id-glob patterns
+        (``ConfigPatternMatcher``/``TagRuleMatcher`` semantics: mappings
+        deep-merge, scalars and lists replace, exact > single-wildcard >
+        multi-wildcard for id patterns), re-validates the overlaid metadata,
+        and re-derives SCD2 current-row companions from the result
+        (desired-state convergence). Tag rules apply first so a specific
+        ``dataentities:`` entry can still override a broader tag-based
+        default for one entity. A missing or empty section compiles to a
+        matcher with zero rules/patterns, making that pass a structural
+        no-op. Both matchers persist on the manager so later registrations
+        self-overlay.
 
         Idempotent and safely re-callable (hot reload: ``reload()`` config,
         then call again). Not synchronized with running DAGs — a concurrent
@@ -887,6 +897,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         caveat as ``tag_overrides``).
         """
         self._matcher = ConfigPatternMatcher(config_service.get("dataentities"))
+        self._tag_matcher = TagRuleMatcher(config_service.get("dataentities_by_tag"))
         for entityid, raw_params in self._raw_params.items():
             entity = self._build_metadata(entityid, raw_params)
             self._validate_entity(entity)
@@ -896,8 +907,11 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
 
     def _build_metadata(self, entityid, raw_params):
         """Construct EntityMetadata from raw registration params plus any
-        config overrides matching ``entityid`` (no matcher yet -> raw as-is)."""
-        if self._matcher is None:
+        config overrides matching the entity's own tags
+        (``dataentities_by_tag:``) or its id (``dataentities:``). Tag rules
+        apply first, id-glob patterns apply on top (no matchers yet -> raw
+        as-is)."""
+        if self._matcher is None and self._tag_matcher is None:
             return EntityMetadata(entityid, **raw_params)
 
         base = {
@@ -905,7 +919,10 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             for key, value in raw_params.items()
             if key not in self._NON_OVERRIDABLE_FIELDS
         }
-        resolved = self._matcher.resolve_overrides(entityid, base)
+        if self._tag_matcher is not None:
+            entity_tags = raw_params.get("tags") or {}
+            base = self._tag_matcher.resolve_overrides(entity_tags, base)
+        resolved = self._matcher.resolve_overrides(entityid, base) if self._matcher else base
         overridable = {field.name for field in fields(EntityMetadata)} - set(
             self._NON_OVERRIDABLE_FIELDS
         )
@@ -943,7 +960,14 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             _validate_write_mode_tag(entity)
             _validate_schema_drift_tag(entity)
         except ValueError as error:
-            if self._matcher is not None and self._matcher.get_matching_overrides(entity.entityid):
+            id_override = self._matcher is not None and self._matcher.get_matching_overrides(
+                entity.entityid
+            )
+            tag_override = (
+                self._tag_matcher is not None
+                and self._tag_matcher.get_matching_overrides(entity.tags or {})
+            )
+            if id_override or tag_override:
                 raise ValueError(
                     f"Config overrides applied to entity '{entity.entityid}' "
                     f"produced invalid metadata: {error}"
