@@ -144,6 +144,13 @@ def _entity(entity_id: str):
     return entity
 
 
+def _entity_with_tags(entity_id: str, tags: dict):
+    entity = MagicMock()
+    entity.tags = tags
+    entity.entityid = entity_id
+    return entity
+
+
 class TestCatalogOnlyConfig:
     """Regression tests for the catalog-dropped-silently bug.
 
@@ -254,3 +261,137 @@ class TestCatalogAndSchemaFlattenRegression:
             mapper.get_table_name(_entity("staging.device_telemetry"))
             == "maincat.analytics.pfx_staging_device_telemetry"
         )
+
+
+class TestPerEntityTagOverride:
+    """`provider.table_catalog` / `provider.table_schema` entity tags override
+    (and, if no other namespace config is present, alone trigger) namespace
+    resolution -- the per-entity counterpart to global config, same
+    precedence tier as the existing `provider.table_name` tag."""
+
+    def test_provider_table_catalog_tag_applies_with_no_other_config(self):
+        mapper = _make_mapper_with_config({})
+
+        entity = _entity_with_tags("staging.device_telemetry", {"provider.table_catalog": "dev"})
+
+        assert mapper.get_table_name(entity) == "dev.staging.device_telemetry"
+
+    def test_provider_table_catalog_tag_overrides_global_config(self):
+        mapper = _make_mapper_with_config({"kindling.storage.table_catalog": "globalcat"})
+
+        entity = _entity_with_tags(
+            "staging.device_telemetry", {"provider.table_catalog": "entitycat"}
+        )
+
+        assert mapper.get_table_name(entity) == "entitycat.staging.device_telemetry"
+
+    def test_provider_table_schema_tag_flattens_like_global_schema_config(self):
+        mapper = _make_mapper_with_config({})
+
+        entity = _entity_with_tags(
+            "staging.device_telemetry", {"provider.table_schema": "analytics"}
+        )
+
+        assert mapper.get_table_name(entity) == "analytics.staging_device_telemetry"
+
+    def test_provider_table_name_tag_still_wins_over_catalog_tag(self):
+        mapper = _make_mapper_with_config({})
+
+        entity = _entity_with_tags(
+            "staging.device_telemetry",
+            {"provider.table_catalog": "dev", "provider.table_name": "explicit.table"},
+        )
+
+        assert mapper.get_table_name(entity) == "explicit.table"
+
+
+class TestCatalogByTagRouting:
+    """`kindling.storage.catalog_by_tag` / `schema_by_tag` route an entity to
+    a catalog/schema based on one of its own tag VALUES, not its entityid --
+    the tag-value-keyed counterpart to id-glob-based `dataentities:`
+    patterns. E.g. `catalog_by_tag: {tier: {bronze: dev_bronze}}` routes any
+    entity tagged `tier=bronze` to catalog `dev_bronze` regardless of how
+    it's named."""
+
+    def test_catalog_by_tag_routes_matching_entity(self):
+        mapper = _make_mapper_with_config(
+            {"kindling.storage.catalog_by_tag": {"tier": {"bronze": "dev_bronze"}}}
+        )
+
+        entity = _entity_with_tags("orders", {"tier": "bronze"})
+
+        assert mapper.get_table_name(entity) == "dev_bronze.orders"
+
+    def test_catalog_by_tag_preserves_entity_id_structure_like_catalog_only_config(self):
+        mapper = _make_mapper_with_config(
+            {"kindling.storage.catalog_by_tag": {"tier": {"bronze": "dev_bronze"}}}
+        )
+
+        entity = _entity_with_tags("staging.device_telemetry", {"tier": "bronze"})
+
+        assert mapper.get_table_name(entity) == "dev_bronze.staging.device_telemetry"
+
+    def test_catalog_by_tag_does_not_apply_when_tag_value_unmatched(self):
+        mapper = _make_mapper_with_config(
+            {"kindling.storage.catalog_by_tag": {"tier": {"bronze": "dev_bronze"}}}
+        )
+
+        entity = _entity_with_tags("staging.device_telemetry", {"tier": "gold"})
+
+        # No routing match and no other namespace config -> treated as an
+        # already-qualified 2-part entity id, same as the no-config case.
+        assert mapper.get_table_name(entity) == "staging.device_telemetry"
+
+    def test_catalog_by_tag_does_not_apply_when_tag_absent(self):
+        mapper = _make_mapper_with_config(
+            {"kindling.storage.catalog_by_tag": {"tier": {"bronze": "dev_bronze"}}}
+        )
+
+        entity = _entity_with_tags("staging.device_telemetry", {})
+
+        assert mapper.get_table_name(entity) == "staging.device_telemetry"
+
+    def test_schema_by_tag_routes_and_flattens_like_schema_config(self):
+        mapper = _make_mapper_with_config(
+            {"kindling.storage.schema_by_tag": {"tier": {"gold": "curated"}}}
+        )
+
+        entity = _entity_with_tags("staging.device_telemetry", {"tier": "gold"})
+
+        assert mapper.get_table_name(entity) == "curated.staging_device_telemetry"
+
+    def test_provider_table_catalog_tag_overrides_catalog_by_tag_routing(self):
+        mapper = _make_mapper_with_config(
+            {"kindling.storage.catalog_by_tag": {"tier": {"bronze": "dev_bronze"}}}
+        )
+
+        entity = _entity_with_tags(
+            "staging.device_telemetry",
+            {"tier": "bronze", "provider.table_catalog": "explicit_cat"},
+        )
+
+        assert mapper.get_table_name(entity) == "explicit_cat.staging.device_telemetry"
+
+    def test_catalog_by_tag_routing_overrides_global_table_catalog_config(self):
+        mapper = _make_mapper_with_config(
+            {
+                "kindling.storage.table_catalog": "globalcat",
+                "kindling.storage.catalog_by_tag": {"tier": {"bronze": "dev_bronze"}},
+            }
+        )
+
+        entity = _entity_with_tags("staging.device_telemetry", {"tier": "bronze"})
+
+        assert mapper.get_table_name(entity) == "dev_bronze.staging.device_telemetry"
+
+    def test_catalog_by_tag_falls_back_to_global_config_when_no_tag_match(self):
+        mapper = _make_mapper_with_config(
+            {
+                "kindling.storage.table_catalog": "globalcat",
+                "kindling.storage.catalog_by_tag": {"tier": {"bronze": "dev_bronze"}},
+            }
+        )
+
+        entity = _entity_with_tags("staging.device_telemetry", {"tier": "silver"})
+
+        assert mapper.get_table_name(entity) == "globalcat.staging.device_telemetry"

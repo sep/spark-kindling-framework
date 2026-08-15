@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from injector import inject
+
 from kindling.data_entities import EntityNameMapper, EntityPathLocator
 from kindling.features import get_feature_bool
 from kindling.injection import GlobalInjector
@@ -84,6 +85,17 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
 
     Conventions:
     - Per-entity override via tag: `provider.table_name`
+    - Per-entity catalog/schema override via tags: `provider.table_catalog`,
+      `provider.table_schema` -- highest precedence after `provider.table_name`.
+    - Tag-value routing tables: `kindling.storage.catalog_by_tag` /
+      `schema_by_tag` map a tag key to a `{tag_value: catalog_or_schema}`
+      dict, e.g. `catalog_by_tag: {tier: {bronze: dev_bronze}}` routes every
+      entity tagged `tier=bronze` to catalog `dev_bronze`, regardless of its
+      entityid. This is the tag-value-keyed counterpart to the id-glob-based
+      `dataentities:` overlay (`ConfigPatternMatcher`): reach for a routing
+      table when placement follows a semantic tag rather than an entityid
+      naming convention; reach for `dataentities:` patterns when it follows
+      an entityid convention.
     - If `kindling.storage.table_schema` is configured (with or without
       `table_catalog`), the entity id is flattened entirely into a single leaf
       name: dots and hyphens -> underscores, e.g. `catalog.schema.leaf` or
@@ -97,10 +109,13 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
     - If no storage namespace config is present, entity IDs are treated as already-qualified names:
       - x.y.z -> catalog.schema.table
       - y.z   -> schema.table (uses current catalog if available)
-    - Optional namespace overrides via config:
-      - `kindling.storage.table_catalog`
-      - `kindling.storage.table_schema`
-      - `kindling.storage.table_name_prefix`
+    - Namespace overrides, highest to lowest precedence:
+      1. `provider.table_catalog` / `provider.table_schema` entity tags
+      2. `kindling.storage.catalog_by_tag` / `schema_by_tag` tag-value routing
+      3. `kindling.storage.table_catalog` / `table_schema` config
+      4. Legacy per-platform keys (`kindling.databricks.catalog`, etc.)
+    - `kindling.storage.table_name_prefix` applies regardless of which tier
+      resolved the catalog/schema.
     """
 
     @inject
@@ -120,10 +135,47 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
             return None
         return cleaned
 
-    def _has_storage_namespace_config(self) -> bool:
+    def _tag_routed_value(self, config_key: str, entity_tags: dict) -> Optional[str]:
+        """Resolve a value via a ``{tag_key: {tag_value: result}}`` routing table.
+
+        E.g. ``kindling.storage.catalog_by_tag: {tier: {bronze: dev_bronze}}``
+        routes any entity tagged ``tier=bronze`` to catalog ``dev_bronze``,
+        without needing a ``dataentities:`` glob pattern over entity ids.
+        First tag key in the routing table whose value is present on the
+        entity and has a mapped entry wins (dict iteration order); an entity
+        can only have one value for a given tag key, so there's no tie to
+        break within a single tag key.
+        """
+        routing = self.config.get(config_key)
+        if not routing:
+            return None
+        try:
+            items = routing.items()
+        except AttributeError:
+            return None
+        for tag_key, value_map in items:
+            if not hasattr(value_map, "items"):
+                continue
+            tag_value = entity_tags.get(tag_key)
+            if tag_value is None:
+                continue
+            cleaned = self._clean_config_value(value_map.get(str(tag_value)))
+            if cleaned:
+                return cleaned
+        return None
+
+    def _has_storage_namespace_config(self, entity_tags: dict) -> bool:
         # Treat platform fallbacks as config too. The key behavior change is that we no longer
         # infer catalog/schema from Spark when config is absent; instead we interpret entity IDs
         # as qualified names.
+        if self._clean_config_value(entity_tags.get("provider.table_catalog")) is not None:
+            return True
+        if self._clean_config_value(entity_tags.get("provider.table_schema")) is not None:
+            return True
+        if self._tag_routed_value("kindling.storage.catalog_by_tag", entity_tags) is not None:
+            return True
+        if self._tag_routed_value("kindling.storage.schema_by_tag", entity_tags) is not None:
+            return True
         for key in (
             "kindling.storage.table_catalog",
             "kindling.storage.table_schema",
@@ -138,9 +190,22 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
                 return True
         return False
 
-    def _config_namespace(self) -> Tuple[Optional[str], Optional[str]]:
-        catalog = self._clean_config_value(self.config.get("kindling.storage.table_catalog"))
-        schema = self._clean_config_value(self.config.get("kindling.storage.table_schema"))
+    def _config_namespace(self, entity_tags: dict) -> Tuple[Optional[str], Optional[str]]:
+        # Highest precedence: explicit per-entity tag override.
+        catalog = self._clean_config_value(entity_tags.get("provider.table_catalog"))
+        schema = self._clean_config_value(entity_tags.get("provider.table_schema"))
+
+        # Next: tag-value routing table.
+        if catalog is None:
+            catalog = self._tag_routed_value("kindling.storage.catalog_by_tag", entity_tags)
+        if schema is None:
+            schema = self._tag_routed_value("kindling.storage.schema_by_tag", entity_tags)
+
+        # Next: global config.
+        if catalog is None:
+            catalog = self._clean_config_value(self.config.get("kindling.storage.table_catalog"))
+        if schema is None:
+            schema = self._clean_config_value(self.config.get("kindling.storage.table_schema"))
 
         # Backward-compatible fallbacks (older platform-specific keys).
         if catalog is None:
@@ -195,7 +260,7 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
 
         # If no namespace config is provided, treat entity IDs as already-qualified names.
         # x.y.z -> catalog.schema.table; y.z -> schema.table (default catalog if available).
-        if not self._has_storage_namespace_config():
+        if not self._has_storage_namespace_config(entity_tags):
             raw = str(entity_id).strip()
             parts = [p.strip() for p in raw.split(".") if p.strip()]
             if len(parts) == 3:
@@ -224,7 +289,7 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
         prefix = (
             self._clean_config_value(self.config.get("kindling.storage.table_name_prefix")) or ""
         )
-        catalog, schema = self._config_namespace()
+        catalog, schema = self._config_namespace(entity_tags)
 
         if schema:
             # catalog+schema both configured, or schema-only configured: this is the

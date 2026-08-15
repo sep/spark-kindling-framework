@@ -103,7 +103,13 @@ These keys are used by the config-driven `EntityNameMapper`/`EntityPathLocator` 
 - `kindling.storage.table_name_prefix`: Optional prefix added to the generated leaf table name.
 - `kindling.storage.table_root`: Default path root for `storage` access mode entities (default `Tables`).
 - `kindling.storage.checkpoint_root`: Default checkpoint root used by system test apps (common default `Files/checkpoints`).
+- `kindling.storage.catalog_by_tag` / `kindling.storage.schema_by_tag`: Tag-value routing tables — map a tag key to a `{tag_value: catalog_or_schema}` dict, e.g. `catalog_by_tag: {tier: {bronze: dev_bronze}}` routes every entity tagged `tier=bronze` to catalog `dev_bronze`, regardless of its entityid. This is the tag-value-keyed counterpart to `dataentities:` glob patterns (`ConfigPatternMatcher`), which match by entityid convention instead. Overrides `table_catalog`/`table_schema` when a matching tag is present; falls back to them otherwise.
 - `kindling.databricks.volume_staging_root`: Optional Databricks-specific governed staging root for bootstrap wheel/config temp files. When omitted, Databricks bootstrap will try to derive a volume-backed staging root from `kindling.storage.checkpoint_root` or `kindling.storage.table_root` before falling back to DBFS.
+
+Per-entity tags (highest precedence, override all of the above):
+
+- `provider.table_catalog` / `provider.table_schema`: Explicit catalog/schema override for a single entity.
+- `provider.table_name`: Full table-name override, bypassing catalog/schema resolution entirely.
 
 ### Databricks Without Unity Catalog
 
