@@ -9,7 +9,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from kindling.config_patterns import ConfigPatternMatcher
+from pyspark.sql import DataFrame
+
+from kindling.config_patterns import ConfigPatternMatcher, TagRuleMatcher
 from kindling.injection import *
 from kindling.sentinels import UNSET
 from kindling.signaling import SignalEmitter, SignalProvider
@@ -17,7 +19,6 @@ from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
 from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
-from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -300,6 +301,10 @@ class DataPipesManager(DataPipesRegistry):
         # after bootstrap's overlay pass (workspace packages, app
         # register_all, notebook cells) are overlaid at registration.
         self._matcher = None
+        # Compiled datapipes-bytag: config section -- same persistence
+        # rationale as _matcher, but matches by the pipe's own declared
+        # tag value instead of its id.
+        self._tag_matcher = None
         self.logger = lp.get_logger("data_pipes_manager")
         self.logger.debug("Data pipes manager initialized ...")
 
@@ -314,29 +319,36 @@ class DataPipesManager(DataPipesRegistry):
         self.logger.debug(f"Pipe unregistered: {pipeid}")
 
     def apply_config_overrides(self, config_service: ConfigService) -> None:
-        """Overlay the ``datapipes:`` config section onto registered pipes.
+        """Overlay the ``datapipes:``/``datapipes-bytag:`` config sections
+        onto registered pipes.
 
         Rebuilds every registered pipe from its original decorator params
-        through the section's glob patterns (``ConfigPatternMatcher``
-        semantics: mappings deep-merge, scalars and lists replace, exact >
-        single-wildcard > multi-wildcard). A missing or empty section
-        compiles to a matcher with zero patterns, making the pass a
-        structural no-op. The matcher persists on the manager so later
-        registrations self-overlay.
+        through ``datapipes-bytag:``'s tag-value rules first, then
+        ``datapipes:``'s id-glob patterns (``ConfigPatternMatcher``/
+        ``TagRuleMatcher`` semantics: mappings deep-merge, scalars and lists
+        replace, exact > single-wildcard > multi-wildcard for id/tag-value
+        patterns). Tag rules apply first so a specific ``datapipes:`` entry
+        can still override a broader tag-based default for one pipe. A
+        missing or empty section compiles to a matcher with zero
+        rules/patterns, making that pass a structural no-op. Both matchers
+        persist on the manager so later registrations self-overlay.
 
         Idempotent and safely re-callable (hot reload: ``reload()`` config,
         then call again). Not synchronized with running DAGs — a concurrent
         run may observe a mix of old and new metadata across pipes.
         """
         self._matcher = ConfigPatternMatcher(config_service.get("datapipes"))
+        self._tag_matcher = TagRuleMatcher(config_service.get("datapipes-bytag"))
         for pipeid, raw_params in self._raw_params.items():
             self.registry[pipeid] = self._build_metadata(pipeid, raw_params)
         self.logger.debug(f"Config overrides applied to {len(self._raw_params)} pipe(s)")
 
     def _build_metadata(self, pipeid, raw_params):
         """Construct PipeMetadata from raw decorator params plus any config
-        overrides matching ``pipeid`` (no matcher yet -> raw as-is)."""
-        if self._matcher is None:
+        overrides matching the pipe's own tags (``datapipes-bytag:``) or its
+        id (``datapipes:``). Tag rules apply first, id-glob patterns apply
+        on top (no matchers yet -> raw as-is)."""
+        if self._matcher is None and self._tag_matcher is None:
             return PipeMetadata(pipeid, **raw_params)
 
         base = {
@@ -344,7 +356,10 @@ class DataPipesManager(DataPipesRegistry):
             for key, value in raw_params.items()
             if key not in self._NON_OVERRIDABLE_FIELDS
         }
-        resolved = self._matcher.resolve_overrides(pipeid, base)
+        if self._tag_matcher is not None:
+            pipe_tags = raw_params.get("tags") or {}
+            base = self._tag_matcher.resolve_overrides(pipe_tags, base)
+        resolved = self._matcher.resolve_overrides(pipeid, base) if self._matcher else base
         overridable = {field.name for field in fields(PipeMetadata)} - set(
             self._NON_OVERRIDABLE_FIELDS
         )

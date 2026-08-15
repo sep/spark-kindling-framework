@@ -547,3 +547,67 @@ class TestTagRuleMatcher:
         result = matcher.resolve_overrides({"priority": 1}, {"tags": {}})
 
         assert result == {"tags": {"escalate": "true"}}
+
+
+class TestTagRuleMatcherWildcards:
+    """Tag values support the same glob syntax as ConfigPatternMatcher id
+    patterns, reusing ConfigPatternMatcher internally per tag key."""
+
+    def test_wildcard_tag_value_matches(self):
+        matcher = TagRuleMatcher({"tier": {"gold*": {"tags": {"team": "core"}}}})
+
+        result = matcher.resolve_overrides({"tier": "gold-us"}, {"tags": {}})
+
+        assert result == {"tags": {"team": "core"}}
+
+    def test_wildcard_requires_nonempty_run_like_id_patterns(self):
+        """`*` means one non-empty run, matching ConfigPatternMatcher's
+        documented id-pattern semantics -- bare "gold" does not match
+        "gold*"."""
+        matcher = TagRuleMatcher({"tier": {"gold*": {"tags": {"team": "core"}}}})
+
+        result = matcher.resolve_overrides({"tier": "gold"}, {"tags": {}})
+
+        assert result == {"tags": {}}
+
+    def test_exact_and_wildcard_can_coexist_for_same_tag_key(self):
+        matcher = TagRuleMatcher(
+            {
+                "tier": {
+                    "gold": {"tags": {"exact": "true"}},
+                    "gold*": {"tags": {"wildcard": "true"}},
+                }
+            }
+        )
+
+        exact_result = matcher.resolve_overrides({"tier": "gold"}, {"tags": {}})
+        wildcard_result = matcher.resolve_overrides({"tier": "gold-us"}, {"tags": {}})
+
+        assert exact_result == {"tags": {"exact": "true"}}
+        assert wildcard_result == {"tags": {"wildcard": "true"}}
+
+    def test_exact_beats_wildcard_when_both_match(self):
+        """A value pattern like "gold*" only matches values with something
+        after "gold" (never bare "gold" itself, see the nonempty-run test
+        above), so this exercises specificity tiering with a "**"-style
+        multi-wildcard pattern that DOES overlap an exact match."""
+        matcher = TagRuleMatcher(
+            {
+                "tier": {
+                    "gold-us": {"tags": {"specific": "true", "team": "specific-team"}},
+                    "**": {"tags": {"team": "catch-all-team"}},
+                }
+            }
+        )
+
+        result = matcher.resolve_overrides({"tier": "gold-us"}, {"tags": {}})
+
+        # Exact ("gold-us") is more specific than multi-wildcard ("**") and
+        # applies later, so it wins the "team" key conflict.
+        assert result == {"tags": {"specific": "true", "team": "specific-team"}}
+
+    def test_question_mark_matches_single_character(self):
+        matcher = TagRuleMatcher({"region": {"us-?": {"tags": {"matched": "true"}}}})
+
+        assert matcher.resolve_overrides({"region": "us-1"}, {}) == {"tags": {"matched": "true"}}
+        assert matcher.resolve_overrides({"region": "us-12"}, {}) == {}

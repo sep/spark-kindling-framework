@@ -88,7 +88,7 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
     - Per-entity catalog/schema override via tags: `provider.table_catalog`,
       `provider.table_schema` -- highest precedence after `provider.table_name`.
       These tags can be set directly on an entity, or assigned to a whole
-      family of entities via the `dataentities_by_tag:` config section (see
+      family of entities via the `dataentities-bytag:` config section (see
       `kindling.data_entities.TagRuleMatcher`), e.g. tagging every `tier:
       bronze` entity with `provider.table_catalog: dev_bronze` without
       needing an entityid naming convention.

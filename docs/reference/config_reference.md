@@ -110,25 +110,25 @@ Per-entity tags (highest precedence, override all of the above):
 - `provider.table_catalog` / `provider.table_schema`: Explicit catalog/schema override for a single entity.
 - `provider.table_name`: Full table-name override, bypassing catalog/schema resolution entirely.
 
-These tags can be set directly on an entity's `tags=`, or assigned to a whole family of entities by tag value via `dataentities_by_tag:` (see "Tag-Based Config Overrides" below) — e.g. tagging every `tier: bronze` entity with `provider.table_catalog: dev_bronze` without needing an entityid naming convention.
+These tags can be set directly on an entity's `tags=`, or assigned to a whole family of entities by tag value via `dataentities-bytag:` (see "Tag-Based Config Overrides" below) — e.g. tagging every `tier: bronze` entity with `provider.table_catalog: dev_bronze` without needing an entityid naming convention.
 
 ### Tag-Based Config Overrides
 
-`dataentities_by_tag:` is a general-purpose counterpart to the `dataentities:` config section (`ConfigPatternMatcher`, documented in `packages/kindling/data_entities.py`): instead of matching entities by an entityid glob pattern, it matches by one of the entity's own already-declared tag values, and can set **any** overridable `EntityMetadata` field — not just storage/catalog config.
+`dataentities-bytag:` / `datapipes-bytag:` are general-purpose counterparts to the `dataentities:` / `datapipes:` config sections (`ConfigPatternMatcher`, documented in `packages/kindling/config_patterns.py`): instead of matching by an id glob pattern, they match by one of the item's own already-declared tag values, and can set **any** overridable field — not just storage/catalog config.
 
 ```yaml
-dataentities_by_tag:
+dataentities-bytag:
   tier:
     bronze:
       tags:
         provider.table_catalog: dev_bronze
-    gold:
+    "gold*":
       tags:
         provider.table_catalog: dev_gold
         schema.drift: fail
 ```
 
-Every entity tagged `tier: bronze` picks up `provider.table_catalog: dev_bronze` (merged into its existing tags, same deep-merge semantics as `dataentities:`); every entity tagged `tier: gold` additionally gets a stricter drift policy. Applied before `dataentities:` glob-pattern overrides, so a specific `dataentities:` entry can still override a broader tag-based default for one entity. Reach for `dataentities_by_tag:` when placement/config follows a semantic tag; reach for `dataentities:` when it follows an entityid naming convention.
+Every entity tagged `tier: bronze` picks up `provider.table_catalog: dev_bronze` (merged into its existing tags, same deep-merge semantics as `dataentities:`); every entity whose `tier` tag matches the glob `gold*` (`gold-us`, `gold-eu`, ...) additionally gets a stricter drift policy. Tag values support the same `*`/`?`/`**` glob syntax and exact-beats-wildcard specificity tiering as `dataentities:` id patterns (`TagRuleMatcher` compiles each tag key's value map as its own `ConfigPatternMatcher`). Tag rules apply before `dataentities:`/`datapipes:` glob-pattern overrides, so a specific id-pattern entry can still override a broader tag-based default for one item. `datapipes-bytag:` works identically for `PipeMetadata` fields. Reach for the `-bytag` sections when placement/config follows a semantic tag; reach for `dataentities:`/`datapipes:` when it follows an id naming convention.
 
 ### Databricks Without Unity Catalog
 

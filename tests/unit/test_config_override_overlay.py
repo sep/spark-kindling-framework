@@ -200,6 +200,95 @@ class TestPipeConfigOverlay:
         )
 
 
+class TestPipeTagBasedConfigOverlay:
+    """DataPipesManager.apply_config_overrides via datapipes-bytag:
+
+    General-purpose counterpart to datapipes:, matching by the pipe's own
+    declared tag VALUE instead of its id.
+    """
+
+    def test_tag_rule_merges_tags_for_matching_pipe(self):
+        manager = make_pipes_manager()
+        register_sample_pipe(manager, tags={"domain": "sales", "criticality": "high"})
+        config_service = make_config_service(
+            {"datapipes-bytag": {"criticality": {"high": {"tags": {"pager": "on-call"}}}}}
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        pipe = manager.get_pipe_definition("bronze.ingest_orders")
+        assert pipe.tags == {"domain": "sales", "criticality": "high", "pager": "on-call"}
+
+    def test_tag_rule_does_not_apply_to_non_matching_pipe(self):
+        manager = make_pipes_manager()
+        register_sample_pipe(manager, tags={"domain": "sales", "criticality": "low"})
+        config_service = make_config_service(
+            {"datapipes-bytag": {"criticality": {"high": {"tags": {"pager": "on-call"}}}}}
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        pipe = manager.get_pipe_definition("bronze.ingest_orders")
+        assert pipe.tags == {"domain": "sales", "criticality": "low"}
+
+    def test_tag_rule_can_set_any_overridable_field_not_just_tags(self):
+        manager = make_pipes_manager()
+        register_sample_pipe(manager, tags={"criticality": "high"})
+        config_service = make_config_service(
+            {"datapipes-bytag": {"criticality": {"high": {"output_type": "memory"}}}}
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        assert manager.get_pipe_definition("bronze.ingest_orders").output_type == "memory"
+
+    def test_id_glob_pattern_overrides_broader_tag_based_default(self):
+        manager = make_pipes_manager()
+        register_sample_pipe(manager, tags={"criticality": "high"})
+        config_service = make_config_service(
+            {
+                "datapipes-bytag": {"criticality": {"high": {"output_type": "memory"}}},
+                "datapipes": {"bronze.ingest_orders": {"output_type": "parquet"}},
+            }
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        assert manager.get_pipe_definition("bronze.ingest_orders").output_type == "parquet"
+
+    def test_wildcard_tag_value_matches(self):
+        manager = make_pipes_manager()
+        register_sample_pipe(manager, tags={"criticality": "high-p1"})
+        config_service = make_config_service(
+            {"datapipes-bytag": {"criticality": {"high*": {"tags": {"pager": "on-call"}}}}}
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        pipe = manager.get_pipe_definition("bronze.ingest_orders")
+        assert pipe.tags["pager"] == "on-call"
+
+    def test_execute_never_overridable_via_tag_rule(self):
+        manager = make_pipes_manager()
+        register_sample_pipe(manager, tags={"criticality": "high"})
+        config_service = make_config_service(
+            {"datapipes-bytag": {"criticality": {"high": {"execute": "clobber"}}}}
+        )
+
+        manager.apply_config_overrides(config_service)
+
+        assert manager.get_pipe_definition("bronze.ingest_orders").execute is sample_execute
+
+    def test_no_tag_rule_section_is_a_no_op(self):
+        manager = make_pipes_manager()
+        register_sample_pipe(manager, tags={"criticality": "high"})
+        config_service = make_config_service({})
+
+        manager.apply_config_overrides(config_service)
+
+        assert manager.get_pipe_definition("bronze.ingest_orders").tags == {"criticality": "high"}
+
+
 def make_entity_manager(config_service=None):
     signal_provider = MagicMock()
     signal_provider.create_signal.return_value = MagicMock()
@@ -350,7 +439,7 @@ class TestEntityConfigOverlay:
 
 
 class TestEntityTagBasedConfigOverlay:
-    """DataEntityManager.apply_config_overrides via dataentities_by_tag:
+    """DataEntityManager.apply_config_overrides via dataentities-bytag:
 
     General-purpose counterpart to dataentities:, matching by the entity's
     own declared tag VALUE instead of its id.
@@ -363,7 +452,7 @@ class TestEntityTagBasedConfigOverlay:
         )
         config_service = make_config_service(
             {
-                "dataentities_by_tag": {
+                "dataentities-bytag": {
                     "tier": {"bronze": {"tags": {"provider.table_catalog": "dev_bronze"}}}
                 }
             }
@@ -379,7 +468,7 @@ class TestEntityTagBasedConfigOverlay:
         register_sample_entity(manager, entityid="staging.device_telemetry", tags={"tier": "gold"})
         config_service = make_config_service(
             {
-                "dataentities_by_tag": {
+                "dataentities-bytag": {
                     "tier": {"bronze": {"tags": {"provider.table_catalog": "dev_bronze"}}}
                 }
             }
@@ -395,7 +484,7 @@ class TestEntityTagBasedConfigOverlay:
         register_sample_entity(manager, entityid="staging.device_telemetry", tags={"tier": "gold"})
         config_service = make_config_service(
             {
-                "dataentities_by_tag": {
+                "dataentities-bytag": {
                     "tier": {"gold": {"partition_columns": ["date"], "name": "renamed_by_tag"}}
                 }
             }
@@ -408,7 +497,7 @@ class TestEntityTagBasedConfigOverlay:
         assert entity.name == "renamed_by_tag"
 
     def test_id_glob_pattern_overrides_broader_tag_based_default(self):
-        """dataentities_by_tag: applies first (broad default); dataentities:
+        """dataentities-bytag: applies first (broad default); dataentities:
         applies on top (specific override) for the same field."""
         manager = make_entity_manager()
         register_sample_entity(
@@ -416,7 +505,7 @@ class TestEntityTagBasedConfigOverlay:
         )
         config_service = make_config_service(
             {
-                "dataentities_by_tag": {
+                "dataentities-bytag": {
                     "tier": {"bronze": {"tags": {"provider.table_catalog": "dev_bronze"}}}
                 },
                 "dataentities": {
@@ -440,7 +529,7 @@ class TestEntityTagBasedConfigOverlay:
             schema=schema_sentinel,
         )
         config_service = make_config_service(
-            {"dataentities_by_tag": {"tier": {"gold": {"schema": "clobber", "sql": "SELECT 1"}}}}
+            {"dataentities-bytag": {"tier": {"gold": {"schema": "clobber", "sql": "SELECT 1"}}}}
         )
 
         manager.apply_config_overrides(config_service)
@@ -453,7 +542,7 @@ class TestEntityTagBasedConfigOverlay:
         manager = make_entity_manager()
         manager.apply_config_overrides(
             make_config_service(
-                {"dataentities_by_tag": {"tier": {"bronze": {"tags": {"write.mode": "insert"}}}}}
+                {"dataentities-bytag": {"tier": {"bronze": {"tags": {"write.mode": "insert"}}}}}
             )
         )
 

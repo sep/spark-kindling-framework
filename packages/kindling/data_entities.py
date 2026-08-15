@@ -825,7 +825,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         # registered after bootstrap's overlay pass (workspace packages,
         # app register_all, notebook cells) are overlaid at registration.
         self._matcher = None
-        # Compiled dataentities_by_tag: config section -- same persistence
+        # Compiled dataentities-bytag: config section -- same persistence
         # rationale as _matcher, but matches by the entity's own declared
         # tag value instead of its id.
         self._tag_matcher = None
@@ -874,11 +874,11 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             self._register_scd2_current_companion(entity, scd_config)
 
     def apply_config_overrides(self, config_service: ConfigService) -> None:
-        """Overlay the ``dataentities:``/``dataentities_by_tag:`` config
+        """Overlay the ``dataentities:``/``dataentities-bytag:`` config
         sections onto registered entities.
 
         Rebuilds every explicitly-registered entity from its original
-        registration params through ``dataentities_by_tag:``'s tag-value
+        registration params through ``dataentities-bytag:``'s tag-value
         rules first, then ``dataentities:``'s id-glob patterns
         (``ConfigPatternMatcher``/``TagRuleMatcher`` semantics: mappings
         deep-merge, scalars and lists replace, exact > single-wildcard >
@@ -897,7 +897,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         caveat as ``tag_overrides``).
         """
         self._matcher = ConfigPatternMatcher(config_service.get("dataentities"))
-        self._tag_matcher = TagRuleMatcher(config_service.get("dataentities_by_tag"))
+        self._tag_matcher = TagRuleMatcher(config_service.get("dataentities-bytag"))
         for entityid, raw_params in self._raw_params.items():
             entity = self._build_metadata(entityid, raw_params)
             self._validate_entity(entity)
@@ -908,7 +908,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
     def _build_metadata(self, entityid, raw_params):
         """Construct EntityMetadata from raw registration params plus any
         config overrides matching the entity's own tags
-        (``dataentities_by_tag:``) or its id (``dataentities:``). Tag rules
+        (``dataentities-bytag:``) or its id (``dataentities:``). Tag rules
         apply first, id-glob patterns apply on top (no matchers yet -> raw
         as-is)."""
         if self._matcher is None and self._tag_matcher is None:
