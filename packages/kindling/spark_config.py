@@ -15,6 +15,28 @@ _CONFIG_LOGGER = logging.getLogger("kindling.config")
 _MISSING = object()
 
 
+def _log_settings_files_load_order(settings_files: List[str]) -> None:
+    """Log the Dynaconf settings_files list in merge order (lowest -> highest precedence).
+
+    Files listed later in ``settings_files`` win when the same key appears in
+    more than one (MERGE_ENABLED_FOR_DYNACONF=True does a deep merge, not a
+    replace). Missing files are silently skipped by Dynaconf with no
+    complaint, which is easy to mistake for "the key isn't set anywhere" when
+    it's really "this file never loaded" — flagging that here up front saves
+    a debug cycle.
+    """
+    if not settings_files:
+        _CONFIG_LOGGER.info("Config file load order: none (no settings_files provided)")
+        return
+    lines = []
+    for index, path in enumerate(settings_files):
+        exists = Path(path).exists()
+        lines.append(f"  [{index}] {'FOUND  ' if exists else 'MISSING'} {path}")
+    _CONFIG_LOGGER.info(
+        "Config file load order (lowest -> highest precedence):\n" + "\n".join(lines)
+    )
+
+
 class ConfigService(ABC):
     """Abstract configuration service interface.
 
@@ -130,6 +152,7 @@ class DynaconfConfig(ConfigService):
         self._reload_context = reload_context  # Store for hot-reload
 
         settings_files = config_files or []
+        _log_settings_files_load_order(settings_files)
 
         # Load YAML configs first
         # NOTE: environments=False because Kindling uses separate files (settings.yaml, development.yaml)
@@ -437,6 +460,7 @@ class DynaconfConfig(ConfigService):
                     )
 
                     # Reload Dynaconf with fresh files
+                    _log_settings_files_load_order(config_files)
                     self.dynaconf = Dynaconf(
                         settings_files=config_files,
                         environments=False,

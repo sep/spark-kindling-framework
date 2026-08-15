@@ -5,6 +5,8 @@ from contextlib import nullcontext
 from functools import reduce
 from pathlib import Path
 
+from pyspark.sql.functions import col
+
 from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.entity_provider_csv import (
@@ -18,7 +20,6 @@ from kindling.spark_config import ConfigService
 from kindling.spark_log import *
 from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
 from kindling.watermarking import *
-from pyspark.sql.functions import col
 
 
 def _is_local_execution() -> bool:
@@ -314,6 +315,10 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             # inside the try keeps any raise paired with
             # persist.persist_failed after persist.before_persist.
             write_mode = str((output_entity.tags or {}).get("write.mode") or "").strip().lower()
+            self.logger.debug(
+                f"Entity '{output_entity.entityid}': resolved write.mode="
+                f"'{write_mode or '(unset)'}' from tags={output_entity.tags}"
+            )
             if write_mode not in ("", "append", "merge", "insert"):
                 raise ValueError(
                     f"Entity '{output_entity.entityid}': invalid write.mode "
