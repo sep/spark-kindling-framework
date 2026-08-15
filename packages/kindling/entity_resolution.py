@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from injector import inject
-
 from kindling.data_entities import EntityNameMapper, EntityPathLocator
 from kindling.features import get_feature_bool
 from kindling.injection import GlobalInjector
@@ -85,7 +84,16 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
 
     Conventions:
     - Per-entity override via tag: `provider.table_name`
-    - If storage namespace config is present, leaf name is derived from entityid: dots and hyphens -> underscores
+    - If `kindling.storage.table_schema` is configured (with or without
+      `table_catalog`), the entity id is flattened entirely into a single leaf
+      name: dots and hyphens -> underscores, e.g. `catalog.schema.leaf` or
+      `schema.leaf`.
+    - If only `kindling.storage.table_catalog` is configured (no schema), the
+      configured catalog is layered on top of the entity id's own dot-structure
+      instead of flattening it: `orders` -> `catalog.orders`;
+      `staging.device_telemetry` -> `catalog.staging.device_telemetry`; a 3+
+      part entity id has its own leading segment replaced by the configured
+      catalog while its trailing schema.table is preserved.
     - If no storage namespace config is present, entity IDs are treated as already-qualified names:
       - x.y.z -> catalog.schema.table
       - y.z   -> schema.table (uses current catalog if available)
@@ -213,18 +221,63 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
                 return f"{vol_catalog}.{vol_schema}.{leaf}"
             return raw
 
-        leaf = _normalize_table_leaf(entity_id)
         prefix = (
             self._clean_config_value(self.config.get("kindling.storage.table_name_prefix")) or ""
         )
+        catalog, schema = self._config_namespace()
+
+        if schema:
+            # catalog+schema both configured, or schema-only configured: this is the
+            # long-standing, documented, and tested behavior -- the entity id is
+            # flattened entirely into a single leaf name underneath the configured
+            # namespace (e.g. entity id "staging.device_telemetry" with
+            # table_schema=analytics becomes "analytics.staging_device_telemetry",
+            # not "analytics.staging.device_telemetry"). Changing this would break
+            # existing deployments/tests that rely on a flat leaf under an explicit
+            # catalog+schema, so it is preserved as-is.
+            leaf = _normalize_table_leaf(entity_id)
+            if prefix:
+                leaf = f"{prefix}{leaf}"
+            if catalog:
+                return f"{catalog}.{schema}.{leaf}"
+            return f"{schema}.{leaf}"
+
+        if catalog:
+            # catalog configured but no schema: previously this silently dropped the
+            # catalog entirely (fell through to a bare, unqualified leaf) -- a real
+            # bug, since there was no way to configure "just a catalog" and have it
+            # take effect. There is no existing test or documented contract relying
+            # on the old drop-the-catalog behavior, so we fix it outright rather than
+            # preserving it.
+            #
+            # Rather than flattening the whole entity id (which would discard any
+            # schema.table structure the entity id already carries), we layer the
+            # configured catalog on top of the entity id's own dot-structure:
+            #   - 1-part entity id "orders"                 -> catalog.orders
+            #   - 2-part entity id "staging.device_telemetry" (already schema.table)
+            #                                                -> catalog.staging.device_telemetry
+            #   - 3+ part entity id "x.staging.device_telemetry" (already fully
+            #     qualified) -> the configured catalog overrides the entity id's own
+            #     leading segment, keeping its trailing schema.table:
+            #     catalog.staging.device_telemetry
+            raw = str(entity_id).strip()
+            parts = [p.strip() for p in raw.split(".") if p.strip()]
+            if len(parts) >= 2:
+                schema_part = parts[-2]
+                table_part = _normalize_table_leaf(parts[-1])
+                if prefix:
+                    table_part = f"{prefix}{table_part}"
+                return f"{catalog}.{schema_part}.{table_part}"
+            leaf = _normalize_table_leaf(entity_id)
+            if prefix:
+                leaf = f"{prefix}{leaf}"
+            return f"{catalog}.{leaf}"
+
+        # Neither catalog nor schema configured (e.g. only table_name_prefix, or a
+        # legacy per-platform key with no value): flatten as before.
+        leaf = _normalize_table_leaf(entity_id)
         if prefix:
             leaf = f"{prefix}{leaf}"
-
-        catalog, schema = self._config_namespace()
-        if catalog and schema:
-            return f"{catalog}.{schema}.{leaf}"
-        if schema:
-            return f"{schema}.{leaf}"
         return leaf
 
 
