@@ -461,6 +461,7 @@ class DatabricksAPI(PlatformAPI):
                 ClusterLogConf,
                 ClusterSpec,
                 DataSecurityMode,
+                RuntimeEngine,
             )
         except ImportError:
             raise ImportError("Databricks SDK service modules not available")
@@ -547,12 +548,19 @@ class DatabricksAPI(PlatformAPI):
         if explicit_data_security_mode:
             data_security_mode = DataSecurityMode(explicit_data_security_mode)
 
+        # Photon is a separate cluster field, not part of the spark_version
+        # string -- a runtime_version like "17.3.x-photon-scala2.13" reported
+        # back by a running cluster reflects this flag, it isn't parsed from
+        # the version passed in at creation time.
+        runtime_engine = RuntimeEngine.PHOTON if job_config.get("photon") else None
+
         cluster_spec = ClusterSpec(
             spark_version=job_config.get("spark_version", "13.3.x-scala2.12"),
             node_type_id=job_config.get("node_type_id", "Standard_DS3_v2"),
             num_workers=job_config.get("num_workers", 1),
             cluster_log_conf=cluster_log_conf,
             data_security_mode=data_security_mode,
+            runtime_engine=runtime_engine,
             spark_conf=spark_conf if spark_conf else None,
         )
 

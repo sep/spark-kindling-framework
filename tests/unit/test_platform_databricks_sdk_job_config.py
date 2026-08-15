@@ -358,6 +358,28 @@ def test_build_job_spec_existing_cluster_id_with_uc_volume_path_is_harmless():
     assert spec["cluster_spec"].data_security_mode == DataSecurityMode.SINGLE_USER
 
 
+# --- photon: runtime_engine is a separate ClusterSpec field, not part of ---
+# --- the spark_version string ---
+
+
+def test_build_job_spec_photon_true_sets_runtime_engine():
+    api = _make_api_for_create_job()
+
+    spec = api._build_job_spec("test-job", {"photon": True})
+
+    from databricks.sdk.service.compute import RuntimeEngine
+
+    assert spec["cluster_spec"].runtime_engine == RuntimeEngine.PHOTON
+
+
+def test_build_job_spec_photon_unset_leaves_runtime_engine_none():
+    api = _make_api_for_create_job()
+
+    spec = api._build_job_spec("test-job", {})
+
+    assert spec["cluster_spec"].runtime_engine is None
+
+
 # --- data_security_mode override / force_new_cluster: enable a genuine ---
 # --- Spark-Connect-backed session for system tests (see trace_ops fix) ---
 

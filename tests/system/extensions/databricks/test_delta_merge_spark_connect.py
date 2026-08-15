@@ -13,13 +13,16 @@ session/API-URL context (observed as "No api url found in local command
 context"). The fix reads the argument's __dict__ directly, which never
 invokes __getattr__ regardless of the argument's type.
 
-Every other Databricks system test resolves existing_cluster_id (the CI
-DATABRICKS_CLUSTER_ID secret) or forces DataSecurityMode.SINGLE_USER, both
-of which run classic attached Spark. Starting with DBR 14.0, clusters
-running Shared/Standard (user-isolation) access mode use Spark Connect for
-the Python driver session by default -- this is the axis those tests never
-exercise. This test forces a fresh Shared-mode cluster instead, so it would
-have failed before the trace_ops fix and passes after it.
+Starting with DBR 14.0, clusters running Shared/Standard (user-isolation)
+access mode use Spark Connect for the Python driver session by default --
+this test relies on the shared CI cluster (DATABRICKS_CLUSTER_ID) already
+being configured that way (confirmed: DBR 17.3 LTS, Photon, Standard
+access mode -- matching a real client cluster observed hitting this bug)
+rather than forcing a fresh cluster itself: the CI service principal is not
+authorized to create clusters (PERMISSION_DENIED), so existing_cluster_id
+is the only viable path here. If the shared cluster's access mode ever
+reverts to Single User/Dedicated, this test stops exercising the bug it
+guards against without warning -- see databricks_execution_contract.md.
 
 Usage:
     poe test-extension --extension databricks --platform databricks
@@ -43,12 +46,6 @@ EXPECTED_TESTS = [
     "initial_merge",
     "keyed_merge_updates_matched_rows",
 ]
-
-# Shared/Standard (user-isolation) access mode uses Spark Connect for the
-# Python driver session starting with DBR 14.0 -- see module docstring.
-# Pinned to match a real client cluster observed hitting this bug: DBR 17.3
-# LTS (Scala 2.13, Spark 4.0.0), Standard/Shared access mode, Standard_D4ds_v5.
-SHARED_MODE_SPARK_VERSION = "17.3.x-scala2.13"
 
 
 @pytest.fixture
@@ -78,13 +75,6 @@ class TestDeltaMergeSparkConnect:
             "app_name": app_name,
             "entry_point": "app.py",
             "test_id": test_id,
-            # Bypass existing_cluster_id/default_cluster_id: the shared CI
-            # cluster's access mode is infra state this code can't observe or
-            # rely on, and USER_ISOLATION is the one mode none of Kindling's
-            # own job configs have ever requested.
-            "force_new_cluster": True,
-            "data_security_mode": "USER_ISOLATION",
-            "spark_version": SHARED_MODE_SPARK_VERSION,
         }
 
         platform_overrides = get_system_platform_config_overrides(platform_name, test_id)
@@ -117,9 +107,7 @@ class TestDeltaMergeSparkConnect:
                     run_id=run_id,
                     print_lines=True,
                     poll_interval=get_system_test_poll_interval(10.0),
-                    # New-cluster startup on top of the run itself needs more headroom
-                    # than an existing-cluster job.
-                    max_wait=get_system_test_stream_max_wait(1200.0, platform_name),
+                    max_wait=get_system_test_stream_max_wait(600.0, platform_name),
                 )
             except Exception as stream_err:
                 print(f"Stdout streaming error (non-fatal): {stream_err}")

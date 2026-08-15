@@ -10,15 +10,16 @@ leaving a live "@secret:..." literal in resolved config, which a downstream
 consumer (e.g. the EventHub provider parsing it as a connection string) then
 failed on with a confusing, unrelated KeyError.
 
-Every other Databricks system test (including
-core/test_config_secrets.py::TestPlatformSecretProvider, which this test
-otherwise mirrors) resolves existing_cluster_id (the CI DATABRICKS_CLUSTER_ID
-secret) -- whatever access mode that cluster happens to have, never
-deliberately Standard/Shared. This test forces a fresh Standard-mode cluster
-instead, using create_job()/run_job() (a persistent job, the same job shape
-`kindling app run --platform databricks` submits), so it exercises the exact
-compute shape a real client hit and would have failed before the
-_resolve_dbutils() bridge fix.
+This uses create_job()/run_job() against existing_cluster_id (the CI
+DATABRICKS_CLUSTER_ID secret) -- the same job shape
+`kindling app run --platform databricks` submits -- and relies on that
+shared cluster already being configured Standard/Shared access mode
+(confirmed: DBR 17.3 LTS, Photon, matching a real client cluster observed
+hitting this bug). It does not force a fresh cluster itself: the CI service
+principal is not authorized to create clusters (PERMISSION_DENIED). If the
+shared cluster's access mode ever reverts to Single User/Dedicated, this
+test stops exercising the bug it guards against without warning -- see
+databricks_execution_contract.md.
 
 Usage:
     poe test-extension --extension databricks --platform databricks
@@ -47,10 +48,6 @@ EXPECTED_TESTS = [
     "config_secret_yaml_ref_integration_key",
     "config_secret_yaml_template_auth_header",
 ]
-
-# Matches a real client cluster observed hitting this bug: DBR 17.3 LTS
-# (Scala 2.13, Spark 4.0.0), Standard (formerly Shared) access mode.
-SHARED_MODE_SPARK_VERSION = "17.3.x-scala2.13"
 
 
 def _extract_secret_name(secret_ref: str) -> str:
@@ -100,13 +97,6 @@ class TestSecretResolutionSparkConnect:
             "entry_point": "app.py",
             "test_id": test_id,
             "config_overrides": {"kindling": {"secrets": platform_secrets_config}},
-            # Bypass existing_cluster_id/default_cluster_id: the shared CI
-            # cluster's access mode is infra state this test can't observe or
-            # rely on, and Standard/Shared (Spark Connect) is the one mode
-            # none of Kindling's own job configs have ever requested.
-            "force_new_cluster": True,
-            "data_security_mode": "USER_ISOLATION",
-            "spark_version": SHARED_MODE_SPARK_VERSION,
         }
         job_config = apply_env_config_overrides(job_config, platform_name)
 
@@ -157,9 +147,7 @@ class TestSecretResolutionSparkConnect:
                 run_id=run_id,
                 print_lines=True,
                 poll_interval=get_system_test_poll_interval(10.0),
-                # New-cluster startup on top of the run itself needs more headroom
-                # than an existing-cluster job.
-                max_wait=get_system_test_stream_max_wait(1200.0, platform_name),
+                max_wait=get_system_test_stream_max_wait(600.0, platform_name),
             )
 
             final_status = wait_for_job_not_pending(api_client, run_id)
