@@ -221,8 +221,8 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
-def _clear_config_env_overrides(monkeypatch):
-    """Isolate tests from CONFIG__* environment variables.
+def _clear_config_env_overrides(request, monkeypatch):
+    """Isolate unit/integration tests from CONFIG__* environment variables.
 
     kindling_cli.cli._resolve_runtime_parameters (via kindling_sdk.env_config)
     and the system-test harness both read CONFIG__-prefixed env vars as a
@@ -232,7 +232,15 @@ def _clear_config_env_overrides(monkeypatch):
     tests) silently changes unrelated unit tests' behavior. Tests that
     specifically want CONFIG__ vars present should set them explicitly via
     monkeypatch.setenv within the test itself.
+
+    System tests are exempt: they are the intended consumer of real
+    CONFIG__* secrets (CI injects them from GitHub Actions secrets, e.g.
+    CONFIG__platform_fabric__kindling__secrets__key_vault_url). Clearing them
+    here made every system test see those secrets as unset regardless of
+    what CI actually configured.
     """
+    if request.node.get_closest_marker("system") is not None:
+        return
     for key in list(os.environ):
         if key.startswith("CONFIG__"):
             monkeypatch.delenv(key, raising=False)
