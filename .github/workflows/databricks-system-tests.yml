@@ -42,6 +42,31 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           pip install -e .
 
+      - name: Resolve candidate storage path
+        id: base-path
+        run: |
+          base_path="workflow-dispatch/${{ github.run_id }}"
+          echo "azure_base_path=$base_path" >> "$GITHUB_OUTPUT"
+          echo "Using AZURE_BASE_PATH=$base_path"
+
+      - name: Build framework wheel
+        run: |
+          chmod +x scripts/build_platform_wheels.sh
+          bash scripts/build_platform_wheels.sh
+          cp runtime/scripts/kindling_bootstrap.py dist/kindling_bootstrap.py
+          ls -lh dist/
+
+      - name: Deploy candidate wheel to isolated path
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+          AZURE_BASE_PATH: ${{ steps.base-path.outputs.azure_base_path }}
+        run: |
+          python scripts/deploy.py
+
       - name: Resolve Databricks UC config
         env:
           DEFAULT_DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
@@ -79,7 +104,7 @@ jobs:
           ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
-          AZURE_BASE_PATH: ""
+          AZURE_BASE_PATH: ${{ steps.base-path.outputs.azure_base_path }}
         run: |
           if [ -n "${{ inputs.extension }}" ]; then
             poe test-extension --extension "${{ inputs.extension }}" --platform databricks
