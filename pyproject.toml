@@ -32,11 +32,35 @@ pyyaml = ">=6.0"
 packaging = ">=23.0"
 blinker = ">=1.6.0"
 # Azure SDKs used by every Azure-backed platform.
-# `azure-core` is intentionally constrained to 1.30.x for managed-runtime
-# compatibility (for example, Fabric runtime 1.30.2). `azure-identity` and
-# `azure-storage-file-datalake` are intentionally kept loose so pip accepts
-# the cluster's pre-installed versions without unnecessary re-resolution.
-azure-core = ">=1.30.0,<1.31.0"
+# `azure-core` needs a per-platform ceiling: Fabric's managed runtime ships
+# azure-core 1.30.2, so the [fabric] extra keeps the tight <1.31.0 upper
+# bound for managed-runtime compatibility. Every other install path (bare,
+# [databricks], [synapse], [all], ...) must NOT carry that ceiling: Azure
+# Databricks' runtime pre-ships azure-mgmt-core==1.5.0, which itself requires
+# azure-core>=1.31.0, so an unconditional <1.31.0 ceiling makes pip hold/
+# downgrade azure-core to 1.30.2 on Databricks and collide with the
+# preinstalled azure-mgmt-core (see the "azure-mgmt-core ... incompatible"
+# warning that used to show up on every Databricks CI job).
+#
+# This is expressed as two additive constraints rather than a mutually
+# exclusive pair: an unconditional base entry (no marker) plus a second entry
+# scoped to `extra == 'fabric'`. Poetry's build backend emits BOTH as
+# separate `Requires-Dist: azure-core (...)` lines in wheel METADATA, and pip
+# applies both whenever the fabric extra is requested, intersecting them to
+# `>=1.30.0,<1.31.0`. A markers-only *mutually exclusive* pair keyed off
+# `extra != 'fabric'` / `extra == 'fabric'` was tried first and does NOT
+# work: poetry-core silently drops the `extra != 'fabric'` entry from the
+# built wheel's METADATA, leaving bare/non-fabric installs with no azure-core
+# requirement at all. Verified by building the wheel and inspecting
+# `unzip -p spark_kindling-*.whl "*.dist-info/METADATA" | grep azure-core`.
+#
+# `azure-identity` and `azure-storage-file-datalake` are intentionally kept
+# loose so pip accepts the cluster's pre-installed versions without
+# unnecessary re-resolution.
+azure-core = [
+    {version = ">=1.30.0"},
+    {version = ">=1.30.0,<1.31.0", markers = "extra == 'fabric'"},
+]
 azure-identity = ">=1.12.0"
 azure-storage-file-datalake = ">=12.0.0"
 # Platform-exclusive runtime deps live in extras (see [tool.poetry.extras]).
