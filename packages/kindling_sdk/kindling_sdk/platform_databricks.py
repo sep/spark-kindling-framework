@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 import requests
 
+from .artifact_store import artifact_store_for, resolve_artifacts_path
 from .platform_provider import (
     PlatformAPI,
     PlatformAPIRegistry,
@@ -542,6 +543,10 @@ class DatabricksAPI(PlatformAPI):
         else:
             data_security_mode = None
 
+        explicit_data_security_mode = job_config.get("data_security_mode")
+        if explicit_data_security_mode:
+            data_security_mode = DataSecurityMode(explicit_data_security_mode)
+
         cluster_spec = ClusterSpec(
             spark_version=job_config.get("spark_version", "13.3.x-scala2.12"),
             node_type_id=job_config.get("node_type_id", "Standard_DS3_v2"),
@@ -551,11 +556,19 @@ class DatabricksAPI(PlatformAPI):
             spark_conf=spark_conf if spark_conf else None,
         )
 
-        existing_cluster_id = (
-            job_config.get("existing_cluster_id")
-            or job_config.get("cluster_id")
-            or self.default_cluster_id
-        )
+        # force_new_cluster bypasses existing_cluster_id/default_cluster_id: a job
+        # config that needs a specific data_security_mode (e.g. USER_ISOLATION for a
+        # genuine Spark-Connect-backed session — see docs/contributing/
+        # databricks_execution_contract.md) cannot rely on whatever access mode the
+        # shared CI cluster already happens to have been created with.
+        if job_config.get("force_new_cluster"):
+            existing_cluster_id = None
+        else:
+            existing_cluster_id = (
+                job_config.get("existing_cluster_id")
+                or job_config.get("cluster_id")
+                or self.default_cluster_id
+            )
 
         return {
             "python_file": python_file,

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
 from kindling.entity_provider_registry import EntityProviderRegistry
@@ -16,6 +17,7 @@ from kindling.trace_ops import (
     LEVEL_VERBOSE,
     TRACED_PROVIDER_OPS,
     UNTRACED_PROVIDER_OPS,
+    _entity_id_from_args,
     configure_op_tracing,
     level_at_least,
     read_tracing_settings,
@@ -158,6 +160,51 @@ class TestWrapProviderOps:
 
         source = inspect.getsource(DeltaEntityProvider.merge_as_stream)
         assert "type(self).merge_to_entity(self" in source
+
+
+class _SparkConnectLikeDataFrame:
+    """Simulates a Spark Connect DataFrame's dangerous __getattr__.
+
+    Spark Connect resolves any unrecognized attribute name as a possible
+    column reference and issues a schema-analysis RPC; outside an active
+    session/API-URL context that RPC fails with something other than a
+    plain AttributeError. This double reproduces just that hazard: any
+    attribute access not present in __dict__ blows up loudly instead of
+    raising AttributeError, so a test using it fails immediately if
+    production code ever falls back to getattr()-style introspection.
+    """
+
+    def __getattr__(self, name):
+        raise RuntimeError(f"No api url found in local command context (attempted attr={name!r})")
+
+
+class TestEntityIdFromArgsSafety:
+    """Regression coverage: tracing must never getattr() a provider-op argument."""
+
+    def test_dangerous_dataframe_argument_is_not_introspected(self):
+        entity_id = _entity_id_from_args(
+            (_SparkConnectLikeDataFrame(), _entity("silver.telemetry")), {}
+        )
+        assert entity_id == "silver.telemetry"
+
+    def test_dangerous_dataframe_as_only_argument_returns_none(self):
+        entity_id = _entity_id_from_args((_SparkConnectLikeDataFrame(),), {})
+        assert entity_id is None
+
+    def test_merge_to_entity_spans_without_touching_dangerous_df_attrs(self):
+        """End-to-end through the real wrapper: merge_to_entity(df, entity)."""
+        provider = FakeProvider()
+        tp = RecordingTraceProvider()
+        wrap_provider_ops(provider, tp, provider_type="fake")
+
+        dangerous_df = _SparkConnectLikeDataFrame()
+        provider.merge_to_entity(dangerous_df, _entity("silver.telemetry"))
+
+        assert provider.merge_calls == 1
+        spans = tp.find(operation="merge_to_entity")
+        assert len(spans) == 1
+        assert spans[0].details["entity_id"] == "silver.telemetry"
+        assert spans[0].closed
 
 
 class TestRegistryOpTracing:

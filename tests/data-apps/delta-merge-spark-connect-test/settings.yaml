@@ -1,0 +1,17 @@
+# Delta Merge / Spark Connect Regression Test App
+# Exercises a real keyed Delta merge (SCD1MergeStrategy) through the traced
+# provider-op path, on whatever Spark session shape the job actually gets.
+
+kindling:
+  version: "0.2.0"
+
+  telemetry:
+    logging:
+      level: INFO
+      print: true
+    tracing:
+      print: false
+
+  bootstrap:
+    load_lake: true
+    load_workspace_packages: false

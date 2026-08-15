@@ -147,9 +147,28 @@ def whitelist_details(mapping: Optional[Dict[str, Any]], keys) -> Dict[str, Any]
 
 
 def _entity_id_from_args(args, kwargs) -> Optional[str]:
-    """Best-effort entity id: first argument shaped like EntityMetadata."""
+    """Best-effort entity id: first argument shaped like EntityMetadata.
+
+    Reads the argument's instance __dict__ directly rather than calling
+    getattr(value, "entityid", None). Traced ops (merge_to_entity,
+    write_to_entity, etc.) receive a DataFrame positional argument
+    alongside the entity, and getattr() would invoke that DataFrame's
+    normal attribute resolution -- on a Spark Connect DataFrame,
+    __getattr__ treats an unrecognized name as a possible column reference
+    and can trigger schema analysis (an RPC to the Connect server), which
+    can raise outside an active session context (e.g. "No api url found
+    in local command context" during ad hoc job bootstrap) instead of the
+    clean AttributeError getattr()'s default expects to catch. __dict__
+    access bypasses __getattr__ entirely (it's resolved by the normal
+    attribute machinery before __getattr__ is ever consulted), so this is
+    safe regardless of what __getattr__ does on non-entity arguments; it
+    just won't find "entityid" on objects that don't plainly have it.
+    """
     for value in list(args) + list(kwargs.values()):
-        entity_id = getattr(value, "entityid", None)
+        instance_dict = getattr(value, "__dict__", None)
+        if not isinstance(instance_dict, dict):
+            continue
+        entity_id = instance_dict.get("entityid")
         if entity_id is not None:
             return entity_id
     return None

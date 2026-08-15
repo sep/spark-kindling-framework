@@ -358,6 +358,78 @@ def test_build_job_spec_existing_cluster_id_with_uc_volume_path_is_harmless():
     assert spec["cluster_spec"].data_security_mode == DataSecurityMode.SINGLE_USER
 
 
+# --- data_security_mode override / force_new_cluster: enable a genuine ---
+# --- Spark-Connect-backed session for system tests (see trace_ops fix) ---
+
+
+def test_explicit_data_security_mode_overrides_uc_default():
+    """job_config['data_security_mode'] wins over the computed SINGLE_USER default."""
+    api = _make_api_for_create_job()
+
+    api.create_job(
+        "test-job",
+        {
+            "artifacts_storage_path": "/Volumes/cat/schema/vol",
+            "data_security_mode": "USER_ISOLATION",
+        },
+    )
+
+    from databricks.sdk.service.compute import DataSecurityMode
+
+    create_call = api._client.jobs.create.call_args
+    task = create_call.kwargs["tasks"][0]
+    assert task.new_cluster.data_security_mode == DataSecurityMode.USER_ISOLATION
+
+
+def test_explicit_data_security_mode_applies_without_uc_mode():
+    """The override isn't gated behind needs_uc_mode -- a non-UC job can request it too."""
+    api = _make_api_for_create_job()
+
+    api.create_job(
+        "test-job",
+        {
+            "main_file": "abfss://c@sa.dfs.core.windows.net/boot.py",
+            "data_security_mode": "USER_ISOLATION",
+        },
+    )
+
+    from databricks.sdk.service.compute import DataSecurityMode
+
+    create_call = api._client.jobs.create.call_args
+    task = create_call.kwargs["tasks"][0]
+    assert task.new_cluster.data_security_mode == DataSecurityMode.USER_ISOLATION
+
+
+def test_force_new_cluster_bypasses_existing_cluster_id():
+    """force_new_cluster ignores existing_cluster_id/cluster_id/default_cluster_id."""
+    api = _make_api_for_create_job()
+    api.default_cluster_id = "warm-shared-cluster"
+
+    api.create_job(
+        "test-job",
+        {
+            "existing_cluster_id": "1234-567890-abcde123",
+            "force_new_cluster": True,
+            "data_security_mode": "USER_ISOLATION",
+        },
+    )
+
+    create_call = api._client.jobs.create.call_args
+    task = create_call.kwargs["tasks"][0]
+    assert task.existing_cluster_id is None
+    assert task.new_cluster is not None
+
+
+def test_without_force_new_cluster_default_cluster_id_still_wins():
+    """Regression guard: the force_new_cluster addition doesn't change existing behavior."""
+    api = _make_api_for_create_job()
+    api.default_cluster_id = "warm-shared-cluster"
+
+    spec = api._build_job_spec("test-job", {})
+
+    assert spec["existing_cluster_id"] == "warm-shared-cluster"
+
+
 # --- Bug fix: _submit_one_time_run calls jobs.submit, not jobs.runs.submit ---
 
 

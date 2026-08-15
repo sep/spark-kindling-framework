@@ -188,6 +188,7 @@ To start using Kindling in your Spark notebooks:
 5. **Extend and Monitor**: Add custom integrations and observability
    - [Logging & Tracing](./contributing/logging_tracing.md)
    - [Azure Monitor Extension](../packages/extensions/kindling_ext_otel_azure/README.md)
+   - [Databricks Execution Contract](./contributing/databricks_execution_contract.md) - Classic vs. Spark Connect, and why tracing must never `getattr()` a provider-op argument
 
 ## Use Cases
 
