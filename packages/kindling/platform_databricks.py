@@ -19,6 +19,7 @@ from kindling.spark_config import ConfigService
 
 _dbutils_runtime_bridge_cache = None
 _dbutils_runtime_bridge_attempted = False
+_dbutils_bridge_logger = logging.getLogger("kindling.platform_databricks")
 
 
 def _resolve_dbutils():
@@ -55,8 +56,16 @@ def _resolve_dbutils():
             from databricks.sdk.runtime import dbutils as sdk_dbutils
 
             _dbutils_runtime_bridge_cache = sdk_dbutils
-        except Exception:
+            _dbutils_bridge_logger.info(
+                "__main__.dbutils unavailable; using databricks.sdk.runtime.dbutils bridge"
+            )
+        except Exception as exc:
             _dbutils_runtime_bridge_cache = None
+            _dbutils_bridge_logger.warning(
+                "__main__.dbutils unavailable and the databricks.sdk.runtime.dbutils "
+                f"bridge failed to construct ({type(exc).__name__}: {exc}); secret/dbutils "
+                "lookups will fall back to environment variables only."
+            )
 
     return _dbutils_runtime_bridge_cache
 

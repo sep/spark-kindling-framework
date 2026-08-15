@@ -62,7 +62,11 @@ class TestResolveAndValidateSecrets:
             entity_tags["incoming.device_telemetry"]["provider.eventhub.connectionString"]
             == "Endpoint=sb://real/;SharedAccessKey=abc"
         )
-        logger.debug.assert_called_once()
+        # Outcome must be visible at INFO (not gated behind DEBUG) -- this is
+        # the exact signal that was missing when diagnosing the real bug.
+        logged_messages = " ".join(str(c.args[0]) for c in logger.info.call_args_list)
+        assert "Resolving 1 @secret reference(s)" in logged_messages
+        assert "Resolved all 1 @secret reference(s) successfully" in logged_messages
 
     def test_raises_actionable_error_when_still_unresolved(self, tmp_path):
         """This is the exact bug: no working SecretProvider yet (or a
@@ -89,7 +93,10 @@ class TestResolveAndValidateSecrets:
         # there is no resolved value in this scenario to leak, but guard
         # against ever interpolating one into the message.
         assert "Endpoint=" not in message
-        logger.debug.assert_not_called()
+        # The pending-count announcement still logs (it's a fact, not the
+        # secret value); the success message must never fire.
+        logged_messages = " ".join(str(c.args[0]) for c in logger.info.call_args_list)
+        assert "Resolved all" not in logged_messages
 
     def test_noop_when_dynaconf_not_yet_initialized(self):
         """config_service.dynaconf is None before ConfigService.initialize()

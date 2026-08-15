@@ -46,7 +46,9 @@ EXPECTED_TESTS = [
 
 # Shared/Standard (user-isolation) access mode uses Spark Connect for the
 # Python driver session starting with DBR 14.0 -- see module docstring.
-SHARED_MODE_SPARK_VERSION = "15.4.x-scala2.12"
+# Pinned to match a real client cluster observed hitting this bug: DBR 17.3
+# LTS (Scala 2.13, Spark 4.0.0), Standard/Shared access mode, Standard_D4ds_v5.
+SHARED_MODE_SPARK_VERSION = "17.3.x-scala2.13"
 
 
 @pytest.fixture

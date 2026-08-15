@@ -1720,6 +1720,15 @@ def _resolve_and_validate_secrets(config_service, logger) -> None:
     if not (hasattr(config_service, "dynaconf") and config_service.dynaconf is not None):
         return
 
+    pending = find_unresolved_secret_references(config_service.dynaconf)
+    if not pending:
+        logger.debug("No @secret references pending resolution")
+        return
+
+    logger.info(
+        f"Resolving {len(pending)} @secret reference(s) now that platform services "
+        f"are available: {', '.join(sorted(pending))}"
+    )
     load_secrets_from_provider(config_service.dynaconf, silent=True)
     unresolved = find_unresolved_secret_references(config_service.dynaconf)
     if unresolved:
@@ -1730,7 +1739,7 @@ def _resolve_and_validate_secrets(config_service, logger) -> None:
             "and dbutils.secrets availability; Fabric/Synapse: Key Vault "
             "configuration) and that the referenced secret(s) exist."
         )
-    logger.debug("Resolved @secret references with platform secret provider")
+    logger.info(f"Resolved all {len(pending)} @secret reference(s) successfully")
 
 
 def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None):
