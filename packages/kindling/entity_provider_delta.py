@@ -7,14 +7,6 @@ from typing import Callable, Dict, Literal, Optional, Type
 
 import pyspark.sql.utils
 from delta.tables import DeltaTable
-from kindling.common_transforms import *
-from kindling.features import get_feature_bool, set_runtime_feature
-
-# Import your existing modules
-from kindling.injection import *
-from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_config import *
-from kindling.spark_log_provider import *
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
@@ -28,6 +20,15 @@ from pyspark.sql.functions import (
     to_json,
 )
 from pyspark.sql.types import StructType
+
+from kindling.common_transforms import *
+from kindling.features import get_feature_bool, set_runtime_feature
+
+# Import your existing modules
+from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import *
+from kindling.spark_log_provider import *
 
 from .data_entities import *
 from .entity_provider import (
@@ -1082,32 +1083,36 @@ class DeltaEntityProvider(
 
     def _check_table_exists(self, table_ref: DeltaTableReference) -> bool:
         """Enhanced existence check that works with both modes"""
+        # FOR_NAME mode: DeltaTable.forName()/get_delta_table() cannot be used
+        # to test existence. On a Spark-Connect-backed session it builds an
+        # unresolved relation client-side without validating against the
+        # catalog, so it returns successfully even when the table doesn't
+        # exist yet -- the DELTA_MISSING_DELTA_TABLE error only surfaces
+        # later, when the relation is actually executed (e.g. mid-merge),
+        # by which point ensure_entity_table() has already been skipped.
+        # spark.catalog.tableExists() is an eager catalog metadata RPC on
+        # both classic and Spark Connect sessions, so use that instead.
+        if self._is_for_name_mode(table_ref.access_mode):
+            try:
+                return bool(self.spark.catalog.tableExists(table_ref.table_name))
+            except Exception as e:
+                self.logger.debug(f"catalog.tableExists failed: {e}")
+                return False
+
+        # FOR_PATH mode: check if path has Delta files
         try:
-            # Try to get the Delta table
             table_ref.get_delta_table()
             return True
         except Exception as e1:
             self.logger.debug(f"get_delta_table failed: {e1}")
-
-            # For FOR_NAME mode, only check catalog (don't check path)
-            if self._is_for_name_mode(table_ref.access_mode):
-                try:
-                    self.spark.read.table(table_ref.table_name)
-                    return True
-                except Exception as e2:
-                    self.logger.debug(f"Table not in catalog: {e2}")
+            try:
+                if not table_ref.table_path:
                     return False
-
-            # For FOR_PATH mode, check if path has Delta files
-            else:
-                try:
-                    if not table_ref.table_path:
-                        return False
-                    self.spark.read.format("delta").load(table_ref.table_path)
-                    return True
-                except Exception as e2:
-                    self.logger.debug(f"Path check failed: {e2}")
-                    return False
+                self.spark.read.format("delta").load(table_ref.table_path)
+                return True
+            except Exception as e2:
+                self.logger.debug(f"Path check failed: {e2}")
+                return False
 
     def _ensure_table_exists(self, entity, table_ref: DeltaTableReference):
         """Ensure table exists, create if needed"""
@@ -1180,8 +1185,11 @@ class DeltaEntityProvider(
             return False
 
         try:
-            self.spark.read.table(table_ref.table_name)
-            return True
+            # spark.catalog.tableExists() is an eager catalog metadata RPC on
+            # both classic and Spark Connect sessions -- see _check_table_exists
+            # for why a lazily-constructed DataFrame/DeltaTable handle can't be
+            # trusted for this check under Spark Connect.
+            return bool(self.spark.catalog.tableExists(table_ref.table_name))
         except Exception as e:
             self.logger.debug(f"Catalog table check failed: {e}")
             return False
@@ -1898,9 +1906,10 @@ class DeltaEntityProvider(
 
         if watermark_version is None:
             # Initial load: full read stamped with the version it covers.
-            from kindling.common_transforms import drop_if_exists, remove_duplicates
             from pyspark.sql.functions import current_timestamp, date_format, lit
             from pyspark.sql.types import IntegerType, TimestampType
+
+            from kindling.common_transforms import drop_if_exists, remove_duplicates
 
             df = remove_duplicates(
                 self.read_entity(entity)
