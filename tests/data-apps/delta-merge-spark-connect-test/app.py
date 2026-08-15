@@ -58,8 +58,16 @@ TELEMETRY_SCHEMA = StructType(
     ]
 )
 
+# Test-id-scoped entityid: in catalog mode, EntityNameMapper composes the
+# physical table name from entityid itself (not from `name`), so a fixed
+# entityid across every run always resolves to the same catalog table --
+# colliding with whatever non-Delta object (or a stale run's leftovers)
+# already lives at that fixed location. Scoping by test_id gives every run
+# its own fresh table, same as every other Kindling system test does.
+entity_id = f"staging.device_telemetry_{test_id}"
+
 DataEntities.entity(
-    entityid="staging.device_telemetry",
+    entityid=entity_id,
     name=f"device_telemetry_{test_id}",
     merge_columns=["device_id", "reading_ts"],
     tags={"provider_type": "delta"},
@@ -67,7 +75,7 @@ DataEntities.entity(
     partition_columns=[],
 )
 
-entity = GlobalInjector.get(DataEntityRegistry).get_entity_definition("staging.device_telemetry")
+entity = GlobalInjector.get(DataEntityRegistry).get_entity_definition(entity_id)
 provider = GlobalInjector.get(EntityProviderRegistry).get_provider_for_entity(entity)
 print(
     f"TEST_ID={test_id} provider_class={type(provider).__module__}.{type(provider).__name__}",
@@ -103,3 +111,16 @@ except Exception as exc:
 
     traceback.print_exc()
     sys.exit(1)
+finally:
+    # The CI harness only cleans up storage-mode paths; this entity is
+    # catalog-mode, so its table would otherwise accumulate in the shared
+    # "kindling" catalog/schema across every run. Drop it from inside the
+    # job itself -- the running Spark session already has the right
+    # catalog/schema context, no separate SQL warehouse needed.
+    try:
+        table_ref = provider._get_table_reference(entity)
+        if table_ref.table_name:
+            spark.sql(f"DROP TABLE IF EXISTS {table_ref.table_name}")
+            print(f"TEST_ID={test_id} dropped table {table_ref.table_name}", flush=True)
+    except Exception as cleanup_exc:
+        print(f"TEST_ID={test_id} table cleanup warning: {cleanup_exc}", flush=True)
