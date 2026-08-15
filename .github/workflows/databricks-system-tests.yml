@@ -4,7 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: "Optional poe system test name (for example: name_mapper, default_telemetry, streaming_pipes)"
+        description: "Optional poe system test name (for example: name_mapper, default_telemetry, streaming_pipes). Ignored when 'extension' is set."
+        required: false
+        default: ""
+      extension:
+        description: "Optional extension name to run tests/system/extensions/<name> instead of core (for example: databricks)"
         required: false
         default: ""
       ref:
@@ -77,7 +81,9 @@ jobs:
           AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
           AZURE_BASE_PATH: ""
         run: |
-          if [ -n "${{ inputs.test }}" ]; then
+          if [ -n "${{ inputs.extension }}" ]; then
+            poe test-extension --extension "${{ inputs.extension }}" --platform databricks
+          elif [ -n "${{ inputs.test }}" ]; then
             poe test-system --platform databricks --test "${{ inputs.test }}"
           else
             poe test-system-ci --platform databricks
