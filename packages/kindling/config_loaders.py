@@ -156,6 +156,8 @@ def load_secrets_from_provider(obj, env: str = None, silent: bool = True, key: s
                 try:
                     resolved_dict[k] = resolve_secret(v, path=f"{path}.{k}" if path else k)
                 except Exception:
+                    if not silent:
+                        raise
                     # Preserve unresolved value to avoid breaking lazy interpolation paths.
                     resolved_dict[k] = v
             return resolved_dict
@@ -190,6 +192,47 @@ def load_secrets_from_provider(obj, env: str = None, silent: bool = True, key: s
             if resolved_value != original_value:
                 obj.set(setting_key, resolved_value)
                 logger.debug(f"Updated '{setting_key}' with resolved secrets")
+
+
+def _is_unresolved_secret_reference(value: Any) -> bool:
+    return isinstance(value, str) and (value.startswith("@secret ") or value.startswith("@secret:"))
+
+
+def find_unresolved_secret_references(obj) -> List[str]:
+    """Return dotted config paths of every remaining @secret reference.
+
+    Call this after a load_secrets_from_provider() pass to check whether it
+    actually resolved everything. A silent=True resolution pass never raises
+    on failure (by design -- it must not crash config loading before a
+    SecretProvider exists), so a caller that needs to know whether secrets
+    are actually usable -- e.g. bootstrap, once platform services are up --
+    must check this explicitly rather than assume success. Values, never
+    just paths, would risk logging a secret; this returns paths only.
+    """
+    unresolved: List[str] = []
+
+    def _walk(value: Any, path: str) -> None:
+        if _is_unresolved_secret_reference(value):
+            unresolved.append(path)
+            return
+
+        if isinstance(value, dict):
+            try:
+                items_iter = value.items(bypass_eval=True) if hasattr(value, "items") else []
+            except TypeError:
+                items_iter = value.items()
+            except Exception:
+                return
+            for k, v in items_iter:
+                _walk(v, f"{path}.{k}" if path else str(k))
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                _walk(item, f"{path}[{i}]")
+
+    for setting_key in list(obj.store.keys()):
+        _walk(obj.get(setting_key), setting_key)
+
+    return unresolved
 
 
 def load(obj, env: str = None, silent: bool = True, key: str = None):
@@ -312,6 +355,7 @@ def unregister_kindling_loaders():
 # Module-level exports
 __all__ = [
     "load_secrets_from_provider",
+    "find_unresolved_secret_references",
     "register_kindling_loaders",
     "unregister_kindling_loaders",
 ]

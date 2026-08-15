@@ -1694,6 +1694,45 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
         logger.info("No py4j JVM bridge detected; using plain-python telemetry providers")
 
 
+def _resolve_and_validate_secrets(config_service, logger) -> None:
+    """Re-run @secret resolution now that platform services exist, and fail
+    loudly if anything is still unresolved afterward.
+
+    An earlier resolution pass happens inside ConfigService.initialize()
+    (the config_init phase, before platform_init) via Dynaconf's loader
+    chain -- at that point there is no SecretProvider to ask yet, so every
+    @secret reference is left as a literal, silently, by design. This
+    second pass, run after platform_init, is the one that can actually
+    succeed.
+
+    If a reference is STILL unresolved here, letting bootstrap complete
+    anyway hands a literal "@secret:..." string to whatever config-consuming
+    code reads it next -- e.g. the EventHub provider parsing it as a
+    connection string, failing with an unrelated-looking KeyError far from
+    the real cause. Raising here instead makes the failure immediate and
+    actionable, naming only the config paths involved (never secret values).
+    """
+    from kindling.config_loaders import (
+        find_unresolved_secret_references,
+        load_secrets_from_provider,
+    )
+
+    if not (hasattr(config_service, "dynaconf") and config_service.dynaconf is not None):
+        return
+
+    load_secrets_from_provider(config_service.dynaconf, silent=True)
+    unresolved = find_unresolved_secret_references(config_service.dynaconf)
+    if unresolved:
+        raise RuntimeError(
+            "Failed to resolve @secret reference(s) at: "
+            f"{', '.join(sorted(unresolved))}. Check that the platform secret "
+            "provider is reachable (Databricks: kindling.secrets.secret_scope "
+            "and dbutils.secrets availability; Fabric/Synapse: Key Vault "
+            "configuration) and that the referenced secret(s) exist."
+        )
+    logger.debug("Resolved @secret references with platform secret provider")
+
+
 def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None):
     """Linear framework initialization with Dynaconf config loading"""
 
@@ -1978,15 +2017,18 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         logger.info("Config overrides applied to registered pipes and entities")
 
         # Resolve any @secret references now that platform services are available.
+        # This is deliberately a hard failure, not a logged warning: an
+        # earlier resolution pass (inside ConfigService.initialize(), before
+        # platform services exist) always leaves references unresolved by
+        # design, silently, because there is no SecretProvider to ask yet.
+        # If they are STILL unresolved here -- after platform_init -- passing
+        # them through unexamined hands a literal "@secret:..." string to
+        # whatever provider reads that config (e.g. the EventHub provider
+        # parsing it as a connection string), which fails with a confusing,
+        # unrelated error far from the actual cause. Fail here instead, with
+        # the config paths (never the secret values) named explicitly.
         with _bootstrap_phase("secret_resolution"):
-            try:
-                from kindling.config_loaders import load_secrets_from_provider
-
-                if hasattr(config_service, "dynaconf") and config_service.dynaconf is not None:
-                    load_secrets_from_provider(config_service.dynaconf, silent=True)
-                    logger.debug("Resolved @secret references with platform secret provider")
-            except Exception as secret_resolution_error:
-                logger.warning(f"Secret resolution pass failed: {secret_resolution_error}")
+            _resolve_and_validate_secrets(config_service, logger)
 
         load_workspace_packages_default = False
         load_workspace_packages_value = config_service.get(

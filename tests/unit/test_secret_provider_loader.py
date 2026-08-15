@@ -17,6 +17,7 @@ import pytest
 from dynaconf import Dynaconf
 
 from kindling.config_loaders import (
+    find_unresolved_secret_references,
     load_secrets_from_provider,
     register_kindling_loaders,
 )
@@ -314,6 +315,121 @@ class TestSecretProviderContractMethods:
 
         wrapper = PlatformServiceSecretProvider()
         assert wrapper.list_secrets() == ["token-a", "token-b"]
+
+
+class TestBootstrapSecretResolutionOrdering:
+    """Regression coverage for the exact bug: an app.py entity_tags @secret
+    reference (e.g. an EventHub connectionString) surviving unresolved past
+    bootstrap because resolution ran once, too early, before platform
+    services existed -- through the REAL DI wiring
+    (PlatformServiceSecretProvider -> SparkPlatformServiceProvider), not a
+    hand-bound fake SecretProvider like the tests above use.
+    """
+
+    def setup_method(self):
+        GlobalInjector.reset()
+
+    def teardown_method(self):
+        GlobalInjector.reset()
+
+    def test_early_resolution_before_platform_init_leaves_reference_unresolved(self):
+        from kindling.platform_provider import (
+            PlatformServiceProvider,
+            PlatformServiceSecretProvider,
+            SecretProvider,
+            SparkPlatformServiceProvider,
+        )
+
+        # Mirrors real bootstrap: SparkPlatformServiceProvider.svc is None
+        # until initialize_platform_services() calls set_service() during
+        # the platform_init phase -- config_init (and its secret-loader pass)
+        # runs before that, every time.
+        platform_provider = SparkPlatformServiceProvider()
+        GlobalInjector.bind(PlatformServiceProvider, platform_provider)
+        GlobalInjector.bind(SecretProvider, PlatformServiceSecretProvider())
+
+        with tempfile.TemporaryDirectory() as td:
+            settings_path = Path(td) / "settings.yaml"
+            settings_path.write_text(
+                "entity_tags:\n"
+                "  incoming.device_telemetry:\n"
+                "    provider.eventhub.connectionString: '@secret:telemetry_eh_conn_string'\n",
+                encoding="utf-8",
+            )
+
+            settings = Dynaconf(
+                settings_files=[str(settings_path)], environments=False, envvar_prefix="KINDLING"
+            )
+
+            # Phase 1: config_init runs before platform_init -- svc is still None.
+            load_secrets_from_provider(settings, silent=True)
+
+            entity_tags = settings.get("entity_tags")
+            assert (
+                entity_tags["incoming.device_telemetry"]["provider.eventhub.connectionString"]
+                == "@secret:telemetry_eh_conn_string"
+            ), "Unresolved before platform init -- expected, not yet a failure"
+            assert find_unresolved_secret_references(settings) == [
+                "ENTITY_TAGS.incoming.device_telemetry.provider.eventhub.connectionString"
+            ]
+
+            # Phase 2: platform_init runs, wiring a real platform service that
+            # can resolve secrets (e.g. Databricks dbutils-backed).
+            class FakePlatformService:
+                def get_secret(self, secret_name, default=None):
+                    if secret_name == "telemetry_eh_conn_string":
+                        return "Endpoint=sb://real-namespace.servicebus.windows.net/"
+                    if default is not None:
+                        return default
+                    raise KeyError(secret_name)
+
+            platform_provider.set_service(FakePlatformService())
+
+            # Phase 3: bootstrap's post-platform_init secret_resolution pass.
+            load_secrets_from_provider(settings, silent=True)
+
+            entity_tags = settings.get("entity_tags")
+            assert (
+                entity_tags["incoming.device_telemetry"]["provider.eventhub.connectionString"]
+                == "Endpoint=sb://real-namespace.servicebus.windows.net/"
+            )
+            assert find_unresolved_secret_references(settings) == []
+
+    def test_unresolved_secret_reports_path_never_value(self):
+        """Requirement: a genuine resolution failure must be reported by
+        config path only -- never by attempting to surface the (nonexistent)
+        resolved value, which doesn't exist to leak, but the raw @secret:
+        reference itself (the secret's *name*, not a value) is fine to
+        report since it's not the credential."""
+        from kindling.platform_provider import SecretProvider
+
+        class AlwaysFailsProvider(SecretProvider):
+            def get_secret(self, secret_name: str, default=None) -> str:
+                raise KeyError(secret_name)
+
+        GlobalInjector.bind(SecretProvider, AlwaysFailsProvider())
+
+        with tempfile.TemporaryDirectory() as td:
+            settings_path = Path(td) / "settings.yaml"
+            settings_path.write_text(
+                "entity_tags:\n"
+                "  incoming.device_telemetry:\n"
+                "    provider.eventhub.connectionString: '@secret:telemetry_eh_conn_string'\n",
+                encoding="utf-8",
+            )
+            settings = Dynaconf(
+                settings_files=[str(settings_path)], environments=False, envvar_prefix="KINDLING"
+            )
+
+            load_secrets_from_provider(settings, silent=True)
+
+            unresolved = find_unresolved_secret_references(settings)
+            assert unresolved == [
+                "ENTITY_TAGS.incoming.device_telemetry.provider.eventhub.connectionString"
+            ]
+            # The path list must never contain anything that looks like a
+            # resolved credential value -- only dotted config paths.
+            assert all(not p.startswith("Endpoint=") for p in unresolved)
 
 
 class TestSecretLoaderRegistration:

@@ -17,6 +17,49 @@ from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
 from kindling.spark_config import ConfigService
 
+_dbutils_runtime_bridge_cache = None
+_dbutils_runtime_bridge_attempted = False
+
+
+def _resolve_dbutils():
+    """Best-effort dbutils handle: notebook global first, SDK runtime bridge second.
+
+    A genuine Databricks notebook injects ``dbutils`` into ``__main__`` at
+    kernel startup, which every existing dbutils call site here already
+    checks via ``getattr(__main__, "dbutils", None)``. An ad hoc
+    ``kindling app run`` job (a plain SparkPythonTask, not a notebook) never
+    gets that injection -- and on Spark Connect, there is no py4j gateway to
+    fall back to either -- so ``__main__.dbutils`` is None there even though
+    the job runs on a real Databricks cluster with working credentials.
+
+    ``databricks.sdk.runtime.dbutils`` (RemoteDbUtils) is Databricks' own
+    non-notebook bridge: same ``.secrets.get(scope=, key=)`` surface, backed
+    by the SDK's own auth resolution (works from the job's ambient
+    credentials). Constructing it eagerly imports and authenticates, which
+    can raise when no Databricks auth is configured (e.g. this process isn't
+    actually running on Databricks) -- cached after the first attempt so a
+    non-Databricks environment doesn't retry and fail on every secret
+    lookup.
+    """
+    global _dbutils_runtime_bridge_cache, _dbutils_runtime_bridge_attempted
+
+    import __main__
+
+    notebook_dbutils = getattr(__main__, "dbutils", None)
+    if notebook_dbutils is not None:
+        return notebook_dbutils
+
+    if not _dbutils_runtime_bridge_attempted:
+        _dbutils_runtime_bridge_attempted = True
+        try:
+            from databricks.sdk.runtime import dbutils as sdk_dbutils
+
+            _dbutils_runtime_bridge_cache = sdk_dbutils
+        except Exception:
+            _dbutils_runtime_bridge_cache = None
+
+    return _dbutils_runtime_bridge_cache
+
 
 def _bind_default_entity_services(logger) -> None:
     """Bind Databricks defaults for config when no explicit setting exists."""
@@ -246,8 +289,6 @@ class DatabricksService(PlatformService):
         """Resolve secret from Databricks secret scopes."""
         import os
 
-        import __main__
-
         scope = (
             self._config_get("kindling.secrets.secret_scope")
             or self._config_get("secret_scope")
@@ -260,7 +301,7 @@ class DatabricksService(PlatformService):
                 scope = possible_scope
                 key = possible_key
 
-        dbutils = getattr(__main__, "dbutils", None)
+        dbutils = _resolve_dbutils()
         if dbutils and hasattr(dbutils, "secrets") and scope:
             try:
                 return dbutils.secrets.get(scope=scope, key=key)
@@ -289,8 +330,6 @@ class DatabricksService(PlatformService):
         raise KeyError(f"Databricks secret not found: {secret_name}")
 
     def secret_exists(self, secret_name: str) -> bool:
-        import __main__
-
         scope = (
             self._config_get("kindling.secrets.secret_scope")
             or self._config_get("secret_scope")
@@ -303,7 +342,7 @@ class DatabricksService(PlatformService):
                 scope = possible_scope
                 key = possible_key
 
-        dbutils = getattr(__main__, "dbutils", None)
+        dbutils = _resolve_dbutils()
         if dbutils and hasattr(dbutils, "secrets") and scope:
             try:
                 return any(s.key == key for s in dbutils.secrets.list(scope=scope))
@@ -316,14 +355,12 @@ class DatabricksService(PlatformService):
         )
 
     def list_secrets(self) -> list:
-        import __main__
-
         scope = (
             self._config_get("kindling.secrets.secret_scope")
             or self._config_get("secret_scope")
             or self._config_get("secrets.secret_scope")
         )
-        dbutils = getattr(__main__, "dbutils", None)
+        dbutils = _resolve_dbutils()
         if dbutils and hasattr(dbutils, "secrets") and scope:
             try:
                 return [s.key for s in dbutils.secrets.list(scope=scope)]
