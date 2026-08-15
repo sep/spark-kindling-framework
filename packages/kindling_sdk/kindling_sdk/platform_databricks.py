@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import subprocess
@@ -21,6 +22,52 @@ from .platform_provider import (
     azure_storage_dfs_endpoint,
     create_azure_credential,
 )
+
+_abfss_log_credential_cache = None
+_abfss_log_credential_attempted = False
+_abfss_log_credential_logger = logging.getLogger("kindling_sdk.platform_databricks")
+
+
+def _resolve_abfss_log_credential():
+    """Best-effort Azure credential for the ABFSS driver-log fallback in get_job_logs().
+
+    get_job_logs() is polled every few seconds for the lifetime of a running
+    Databricks job (via stream_stdout_logs). While a run is RUNNING,
+    get_run_output() is legitimately unavailable, so every poll falls
+    through to this ABFSS fallback. Constructing DefaultAzureCredential()
+    fresh each time means, in environments with no Azure auth configured,
+    the full multi-credential failure chain is retried and reprinted on
+    every single poll for the entire job duration. Attempt construction/auth
+    exactly once per process and cache the outcome so subsequent polls skip
+    straight past this fallback instead of retrying a failure we already
+    know will happen.
+    """
+    global _abfss_log_credential_cache, _abfss_log_credential_attempted
+
+    if _abfss_log_credential_attempted:
+        return _abfss_log_credential_cache
+    _abfss_log_credential_attempted = True
+
+    try:
+        from azure.identity import DefaultAzureCredential
+
+        credential = DefaultAzureCredential()
+        # DefaultAzureCredential() construction is lazy - force one token
+        # fetch now so any auth failure (and its verbose chained error) is
+        # surfaced here, once, instead of inside get_job_logs() on every poll.
+        credential.get_token("https://storage.azure.com/.default")
+        _abfss_log_credential_cache = credential
+    except Exception as exc:
+        _abfss_log_credential_logger.warning(
+            "ABFSS driver-log fallback unavailable (%s: %s); skipping this "
+            "fallback for the rest of the process.",
+            type(exc).__name__,
+            exc,
+        )
+        _abfss_log_credential_cache = None
+
+    return _abfss_log_credential_cache
+
 
 # Databricks REST API Client (for remote operations)
 # ============================================================================
@@ -890,11 +937,20 @@ class DatabricksAPI(PlatformAPI):
                 if self.storage_account and self.container:
                     try:
                         # Read log file from ABFSS using Azure Storage SDK (same pattern as Fabric/Synapse)
-                        from azure.identity import DefaultAzureCredential
                         from azure.storage.filedatalake import DataLakeServiceClient
 
+                        credential = _resolve_abfss_log_credential()
+                        if credential is None:
+                            # Already attempted and failed earlier in this
+                            # process (and logged once there) - don't retry
+                            # the auth chain and reprint its failure on
+                            # every poll of a running job.
+                            raise Exception(
+                                "Azure credential unavailable for ABFSS driver-log "
+                                "fallback (see earlier warning for details)"
+                            )
+
                         account_url = azure_storage_account_url(self.storage_account)
-                        credential = DefaultAzureCredential()
                         storage_client = DataLakeServiceClient(
                             account_url=account_url, credential=credential
                         )
