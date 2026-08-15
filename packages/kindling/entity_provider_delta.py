@@ -7,6 +7,14 @@ from typing import Callable, Dict, Literal, Optional, Type
 
 import pyspark.sql.utils
 from delta.tables import DeltaTable
+from kindling.common_transforms import *
+from kindling.features import get_feature_bool, set_runtime_feature
+
+# Import your existing modules
+from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import *
+from kindling.spark_log_provider import *
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
@@ -20,15 +28,6 @@ from pyspark.sql.functions import (
     to_json,
 )
 from pyspark.sql.types import StructType
-
-from kindling.common_transforms import *
-from kindling.features import get_feature_bool, set_runtime_feature
-
-# Import your existing modules
-from kindling.injection import *
-from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_config import *
-from kindling.spark_log_provider import *
 
 from .data_entities import *
 from .entity_provider import (
@@ -1099,20 +1098,27 @@ class DeltaEntityProvider(
                 self.logger.debug(f"catalog.tableExists failed: {e}")
                 return False
 
-        # FOR_PATH mode: check if path has Delta files
+        # FOR_PATH mode: check if path has Delta files.
+        # DeltaTable.forPath()/DataFrameReader.load() build a lazy,
+        # unresolved relation client-side on a Spark-Connect-backed session
+        # and do NOT validate the path against storage -- both calls can
+        # return successfully for a path that does not exist yet. The
+        # PATH_NOT_FOUND/AnalysisException only surfaces later, when
+        # something forces schema resolution (e.g. MigrationPlanner's
+        # `.schema` access), by which point this check has already
+        # (incorrectly) reported "exists" and the caller has skipped table
+        # creation / gone down the wrong branch. Forcing `.schema` here
+        # triggers the same eager ANALYZE RPC on both classic and Spark
+        # Connect sessions, so a missing path reliably raises inside this
+        # try/except instead of escaping uncaught from a later caller.
+        if not table_ref.table_path:
+            return False
         try:
-            table_ref.get_delta_table()
+            self.spark.read.format("delta").load(table_ref.table_path).schema
             return True
-        except Exception as e1:
-            self.logger.debug(f"get_delta_table failed: {e1}")
-            try:
-                if not table_ref.table_path:
-                    return False
-                self.spark.read.format("delta").load(table_ref.table_path)
-                return True
-            except Exception as e2:
-                self.logger.debug(f"Path check failed: {e2}")
-                return False
+        except Exception as e:
+            self.logger.debug(f"Path check failed: {e}")
+            return False
 
     def _ensure_table_exists(self, entity, table_ref: DeltaTableReference):
         """Ensure table exists, create if needed"""
@@ -1169,11 +1175,23 @@ class DeltaEntityProvider(
         self._ensure_clustering(entity, table_ref)
 
     def _check_physical_table_exists(self, table_ref: DeltaTableReference) -> bool:
-        """Check if physical Delta files exist at the path"""
+        """Check if physical Delta files exist at the path.
+
+        Mirrors the FOR_PATH branch of ``_check_table_exists``: on a
+        Spark-Connect-backed session, ``spark.read.format("delta").load(path)``
+        builds a lazy, unresolved relation client-side and does not validate
+        the path against storage -- it returns successfully even for a path
+        that has no Delta table yet. ``_ensure_table_exists`` (the caller)
+        would then treat a brand-new entity as already existing and skip
+        ``_create_physical_table``, so a later DESCRIBE DETAIL fails with
+        DELTA_MISSING_DELTA_TABLE. Forcing ``.schema`` triggers the same
+        eager ANALYZE RPC on both classic and Spark Connect sessions, so a
+        missing path is reliably reported as not-existing here instead.
+        """
         if not table_ref.table_path:
             return False
         try:
-            self.spark.read.format("delta").load(table_ref.table_path)
+            self.spark.read.format("delta").load(table_ref.table_path).schema
             return True
         except Exception as e:
             self.logger.debug(f"Physical table check failed: {e}")
@@ -1770,6 +1788,28 @@ class DeltaEntityProvider(
             )
 
         def _merge_batch(batch_df, batch_id):
+            # Deliberately does not close over `self` (or anything else that
+            # carries a live SparkSession/Delta table handle). On a
+            # Spark-Connect-backed session (Databricks Standard/Shared
+            # access mode), `foreachBatch()` cloudpickles this callback up
+            # front to ship it for micro-batch execution, and a captured
+            # SparkSession fails immediately -- before any batch ever runs --
+            # with "TypeError: cannot pickle '_thread.RLock' object" wrapped
+            # in pyspark.errors.PySparkPicklingError
+            # ([STREAMING_CONNECT_SERIALIZATION_ERROR]), because the
+            # Connect client's internal synchronization primitives aren't
+            # picklable. PySpark's own guidance for foreachBatch under
+            # Spark Connect is to use the micro-batch's own bound session
+            # (``df.sparkSession``) instead of any session captured from an
+            # enclosing scope. `GlobalInjector` and `EntityProvider` are
+            # plain classes (no instance state), so referencing them here
+            # is safe -- only the fresh, per-batch instance built from them
+            # ever touches a session.
+            from copy import copy
+
+            batch_provider = copy(GlobalInjector.get(EntityProvider))
+            batch_provider.spark = batch_df.sparkSession
+
             if cfg.enabled and cfg.sequence_by:
                 from pyspark.sql import Window
                 from pyspark.sql.functions import row_number
@@ -1786,7 +1826,7 @@ class DeltaEntityProvider(
             # tracing wrapper (trace_ops): a span per micro-batch would blow
             # the hot-loop budget. Per-batch visibility comes from the
             # streaming listener's batch_progress events instead.
-            type(self).merge_to_entity(self, batch_df, entity)
+            type(batch_provider).merge_to_entity(batch_provider, batch_df, entity)
 
         writer = (
             df.writeStream.outputMode("update")
@@ -1906,10 +1946,9 @@ class DeltaEntityProvider(
 
         if watermark_version is None:
             # Initial load: full read stamped with the version it covers.
+            from kindling.common_transforms import drop_if_exists, remove_duplicates
             from pyspark.sql.functions import current_timestamp, date_format, lit
             from pyspark.sql.types import IntegerType, TimestampType
-
-            from kindling.common_transforms import drop_if_exists, remove_duplicates
 
             df = remove_duplicates(
                 self.read_entity(entity)

@@ -11,8 +11,10 @@ from unittest.mock import MagicMock
 
 import pytest
 from kindling.data_entities import EntityMetadata, EntityNameMapper, EntityPathLocator
+from kindling.data_entities import EntityProvider as EntityProviderInterface
 from kindling.entity_provider import StreamMergeableEntityProvider, is_stream_mergeable
 from kindling.entity_provider_delta import DeltaEntityProvider, ReadOnlyEntityError
+from kindling.injection import GlobalInjector
 from kindling.signaling import SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
@@ -130,12 +132,22 @@ class TestDeltaMergeAsStream:
         entity = self._make_entity()
         merge_calls = []
         # Patch the class, not the instance: _merge_batch calls
-        # type(self).merge_to_entity(self, ...) so per-instance tracing
-        # wrappers (trace_ops) never span the micro-batch hot loop.
+        # type(provider).merge_to_entity(provider, ...) so per-instance
+        # tracing wrappers (trace_ops) never span the micro-batch hot loop.
         monkeypatch.setattr(
             type(provider),
             "merge_to_entity",
             lambda self, df, ent: merge_calls.append((df, ent)),
+        )
+        # _merge_batch deliberately re-resolves the provider via
+        # GlobalInjector instead of closing over the enclosing `provider`
+        # (see the Spark-Connect-picklability regression test below); stand
+        # in for that lookup here so the unit test doesn't need a fully
+        # wired DI container.
+        monkeypatch.setattr(
+            GlobalInjector,
+            "get",
+            lambda iface: provider if iface is EntityProviderInterface else MagicMock(),
         )
         df = MagicMock()
         writer = df.writeStream.outputMode.return_value.option.return_value
@@ -147,6 +159,35 @@ class TestDeltaMergeAsStream:
         batch_fn(batch_df, 42)
 
         assert merge_calls == [(batch_df, entity)]
+
+    def test_merge_batch_closure_does_not_capture_provider_or_spark(self, provider):
+        """Spark-Connect regression: foreachBatch() cloudpickles its callback
+        up front to ship it for micro-batch execution, and a captured
+        SparkSession (reachable via a captured provider instance, e.g.
+        `self`) fails with "TypeError: cannot pickle '_thread.RLock' object"
+        (pyspark.errors.PySparkPicklingError:
+        [STREAMING_CONNECT_SERIALIZATION_ERROR]) -- before any batch ever
+        runs. `_merge_batch` must not close over the provider instance (or
+        anything else holding a live SparkSession); it must re-resolve
+        everything it needs from the micro-batch's own bound session
+        instead. Assert this at the bytecode level: the provider instance
+        must not appear among the callback's free variables at all.
+        """
+        entity = self._make_entity()
+        df = MagicMock()
+        writer = df.writeStream.outputMode.return_value.option.return_value
+
+        provider.merge_as_stream(df, entity, "/chk/orders")
+
+        batch_fn = writer.foreachBatch.call_args[0][0]
+        free_vars = batch_fn.__code__.co_freevars
+        closure_values = [
+            cell.cell_contents for cell in (batch_fn.__closure__ or ()) if cell.cell_contents
+        ]
+
+        assert "self" not in free_vars
+        assert provider not in closure_values
+        assert provider.spark not in closure_values
 
     def test_trigger_and_query_name_options_are_applied(self, provider):
         entity = self._make_entity()

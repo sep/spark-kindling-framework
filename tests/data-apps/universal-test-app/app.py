@@ -89,13 +89,47 @@ def test_framework_available(logger, test_id):
         return False
 
 
-def test_storage_access(logger, test_id):
+def _resolve_storage_check_path(config_service, platform: str) -> str:
+    """Return the path to list for the storage-access smoke check.
+
+    On Databricks, listing the raw filesystem root ("/") via dbutils.fs /
+    mssparkutils.fs routes through Databricks' legacy DBFS-wide permission
+    checker (DBFSUtilsPermissionsChecker -> DriverToWebappSqlAclClient.
+    getApiUrl), which round-trips to the workspace webapp for a
+    command-context/API-URL. That context is only populated for an
+    interactive notebook-attached execution -- not for a job submitted via
+    the Jobs API (Spark Connect on a Standard/Shared-access-mode cluster) --
+    so root listing fails unconditionally there with
+    `IllegalStateException: No api url found in local command context`.
+    This shares its error text with (but is a distinct bug from) the
+    getattr()-on-DataFrame issue documented in
+    docs/contributing/databricks_execution_contract.md: same underlying
+    "no command context" Databricks limitation, different triggering call.
+
+    Kindling's own bootstrap already lists a path under the configured
+    Unity Catalog volume root successfully in this exact execution mode
+    (see packages_dir handling in kindling/bootstrap.py), so probe that
+    configured path instead of the DBFS root when it is known.
+    """
+    if platform == "databricks" and config_service is not None:
+        try:
+            configured_path = config_service.get("kindling.temp_path")
+        except Exception:
+            configured_path = None
+        if configured_path:
+            return str(configured_path)
+
+    return "/"
+
+
+def test_storage_access(logger, test_id, platform_name=None, config_service=None):
     """Test storage access via platform abstraction"""
     try:
         # Try mssparkutils first (Fabric/Synapse)
         import __main__
 
         mssparkutils = getattr(__main__, "mssparkutils", None)
+        list_path = _resolve_storage_check_path(config_service, platform_name)
 
         if not mssparkutils:
             try:
@@ -104,13 +138,13 @@ def test_storage_access(logger, test_id):
                 # Try dbutils (Databricks) - access from __main__ globals
                 dbutils = getattr(__main__, "dbutils", None)
                 if dbutils:
-                    files = dbutils.fs.ls("/")
+                    files = dbutils.fs.ls(list_path)
                     return True
                 else:
                     return False
 
         # Use mssparkutils
-        files = mssparkutils.fs.ls("/")
+        files = mssparkutils.fs.ls(list_path)
         return True
 
     except Exception as e:
@@ -153,7 +187,11 @@ if results["framework_available"]:
     print(msg)
 
 # Test 4: Storage access
-results["storage_access"] = test_storage_access(app_logger, test_id)
+try:
+    _config_service = get_kindling_service(ConfigService)
+except Exception:
+    _config_service = None
+results["storage_access"] = test_storage_access(app_logger, test_id, platform_name, _config_service)
 if results["storage_access"]:
     msg = f"TEST_ID={test_id} test=storage_access status=PASSED"
     app_logger.info(msg)
