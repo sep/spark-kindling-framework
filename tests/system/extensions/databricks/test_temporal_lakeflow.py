@@ -64,7 +64,7 @@ def _pipeline_notebook(pkg_root: str) -> str:
             f"{_wheel_version(repo / 'packages/extensions/kindling_ext_sdp/pyproject.toml')}-py3-none-any.whl",
             f"{pkg_root}/spark_kindling_ext_databricks-"
             f"{_wheel_version(repo / 'packages/extensions/kindling_ext_databricks/pyproject.toml')}-py3-none-any.whl",
-            f"{pkg_root}/kindling_ext_temporal-"
+            f"{pkg_root}/spark_kindling_ext_temporal-"
             f"{_wheel_version(repo / 'packages/extensions/kindling_ext_temporal/pyproject.toml')}-py3-none-any.whl",
             f"{pkg_root}/lakeflow_temporal_test_app-"
             f"{_wheel_version(WORKSPACE_ROOT / 'data-apps/lakeflow-temporal-test-app/pyproject.toml')}-py3-none-any.whl",
