@@ -132,7 +132,7 @@ access mode.
 
 ## The regression test
 
-`tests/system/extensions/databricks/test_delta_merge_spark_connect.py`
+`tests/system/core/test_delta_merge_spark_connect.py`
 deploys `delta-merge-spark-connect-test` (a minimal app that registers a
 Delta entity with `merge_columns` and calls `merge_to_entity(df, entity)`
 twice — once to insert, once to exercise the matched-update /

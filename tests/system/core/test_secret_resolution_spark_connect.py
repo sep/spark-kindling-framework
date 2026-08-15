@@ -22,7 +22,7 @@ test stops exercising the bug it guards against without warning -- see
 databricks_execution_contract.md.
 
 Usage:
-    poe test-extension --extension databricks --platform databricks
+    poe test-system-ci --platform databricks --test test_secret_round_trip_on_shared_mode_cluster
 """
 
 import os
@@ -62,7 +62,7 @@ def _extract_secret_name(secret_ref: str) -> str:
 def config_secrets_app_path():
     from pathlib import Path
 
-    app_path = Path(__file__).parent.parent.parent.parent / "data-apps" / APP_NAME
+    app_path = Path(__file__).parent.parent.parent / "data-apps" / APP_NAME
     if not app_path.exists():
         pytest.skip(f"Config secrets test app not found at {app_path}")
     return app_path

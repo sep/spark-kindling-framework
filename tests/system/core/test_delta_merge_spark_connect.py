@@ -25,7 +25,7 @@ reverts to Single User/Dedicated, this test stops exercising the bug it
 guards against without warning -- see databricks_execution_contract.md.
 
 Usage:
-    poe test-extension --extension databricks --platform databricks
+    poe test-system-ci --platform databricks --test test_keyed_merge_succeeds_on_shared_mode_cluster
 """
 
 import os
@@ -51,7 +51,7 @@ EXPECTED_TESTS = [
 
 @pytest.fixture
 def delta_merge_app_path():
-    app_path = Path(__file__).parent.parent.parent.parent / "data-apps" / APP_NAME
+    app_path = Path(__file__).parent.parent.parent / "data-apps" / APP_NAME
     if not app_path.exists():
         pytest.skip(f"Delta merge / Spark Connect test app not found at {app_path}")
     return app_path
