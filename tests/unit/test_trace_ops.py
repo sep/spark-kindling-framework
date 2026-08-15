@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
 from kindling.entity_provider_registry import EntityProviderRegistry
@@ -155,11 +154,18 @@ class TestWrapProviderOps:
         assert len(tp.find(operation="merge_to_entity")) == 1, "Instance call must span"
 
     def test_delta_merge_batch_uses_class_attribute_bypass(self):
-        """Source guard: the foreachBatch closure must keep the wrapper bypass."""
+        """Source guard: the foreachBatch closure must keep the wrapper bypass.
+
+        _merge_batch resolves its own provider instance (``batch_provider``)
+        rather than closing over ``self`` -- see
+        test_delta_stream_merge.py::test_merge_batch_closure_does_not_capture_provider_or_spark
+        for why -- so the class-attribute bypass call now reads
+        `type(batch_provider).merge_to_entity(batch_provider, ...)`.
+        """
         from kindling.entity_provider_delta import DeltaEntityProvider
 
         source = inspect.getsource(DeltaEntityProvider.merge_as_stream)
-        assert "type(self).merge_to_entity(self" in source
+        assert "type(batch_provider).merge_to_entity(batch_provider" in source
 
 
 class _SparkConnectLikeDataFrame:

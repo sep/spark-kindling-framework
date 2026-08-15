@@ -149,6 +149,48 @@ class TestCheckTableExistsStorageMode:
         assert provider._check_table_exists(table_ref) is False
 
 
+class TestCheckPhysicalTableExists:
+    """_ensure_table_exists()/ensure_entity_table() regression: a brand-new
+    storage-mode entity's path must be reported as not-existing even when
+    .load() itself doesn't raise. This is the sibling of
+    TestCheckTableExistsStorageMode's fix, applied to
+    _check_physical_table_exists() -- the method _ensure_table_exists()
+    (the path ensure_entity_table() actually takes) uses to decide whether
+    to call _create_physical_table(). Without forcing eager resolution here
+    too, a Spark-Connect-deferred PATH_NOT_FOUND lets _ensure_table_exists()
+    wrongly conclude the table already exists, skip table creation, and a
+    later DESCRIBE DETAIL fails with DELTA_MISSING_DELTA_TABLE -- reproduced
+    by tests/system/core/test_streaming_pipes_orchestrator.py's
+    delta_partitioning sub-check on Databricks Standard/Shared clusters."""
+
+    def test_returns_false_when_load_succeeds_but_schema_raises(self, provider_and_spark):
+        provider, spark = provider_and_spark
+
+        lazy_df = MagicMock()
+        type(lazy_df).schema = PropertyMock(
+            side_effect=Exception("[PATH_NOT_FOUND] Path does not exist")
+        )
+        spark.read.format.return_value.load.return_value = lazy_df
+
+        table_ref = _storage_table_ref()
+        assert provider._check_physical_table_exists(table_ref) is False
+
+    def test_returns_true_when_schema_resolves(self, provider_and_spark):
+        provider, spark = provider_and_spark
+
+        resolved_df = MagicMock()
+        type(resolved_df).schema = PropertyMock(return_value=MagicMock())
+        spark.read.format.return_value.load.return_value = resolved_df
+
+        table_ref = _storage_table_ref()
+        assert provider._check_physical_table_exists(table_ref) is True
+
+    def test_returns_false_when_no_table_path(self, provider_and_spark):
+        provider, _spark = provider_and_spark
+        table_ref = _storage_table_ref(table_path=None)
+        assert provider._check_physical_table_exists(table_ref) is False
+
+
 class TestMergeToEntityCreatesTableOnFirstRun:
     def test_merge_creates_table_when_catalog_reports_missing(
         self, provider_and_spark, monkeypatch
