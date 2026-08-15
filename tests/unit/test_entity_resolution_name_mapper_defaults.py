@@ -126,3 +126,131 @@ def test_name_mapper_volume_inference_does_not_affect_three_part_names():
     entity.entityid = "other.catalog.my_entity"
 
     assert mapper.get_table_name(entity) == "other.catalog.my_entity"
+
+
+def _make_mapper_with_config(values: dict):
+    config = MagicMock(spec=ConfigService)
+    config.get.side_effect = lambda key, default=None: values.get(key, default)
+
+    logger_provider = MagicMock()
+    logger_provider.get_logger.return_value = MagicMock()
+    return ConfigDrivenEntityNameMapper(config, logger_provider)
+
+
+def _entity(entity_id: str):
+    entity = MagicMock()
+    entity.tags = {}
+    entity.entityid = entity_id
+    return entity
+
+
+class TestCatalogOnlyConfig:
+    """Regression tests for the catalog-dropped-silently bug.
+
+    Previously, configuring `kindling.storage.table_catalog` without also
+    setting `kindling.storage.table_schema` silently dropped the catalog
+    entirely: `if catalog and schema` was False and `if schema` was also
+    False, so the code fell through to a bare, unqualified leaf name. There
+    was no way to configure "just a catalog" and have it take effect.
+    """
+
+    def test_catalog_only_qualifies_one_part_entity_id(self):
+        mapper = _make_mapper_with_config({"kindling.storage.table_catalog": "maincat"})
+
+        assert mapper.get_table_name(_entity("orders")) == "maincat.orders"
+
+    def test_catalog_only_preserves_two_part_entity_id_structure(self):
+        """A 2-part entity id already reads as schema.table; the configured
+        catalog should be layered on top rather than flattening the whole id
+        into a single leaf under the catalog."""
+        mapper = _make_mapper_with_config({"kindling.storage.table_catalog": "maincat"})
+
+        assert (
+            mapper.get_table_name(_entity("staging.device_telemetry"))
+            == "maincat.staging.device_telemetry"
+        )
+
+    def test_catalog_only_overrides_leading_segment_of_three_part_entity_id(self):
+        """A 3-part entity id is already fully-qualified; the configured
+        catalog overrides its own leading segment while the trailing
+        schema.table is preserved."""
+        mapper = _make_mapper_with_config({"kindling.storage.table_catalog": "maincat"})
+
+        assert (
+            mapper.get_table_name(_entity("other_cat.staging.device_telemetry"))
+            == "maincat.staging.device_telemetry"
+        )
+
+    def test_catalog_only_normalises_hyphens_in_trailing_table_segment(self):
+        mapper = _make_mapper_with_config({"kindling.storage.table_catalog": "maincat"})
+
+        assert (
+            mapper.get_table_name(_entity("staging.device-telemetry-abc"))
+            == "maincat.staging.device_telemetry_abc"
+        )
+
+    def test_catalog_only_applies_table_name_prefix_to_trailing_table_segment(self):
+        mapper = _make_mapper_with_config(
+            {
+                "kindling.storage.table_catalog": "maincat",
+                "kindling.storage.table_name_prefix": "pfx_",
+            }
+        )
+
+        assert (
+            mapper.get_table_name(_entity("staging.device_telemetry"))
+            == "maincat.staging.pfx_device_telemetry"
+        )
+
+    def test_catalog_only_applies_table_name_prefix_to_one_part_entity_id(self):
+        mapper = _make_mapper_with_config(
+            {
+                "kindling.storage.table_catalog": "maincat",
+                "kindling.storage.table_name_prefix": "pfx_",
+            }
+        )
+
+        assert mapper.get_table_name(_entity("orders")) == "maincat.pfx_orders"
+
+
+class TestCatalogAndSchemaFlattenRegression:
+    """Locks in the existing, documented, and tested flattening behavior for
+    the case where `table_schema` is configured (with or without
+    `table_catalog`). This is deliberately NOT changed by the catalog-only
+    fix above, since existing deployments/tests rely on the entity id being
+    flattened into a single leaf underneath the configured namespace."""
+
+    def test_catalog_and_schema_both_set_flattens_dotted_entity_id(self):
+        mapper = _make_mapper_with_config(
+            {
+                "kindling.storage.table_catalog": "maincat",
+                "kindling.storage.table_schema": "analytics",
+            }
+        )
+
+        assert (
+            mapper.get_table_name(_entity("staging.device_telemetry"))
+            == "maincat.analytics.staging_device_telemetry"
+        )
+
+    def test_schema_only_set_flattens_dotted_entity_id(self):
+        mapper = _make_mapper_with_config({"kindling.storage.table_schema": "analytics"})
+
+        assert (
+            mapper.get_table_name(_entity("staging.device_telemetry"))
+            == "analytics.staging_device_telemetry"
+        )
+
+    def test_catalog_and_schema_both_set_applies_prefix_to_flattened_leaf(self):
+        mapper = _make_mapper_with_config(
+            {
+                "kindling.storage.table_catalog": "maincat",
+                "kindling.storage.table_schema": "analytics",
+                "kindling.storage.table_name_prefix": "pfx_",
+            }
+        )
+
+        assert (
+            mapper.get_table_name(_entity("staging.device_telemetry"))
+            == "maincat.analytics.pfx_staging_device_telemetry"
+        )
