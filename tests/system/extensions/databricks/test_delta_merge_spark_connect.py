@@ -28,6 +28,7 @@ Usage:
     poe test-extension --extension databricks --platform databricks
 """
 
+import os
 import uuid
 from pathlib import Path
 
@@ -78,6 +79,24 @@ class TestDeltaMergeSparkConnect:
         }
 
         platform_overrides = get_system_platform_config_overrides(platform_name, test_id)
+        if platform_name == "databricks":
+            # get_system_platform_config_overrides sets access_mode=catalog but
+            # never a table_catalog/table_schema, so entity resolution falls back
+            # to whatever the session's ambient default catalog happens to be --
+            # on this cluster that's the legacy hive_metastore, where creating a
+            # genuinely new Delta table from a UC-governed Standard-mode session
+            # doesn't behave like a real UC catalog. Pin the real UC catalog/schema
+            # explicitly, same env vars the UC-volume path itself is derived from.
+            platform_overrides.setdefault("kindling", {}).setdefault("storage", {}).update(
+                {
+                    "table_catalog": os.getenv(
+                        "KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG", "kindling"
+                    ),
+                    "table_schema": os.getenv(
+                        "KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA", "kindling"
+                    ),
+                }
+            )
         if platform_overrides:
             job_config["config_overrides"] = platform_overrides
 
