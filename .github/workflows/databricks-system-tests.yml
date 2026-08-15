@@ -93,6 +93,26 @@ jobs:
         run: |
           python scripts/databricks_uc_preflight.py
 
+      # test_lakeflow_scd_platform.py and test_temporal_lakeflow.py spin up
+      # real serverless Lakeflow/DLT pipelines whose generated notebook does
+      # a %pip install of exact-pinned wheels from a UC Volume path (Lakeflow
+      # can't install from the abfss:// path the rest of this workflow uses).
+      # Build the two test-app wheels and push the current commit's wheels
+      # to that volume so the notebook's install step has something to find.
+      - name: Build and deploy Lakeflow UC volume wheels
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          export PATH="/home/vscode/.local/bin:$PATH"
+          export POETRY_CACHE_DIR="${POETRY_CACHE_DIR:-/tmp/poetry-cache}"
+          export POETRY_VIRTUALENVS_PATH="${POETRY_VIRTUALENVS_PATH:-/tmp/poetry-virtualenvs}"
+          export VIRTUALENV_OVERRIDE_APP_DATA="${VIRTUALENV_OVERRIDE_APP_DATA:-/tmp/virtualenv-app-data}"
+          export XDG_DATA_HOME="${XDG_DATA_HOME:-/tmp/xdg-data}"
+          mkdir -p "$POETRY_CACHE_DIR" "$POETRY_VIRTUALENVS_PATH" "$VIRTUALENV_OVERRIDE_APP_DATA" "$XDG_DATA_HOME"
+          python scripts/deploy_lakeflow_uc_wheels.py
+
       - name: Run Databricks system tests
         env:
           PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
