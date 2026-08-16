@@ -7,14 +7,6 @@ from typing import Callable, Dict, Literal, Optional, Type
 
 import pyspark.sql.utils
 from delta.tables import DeltaTable
-from kindling.common_transforms import *
-from kindling.features import get_feature_bool, set_runtime_feature
-
-# Import your existing modules
-from kindling.injection import *
-from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_config import *
-from kindling.spark_log_provider import *
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
@@ -28,6 +20,15 @@ from pyspark.sql.functions import (
     to_json,
 )
 from pyspark.sql.types import StructType
+
+from kindling.common_transforms import *
+from kindling.features import get_feature_bool, set_runtime_feature
+
+# Import your existing modules
+from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import *
+from kindling.spark_log_provider import *
 
 from .data_entities import *
 from .entity_provider import (
@@ -1686,11 +1687,28 @@ class DeltaEntityProvider(
     def _transform_delta_feed_to_changes(
         self, change_feed_df: DataFrame, key_columns: list[str]
     ) -> DataFrame:
-        """Transform change feed to latest changes per key"""
-        from pyspark.sql import Window
-        from pyspark.sql.functions import col, row_number
+        """Transform change feed to latest changes per key.
 
+        For append-only/keyless entities (``merge_columns=[]``), every
+        non-delete row in the incremental CDF slice is a valid record --
+        there is no business key to deduplicate by. ``Window.partitionBy()``
+        with no columns collapses to a single global partition, so ranking
+        would silently keep only one arbitrary row from the entire slice
+        (and emit Spark's "No Partition Defined for Window operation"
+        warning) -- so no window/row-number ranking is applied at all when
+        ``key_columns`` is empty; every non-delete row passes through.
+        """
         filtered_df = change_feed_df.filter(col("_change_type") != "delete").drop("_change_type")
+
+        if not key_columns:
+            return (
+                filtered_df.transform(drop_if_exists, "SourceTimestamp")
+                .withColumnRenamed("_commit_version", "SourceVersion")
+                .withColumnRenamed("_commit_timestamp", "SourceTimestamp")
+            )
+
+        from pyspark.sql import Window
+        from pyspark.sql.functions import row_number
 
         window_spec = Window.partitionBy(*key_columns).orderBy(
             col("_commit_version").desc(), col("_commit_timestamp").desc()
@@ -2084,9 +2102,10 @@ class DeltaEntityProvider(
 
         if watermark_version is None:
             # Initial load: full read stamped with the version it covers.
-            from kindling.common_transforms import drop_if_exists, remove_duplicates
             from pyspark.sql.functions import current_timestamp, date_format, lit
             from pyspark.sql.types import IntegerType, TimestampType
+
+            from kindling.common_transforms import drop_if_exists, remove_duplicates
 
             df = remove_duplicates(
                 self.read_entity(entity)
