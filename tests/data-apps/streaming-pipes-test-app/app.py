@@ -629,7 +629,17 @@ try:
                     return False
                 progress = q.lastProgress
                 if progress:
-                    num_input = progress.get("numInputRows", 0)
+                    # dict.get(key, default) only applies the default when
+                    # the key is ABSENT -- Spark's streaming progress can
+                    # legitimately report numInputRows as an explicit None
+                    # (e.g. a "no new data" trigger), which .get(..., 0)
+                    # passes through unchanged, blowing up the < comparison
+                    # below with "TypeError: '<' not supported between
+                    # instances of 'NoneType' and 'int'". Coalesce
+                    # explicitly instead of relying on the default.
+                    num_input = progress.get("numInputRows")
+                    if num_input is None:
+                        num_input = 0
                     msg = f"TEST_ID={test_id} query={q.id} batch={progress.get('batchId')} input_rows={num_input}"
                     logger.debug(msg)
                     # Check if this query has processed enough data
