@@ -1,7 +1,12 @@
 # Spark Declarative Pipelines Execution Engine for Kindling
 
-**Status:** Draft — direction reviewed in design discussion; prerequisite
-watermark refactor implemented (PR #158); not yet scheduled.
+**Status:** Substantially implemented (2026-07-28) — core engine seam
+(`kindling.initialize(engine=...)`, `declare_pipeline()`), `kindling_ext_sdp`
+(declaration engine/plan, capability gating, dry-run harness, write-guard
+provider, OSS engine), and `kindling_ext_databricks` (expectations, AUTO CDC
+declared flows, temporal lowering) have shipped. Remaining: multi-flow
+`append_flow` targets (deliberately deferred), catalog-naming open question,
+dual-engine parity documentation.
 **Created:** 2026-07-13
 **Related:** `package_config_architecture.md` (post-registration config
 overlay this engine's bootstrap ordering depends on),
