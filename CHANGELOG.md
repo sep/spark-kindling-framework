@@ -6,6 +6,25 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **New CLI config/entity/pipe introspection and health-check commands**:
+  `kindling config show`/`kindling config diff` print the merged
+  base -> platform -> env `settings.yaml` stack (and diff two env/platform
+  combinations) without starting Dynaconf or Spark; `kindling entity list`
+  and `kindling pipeline show` round out `entity`/`pipeline` with the
+  listing/show commands the other side already had; `kindling entity tags`
+  and `kindling pipeline show --tags` print an entity/pipe's fully resolved
+  tags annotated with the config layer that last set each one
+  (`dataentities-bytag:`/`dataentities:`/`entity_tags:` and their
+  `datapipes` counterparts); `kindling app check` and `kindling package
+  check` are new composite health checks (app-import smoke test, entity/
+  pipe graph validation, optional deployed-runtime version-skew check for
+  `app check`; Poetry metadata, `src/` layout, and a real wheel build for
+  `package check`). Resolved `@secret:` values are redacted by default
+  everywhere tags/config are printed; `--reveal-secrets` opts in with a
+  warning banner. `--trace`/`--trace-level` on `app run`/`pipeline run` are
+  documented sugar for `--param print_trace=true`/`--param
+  kindling.telemetry.tracing.level=<level>`. See
+  `docs/proposals/kindling_cli_devex_gaps.md`.
 - **Generic `provider.kafka.<option>` passthrough for the Event Hub
   provider's Kafka transport**: any tag under that prefix is forwarded
   verbatim as a Kafka connector option (prefix stripped) instead of
