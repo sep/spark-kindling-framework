@@ -1118,24 +1118,13 @@ def _run_local_pipe(
     click.echo(f"Pipe '{pipe_id}' completed successfully.")
 
 
-def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
-    """Validate entity and pipe definitions without starting Spark."""
-    try:
-        from kindling.data_entities import DataEntityRegistry
-        from kindling.data_pipes import DataPipesRegistry
-        from kindling.injection import GlobalInjector
-    except ImportError as exc:
-        raise click.ClickException(
-            "kindling package is required. Install with: pip install spark-kindling[standalone]"
-        ) from exc
-
-    resolved_app = _discover_app_py(app_path)
-    resolved_env = env or os.getenv("KINDLING_ENV", "local")
-    # [implementer] keep validate environment handling symmetric with run — TASK-20260430-002
-    _load_app_module(resolved_app, env=resolved_env)
-
-    entity_registry = GlobalInjector.get(DataEntityRegistry)
-    pipe_registry = GlobalInjector.get(DataPipesRegistry)
+def _build_entity_pipe_graph_checks(
+    entity_registry: Any, pipe_registry: Any
+) -> Tuple[List[Tuple[str, bool, str]], int, int]:
+    """Build the entity/pipe registration + graph-integrity checks shared by
+    `app validate` and `app check` (a superset of validate). Returns
+    ``(checks, entity_count, pipe_count)``.
+    """
     entity_ids = set(entity_registry.get_entity_ids())
     pipe_ids = list(pipe_registry.get_pipe_ids())
 
@@ -1179,12 +1168,16 @@ def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
                 )
             )
 
-    _print_check_results(checks)
+    return checks, len(entity_ids), len(pipe_ids)
 
-    # Warn about delta source entities that have no fixture CSV (local runs will need cloud creds)
+
+def _warn_missing_entity_fixtures(entity_registry: Any, pipe_registry: Any) -> None:
+    """Print [WARN] lines for delta source entities lacking a local fixture CSV
+    (local runs of those pipes will need cloud storage credentials)."""
+    entity_ids = set(entity_registry.get_entity_ids())
     cwd = Path.cwd()
     source_entity_ids: set = set()
-    for pipe_id in pipe_ids:
+    for pipe_id in pipe_registry.get_pipe_ids():
         pipe = pipe_registry.get_pipe_definition(pipe_id)
         source_entity_ids.update(pipe.input_entity_ids)
     for entity_id in sorted(source_entity_ids):
@@ -1198,6 +1191,32 @@ def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
                 f"[WARN] entity.{entity_id}.fixture: no fixture CSV at"
                 f" tests/entities/{parts}.csv — local runs will require cloud storage"
             )
+
+
+def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
+    """Validate entity and pipe definitions without starting Spark."""
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.data_pipes import DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_app = _discover_app_py(app_path)
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    # [implementer] keep validate environment handling symmetric with run — TASK-20260430-002
+    _load_app_module(resolved_app, env=resolved_env)
+
+    entity_registry = GlobalInjector.get(DataEntityRegistry)
+    pipe_registry = GlobalInjector.get(DataPipesRegistry)
+    checks, _entity_count, _pipe_count = _build_entity_pipe_graph_checks(
+        entity_registry, pipe_registry
+    )
+
+    _print_check_results(checks)
+    _warn_missing_entity_fixtures(entity_registry, pipe_registry)
 
     all_passed = all(passed for _, passed, _ in checks)
     if all_passed:
@@ -3066,17 +3085,23 @@ def _open_store(path: str) -> ArtifactStore:
         raise click.ClickException(str(exc)) from exc
 
 
-def _warn_if_runtime_outdated(store: ArtifactStore) -> None:
-    """Emit a warning if the deployed runtime wheel is older than the CLI."""
+def _detect_runtime_version_skew(store: ArtifactStore) -> Optional[Tuple[str, str, bool]]:
+    """Compare the deployed runtime wheel version against the CLI's own version.
+
+    Returns ``(deployed_version, cli_version, is_outdated)`` as
+    ``(str, str, bool)`` if a comparison was possible, or ``None`` if no
+    deployed runtime wheel/version info could be determined (not itself a
+    failure -- just nothing to compare, e.g. no runtime deployed yet).
+    """
     try:
         from packaging.version import Version
     except ImportError:
-        return
+        return None
 
     try:
         files = store.list_files("packages")
     except Exception:
-        return
+        return None
 
     deployed_version = None
     for file_path in files:
@@ -3092,14 +3117,23 @@ def _warn_if_runtime_outdated(store: ArtifactStore) -> None:
                     pass
 
     if deployed_version is None:
-        return
+        return None
 
     try:
         cli_version = Version(_get_version("spark-kindling-cli"))
     except Exception:
-        return
+        return None
 
-    if deployed_version < cli_version:
+    return (str(deployed_version), str(cli_version), deployed_version < cli_version)
+
+
+def _warn_if_runtime_outdated(store: ArtifactStore) -> None:
+    """Emit a warning if the deployed runtime wheel is older than the CLI."""
+    skew = _detect_runtime_version_skew(store)
+    if skew is None:
+        return
+    deployed_version, cli_version, is_outdated = skew
+    if is_outdated:
         click.echo(
             f"Warning: deployed runtime is v{deployed_version} but CLI is v{cli_version}. "
             "Run 'kindling runtime deploy' to update the runtime wheel.",
@@ -3915,6 +3949,156 @@ def app_group() -> None:
 def app_validate(env: Optional[str], app_path: Optional[Path]) -> None:
     """Validate entity and pipe definitions without starting Spark."""
     _validate_app(env, app_path)
+
+
+@app_group.command("check")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help=(
+        "If given, additionally checks the deployed runtime version against the CLI "
+        "(requires artifacts storage access)."
+    ),
+)
+@click.option(
+    "--artifacts-path",
+    "artifacts_path",
+    default=None,
+    help="Artifacts root for the runtime version-skew check. Overrides KINDLING_ARTIFACTS_STORAGE_PATH.",
+)
+@click.option(
+    "--storage-account",
+    "storage_account",
+    default=None,
+    help="[legacy] Storage account for the version-skew check. Overrides AZURE_STORAGE_ACCOUNT.",
+)
+@click.option("--container", "container", default=None, help="Storage container name.")
+@click.option("--base-path", "base_path", default=None, help="Base path within container.")
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def app_check(
+    app_path: Optional[Path],
+    env: Optional[str],
+    platform: Optional[str],
+    artifacts_path: Optional[str],
+    storage_account: Optional[str],
+    container: Optional[str],
+    base_path: Optional[str],
+    json_output: bool,
+) -> None:
+    """Run a composite health check for an app.
+
+    A superset of `app validate`: the same entity/pipe graph checks, plus
+    an app-import smoke test reported as a `[FAIL] app_import` check line
+    (rather than aborting immediately the way `app validate` does), and,
+    with --platform, a deployed-runtime version-skew check. Read-only.
+    Exits 0 iff every check passes, matching `env check`'s convention.
+
+    \b
+    Examples:
+      kindling app check
+      kindling app check --app myapp --env dev
+      kindling app check --platform databricks
+    """
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.data_pipes import DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    checks: List[Tuple[str, bool, str]] = []
+    notes: List[str] = []
+    entity_count = 0
+    pipe_count = 0
+    entity_registry = None
+    pipe_registry = None
+
+    try:
+        resolved_app = _discover_app_py(app_path)
+        _load_app_module(resolved_app, env=resolved_env)
+    except click.ClickException as exc:
+        checks.append(("app_import", False, str(exc)))
+    else:
+        checks.append(("app_import", True, f"Imported {resolved_app} and ran initialize()"))
+
+        entity_registry = GlobalInjector.get(DataEntityRegistry)
+        pipe_registry = GlobalInjector.get(DataPipesRegistry)
+        graph_checks, entity_count, pipe_count = _build_entity_pipe_graph_checks(
+            entity_registry, pipe_registry
+        )
+        checks.extend(graph_checks)
+
+        if platform:
+            try:
+                resolved_destination = resolve_artifacts_path(
+                    artifacts_path,
+                    storage_account=storage_account,
+                    container=container,
+                    base_path=base_path,
+                )
+            except ValueError:
+                notes.append(
+                    "runtime_version_skew: skipped (no artifacts storage configured; pass "
+                    "--artifacts-path or set KINDLING_ARTIFACTS_STORAGE_PATH)"
+                )
+            else:
+                try:
+                    store = _open_store(resolved_destination)
+                    skew = _detect_runtime_version_skew(store)
+                except Exception as exc:
+                    notes.append(f"runtime_version_skew: skipped ({exc})")
+                else:
+                    if skew is None:
+                        notes.append(
+                            "runtime_version_skew: skipped (no deployed runtime wheel found "
+                            "under packages/)"
+                        )
+                    else:
+                        deployed_version, cli_version, is_outdated = skew
+                        detail = f"deployed v{deployed_version} vs CLI v{cli_version}"
+                        detail += (
+                            " - deployed runtime is older; run `kindling runtime deploy`"
+                            if is_outdated
+                            else " - up to date"
+                        )
+                        checks.append(("runtime_version_skew", not is_outdated, detail))
+        else:
+            notes.append(
+                "runtime_version_skew: skipped (pass --platform to check the deployed runtime)"
+            )
+
+    all_passed = _emit_check_results(
+        checks,
+        json_output,
+        extra={"env": resolved_env, "entity_count": entity_count, "pipe_count": pipe_count},
+        notes=notes,
+    )
+
+    if not json_output:
+        if entity_registry is not None and pipe_registry is not None:
+            _warn_missing_entity_fixtures(entity_registry, pipe_registry)
+        click.echo(f"Entities: {entity_count}  Pipes: {pipe_count}")
+        click.echo("App check passed." if all_passed else "App check failed - see above.")
+
+    if not all_passed:
+        raise click.exceptions.Exit(1)
 
 
 def _resolve_source_path(
@@ -6913,6 +7097,106 @@ def package_deploy(
         json_output,
         f"Deployed `{wheel.name}` to `{store.describe()}/packages/`.",
     )
+
+
+@package_group.command("check")
+@click.argument("package_name")
+@click.option(
+    "--local-folder",
+    "local_folder",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="Override convention lookup. Check this directory instead of packages/<package_name>/.",
+)
+@click.option(
+    "--dist-dir",
+    "dist_dir",
+    default="dist",
+    show_default=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help=(
+        "Directory where the wheel-build check writes its wheel. Relative paths "
+        "are resolved from the package root."
+    ),
+)
+@click.option(
+    "--skip-build",
+    is_flag=True,
+    help="Skip the wheel-build check for a faster check (metadata and layout only).",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def package_check(
+    package_name: str,
+    local_folder: Optional[Path],
+    dist_dir: Path,
+    skip_build: bool,
+    json_output: bool,
+) -> None:
+    """Run a health check for a package before deploying it.
+
+    Checks the things `package deploy` depends on: valid Poetry metadata
+    (tool.poetry.name/version), a plausible src/ layout, and (unless
+    --skip-build) that the package's wheel actually builds via the same
+    `poetry build` invocation `package deploy` uses internally, rather than
+    inferring buildability from file presence alone. Exits 0 iff every
+    check passes.
+
+    \b
+    PACKAGE_NAME is used to locate packages/<package_name>/ by convention.
+    Use --local-folder to override for non-standard layouts.
+
+    \b
+    Examples:
+      kindling package check my-domain-package
+      kindling package check my-domain-package --skip-build
+    """
+    if local_folder:
+        package_root = local_folder.expanduser().resolve()
+    else:
+        package_root = _resolve_by_convention(package_name, "packages", "package")
+
+    checks: List[Tuple[str, bool, str]] = []
+    notes: List[str] = []
+
+    try:
+        pkg_name, pkg_version = _load_package_metadata(package_root)
+        checks.append(("pyproject", True, f"{pkg_name} {pkg_version}"))
+    except click.ClickException as exc:
+        checks.append(("pyproject", False, str(exc)))
+
+    src_dir = package_root / "src"
+    has_package = src_dir.is_dir() and any(
+        (child / "__init__.py").exists() for child in src_dir.iterdir() if child.is_dir()
+    )
+    checks.append(
+        (
+            "src_layout",
+            has_package,
+            (
+                "src/<package>/__init__.py found"
+                if has_package
+                else f"expected an importable package under {src_dir}"
+            ),
+        )
+    )
+
+    if skip_build:
+        notes.append("wheel_build: skipped (--skip-build)")
+    else:
+        try:
+            wheel = _build_package_wheel(package_root, dist_dir)
+            checks.append(("wheel_build", True, f"built {wheel.name}"))
+        except click.ClickException as exc:
+            checks.append(("wheel_build", False, str(exc)))
+
+    all_passed = _emit_check_results(
+        checks, json_output, extra={"package_path": str(package_root)}, notes=notes
+    )
+    if not json_output:
+        click.echo("Package check passed." if all_passed else "Package check failed - see above.")
+
+    if not all_passed:
+        raise click.exceptions.Exit(1)
 
 
 # =============================================================================
