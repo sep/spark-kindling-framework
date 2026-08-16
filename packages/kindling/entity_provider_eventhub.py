@@ -1,5 +1,6 @@
 """Azure Event Hub entity provider with Event Hubs and Kafka transports."""
 
+import struct as _struct
 from typing import Any, Callable, Dict, Optional
 
 from injector import inject
@@ -11,7 +12,7 @@ from pyspark.sql.functions import expr
 from pyspark.sql.functions import hex as spark_hex
 from pyspark.sql.functions import lit, map_from_entries, struct, substring
 from pyspark.sql.functions import transform as sql_transform
-from pyspark.sql.functions import when
+from pyspark.sql.functions import udf, when
 from pyspark.sql.types import ArrayType, BinaryType, MapType, StringType
 
 from .data_entities import EntityMetadata
@@ -29,33 +30,149 @@ _AVRO_SINGLE_OBJECT_MARKER = bytes([0xC3, 0x01])
 _AVRO_SINGLE_OBJECT_HEADER_LEN = 2 + 16
 
 
-def _flatten_kafka_headers(df: DataFrame) -> DataFrame:
+def _decode_amqp_primitive(data: Optional[bytes]) -> Optional[str]:
+    """Decode a single AMQP 1.0 primitive-typed value into its string
+    representation, per the AMQP 1.0 spec's type system (section 7.2:
+    https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-types-v1.0-os.html#type-primitive).
+
+    Event Hubs' Kafka protocol head surfaces AMQP message annotations/
+    application properties (e.g. enqueue time, sequence number) as Kafka
+    record headers whose VALUE bytes are still AMQP-primitive-encoded, not
+    plain UTF-8 -- a blind UTF-8 decode of these produces garbage. This
+    reads the leading type-constructor byte and decodes the following
+    bytes per the standard AMQP fixed-width/variable-width primitive
+    encodings (covers the common scalar types most annotations use: null,
+    boolean, uint/int/ulong/long family, float, double, timestamp, and
+    UTF-8/symbol/binary variable-width types).
+
+    Falls back to a best-effort UTF-8 (lossy) decode of the raw bytes for
+    any constructor byte not covered here (e.g. composite/described types,
+    arrays, lists, maps -- not expected for simple annotation values) or
+    malformed/truncated input, rather than raising -- this is a display/
+    interpretation aid, not a strict protocol validator.
+    """
+    if not data:
+        return None
+    ctor = data[0]
+    rest = data[1:]
+    try:
+        if ctor in (0x40,):  # null
+            return None
+        if ctor == 0x41:  # true
+            return "true"
+        if ctor == 0x42:  # false
+            return "false"
+        if ctor in (0x43, 0x44):  # uint0, ulong0
+            return "0"
+        if ctor == 0x50:  # ubyte
+            return str(rest[0])
+        if ctor in (0x51, 0x54, 0x55):  # byte, smallint, smalllong (signed 1 byte)
+            return str(_struct.unpack(">b", rest[:1])[0])
+        if ctor in (0x52, 0x53):  # smalluint, smallulong (unsigned 1 byte)
+            return str(rest[0])
+        if ctor == 0x56:  # boolean (1 byte: 0 = false, else true)
+            return "true" if rest[0] else "false"
+        if ctor == 0x60:  # ushort
+            return str(_struct.unpack(">H", rest[:2])[0])
+        if ctor == 0x61:  # short
+            return str(_struct.unpack(">h", rest[:2])[0])
+        if ctor == 0x70:  # uint
+            return str(_struct.unpack(">I", rest[:4])[0])
+        if ctor == 0x71:  # int
+            return str(_struct.unpack(">i", rest[:4])[0])
+        if ctor == 0x72:  # float (IEEE 754 binary32)
+            return str(_struct.unpack(">f", rest[:4])[0])
+        if ctor == 0x80:  # ulong
+            return str(_struct.unpack(">Q", rest[:8])[0])
+        if ctor == 0x81:  # long
+            return str(_struct.unpack(">q", rest[:8])[0])
+        if ctor == 0x82:  # double (IEEE 754 binary64)
+            return str(_struct.unpack(">d", rest[:8])[0])
+        if ctor == 0x83:  # timestamp: signed 8-byte ms since Unix epoch
+            return str(_struct.unpack(">q", rest[:8])[0])
+        if ctor == 0xA0:  # vbin8: 1-byte length + binary
+            length = rest[0]
+            return rest[1 : 1 + length].hex()
+        if ctor == 0xA1:  # str8-utf8: 1-byte length + UTF-8
+            length = rest[0]
+            return rest[1 : 1 + length].decode("utf-8", "replace")
+        if ctor == 0xA3:  # sym8: 1-byte length + ASCII symbol
+            length = rest[0]
+            return rest[1 : 1 + length].decode("ascii", "replace")
+        if ctor == 0xB0:  # vbin32: 4-byte length + binary
+            length = _struct.unpack(">I", rest[:4])[0]
+            return rest[4 : 4 + length].hex()
+        if ctor == 0xB1:  # str32-utf8: 4-byte length + UTF-8
+            length = _struct.unpack(">I", rest[:4])[0]
+            return rest[4 : 4 + length].decode("utf-8", "replace")
+        if ctor == 0xB3:  # sym32: 4-byte length + ASCII symbol
+            length = _struct.unpack(">I", rest[:4])[0]
+            return rest[4 : 4 + length].decode("ascii", "replace")
+    except (_struct.error, IndexError):
+        pass
+    # Unrecognized constructor or truncated payload: best-effort fallback
+    # rather than failing the whole read over one header value.
+    return data.decode("utf-8", "replace")
+
+
+def _decode_amqp_headers_map(headers) -> Optional[Dict[str, Optional[str]]]:
+    """Decode a whole Kafka ``headers`` array (list of key/binary-value Row
+    entries) into a ``dict`` with each value AMQP-primitive-decoded."""
+    if headers is None:
+        return None
+    return {entry["key"]: _decode_amqp_primitive(entry["value"]) for entry in headers}
+
+
+_decode_amqp_headers_udf = udf(_decode_amqp_headers_map, MapType(StringType(), StringType()))
+
+
+def _flatten_kafka_headers(df: DataFrame, amqp_headers: bool = False) -> DataFrame:
     """Flatten Kafka's ``headers`` column (``array<struct<key,value:binary>>``,
     present only when ``provider.kafka.includeHeaders=true``) into a
     ``map<string,string>`` -- the same shape as the provider's existing
     ``properties``/``systemProperties`` metadata columns. Transport-level,
     not payload-codec-specific, so both preprocess modes apply it.
 
+    ``amqp_headers=True`` (``provider.amqp_headers: true``) decodes each
+    header value as an AMQP 1.0 primitive (see ``_decode_amqp_primitive``)
+    instead of plain UTF-8 -- needed because Event Hubs' Kafka protocol
+    head surfaces AMQP system-property annotations (e.g. enqueue time,
+    sequence number) with AMQP-primitive-encoded values, which a plain
+    UTF-8 decode would corrupt into garbage. Either way the output stays a
+    uniform ``map<string,string>``; interpreting what a given header NAME
+    means (e.g. that it should be parsed further as a timestamp) is the
+    consuming pipe's job, not this provider's.
+
+    The two modes use different execution strategies: plain UTF-8 uses
+    native Catalyst higher-order functions (``transform``/``map_from_entries``),
+    but a Python UDF cannot be nested inside a higher-order function's
+    lambda (Catalyst rejects it: "Cannot evaluate expression" at runtime,
+    not at planning time) -- so the AMQP path applies one UDF to the whole
+    headers array at once instead.
+
     No-op when ``headers`` is absent (native Event Hubs connector, or Kafka
     without ``includeHeaders``) or already a different shape.
     """
     if "headers" in df.columns and isinstance(df.schema["headers"].dataType, ArrayType):
-        df = df.withColumn(
-            "headers",
-            map_from_entries(
-                sql_transform(
-                    col("headers"),
-                    lambda entry: struct(
-                        entry["key"].alias("key"),
-                        spark_decode(entry["value"], "UTF-8").alias("value"),
-                    ),
-                )
-            ),
-        )
+        if amqp_headers:
+            df = df.withColumn("headers", _decode_amqp_headers_udf(col("headers")))
+        else:
+            df = df.withColumn(
+                "headers",
+                map_from_entries(
+                    sql_transform(
+                        col("headers"),
+                        lambda entry: struct(
+                            entry["key"].alias("key"),
+                            spark_decode(entry["value"], "UTF-8").alias("value"),
+                        ),
+                    )
+                ),
+            )
     return df
 
 
-def _preprocess_kafka(df: DataFrame) -> DataFrame:
+def _preprocess_kafka(df: DataFrame, amqp_headers: bool = False) -> DataFrame:
     """``provider.preprocess: kafka`` -- for text-payload producers (JSON,
     delimited text, etc.): decode the binary ``body`` to UTF-8 text and
     flatten Kafka headers. Do NOT use this for binary-schema payloads
@@ -67,10 +184,10 @@ def _preprocess_kafka(df: DataFrame) -> DataFrame:
     """
     if "body" in df.columns and isinstance(df.schema["body"].dataType, BinaryType):
         df = df.withColumn("body", spark_decode(col("body"), "UTF-8"))
-    return _flatten_kafka_headers(df)
+    return _flatten_kafka_headers(df, amqp_headers=amqp_headers)
 
 
-def _preprocess_avro(df: DataFrame) -> DataFrame:
+def _preprocess_avro(df: DataFrame, amqp_headers: bool = False) -> DataFrame:
     """``provider.preprocess: avro`` -- for Avro single-object-encoded
     payloads (2-byte marker + 16-byte schema fingerprint + Avro-encoded
     body; see ``_AVRO_SINGLE_OBJECT_MARKER``). Extracts the fingerprint into
@@ -86,7 +203,7 @@ def _preprocess_avro(df: DataFrame) -> DataFrame:
     for this to be a safe, partial win.
     """
     if "body" not in df.columns or not isinstance(df.schema["body"].dataType, BinaryType):
-        return _flatten_kafka_headers(df)
+        return _flatten_kafka_headers(df, amqp_headers=amqp_headers)
 
     is_single_object = substring(col("body"), 1, 2) == lit(_AVRO_SINGLE_OBJECT_MARKER)
     # Spark SQL's substring(bin, pos) 2-arg form means "from pos to the end"
@@ -103,10 +220,10 @@ def _preprocess_avro(df: DataFrame) -> DataFrame:
         "body",
         when(is_single_object, rest_of_body).otherwise(col("body")),
     )
-    return _flatten_kafka_headers(df)
+    return _flatten_kafka_headers(df, amqp_headers=amqp_headers)
 
 
-_PREPROCESS_MODES: Dict[str, Callable[[DataFrame], DataFrame]] = {
+_PREPROCESS_MODES: Dict[str, Callable[..., DataFrame]] = {
     "kafka": _preprocess_kafka,
     "avro": _preprocess_avro,
 }
@@ -147,6 +264,15 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
           16-byte schema fingerprint into an avro_schema_fingerprint column
           and strips it from body (still binary; this framework does not
           deserialize Avro), and flattens Kafka headers the same as "kafka".
+    - provider.amqp_headers: Opt-in boolean (default false), only relevant
+      alongside provider.preprocess. Event Hubs' Kafka protocol head
+      surfaces AMQP message annotations (e.g. enqueue time, sequence
+      number) as Kafka headers whose values are still AMQP-1.0-primitive-
+      encoded, not plain UTF-8 -- true decodes each header value per the
+      AMQP primitive type system instead of blind UTF-8 (which would
+      otherwise corrupt them into garbage). Output stays map<string,string>
+      either way; interpreting a given header NAME's meaning (e.g. "this
+      one is a timestamp") is still the consuming pipe's job.
 
     Example entity definition:
     ```python
@@ -417,8 +543,10 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
                 f"Supported values: {', '.join(sorted(_PREPROCESS_MODES))}."
             )
 
+        amqp_headers = bool(provider_config.get("amqp_headers"))
+
         try:
-            return preprocessor(df)
+            return preprocessor(df, amqp_headers=amqp_headers)
         except Exception as exc:
             raise RuntimeError(
                 f"Event Hub entity '{entity_metadata.entityid}' preprocessing "

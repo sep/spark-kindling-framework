@@ -314,6 +314,22 @@ not a single `.csv` file — merge them downstream if a single file is required.
   or to structural-only normalization (decoding, reshaping containers)
   where no information is actually discarded.
 
+  This tag covers **generic transport normalization only** — decoding the
+  wire format into consistent types. Application semantics (which header
+  identifies a device, how to interpret or fall back on enqueue time,
+  which columns to persist) stay the consuming pipe's responsibility; the
+  provider does not and should not know about them.
+- `provider.amqp_headers`: Opt-in boolean (default `false`), only relevant
+  alongside `provider.preprocess`. Event Hubs' Kafka protocol head surfaces
+  AMQP message annotations (e.g. enqueue time, sequence number) as Kafka
+  headers whose *values* are still [AMQP 1.0 primitive-encoded](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-types-v1.0-os.html#type-primitive),
+  not plain UTF-8 — `true` decodes each header value per the AMQP
+  primitive type system instead of blind UTF-8, which would otherwise
+  corrupt them into garbage. Output stays `map<string,string>` either way
+  (numeric/timestamp values become their string representation);
+  interpreting what a given header *name* means is still the consuming
+  pipe's job.
+
 ### Memory Provider (`provider_type: memory`)
 
 Batch:

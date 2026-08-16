@@ -8,6 +8,7 @@ from kindling.entity_provider_eventhub import (
     _AVRO_SINGLE_OBJECT_MARKER,
     _PREPROCESS_MODES,
     EventHubEntityProvider,
+    _decode_amqp_primitive,
 )
 
 
@@ -396,7 +397,7 @@ class TestEventHubPreprocessing:
         monkeypatch.setitem(
             eventhub_module._PREPROCESS_MODES,
             "kafka",
-            lambda df: (calls.append(df), transformed_df)[1],
+            lambda df, amqp_headers=False: (calls.append(df), transformed_df)[1],
         )
 
         entity = _entity(
@@ -426,7 +427,7 @@ class TestEventHubPreprocessing:
         monkeypatch.setitem(
             eventhub_module._PREPROCESS_MODES,
             "avro",
-            lambda df: (calls.append(df), transformed_df)[1],
+            lambda df, amqp_headers=False: (calls.append(df), transformed_df)[1],
         )
 
         entity = _entity(
@@ -568,7 +569,7 @@ class TestEventHubPreprocessing:
             monkeypatch.setitem(
                 eventhub_module._PREPROCESS_MODES,
                 "kafka",
-                lambda df: (calls.append(df), transformed_df)[1],
+                lambda df, amqp_headers=False: (calls.append(df), transformed_df)[1],
             )
 
             logger_provider = MagicMock()
@@ -687,6 +688,263 @@ class TestPreprocessKafkaMode:
 
         assert result.isStreaming is True
         assert dict(result.dtypes)["body"] == "string"
+
+
+class TestDecodeAmqpPrimitiveFunction:
+    """Pure-Python unit coverage for _decode_amqp_primitive, independent of
+    Spark, for fast edge-case checks."""
+
+    def test_empty_or_none_returns_none(self):
+        assert _decode_amqp_primitive(None) is None
+        assert _decode_amqp_primitive(b"") is None
+
+    def test_null_constructor_returns_none(self):
+        assert _decode_amqp_primitive(bytes([0x40])) is None
+
+    def test_true_false_constructors(self):
+        assert _decode_amqp_primitive(bytes([0x41])) == "true"
+        assert _decode_amqp_primitive(bytes([0x42])) == "false"
+
+    def test_uint0_ulong0_constructors(self):
+        assert _decode_amqp_primitive(bytes([0x43])) == "0"
+        assert _decode_amqp_primitive(bytes([0x44])) == "0"
+
+    def test_smallint_family_signed(self):
+        import struct as _struct
+
+        assert _decode_amqp_primitive(bytes([0x54]) + _struct.pack(">b", -5)) == "-5"
+
+    def test_truncated_payload_falls_back_without_raising(self):
+        # 0x81 (long) claims 8 bytes follow but only 2 are given.
+        result = _decode_amqp_primitive(bytes([0x81, 0x00, 0x01]))
+        assert result is not None  # falls back to a lossy decode, doesn't raise
+
+
+def test_read_entity_passes_amqp_headers_flag_to_preprocessor(provider, monkeypatch):
+    import kindling.entity_provider_eventhub as eventhub_module
+
+    received_kwargs = {}
+
+    def _spy(df, amqp_headers=False):
+        received_kwargs["amqp_headers"] = amqp_headers
+        return df
+
+    monkeypatch.setitem(eventhub_module._PREPROCESS_MODES, "kafka", _spy)
+
+    entity = _entity(
+        {
+            "provider_type": "eventhub",
+            "provider.eventhub.connectionString": _connection_string(),
+            "provider.eventhub.name": "my-hub",
+            "provider.preprocess": "kafka",
+            "provider.amqp_headers": "true",
+        }
+    )
+    provider.spark.read.format.return_value.options.return_value.load.return_value = MagicMock()
+
+    provider.read_entity(entity)
+
+    assert received_kwargs["amqp_headers"] is True
+
+
+class TestAmqpHeaderDecoding:
+    """provider.amqp_headers: true -- AMQP 1.0 primitive-typed header value
+    decoding (Event Hubs' Kafka protocol head surfaces AMQP annotations as
+    Kafka headers whose values are AMQP-encoded, not plain UTF-8)."""
+
+    def _df_with_header_value(self, spark_session, value_bytes, key="x-opt-enqueued-time"):
+        from pyspark.sql import Row
+        from pyspark.sql.types import (
+            ArrayType,
+            BinaryType,
+            StringType,
+            StructField,
+            StructType,
+        )
+
+        schema = StructType(
+            [
+                StructField("body", BinaryType(), True),
+                StructField(
+                    "headers",
+                    ArrayType(
+                        StructType(
+                            [
+                                StructField("key", StringType(), True),
+                                StructField("value", BinaryType(), True),
+                            ]
+                        )
+                    ),
+                    True,
+                ),
+            ]
+        )
+        return spark_session.createDataFrame(
+            [Row(body=b"unused", headers=[Row(key=key, value=value_bytes)])],
+            schema=schema,
+        )
+
+    def test_default_false_decodes_headers_as_plain_utf8(self, spark_session):
+        """Regression: amqp_headers unset/false must keep today's plain
+        UTF-8 header decoding (kafka mode's existing behavior)."""
+        df = _headers_schema_df(spark_session, b"unused", header_value_bytes=b"application/json")
+
+        result = _PREPROCESS_MODES["kafka"](df, amqp_headers=False)
+
+        assert result.collect()[0]["headers"] == {"content-type": "application/json"}
+
+    def test_decodes_amqp_long_value(self, spark_session):
+        import struct as _struct
+
+        enqueued_time_ms = 1699999999123
+        value_bytes = bytes([0x81]) + _struct.pack(">q", enqueued_time_ms)
+        df = self._df_with_header_value(spark_session, value_bytes)
+
+        result = _PREPROCESS_MODES["kafka"](df, amqp_headers=True)
+
+        assert result.collect()[0]["headers"] == {"x-opt-enqueued-time": str(enqueued_time_ms)}
+
+    def test_decodes_amqp_timestamp_value(self, spark_session):
+        import struct as _struct
+
+        ts_ms = 1700000000000
+        value_bytes = bytes([0x83]) + _struct.pack(">q", ts_ms)
+        df = self._df_with_header_value(spark_session, value_bytes, key="x-opt-enqueued-time")
+
+        result = _PREPROCESS_MODES["kafka"](df, amqp_headers=True)
+
+        assert result.collect()[0]["headers"] == {"x-opt-enqueued-time": str(ts_ms)}
+
+    def test_decodes_amqp_str8_utf8_value(self, spark_session):
+        text = "device-42"
+        value_bytes = bytes([0xA1, len(text.encode("utf-8"))]) + text.encode("utf-8")
+        df = self._df_with_header_value(spark_session, value_bytes, key="x-opt-partition-key")
+
+        result = _PREPROCESS_MODES["kafka"](df, amqp_headers=True)
+
+        assert result.collect()[0]["headers"] == {"x-opt-partition-key": text}
+
+    def test_decodes_amqp_uint_and_boolean_values(self, spark_session):
+        import struct as _struct
+
+        from pyspark.sql import Row
+        from pyspark.sql.types import (
+            ArrayType,
+            BinaryType,
+            StringType,
+            StructField,
+            StructType,
+        )
+
+        schema = StructType(
+            [
+                StructField("body", BinaryType(), True),
+                StructField(
+                    "headers",
+                    ArrayType(
+                        StructType(
+                            [
+                                StructField("key", StringType(), True),
+                                StructField("value", BinaryType(), True),
+                            ]
+                        )
+                    ),
+                    True,
+                ),
+            ]
+        )
+        df = spark_session.createDataFrame(
+            [
+                Row(
+                    body=b"unused",
+                    headers=[
+                        Row(
+                            key="x-opt-sequence-number",
+                            value=bytes([0x70]) + _struct.pack(">I", 42),
+                        ),
+                        Row(key="x-opt-is-duplicate", value=bytes([0x41])),
+                    ],
+                )
+            ],
+            schema=schema,
+        )
+
+        result = _PREPROCESS_MODES["kafka"](df, amqp_headers=True)
+
+        headers = result.collect()[0]["headers"]
+        assert headers["x-opt-sequence-number"] == "42"
+        assert headers["x-opt-is-duplicate"] == "true"
+
+    def test_unrecognized_constructor_falls_back_to_lossy_utf8(self, spark_session):
+        """An unimplemented/composite AMQP type constructor must not raise
+        -- fall back to a best-effort decode instead of failing the read."""
+        value_bytes = bytes([0xC0]) + b"plain-fallback-text"
+        df = self._df_with_header_value(spark_session, value_bytes, key="x-custom")
+
+        result = _PREPROCESS_MODES["kafka"](df, amqp_headers=True)
+
+        # Fallback decodes the WHOLE byte sequence (including the
+        # unrecognized constructor byte) as best-effort UTF-8 -- not a
+        # crash, and not silently dropped.
+        headers = result.collect()[0]["headers"]
+        assert "plain-fallback-text" in headers["x-custom"]
+
+    def test_amqp_headers_composes_with_avro_mode(self, spark_session):
+        """amqp_headers applies identically regardless of which preprocess
+        mode (kafka/avro) is selected -- it's a header-decoding concern,
+        orthogonal to the body payload codec."""
+        import struct as _struct
+
+        from pyspark.sql import Row
+        from pyspark.sql.types import (
+            ArrayType,
+            BinaryType,
+            StringType,
+            StructField,
+            StructType,
+        )
+
+        fingerprint = bytes(range(16))
+        avro_body = _AVRO_SINGLE_OBJECT_MARKER + fingerprint + b"avro-payload"
+        enqueued_time_ms = 1700000000000
+        schema = StructType(
+            [
+                StructField("body", BinaryType(), True),
+                StructField(
+                    "headers",
+                    ArrayType(
+                        StructType(
+                            [
+                                StructField("key", StringType(), True),
+                                StructField("value", BinaryType(), True),
+                            ]
+                        )
+                    ),
+                    True,
+                ),
+            ]
+        )
+        df = spark_session.createDataFrame(
+            [
+                Row(
+                    body=avro_body,
+                    headers=[
+                        Row(
+                            key="x-opt-enqueued-time",
+                            value=bytes([0x81]) + _struct.pack(">q", enqueued_time_ms),
+                        )
+                    ],
+                )
+            ],
+            schema=schema,
+        )
+
+        result = _PREPROCESS_MODES["avro"](df, amqp_headers=True)
+
+        row = result.collect()[0]
+        assert row["avro_schema_fingerprint"] == fingerprint.hex().upper()
+        assert row["body"] == b"avro-payload"
+        assert row["headers"] == {"x-opt-enqueued-time": str(enqueued_time_ms)}
 
 
 class TestPreprocessAvroMode:
