@@ -494,11 +494,26 @@ class DeltaAccessMode:
 class DeltaTableReference:
     """Encapsulates how to reference a Delta table"""
 
-    def __init__(self, table_name: str, table_path: Optional[str], access_mode: DeltaAccessMode):
+    def __init__(
+        self,
+        table_name: str,
+        table_path: Optional[str],
+        access_mode: DeltaAccessMode,
+        spark=None,
+    ):
         self.table_name = table_name
         self.table_path = table_path
         self.access_mode = access_mode
-        self.spark = get_or_create_spark_session()
+        # ``spark`` lets a caller bind this reference to a *specific*
+        # session (e.g. a foreachBatch micro-batch's own
+        # ``batch_df.sparkSession`` under Spark Connect) instead of
+        # whatever ``get_or_create_spark_session()`` would resolve. That
+        # global lookup finds the driver's session fine at normal call
+        # sites, but inside Spark Connect's isolated foreachBatch worker
+        # process there is no such global to find -- it would silently
+        # build an unrelated, disconnected local session instead of the
+        # Connect session the running micro-batch actually belongs to.
+        self.spark = spark if spark is not None else get_or_create_spark_session()
 
     def get_delta_table(self) -> DeltaTable:
         """Get DeltaTable instance using appropriate method"""
@@ -556,6 +571,65 @@ class DeltaTableReference:
         if self.access_mode == DeltaAccessMode.STORAGE:
             return self.table_path
         raise ValueError(f"Unsupported Delta access mode: {self.access_mode}")
+
+
+def _resolve_merge_strategy_name(scd_config: SCDConfig, entity) -> str:
+    """Pick the merge strategy name for an entity.
+
+    Pure function of an already-resolved ``SCDConfig`` plus the entity's own
+    tags -- no DI, no instance state, safe to call from anywhere including
+    an isolated foreachBatch worker process. Shared by the batch merge path
+    (``_merge_to_delta_table``) and the streaming merge path
+    (``merge_as_stream``), which must resolve the strategy name on the
+    driver, before the foreachBatch callback is built and shipped off.
+    """
+    if scd_config.enabled:
+        return "scd2"
+    write_mode = str((entity.tags or {}).get("write.mode") or "").strip().lower()
+    if write_mode == "insert":
+        return "insert_only"
+    return "scd1"
+
+
+def _enforce_schema_drift_for_batch(
+    df: DataFrame, entity, delta_table: DeltaTable, policy: str
+) -> None:
+    """Streaming-path counterpart to
+    ``DeltaEntityProvider._enforce_schema_drift_policy``: identical
+    evolve/warn/fail semantics, but built to run inside foreachBatch's
+    isolated worker process under Spark Connect. It takes an
+    already-resolved ``DeltaTable`` handle (built from the micro-batch's own
+    session) instead of a ``DeltaTableReference``, and logs through a fresh
+    module-level logger obtained at call time instead of a DI-resolved one
+    -- both avoid needing anything from the enclosing ``DeltaEntityProvider``
+    instance or the framework's dependency-injection container, neither of
+    which exist in this process.
+    """
+    if policy == "evolve":
+        return
+
+    table_fields = {
+        field_.name: field_.dataType.simpleString() for field_ in delta_table.toDF().schema.fields
+    }
+    new_columns = []
+    type_conflicts = []
+    for field_ in df.schema.fields:
+        table_type = table_fields.get(field_.name)
+        if table_type is None:
+            new_columns.append(field_.name)
+        elif table_type != field_.dataType.simpleString():
+            type_conflicts.append((field_.name, table_type, field_.dataType.simpleString()))
+
+    if not new_columns and not type_conflicts:
+        return
+    if policy == "fail":
+        raise SchemaDriftError(entity.entityid, new_columns, type_conflicts)
+
+    logging.getLogger(__name__).warning(
+        f"Schema drift writing entity '{entity.entityid}' "
+        f"(schema.drift=warn): new columns {sorted(new_columns)}, type "
+        f"conflicts {sorted(type_conflicts)}; proceeding with evolution"
+    )
 
 
 @GlobalInjector.singleton_autobind()
@@ -1518,13 +1592,7 @@ class DeltaEntityProvider(
         """Merge DataFrame to existing Delta table"""
         self._enforce_schema_drift_policy(df, entity, table_ref)
         scd_config = scd_config_from_tags(entity)
-        write_mode = str((entity.tags or {}).get("write.mode") or "").strip().lower()
-        if scd_config.enabled:
-            strategy_name = "scd2"
-        elif write_mode == "insert":
-            strategy_name = "insert_only"
-        else:
-            strategy_name = "scd1"
+        strategy_name = _resolve_merge_strategy_name(scd_config, entity)
         strategy = DeltaMergeStrategies.get(strategy_name)
         merge_condition = self._build_merge_condition("old", "new", entity.merge_columns)
         strategy.apply(table_ref.get_delta_table(), df, entity, merge_condition)
@@ -1731,10 +1799,12 @@ class DeltaEntityProvider(
     def merge_as_stream(self, df, entity, checkpoint_location, options=None):
         """Merge a streaming DataFrame into the entity via foreachBatch.
 
-        Each micro-batch runs through ``merge_to_entity``, so SCD1/SCD2
-        semantics (and their per-merge signal emissions) are identical to
-        the batch path. Micro-batch replay after a failure is safe because
-        the merge is idempotent by business key.
+        Each micro-batch applies the same SCD1/SCD2 merge semantics as the
+        batch path (``merge_to_entity``), but does *not* go through
+        ``merge_to_entity`` itself, and does not emit its per-merge signals
+        -- see ``_merge_batch``'s docstring for why. Micro-batch replay
+        after a failure is safe because the merge is idempotent by business
+        key.
 
         The merge contract is one row per business key per merge (Delta
         rejects multiple source rows matching one target row). A streaming
@@ -1787,28 +1857,73 @@ class DeltaEntityProvider(
                 f"the per-batch latest-row-per-key collapse cannot run"
             )
 
-        def _merge_batch(batch_df, batch_id):
-            # Deliberately does not close over `self` (or anything else that
-            # carries a live SparkSession/Delta table handle). On a
-            # Spark-Connect-backed session (Databricks Standard/Shared
-            # access mode), `foreachBatch()` cloudpickles this callback up
-            # front to ship it for micro-batch execution, and a captured
-            # SparkSession fails immediately -- before any batch ever runs --
-            # with "TypeError: cannot pickle '_thread.RLock' object" wrapped
-            # in pyspark.errors.PySparkPicklingError
-            # ([STREAMING_CONNECT_SERIALIZATION_ERROR]), because the
-            # Connect client's internal synchronization primitives aren't
-            # picklable. PySpark's own guidance for foreachBatch under
-            # Spark Connect is to use the micro-batch's own bound session
-            # (``df.sparkSession``) instead of any session captured from an
-            # enclosing scope. `GlobalInjector` and `EntityProvider` are
-            # plain classes (no instance state), so referencing them here
-            # is safe -- only the fresh, per-batch instance built from them
-            # ever touches a session.
-            from copy import copy
+        # Everything `_merge_batch` needs gets resolved *here*, on the
+        # driver, before the writer is even built -- not inside the
+        # callback. `foreachBatch()`'s callback runs, under Spark Connect,
+        # in `foreach_batch_worker.py`: a freshly spawned Python process
+        # that unpickles the callback and calls it, but never ran
+        # `initialize_framework()`'s bootstrap sequence. Its
+        # `GlobalInjector` therefore has zero bindings registered --
+        # `GlobalInjector.get(...)` fails there with a bare `KeyError` for
+        # *any* interface, not just `EntityProvider` (confirmed against a
+        # real job log: the lookup cascaded from `EntityProvider` to
+        # `EntityNameMapper` next). `_get_table_reference` reaches into
+        # `self.enm`/`self.epl`/`self.config` (all DI-resolved), so it must
+        # run here, while `self` and the DI container are still available,
+        # and only plain, already-resolved data extracted from the result
+        # -- never the `DeltaTableReference` object itself, which binds its
+        # own live SparkSession at construction -- gets captured below.
+        table_ref = self._get_table_reference(entity)
+        if not self._check_table_exists(table_ref):
+            # Mirrors merge_to_entity's own "create empty, then merge"
+            # bootstrap: writing the raw dataframe would skip SCD
+            # bookkeeping, and the isolated foreachBatch worker has no DI
+            # to create a missing table with anyway. Doing this once here,
+            # before the query starts, is strictly better than the old
+            # per-batch check: a genuinely missing table now fails fast at
+            # query start instead of on the first micro-batch.
+            self.ensure_entity_table(entity)
+            # ensure_entity_table() resolves its own table_ref internally,
+            # so re-fetch to pick up anything it filled in (e.g. table_path
+            # for a newly created managed/name-mode table).
+            table_ref = self._get_table_reference(entity)
 
-            batch_provider = copy(GlobalInjector.get(EntityProvider))
-            batch_provider.spark = batch_df.sparkSession
+        # Only plain, picklable strings cross into the closure -- never
+        # `table_ref` itself.
+        table_name = table_ref.table_name
+        table_path = table_ref.table_path
+        access_mode = table_ref.access_mode
+
+        strategy_name = _resolve_merge_strategy_name(cfg, entity)
+        merge_condition = self._build_merge_condition("old", "new", entity.merge_columns)
+        drift_policy = (
+            str((entity.tags or {}).get("schema.drift") or "").strip().lower() or "evolve"
+        )
+
+        def _merge_batch(batch_df, batch_id):
+            # Must not reference `self`, `GlobalInjector`, or any
+            # DI-resolved provider/service -- see this method's docstring
+            # for the two distinct failure modes that ruled those out:
+            #
+            # 1. A captured `self` (or anything holding a live
+            #    SparkSession/Delta table handle) fails to *pickle* --
+            #    `foreachBatch()` cloudpickles this callback up front to
+            #    ship it off, and a live SparkSession/Connect client isn't
+            #    picklable (PySparkPicklingError:
+            #    STREAMING_CONNECT_SERIALIZATION_ERROR).
+            # 2. Even having dodged that, a captured `GlobalInjector.get(...)`
+            #    call fails at *run time* with a plain `KeyError` -- the
+            #    isolated worker process's injector was never bootstrapped
+            #    and has no bindings at all.
+            #
+            # Everything referenced here is either a plain picklable value
+            # captured from the enclosing scope (table_name, table_path,
+            # access_mode, entity, cfg, strategy_name, merge_condition,
+            # drift_policy -- all plain dataclasses/strings/enums with no
+            # live session or service reference) or is looked up fresh from
+            # the micro-batch's own bound session (batch_df.sparkSession)
+            # once this function actually runs.
+            spark = batch_df.sparkSession
 
             if cfg.enabled and cfg.sequence_by:
                 from pyspark.sql import Window
@@ -1822,11 +1937,34 @@ class DeltaEntityProvider(
                     .filter(col("__row_rank") == 1)
                     .drop("__row_rank")
                 )
+
+            # A *fresh* DeltaTableReference, bound to this micro-batch's own
+            # session -- never `get_or_create_spark_session()`'s default (a
+            # bare `SparkSession.builder.getOrCreate()` in this isolated
+            # process would build an unrelated, disconnected local session,
+            # not the Connect session the batch actually belongs to).
+            batch_table_ref = DeltaTableReference(
+                table_name=table_name,
+                table_path=table_path,
+                access_mode=access_mode,
+                spark=spark,
+            )
+            delta_table = batch_table_ref.get_delta_table()
+
+            _enforce_schema_drift_for_batch(batch_df, entity, delta_table, drift_policy)
+
             # Class-attribute lookup deliberately bypasses the per-instance
-            # tracing wrapper (trace_ops): a span per micro-batch would blow
-            # the hot-loop budget. Per-batch visibility comes from the
-            # streaming listener's batch_progress events instead.
-            type(batch_provider).merge_to_entity(batch_provider, batch_df, entity)
+            # tracing wrapper (trace_ops) and any `DeltaEntityProvider`
+            # instance entirely: a span per micro-batch would blow the
+            # hot-loop budget, and per-batch visibility comes from the
+            # streaming listener's batch_progress events instead (also why
+            # this path skips merge_to_entity's per-merge signal
+            # emissions). `DeltaMergeStrategies` is a plain class-level
+            # registry (no DI, no instance state) and its strategies are
+            # themselves stateless, so calling it directly here needs
+            # nothing this isolated worker process doesn't already have.
+            strategy = DeltaMergeStrategies.get(strategy_name)
+            strategy.apply(delta_table, batch_df, entity, merge_condition)
 
         writer = (
             df.writeStream.outputMode("update")
