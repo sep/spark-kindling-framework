@@ -376,6 +376,33 @@ class SynapseService(PlatformService):
                     files = mssparkutils.fs.ls(path)
                     result = [f.name for f in files]
                     if result or not path.startswith("abfss://"):
+                        if result and path.startswith("abfss://"):
+                            # Cross-check with ADLS SDK to detect listing discrepancies.
+                            # mssparkutils.fs.ls() can return stale results for
+                            # recently-uploaded files due to ABFS driver caching or
+                            # Blob -> ADLS propagation lag (the same class of issue
+                            # fixed for DatabricksService.list() on UC clusters).
+                            try:
+                                account_url, container, remote_path = self._parse_abfss(path)
+                                remote_path = remote_path.rstrip("/")
+                                fs_client = self._adls_fs_client(account_url, container)
+                                sdk_result = [
+                                    item.name.split("/")[-1]
+                                    for item in fs_client.get_paths(path=remote_path or "/")
+                                    if not item.is_directory
+                                ]
+                                if len(sdk_result) != len(result):
+                                    self.logger.warning(
+                                        f"[list] mssparkutils returned {len(result)} file(s) but "
+                                        f"ADLS SDK returned {len(sdk_result)} — using SDK result. "
+                                        f"mssparkutils: {sorted(result)[:10]}  "
+                                        f"SDK: {sorted(sdk_result)[:10]}"
+                                    )
+                                    return sdk_result
+                            except Exception as exc:
+                                self.logger.debug(
+                                    f"[list] SDK cross-check failed (non-fatal): {exc}"
+                                )
                         return result
                     # Empty on ABFS — might be token failure; retry
                 except Exception as e:
