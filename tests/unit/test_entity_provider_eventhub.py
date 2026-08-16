@@ -877,9 +877,12 @@ class TestAmqpHeaderDecoding:
 
     def test_unrecognized_constructor_falls_back_to_lossy_utf8(self, spark_session):
         """An unimplemented/composite AMQP type constructor must not raise
-        -- fall back to a best-effort decode instead of failing the read."""
+        -- fall back to a best-effort decode instead of failing the read.
+        Uses an x-opt- key so this actually exercises
+        _decode_amqp_primitive's internal fallback, not the (also-safe but
+        different) plain-UTF-8 path non-x-opt- keys always take."""
         value_bytes = bytes([0xC0]) + b"plain-fallback-text"
-        df = self._df_with_header_value(spark_session, value_bytes, key="x-custom")
+        df = self._df_with_header_value(spark_session, value_bytes, key="x-opt-custom")
 
         result = _PREPROCESS_MODES["kafka"](df, amqp_headers=True)
 
@@ -887,7 +890,7 @@ class TestAmqpHeaderDecoding:
         # unrecognized constructor byte) as best-effort UTF-8 -- not a
         # crash, and not silently dropped.
         headers = result.collect()[0]["headers"]
-        assert "plain-fallback-text" in headers["x-custom"]
+        assert "plain-fallback-text" in headers["x-opt-custom"]
 
     def test_amqp_headers_composes_with_avro_mode(self, spark_session):
         """amqp_headers applies identically regardless of which preprocess
@@ -998,3 +1001,219 @@ class TestPreprocessAvroMode:
 
         assert result.isStreaming is True
         assert "avro_schema_fingerprint" in result.columns
+
+
+def _amqp_str8(text: str) -> bytes:
+    encoded = text.encode("utf-8")
+    assert len(encoded) <= 255, "use _amqp_str32 for longer strings"
+    return bytes([0xA1, len(encoded)]) + encoded
+
+
+def _amqp_str32(text: str) -> bytes:
+    import struct as _struct
+
+    encoded = text.encode("utf-8")
+    return bytes([0xB1]) + _struct.pack(">I", len(encoded)) + encoded
+
+
+def _amqp_timestamp(epoch_ms: int) -> bytes:
+    import struct as _struct
+
+    return bytes([0x83]) + _struct.pack(">q", epoch_ms)
+
+
+class TestAmqpHeaderDecodingIntegration:
+    """End-to-end coverage exercising the ACTUAL provider.read_entity()
+    preprocessing path -- not just _decode_amqp_primitive or
+    _PREPROCESS_MODES in isolation -- with a realistic mix of AMQP-encoded
+    Event Hubs system-property headers (x-opt-*) and a plain producer-set
+    header in the same row."""
+
+    DEVICE_ID = "device-42"
+    PUBLISHER = "publisher-" + ("x" * 300)  # >255 bytes -> forces str32-utf8, not str8-utf8
+    ENQUEUED_TIME_MS = 1700000000123
+    BODY_TEXT = '{"device_id": "device-42", "temp": 21.5}'
+
+    def _entity_with_preprocessing(self, amqp_headers):
+        tags = {
+            "provider_type": "eventhub",
+            "provider.transport": "kafka",
+            "provider.eventhub.connectionString": _connection_string(),
+            "provider.eventhub.name": "my-hub",
+            "provider.preprocess": "kafka",
+            "provider.amqp_headers": "true" if amqp_headers else "false",
+        }
+        return _entity(tags)
+
+    def _kafka_source_shaped_df(self, spark_session):
+        """Matches Spark's real Kafka structured-streaming source schema
+        (value/timestamp/headers) BEFORE _normalize_dataframe renames
+        value->body -- so read_entity()'s full normalize+preprocess chain
+        runs exactly as it would against a genuine Kafka read."""
+        from pyspark.sql import Row
+        from pyspark.sql.types import (
+            ArrayType,
+            BinaryType,
+            StringType,
+            StructField,
+            StructType,
+            TimestampType,
+        )
+
+        schema = StructType(
+            [
+                StructField("value", BinaryType(), True),
+                StructField("timestamp", TimestampType(), True),
+                StructField(
+                    "headers",
+                    ArrayType(
+                        StructType(
+                            [
+                                StructField("key", StringType(), True),
+                                StructField("value", BinaryType(), True),
+                            ]
+                        )
+                    ),
+                    True,
+                ),
+            ]
+        )
+        return spark_session.createDataFrame(
+            [
+                Row(
+                    value=self.BODY_TEXT.encode("utf-8"),
+                    timestamp=None,
+                    headers=[
+                        Row(key="x-opt-partition-key", value=_amqp_str8(self.DEVICE_ID)),
+                        Row(key="x-opt-publisher", value=_amqp_str32(self.PUBLISHER)),
+                        Row(
+                            key="x-opt-enqueued-time",
+                            value=_amqp_timestamp(self.ENQUEUED_TIME_MS),
+                        ),
+                        Row(key="content-type", value=b"application/json"),
+                        Row(key="x-opt-malformed", value=bytes([0x81, 0x00])),  # truncated long
+                    ],
+                )
+            ],
+            schema=schema,
+        )
+
+    def _read_via_provider(self, spark_session, amqp_headers):
+        logger_provider = MagicMock()
+        logger_provider.get_logger.return_value = MagicMock()
+        config_service = MagicMock()
+        config_service.get.return_value = "databricks"
+        with patch(
+            "kindling.entity_provider_eventhub.get_or_create_spark_session",
+            return_value=MagicMock(),
+        ):
+            event_hub_provider = EventHubEntityProvider(logger_provider, config_service)
+        event_hub_provider.spark.read.format.return_value.options.return_value.load.return_value = (
+            self._kafka_source_shaped_df(spark_session)
+        )
+
+        entity = self._entity_with_preprocessing(amqp_headers)
+        return event_hub_provider.read_entity(entity)
+
+    def test_full_preprocessing_path_batch_amqp_enabled(self, spark_session):
+        result = self._read_via_provider(spark_session, amqp_headers=True)
+        row = result.collect()[0]
+
+        # Payload decoded to expected text.
+        assert row["body"] == self.BODY_TEXT
+        # Headers became a map<string,string>.
+        assert isinstance(row["headers"], dict)
+        # Short AMQP string decodes exactly.
+        assert row["headers"]["x-opt-partition-key"] == self.DEVICE_ID
+        # Long AMQP string (str32-utf8) decodes exactly.
+        assert row["headers"]["x-opt-publisher"] == self.PUBLISHER
+        # AMQP timestamp becomes its expected epoch-millisecond text value.
+        assert row["headers"]["x-opt-enqueued-time"] == str(self.ENQUEUED_TIME_MS)
+        # Plain UTF-8 header (no x-opt- prefix) is unchanged.
+        assert row["headers"]["content-type"] == "application/json"
+        # Malformed/unknown value doesn't fail the read or corrupt siblings.
+        assert "x-opt-malformed" in row["headers"]
+        assert row["headers"]["x-opt-malformed"] is not None
+
+    def test_full_preprocessing_path_amqp_disabled_does_not_claim_decoded_values(
+        self, spark_session
+    ):
+        """With AMQP decoding disabled, the same input follows plain-UTF-8
+        header decoding -- it must NOT happen to produce the correct
+        string/timestamp values by coincidence."""
+        result = self._read_via_provider(spark_session, amqp_headers=False)
+        row = result.collect()[0]
+
+        # Body decoding is unaffected by amqp_headers (kafka mode's own
+        # body handling, not a header concern).
+        assert row["body"] == self.BODY_TEXT
+        assert isinstance(row["headers"], dict)
+        # AMQP-encoded values must NOT decode to their real values under
+        # plain UTF-8 -- proving no accidental/coincidental correctness.
+        assert row["headers"]["x-opt-partition-key"] != self.DEVICE_ID
+        assert row["headers"]["x-opt-publisher"] != self.PUBLISHER
+        assert row["headers"]["x-opt-enqueued-time"] != str(self.ENQUEUED_TIME_MS)
+        # The genuinely-plain header is correct either way.
+        assert row["headers"]["content-type"] == "application/json"
+
+    def test_streaming_schema_matches_batch_shape(self, spark_session):
+        """Batch and streaming reads go through identical Catalyst column
+        expressions in _apply_preprocessing/_flatten_kafka_headers --
+        verified via schema parity on a real streaming source, since
+        injecting fixed header rows into a genuine streaming source isn't
+        practical in a unit test."""
+        from pyspark.sql.functions import array
+        from pyspark.sql.functions import col as _col
+        from pyspark.sql.functions import lit as _lit
+        from pyspark.sql.functions import struct as _struct_fn
+        from pyspark.sql.types import BinaryType
+
+        streaming_df = (
+            spark_session.readStream.format("rate")
+            .load()
+            .withColumn("body", _col("value").cast("string").cast(BinaryType()))
+            .withColumn(
+                "headers",
+                array(
+                    _struct_fn(
+                        _lit("x-opt-enqueued-time").alias("key"),
+                        _col("value").cast("string").cast(BinaryType()).alias("value"),
+                    )
+                ),
+            )
+        )
+        assert streaming_df.isStreaming is True
+
+        streaming_result = _PREPROCESS_MODES["kafka"](streaming_df, amqp_headers=True)
+        batch_result = _PREPROCESS_MODES["kafka"](
+            self._kafka_source_shaped_df(spark_session)
+            .withColumnRenamed("value", "body")
+            .drop("timestamp"),
+            amqp_headers=True,
+        )
+
+        assert streaming_result.isStreaming is True
+        assert dict(streaming_result.dtypes)["body"] == dict(batch_result.dtypes)["body"]
+        assert dict(streaming_result.dtypes)["headers"] == dict(batch_result.dtypes)["headers"]
+
+    def test_pipe_extracts_identity_and_enqueue_time_without_amqp_decoder(self, spark_session):
+        """An ingestion pipe consuming the preprocessed output extracts
+        device identity and enqueue time using only generic map-key lookup
+        and a cast -- no AMQP-specific decoding logic of its own, proving
+        the provider already did that work."""
+        from pyspark.sql.functions import col as _col
+
+        preprocessed = self._read_via_provider(spark_session, amqp_headers=True)
+
+        # This is what a consuming pipe's own transform looks like: plain
+        # column/map access, zero knowledge of AMQP framing.
+        ingested = preprocessed.select(
+            _col("headers")["x-opt-partition-key"].alias("device_id"),
+            _col("headers")["x-opt-enqueued-time"].cast("long").alias("enqueued_time_ms"),
+            _col("body"),
+        )
+
+        row = ingested.collect()[0]
+        assert row["device_id"] == self.DEVICE_ID
+        assert row["enqueued_time_ms"] == self.ENQUEUED_TIME_MS
+        assert row["body"] == self.BODY_TEXT

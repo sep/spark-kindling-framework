@@ -115,12 +115,37 @@ def _decode_amqp_primitive(data: Optional[bytes]) -> Optional[str]:
     return data.decode("utf-8", "replace")
 
 
+# Event Hubs' Kafka protocol head exposes its own AMQP-derived system
+# properties (enqueue time, sequence number, offset, partition key,
+# publisher, ...) as Kafka headers with this documented prefix -- see
+# https://learn.microsoft.com/azure/event-hubs/apache-kafka-migration-guide.
+# A producer's OWN custom headers are not AMQP-encoded (they're whatever
+# the producer's Kafka client wrote, almost always plain UTF-8), and their
+# key names don't follow this convention -- so AMQP decoding is gated on
+# it. This isn't just an optimization: a plain UTF-8 header's first byte
+# can coincide with a recognized AMQP type-constructor byte (e.g. ASCII
+# 'a' is 0x61, AMQP's "short" constructor), so blindly AMQP-decoding every
+# header regardless of key would corrupt genuinely plain ones.
+_AMQP_SYSTEM_PROPERTY_PREFIX = "x-opt-"
+
+
 def _decode_amqp_headers_map(headers) -> Optional[Dict[str, Optional[str]]]:
     """Decode a whole Kafka ``headers`` array (list of key/binary-value Row
-    entries) into a ``dict`` with each value AMQP-primitive-decoded."""
+    entries) into a ``dict``, AMQP-primitive-decoding only keys under the
+    ``x-opt-`` system-property convention (see
+    ``_AMQP_SYSTEM_PROPERTY_PREFIX``) and plain-UTF-8-decoding everything
+    else."""
     if headers is None:
         return None
-    return {entry["key"]: _decode_amqp_primitive(entry["value"]) for entry in headers}
+    decoded: Dict[str, Optional[str]] = {}
+    for entry in headers:
+        key = entry["key"]
+        value = entry["value"]
+        if key is not None and key.startswith(_AMQP_SYSTEM_PROPERTY_PREFIX):
+            decoded[key] = _decode_amqp_primitive(value)
+        else:
+            decoded[key] = value.decode("utf-8", "replace") if value is not None else None
+    return decoded
 
 
 _decode_amqp_headers_udf = udf(_decode_amqp_headers_map, MapType(StringType(), StringType()))
@@ -133,15 +158,20 @@ def _flatten_kafka_headers(df: DataFrame, amqp_headers: bool = False) -> DataFra
     ``properties``/``systemProperties`` metadata columns. Transport-level,
     not payload-codec-specific, so both preprocess modes apply it.
 
-    ``amqp_headers=True`` (``provider.amqp_headers: true``) decodes each
-    header value as an AMQP 1.0 primitive (see ``_decode_amqp_primitive``)
-    instead of plain UTF-8 -- needed because Event Hubs' Kafka protocol
-    head surfaces AMQP system-property annotations (e.g. enqueue time,
-    sequence number) with AMQP-primitive-encoded values, which a plain
-    UTF-8 decode would corrupt into garbage. Either way the output stays a
-    uniform ``map<string,string>``; interpreting what a given header NAME
-    means (e.g. that it should be parsed further as a timestamp) is the
-    consuming pipe's job, not this provider's.
+    ``amqp_headers=True`` (``provider.amqp_headers: true``) decodes
+    ``x-opt-``-prefixed header values as an AMQP 1.0 primitive (see
+    ``_decode_amqp_primitive``/``_AMQP_SYSTEM_PROPERTY_PREFIX``) instead of
+    plain UTF-8 -- needed because Event Hubs' Kafka protocol head surfaces
+    its own AMQP system-property annotations (e.g. enqueue time, sequence
+    number) under that prefix with AMQP-primitive-encoded values, which a
+    plain UTF-8 decode would corrupt into garbage. Headers outside that
+    prefix (a producer's own custom headers) are always plain-UTF-8
+    decoded, `amqp_headers` or not -- their key names don't follow the
+    convention, and their values are almost always genuinely plain UTF-8
+    from the producer's own Kafka client, not AMQP. Either way the output
+    stays a uniform ``map<string,string>``; interpreting what a given
+    header NAME means (e.g. that it should be parsed further as a
+    timestamp) is the consuming pipe's job, not this provider's.
 
     The two modes use different execution strategies: plain UTF-8 uses
     native Catalyst higher-order functions (``transform``/``map_from_entries``),
@@ -266,13 +296,16 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
           deserialize Avro), and flattens Kafka headers the same as "kafka".
     - provider.amqp_headers: Opt-in boolean (default false), only relevant
       alongside provider.preprocess. Event Hubs' Kafka protocol head
-      surfaces AMQP message annotations (e.g. enqueue time, sequence
-      number) as Kafka headers whose values are still AMQP-1.0-primitive-
-      encoded, not plain UTF-8 -- true decodes each header value per the
-      AMQP primitive type system instead of blind UTF-8 (which would
-      otherwise corrupt them into garbage). Output stays map<string,string>
-      either way; interpreting a given header NAME's meaning (e.g. "this
-      one is a timestamp") is still the consuming pipe's job.
+      surfaces its own AMQP message annotations (e.g. enqueue time,
+      sequence number) as x-opt-prefixed Kafka headers whose values are
+      still AMQP-1.0-primitive-encoded, not plain UTF-8 -- true decodes
+      only those x-opt- headers per the AMQP primitive type system instead
+      of blind UTF-8 (which would otherwise corrupt them into garbage).
+      Headers outside that prefix (a producer's own custom headers) are
+      always plain-UTF-8 decoded regardless of this flag. Output stays
+      map<string,string> either way; interpreting a given header NAME's
+      meaning (e.g. "this one is a timestamp") is still the consuming
+      pipe's job.
 
     Example entity definition:
     ```python

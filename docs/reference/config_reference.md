@@ -321,11 +321,16 @@ not a single `.csv` file — merge them downstream if a single file is required.
   provider does not and should not know about them.
 - `provider.amqp_headers`: Opt-in boolean (default `false`), only relevant
   alongside `provider.preprocess`. Event Hubs' Kafka protocol head surfaces
-  AMQP message annotations (e.g. enqueue time, sequence number) as Kafka
-  headers whose *values* are still [AMQP 1.0 primitive-encoded](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-types-v1.0-os.html#type-primitive),
-  not plain UTF-8 — `true` decodes each header value per the AMQP
+  its own AMQP message annotations (e.g. enqueue time, sequence number) as
+  `x-opt-`-prefixed Kafka headers whose *values* are still
+  [AMQP 1.0 primitive-encoded](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-types-v1.0-os.html#type-primitive),
+  not plain UTF-8 — `true` decodes only those `x-opt-` headers per the AMQP
   primitive type system instead of blind UTF-8, which would otherwise
-  corrupt them into garbage. Output stays `map<string,string>` either way
+  corrupt them into garbage. Headers outside that prefix (a producer's own
+  custom headers) are always plain-UTF-8 decoded regardless of this flag —
+  a plain header's first byte can otherwise coincide with a recognized AMQP
+  type-constructor byte, so decoding is gated on the documented prefix
+  rather than applied blindly. Output stays `map<string,string>` either way
   (numeric/timestamp values become their string representation);
   interpreting what a given header *name* means is still the consuming
   pipe's job.
