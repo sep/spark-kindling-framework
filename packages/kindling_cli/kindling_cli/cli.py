@@ -550,6 +550,279 @@ def _print_check_results(checks: List[Tuple[str, bool, str]]) -> bool:
     return all_passed
 
 
+def _emit_check_results(
+    checks: List[Tuple[str, bool, str]],
+    json_output: bool,
+    extra: Optional[Dict[str, Any]] = None,
+    notes: Optional[List[str]] = None,
+) -> bool:
+    """Print PASS/FAIL check results (or a JSON equivalent) and return whether
+    every check passed, following the same `[PASS]`/`[FAIL]` convention as
+    `env check`/`app validate` rather than inventing another report style.
+
+    `notes` are informational, non-blocking lines (e.g. "check skipped: no
+    --platform given") that never affect the pass/fail outcome.
+    """
+    all_passed = all(passed for _, passed, _ in checks)
+    if json_output:
+        payload: Dict[str, Any] = {
+            "passed": all_passed,
+            "checks": [
+                {"name": name, "passed": passed, "detail": detail}
+                for name, passed, detail in checks
+            ],
+        }
+        if notes:
+            payload["notes"] = list(notes)
+        if extra:
+            payload.update(extra)
+        _emit_json(payload)
+    else:
+        _print_check_results(checks)
+        for note in notes or []:
+            click.echo(f"[SKIP] {note}")
+    return all_passed
+
+
+# ---------------------------------------------------------------------------
+# Config introspection helpers (config show/diff, entity tags, pipeline show)
+#
+# These deliberately never import the `kindling` runtime package: importing
+# it (even indirectly through kindling.config_patterns) pulls in pyspark via
+# kindling/__init__.py, and `config show` specifically must stay usable
+# without pyspark installed -- it only replays the base -> platform -> env
+# settings.yaml merge, never a real Dynaconf/Spark bootstrap.
+# ---------------------------------------------------------------------------
+
+_MISSING_CONFIG_KEY = object()
+
+
+def _get_nested_key(data: Dict[str, Any], dotted_key: str) -> Any:
+    """Read a dot-notation key from a nested dict.
+
+    Returns the module-private `_MISSING_CONFIG_KEY` sentinel (not `None`,
+    which is a legitimate config value) when any segment of the path is
+    absent or the traversal hits a non-dict value.
+    """
+    current: Any = data
+    for part in dotted_key.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return _MISSING_CONFIG_KEY
+        current = current[part]
+    return current
+
+
+def _is_secret_reference(value: Any) -> bool:
+    """Mirror kindling.config_loaders._is_unresolved_secret_reference without
+    importing the kindling package (see module docstring above)."""
+    return isinstance(value, str) and (value.startswith("@secret ") or value.startswith("@secret:"))
+
+
+def _secret_display_name(value: str) -> str:
+    """Extract the secret name/scope portion of an `@secret ...`/`@secret:...`
+    reference string, mirroring kindling.config_loaders.resolve_secret_value's
+    parsing (without resolving it)."""
+    if value.startswith("@secret "):
+        return value[len("@secret ") :].strip()
+    return value[len("@secret:") :].strip()
+
+
+def _redact_secret_scalar(value: Any, reveal: bool) -> Any:
+    """Redact a single value if it's an unresolved `@secret:` reference."""
+    if not _is_secret_reference(value):
+        return value
+    if reveal:
+        return value
+    return f"<secret: {_secret_display_name(value)}>"
+
+
+def _redact_config_tree(data: Any, reveal: bool) -> Any:
+    """Recursively redact `@secret:` reference values in a config tree."""
+    if isinstance(data, dict):
+        return {key: _redact_config_tree(value, reveal) for key, value in data.items()}
+    if isinstance(data, list):
+        return [_redact_config_tree(value, reveal) for value in data]
+    return _redact_secret_scalar(data, reveal)
+
+
+def _load_effective_raw_config(
+    settings_dir: Path, env: Optional[str], platform: Optional[str]
+) -> Tuple[Dict[str, Any], List[Path]]:
+    """Merge base/platform/env settings YAML files the same way local app
+    bootstrap conventionally lays them out (settings.yaml alongside app.py;
+    see app.py's own `_config_files` convention), without starting Dynaconf
+    or Spark.
+
+    Returns the merged dict and the list of files that were actually found,
+    in merge order (base -> platform -> env; a later file's keys win on
+    conflict, matching Dynaconf's MERGE_ENABLED_FOR_DYNACONF deep-merge
+    semantics for plain YAML values).
+    """
+    merged: Dict[str, Any] = {}
+    used: List[Path] = []
+
+    base_path = settings_dir / "settings.yaml"
+    if base_path.exists():
+        merged = _deep_merge_dict(merged, _load_yaml_config(base_path))
+        used.append(base_path)
+
+    if platform:
+        platform_path = settings_dir / f"settings.{platform}.yaml"
+        if platform_path.exists():
+            merged = _deep_merge_dict(merged, _load_yaml_config(platform_path))
+            used.append(platform_path)
+
+    if env:
+        env_path = settings_dir / f"settings.{env}.yaml"
+        if env_path.exists():
+            merged = _deep_merge_dict(merged, _load_yaml_config(env_path))
+            used.append(env_path)
+
+    return merged, used
+
+
+def _flatten_config_dict(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    """Flatten a nested dict into dotted-key -> scalar/list pairs."""
+    flat: Dict[str, Any] = {}
+    for key, value in data.items():
+        dotted = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            flat.update(_flatten_config_dict(value, dotted))
+        else:
+            flat[dotted] = value
+    return flat
+
+
+def _diff_flat_config(
+    config_a: Dict[str, Any], config_b: Dict[str, Any]
+) -> List[Tuple[str, Any, Any]]:
+    """Return (key, value_in_a, value_in_b) for every dotted key that differs
+    (including keys present in only one side, using `_MISSING_CONFIG_KEY`)."""
+    flat_a = _flatten_config_dict(config_a)
+    flat_b = _flatten_config_dict(config_b)
+    diffs: List[Tuple[str, Any, Any]] = []
+    for key in sorted(set(flat_a) | set(flat_b)):
+        value_a = flat_a.get(key, _MISSING_CONFIG_KEY)
+        value_b = flat_b.get(key, _MISSING_CONFIG_KEY)
+        if value_a != value_b:
+            diffs.append((key, value_a, value_b))
+    return diffs
+
+
+def _raw_registration_tags(registry: Any, item_id: str, fallback: Dict[str, Any]) -> Dict[str, Any]:
+    """Best-effort literal (pre-config-overlay) declared tags for an entity/pipe.
+
+    Reaches into the concrete registry's `_raw_params` (populated at
+    registration time by DataEntityManager/DataPipesManager) because neither
+    DataEntityRegistry nor DataPipesRegistry exposes this publicly. Falls
+    back to the already-overlaid tags if `_raw_params` isn't present (e.g. a
+    custom registry implementation) -- degrades provenance granularity but
+    never crashes.
+    """
+    raw_params = getattr(registry, "_raw_params", None)
+    if isinstance(raw_params, dict):
+        entry = raw_params.get(item_id)
+        if isinstance(entry, dict):
+            tags = entry.get("tags")
+            if isinstance(tags, dict):
+                return dict(tags)
+    return dict(fallback or {})
+
+
+def _resolve_tag_provenance(
+    literal_tags: Dict[str, Any],
+    item_id: str,
+    bytag_section: Optional[Dict[str, Any]],
+    idglob_section: Optional[Dict[str, Any]],
+    exact_overrides: Optional[Dict[str, Any]],
+    bytag_label: str,
+    idglob_label: str,
+    exact_label: str,
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """Re-derive final tags plus a provenance label per key, replaying the
+    same precedence DataEntityManager/DataPipesManager apply at
+    registration/lookup time: literal tags= first, then the by-tag rules
+    (dataentities-bytag:/datapipes-bytag:), then the id-glob patterns
+    (dataentities:/datapipes:), then (entities only) the top-level
+    entity_tags: exact-id map applied at read time.
+
+    Uses kindling.config_patterns.ConfigPatternMatcher/TagRuleMatcher --
+    the exact matching engine the framework itself uses -- so this command
+    never reimplements precedence, only makes it observable.
+    """
+    from kindling.config_patterns import ConfigPatternMatcher, TagRuleMatcher
+
+    provenance: Dict[str, str] = {key: "literal tags=" for key in literal_tags}
+    current: Dict[str, Any] = dict(literal_tags)
+
+    tag_matcher = TagRuleMatcher(bytag_section)
+    after_bytag = (
+        tag_matcher.resolve_overrides(literal_tags, {"tags": dict(current)}).get("tags") or {}
+    )
+    for key, value in after_bytag.items():
+        if current.get(key) != value:
+            provenance[key] = bytag_label
+    current = dict(after_bytag)
+
+    id_matcher = ConfigPatternMatcher(idglob_section)
+    after_idglob = id_matcher.resolve_overrides(item_id, {"tags": dict(current)}).get("tags") or {}
+    for key, value in after_idglob.items():
+        if current.get(key) != value:
+            provenance[key] = idglob_label
+    current = dict(after_idglob)
+
+    for key, value in (exact_overrides or {}).items():
+        if current.get(key) != value:
+            provenance[key] = exact_label
+        current[key] = value
+
+    return current, provenance
+
+
+def _build_tag_view(
+    final_tags: Dict[str, Any],
+    computed_tags: Dict[str, Any],
+    provenance: Dict[str, str],
+    reveal_secrets: bool,
+) -> Dict[str, Dict[str, Any]]:
+    """Combine the live authoritative tag values with the statically
+    recomputed provenance/secret-detection pass into one per-key view:
+    ``{tag_key: {"value": <display value>, "source": <provenance label>}}``.
+
+    Values always come from `final_tags` (the live, framework-resolved
+    dict) so display is never less accurate than reality; `computed_tags`
+    (derived from on-disk YAML, never through a possibly secret-resolving
+    ConfigService) is consulted only to decide whether a key holds a secret
+    reference and to label its source layer.
+
+    A key is redacted if EITHER its live value or its statically-recomputed
+    value looks like an unresolved `@secret:` reference -- the static pass
+    catches config-file-declared secrets even after a live SecretProvider
+    resolves them (the on-disk YAML never changes), while the live-value
+    check catches the common local/standalone case (no SecretProvider
+    configured) where the literal reference simply passes through
+    unresolved. See _resolve_tag_provenance's caller docstrings for the one
+    known gap: a secret declared directly in code's own tags= that a live
+    SecretProvider *does* successfully resolve leaves no on-disk trace to
+    detect, so it is not redacted by the static pass.
+    """
+    view: Dict[str, Dict[str, Any]] = {}
+    for key in sorted(final_tags):
+        value = final_tags[key]
+        raw_value = computed_tags.get(key, value)
+        if _is_secret_reference(value) or _is_secret_reference(raw_value):
+            secret_source = value if _is_secret_reference(value) else raw_value
+            display_value = (
+                secret_source
+                if reveal_secrets
+                else f"<secret: {_secret_display_name(secret_source)}>"
+            )
+        else:
+            display_value = value
+        view[key] = {"value": display_value, "source": provenance.get(key, "resolved")}
+    return view
+
+
 def _discover_local_app_names() -> List[Tuple[str, Path]]:
     """Return (app_name, app_dir) for every app found under the current directory."""
     cwd = Path.cwd()
@@ -1419,6 +1692,244 @@ def config_set(
         encoding="utf-8",
     )
     click.echo(f"Set `{key}` = {typed_value!r} in `{target_path}`")
+
+
+@config_group.command("show")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Platform overlay to layer in (settings.<platform>.yaml), if any.",
+)
+@click.option(
+    "--key",
+    "dotted_key",
+    default=None,
+    help="Print only the resolved value at this dotted config key.",
+)
+@click.option(
+    "--reveal-secrets",
+    is_flag=True,
+    help="Print resolved @secret: references in plaintext instead of redacting them.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def config_show(
+    app_path: Optional[Path],
+    env: Optional[str],
+    platform: Optional[str],
+    dotted_key: Optional[str],
+    reveal_secrets: bool,
+    json_output: bool,
+) -> None:
+    """Print the fully merged effective configuration for an app.
+
+    Layers settings.yaml -> settings.<platform>.yaml -> settings.<env>.yaml
+    exactly as local app bootstrap does (later files win on key conflicts),
+    without starting Dynaconf or Spark. `@secret:` reference values are
+    redacted by default as `<secret: name>`; pass --reveal-secrets to print
+    them in plaintext (a warning banner is printed first).
+
+    \b
+    Examples:
+      kindling config show --app myapp --env dev
+      kindling config show --app myapp --env prod --platform databricks
+      kindling config show --app myapp --key kindling.telemetry.tracing.level
+    """
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    settings_dir = resolved_app.parent
+    merged, used_files = _load_effective_raw_config(settings_dir, resolved_env, platform)
+
+    if not used_files:
+        raise click.ClickException(
+            f"No settings.yaml found under `{settings_dir}`.\n"
+            "  Hint: run `kindling config init` to generate a starter config."
+        )
+
+    if reveal_secrets and not json_output:
+        click.echo(
+            "WARNING: --reveal-secrets is set; secret values below are printed in plaintext."
+        )
+
+    source_paths = [str(path) for path in used_files]
+
+    if dotted_key:
+        value = _get_nested_key(merged, dotted_key)
+        if value is _MISSING_CONFIG_KEY:
+            raise click.ClickException(f"Key `{dotted_key}` not found in effective config.")
+        display_value = _redact_config_tree(value, reveal_secrets)
+        if json_output:
+            _emit_json(
+                {
+                    "app": str(resolved_app),
+                    "env": resolved_env,
+                    "platform": platform,
+                    "key": dotted_key,
+                    "value": display_value,
+                    "sources": source_paths,
+                }
+            )
+        elif isinstance(display_value, (dict, list)):
+            click.echo(f"{dotted_key}:")
+            click.echo(yaml.dump(display_value, default_flow_style=False, sort_keys=False))
+        else:
+            click.echo(f"{dotted_key} = {display_value!r}")
+        return
+
+    redacted = _redact_config_tree(merged, reveal_secrets)
+    if json_output:
+        _emit_json(
+            {
+                "app": str(resolved_app),
+                "env": resolved_env,
+                "platform": platform,
+                "sources": source_paths,
+                "config": redacted,
+            }
+        )
+        return
+
+    header = f"Effective config for `{resolved_app}`  [env: {resolved_env}"
+    header += f", platform: {platform}]" if platform else "]"
+    click.echo(header)
+    click.echo(f"Sources: {', '.join(source_paths)}")
+    click.echo()
+    click.echo(yaml.dump(redacted, default_flow_style=False, sort_keys=False))
+
+
+@config_group.command("diff")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--env",
+    default=None,
+    help="Environment for side A (default: KINDLING_ENV or 'local')",
+)
+@click.option(
+    "--diff-env",
+    "diff_env",
+    default=None,
+    help="Environment for side B. Defaults to side A's environment if omitted.",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Platform overlay for side A.",
+)
+@click.option(
+    "--diff-platform",
+    "diff_platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Platform overlay for side B. Defaults to side A's platform if omitted.",
+)
+@click.option(
+    "--reveal-secrets",
+    is_flag=True,
+    help="Print resolved @secret: references in plaintext instead of redacting them.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def config_diff(
+    app_path: Optional[Path],
+    env: Optional[str],
+    diff_env: Optional[str],
+    platform: Optional[str],
+    diff_platform: Optional[str],
+    reveal_secrets: bool,
+    json_output: bool,
+) -> None:
+    """Compare effective config between two env/platform combinations.
+
+    A thin wrapper over `config show`'s merge logic: resolves config twice
+    and prints only the dotted keys that differ. Requires at least one of
+    --diff-env/--diff-platform (otherwise there is nothing to compare).
+
+    \b
+    Examples:
+      kindling config diff --app myapp --env dev --diff-env prod
+      kindling config diff --app myapp --platform databricks --diff-platform fabric
+    """
+    if not diff_env and not diff_platform:
+        raise click.ClickException("Provide --diff-env and/or --diff-platform to compare against.")
+
+    resolved_env_a = env or os.getenv("KINDLING_ENV", "local")
+    resolved_env_b = diff_env or resolved_env_a
+    resolved_platform_b = diff_platform if diff_platform is not None else platform
+
+    resolved_app = _discover_app_py(app_path)
+    settings_dir = resolved_app.parent
+    config_a, sources_a = _load_effective_raw_config(settings_dir, resolved_env_a, platform)
+    config_b, sources_b = _load_effective_raw_config(
+        settings_dir, resolved_env_b, resolved_platform_b
+    )
+
+    diffs = _diff_flat_config(config_a, config_b)
+
+    def _display(value: Any) -> Any:
+        if value is _MISSING_CONFIG_KEY:
+            return "(unset)"
+        return _redact_config_tree(value, reveal_secrets)
+
+    if reveal_secrets and not json_output:
+        click.echo(
+            "WARNING: --reveal-secrets is set; secret values below are printed in plaintext."
+        )
+
+    label_a = f"env={resolved_env_a}" + (f",platform={platform}" if platform else "")
+    label_b = f"env={resolved_env_b}" + (
+        f",platform={resolved_platform_b}" if resolved_platform_b else ""
+    )
+
+    if json_output:
+        _emit_json(
+            {
+                "app": str(resolved_app),
+                "side_a": {
+                    "env": resolved_env_a,
+                    "platform": platform,
+                    "sources": [str(p) for p in sources_a],
+                },
+                "side_b": {
+                    "env": resolved_env_b,
+                    "platform": resolved_platform_b,
+                    "sources": [str(p) for p in sources_b],
+                },
+                "diffs": [
+                    {"key": key, "a": _display(value_a), "b": _display(value_b)}
+                    for key, value_a, value_b in diffs
+                ],
+            }
+        )
+        return
+
+    click.echo(f"Comparing `{resolved_app}`:  A[{label_a}]  vs  B[{label_b}]")
+    click.echo()
+    if not diffs:
+        click.echo("No differences.")
+        return
+
+    rows = [
+        [key, str(_display(value_a)), str(_display(value_b))] for key, value_a, value_b in diffs
+    ]
+    click.echo(_format_table(["Key", f"A ({label_a})", f"B ({label_b})"], rows))
 
 
 @cli.group("env")
@@ -5016,6 +5527,95 @@ def entity_group() -> None:
     """Inspect and validate entity data during local development."""
 
 
+@entity_group.command("list")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+@click.option(
+    "--tags",
+    "show_tags",
+    is_flag=True,
+    help="Add a Tags column with each entity's full resolved tag dict.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def entity_list(
+    app_path: Optional[Path],
+    env: Optional[str],
+    show_tags: bool,
+    json_output: bool,
+) -> None:
+    """List all registered entities for an app.
+
+    Top-level, symmetric with `pipeline list` -- `app inspect --entities`
+    keeps working unchanged; this is additive. Any tag value that still
+    looks like an unresolved `@secret:` reference is redacted; there is no
+    --reveal-secrets escape hatch here (use `kindling entity tags` for that).
+
+    \b
+    Examples:
+      kindling entity list --app myapp
+      kindling entity list --app myapp --tags
+    """
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env=resolved_env)
+
+    registry = GlobalInjector.get(DataEntityRegistry)
+    entity_ids = sorted(registry.get_entity_ids())
+
+    def _safe_tags(entity_id: str) -> Dict[str, Any]:
+        entity_def = registry.get_entity_definition(entity_id)
+        return dict((entity_def.tags if entity_def else {}) or {})
+
+    if json_output:
+        entities = []
+        for entity_id in entity_ids:
+            tags = _safe_tags(entity_id)
+            item: Dict[str, Any] = {
+                "entity_id": entity_id,
+                "provider_type": tags.get("provider_type", "delta"),
+            }
+            if show_tags:
+                item["tags"] = _redact_config_tree(tags, reveal=False)
+            entities.append(item)
+        _emit_json({"env": resolved_env, "entities": entities})
+        return
+
+    if not entity_ids:
+        click.echo("No entities registered.")
+        return
+
+    click.echo(f"Registered entities ({len(entity_ids)}):")
+    if show_tags:
+        rows = []
+        for entity_id in entity_ids:
+            tags = _redact_config_tree(_safe_tags(entity_id), reveal=False)
+            tags_display = ", ".join(f"{key}={value}" for key, value in sorted(tags.items()))
+            rows.append([entity_id, tags_display or "(none)"])
+        click.echo(_format_table(["Entity", "Tags"], rows))
+    else:
+        for entity_id in entity_ids:
+            provider_type = _safe_tags(entity_id).get("provider_type", "delta")
+            click.echo(f"  {entity_id}  ({provider_type})")
+
+
 @entity_group.command("show")
 @click.argument("entity_id")
 @click.option("--env", "env", default="local", show_default=True, help="Configuration environment.")
@@ -5252,6 +5852,125 @@ def entity_validate(
         click.echo(f"{len(warnings)} warning(s). Entity may need attention.")
     else:
         click.echo("All checks passed.")
+
+
+@entity_group.command("tags")
+@click.argument("entity_id")
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Platform overlay used when locating settings.<platform>.yaml for provenance/secret detection.",
+)
+@click.option(
+    "--reveal-secrets",
+    is_flag=True,
+    help="Print resolved @secret: references in plaintext instead of redacting them.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def entity_tags(
+    entity_id: str,
+    env: Optional[str],
+    app_path: Optional[Path],
+    platform: Optional[str],
+    reveal_secrets: bool,
+    json_output: bool,
+) -> None:
+    """Print an entity's fully resolved tags, annotated with the config layer
+    that last set each one.
+
+    Walks the same precedence Kindling applies at lookup time: literal
+    tags= declared on the entity, then dataentities-bytag: (tag-value
+    rules), then dataentities: (id-glob patterns), then the top-level
+    entity_tags: map. Resolved @secret: values are redacted by default as
+    `<secret: name>`; pass --reveal-secrets to print them in plaintext.
+
+    Known limitation: a secret declared directly in the entity's own tags=
+    in code (not a config-file override) is only caught if it remains
+    unresolved (e.g. no secret provider configured locally, the common case
+    for local CLI use); if a live secret provider actually resolves it
+    during bootstrap, this command has no on-disk trace left to redact.
+
+    \b
+    Examples:
+      kindling entity tags bronze.orders --env dev
+      kindling entity tags bronze.orders --env prod --platform databricks --json
+    """
+    try:
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env=resolved_env)
+
+    entity_registry = GlobalInjector.get(DataEntityRegistry)
+    entity_def = entity_registry.get_entity_definition(entity_id)
+    if entity_def is None:
+        known = sorted(entity_registry.get_entity_ids())
+        hint = f"\n  Known entities: {', '.join(known)}" if known else ""
+        raise click.ClickException(f"Entity '{entity_id}' is not registered.{hint}")
+
+    final_tags = dict(entity_def.tags or {})
+    literal_tags = _raw_registration_tags(entity_registry, entity_id, final_tags)
+
+    settings_dir = resolved_app.parent
+    raw_config, _ = _load_effective_raw_config(settings_dir, resolved_env, platform)
+    computed_tags, provenance = _resolve_tag_provenance(
+        literal_tags,
+        entity_id,
+        raw_config.get("dataentities-bytag"),
+        raw_config.get("dataentities"),
+        (raw_config.get("entity_tags") or {}).get(entity_id),
+        bytag_label="dataentities-bytag:",
+        idglob_label=f"dataentities: {entity_id}",
+        exact_label=f"entity_tags: {entity_id}",
+    )
+
+    view = _build_tag_view(final_tags, computed_tags, provenance, reveal_secrets)
+
+    if json_output:
+        _emit_json(
+            {
+                "entity_id": entity_id,
+                "env": resolved_env,
+                "platform": platform,
+                "tags": {key: entry["value"] for key, entry in view.items()},
+                "provenance": {key: entry["source"] for key, entry in view.items()},
+            }
+        )
+        return
+
+    if reveal_secrets:
+        click.echo(
+            "WARNING: --reveal-secrets is set; secret values below are printed in plaintext."
+        )
+
+    header = f"Entity: {entity_id}  [env: {resolved_env}"
+    header += f", platform: {platform}]" if platform else "]"
+    click.echo(header)
+    click.echo()
+    if not view:
+        click.echo("(no tags)")
+        return
+    rows = [[key, str(entry["value"]), entry["source"]] for key, entry in view.items()]
+    click.echo(_format_table(["Tag", "Value", "Source"], rows))
 
 
 # =============================================================================
