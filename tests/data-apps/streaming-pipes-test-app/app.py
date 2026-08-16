@@ -592,21 +592,41 @@ try:
     # Track executor's streaming queries for cleanup
     if hasattr(result, "streaming_queries"):
         for pipe_id, q in result.streaming_queries.items():
-            msg = f"TEST_ID={test_id} streaming_query pipe={pipe_id} query_id={q.id if q else 'None'} active={q.isActive if q else False}"
+            is_active = q.isActive if q else False
+            msg = f"TEST_ID={test_id} streaming_query pipe={pipe_id} query_id={q.id if q else 'None'} active={is_active}"
             logger.info(msg)
             print(msg)
+            if q and not is_active:
+                exc = q.exception()
+                exc_msg = f"TEST_ID={test_id} streaming_query pipe={pipe_id} status=DEAD_AT_START exception={exc!r}"
+                logger.error(exc_msg)
+                print(exc_msg, flush=True)
             if q:
                 streaming_queries.append(q)
 
     # ---- Helper: Wait for queries to process data ----
     def wait_for_query_progress(queries, expected_rows, timeout_seconds=60, poll_interval=2):
-        """Monitor streaming queries and wait until they've processed expected rows."""
+        """Monitor streaming queries and wait until they've processed expected rows.
+
+        A query going inactive mid-run is a hard failure, not "nothing left
+        to check" -- surface its exception immediately and stop waiting.
+        Silently `continue`-ing past a dead query (the previous behavior)
+        let the other, still-active queries' progress alone satisfy
+        `all_processed`, so a query that died on its very first micro-batch
+        was falsely reported as "processed" in a fraction of a second,
+        masking the real failure behind a confusing downstream
+        zero-rows-written symptom instead of the actual exception.
+        """
         start_time = time.time()
         while time.time() - start_time < timeout_seconds:
             all_processed = True
             for q in queries:
                 if not q.isActive:
-                    continue
+                    exc = q.exception()
+                    msg = f"TEST_ID={test_id} query={q.id} status=DEAD " f"exception={exc!r}"
+                    logger.error(msg)
+                    print(msg, flush=True)
+                    return False
                 progress = q.lastProgress
                 if progress:
                     num_input = progress.get("numInputRows", 0)
