@@ -222,6 +222,23 @@ jobs:
             needs_wheels=true
           fi
 
+          # Safety net: a tag push must always build and publish wheels,
+          # regardless of what the diff-since-previous-tag found. That diff
+          # can legitimately show nothing "changed" when the previous tag
+          # never actually published (its own system-tests gate failed, or
+          # its release was deleted after the fact) -- in that case, this
+          # tag's real content is already fully contained in the abandoned
+          # tag's diff, and unconditionally trusting an empty diff here
+          # would publish a GitHub Release with zero wheel assets attached.
+          # Rebuilding wheels from identical source is cheap; a broken
+          # public release is not.
+          if [[ "$is_tag" == "true" && "$needs_wheels" == "false" ]]; then
+            release_kind="runtime"
+            needs_wheels=true
+            needs_system_tests=true
+            echo "Tag push with no diff-classified changes (likely a prior abandoned/unpublished tag) -- forcing needs_wheels=true"
+          fi
+
           # [skip system tests] in the commit message bypasses cloud platform
           # tests for runtime changes that only affect the standalone/local path.
           # Use git log instead of a GitHub Actions expression to avoid shell-injection
