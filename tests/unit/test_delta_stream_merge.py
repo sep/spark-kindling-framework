@@ -1,17 +1,28 @@
 """
 Unit tests for DeltaEntityProvider.merge_as_stream.
 
-merge_as_stream wraps the batch merge in a foreachBatch streaming sink:
-each micro-batch is handed to merge_to_entity, so SCD1/SCD2 semantics are
-identical to the batch path. These tests verify the writer wiring, the
-guards (read_only, missing merge_columns), and option pass-through.
+merge_as_stream wraps the batch merge in a foreachBatch streaming sink. The
+per-batch callback (_merge_batch) applies the same SCD1/SCD2 merge semantics
+as the batch path, but does not call merge_to_entity or touch GlobalInjector
+at all: under Spark Connect, foreachBatch()'s callback runs in a freshly
+spawned, isolated worker process (foreach_batch_worker.py) that never ran
+initialize_framework()'s bootstrap sequence, so GlobalInjector has no
+bindings there and any GlobalInjector.get(...) call fails with a bare
+KeyError. Everything DI-dependent (the table reference, merge strategy name,
+merge condition, schema-drift policy) is resolved once on the driver, inside
+merge_as_stream itself, before the writer is built; only that plain,
+picklable data is captured by the closure.
+
+These tests verify the writer wiring, the guards (read_only, missing
+merge_columns), option pass-through, that the closure never captures a live
+provider/session/DI reference, and that the batch callback actually merges
+using only that captured plain data plus batch_df.sparkSession.
 """
 
 from unittest.mock import MagicMock
 
 import pytest
 from kindling.data_entities import EntityMetadata, EntityNameMapper, EntityPathLocator
-from kindling.data_entities import EntityProvider as EntityProviderInterface
 from kindling.entity_provider import StreamMergeableEntityProvider, is_stream_mergeable
 from kindling.entity_provider_delta import DeltaEntityProvider, ReadOnlyEntityError
 from kindling.injection import GlobalInjector
@@ -128,37 +139,61 @@ class TestDeltaMergeAsStream:
         )
         writer.foreachBatch.return_value.start.assert_called_once_with()
 
-    def test_each_micro_batch_runs_batch_merge(self, provider, monkeypatch):
+    def test_each_micro_batch_merges_directly_without_di(self, provider, monkeypatch):
+        """The batch callback must complete a merge using only its captured
+        plain data (table_name/table_path/access_mode/entity/cfg/
+        strategy_name/merge_condition) plus batch_df.sparkSession -- never
+        GlobalInjector, never merge_to_entity, never any DeltaEntityProvider
+        instance. Proven here by patching GlobalInjector.get to raise
+        unconditionally: if the callback so much as touched it, this test
+        would fail loudly instead of silently passing with a stubbed
+        lookup.
+        """
         entity = self._make_entity()
-        merge_calls = []
-        # Patch the class, not the instance: _merge_batch calls
-        # type(provider).merge_to_entity(provider, ...) so per-instance
-        # tracing wrappers (trace_ops) never span the micro-batch hot loop.
-        monkeypatch.setattr(
-            type(provider),
-            "merge_to_entity",
-            lambda self, df, ent: merge_calls.append((df, ent)),
-        )
-        # _merge_batch deliberately re-resolves the provider via
-        # GlobalInjector instead of closing over the enclosing `provider`
-        # (see the Spark-Connect-picklability regression test below); stand
-        # in for that lookup here so the unit test doesn't need a fully
-        # wired DI container.
-        monkeypatch.setattr(
-            GlobalInjector,
-            "get",
-            lambda iface: provider if iface is EntityProviderInterface else MagicMock(),
-        )
         df = MagicMock()
         writer = df.writeStream.outputMode.return_value.option.return_value
 
         provider.merge_as_stream(df, entity, "/chk/orders")
-
         batch_fn = writer.foreachBatch.call_args[0][0]
+
+        def _must_not_be_called(*args, **kwargs):
+            raise AssertionError(
+                "GlobalInjector.get() was called from the foreachBatch callback -- "
+                "it must never touch DI, since Spark Connect's isolated foreachBatch "
+                "worker process never bootstraps the framework and has no bindings."
+            )
+
+        monkeypatch.setattr(GlobalInjector, "get", _must_not_be_called)
+
+        mock_delta_table = MagicMock(name="delta_table")
+        monkeypatch.setattr(
+            "kindling.entity_provider_delta.DeltaTableReference.get_delta_table",
+            lambda self: mock_delta_table,
+        )
+
+        apply_calls = []
+        mock_strategy = MagicMock(name="strategy")
+        mock_strategy.apply.side_effect = lambda *a, **kw: apply_calls.append((a, kw))
+        monkeypatch.setattr(
+            "kindling.entity_provider_delta.DeltaMergeStrategies.get",
+            lambda name: mock_strategy,
+        )
+
         batch_df = MagicMock()
+        batch_df.sparkSession = MagicMock(name="batch_spark_session")
+
+        # Must not raise -- and must not need GlobalInjector.get stubbed to
+        # return anything sensible; it's stubbed above only to fail loudly
+        # if called at all.
         batch_fn(batch_df, 42)
 
-        assert merge_calls == [(batch_df, entity)]
+        assert len(apply_calls) == 1
+        args, _kwargs = apply_calls[0]
+        delta_table_arg, df_arg, entity_arg, merge_condition_arg = args
+        assert delta_table_arg is mock_delta_table
+        assert df_arg is batch_df
+        assert entity_arg is entity
+        assert merge_condition_arg == "old.`order_id` = new.`order_id`"
 
     def test_merge_batch_closure_does_not_capture_provider_or_spark(self, provider):
         """Spark-Connect regression: foreachBatch() cloudpickles its callback
@@ -168,10 +203,16 @@ class TestDeltaMergeAsStream:
         (pyspark.errors.PySparkPicklingError:
         [STREAMING_CONNECT_SERIALIZATION_ERROR]) -- before any batch ever
         runs. `_merge_batch` must not close over the provider instance (or
-        anything else holding a live SparkSession); it must re-resolve
-        everything it needs from the micro-batch's own bound session
-        instead. Assert this at the bytecode level: the provider instance
-        must not appear among the callback's free variables at all.
+        anything else holding a live SparkSession); it must use only the
+        micro-batch's own bound session instead. Assert this at the
+        bytecode level: neither the provider instance nor its session, nor
+        GlobalInjector/EntityProvider/EntityNameMapper (the DI container and
+        the interfaces the earlier, still-broken fix looked them up by) may
+        appear among the callback's free variables or captured closure
+        values -- the isolated foreachBatch worker process under Spark
+        Connect never bootstraps the framework, so any of those would fail
+        at pickling time (a live session) or at call time (a KeyError from
+        an unbootstrapped GlobalInjector).
         """
         entity = self._make_entity()
         df = MagicMock()
@@ -186,8 +227,12 @@ class TestDeltaMergeAsStream:
         ]
 
         assert "self" not in free_vars
+        assert "GlobalInjector" not in free_vars
+        assert "EntityProvider" not in free_vars
+        assert "EntityNameMapper" not in free_vars
         assert provider not in closure_values
         assert provider.spark not in closure_values
+        assert GlobalInjector not in closure_values
 
     def test_trigger_and_query_name_options_are_applied(self, provider):
         entity = self._make_entity()
