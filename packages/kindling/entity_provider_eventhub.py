@@ -1,18 +1,115 @@
 """Azure Event Hub entity provider with Event Hubs and Kafka transports."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from injector import inject
 from pyspark import SparkContext
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import lit
-from pyspark.sql.types import MapType, StringType
+from pyspark.sql.functions import col
+from pyspark.sql.functions import decode as spark_decode
+from pyspark.sql.functions import expr
+from pyspark.sql.functions import hex as spark_hex
+from pyspark.sql.functions import lit, map_from_entries, struct, substring
+from pyspark.sql.functions import transform as sql_transform
+from pyspark.sql.functions import when
+from pyspark.sql.types import ArrayType, BinaryType, MapType, StringType
 
 from .data_entities import EntityMetadata
 from .entity_provider import BaseEntityProvider, StreamableEntityProvider
 from .injection import GlobalInjector
 from .spark_config import ConfigService, get_or_create_spark_session
 from .spark_log_provider import PythonLoggerProvider
+
+# Avro single-object encoding (the Avro spec's standard, registry-free way to
+# prefix a binary Avro payload with a schema identifier -- see
+# https://avro.apache.org/docs/current/spec.html#single_object_encoding):
+# a fixed 2-byte marker, then a 16-byte schema fingerprint, then the
+# Avro-encoded body.
+_AVRO_SINGLE_OBJECT_MARKER = bytes([0xC3, 0x01])
+_AVRO_SINGLE_OBJECT_HEADER_LEN = 2 + 16
+
+
+def _flatten_kafka_headers(df: DataFrame) -> DataFrame:
+    """Flatten Kafka's ``headers`` column (``array<struct<key,value:binary>>``,
+    present only when ``provider.kafka.includeHeaders=true``) into a
+    ``map<string,string>`` -- the same shape as the provider's existing
+    ``properties``/``systemProperties`` metadata columns. Transport-level,
+    not payload-codec-specific, so both preprocess modes apply it.
+
+    No-op when ``headers`` is absent (native Event Hubs connector, or Kafka
+    without ``includeHeaders``) or already a different shape.
+    """
+    if "headers" in df.columns and isinstance(df.schema["headers"].dataType, ArrayType):
+        df = df.withColumn(
+            "headers",
+            map_from_entries(
+                sql_transform(
+                    col("headers"),
+                    lambda entry: struct(
+                        entry["key"].alias("key"),
+                        spark_decode(entry["value"], "UTF-8").alias("value"),
+                    ),
+                )
+            ),
+        )
+    return df
+
+
+def _preprocess_kafka(df: DataFrame) -> DataFrame:
+    """``provider.preprocess: kafka`` -- for text-payload producers (JSON,
+    delimited text, etc.): decode the binary ``body`` to UTF-8 text and
+    flatten Kafka headers. Do NOT use this for binary-schema payloads
+    (Avro, Protobuf) -- decoding non-text bytes as UTF-8 is lossy and will
+    corrupt them; use ``avro`` for Avro single-object-encoded payloads.
+
+    No-op on ``body`` when it isn't binary, so applying this twice, or to a
+    DataFrame that already has a text ``body``, is safe.
+    """
+    if "body" in df.columns and isinstance(df.schema["body"].dataType, BinaryType):
+        df = df.withColumn("body", spark_decode(col("body"), "UTF-8"))
+    return _flatten_kafka_headers(df)
+
+
+def _preprocess_avro(df: DataFrame) -> DataFrame:
+    """``provider.preprocess: avro`` -- for Avro single-object-encoded
+    payloads (2-byte marker + 16-byte schema fingerprint + Avro-encoded
+    body; see ``_AVRO_SINGLE_OBJECT_MARKER``). Extracts the fingerprint into
+    a new ``avro_schema_fingerprint`` column (hex string) and strips the
+    18-byte header from ``body``, leaving the Avro-encoded bytes as binary --
+    this framework does not deserialize Avro (no schema-registry client
+    exists here), so full decoding is the consuming pipe's job once it
+    resolves the fingerprint to a schema.
+
+    Rows whose ``body`` does not start with the single-object marker are
+    left untouched (``avro_schema_fingerprint`` is null, ``body``
+    unstripped) rather than corrupted -- not every row need be conforming
+    for this to be a safe, partial win.
+    """
+    if "body" not in df.columns or not isinstance(df.schema["body"].dataType, BinaryType):
+        return _flatten_kafka_headers(df)
+
+    is_single_object = substring(col("body"), 1, 2) == lit(_AVRO_SINGLE_OBJECT_MARKER)
+    # Spark SQL's substring(bin, pos) 2-arg form means "from pos to the end"
+    # -- the Python substring() function requires a literal int length, so
+    # a variable, expression-based length (total length minus the header)
+    # needs the SQL expression form instead.
+    rest_of_body = expr(f"substring(body, {_AVRO_SINGLE_OBJECT_HEADER_LEN + 1})")
+    df = df.withColumn(
+        "avro_schema_fingerprint",
+        when(is_single_object, spark_hex(substring(col("body"), 3, 16))).otherwise(
+            lit(None).cast(StringType())
+        ),
+    ).withColumn(
+        "body",
+        when(is_single_object, rest_of_body).otherwise(col("body")),
+    )
+    return _flatten_kafka_headers(df)
+
+
+_PREPROCESS_MODES: Dict[str, Callable[[DataFrame], DataFrame]] = {
+    "kafka": _preprocess_kafka,
+    "avro": _preprocess_avro,
+}
 
 
 @GlobalInjector.singleton_autobind()
@@ -38,6 +135,18 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
     - provider.maxEventsPerTrigger: Max events per micro-batch (streaming only)
     - provider.receiverTimeout: Receiver timeout in milliseconds
     - provider.operationTimeout: Operation timeout in milliseconds
+    - provider.preprocess: Opt-in payload mode, applied identically to batch
+      and streaming reads after transport normalization. Unset by default,
+      so raw transport-shaped output (binary body, Kafka header arrays) is
+      unaffected -- a bronze entity capturing the untouched wire format
+      simply never sets this tag. Supported values:
+        - "kafka": for text payloads (JSON, delimited text) -- decodes the
+          binary body to UTF-8 text and flattens Kafka headers into a
+          map<string,string>.
+        - "avro": for Avro single-object-encoded payloads -- extracts the
+          16-byte schema fingerprint into an avro_schema_fingerprint column
+          and strips it from body (still binary; this framework does not
+          deserialize Avro), and flattens Kafka headers the same as "kafka".
 
     Example entity definition:
     ```python
@@ -276,6 +385,46 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             .withColumn("systemProperties", lit(None).cast(MapType(StringType(), StringType())))
         )
 
+    def _apply_preprocessing(
+        self, df: DataFrame, entity_metadata: EntityMetadata, provider_config: dict
+    ) -> DataFrame:
+        """Apply the entity's opt-in ``provider.preprocess`` mode, if any
+        (see ``_PREPROCESS_MODES``: "kafka" or "avro").
+
+        Runs after transport-specific reading and ``_normalize_dataframe``,
+        identically for batch and streaming reads, so the same mode always
+        sees the same unified column shape regardless of transport. Entities
+        that never set ``provider.preprocess`` are entirely unaffected --
+        this is a no-op returning ``df`` unchanged -- preserving today's
+        raw, transport-shaped output for anything that doesn't opt in (e.g.
+        a bronze entity capturing the untouched wire format).
+
+        ``provider_config`` is read from ``entity_metadata.tags`` via
+        ``_get_provider_config`` at call time, i.e. after bootstrap's
+        config-overlay and @secret resolution have already run (see
+        ``kindling.bootstrap``) -- there is no separate, earlier read of
+        this tag that could race ahead of that resolution.
+        """
+        mode = provider_config.get("preprocess")
+        if not mode:
+            return df
+
+        preprocessor = _PREPROCESS_MODES.get(mode)
+        if preprocessor is None:
+            raise ValueError(
+                f"Event Hub entity '{entity_metadata.entityid}' declares "
+                f"provider.preprocess='{mode}', which is not a supported mode. "
+                f"Supported values: {', '.join(sorted(_PREPROCESS_MODES))}."
+            )
+
+        try:
+            return preprocessor(df)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Event Hub entity '{entity_metadata.entityid}' preprocessing "
+                f"'{mode}' failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
     def _encrypt_connection_string(self, connection_string: str) -> str:
         """
         Encrypt Event Hub connection string for Spark connector when possible.
@@ -335,6 +484,7 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
 
             df = self.spark.read.format(transport).options(**source_config).load()
             df = self._normalize_dataframe(df, transport)
+            df = self._apply_preprocessing(df, entity_metadata, config)
 
             self.logger.info(
                 "Successfully read Event Hub entity "
@@ -394,6 +544,7 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
 
             stream_df = self.spark.readStream.format(transport).options(**source_config).load()
             stream_df = self._normalize_dataframe(stream_df, transport)
+            stream_df = self._apply_preprocessing(stream_df, entity_metadata, config)
 
             self.logger.info(
                 "Successfully created Event Hub stream for entity "

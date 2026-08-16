@@ -283,6 +283,36 @@ not a single `.csv` file — merge them downstream if a single file is required.
   through verbatim with the `kafka.` prefix stripped (e.g.
   `provider.kafka.includeHeaders: true` includes Kafka record headers as a
   `headers` column; Kafka transport only).
+- `provider.preprocess`: Opt-in payload mode, applied identically to batch
+  and streaming reads after transport-specific reading and normalization —
+  a pipe consuming this entity never needs to know whether Kafka or the
+  native Event Hubs connector produced the data. Unset by default, which is
+  a strict no-op: entities that don't set this tag get exactly today's raw,
+  transport-shaped output (binary `body`, Kafka header arrays where
+  requested). Two built-in modes, chosen by payload codec:
+  - `kafka`: for text payloads (JSON, delimited text) — decodes the binary
+    `body` to UTF-8 text and flattens Kafka's `headers` array into a
+    `map<string,string>` (the same shape as the provider's `properties`/
+    `systemProperties` columns). Do not use this for binary-schema payloads
+    (Avro, Protobuf) — decoding non-text bytes as UTF-8 is lossy.
+  - `avro`: for [Avro single-object-encoded](https://avro.apache.org/docs/current/spec.html#single_object_encoding)
+    payloads (the Avro spec's standard, registry-free way to prefix a
+    binary payload with a schema fingerprint — 2-byte marker + 16-byte
+    fingerprint + Avro-encoded body). Extracts the fingerprint into a new
+    `avro_schema_fingerprint` column (hex string) and strips it from `body`,
+    which stays binary — this framework has no schema-registry client, so
+    deserializing with the resolved schema is the consuming pipe's job.
+    Also flattens Kafka headers, same as `kafka`. Rows that don't start
+    with the marker are left untouched rather than corrupted.
+
+  Leave this unset for an entity meant to capture the untouched Event Hub
+  wire format (e.g. a bronze landing table relying on byte-for-byte replay
+  from that table, since Event Hub's own retention is typically short) —
+  opting in trades that raw fidelity for a consumer-ready shape. It is
+  well suited to entities that are themselves the canonical, schema-bearing
+  representation of the stream (no separate raw capture depends on them),
+  or to structural-only normalization (decoding, reshaping containers)
+  where no information is actually discarded.
 
 ### Memory Provider (`provider_type: memory`)
 
