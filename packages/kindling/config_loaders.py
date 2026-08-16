@@ -198,6 +198,25 @@ def _is_unresolved_secret_reference(value: Any) -> bool:
     return isinstance(value, str) and (value.startswith("@secret ") or value.startswith("@secret:"))
 
 
+def resolve_secret_value(value: Any, secret_provider) -> Any:
+    """Resolve a single ``@secret <key>``/``@secret:<key>``/``@secret:<scope>:<key>``
+    string reference via ``secret_provider.get_secret(...)``.
+
+    Returns ``value`` unchanged if it isn't a secret reference. Unlike
+    ``load_secrets_from_provider`` (which walks Dynaconf's config tree),
+    this resolves one already-extracted string value -- used for secret
+    references embedded directly in entity/pipe ``tags=`` declared in
+    Python registration params, which never pass through Dynaconf at all.
+    """
+    if not _is_unresolved_secret_reference(value):
+        return value
+    if value.startswith("@secret "):
+        secret_name = value[len("@secret ") :].strip()
+    else:
+        secret_name = value[len("@secret:") :].strip()
+    return secret_provider.get_secret(secret_name)
+
+
 def find_unresolved_secret_references(obj) -> List[str]:
     """Return dotted config paths of every remaining @secret reference.
 

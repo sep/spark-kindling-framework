@@ -1746,6 +1746,57 @@ def _resolve_and_validate_secrets(config_service, logger) -> None:
     logger.info(f"Resolved all {len(pending)} @secret reference(s) successfully")
 
 
+def _resolve_registered_tag_secrets(logger) -> None:
+    """Resolve @secret references embedded directly in an entity/pipe's own
+    ``tags=`` registration param -- e.g. ``@entity(..., tags={"provider.
+    eventhub.connectionString": "@secret:scope:key"})`` written straight in
+    app code, as opposed to a ``dataentities:``/``datapipes:``/``entity_tags:``
+    config-overlay section.
+
+    These never pass through Dynaconf's config tree at all -- they live only
+    in the manager's ``_raw_params`` -- so ``_resolve_and_validate_secrets``
+    (which only walks ``config_service.dynaconf``) cannot see or resolve
+    them, and neither can the ``dataentities:``-overlay re-apply. Without
+    this pass, a secret declared this way stays a literal string forever,
+    handed to whatever provider reads it (e.g. EventHub parsing it as a
+    connection string), failing the same confusing way @secret resolution
+    was originally meant to prevent.
+
+    Silently returns if no SecretProvider is bound (e.g. standalone without
+    any registered secrets) -- there is nothing to resolve against, and
+    nothing here implies a reference exists that needs one. Raises if any
+    resolution actually fails, naming only entity/pipe id + tag key, never
+    the attempted value.
+    """
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
+    from kindling.platform_provider import SecretProvider
+
+    try:
+        secret_provider = get_kindling_service(SecretProvider)
+    except Exception:
+        return
+
+    all_failures = []
+    for registry_iface in (DataEntityRegistry, DataPipesRegistry):
+        try:
+            registry = get_kindling_service(registry_iface)
+        except Exception:
+            continue
+        resolver = getattr(registry, "resolve_secret_tags", None)
+        if resolver is None:
+            continue
+        all_failures.extend(resolver(secret_provider))
+
+    if all_failures:
+        raise RuntimeError(
+            "Failed to resolve @secret reference(s) declared directly in "
+            f"registered tags at: {', '.join(sorted(all_failures))}. Check "
+            "that the platform secret provider is reachable and that the "
+            "referenced secret(s) exist."
+        )
+
+
 def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None):
     """Linear framework initialization with Dynaconf config loading"""
 
@@ -2042,6 +2093,14 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # the config paths (never the secret values) named explicitly.
         with _bootstrap_phase("secret_resolution"):
             _resolve_and_validate_secrets(config_service, logger)
+
+        # Resolve @secret references embedded directly in an entity/pipe's
+        # own tags= registration param (as opposed to a config-overlay
+        # section) -- these never touch Dynaconf, so the pass above cannot
+        # see them. Must run before the resolved_config_overlay re-apply
+        # below, since that re-apply rebuilds metadata from _raw_params.
+        with _bootstrap_phase("registered_tag_secret_resolution"):
+            _resolve_registered_tag_secrets(logger)
 
         # Re-overlay dataentities:/dataentities-bytag:/datapipes:/datapipes-bytag:
         # config sections now that any @secret references inside them are

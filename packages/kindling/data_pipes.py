@@ -343,6 +343,38 @@ class DataPipesManager(DataPipesRegistry):
             self.registry[pipeid] = self._build_metadata(pipeid, raw_params)
         self.logger.debug(f"Config overrides applied to {len(self._raw_params)} pipe(s)")
 
+    def resolve_secret_tags(self, secret_provider) -> List[str]:
+        """Resolve ``@secret:``/``@secret `` references embedded directly in
+        a pipe's own ``tags=`` registration param. See
+        ``DataEntityManager.resolve_secret_tags`` for the full rationale --
+        these never pass through Dynaconf's config tree, so they need a
+        separate resolution pass distinct from ``dataentities:``/
+        ``datapipes:`` config-overlay-sourced secrets.
+
+        Mutates ``self._raw_params`` in place so a subsequent
+        ``apply_config_overrides()`` call re-derives metadata with the
+        resolved values. Returns ``"<pipeid>.tags.<key>"`` paths that failed
+        to resolve (never values).
+        """
+        from kindling.config_loaders import (
+            _is_unresolved_secret_reference,
+            resolve_secret_value,
+        )
+
+        failures: List[str] = []
+        for pipeid, raw_params in self._raw_params.items():
+            tags = raw_params.get("tags")
+            if not isinstance(tags, dict):
+                continue
+            for key, value in list(tags.items()):
+                if not _is_unresolved_secret_reference(value):
+                    continue
+                try:
+                    tags[key] = resolve_secret_value(value, secret_provider)
+                except Exception:
+                    failures.append(f"{pipeid}.tags.{key}")
+        return failures
+
     def _build_metadata(self, pipeid, raw_params):
         """Construct PipeMetadata from raw decorator params plus any config
         overrides matching the pipe's own tags (``datapipes-bytag:``) or its

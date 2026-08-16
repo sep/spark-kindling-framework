@@ -1032,3 +1032,195 @@ class TestSecretResolutionReappliesConfigOverlay:
         # bootstrap already raised first, before any provider could try.
         entity = entity_manager.get_entity_definition("incoming.device_telemetry")
         assert entity.tags["provider.eventhub.connectionString"] == "@secret:myscope:eh_conn"
+
+
+class TestRegisteredTagSecretsResolution:
+    """Regression coverage for @secret: references embedded directly in an
+    entity/pipe's own tags= registration param (e.g. ``@entity(...,
+    tags={"provider.eventhub.connectionString": "@secret:scope:key"})``
+    written in app code), as opposed to a dataentities:/datapipes:/
+    dataentities-bytag:/datapipes-bytag: config-overlay section.
+
+    These never touch Dynaconf's config tree at all -- they live only in
+    the manager's _raw_params -- so _resolve_and_validate_secrets (which
+    only walks config_service.dynaconf) cannot see or resolve them, and
+    neither can dataentities:-overlay re-apply. bootstrap.
+    _resolve_registered_tag_secrets is the dedicated pass for this case.
+    """
+
+    def _patch_services(
+        self, monkeypatch, entity_registry=None, pipes_registry=None, secret_provider=None
+    ):
+        import kindling.bootstrap as bootstrap
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.data_pipes import DataPipesRegistry
+        from kindling.platform_provider import SecretProvider
+
+        if entity_registry is None:
+            entity_registry = MagicMock(spec=[])
+        if pipes_registry is None:
+            pipes_registry = MagicMock(spec=[])
+        services = {
+            DataPipesRegistry: pipes_registry,
+            DataEntityRegistry: entity_registry,
+        }
+        if secret_provider is not None:
+            services[SecretProvider] = secret_provider
+
+        def _get(iface):
+            if iface not in services:
+                raise LookupError(f"no fake service registered for {iface!r}")
+            return services[iface]
+
+        monkeypatch.setattr(bootstrap, "get_kindling_service", _get)
+        return bootstrap
+
+    def test_entity_manager_resolves_secret_embedded_in_raw_tags(self):
+        resolved = (
+            "Endpoint=sb://real-ns.servicebus.windows.net/;SharedAccessKeyName=x;SharedAccessKey=y"
+        )
+        manager = make_entity_manager()
+        register_sample_entity(
+            manager,
+            entityid="incoming.device_telemetry",
+            tags={
+                "provider_type": "eventhub",
+                "provider.eventhub.connectionString": "@secret:myscope:eh_conn",
+            },
+            name="device_telemetry",
+        )
+        secret_provider = MagicMock()
+        secret_provider.get_secret.return_value = resolved
+
+        failures = manager.resolve_secret_tags(secret_provider)
+
+        assert failures == []
+        secret_provider.get_secret.assert_called_once_with("myscope:eh_conn")
+        # Mutated in place -- a subsequent apply_config_overrides() rebuild
+        # (or a plain get_entity_definition() read, since nothing else
+        # overlays this entity) sees the resolved value, not the literal.
+        entity = manager.get_entity_definition("incoming.device_telemetry")
+        assert entity.tags["provider.eventhub.connectionString"] == resolved
+
+    def test_entity_manager_non_secret_tags_untouched(self):
+        manager = make_entity_manager()
+        register_sample_entity(
+            manager,
+            entityid="bronze.orders",
+            tags={"layer": "bronze", "provider.type": "delta"},
+        )
+        secret_provider = MagicMock()
+
+        failures = manager.resolve_secret_tags(secret_provider)
+
+        assert failures == []
+        secret_provider.get_secret.assert_not_called()
+        entity = manager.get_entity_definition("bronze.orders")
+        assert entity.tags == {"layer": "bronze", "provider.type": "delta"}
+
+    def test_entity_manager_resolution_failure_reported_without_value(self):
+        manager = make_entity_manager()
+        register_sample_entity(
+            manager,
+            entityid="incoming.device_telemetry",
+            tags={"provider.eventhub.connectionString": "@secret:bad:key"},
+            name="device_telemetry",
+        )
+        secret_provider = MagicMock()
+        secret_provider.get_secret.side_effect = KeyError("bad:key")
+
+        failures = manager.resolve_secret_tags(secret_provider)
+
+        assert failures == ["incoming.device_telemetry.tags.provider.eventhub.connectionString"]
+        # Literal untouched on failure -- not silently blanked out.
+        entity = manager.get_entity_definition("incoming.device_telemetry")
+        assert entity.tags["provider.eventhub.connectionString"] == "@secret:bad:key"
+
+    def test_pipe_manager_resolves_secret_embedded_in_raw_tags(self):
+        resolved = "https://api.example.com/token-xyz"
+        manager = make_pipes_manager()
+        register_sample_pipe(
+            manager,
+            pipeid="bronze.ingest_orders",
+            tags={"domain": "sales", "provider.api.token": "@secret:apiscope:token"},
+        )
+        secret_provider = MagicMock()
+        secret_provider.get_secret.return_value = resolved
+
+        failures = manager.resolve_secret_tags(secret_provider)
+
+        assert failures == []
+        secret_provider.get_secret.assert_called_once_with("apiscope:token")
+        pipe = manager.get_pipe_definition("bronze.ingest_orders")
+        assert pipe.tags["provider.api.token"] == resolved
+
+    def test_apply_config_overrides_after_resolve_secret_tags_preserves_resolution(self):
+        """The real bootstrap sequence: resolve_secret_tags() mutates
+        _raw_params, then apply_config_overrides() re-derives metadata from
+        those same _raw_params -- the resolved value must survive that
+        rebuild, not just a bare get_entity_definition() read."""
+        resolved = (
+            "Endpoint=sb://real-ns.servicebus.windows.net/;SharedAccessKeyName=x;SharedAccessKey=y"
+        )
+        config_service = make_config_service({"dataentities": {}})
+        manager = make_entity_manager(config_service)
+        register_sample_entity(
+            manager,
+            entityid="incoming.device_telemetry",
+            tags={"provider.eventhub.connectionString": "@secret:myscope:eh_conn"},
+            name="device_telemetry",
+        )
+        secret_provider = MagicMock()
+        secret_provider.get_secret.return_value = resolved
+
+        manager.resolve_secret_tags(secret_provider)
+        manager.apply_config_overrides(config_service)
+
+        entity = manager.get_entity_definition("incoming.device_telemetry")
+        assert entity.tags["provider.eventhub.connectionString"] == resolved
+
+    def test_bootstrap_resolve_registered_tag_secrets_wires_both_registries(self, monkeypatch):
+        fake_provider = MagicMock()
+        fake_provider.get_secret.return_value = "resolved-value"
+
+        entity_registry = MagicMock()
+        entity_registry.resolve_secret_tags.return_value = []
+        pipes_registry = MagicMock()
+        pipes_registry.resolve_secret_tags.return_value = []
+        bootstrap = self._patch_services(
+            monkeypatch, entity_registry, pipes_registry, secret_provider=fake_provider
+        )
+
+        bootstrap._resolve_registered_tag_secrets(MagicMock())
+
+        entity_registry.resolve_secret_tags.assert_called_once_with(fake_provider)
+        pipes_registry.resolve_secret_tags.assert_called_once_with(fake_provider)
+
+    def test_bootstrap_resolve_registered_tag_secrets_raises_on_failure(self, monkeypatch):
+        fake_provider = MagicMock()
+
+        entity_registry = MagicMock()
+        entity_registry.resolve_secret_tags.return_value = [
+            "incoming.device_telemetry.tags.provider.eventhub.connectionString"
+        ]
+        pipes_registry = MagicMock()
+        pipes_registry.resolve_secret_tags.return_value = []
+        bootstrap = self._patch_services(
+            monkeypatch, entity_registry, pipes_registry, secret_provider=fake_provider
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to resolve"):
+            bootstrap._resolve_registered_tag_secrets(MagicMock())
+
+    def test_bootstrap_noop_when_no_secret_provider_bound(self, monkeypatch):
+        entity_registry = MagicMock()
+        pipes_registry = MagicMock()
+        # No secret_provider passed -> _patch_services' fake get_kindling_service
+        # raises LookupError for SecretProvider, matching the real
+        # get_kindling_service()'s behavior when nothing is bound.
+        bootstrap = self._patch_services(monkeypatch, entity_registry, pipes_registry)
+
+        bootstrap._resolve_registered_tag_secrets(MagicMock())
+
+        entity_registry.resolve_secret_tags.assert_not_called()
+        pipes_registry.resolve_secret_tags.assert_not_called()

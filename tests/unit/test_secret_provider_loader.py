@@ -317,6 +317,59 @@ class TestSecretProviderContractMethods:
         assert wrapper.list_secrets() == ["token-a", "token-b"]
 
 
+class TestResolveSecretValue:
+    """Unit tests for resolve_secret_value(), which resolves a single
+    already-extracted string (as opposed to load_secrets_from_provider(),
+    which walks a whole Dynaconf tree) -- used for @secret references
+    embedded directly in entity/pipe tags= registration params."""
+
+    def test_non_secret_value_passed_through_unchanged(self):
+        from kindling.config_loaders import resolve_secret_value
+
+        provider = MagicMock()
+        assert resolve_secret_value("plain-value", provider) == "plain-value"
+        provider.get_secret.assert_not_called()
+
+    def test_non_string_value_passed_through_unchanged(self):
+        from kindling.config_loaders import resolve_secret_value
+
+        provider = MagicMock()
+        assert resolve_secret_value(42, provider) == 42
+        assert resolve_secret_value(None, provider) is None
+
+    def test_colon_form_resolves(self):
+        from kindling.config_loaders import resolve_secret_value
+
+        provider = MagicMock()
+        provider.get_secret.return_value = "resolved-value"
+        assert resolve_secret_value("@secret:my-key", provider) == "resolved-value"
+        provider.get_secret.assert_called_once_with("my-key")
+
+    def test_space_form_resolves(self):
+        from kindling.config_loaders import resolve_secret_value
+
+        provider = MagicMock()
+        provider.get_secret.return_value = "resolved-value"
+        assert resolve_secret_value("@secret my-key", provider) == "resolved-value"
+        provider.get_secret.assert_called_once_with("my-key")
+
+    def test_explicit_scope_colon_key_form_resolves(self):
+        from kindling.config_loaders import resolve_secret_value
+
+        provider = MagicMock()
+        provider.get_secret.return_value = "resolved-value"
+        assert resolve_secret_value("@secret:my-scope:my-key", provider) == "resolved-value"
+        provider.get_secret.assert_called_once_with("my-scope:my-key")
+
+    def test_provider_failure_propagates(self):
+        from kindling.config_loaders import resolve_secret_value
+
+        provider = MagicMock()
+        provider.get_secret.side_effect = KeyError("my-key")
+        with pytest.raises(KeyError):
+            resolve_secret_value("@secret:my-key", provider)
+
+
 class TestBootstrapSecretResolutionOrdering:
     """Regression coverage for the exact bug: an app.py entity_tags @secret
     reference (e.g. an EventHub connectionString) surviving unresolved past

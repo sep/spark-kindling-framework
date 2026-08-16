@@ -905,6 +905,43 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         self._converge_scd2_companions()
         _ENTITY_LOGGER.debug("Config overrides applied to %s entit(y/ies)", len(self._raw_params))
 
+    def resolve_secret_tags(self, secret_provider) -> List[str]:
+        """Resolve ``@secret:``/``@secret `` references embedded directly in
+        an entity's own ``tags=`` registration param (e.g. ``@entity(...,
+        tags={"provider.eventhub.connectionString": "@secret:scope:key"})``).
+
+        These never pass through Dynaconf's config tree, so bootstrap's
+        ``_resolve_and_validate_secrets`` (which only walks
+        ``config_service.dynaconf``) cannot see or resolve them. Mutates
+        ``self._raw_params`` in place so a subsequent
+        ``apply_config_overrides()`` call re-derives metadata with the
+        resolved values instead of the literal reference.
+
+        Returns a list of ``"<entityid>.tags.<key>"`` paths that failed to
+        resolve (never the attempted values, to avoid ever interpolating a
+        secret into a log/error message) -- callers should treat any
+        non-empty result as a hard failure, mirroring
+        ``_resolve_and_validate_secrets``'s post-platform-init contract.
+        """
+        from kindling.config_loaders import (
+            _is_unresolved_secret_reference,
+            resolve_secret_value,
+        )
+
+        failures: List[str] = []
+        for entityid, raw_params in self._raw_params.items():
+            tags = raw_params.get("tags")
+            if not isinstance(tags, dict):
+                continue
+            for key, value in list(tags.items()):
+                if not _is_unresolved_secret_reference(value):
+                    continue
+                try:
+                    tags[key] = resolve_secret_value(value, secret_provider)
+                except Exception:
+                    failures.append(f"{entityid}.tags.{key}")
+        return failures
+
     def _build_metadata(self, entityid, raw_params):
         """Construct EntityMetadata from raw registration params plus any
         config overrides matching the entity's own tags
