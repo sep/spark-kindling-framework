@@ -464,3 +464,161 @@ class TestEntityTagsCommand:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["env"] == "staging"
+
+
+# ---------------------------------------------------------------------------
+# kindling pipeline show
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineShow:
+    def test_unknown_pipe_fails(self, monkeypatch):
+        from kindling.data_pipes import DataPipesRegistry
+
+        _patch_registry(monkeypatch, DataPipesRegistry, _FakePipeRegistry({}))
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            app_path = _write_app(Path("app.py"))
+            result = runner.invoke(
+                cli, ["pipeline", "show", "missing.pipe", "--app", str(app_path)]
+            )
+
+        assert result.exit_code != 0
+        assert "not registered" in result.output
+
+    def test_shows_structure_by_default(self, monkeypatch):
+        from kindling.data_pipes import DataPipesRegistry
+
+        pipe = _make_pipe(
+            "bronze.ingest_orders",
+            input_entity_ids=["raw.orders"],
+            output_entity_id="bronze.orders",
+            output_type="delta",
+        )
+        _patch_registry(
+            monkeypatch, DataPipesRegistry, _FakePipeRegistry({"bronze.ingest_orders": pipe})
+        )
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            app_path = _write_app(Path("app.py"))
+            result = runner.invoke(
+                cli, ["pipeline", "show", "bronze.ingest_orders", "--app", str(app_path)]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "raw.orders" in result.output
+        assert "bronze.orders" in result.output
+        assert "delta" in result.output
+
+    def test_json_structure_output(self, monkeypatch):
+        from kindling.data_pipes import DataPipesRegistry
+
+        pipe = _make_pipe(
+            "bronze.ingest_orders",
+            input_entity_ids=["raw.orders"],
+            output_entity_id="bronze.orders",
+            output_type="delta",
+        )
+        _patch_registry(
+            monkeypatch, DataPipesRegistry, _FakePipeRegistry({"bronze.ingest_orders": pipe})
+        )
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            app_path = _write_app(Path("app.py"))
+            result = runner.invoke(
+                cli,
+                ["pipeline", "show", "bronze.ingest_orders", "--app", str(app_path), "--json"],
+            )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload == {
+            "pipe_id": "bronze.ingest_orders",
+            "name": "bronze.ingest_orders",
+            "input_entity_ids": ["raw.orders"],
+            "output_entity_id": "bronze.orders",
+            "output_type": "delta",
+        }
+
+    def test_tags_flag_shows_provenance_from_datapipes_bytag(self, monkeypatch):
+        from kindling.data_pipes import DataPipesRegistry
+
+        pipe = _make_pipe(
+            "bronze.ingest_orders", tags={"tier": "bronze", "retry.max_attempts": "5"}
+        )
+        registry = _FakePipeRegistry(
+            {"bronze.ingest_orders": pipe},
+            raw_params={"bronze.ingest_orders": {"tags": {"tier": "bronze"}}},
+        )
+        _patch_registry(monkeypatch, DataPipesRegistry, registry)
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            app_path = _write_app(Path("app.py"))
+            Path("settings.yaml").write_text(
+                "datapipes-bytag:\n"
+                "  tier:\n"
+                "    bronze:\n"
+                "      tags:\n"
+                "        retry.max_attempts: '5'\n",
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(
+                cli,
+                [
+                    "pipeline",
+                    "show",
+                    "bronze.ingest_orders",
+                    "--app",
+                    str(app_path),
+                    "--tags",
+                    "--json",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["tags"]["retry.max_attempts"] == "5"
+        assert payload["provenance"]["retry.max_attempts"] == "datapipes-bytag:"
+        assert payload["provenance"]["tier"] == "literal tags="
+
+    def test_tags_secret_redaction(self, monkeypatch):
+        from kindling.data_pipes import DataPipesRegistry
+
+        pipe = _make_pipe("bronze.ingest_orders", tags={"provider.token": "resolved-live-value"})
+        registry = _FakePipeRegistry(
+            {"bronze.ingest_orders": pipe},
+            raw_params={"bronze.ingest_orders": {"tags": {}}},
+        )
+        _patch_registry(monkeypatch, DataPipesRegistry, registry)
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            app_path = _write_app(Path("app.py"))
+            Path("settings.yaml").write_text(
+                "datapipes:\n"
+                "  bronze.ingest_orders:\n"
+                "    tags:\n"
+                "      provider.token: '@secret:kv/token'\n",
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(
+                cli,
+                [
+                    "pipeline",
+                    "show",
+                    "bronze.ingest_orders",
+                    "--app",
+                    str(app_path),
+                    "--tags",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "<secret: kv/token>" in result.output
+        assert "@secret:kv/token" not in result.output

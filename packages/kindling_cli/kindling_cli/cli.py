@@ -1323,6 +1323,140 @@ def pipeline_list(
         click.echo(f"  {pid}")
 
 
+@pipeline_group.command("show")
+@click.argument("pipe_id")
+@click.option(
+    "--app",
+    "app_path",
+    default=None,
+    type=click.Path(path_type=Path, dir_okay=False, exists=False),
+    help="Path to app.py (auto-discovered when omitted)",
+)
+@click.option(
+    "--env",
+    default=None,
+    help="Environment overlay (default: KINDLING_ENV or 'local')",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(SUPPORTED_PLATFORMS),
+    default=None,
+    help="Platform overlay used when locating settings.<platform>.yaml (only relevant with --tags).",
+)
+@click.option(
+    "--tags",
+    "show_tags",
+    is_flag=True,
+    help="Show the pipe's resolved tags with provenance instead of its structure.",
+)
+@click.option(
+    "--reveal-secrets",
+    is_flag=True,
+    help="With --tags, print resolved @secret: references in plaintext instead of redacting them.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def pipeline_show(
+    pipe_id: str,
+    app_path: Optional[Path],
+    env: Optional[str],
+    platform: Optional[str],
+    show_tags: bool,
+    reveal_secrets: bool,
+    json_output: bool,
+) -> None:
+    """Show a single registered pipe's structure, or its resolved tags with --tags.
+
+    The pipe-level analog of `entity show`, closing the asymmetry where
+    entities have show/validate and pipes previously had neither. With
+    --tags, prints the resolved tag dict with per-key provenance
+    (literal tags=, datapipes-bytag:, datapipes:), the same walk
+    `entity tags` performs but sourced from datapipes:/datapipes-bytag:.
+
+    \b
+    Examples:
+      kindling pipeline show bronze.ingest_orders --app myapp --env dev
+      kindling pipeline show bronze.ingest_orders --app myapp --tags --json
+    """
+    try:
+        from kindling.data_pipes import DataPipesRegistry
+        from kindling.injection import GlobalInjector
+    except ImportError as exc:
+        raise click.ClickException(
+            "kindling package is required. Install with: pip install spark-kindling[standalone]"
+        ) from exc
+
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    resolved_app = _discover_app_py(app_path)
+    _load_app_module(resolved_app, env=resolved_env)
+
+    registry = GlobalInjector.get(DataPipesRegistry)
+    pipe_def = registry.get_pipe_definition(pipe_id)
+    if pipe_def is None:
+        known = sorted(registry.get_pipe_ids())
+        hint = f"\n  Registered pipes: {', '.join(known)}" if known else ""
+        raise click.ClickException(f"Pipe '{pipe_id}' is not registered.{hint}")
+
+    if show_tags:
+        final_tags = dict(pipe_def.tags or {})
+        literal_tags = _raw_registration_tags(registry, pipe_id, final_tags)
+
+        settings_dir = resolved_app.parent
+        raw_config, _ = _load_effective_raw_config(settings_dir, resolved_env, platform)
+        computed_tags, provenance = _resolve_tag_provenance(
+            literal_tags,
+            pipe_id,
+            raw_config.get("datapipes-bytag"),
+            raw_config.get("datapipes"),
+            None,
+            bytag_label="datapipes-bytag:",
+            idglob_label=f"datapipes: {pipe_id}",
+            exact_label="",
+        )
+        view = _build_tag_view(final_tags, computed_tags, provenance, reveal_secrets)
+
+        if json_output:
+            _emit_json(
+                {
+                    "pipe_id": pipe_id,
+                    "env": resolved_env,
+                    "platform": platform,
+                    "tags": {key: entry["value"] for key, entry in view.items()},
+                    "provenance": {key: entry["source"] for key, entry in view.items()},
+                }
+            )
+            return
+
+        if reveal_secrets:
+            click.echo(
+                "WARNING: --reveal-secrets is set; secret values below are printed in plaintext."
+            )
+        click.echo(f"Pipe: {pipe_id}  [env: {resolved_env}]")
+        click.echo()
+        if not view:
+            click.echo("(no tags)")
+            return
+        rows = [[key, str(entry["value"]), entry["source"]] for key, entry in view.items()]
+        click.echo(_format_table(["Tag", "Value", "Source"], rows))
+        return
+
+    payload = {
+        "pipe_id": pipe_id,
+        "name": pipe_def.name,
+        "input_entity_ids": list(pipe_def.input_entity_ids or []),
+        "output_entity_id": pipe_def.output_entity_id,
+        "output_type": pipe_def.output_type,
+    }
+    if json_output:
+        _emit_json(payload)
+        return
+
+    click.echo(f"Pipe: {pipe_id}")
+    click.echo(f"  Name:           {payload['name']}")
+    click.echo(f"  Input entities: {', '.join(payload['input_entity_ids']) or '(none)'}")
+    click.echo(f"  Output entity:  {payload['output_entity_id']}")
+    click.echo(f"  Output type:    {payload['output_type']}")
+
+
 # =============================================================================
 # migrate
 # =============================================================================
