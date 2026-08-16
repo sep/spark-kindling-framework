@@ -1062,6 +1062,44 @@ def cli() -> None:
     """Kindling CLI."""
 
 
+def _apply_trace_env_vars(trace: bool, trace_level: Optional[str]) -> None:
+    """Set the env-var-gated tracing config Dynaconf reads once an app.py
+    bootstraps (KINDLING_KINDLING__TELEMETRY__TRACING__PRINT/LEVEL), the
+    same override Dynaconf applies to kindling.telemetry.tracing.print/level.
+
+    Used by commands like `pipeline run` that have no --param plumbing of
+    their own; `app run` instead implements --trace/--trace-level as sugar
+    for --param print_trace=true/--param kindling.telemetry.tracing.level=
+    since it already threads --param through to bootstrap. A flag left
+    unset here leaves any ambient/.env-based tracing config untouched.
+    """
+    if trace:
+        os.environ["KINDLING_KINDLING__TELEMETRY__TRACING__PRINT"] = "true"
+    if trace_level:
+        os.environ["KINDLING_KINDLING__TELEMETRY__TRACING__LEVEL"] = trace_level
+
+
+def _prepend_trace_param_overrides(
+    trace: bool, trace_level: Optional[str], param_overrides: Tuple[str, ...]
+) -> Tuple[str, ...]:
+    """Translate --trace/--trace-level into --param-shaped overrides and
+    prepend them ahead of any explicit --param values.
+
+    _resolve_runtime_parameters applies overrides in order via
+    _set_nested_key, later entries winning -- prepending here means an
+    explicit `--param print_trace=...`/`--param
+    kindling.telemetry.tracing.level=...` passed alongside --trace/
+    --trace-level still wins, consistent with how --param already overrides
+    file-based and env-based parameters elsewhere.
+    """
+    synthetic: Tuple[str, ...] = ()
+    if trace:
+        synthetic += ("print_trace=true",)
+    if trace_level:
+        synthetic += (f"kindling.telemetry.tracing.level={trace_level}",)
+    return (*synthetic, *param_overrides)
+
+
 def _run_local_pipe(
     pipe_id: str,
     env: Optional[str],
@@ -1069,6 +1107,8 @@ def _run_local_pipe(
     config_dir: Optional[Path],
     quiet: bool,
     no_watermark: bool,
+    trace: bool = False,
+    trace_level: Optional[str] = None,
 ) -> None:
     """Execute a registered pipe locally."""
     try:
@@ -1081,6 +1121,7 @@ def _run_local_pipe(
 
     if quiet:
         _configure_quiet_logging()
+    _apply_trace_env_vars(trace, trace_level)
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
     if env is not None and env != "local":
@@ -1270,6 +1311,17 @@ def pipeline_group() -> None:
     default=False,
     help="Bypass watermark tracking so the full dataset is processed (useful for dev backfills).",
 )
+@click.option(
+    "--trace",
+    is_flag=True,
+    help="Print bootstrap/framework trace spans (sugar for KINDLING_KINDLING__TELEMETRY__TRACING__PRINT=true).",
+)
+@click.option(
+    "--trace-level",
+    type=click.Choice(["minimal", "standard", "verbose"]),
+    default=None,
+    help="Trace span volume tier (sugar for kindling.telemetry.tracing.level).",
+)
 def pipeline_run(
     pipe_id: str,
     app_path: Optional[Path],
@@ -1277,6 +1329,8 @@ def pipeline_run(
     config_dir: Optional[Path],
     quiet: bool,
     no_watermark: bool,
+    trace: bool,
+    trace_level: Optional[str],
 ) -> None:
     """Run a single pipeline layer locally using already-populated upstream entity storage.
 
@@ -1291,8 +1345,9 @@ def pipeline_run(
     \b
       kindling pipeline run bronze.ingest_myproject --app myproject --env dev
       kindling pipeline run silver.stage_myproject --app myproject --env dev
+      kindling pipeline run bronze.ingest_myproject --trace --trace-level verbose
     """
-    _run_local_pipe(pipe_id, env, app_path, config_dir, quiet, no_watermark)
+    _run_local_pipe(pipe_id, env, app_path, config_dir, quiet, no_watermark, trace, trace_level)
 
 
 @pipeline_group.command("list")
@@ -4738,6 +4793,17 @@ def _run_standalone_app(
     help="Runtime parameter override in KEY=VALUE form. Repeatable.",
 )
 @click.option(
+    "--trace",
+    is_flag=True,
+    help="Print bootstrap/framework trace spans (sugar for --param print_trace=true).",
+)
+@click.option(
+    "--trace-level",
+    type=click.Choice(["minimal", "standard", "verbose"]),
+    default=None,
+    help="Trace span volume tier (sugar for --param kindling.telemetry.tracing.level=<level>).",
+)
+@click.option(
     "--platform",
     type=click.Choice(APP_RUN_PLATFORMS),
     default="standalone",
@@ -4791,6 +4857,8 @@ def app_run(
     local_packages: Tuple[Path, ...],
     parameters_path: Optional[Path],
     param_overrides: Tuple[str, ...],
+    trace: bool,
+    trace_level: Optional[str],
     platform: Optional[str],
     no_logs: bool,
     no_wait: bool,
@@ -4809,7 +4877,14 @@ def app_run(
 
     For remote runs (--platform), APP is the deployed app name. The app must already
     be deployed; use 'kindling app deploy APP --platform PLATFORM' first.
+
+    \b
+    --trace/--trace-level are documented sugar for
+    --param print_trace=true/--param kindling.telemetry.tracing.level=<level>;
+    an explicit --param for the same key still wins.
     """
+    param_overrides = _prepend_trace_param_overrides(trace, trace_level, param_overrides)
+
     if platform == "standalone":
         if app_name:
             raise click.ClickException("--app-name is only valid for remote app runs.")
