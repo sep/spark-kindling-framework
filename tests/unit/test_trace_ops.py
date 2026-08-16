@@ -153,19 +153,35 @@ class TestWrapProviderOps:
         provider.merge_to_entity("df", _entity())
         assert len(tp.find(operation="merge_to_entity")) == 1, "Instance call must span"
 
-    def test_delta_merge_batch_uses_class_attribute_bypass(self):
-        """Source guard: the foreachBatch closure must keep the wrapper bypass.
+    def test_delta_merge_batch_never_calls_merge_to_entity(self):
+        """Source guard: _merge_batch must not call merge_to_entity at all --
+        via a class-attribute bypass or otherwise.
 
-        _merge_batch resolves its own provider instance (``batch_provider``)
-        rather than closing over ``self`` -- see
-        test_delta_stream_merge.py::test_merge_batch_closure_does_not_capture_provider_or_spark
-        for why -- so the class-attribute bypass call now reads
-        `type(batch_provider).merge_to_entity(batch_provider, ...)`.
+        Earlier this design used `type(x).merge_to_entity(x, ...)` (a
+        class-attribute lookup) specifically to bypass the per-instance
+        tracing wrapper in the micro-batch hot loop. That pattern required
+        a live provider instance, which forced either capturing `self`
+        (unpicklable under Spark Connect's foreachBatch --
+        STREAMING_CONNECT_SERIALIZATION_ERROR) or re-resolving one via
+        GlobalInjector (fails with a bare KeyError in Spark Connect's
+        isolated foreachBatch worker process, which never bootstraps the
+        framework's DI container -- see
+        test_delta_stream_merge.py::test_each_micro_batch_merges_directly_without_di).
+        The fix removes the need for ANY provider instance in the hot loop:
+        _merge_batch calls DeltaMergeStrategies.get(...).apply(...) and
+        DeltaTableReference directly, using only plain data resolved on the
+        driver beforehand plus the micro-batch's own bound session. There is
+        no tracing wrapper to bypass anymore because there is no
+        instance-bound method call left to wrap.
         """
         from kindling.entity_provider_delta import DeltaEntityProvider
 
         source = inspect.getsource(DeltaEntityProvider.merge_as_stream)
-        assert "type(batch_provider).merge_to_entity(batch_provider" in source
+        # Check the call pattern specifically, not prose: the docstring
+        # legitimately mentions "merge_to_entity" by name to explain what
+        # this path does NOT do.
+        assert ".merge_to_entity(" not in source
+        assert "DeltaMergeStrategies.get(" in source
 
 
 class _SparkConnectLikeDataFrame:
