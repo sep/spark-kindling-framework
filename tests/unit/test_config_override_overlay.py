@@ -764,3 +764,271 @@ class TestBootstrapApplyConfigOverrides:
         )
 
         bootstrap.apply_config_overrides()
+
+
+class _DynaconfBackedConfigService:
+    """Minimal ConfigService stand-in backed by a real Dynaconf instance.
+
+    Unlike ``make_config_service``'s MagicMock (which stubs ``.get()`` from a
+    static dict), this proxies both ``.get()`` and ``.dynaconf`` to the same
+    live Dynaconf object -- required to exercise
+    ``bootstrap._resolve_and_validate_secrets``, which mutates
+    ``config_service.dynaconf`` in place via ``load_secrets_from_provider``.
+    A subsequent ``.get("dataentities")`` must observe that mutation for the
+    re-overlay regression test to mean anything.
+    """
+
+    def __init__(self, dynaconf):
+        self.dynaconf = dynaconf
+
+    def get(self, key, default=None):
+        return self.dynaconf.get(key, default)
+
+    def get_entity_tags(self, entityid):
+        all_entity_tags = self.dynaconf.get("entity_tags", {})
+        if not isinstance(all_entity_tags, dict):
+            return {}
+        tags = all_entity_tags.get(entityid, {})
+        return tags if isinstance(tags, dict) else {}
+
+
+def _dynaconf_from_yaml(tmp_path, yaml_text):
+    from dynaconf import Dynaconf
+
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(yaml_text, encoding="utf-8")
+    return Dynaconf(
+        settings_files=[str(settings_path)], environments=False, envvar_prefix="KINDLING"
+    )
+
+
+class TestSecretResolutionReappliesConfigOverlay:
+    """Regression coverage: a ``@secret:`` reference inside ``dataentities:``/
+    ``dataentities-bytag:`` must reach the registered ``EntityMetadata.tags``
+    with its RESOLVED value, not the literal reference.
+
+    ``DataEntityManager.apply_config_overrides`` always rebuilds every
+    entity's metadata from its original registration params (never from
+    previously-overlaid metadata), so the config-overlay pass that runs
+    before platform services exist (and therefore before any SecretProvider
+    can resolve anything) permanently bakes the unresolved literal into the
+    registry unless the overlay is re-applied after secret resolution. This
+    mirrors the exact sequence ``kindling.bootstrap.initialize_framework``
+    now runs: config_overlay -> secret_resolution -> resolved_config_overlay.
+    """
+
+    def _patch_services(self, monkeypatch, config_service, entity_registry):
+        import kindling.bootstrap as bootstrap
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.data_pipes import DataPipesRegistry
+        from kindling.spark_config import ConfigService
+
+        pipes_registry = MagicMock(spec=["apply_config_overrides", "get_pipe_ids"])
+        pipes_registry.get_pipe_ids.return_value = []
+        services = {
+            ConfigService: config_service,
+            DataPipesRegistry: pipes_registry,
+            DataEntityRegistry: entity_registry,
+        }
+        monkeypatch.setattr(bootstrap, "get_kindling_service", lambda iface: services[iface])
+        return bootstrap
+
+    def _bind_fake_secret_provider(self, resolved_by_name):
+        from kindling.injection import GlobalInjector
+        from kindling.platform_provider import SecretProvider
+
+        class FakeSecretProvider(SecretProvider):
+            def get_secret(self, secret_name, default=None):
+                if secret_name in resolved_by_name:
+                    return resolved_by_name[secret_name]
+                raise KeyError(secret_name)
+
+        GlobalInjector.reset()
+        GlobalInjector.bind(SecretProvider, FakeSecretProvider())
+
+    def setup_method(self):
+        from kindling.injection import GlobalInjector
+
+        GlobalInjector.reset()
+
+    def teardown_method(self):
+        from kindling.injection import GlobalInjector
+
+        GlobalInjector.reset()
+
+    def test_dataentities_secret_literal_survives_without_reoverlay(self, monkeypatch, tmp_path):
+        """Structural control: proves the bug is real by stopping short of
+        the fix -- calling apply_config_overrides() then secret resolution,
+        but NOT re-overlaying, leaves the literal in place."""
+        resolved = (
+            "Endpoint=sb://real-ns.servicebus.windows.net/;SharedAccessKeyName=x;SharedAccessKey=y"
+        )
+        self._bind_fake_secret_provider({"myscope:eh_conn": resolved})
+        dynaconf = _dynaconf_from_yaml(
+            tmp_path,
+            "dataentities:\n"
+            "  incoming.device_telemetry:\n"
+            "    tags:\n"
+            "      provider_type: eventhub\n"
+            "      provider.eventhub.connectionString: '@secret:myscope:eh_conn'\n",
+        )
+        config_service = _DynaconfBackedConfigService(dynaconf)
+        entity_manager = make_entity_manager(config_service)
+        register_sample_entity(
+            entity_manager, entityid="incoming.device_telemetry", tags={}, name="device_telemetry"
+        )
+        bootstrap = self._patch_services(monkeypatch, config_service, entity_manager)
+        logger = MagicMock()
+
+        bootstrap.apply_config_overrides()
+        bootstrap._resolve_and_validate_secrets(config_service, logger)
+
+        conn = entity_manager.get_entity_definition("incoming.device_telemetry").tags[
+            "provider.eventhub.connectionString"
+        ]
+        assert conn == "@secret:myscope:eh_conn"
+
+    def test_entity_metadata_receives_resolved_secret_after_full_bootstrap_sequence(
+        self, monkeypatch, tmp_path
+    ):
+        """The fix: config_overlay -> secret_resolution -> resolved_config_overlay
+        (the exact sequence in initialize_framework) leaves the RESOLVED
+        value in the registered entity's tags."""
+        resolved = (
+            "Endpoint=sb://real-ns.servicebus.windows.net/;SharedAccessKeyName=x;SharedAccessKey=y"
+        )
+        self._bind_fake_secret_provider({"myscope:eh_conn": resolved})
+        dynaconf = _dynaconf_from_yaml(
+            tmp_path,
+            "dataentities:\n"
+            "  incoming.device_telemetry:\n"
+            "    tags:\n"
+            "      provider_type: eventhub\n"
+            "      provider.eventhub.connectionString: '@secret:myscope:eh_conn'\n",
+        )
+        config_service = _DynaconfBackedConfigService(dynaconf)
+        entity_manager = make_entity_manager(config_service)
+        register_sample_entity(
+            entity_manager, entityid="incoming.device_telemetry", tags={}, name="device_telemetry"
+        )
+        bootstrap = self._patch_services(monkeypatch, config_service, entity_manager)
+        logger = MagicMock()
+
+        bootstrap.apply_config_overrides()
+        bootstrap._resolve_and_validate_secrets(config_service, logger)
+        bootstrap.apply_config_overrides()
+
+        entity = entity_manager.get_entity_definition("incoming.device_telemetry")
+        assert entity.tags["provider.eventhub.connectionString"] == resolved
+        assert entity.tags["provider_type"] == "eventhub"
+
+        # Validation ask: an EventHub provider can now build Kafka options
+        # from the resolved tag without the confusing KeyError('Endpoint').
+        from kindling.entity_provider_eventhub import EventHubEntityProvider
+
+        provider = EventHubEntityProvider.__new__(EventHubEntityProvider)
+        provider_config = {
+            key[len("provider.") :]: value
+            for key, value in entity.tags.items()
+            if key.startswith("provider.")
+        }
+        provider_config["eventhub.name"] = "device-telemetry"
+        kafka_config = provider._build_kafka_config(provider_config, streaming=True)
+        assert kafka_config["kafka.bootstrap.servers"] == "real-ns.servicebus.windows.net:9093"
+
+        # Never log the resolved secret value anywhere along the way.
+        for mock_call in logger.mock_calls:
+            for arg in mock_call.args:
+                assert resolved not in str(arg)
+
+    def test_explicit_scope_colon_key_reference_resolves(self, monkeypatch, tmp_path):
+        """@secret:<scope>:<key> (explicit scope) must resolve, not just the
+        bare @secret:<key> form."""
+        resolved = "Endpoint=sb://scoped-ns.servicebus.windows.net/;SharedAccessKeyName=x;SharedAccessKey=y"
+        self._bind_fake_secret_provider({"explicit-scope:conn-key": resolved})
+        dynaconf = _dynaconf_from_yaml(
+            tmp_path,
+            "dataentities:\n"
+            "  incoming.device_telemetry:\n"
+            "    tags:\n"
+            "      provider.eventhub.connectionString: '@secret:explicit-scope:conn-key'\n",
+        )
+        config_service = _DynaconfBackedConfigService(dynaconf)
+        entity_manager = make_entity_manager(config_service)
+        register_sample_entity(
+            entity_manager, entityid="incoming.device_telemetry", tags={}, name="device_telemetry"
+        )
+        bootstrap = self._patch_services(monkeypatch, config_service, entity_manager)
+        logger = MagicMock()
+
+        bootstrap.apply_config_overrides()
+        bootstrap._resolve_and_validate_secrets(config_service, logger)
+        bootstrap.apply_config_overrides()
+
+        entity = entity_manager.get_entity_definition("incoming.device_telemetry")
+        assert entity.tags["provider.eventhub.connectionString"] == resolved
+
+    def test_nested_dataentities_bytag_secret_resolves(self, monkeypatch, tmp_path):
+        """@secret: reference nested three levels deep (tag_key ->
+        tag_value_pattern -> tags -> key) inside dataentities-bytag: must
+        also resolve and reach registered entity metadata."""
+        resolved = "Endpoint=sb://tagged-ns.servicebus.windows.net/;SharedAccessKeyName=x;SharedAccessKey=y"
+        self._bind_fake_secret_provider({"tagscope:eh_conn": resolved})
+        dynaconf = _dynaconf_from_yaml(
+            tmp_path,
+            "dataentities-bytag:\n"
+            "  provider_type:\n"
+            "    eventhub:\n"
+            "      tags:\n"
+            "        provider.eventhub.connectionString: '@secret:tagscope:eh_conn'\n",
+        )
+        config_service = _DynaconfBackedConfigService(dynaconf)
+        entity_manager = make_entity_manager(config_service)
+        register_sample_entity(
+            entity_manager,
+            entityid="incoming.device_telemetry",
+            tags={"provider_type": "eventhub"},
+            name="device_telemetry",
+        )
+        bootstrap = self._patch_services(monkeypatch, config_service, entity_manager)
+        logger = MagicMock()
+
+        bootstrap.apply_config_overrides()
+        bootstrap._resolve_and_validate_secrets(config_service, logger)
+        bootstrap.apply_config_overrides()
+
+        entity = entity_manager.get_entity_definition("incoming.device_telemetry")
+        assert entity.tags["provider.eventhub.connectionString"] == resolved
+
+    def test_unresolved_secret_raises_before_resolved_overlay_or_provider_construction(
+        self, monkeypatch, tmp_path
+    ):
+        """If the secret can never be resolved (bad scope/key, provider
+        unreachable), _resolve_and_validate_secrets must raise -- so
+        initialize_framework never reaches the resolved_config_overlay phase,
+        and no provider is ever constructed against a literal reference."""
+        self._bind_fake_secret_provider({})  # every lookup fails
+        dynaconf = _dynaconf_from_yaml(
+            tmp_path,
+            "dataentities:\n"
+            "  incoming.device_telemetry:\n"
+            "    tags:\n"
+            "      provider.eventhub.connectionString: '@secret:myscope:eh_conn'\n",
+        )
+        config_service = _DynaconfBackedConfigService(dynaconf)
+        entity_manager = make_entity_manager(config_service)
+        register_sample_entity(
+            entity_manager, entityid="incoming.device_telemetry", tags={}, name="device_telemetry"
+        )
+        bootstrap = self._patch_services(monkeypatch, config_service, entity_manager)
+        logger = MagicMock()
+
+        bootstrap.apply_config_overrides()
+        with pytest.raises(RuntimeError, match="Failed to resolve"):
+            bootstrap._resolve_and_validate_secrets(config_service, logger)
+
+        # Never got the chance to re-overlay; the literal is still there,
+        # and downstream Kafka-option construction would fail on it -- but
+        # bootstrap already raised first, before any provider could try.
+        entity = entity_manager.get_entity_definition("incoming.device_telemetry")
+        assert entity.tags["provider.eventhub.connectionString"] == "@secret:myscope:eh_conn"

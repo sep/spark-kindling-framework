@@ -261,7 +261,11 @@ def apply_config_overrides() -> None:
     registered pipe/entity metadata.
 
     Called from ``initialize_framework`` right after local package
-    registrations import, and safely re-callable after
+    registrations import, and again after post-platform ``@secret``
+    resolution so any secret reference inside those sections lands
+    resolved rather than as a literal (the managers always rebuild
+    metadata from the original registration params, so re-calling is
+    idempotent and never accumulates). Also safely re-callable after
     ``config_service.reload()`` for hot reload. The managers keep the
     compiled patterns, so items registered later (workspace packages, app
     ``register_all``, notebook cells) are overlaid at registration.
@@ -2038,6 +2042,19 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # the config paths (never the secret values) named explicitly.
         with _bootstrap_phase("secret_resolution"):
             _resolve_and_validate_secrets(config_service, logger)
+
+        # Re-overlay dataentities:/dataentities-bytag:/datapipes:/datapipes-bytag:
+        # config sections now that any @secret references inside them are
+        # resolved. The first overlay pass (above) ran before platform
+        # services existed, so any @secret literal in those sections got
+        # baked verbatim into the registered EntityMetadata/PipeMetadata
+        # tags -- apply_config_overrides() always rebuilds from the original
+        # registration params (see DataEntityManager.apply_config_overrides),
+        # so calling it again here is idempotent and simply picks up the
+        # now-resolved config_service state instead of accumulating anything.
+        with _bootstrap_phase("resolved_config_overlay"):
+            apply_config_overrides()
+        logger.debug("Config overrides re-applied after @secret resolution")
 
         load_workspace_packages_default = False
         load_workspace_packages_value = config_service.get(

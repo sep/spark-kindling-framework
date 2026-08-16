@@ -130,6 +130,8 @@ dataentities-bytag:
 
 Every entity tagged `tier: bronze` picks up `provider.table_catalog: dev_bronze` (merged into its existing tags, same deep-merge semantics as `dataentities:`); every entity whose `tier` tag matches the glob `gold*` (`gold-us`, `gold-eu`, ...) additionally gets a stricter drift policy. Tag values support the same `*`/`?`/`**` glob syntax and exact-beats-wildcard specificity tiering as `dataentities:` id patterns (`TagRuleMatcher` compiles each tag key's value map as its own `ConfigPatternMatcher`). Tag rules apply before `dataentities:`/`datapipes:` glob-pattern overrides, so a specific id-pattern entry can still override a broader tag-based default for one item. `datapipes-bytag:` works identically for `PipeMetadata` fields. Reach for the `-bytag` sections when placement/config follows a semantic tag; reach for `dataentities:`/`datapipes:` when it follows an id naming convention.
 
+A tag value inside `dataentities:`/`dataentities-bytag:`/`datapipes:`/`datapipes-bytag:` may itself be a `@secret:<key>` / `@secret:<scope>:<key>` reference (e.g. a provider connection string). Bootstrap overlays these sections once before platform services exist (secrets still literal at that point), resolves `@secret:` references once platform services are up, then re-overlays so the resolved value — not the literal — lands in the registered entity/pipe metadata. A secret that still can't be resolved after platform init fails bootstrap loudly rather than handing a literal reference to a provider.
+
 ### Databricks Without Unity Catalog
 
 Azure Government Databricks regions should be treated as non-UC environments unless the target workspace proves otherwise. The recommended baseline is direct cloud storage:
