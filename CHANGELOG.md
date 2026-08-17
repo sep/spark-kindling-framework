@@ -16,6 +16,10 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- **Proposal archive reconciled with shipped and superseded work**: ten completed
+  or superseded design records moved under `docs/proposals/obsolete/`; active
+  SDP, Event Hub transport, and package-config proposals now state their actual
+  implemented scope and remaining work.
 - **`kindling.bootstrap.load_workspace_packages` now defaults to `false` on
   every platform**, not just `standalone`. Previously fabric/synapse/
   databricks defaulted to `true`, silently scanning and loading
@@ -177,7 +181,7 @@ All notable changes to spark-kindling are documented here.
     explicitly rather than inferred from time containment.
   - Public `kindling.test_framework.RecordingTraceProvider` for asserting
     span structure in tests (`find()`/`tree()` helpers).
-  - Decision record: `docs/proposals/comprehensive_tracing_instrumentation.md`.
+  - Decision record: `docs/proposals/obsolete/comprehensive_tracing_instrumentation.md`.
 
 ### Changed
 

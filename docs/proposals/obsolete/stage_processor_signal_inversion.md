@@ -1,6 +1,7 @@
 # Stage Processor Signal Inversion
 
-**Status:** Proposal
+**Status:** Superseded and archived — the framework retained direct
+orchestration and adopted aspects on persist signals instead.
 **Created:** 2026-05-18
 **Related:** signal_quick_reference.md, stage_processing.md, watermarking.md
 

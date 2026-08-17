@@ -1,9 +1,8 @@
 # Proposal: App-Local Settings Overlay Model (Manifest-Only `app.yaml`)
 
-**Status:** Mostly implemented. All items done except #6 (removing the legacy
-`app.<platform>.yaml` / `app.<env>.yaml` fallback), which is intentionally retained as a
-compatibility shim — see Legacy Fallback Behavior below. Revisit #6 only when ready to force
-a breaking config migration.
+**Status:** Implemented and archived. The legacy `app.<platform>.yaml` /
+`app.<env>.yaml` fallback is intentionally retained as a compatibility shim;
+removing it would be a separate breaking config migration.
 
 ## Goal
 

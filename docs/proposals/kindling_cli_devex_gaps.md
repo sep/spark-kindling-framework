@@ -304,7 +304,7 @@ plumbing.
 ## What This Proposal Deliberately Does Not Do
 
 - **No `pattern`-style app scaffolding** — that's already proposed
-  separately in `docs/proposals/kindling_patterns_cli.md` and shouldn't be
+  separately in `docs/proposals/obsolete/kindling_patterns_cli.md` and shouldn't be
   duplicated here.
 - **No fixes to CLI consistency findings** (e.g. `app cleanup` missing a
   confirmation prompt, the `--env`/`--platform` default-semantics split

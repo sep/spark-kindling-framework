@@ -1,7 +1,10 @@
 # Package Configuration & Declaration Override Architecture
 
 > **Created:** 2026-02-02
-> **Status:** Design Proposal (Under Review)
+> **Status:** Partially implemented — Phases 1–2 shipped in #205/#209
+> (`ConfigPatternMatcher` plus post-registration entity/pipe overlays). Phase 3
+> (`_enabled`, `_remove_tags`, introspection, and validation) remains open under
+> issue #32; Phase 4 documentation remains incomplete.
 > **Context:** Extending configuration system to support package-level config and decorator overrides
 > **Revised:** 2026-07-06 — dropped the two-phase pending-registration model in favor of a simpler post-registration config overlay. See "Key Insight" under Implementation Design for why.
 

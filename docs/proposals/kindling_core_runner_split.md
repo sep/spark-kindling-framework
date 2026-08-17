@@ -4,7 +4,7 @@
 deliberately NOT scheduled (see Platform Context).
 **Created:** 2026-07-15
 **Related:** `declarative_pipelines_engine.md` (the SDP engine whose
-existence exposed this split), `sdp_engine_phase1_notes.md` (bootstrap
+existence exposed this split), `obsolete/sdp_engine_phase1_notes.md` (bootstrap
 ordering, provider write-inertness), PR #158 (watermark aspect — the first
 extraction of runner machinery from ambient core), PRs #160/#162/#165/#166
 (the SDP engine phases).

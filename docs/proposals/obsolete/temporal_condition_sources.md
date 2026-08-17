@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Implemented by PR #224 and archived.
 
 ## Context
 

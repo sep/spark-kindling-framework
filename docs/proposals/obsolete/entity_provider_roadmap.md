@@ -8,7 +8,7 @@ doc records what shipped, what was learned live, and what remains.
 ## Evaluation Rubric
 
 A provider is scored against the capability interfaces from
-[entity_providers.md](../contributing/entity_providers.md), plus two
+[entity_providers.md](../../contributing/entity_providers.md), plus two
 cross-cutting concerns:
 
 | Dimension | Why it matters |

@@ -65,5 +65,5 @@ kindling.declare_pipeline()
 See:
 
 - `docs/proposals/declarative_pipelines_engine.md` — the full proposal.
-- `docs/proposals/sdp_engine_phase1_notes.md` — Phase-1 architecture
+- `docs/proposals/obsolete/sdp_engine_phase1_notes.md` — Phase-1 architecture
   decisions (bootstrap ordering, provider write-inertness, deferrals).
