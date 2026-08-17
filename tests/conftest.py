@@ -37,6 +37,17 @@ sys.path.insert(
     ),
 )
 
+# kindling.spark_session.create_session() (reachable via get_or_create_spark_session()
+# from many unrelated code paths -- bootstrap, entity providers, SparkLogger --
+# anywhere a Spark session isn't explicitly injected/mocked) creates a bare,
+# non-Delta SparkSession unless this flag is set. Since SparkSession is a
+# JVM-wide singleton per pytest-xdist worker process, one unmocked call
+# anywhere can leave that whole worker without a working DeltaCatalog for
+# every later Delta-dependent test. The CLI already defaults this to "true"
+# for real runs (kindling_cli/cli.py); default it the same way for tests
+# rather than patching every individual call site.
+os.environ.setdefault("KINDLING_SPARK_ENABLE_DELTA", "true")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Platform-Specific Test Markers Configuration

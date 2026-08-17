@@ -102,6 +102,12 @@ def test_initialize_framework_uses_explicit_config_files_for_standalone():
         patch("kindling.bootstrap.get_kindling_service", side_effect=_get_service),
         patch("kindling.features.discover_runtime_features"),
         patch("kindling.bootstrap.get_or_create_spark_session", return_value=mock_spark),
+        # _apply_spark_configs does a LOCAL `from kindling.spark_session import
+        # get_or_create_spark_session` inside its own function body, which reads
+        # the live attribute at call time -- the patch above only covers the
+        # module-level `from kindling.spark_session import *` binding bootstrap.py
+        # took at its own import time, not this fresh, dynamic re-import.
+        patch("kindling.spark_session.get_or_create_spark_session", return_value=mock_spark),
     ):
         result = initialize_framework(
             {
