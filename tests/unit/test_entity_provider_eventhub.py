@@ -892,6 +892,34 @@ class TestAmqpHeaderDecoding:
         headers = result.collect()[0]["headers"]
         assert "plain-fallback-text" in headers["x-opt-custom"]
 
+    def test_decodes_amqp_value_under_non_x_opt_key_when_structurally_exact(self, spark_session):
+        """Some producers (observed with Azure IoT Hub's Kafka-compatible
+        endpoint) AMQP-encode their OWN custom application headers, not just
+        Event Hubs' x-opt- system properties. A structurally exact AMQP
+        encoding (constructor + declared length exactly consuming every
+        remaining byte) is decoded regardless of key name."""
+        value_bytes = bytes([0xA1, len(b"SCD100000000007033")]) + b"SCD100000000007033"
+        df = self._df_with_header_value(spark_session, value_bytes, key="DeviceId")
+
+        result = _PREPROCESS_MODES["kafka"](df, amqp_headers=True)
+
+        assert result.collect()[0]["headers"] == {"DeviceId": "SCD100000000007033"}
+
+    def test_non_x_opt_key_left_plain_when_not_structurally_exact_amqp(self, spark_session):
+        """A non-x-opt- header whose first byte coincidentally matches a
+        real AMQP type-constructor byte, but whose remaining length does
+        NOT exactly match that type's required width, must be left as a
+        plain UTF-8 decode -- not corrupted by a false-positive AMQP
+        decode. Uses 0xA1 (str8-utf8's constructor), the collision most
+        likely to occur in real non-ASCII UTF-8 header text."""
+        value_bytes = bytes([0xA1]) + "café".encode("utf-8")
+        df = self._df_with_header_value(spark_session, value_bytes, key="custom-header")
+
+        result = _PREPROCESS_MODES["kafka"](df, amqp_headers=True)
+
+        headers = result.collect()[0]["headers"]
+        assert headers["custom-header"] == value_bytes.decode("utf-8", "replace")
+
     def test_amqp_headers_composes_with_avro_mode(self, spark_session):
         """amqp_headers applies identically regardless of which preprocess
         mode (kafka/avro) is selected -- it's a header-decoding concern,

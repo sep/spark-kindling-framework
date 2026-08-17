@@ -324,16 +324,24 @@ not a single `.csv` file — merge them downstream if a single file is required.
   its own AMQP message annotations (e.g. enqueue time, sequence number) as
   `x-opt-`-prefixed Kafka headers whose *values* are still
   [AMQP 1.0 primitive-encoded](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-types-v1.0-os.html#type-primitive),
-  not plain UTF-8 — `true` decodes only those `x-opt-` headers per the AMQP
+  not plain UTF-8 — `true` decodes those `x-opt-` headers per the AMQP
   primitive type system instead of blind UTF-8, which would otherwise
-  corrupt them into garbage. Headers outside that prefix (a producer's own
-  custom headers) are always plain-UTF-8 decoded regardless of this flag —
-  a plain header's first byte can otherwise coincide with a recognized AMQP
-  type-constructor byte, so decoding is gated on the documented prefix
-  rather than applied blindly. Output stays `map<string,string>` either way
-  (numeric/timestamp values become their string representation);
-  interpreting what a given header *name* means is still the consuming
-  pipe's job.
+  corrupt them into garbage. `x-opt-` headers are always assumed genuinely
+  AMQP-encoded and decoded best-effort. Every other header key is also
+  checked against the AMQP primitive decoder, but only accepted when the
+  encoding is *structurally exact* (the declared length exactly accounts
+  for every remaining byte, with nothing left over) — otherwise it falls
+  back to a plain UTF-8 decode. This covers producers that AMQP-encode
+  their own custom headers too, not just Event Hubs' system properties
+  (observed with Azure IoT Hub's Kafka-compatible endpoint), while still
+  protecting genuinely-plain headers: a plain value's first byte can
+  coincidentally match a real AMQP type-constructor byte, but for that
+  false match to also survive the exact-length check, the value's total
+  byte count would have to exactly equal that type's required width — a
+  coincidence that becomes vanishingly unlikely past a couple of bytes.
+  Output stays `map<string,string>` either way (numeric/timestamp values
+  become their string representation); interpreting what a given header
+  *name* means is still the consuming pipe's job.
 
 ### Memory Provider (`provider_type: memory`)
 
