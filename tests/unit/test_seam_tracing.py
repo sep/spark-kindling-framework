@@ -10,37 +10,31 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+
 from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
 from kindling.injection import GlobalInjector
 from kindling.simple_read_persist_strategy import SimpleReadPersistStrategy
 from kindling.test_framework import RecordingTraceProvider
 from kindling.trace_ops import COMPONENT_PIPES, TracingGates
-from pyspark.sql import SparkSession
-
 from tests.conftest import _sockets_permitted
 
 
 @pytest.fixture(scope="module")
 def spark_session():
-    """Plain (non-Delta), module-scoped, self-contained SparkSession.
-
-    Deliberately shadows conftest.py's shared, session-scoped fixture rather
-    than requesting it: TestWatermarkSpans only needs an active SparkContext
-    for pyspark.sql.functions.col(...) to build a Column against a mocked
-    DataFrame, not a real Delta-capable session. Depending on the shared
-    fixture would leave it (and conftest's get_local_spark_session Delta
-    catalog config, which sets the DeltaCatalog class without loading the
-    Delta JAR) active for the rest of the process -- silently corrupting any
-    later plain-session fixture that reuses it via getOrCreate(). See
-    test_entity_provider_memory_scd2.py's module docstring for the same
-    hazard from the other direction.
+    """Module-scoped rather than conftest.py's session-scoped fixture:
+    TestWatermarkSpans only needs an active SparkContext for
+    pyspark.sql.functions.col(...) to build a Column against a mocked
+    DataFrame. Built via get_standalone_spark_session (see
+    test_entity_provider_memory_scd2.py's module docstring) so it's always
+    Delta-configured regardless of xdist worker test order.
     """
     if not _sockets_permitted():
         pytest.skip(
             "Sockets are not permitted in this environment; cannot start a real SparkSession."
         )
-    spark = SparkSession.builder.appName("SeamTracingTests").master("local[2]").getOrCreate()
-    spark.sparkContext.setLogLevel("ERROR")
+    from tests.spark_test_helper import get_standalone_spark_session
+
+    spark = get_standalone_spark_session("SeamTracingTests")
     yield spark
     spark.stop()
 
