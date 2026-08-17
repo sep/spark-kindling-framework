@@ -8,8 +8,9 @@ recorded by _BootstrapPhaseRecorder and retro-flushed as one span tree
 import time
 from unittest.mock import MagicMock, patch
 
-import kindling.bootstrap as bootstrap_module
 import pytest
+
+import kindling.bootstrap as bootstrap_module
 from kindling.bootstrap import _bootstrap_phase, _flush_bootstrap_trace
 from kindling.injection import GlobalInjector
 from kindling.test_framework import RecordingTraceProvider
@@ -147,11 +148,17 @@ class TestShortCircuitedReinit:
         bootstrap_module._PHASE_RECORDER.phases = []
         bootstrap_module._PHASE_RECORDER.start_time = None
 
+        mock_spark = MagicMock()
+        mock_spark.conf.getAll.return_value = {}
+
         with patch.object(bootstrap_module, "is_framework_initialized", return_value=True):
             with patch.object(bootstrap_module, "get_kindling_service", MagicMock()):
                 with patch.object(bootstrap_module, "_import_local_package_registrations"):
                     with patch.object(bootstrap_module, "_flush_bootstrap_trace") as flush:
-                        bootstrap_module.initialize_framework({})
+                        with patch.object(
+                            bootstrap_module, "get_or_create_spark_session", return_value=mock_spark
+                        ):
+                            bootstrap_module.initialize_framework({})
 
         assert bootstrap_module._PHASE_RECORDER.phases == []
         assert bootstrap_module._PHASE_RECORDER.start_time is None

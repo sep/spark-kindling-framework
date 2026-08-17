@@ -15,7 +15,7 @@ DeltaCatalog.
 """
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pyspark.sql.functions import lit
@@ -44,7 +44,8 @@ def spark_session():
 
     spark = get_standalone_spark_session("MemorySCD2Tests")
     yield spark
-    spark.stop()
+    # Not spark.stop() here: this may be the same JVM-singleton session
+    # other tests elsewhere in this xdist worker are still relying on.
 
 
 BUSINESS_SCHEMA = StructType(
@@ -68,7 +69,14 @@ SCD2_SCHEMA = StructType(
 def _make_provider(spark_session):
     logger_provider = MagicMock()
     logger_provider.get_logger.return_value = MagicMock()
-    provider = MemoryEntityProvider(logger_provider)
+    # MemoryEntityProvider.__init__ eagerly calls get_or_create_spark_session()
+    # -- intercept it so construction can't create its own bare, non-Delta
+    # session as a throwaway side effect before we assign the real one below.
+    with patch(
+        "kindling.entity_provider_memory.get_or_create_spark_session",
+        return_value=spark_session,
+    ):
+        provider = MemoryEntityProvider(logger_provider)
     provider.spark = spark_session
     return provider
 

@@ -71,6 +71,8 @@ def test_initialize_framework_uses_explicit_config_files_for_standalone():
     logger_provider = MagicMock()
     logger_provider.get_logger.return_value = logger
     config_service = _config_service_with_defaults()
+    mock_spark = MagicMock()
+    mock_spark.conf.getAll.return_value = {}
     platform_service_provider = MagicMock(spec=PlatformServiceProvider)
     standalone_service = MagicMock()
     pipes_registry = MagicMock()
@@ -99,6 +101,7 @@ def test_initialize_framework_uses_explicit_config_files_for_standalone():
         patch("kindling.bootstrap.is_framework_initialized", return_value=False),
         patch("kindling.bootstrap.get_kindling_service", side_effect=_get_service),
         patch("kindling.features.discover_runtime_features"),
+        patch("kindling.bootstrap.get_or_create_spark_session", return_value=mock_spark),
     ):
         result = initialize_framework(
             {

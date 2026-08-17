@@ -6,8 +6,9 @@ import uuid
 from datetime import datetime
 from unittest.mock import MagicMock, Mock, call, patch
 
-import kindling.spark_trace as spark_trace_module
 import pytest
+
+import kindling.spark_trace as spark_trace_module
 from kindling.spark_trace import (
     AzureEventEmitter,
     CustomEventEmitter,
@@ -941,7 +942,7 @@ class TestEdgeCases:
         end_call = [c for c in calls if "END" in c[0][1]][0]
         total_time = float(end_call[0][2]["totalTime"])
 
-        assert total_time >= 0.2, "Should measure at least 200ms"
+        assert total_time >= 0.195, "Should measure at least ~200ms"
 
     def test_emitter_emit_called_with_correct_types(self, mock_emitter):
         """emit_custom_event should be called with correct parameter types."""

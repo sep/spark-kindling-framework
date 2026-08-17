@@ -775,7 +775,8 @@ def _memory_spark_session():
         )
     spark = get_standalone_spark_session("TemporalConditionsIngestTests")
     yield spark
-    spark.stop()
+    # Not spark.stop() here: this may be the same JVM-singleton session
+    # other tests elsewhere in this xdist worker are still relying on.
 
 
 def test_ingest_conditions_end_to_end_against_memory_provider(_memory_spark_session, monkeypatch):
@@ -1284,7 +1285,8 @@ def spark():
     spark = get_standalone_spark_session("TemporalExtensionUnit")
     spark.conf.set("spark.sql.shuffle.partitions", "1")
     yield spark
-    spark.stop()
+    # Not spark.stop() here: this may be the same JVM-singleton session
+    # other tests elsewhere in this xdist worker are still relying on.
 
 
 def _predicate_events_df(spark):

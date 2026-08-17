@@ -36,7 +36,8 @@ def spark_session():
 
     spark = get_standalone_spark_session("SeamTracingTests")
     yield spark
-    spark.stop()
+    # Not spark.stop() here: this may be the same JVM-singleton session
+    # other tests elsewhere in this xdist worker are still relying on.
 
 
 class _MergeWritableProvider(BaseEntityProvider, WritableEntityProvider):
