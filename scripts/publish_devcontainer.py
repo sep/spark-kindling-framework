@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Build and publish the Kindling devcontainer image to GHCR.
 
-poe publish-devcontainer                  # build + push current version
+The image is decoupled from Kindling package releases (it only provides
+OS/Java/Python/Poetry/JARs/the bootstrap CLI), so the default tag is a
+build identity, not the framework's version.
+
+poe publish-devcontainer                  # build + push, tag build-<sha>
 poe publish-devcontainer --no-push        # build only (local smoke-test)
-poe publish-devcontainer --version 0.9.33 # override version tag
+poe publish-devcontainer --version dev-x  # override the tag explicitly
 """
 
 import base64
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -22,12 +25,11 @@ DOCKERFILE = Path(".github/Dockerfile.devcontainer")
 DEFAULT_PLATFORMS = "linux/amd64,linux/arm64"
 
 
-def _current_version() -> str:
-    content = (Path(__file__).parent.parent / "pyproject.toml").read_text()
-    match = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
-    if not match:
-        raise ValueError("Could not find version in pyproject.toml")
-    return match.group(1)
+def _git_short_sha() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True
+    )
+    return result.stdout.strip()
 
 
 def _gh_actor() -> str:
@@ -101,8 +103,8 @@ def _ensure_builder(env: dict) -> None:
 
 def main(version: str = "", push: bool = True, platforms: str = DEFAULT_PLATFORMS) -> int:
     try:
-        resolved_version = version or _current_version()
-        print(f"Building devcontainer image version {resolved_version}")
+        resolved_version = version or f"build-{_git_short_sha()}"
+        print(f"Building devcontainer image {resolved_version}")
 
         env = os.environ.copy()
 
@@ -164,7 +166,7 @@ if __name__ == "__main__":
         description="Build and publish the Kindling devcontainer image"
     )
     parser.add_argument(
-        "--version", default="", help="Image version tag (default: current pyproject version)"
+        "--version", default="", help="Image tag override (default: build-<git short sha>)"
     )
     parser.add_argument(
         "--no-push", dest="push", action="store_false", help="Build only, do not push"

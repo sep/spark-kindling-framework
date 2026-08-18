@@ -194,6 +194,19 @@ def test_env_check_degrades_gracefully_without_network(monkeypatch):
         assert "could not check latest release" in result.output
 
 
+def test_env_check_degrades_gracefully_on_malformed_pyproject_toml():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        assert runner.invoke(cli, ["config", "init"]).exit_code == 0
+        Path("pyproject.toml").write_text("this is not [valid toml", encoding="utf-8")
+
+        result = runner.invoke(cli, ["env", "check"])
+
+        assert result.exit_code == 0, result.output
+        assert "Environment check passed." in result.output
+        assert "could not read Kindling dependencies" in result.output
+
+
 def _release_assets(*wheel_names):
     base = "https://github.com/example/repo/releases/download/v1.2.3"
     return {

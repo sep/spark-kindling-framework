@@ -1934,7 +1934,11 @@ def _print_kindling_version_report(pyproject_path: Path) -> None:
     latest release doesn't fail the environment check, since it's a valid
     state, not a broken one.
     """
-    entries = list(_iter_kindling_dependency_entries(pyproject_path))
+    try:
+        entries = list(_iter_kindling_dependency_entries(pyproject_path))
+    except Exception as exc:  # malformed pyproject.toml -- degrade, don't fail the check
+        click.echo(f"\n(could not read Kindling dependencies from {pyproject_path}: {exc})")
+        return
     if not entries:
         return
 

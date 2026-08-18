@@ -50,7 +50,7 @@ RUN pip install --no-cache-dir poetry==1.8.3 poethepoet==0.45.0
 # need to match any project's pinned framework version: it's a bootstrap
 # tool, not a runtime dependency domain app code imports.
 RUN LATEST_CLI_WHEEL_URL="$(curl -fsSL https://api.github.com/repos/sep/spark-kindling-framework/releases/latest \
-        | python3 -c "import json, sys; assets = json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].startswith('spark_kindling_cli-')))")" \
+        | python3 -c "import json, sys; assets = json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].startswith('spark_kindling_cli-') and a['name'].endswith('.whl')))")" \
     && pip install --no-cache-dir "$LATEST_CLI_WHEEL_URL"
 
 # Pre-download Hadoop Azure JARs needed for local ABFSS integration tests.
