@@ -121,8 +121,6 @@ def main(version: str = "", push: bool = True, platforms: str = DEFAULT_PLATFORM
                 str(DOCKERFILE),
                 "--platform",
                 platforms,
-                "--build-arg",
-                f"KINDLING_VERSION={resolved_version}",
                 "--tag",
                 f"{IMAGE}:{resolved_version}",
                 "--tag",

@@ -137,6 +137,13 @@ Check whether the local environment is ready for Kindling.
 | `--local` | — | Also check Java, PySpark, delta-spark, and hadoop-azure JARs |
 | `--platform databricks\|fabric\|synapse` | auto-detected | Check platform pre-flight readiness: required vars are reported as SET or MISSING with `export` hints, and authentication alternatives are listed in the SDK's resolution order. Exits 1 unless the platform is ready |
 
+If `pyproject.toml` declares any Kindling dependency (`spark-kindling`,
+`spark-kindling-sdk`/`-cli`, or an extension added via `env add`), also
+reports each one's pinned version and whether a newer release is available.
+This is purely informational — it never fails the check, and degrades
+gracefully (prints a note instead of erroring) if the GitHub API is
+unreachable.
+
 Platform pre-flight requirements:
 
 | Platform | Required vars | Auth — one of |
@@ -171,27 +178,83 @@ kindling env ensure
 
 ### `env update`
 
-Update Kindling packages inside a domain devcontainer without rebuilding the
-container. This downloads wheel assets from the public Kindling GitHub release,
-refreshes `/opt/kindling-packages/wheels/` and the local PEP 503 index at
-`/opt/kindling-packages/simple/`, reinstalls Kindling into the current Python
-environment, then runs `poetry update` and `poetry install` for the current
-project.
+Update every Kindling package a project already depends on. Scans
+`pyproject.toml` for any dependency named `spark-kindling` or
+`spark-kindling-*` (the framework, SDK, CLI, and any extensions added via
+`env add`), wherever it's declared — the main dependency table or any
+dependency group — and points each one at its matching wheel in the target
+Kindling release (default: latest) by running
+`poetry add <release wheel URL>`. Every Kindling package in a release is
+versioned together, so one release resolves every dependency at once.
+Existing `extras` and dependency group placement are re-supplied on each
+call so they survive the update. Finishes with `poetry install --sync`.
+
+No local wheel cache or Poetry source configuration is required — each
+dependency points directly at its wheel's GitHub release asset URL.
 
 | Option | Default | Description |
 |---|---|---|
-| `--version TEXT` | `latest` | Kindling release version or tag |
+| `--version TEXT` | `latest` | Kindling release version or tag to update to |
 | `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
-| `--package-dir PATH` | `/opt/kindling-packages` | Local wheel cache used by generated projects |
 | `--project PATH` | `.` | Poetry project to update |
-| `--no-project` | — | Refresh the devcontainer cache only |
-| `--no-global` | — | Skip reinstalling Kindling into the current Python environment |
 | `--no-sync` | — | Run `poetry install` without `--sync` |
-| `--no-sudo` | — | Do not use `sudo` for image-owned cache paths |
 
 ```bash
 kindling env update
 kindling env update --version 0.10.35
+```
+
+### `env add`
+
+Add a Kindling framework or extension package as a project dependency,
+pinned to the exact wheel published in a Kindling GitHub release. Resolves
+`PACKAGE`'s wheel from the given release (default: latest) and runs
+`poetry add <release wheel URL>`. If `PACKAGE` is already declared anywhere
+in the project, its existing dependency group and `extras` are reused
+automatically (Poetry does not infer either from a prior entry on its own);
+`--group` only applies when adding `PACKAGE` for the first time.
+
+No local wheel cache or Poetry source configuration is required.
+
+| Option | Default | Description |
+|---|---|---|
+| `PACKAGE` | — | Package to add, e.g. `spark-kindling-ext-databricks` (required) |
+| `--version TEXT` | `latest` | Kindling release version or tag to resolve `PACKAGE`'s version from |
+| `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
+| `--project PATH` | `.` | Poetry project to add the dependency to |
+| `--group TEXT` | — | Poetry dependency group (e.g. `dev`) for a new dependency; ignored if `PACKAGE` already exists in a group |
+
+```bash
+kindling env add spark-kindling-ext-databricks
+kindling env add spark-kindling-ext-sdp --group dev
+```
+
+### `env bootstrap`
+
+Ensure a project can load Kindling, adding it if it isn't declared yet.
+Checks `pyproject.toml` for any `spark-kindling`/`spark-kindling-*`
+dependency. If none is declared — a project created without
+`kindling repo init`, or one that predates this devcontainer's package
+model — adds the framework, SDK, and CLI pinned to the target Kindling
+release (default: latest). If Kindling is already declared, this leaves it
+untouched; the project's own `pyproject.toml`/`poetry.lock` remain
+authoritative. Either way, finishes with `poetry install --sync`.
+
+This is the generated devcontainer's `postCreateCommand`, run on every
+container creation. The devcontainer image itself never installs the
+Kindling framework or SDK directly — only the CLI is baked in (from the
+latest published release), so this command is always available to bring a
+project up to a working state.
+
+| Option | Default | Description |
+|---|---|---|
+| `--version TEXT` | `latest` | Kindling release version or tag to install if nothing is declared yet |
+| `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
+| `--project PATH` | `.` | Poetry project to bootstrap |
+| `--no-sync` | — | Run `poetry install` without `--sync` |
+
+```bash
+kindling env bootstrap
 ```
 
 ---
