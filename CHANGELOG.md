@@ -39,6 +39,18 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **Event Hub AMQP header decoding (`provider.amqp_headers: true`) could
+  crash Spark executors with `ModuleNotFoundError: No module named
+  'kindling'`**: `_decode_amqp_headers_udf` wrapped a module-level function,
+  which Spark ships to every executor via cloudpickle by *reference*
+  (reconstructed with `import kindling...` on the receiving side) — fatal on
+  any executor without kindling installed, which is every executor by
+  design (kindling stays driver-side). The UDF's function is now built
+  entirely inside a local factory (`_build_decode_amqp_headers_udf`), so
+  cloudpickle embeds it by value instead — no import of anything beyond the
+  stdlib `struct` module required to unpickle or run it on a worker. A new
+  regression test spawns a real subprocess with kindling's import path
+  removed and proves the UDF's function unpickles and runs correctly there.
 - **Databricks SDK job submission ignored `KINDLING_ARTIFACTS_STORAGE_PATH`**
   (gh#216): `DatabricksAPI.from_env()` only ever read the legacy
   `AZURE_STORAGE_ACCOUNT`/`AZURE_CONTAINER`/`AZURE_BASE_PATH` triple, so

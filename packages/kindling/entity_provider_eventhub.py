@@ -50,6 +50,12 @@ def _decode_amqp_primitive(data: Optional[bytes]) -> Optional[str]:
     arrays, lists, maps -- not expected for simple annotation values) or
     malformed/truncated input, rather than raising -- this is a display/
     interpretation aid, not a strict protocol validator.
+
+    Kept as the tested, documented reference implementation of this
+    algorithm; NOT called by the production header-decoding UDF below
+    (see ``_build_decode_amqp_headers_udf``'s docstring for why it has its
+    own nested duplicate instead). ``TestAmqpPrimitiveDecodeParity``
+    asserts the two never drift apart.
     """
     if not data:
         return None
@@ -123,130 +129,189 @@ def _decode_amqp_primitive(data: Optional[bytes]) -> Optional[str]:
 # decoder below (_decode_amqp_primitive) regardless of structure.
 _AMQP_SYSTEM_PROPERTY_PREFIX = "x-opt-"
 
-# Sentinel distinguishing "not AMQP-encoded" from a real decoded value of
-# None (AMQP's own null type) in _try_decode_amqp_primitive_strict.
-_NOT_AMQP = object()
 
+def _build_decode_amqp_headers_udf():
+    """Build the header-decoding UDF from functions defined ENTIRELY inside
+    this factory, rather than at module scope.
 
-def _try_decode_amqp_primitive_strict(data: Optional[bytes]):
-    """Attempt to decode ``data`` as an AMQP 1.0 primitive, but only return a
-    value when the encoding is STRUCTURALLY EXACT: the type constructor is
-    recognized AND (for fixed-width types) the byte count matches exactly,
-    or (for variable-width types) the declared length exactly accounts for
-    every remaining byte, with zero leftover. Returns the ``_NOT_AMQP``
-    sentinel otherwise.
+    Spark ships a UDF's wrapped function to every executor via cloudpickle.
+    A module-level function is picklable BY REFERENCE: cloudpickle writes
+    just its ``(module, qualname)`` and reconstructs it with
+    ``import kindling.entity_provider_eventhub`` on the receiving side --
+    which fails with ``ModuleNotFoundError: No module named 'kindling'`` on
+    any executor that doesn't have kindling installed (by design: kindling
+    stays driver-side; see the module docstring). A function defined here,
+    nested inside this factory, has no such import path -- its
+    ``__qualname__`` contains ``<locals>``, so cloudpickle can't resolve it
+    by reference and embeds it BY VALUE (actual bytecode) instead. Nothing
+    beyond the stdlib ``struct`` module (imported at the top of this file,
+    always available) is needed to unpickle or run it.
 
-    This is the opportunistic counterpart to ``_decode_amqp_primitive``
-    (which is only ever applied to Event Hubs' own confirmed-AMQP ``x-opt-``
-    system properties). Some upstream producers -- observed with Azure IoT
-    Hub's Kafka-compatible endpoint -- AMQP-encode their OWN custom
-    application headers too, not just the well-known system properties, so
-    gating decoding on the ``x-opt-`` prefix alone leaves those headers
-    showing raw AMQP framing bytes (e.g. a str8-utf8 value's 2-byte
-    constructor+length prefix decoding as garbage before the correct text).
-    Exact-length structural validation is what makes it safe to attempt this
-    on ANY header without the prefix restriction: a plain UTF-8 value's
-    first byte can coincidentally match a real AMQP type-constructor byte
-    (e.g. ASCII 'a' is 0x61, AMQP's "short" 2-byte-int constructor), but for
-    that FALSE match to also survive the exact-length check, the value's
-    total remaining byte count would have to exactly equal that type's
-    required width -- a coincidence that becomes vanishingly unlikely as
-    values get longer than a couple of bytes.
+    This necessarily duplicates ``_decode_amqp_primitive``'s algorithm
+    rather than calling it -- calling the module-level function would
+    reintroduce exactly the by-reference dependency this exists to avoid.
+    ``TestAmqpPrimitiveDecodeParity`` asserts the two implementations agree
+    on every case in ``TestDecodeAmqpPrimitiveFunction``'s battery, so they
+    cannot silently drift apart. The plain module-level constant
+    ``_AMQP_SYSTEM_PROPERTY_PREFIX`` referenced below is safe to close over
+    as-is: strings (unlike functions/classes) are always pickled by value.
     """
-    if not data:
-        return _NOT_AMQP
-    ctor = data[0]
-    rest = data[1:]
-    try:
-        if ctor == 0x40 and len(rest) == 0:  # null
+    not_amqp = object()
+
+    def decode_primitive(data):
+        if not data:
             return None
-        if ctor == 0x41 and len(rest) == 0:  # true
-            return "true"
-        if ctor == 0x42 and len(rest) == 0:  # false
-            return "false"
-        if ctor in (0x43, 0x44) and len(rest) == 0:  # uint0, ulong0
-            return "0"
-        if ctor == 0x50 and len(rest) == 1:  # ubyte
-            return str(rest[0])
-        if ctor in (0x51, 0x54, 0x55) and len(rest) == 1:  # byte/smallint/smalllong
-            return str(_struct.unpack(">b", rest)[0])
-        if ctor in (0x52, 0x53) and len(rest) == 1:  # smalluint, smallulong
-            return str(rest[0])
-        if ctor == 0x56 and len(rest) == 1:  # boolean
-            return "true" if rest[0] else "false"
-        if ctor == 0x60 and len(rest) == 2:  # ushort
-            return str(_struct.unpack(">H", rest)[0])
-        if ctor == 0x61 and len(rest) == 2:  # short
-            return str(_struct.unpack(">h", rest)[0])
-        if ctor == 0x70 and len(rest) == 4:  # uint
-            return str(_struct.unpack(">I", rest)[0])
-        if ctor == 0x71 and len(rest) == 4:  # int
-            return str(_struct.unpack(">i", rest)[0])
-        if ctor == 0x72 and len(rest) == 4:  # float
-            return str(_struct.unpack(">f", rest)[0])
-        if ctor == 0x80 and len(rest) == 8:  # ulong
-            return str(_struct.unpack(">Q", rest)[0])
-        if ctor == 0x81 and len(rest) == 8:  # long
-            return str(_struct.unpack(">q", rest)[0])
-        if ctor == 0x82 and len(rest) == 8:  # double
-            return str(_struct.unpack(">d", rest)[0])
-        if ctor == 0x83 and len(rest) == 8:  # timestamp
-            return str(_struct.unpack(">q", rest)[0])
-        if ctor == 0xA0 and len(rest) >= 1 and rest[0] == len(rest) - 1:  # vbin8
-            return rest[1:].hex()
-        if ctor == 0xA1 and len(rest) >= 1 and rest[0] == len(rest) - 1:  # str8-utf8
-            return rest[1:].decode("utf-8")
-        if ctor == 0xA3 and len(rest) >= 1 and rest[0] == len(rest) - 1:  # sym8
-            return rest[1:].decode("ascii")
-        if (
-            ctor == 0xB0 and len(rest) >= 4 and _struct.unpack(">I", rest[:4])[0] == len(rest) - 4
-        ):  # vbin32
-            return rest[4:].hex()
-        if (
-            ctor == 0xB1 and len(rest) >= 4 and _struct.unpack(">I", rest[:4])[0] == len(rest) - 4
-        ):  # str32-utf8
-            return rest[4:].decode("utf-8")
-        if (
-            ctor == 0xB3 and len(rest) >= 4 and _struct.unpack(">I", rest[:4])[0] == len(rest) - 4
-        ):  # sym32
-            return rest[4:].decode("ascii")
-    except (_struct.error, UnicodeDecodeError, IndexError):
-        return _NOT_AMQP
-    return _NOT_AMQP
+        ctor = data[0]
+        rest = data[1:]
+        try:
+            if ctor in (0x40,):  # null
+                return None
+            if ctor == 0x41:  # true
+                return "true"
+            if ctor == 0x42:  # false
+                return "false"
+            if ctor in (0x43, 0x44):  # uint0, ulong0
+                return "0"
+            if ctor == 0x50:  # ubyte
+                return str(rest[0])
+            if ctor in (0x51, 0x54, 0x55):  # byte, smallint, smalllong
+                return str(_struct.unpack(">b", rest[:1])[0])
+            if ctor in (0x52, 0x53):  # smalluint, smallulong
+                return str(rest[0])
+            if ctor == 0x56:  # boolean
+                return "true" if rest[0] else "false"
+            if ctor == 0x60:  # ushort
+                return str(_struct.unpack(">H", rest[:2])[0])
+            if ctor == 0x61:  # short
+                return str(_struct.unpack(">h", rest[:2])[0])
+            if ctor == 0x70:  # uint
+                return str(_struct.unpack(">I", rest[:4])[0])
+            if ctor == 0x71:  # int
+                return str(_struct.unpack(">i", rest[:4])[0])
+            if ctor == 0x72:  # float
+                return str(_struct.unpack(">f", rest[:4])[0])
+            if ctor == 0x80:  # ulong
+                return str(_struct.unpack(">Q", rest[:8])[0])
+            if ctor == 0x81:  # long
+                return str(_struct.unpack(">q", rest[:8])[0])
+            if ctor == 0x82:  # double
+                return str(_struct.unpack(">d", rest[:8])[0])
+            if ctor == 0x83:  # timestamp
+                return str(_struct.unpack(">q", rest[:8])[0])
+            if ctor == 0xA0:  # vbin8
+                length = rest[0]
+                return rest[1 : 1 + length].hex()
+            if ctor == 0xA1:  # str8-utf8
+                length = rest[0]
+                return rest[1 : 1 + length].decode("utf-8", "replace")
+            if ctor == 0xA3:  # sym8
+                length = rest[0]
+                return rest[1 : 1 + length].decode("ascii", "replace")
+            if ctor == 0xB0:  # vbin32
+                length = _struct.unpack(">I", rest[:4])[0]
+                return rest[4 : 4 + length].hex()
+            if ctor == 0xB1:  # str32-utf8
+                length = _struct.unpack(">I", rest[:4])[0]
+                return rest[4 : 4 + length].decode("utf-8", "replace")
+            if ctor == 0xB3:  # sym32
+                length = _struct.unpack(">I", rest[:4])[0]
+                return rest[4 : 4 + length].decode("ascii", "replace")
+        except (_struct.error, IndexError):
+            pass
+        return data.decode("utf-8", "replace")
+
+    def try_decode_strict(data):
+        if not data:
+            return not_amqp
+        ctor = data[0]
+        rest = data[1:]
+        try:
+            if ctor == 0x40 and len(rest) == 0:  # null
+                return None
+            if ctor == 0x41 and len(rest) == 0:  # true
+                return "true"
+            if ctor == 0x42 and len(rest) == 0:  # false
+                return "false"
+            if ctor in (0x43, 0x44) and len(rest) == 0:  # uint0, ulong0
+                return "0"
+            if ctor == 0x50 and len(rest) == 1:  # ubyte
+                return str(rest[0])
+            if ctor in (0x51, 0x54, 0x55) and len(rest) == 1:  # byte/smallint/smalllong
+                return str(_struct.unpack(">b", rest)[0])
+            if ctor in (0x52, 0x53) and len(rest) == 1:  # smalluint, smallulong
+                return str(rest[0])
+            if ctor == 0x56 and len(rest) == 1:  # boolean
+                return "true" if rest[0] else "false"
+            if ctor == 0x60 and len(rest) == 2:  # ushort
+                return str(_struct.unpack(">H", rest)[0])
+            if ctor == 0x61 and len(rest) == 2:  # short
+                return str(_struct.unpack(">h", rest)[0])
+            if ctor == 0x70 and len(rest) == 4:  # uint
+                return str(_struct.unpack(">I", rest)[0])
+            if ctor == 0x71 and len(rest) == 4:  # int
+                return str(_struct.unpack(">i", rest)[0])
+            if ctor == 0x72 and len(rest) == 4:  # float
+                return str(_struct.unpack(">f", rest)[0])
+            if ctor == 0x80 and len(rest) == 8:  # ulong
+                return str(_struct.unpack(">Q", rest)[0])
+            if ctor == 0x81 and len(rest) == 8:  # long
+                return str(_struct.unpack(">q", rest)[0])
+            if ctor == 0x82 and len(rest) == 8:  # double
+                return str(_struct.unpack(">d", rest)[0])
+            if ctor == 0x83 and len(rest) == 8:  # timestamp
+                return str(_struct.unpack(">q", rest)[0])
+            if ctor == 0xA0 and len(rest) >= 1 and rest[0] == len(rest) - 1:  # vbin8
+                return rest[1:].hex()
+            if ctor == 0xA1 and len(rest) >= 1 and rest[0] == len(rest) - 1:  # str8-utf8
+                return rest[1:].decode("utf-8")
+            if ctor == 0xA3 and len(rest) >= 1 and rest[0] == len(rest) - 1:  # sym8
+                return rest[1:].decode("ascii")
+            if (
+                ctor == 0xB0
+                and len(rest) >= 4
+                and _struct.unpack(">I", rest[:4])[0] == len(rest) - 4
+            ):  # vbin32
+                return rest[4:].hex()
+            if (
+                ctor == 0xB1
+                and len(rest) >= 4
+                and _struct.unpack(">I", rest[:4])[0] == len(rest) - 4
+            ):  # str32-utf8
+                return rest[4:].decode("utf-8")
+            if (
+                ctor == 0xB3
+                and len(rest) >= 4
+                and _struct.unpack(">I", rest[:4])[0] == len(rest) - 4
+            ):  # sym32
+                return rest[4:].decode("ascii")
+        except (_struct.error, UnicodeDecodeError, IndexError):
+            return not_amqp
+        return not_amqp
+
+    def decode_headers_map(headers):
+        if headers is None:
+            return None
+        decoded = {}
+        for entry in headers:
+            key = entry["key"]
+            value = entry["value"]
+            if key is not None and key.startswith(_AMQP_SYSTEM_PROPERTY_PREFIX):
+                decoded[key] = decode_primitive(value)
+                continue
+            if value is None:
+                decoded[key] = None
+                continue
+            strict_result = try_decode_strict(value)
+            if strict_result is not not_amqp:
+                decoded[key] = strict_result
+            else:
+                decoded[key] = value.decode("utf-8", "replace")
+        return decoded
+
+    return udf(decode_headers_map, MapType(StringType(), StringType()))
 
 
-def _decode_amqp_headers_map(headers) -> Optional[Dict[str, Optional[str]]]:
-    """Decode a whole Kafka ``headers`` array (list of key/binary-value Row
-    entries) into a ``dict``. Keys under the ``x-opt-`` system-property
-    convention (see ``_AMQP_SYSTEM_PROPERTY_PREFIX``) are always
-    best-effort AMQP-decoded (``_decode_amqp_primitive``), since Event Hubs
-    guarantees those are genuinely AMQP-encoded. Every other key is
-    opportunistically checked against the STRICT structural decoder
-    (``_try_decode_amqp_primitive_strict``) first -- covering producers
-    (e.g. Azure IoT Hub) that AMQP-encode their own custom headers too --
-    and falls back to a plain UTF-8 decode when that check doesn't confirm
-    a structurally exact AMQP encoding."""
-    if headers is None:
-        return None
-    decoded: Dict[str, Optional[str]] = {}
-    for entry in headers:
-        key = entry["key"]
-        value = entry["value"]
-        if key is not None and key.startswith(_AMQP_SYSTEM_PROPERTY_PREFIX):
-            decoded[key] = _decode_amqp_primitive(value)
-            continue
-        if value is None:
-            decoded[key] = None
-            continue
-        strict_result = _try_decode_amqp_primitive_strict(value)
-        if strict_result is not _NOT_AMQP:
-            decoded[key] = strict_result
-        else:
-            decoded[key] = value.decode("utf-8", "replace")
-    return decoded
-
-
-_decode_amqp_headers_udf = udf(_decode_amqp_headers_map, MapType(StringType(), StringType()))
+_decode_amqp_headers_udf = _build_decode_amqp_headers_udf()
 
 
 def _flatten_kafka_headers(df: DataFrame, amqp_headers: bool = False) -> DataFrame:

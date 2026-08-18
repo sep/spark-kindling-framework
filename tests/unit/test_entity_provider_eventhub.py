@@ -720,6 +720,120 @@ class TestDecodeAmqpPrimitiveFunction:
         assert result is not None  # falls back to a lossy decode, doesn't raise
 
 
+class TestAmqpPrimitiveDecodeParity:
+    """The production header-decoding UDF (_decode_amqp_headers_udf) wraps
+    a function defined entirely inside _build_decode_amqp_headers_udf --
+    NOT _decode_amqp_primitive -- specifically so it doesn't reference any
+    kindling-module-level name (see that factory's docstring). That nested
+    function is therefore not directly importable/callable from a test the
+    way _decode_amqp_primitive is. This drives it indirectly, through a
+    real x-opt- header value (the code path that uses it), and asserts the
+    result matches _decode_amqp_primitive's direct output for the same
+    bytes -- so the two implementations cannot silently drift apart."""
+
+    @pytest.mark.parametrize(
+        "value_bytes",
+        [
+            bytes([0x40]),  # null
+            bytes([0x41]),  # true
+            bytes([0x42]),  # false
+            bytes([0x54, 0xFB]),  # smallint -5
+            bytes([0x83, 0, 0, 0, 0, 0x65, 0xA0, 0xBC, 0x28]),  # timestamp
+            bytes([0xA1, 5]) + b"hello",  # str8-utf8
+            bytes([0x81, 0x00, 0x01]),  # truncated -- lossy fallback
+        ],
+    )
+    def test_udf_matches_reference_implementation(self, spark_session, value_bytes):
+        from pyspark.sql import Row
+        from pyspark.sql.functions import col
+        from pyspark.sql.types import (
+            ArrayType,
+            BinaryType,
+            StringType,
+            StructField,
+            StructType,
+        )
+
+        from kindling.entity_provider_eventhub import _decode_amqp_headers_udf
+
+        schema = StructType(
+            [
+                StructField(
+                    "headers",
+                    ArrayType(
+                        StructType(
+                            [
+                                StructField("key", StringType(), True),
+                                StructField("value", BinaryType(), True),
+                            ]
+                        )
+                    ),
+                    True,
+                ),
+            ]
+        )
+        df = spark_session.createDataFrame(
+            [Row(headers=[Row(key="x-opt-test", value=value_bytes)])], schema=schema
+        )
+        result = df.withColumn("headers", _decode_amqp_headers_udf(col("headers"))).collect()[0][
+            "headers"
+        ]
+
+        assert result["x-opt-test"] == _decode_amqp_primitive(value_bytes)
+
+
+class TestAmqpHeadersUdfWorkerSafety:
+    """The exact regression this guards: _decode_amqp_headers_udf must be
+    unpicklable and callable in a process where `kindling` is not
+    importable -- the condition on every Spark executor, by design (see
+    _build_decode_amqp_headers_udf's docstring). No existing in-process
+    test can catch a violation of this, because kindling is already
+    imported in the test process itself; this spawns a real subprocess
+    with kindling's path removed instead."""
+
+    def test_udf_function_unpickles_and_runs_without_kindling_importable(self):
+        import subprocess
+        import sys
+
+        import pyspark.cloudpickle as cloudpickle
+
+        from kindling.entity_provider_eventhub import _decode_amqp_headers_udf
+
+        pickled = cloudpickle.dumps(_decode_amqp_headers_udf.func)
+
+        script = """
+import sys
+
+# Simulate a Spark executor that never had kindling installed: strip the
+# editable-install path this repo's own venv adds for `packages/`, which
+# is the ONLY reason `import kindling` would succeed in this interpreter.
+sys.path = [p for p in sys.path if "workspaces/kindling/packages" not in p]
+assert "kindling" not in sys.modules
+
+import pyspark.cloudpickle as cloudpickle
+
+data = sys.stdin.buffer.read()
+fn = cloudpickle.loads(data)
+assert "kindling" not in sys.modules, (
+    "unpickling imported kindling -- the function is not self-contained"
+)
+
+headers = [{"key": "x-opt-seq", "value": bytes([0x70, 0, 0, 0, 42])}]
+result = fn(headers)
+assert result == {"x-opt-seq": "42"}, result
+print("OK")
+"""
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            input=pickled,
+            capture_output=True,
+        )
+        assert (
+            proc.returncode == 0
+        ), f"stdout={proc.stdout.decode()!r} stderr={proc.stderr.decode()!r}"
+        assert proc.stdout.strip() == b"OK"
+
+
 def test_read_entity_passes_amqp_headers_flag_to_preprocessor(provider, monkeypatch):
     import kindling.entity_provider_eventhub as eventhub_module
 
