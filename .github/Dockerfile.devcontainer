@@ -44,14 +44,26 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 # Install Poetry and Poe globally (version-pinned for reproducibility)
 RUN pip install --no-cache-dir poetry==1.8.3 poethepoet==0.45.0
 
-# Install only the Kindling CLI, resolved from the latest published GitHub
-# release -- a real, fetchable release, unlike a wheel built from whatever
-# source commit triggered this image build. The CLI's own version doesn't
-# need to match any project's pinned framework version: it's a bootstrap
-# tool, not a runtime dependency domain app code imports.
-RUN LATEST_CLI_WHEEL_URL="$(curl -fsSL https://api.github.com/repos/sep/spark-kindling-framework/releases/latest \
+# Install only the Kindling CLI (and its spark-kindling-sdk dependency),
+# resolved from the latest published GitHub release -- a real, fetchable
+# release, unlike a wheel built from whatever source commit triggered this
+# image build. The CLI's own version doesn't need to match any project's
+# pinned framework version: it's a bootstrap tool, not a runtime dependency
+# domain app code imports.
+#
+# spark-kindling-sdk is fetched alongside it because the CLI wheel's own
+# metadata declares a hard `spark-kindling-sdk>=<version>` requirement (a
+# plain version constraint, not a URL -- poetry-core bakes the root
+# project's path dependency into that form when building a standalone
+# wheel), and spark-kindling-sdk has never been published to PyPI. Passing
+# both wheels to the same `pip install` lets pip's resolver satisfy that
+# requirement from the second URL instead of trying PyPI.
+RUN LATEST_RELEASE_JSON="$(curl -fsSL https://api.github.com/repos/sep/spark-kindling-framework/releases/latest)" \
+    && LATEST_CLI_WHEEL_URL="$(echo "$LATEST_RELEASE_JSON" \
         | python3 -c "import json, sys; assets = json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].startswith('spark_kindling_cli-') and a['name'].endswith('.whl')))")" \
-    && pip install --no-cache-dir "$LATEST_CLI_WHEEL_URL"
+    && LATEST_SDK_WHEEL_URL="$(echo "$LATEST_RELEASE_JSON" \
+        | python3 -c "import json, sys; assets = json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].startswith('spark_kindling_sdk-') and a['name'].endswith('.whl')))")" \
+    && pip install --no-cache-dir "$LATEST_CLI_WHEEL_URL" "$LATEST_SDK_WHEEL_URL"
 
 # Pre-download Hadoop Azure JARs needed for local ABFSS integration tests.
 # Stored in /opt/hadoop-jars (stable image layer).
