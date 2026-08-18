@@ -26,16 +26,19 @@ Usage:
 
 import base64
 import os
-import re
-import sys
-import time
 import uuid
-from pathlib import Path
 
 import pytest
 
-WORKSPACE_ROOT = Path(__file__).parent.parent.parent.parent
-PACKAGES_VOLUME = "/Volumes/{catalog}/{schema}/artifacts/packages"
+from tests.system.extensions.databricks.lakeflow_test_helpers import (
+    PACKAGES_VOLUME,
+    WORKSPACE_ROOT,
+    pipeline_notebook,
+    print_error_events,
+    select_warehouse_id,
+    wait_for_update,
+    wheel_version,
+)
 
 EXPECTED_V1 = {("c1", "bronze", "open"), ("c2", "silver", "open")}
 EXPECTED_V2 = {
@@ -46,28 +49,22 @@ EXPECTED_V2 = {
 }
 
 
-def _wheel_version(pyproject: Path) -> str:
-    match = re.search(r'^version = "([^"]+)"', pyproject.read_text(), re.MULTILINE)
-    assert match, f"no version in {pyproject}"
-    return match.group(1)
-
-
 def _pipeline_notebook(pkg_root: str) -> str:
-    kindling_version = _wheel_version(WORKSPACE_ROOT.parent / "pyproject.toml")
-    sdp_version = _wheel_version(
+    kindling_version = wheel_version(WORKSPACE_ROOT.parent / "pyproject.toml")
+    sdp_version = wheel_version(
         WORKSPACE_ROOT.parent / "packages" / "extensions" / "kindling_ext_sdp" / "pyproject.toml"
     )
-    databricks_version = _wheel_version(
+    databricks_version = wheel_version(
         WORKSPACE_ROOT.parent
         / "packages"
         / "extensions"
         / "kindling_ext_databricks"
         / "pyproject.toml"
     )
-    app_version = _wheel_version(
+    app_version = wheel_version(
         WORKSPACE_ROOT / "data-apps" / "lakeflow-scd-test-app" / "pyproject.toml"
     )
-    wheels = " ".join(
+    return pipeline_notebook(
         [
             f"{pkg_root}/spark_kindling-{kindling_version}-py3-none-any.whl",
             f"{pkg_root}/spark_kindling_ext_sdp-{sdp_version}-py3-none-any.whl",
@@ -75,38 +72,6 @@ def _pipeline_notebook(pkg_root: str) -> str:
             f"{pkg_root}/lakeflow_scd_test_app-{app_version}-py3-none-any.whl",
         ]
     )
-    return f"""# Databricks notebook source
-# MAGIC %pip install {wheels}
-
-# COMMAND ----------
-
-from kindling_ext_databricks.lakeflow_app_selector import declare_from_pipeline_config
-
-declare_from_pipeline_config()
-"""
-
-
-def _wait_for_update(w, pipeline_id: str, update_id: str, max_wait: float = 1800.0) -> str:
-    deadline = time.time() + max_wait
-    state = None
-    while time.time() < deadline:
-        info = w.pipelines.get_update(pipeline_id, update_id)
-        state = info.update.state.value if info.update and info.update.state else None
-        if state in {"COMPLETED", "FAILED", "CANCELED"}:
-            return state
-        time.sleep(15)
-    return state or "TIMEOUT"
-
-
-def _print_error_events(w, pipeline_id: str) -> None:
-    for event in list(w.pipelines.list_pipeline_events(pipeline_id, max_results=50)):
-        if event.level and event.level.value == "ERROR":
-            print(f"[ERROR] {event.event_type}: {(event.message or '').strip()[:2000]}")
-            error = getattr(event, "error", None)
-            if error and getattr(error, "exceptions", None):
-                for exc in error.exceptions:
-                    print("  EXC:", (exc.message or "").strip()[:2000])
-    sys.stdout.flush()
 
 
 def _query_scd_rows(w, warehouse_id: str, table: str):
@@ -140,19 +105,9 @@ class TestLakeflowSdpPlatform:
         schema = os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA", "default")
         pkg_root = PACKAGES_VOLUME.format(catalog=catalog, schema=schema)
 
-        # Prefer RUNNING warehouses; a STOPPED serverless warehouse
-        # auto-starts on statement execution but adds startup latency.
-        warehouses = sorted(
-            (
-                wh
-                for wh in w.warehouses.list()
-                if wh.state and wh.state.value in ("RUNNING", "STOPPED")
-            ),
-            key=lambda wh: wh.state.value != "RUNNING",
-        )
-        if not warehouses:
+        warehouse_id = select_warehouse_id(w, os.getenv("SYSTEM_TEST_SQL_WAREHOUSE_ID"))
+        if not warehouse_id:
             pytest.skip("No SQL warehouse available to verify pipeline outputs.")
-        warehouse_id = os.getenv("SYSTEM_TEST_SQL_WAREHOUSE_ID") or warehouses[0].id
 
         test_id = str(uuid.uuid4())[:8]
         pipeline_name = f"systest-lakeflow-scd-{test_id}"
@@ -196,9 +151,9 @@ class TestLakeflowSdpPlatform:
 
         try:
             update = w.pipelines.start_update(pipeline_id)
-            state = _wait_for_update(w, pipeline_id, update.update_id)
+            state = wait_for_update(w, pipeline_id, update.update_id)
             if state != "COMPLETED":
-                _print_error_events(w, pipeline_id)
+                print_error_events(w, pipeline_id)
             assert state == "COMPLETED", f"v1 update ended {state}"
 
             rows = _query_scd_rows(w, warehouse_id, table)
@@ -219,9 +174,9 @@ class TestLakeflowSdpPlatform:
                 configuration=_configuration("v2"),
             )
             update = w.pipelines.start_update(pipeline_id)
-            state = _wait_for_update(w, pipeline_id, update.update_id)
+            state = wait_for_update(w, pipeline_id, update.update_id)
             if state != "COMPLETED":
-                _print_error_events(w, pipeline_id)
+                print_error_events(w, pipeline_id)
             assert state == "COMPLETED", f"v2 update ended {state}"
 
             rows = _query_scd_rows(w, warehouse_id, table)

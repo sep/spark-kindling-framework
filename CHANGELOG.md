@@ -6,6 +6,16 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **Databricks Lakeflow system test for the general SDP execution path**:
+  `tests/system/extensions/databricks/test_lakeflow_engine_platform.py`
+  deploys a new `lakeflow-engine-test-app` (two materialized views, SDP
+  inferring the dependency between them) into a real serverless pipeline
+  and validates application selection, `sdp`/`databricks_sdp` configuration
+  overlays, dataset metadata, and Lakeflow expectations (warn/drop).
+  Wheel-version resolution, notebook generation, update polling,
+  error-event reporting, SQL execution, and warehouse selection — duplicated
+  across the existing SCD and temporal Lakeflow platform tests — are now
+  shared via a new `lakeflow_test_helpers.py`.
 - **Generic `provider.kafka.<option>` passthrough for the Event Hub
   provider's Kafka transport**: any tag under that prefix is forwarded
   verbatim as a Kafka connector option (prefix stripped) instead of

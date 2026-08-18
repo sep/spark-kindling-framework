@@ -3,12 +3,14 @@
 Deploy the wheels a Lakeflow/DLT pipeline notebook %pip installs to a Unity
 Catalog volume.
 
-Two system tests spin up a real serverless Lakeflow pipeline whose generated
-notebook does a ``%pip install`` of exact-pinned wheel versions from a UC
-Volume path (see ``PACKAGES_VOLUME`` in both test files):
+Three system tests spin up a real serverless Lakeflow pipeline whose
+generated notebook does a ``%pip install`` of exact-pinned wheel versions
+from a UC Volume path (see ``PACKAGES_VOLUME`` in
+``tests/system/extensions/databricks/lakeflow_test_helpers.py``):
 
   tests/system/extensions/databricks/test_lakeflow_scd_platform.py
   tests/system/extensions/databricks/test_temporal_lakeflow.py
+  tests/system/extensions/databricks/test_lakeflow_engine_platform.py
 
 Serverless Lakeflow pipelines cannot install from the abfss:// staging path
 the rest of CI uses (scripts/deploy.py) — the notebook's %pip install only
@@ -63,6 +65,7 @@ EXTENSION_WHEEL_GLOBS = [
 TEST_APP_DIRS = [
     REPO_ROOT / "tests" / "data-apps" / "lakeflow-scd-test-app",
     REPO_ROOT / "tests" / "data-apps" / "lakeflow-temporal-test-app",
+    REPO_ROOT / "tests" / "data-apps" / "lakeflow-engine-test-app",
 ]
 
 # Make kindling_sdk importable even when it isn't installed on the active

@@ -173,6 +173,42 @@ KINDLING_DATABRICKS_SYSTEM_TEST_MODE=uc poe test-system --platform databricks --
 KINDLING_DATABRICKS_SYSTEM_TEST_MODE=classic poe test-system --platform databricks --test name_mapper
 ```
 
+### Lakeflow Platform Tests (Databricks)
+
+`tests/system/extensions/databricks/` includes three Databricks-only Lakeflow
+platform tests, each deploying a small data app through
+`kindling_ext_databricks.lakeflow_app_selector.declare_from_pipeline_config`
+into a real, temporary serverless pipeline:
+
+- `test_lakeflow_scd_platform.py` — SCD declared-flow -> AUTO CDC mapping
+  (`lakeflow-scd-test-app`).
+- `test_temporal_lakeflow.py` — the temporal chain's stratified lowering
+  (`lakeflow-temporal-test-app`).
+- `test_lakeflow_engine_platform.py` — the general Lakeflow SDP execution
+  path: application selection, `sdp`/`databricks_sdp` configuration
+  overlays, dependency inference between materialized views, dataset
+  metadata (table properties), and Lakeflow expectations (warn/drop)
+  (`lakeflow-engine-test-app`).
+
+Shared helpers (wheel-version resolution, pipeline notebook generation,
+update polling, error-event reporting, SQL execution, warehouse selection)
+live in `lakeflow_test_helpers.py`.
+
+Prerequisites: the `spark_kindling`, `spark_kindling_ext_sdp`,
+`spark_kindling_ext_databricks` (plus `spark_kindling_ext_temporal` for the
+temporal test) wheels and the relevant `tests/data-apps/*` wheel must be
+uploaded to the configured Unity Catalog artifacts volume at the versions
+in the current checkout — serverless environments cache installed
+environments by requirement set, so bump versions after any code change
+before re-running. Run with:
+
+```bash
+poe test-extension --extension databricks --platform databricks
+```
+
+Set `SKIP_TEST_CLEANUP=1` to leave the created pipeline, notebook, and
+tables in place for debugging a failed run.
+
 ## Test Markers
 
 Tests use pytest markers to categorize:
