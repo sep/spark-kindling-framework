@@ -9,25 +9,20 @@ description = "Kindling data pipeline project — {{ kebab_name }}"
 authors = []
 packages = [{include = "{{ snake_name }}", from = "src"}]
 
-# Kindling wheels are baked into the devcontainer image and served via a
-# local PEP 503 index at /opt/kindling-packages/simple/.  Poetry resolves
-# spark-kindling from that index so the version always matches the image —
-# no hardcoded wheel paths that break when the image is upgraded.
-[[tool.poetry.source]]
-name = "kindling-local"
-url = "file:///opt/kindling-packages/simple/"
-priority = "supplemental"
-
+# Kindling packages are pinned directly to their release wheel on GitHub, so
+# the exact version in use is whatever's recorded in poetry.lock — no local
+# wheel cache or Poetry source configuration required. `kindling env update`
+# and `kindling env add` manage these entries; see their `--help`.
 [tool.poetry.dependencies]
 python = "^3.10"
-spark-kindling = {version = ">={{ kindling_version }}", extras = ["standalone"]}
+spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/releases/download/v{{ kindling_version }}/spark_kindling-{{ kindling_version }}-py3-none-any.whl", extras = ["standalone"] }
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"
 pytest-cov = ">=4.0.0"
 poethepoet = ">=0.24.0"
-spark-kindling-sdk = {version = ">={{ kindling_version }}"}
-spark-kindling-cli = {version = ">={{ kindling_version }}"}
+spark-kindling-sdk = { url = "https://github.com/sep/spark-kindling-framework/releases/download/v{{ kindling_version }}/spark_kindling_sdk-{{ kindling_version }}-py3-none-any.whl" }
+spark-kindling-cli = { url = "https://github.com/sep/spark-kindling-framework/releases/download/v{{ kindling_version }}/spark_kindling_cli-{{ kindling_version }}-py3-none-any.whl" }
 
 [tool.poe.tasks]
 test-unit = "pytest tests/unit -v"

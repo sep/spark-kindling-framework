@@ -100,6 +100,7 @@ jobs:
       needs_wheels: ${{ steps.classify.outputs.needs_wheels }}
       needs_system_tests: ${{ steps.classify.outputs.needs_system_tests }}
       fast_track: ${{ steps.classify.outputs.fast_track }}
+      devcontainer_changed: ${{ steps.classify.outputs.devcontainer_changed }}
       changed_files: ${{ steps.classify.outputs.changed_files }}
 
     steps:
@@ -189,7 +190,14 @@ jobs:
               docs/*|README.md|AGENTS.md|CLAUDE.md|.github/instructions/*|.github/kindling-agent-reference.md)
                 docs_changed=true
                 ;;
-              .github/workflows/*|.github/Dockerfile.*|scripts/release.sh)
+              .github/Dockerfile.devcontainer)
+                # The published domain devcontainer image is decoupled from
+                # Kindling package releases -- it's rebuilt when its own
+                # inputs change (see devcontainer_changed below), not when a
+                # Kindling release happens to ship. Editing it alone must not
+                # force a runtime release.
+                ;;
+              .github/workflows/*|.github/Dockerfile.ci|scripts/release.sh)
                 runtime_changed=true
                 ;;
               *)
@@ -197,6 +205,12 @@ jobs:
                 ;;
             esac
           done <<< "$changed_files"
+
+          devcontainer_changed=false
+          if printf '%s\n' "$changed_files" \
+              | grep -qE '^\.github/Dockerfile\.devcontainer$|^\.github/kindling-agent-reference\.md$'; then
+            devcontainer_changed=true
+          fi
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             runtime_changed=true
@@ -271,6 +285,7 @@ jobs:
             echo "needs_wheels=$needs_wheels"
             echo "needs_system_tests=$needs_system_tests"
             echo "fast_track=$fast_track"
+            echo "devcontainer_changed=$devcontainer_changed"
             echo "changed_files<<EOF"
             printf '%s\n' "$changed_files"
             echo "EOF"
@@ -875,6 +890,23 @@ jobs:
       contents: write
 
     steps:
+      - name: Classify prerelease
+        id: prerelease
+        run: |
+          set -euo pipefail
+          # Matches bump_version.py's own version pattern (PEP 440 alpha/beta/rc,
+          # e.g. "0.12.22a1" -- no hyphen, unlike strict SemVer's "-alpha.1").
+          # softprops/action-gh-release's `prerelease: auto` detects SemVer-style
+          # prerelease tags via a hyphen and would not reliably catch this
+          # project's actual tag format, so the flag is computed explicitly here.
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(a|alpha|b|beta|rc)[0-9]*$ ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $GITHUB_REF_NAME classified as a prerelease"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download wheel artifacts
         if: needs.classify-changes.outputs.needs_wheels == 'true'
         uses: actions/download-artifact@v8
@@ -911,6 +943,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           generate_release_notes: true
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
           files: |
             dist/*.whl
             dist/kindling_bootstrap.py
@@ -926,6 +959,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           generate_release_notes: true
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -952,14 +986,17 @@ jobs:
   build-devcontainer-image:
     name: Build & Publish Devcontainer Image
     runs-on: ubuntu-latest
-    needs: [classify-changes, publish-release]
-    # Publish on runtime version tags (after release), or when manually triggered with publish_devcontainer=true.
+    needs: [classify-changes]
+    # The devcontainer image is decoupled from Kindling package releases --
+    # it publishes when its own inputs (Dockerfile.devcontainer, the agent
+    # reference doc) change on main, or when manually triggered. It is not
+    # tied to a Kindling version tag or release_kind.
     if: |
       always() && (
         (
-          startsWith(github.ref, 'refs/tags/v') &&
-          needs.publish-release.result == 'success' &&
-          needs.classify-changes.outputs.release_kind == 'runtime'
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          needs.classify-changes.outputs.devcontainer_changed == 'true'
         ) ||
         (github.event_name == 'workflow_dispatch' && inputs.publish_devcontainer == true)
       )
@@ -981,14 +1018,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version label
-        id: version
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-          else
-            echo "version=dev-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          fi
+      - name: Extract build identity
+        id: build
+        # No longer a Kindling version -- this image is decoupled from
+        # Kindling releases. The tag identifies which commit produced it.
+        run: echo "sha=build-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push devcontainer image
         uses: docker/build-push-action@v7
@@ -997,10 +1031,8 @@ jobs:
           file: .github/Dockerfile.devcontainer
           platforms: linux/amd64,linux/arm64
           push: true
-          build-args: |
-            KINDLING_VERSION=${{ steps.version.outputs.version }}
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/devcontainer:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/devcontainer:${{ steps.build.outputs.sha }}
             ${{ env.REGISTRY }}/${{ github.repository }}/devcontainer:latest
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/devcontainer:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/devcontainer:buildcache,mode=max
@@ -1009,7 +1041,7 @@ jobs:
         run: |
           echo "## Devcontainer Image Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Image: \`${{ env.REGISTRY }}/${{ github.repository }}/devcontainer:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Image: \`${{ env.REGISTRY }}/${{ github.repository }}/devcontainer:${{ steps.build.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
   test-summary:
     name: Test Summary
