@@ -1,7 +1,8 @@
 # Poetry to uv Migration
 
 **Date:** 2026-08-19
-**Status:** Proposal
+**Status:** Implemented (as a direct cutover — see "Phasing — Landed as a
+Direct Cutover")
 **Scope:** Replacing Poetry with uv as the toolchain `kindling repo init` /
 `kindling package init` scaffold into domain projects, and specifically
 enabling uv workspaces for the apps/packages monorepo layout domain teams
@@ -158,46 +159,53 @@ below since it's part of what a domain project actually runs.
 
 ---
 
-## Migration Touchpoints (concrete)
+## Migration Touchpoints (concrete) — Landed
 
-If this goes ahead, the work breaks down as:
+Implemented directly as a cutover, not a maintained transition period, per
+explicit direction: no scaffolding flag for generating new Poetry projects,
+no permanent dual-schema support in the CLI, and the conversion itself is a
+standalone script rather than a shipped CLI command (it runs three times,
+then gets deleted).
 
-**`kindling_cli` (the product surface domain teams depend on):**
-- `_load_pyproject_toml`, `_iter_kindling_dependency_entries`,
-  `_dependency_extras`, `_declared_kindling_version`, `_poetry_add_url`,
-  `_canonical_distribution_name`'s callers — all need a uv-schema-aware
-  path (`[project.dependencies]` + `[tool.uv.sources]`) alongside or
-  instead of the current Poetry-schema path.
+**`kindling_cli` — now uv-only, not dual-schema:**
+- `_iter_kindling_dependency_entries` (and `_dependency_extras`,
+  `_declared_kindling_version`, `_uv_add_url`, `_canonical_distribution_name`'s
+  callers) read/write **only** uv's schema (`[project.dependencies]` +
+  `[tool.uv.sources]` + `[dependency-groups]`) — the Poetry-schema code path
+  was removed outright rather than kept alongside it, since no new
+  Poetry-schema project will ever be scaffolded again and all 3 existing
+  ones convert via the throwaway script below.
 - `env update` / `env add` / `env bootstrap` / `env check` — the
-  `poetry add`/`poetry install --sync` subprocess calls become `uv add`/`uv sync`.
+  `poetry add`/`poetry install --sync` subprocess calls are now
+  unconditionally `uv add`/`uv sync`. No schema detection, no flag.
 - `_reconcile_root_kindling_dependencies` / `_discover_descendant_pyprojects`
-  — retires once the 3 existing projects are converted to real
-  `[tool.uv.workspace]` members (Phase 2); no need to keep it as a
-  long-lived fallback given how small that migration is.
-- `templates/pyproject.toml.j2`, `templates/.devcontainer/devcontainer.json.j2`,
-  `templates/.github/workflows/ci.yml.j2` — new uv-flavored versions. A
-  `--package-manager poetry|uv` scaffolding flag is still useful briefly
-  (covers the gap between Phase 1 shipping and the 3 existing projects
-  converting in Phase 2), but doesn't need to be a long-term supported
-  option.
-- `docs/proposals/domain_devcontainer_contract.md` — needs its own
-  "Implementation Update" section (matching how it already documents its
-  divergence from the original wheelhouse design) once this lands, since
-  its whole contract is phrased in terms of `poetry.lock`/`poetry add`.
-- `.github/Dockerfile.devcontainer` — swap the pinned `poetry==1.8.3` /
-  `poethepoet==0.45.0` install for a pinned uv version (poethepoet stays;
-  it's still needed to run `poe` tasks inside the generated project). This
-  is the one file in this repo's own build that domain projects genuinely
-  depend on, since it's baked into the devcontainer image every domain
-  project's `.devcontainer/devcontainer.json.j2` pulls.
+  — kept (schema-agnostic directory walk, now operates on uv-schema
+  projects only via the simplified iterator above); retires once the 3
+  existing projects are on a real `[tool.uv.workspace]`.
+- **Not done, deliberately**: no `pyproject.toml.j2`/`devcontainer.json.j2`/
+  `ci.yml.j2` uv-flavored variants, no `--package-manager` scaffolding flag.
+  New-project scaffolding stays out of scope for this change; revisit only
+  if/when new project generation is actually needed.
+- `.github/Dockerfile.devcontainer`'s Poetry pin — **not yet touched**;
+  still needed until scaffolding/devcontainer templates are addressed
+  separately, since the published devcontainer image is what domain
+  projects' generated CI runs inside.
 
-**The 3 existing domain projects (e.g. `cwmdp-test-pkg`):**
-- All 3 are early in development, so converting them directly (either by
-  hand or a small one-off `kindling env migrate --to-uv` — worth building
-  only if it saves more effort than doing 3 conversions by hand) is
-  cheaper than building and maintaining an indefinite Poetry-schema
-  deprecation window. Once all 3 are converted, Poetry-schema support can
-  come out of `kindling_cli` entirely.
+**Migration itself — a standalone script, not a CLI command:**
+- `scripts/migrate_domain_project_to_uv.py` in this repo: a plain
+  argparse script (no click, no kindling_cli import) that converts one
+  project's `[tool.poetry.*]` to PEP 621 in place, switches the build
+  backend to `uv_build`, preserves every other section (poe tasks, pytest
+  config, ...) as original text, optionally sets up/extends a
+  `[tool.uv.workspace]` at a monorepo root via `--workspace-root`, and runs
+  `uv sync`. Run once per existing project, then delete the script — it is
+  not part of `kindling_cli`'s installed/shipped surface.
+
+**The 3 existing domain projects (all SEP-owned, early in development):**
+- Convert each by running the script once against it. Once all 3 are
+  converted, there is no remaining Poetry-schema Kindling project anywhere,
+  which is exactly why the CLI could go uv-only immediately rather than
+  carrying dual-schema support.
 
 ---
 
@@ -235,32 +243,27 @@ If this goes ahead, the work breaks down as:
 
 ---
 
-## Proposed Phasing
+## Phasing — Landed as a Direct Cutover
 
-Given only 3 easy-to-migrate projects, this doesn't need a long-lived
-dual-schema era or a deprecation timeline — it can be a short, coordinated
-cutover instead of an indefinitely-supported dual path.
+Given only 3 easy-to-migrate projects, this didn't need a phased dual-schema
+rollout at all — it landed as a single direct cutover:
 
-- **Phase 0 — Spike. Done.** Validated directly against real release wheels
-  (see "Resolved" above): `uv add <wheel-url>` records the same
-  `[tool.uv.sources]` pinning idiom Poetry's `url=` table does, dependency
-  groups map cleanly, and the group re-add footgun (and how to guard
-  against it) is now known up front rather than discovered mid-implementation.
-- **Phase 1 — uv scaffolding + `kindling_cli` uv support.** New
-  uv-flavored `pyproject.toml.j2`/`devcontainer.json.j2`/`ci.yml.j2`
-  templates; teach `_iter_kindling_dependency_entries` (and
-  `_dependency_extras`, `_declared_kindling_version`, `_poetry_add_url`) to
-  read/write uv's schema; extend `kindling repo init` with real
-  `[tool.uv.workspace]` support for the apps/packages monorepo layout. Only
-  needs to run *alongside* Poetry-schema support briefly, not indefinitely.
-- **Phase 2 — Migrate the 3 existing projects, then drop Poetry support.**
-  Convert each of the 3 (by hand or a one-off `kindling env migrate
-  --to-uv` if worth building given there are only 3) shortly after Phase 1
-  ships, then retire Poetry-schema parsing from `kindling_cli` entirely —
-  no extended deprecation window to manage. `_reconcile_root_kindling_dependencies`
-  retires at this point too, once every domain project can use a real
-  `[tool.uv.workspace]`.
-
-Each phase is independently shippable and reversible — Phase 0 is already
-done, Phase 1 is safe to ship with zero visible change to existing projects,
-and Phase 2 is small precisely because the existing footprint is small.
+- **Spike.** Validated directly against real release wheels (see "Resolved"
+  above): `uv add <wheel-url>` records the same `[tool.uv.sources]` pinning
+  idiom Poetry's `url=` table does, dependency groups map cleanly, and the
+  group re-add footgun (and how to guard against it) was known up front
+  rather than discovered mid-implementation.
+- **`kindling_cli` cut over to uv-only.** `_iter_kindling_dependency_entries`
+  and `env update`/`env add`/`env bootstrap`/`env check` read/write uv's
+  schema exclusively — no schema detection, no Poetry code path kept
+  alongside it. New-project scaffolding (`pyproject.toml.j2` etc.) was
+  explicitly left out of scope rather than given a uv variant, since no new
+  Poetry-schema project will be created again either way.
+- **Migration script, not a CLI feature.** `scripts/migrate_domain_project_to_uv.py`
+  — a standalone script, not a `kindling_cli` command — converts one
+  project (and optionally sets up a `[tool.uv.workspace]` root) and gets run
+  three times, once per existing project, then deleted.
+- **Result:** once the 3 conversions run, there is no Poetry-schema Kindling
+  project left anywhere, so the CLI's uv-only cutover has no transition gap
+  to manage. `_reconcile_root_kindling_dependencies` retires once every
+  domain project is on a real `[tool.uv.workspace]`.
