@@ -14,11 +14,13 @@ from click.testing import CliRunner
 from kindling_cli.cli import (
     _AZURE_SP_VARS,
     _azure_cli_session_available,
+    _detect_pyproject_schema,
     _find_wheels,
     _generate_bootstrap_notebook,
     _generate_sample_notebook,
     _load_app_module,
     _parse_abfss_uri,
+    _parse_pep508_name_extras,
     _render_environment_bootstrap_source,
     _render_starter_notebook_source,
     _resolve_account_url,
@@ -207,6 +209,36 @@ def test_env_check_degrades_gracefully_on_malformed_pyproject_toml():
         assert "could not read Kindling dependencies" in result.output
 
 
+def test_parse_pep508_name_extras_plain_name():
+    assert _parse_pep508_name_extras("spark-kindling-cli") == ("spark-kindling-cli", [])
+
+
+def test_parse_pep508_name_extras_with_extras():
+    assert _parse_pep508_name_extras("spark-kindling[standalone]") == (
+        "spark-kindling",
+        ["standalone"],
+    )
+
+
+def test_parse_pep508_name_extras_with_multiple_extras_and_specifier():
+    assert _parse_pep508_name_extras("spark-kindling[standalone, adx]>=1.0.0") == (
+        "spark-kindling",
+        ["standalone", "adx"],
+    )
+
+
+def test_detect_pyproject_schema_poetry():
+    assert _detect_pyproject_schema({"tool": {"poetry": {"name": "demo"}}}) == "poetry"
+
+
+def test_detect_pyproject_schema_uv():
+    assert _detect_pyproject_schema({"project": {"name": "demo"}}) == "uv"
+
+
+def test_detect_pyproject_schema_defaults_to_uv_when_empty():
+    assert _detect_pyproject_schema({}) == "uv"
+
+
 def _release_assets(*wheel_names):
     base = "https://github.com/example/repo/releases/download/v1.2.3"
     return {
@@ -219,7 +251,7 @@ def _wheel_url(name):
 
 
 def _write_pyproject(project_dir, body):
-    project_dir.mkdir(exist_ok=True)
+    project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "pyproject.toml").write_text(body, encoding="utf-8")
 
 
@@ -275,6 +307,59 @@ def test_env_update_updates_declared_kindling_dependencies(monkeypatch, tmp_path
     assert (["poetry", "install", "--with", "dev", "--sync"], resolved) in commands
 
 
+def test_env_update_updates_declared_kindling_dependencies_uv_schema(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling[standalone]"]\n\n'
+        "[tool.uv.sources]\n"
+        'spark-kindling = { url = "https://example.com/spark_kindling-1.0.0-py3-none-any.whl" }\n'
+        'spark-kindling-cli = { url = "https://example.com/spark_kindling_cli-1.0.0-py3-none-any.whl" }\n\n'
+        "[dependency-groups]\n"
+        'dev = ["spark-kindling-cli"]\n',
+    )
+    commands = []
+
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets(
+            "spark_kindling-1.2.3-py3-none-any.whl",
+            "spark_kindling_cli-1.2.3-py3-none-any.whl",
+        ),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(cli, ["env", "update", "--project", str(project_dir)])
+
+    assert result.exit_code == 0, result.output
+    resolved = project_dir.resolve()
+    assert (
+        [
+            "uv",
+            "add",
+            _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"),
+            "--extra",
+            "standalone",
+        ],
+        resolved,
+    ) in commands
+    assert (
+        [
+            "uv",
+            "add",
+            _wheel_url("spark_kindling_cli-1.2.3-py3-none-any.whl"),
+            "--group",
+            "dev",
+        ],
+        resolved,
+    ) in commands
+    assert (["uv", "sync"], resolved) in commands
+
+
 def test_env_update_skips_dependency_missing_from_release(monkeypatch, tmp_path):
     project_dir = tmp_path / "project"
     _write_pyproject(
@@ -308,6 +393,71 @@ def test_env_update_fails_when_no_kindling_dependencies_declared(tmp_path):
 
     assert result.exit_code != 0
     assert "No spark-kindling* dependencies found" in result.output
+
+
+def test_env_update_copies_kindling_dependency_from_nested_project(monkeypatch, tmp_path):
+    root_dir = tmp_path / "root"
+    _write_pyproject(root_dir, "[tool.poetry]\nname = 'root'\nversion = '0.1.0'\n")
+    _write_pyproject(
+        root_dir / "apps" / "cwmdp",
+        "[tool.poetry]\nname = 'cwmdp'\nversion = '0.1.0'\n\n"
+        "[tool.poetry.dependencies]\n"
+        'python = "^3.10"\n'
+        'spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/'
+        'releases/download/v1.2.3/spark_kindling-1.2.3-py3-none-any.whl", extras = ["standalone"] }\n',
+    )
+    commands = []
+
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets("spark_kindling-1.2.3-py3-none-any.whl"),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(cli, ["env", "update", "--project", str(root_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "adopting from nested project" in result.output
+    resolved = root_dir.resolve()
+    assert (
+        [
+            "poetry",
+            "add",
+            _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"),
+            "--extras",
+            "standalone",
+        ],
+        resolved,
+    ) in commands
+
+
+def test_env_update_fails_when_nested_projects_disagree_on_version(tmp_path):
+    root_dir = tmp_path / "root"
+    _write_pyproject(root_dir, "[tool.poetry]\nname = 'root'\nversion = '0.1.0'\n")
+    _write_pyproject(
+        root_dir / "apps" / "one",
+        "[tool.poetry]\nname = 'one'\nversion = '0.1.0'\n\n"
+        "[tool.poetry.dependencies]\n"
+        'spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/'
+        'releases/download/v1.2.3/spark_kindling-1.2.3-py3-none-any.whl" }\n',
+    )
+    _write_pyproject(
+        root_dir / "apps" / "two",
+        "[tool.poetry]\nname = 'two'\nversion = '0.1.0'\n\n"
+        "[tool.poetry.dependencies]\n"
+        'spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/'
+        'releases/download/v1.5.0/spark_kindling-1.5.0-py3-none-any.whl" }\n',
+    )
+
+    result = CliRunner().invoke(cli, ["env", "update", "--project", str(root_dir)])
+
+    assert result.exit_code != 0
+    assert "disagree" in result.output
+    assert "1.2.3" in result.output
+    assert "1.5.0" in result.output
 
 
 def test_env_update_fails_without_pyproject_toml(tmp_path):
@@ -583,6 +733,125 @@ def test_env_bootstrap_adds_kindling_when_undeclared(monkeypatch, tmp_path):
     assert (["poetry", "install", "--with", "dev", "--sync"], resolved) in commands
 
 
+def test_env_bootstrap_adds_kindling_when_undeclared_uv_schema(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\n",
+    )
+    commands = []
+
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets(
+            "spark_kindling-1.2.3-py3-none-any.whl",
+            "spark_kindling_sdk-1.2.3-py3-none-any.whl",
+            "spark_kindling_cli-1.2.3-py3-none-any.whl",
+        ),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(project_dir)])
+
+    assert result.exit_code == 0, result.output
+    resolved = project_dir.resolve()
+    assert (
+        [
+            "uv",
+            "add",
+            _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"),
+            "--extra",
+            "standalone",
+        ],
+        resolved,
+    ) in commands
+    assert (
+        [
+            "uv",
+            "add",
+            _wheel_url("spark_kindling_sdk-1.2.3-py3-none-any.whl"),
+            "--group",
+            "dev",
+        ],
+        resolved,
+    ) in commands
+    assert (
+        [
+            "uv",
+            "add",
+            _wheel_url("spark_kindling_cli-1.2.3-py3-none-any.whl"),
+            "--group",
+            "dev",
+        ],
+        resolved,
+    ) in commands
+    assert (["uv", "sync"], resolved) in commands
+
+
+def test_uv_add_url_removes_stray_bare_duplicate_after_group_add(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling-cli"]\n\n'
+        "[tool.uv.sources]\n"
+        'spark-kindling-cli = { url = "https://example.com/old.whl" }\n',
+    )
+    commands = []
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    from kindling_cli.cli import _uv_add_url
+
+    _uv_add_url(project_dir, "spark-kindling-cli", "https://example.com/new.whl", group="dev")
+
+    assert (["uv", "add", "https://example.com/new.whl", "--group", "dev"], project_dir) in commands
+    assert (["uv", "remove", "spark-kindling-cli"], project_dir) in commands
+
+
+def test_env_bootstrap_copies_kindling_dependency_from_nested_project(monkeypatch, tmp_path):
+    root_dir = tmp_path / "root"
+    _write_pyproject(root_dir, "[tool.poetry]\nname = 'root'\nversion = '0.1.0'\n")
+    _write_pyproject(
+        root_dir / "apps" / "cwmdp",
+        "[tool.poetry]\nname = 'cwmdp'\nversion = '0.1.0'\n\n"
+        "[tool.poetry.dependencies]\n"
+        'python = "^3.10"\n'
+        'spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/'
+        'releases/download/v1.2.3/spark_kindling-1.2.3-py3-none-any.whl", extras = ["standalone"] }\n',
+    )
+    commands = []
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._resolve_github_version",
+        lambda version, repo: (_ for _ in ()).throw(AssertionError("should not resolve latest")),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(root_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "copying from nested project" in result.output
+    resolved = root_dir.resolve()
+    assert (
+        [
+            "poetry",
+            "add",
+            "https://github.com/sep/spark-kindling-framework/releases/download/"
+            "v1.2.3/spark_kindling-1.2.3-py3-none-any.whl",
+            "--extras",
+            "standalone",
+        ],
+        resolved,
+    ) in commands
+
+
 def test_env_bootstrap_leaves_existing_kindling_declaration_untouched(monkeypatch, tmp_path):
     project_dir = tmp_path / "project"
     _write_pyproject(
@@ -614,6 +883,199 @@ def test_env_bootstrap_fails_without_pyproject_toml(tmp_path):
     project_dir.mkdir()
 
     result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(project_dir)])
+
+    assert result.exit_code != 0
+    assert "No pyproject.toml found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# env migrate --to uv
+# ---------------------------------------------------------------------------
+
+
+def test_env_migrate_converts_poetry_to_uv_schema(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[build-system]\n"
+        'requires = ["poetry-core>=1.0.0"]\n'
+        'build-backend = "poetry.core.masonry.api"\n\n'
+        "[tool.poetry]\n"
+        'name = "demo"\n'
+        'version = "0.1.0"\n'
+        "authors = []\n\n"
+        "[tool.poetry.dependencies]\n"
+        'python = "^3.10"\n'
+        'spark-kindling = { url = "https://example.com/spark_kindling-1.0.0-py3-none-any.whl", extras = ["standalone"] }\n\n'
+        "[tool.poetry.group.dev.dependencies]\n"
+        'pytest = ">=7.0.0"\n'
+        'spark-kindling-cli = { url = "https://example.com/spark_kindling_cli-1.0.0-py3-none-any.whl" }\n\n'
+        "[tool.poe.tasks]\n"
+        'build = "poetry build"\n'
+        'test-unit = "pytest tests/unit -v"\n',
+    )
+    (project_dir / "poetry.lock").write_text("# stale lock\n", encoding="utf-8")
+    commands = []
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(
+        cli, ["env", "migrate", "--to", "uv", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    content = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert '[project]\nname = "demo"' in content
+    assert 'dependencies = [\n    "spark-kindling[standalone]",\n]' in content
+    assert 'build-backend = "uv_build"' in content
+    assert (
+        'spark-kindling = { url = "https://example.com/spark_kindling-1.0.0-py3-none-any.whl" }'
+        in content
+    )
+    assert 'dev = ["pytest>=7.0.0", "spark-kindling-cli"]' in content
+    assert 'build = "uv build"' in content
+    assert 'test-unit = "pytest tests/unit -v"' in content
+    assert not (project_dir / "poetry.lock").exists()
+    assert (["uv", "sync"], project_dir.resolve()) in commands
+
+
+def test_env_migrate_is_idempotent_on_already_uv_project(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\ndependencies = []\n",
+    )
+    commands = []
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(
+        cli, ["env", "migrate", "--to", "uv", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "already uv-schema" in result.output
+    assert (["uv", "sync"], project_dir.resolve()) in commands
+
+
+def test_env_migrate_creates_workspace_root(monkeypatch, tmp_path):
+    root_dir = tmp_path / "root"
+    root_dir.mkdir()
+    project_dir = root_dir / "packages" / "demo_pkg"
+    _write_pyproject(
+        project_dir,
+        "[tool.poetry]\nname = 'demo-pkg'\nversion = '0.1.0'\n\n"
+        "[tool.poetry.dependencies]\n"
+        'python = "^3.10"\n',
+    )
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: None)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "env",
+            "migrate",
+            "--to",
+            "uv",
+            "--project",
+            str(project_dir),
+            "--workspace-root",
+            str(root_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    root_pyproject = (root_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'members = ["packages/demo_pkg"]' in root_pyproject
+    assert "package = false" in root_pyproject
+
+
+def test_env_migrate_extends_existing_workspace_root(monkeypatch, tmp_path):
+    root_dir = tmp_path / "root"
+    root_dir.mkdir()
+    (root_dir / "pyproject.toml").write_text(
+        "[project]\nname = 'root'\nversion = '0.0.0'\n\n"
+        "[tool.uv]\npackage = false\n\n"
+        "[tool.uv.workspace]\n"
+        'members = ["packages/existing_pkg"]\n',
+        encoding="utf-8",
+    )
+    project_dir = root_dir / "packages" / "new_pkg"
+    _write_pyproject(
+        project_dir,
+        "[tool.poetry]\nname = 'new-pkg'\nversion = '0.1.0'\n\n"
+        "[tool.poetry.dependencies]\n"
+        'python = "^3.10"\n',
+    )
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: None)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "env",
+            "migrate",
+            "--to",
+            "uv",
+            "--project",
+            str(project_dir),
+            "--workspace-root",
+            str(root_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    root_pyproject = (root_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"packages/existing_pkg"' in root_pyproject
+    assert '"packages/new_pkg"' in root_pyproject
+
+
+def test_env_migrate_adds_members_key_to_empty_workspace_table(monkeypatch, tmp_path):
+    root_dir = tmp_path / "root"
+    root_dir.mkdir()
+    (root_dir / "pyproject.toml").write_text(
+        "[project]\nname = 'root'\nversion = '0.0.0'\n\n"
+        "[tool.uv]\npackage = false\n\n"
+        "[tool.uv.workspace]\n",
+        encoding="utf-8",
+    )
+    project_dir = root_dir / "packages" / "new_pkg"
+    _write_pyproject(
+        project_dir,
+        "[tool.poetry]\nname = 'new-pkg'\nversion = '0.1.0'\n\n"
+        "[tool.poetry.dependencies]\n"
+        'python = "^3.10"\n',
+    )
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: None)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "env",
+            "migrate",
+            "--to",
+            "uv",
+            "--project",
+            str(project_dir),
+            "--workspace-root",
+            str(root_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    root_pyproject = (root_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert root_pyproject.count("[tool.uv.workspace]") == 1
+    assert 'members = ["packages/new_pkg"]' in root_pyproject
+
+
+def test_env_migrate_fails_without_pyproject_toml(tmp_path):
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    result = CliRunner().invoke(
+        cli, ["env", "migrate", "--to", "uv", "--project", str(project_dir)]
+    )
 
     assert result.exit_code != 0
     assert "No pyproject.toml found" in result.output

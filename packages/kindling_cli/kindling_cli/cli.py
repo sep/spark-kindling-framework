@@ -1795,15 +1795,41 @@ def _dependency_extras(entry: Any) -> List[str]:
     return []
 
 
-def _iter_kindling_dependency_entries(
-    pyproject_path: Path,
+def _detect_pyproject_schema(data: Dict[str, Any]) -> str:
+    """'poetry' or 'uv' -- which dependency schema a parsed pyproject.toml
+    uses. [tool.poetry] and PEP 621's [project] are mutually exclusive in
+    practice, so presence of the former is the only signal needed; anything
+    else (including a bare/empty file) is treated as uv/PEP 621 shaped."""
+    if "poetry" in data.get("tool", {}):
+        return "poetry"
+    return "uv"
+
+
+_PEP508_NAME_EXTRAS_RE = re.compile(
+    r"^\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\s*(\[[^\]]*\])?"
+)
+
+
+def _parse_pep508_name_extras(requirement: str) -> Tuple[str, List[str]]:
+    """Best-effort (name, extras) from a PEP 508 requirement string (e.g.
+    'spark-kindling[standalone]>=1.0'). Ignores any version specifier/marker
+    -- callers only need the name (to match spark-kindling*) and the extras
+    uv stores inline in the requirement string rather than in a separate
+    table."""
+    match = _PEP508_NAME_EXTRAS_RE.match(requirement)
+    if not match:
+        return requirement.strip(), []
+    name = match.group(1)
+    extras_str = match.group(2)
+    if not extras_str:
+        return name, []
+    extras = [e.strip() for e in extras_str[1:-1].split(",") if e.strip()]
+    return name, extras
+
+
+def _iter_poetry_kindling_dependency_entries(
+    data: Dict[str, Any],
 ) -> Iterator[Tuple[str, Optional[str], Any]]:
-    """Yield (distribution_name, group_or_None, raw_entry) for every declared
-    'spark-kindling'/'spark-kindling-*' dependency in pyproject.toml,
-    wherever it's declared -- the main dependency table or any dependency
-    group.
-    """
-    data = _load_pyproject_toml(pyproject_path)
     poetry = data.get("tool", {}).get("poetry", {})
 
     main_deps = poetry.get("dependencies", {})
@@ -1820,6 +1846,74 @@ def _iter_kindling_dependency_entries(
                 for name, entry in group_deps.items():
                     if _is_kindling_distribution(name):
                         yield name, group_name, entry
+
+
+def _uv_source_for(sources: Dict[str, Any], name: str) -> Any:
+    canonical = _canonical_distribution_name(name)
+    for key, value in sources.items():
+        if _canonical_distribution_name(key) == canonical:
+            return value
+    return None
+
+
+def _uv_synthetic_entry(sources: Dict[str, Any], name: str, extras: List[str]) -> Dict[str, Any]:
+    """Build a Poetry-shaped entry dict ({"url": ..., "extras": [...]}) from
+    a uv dependency's [tool.uv.sources] override, so _dependency_extras and
+    _declared_kindling_version (written against Poetry's dict shape) work
+    unchanged against a uv project too."""
+    entry: Dict[str, Any] = {}
+    source = _uv_source_for(sources, name)
+    if isinstance(source, dict) and isinstance(source.get("url"), str):
+        entry["url"] = source["url"]
+    if extras:
+        entry["extras"] = extras
+    return entry
+
+
+def _iter_uv_kindling_dependency_entries(
+    data: Dict[str, Any],
+) -> Iterator[Tuple[str, Optional[str], Any]]:
+    project = data.get("project", {})
+    sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+    if not isinstance(sources, dict):
+        sources = {}
+
+    main_deps = project.get("dependencies", [])
+    if isinstance(main_deps, list):
+        for requirement in main_deps:
+            if not isinstance(requirement, str):
+                continue
+            name, extras = _parse_pep508_name_extras(requirement)
+            if _is_kindling_distribution(name):
+                yield name, None, _uv_synthetic_entry(sources, name, extras)
+
+    groups = data.get("dependency-groups", {})
+    if isinstance(groups, dict):
+        for group_name, group_reqs in groups.items():
+            if not isinstance(group_reqs, list):
+                continue
+            for requirement in group_reqs:
+                if not isinstance(requirement, str):
+                    continue  # skip {include-group = "..."} entries
+                name, extras = _parse_pep508_name_extras(requirement)
+                if _is_kindling_distribution(name):
+                    yield name, group_name, _uv_synthetic_entry(sources, name, extras)
+
+
+def _iter_kindling_dependency_entries(
+    pyproject_path: Path,
+) -> Iterator[Tuple[str, Optional[str], Any]]:
+    """Yield (distribution_name, group_or_None, raw_entry) for every declared
+    'spark-kindling'/'spark-kindling-*' dependency in pyproject.toml,
+    wherever it's declared -- the main dependency table/list or any
+    dependency group -- under either Poetry's [tool.poetry.*] schema or
+    uv/PEP 621's [project]/[tool.uv.sources]/[dependency-groups] schema.
+    """
+    data = _load_pyproject_toml(pyproject_path)
+    if _detect_pyproject_schema(data) == "poetry":
+        yield from _iter_poetry_kindling_dependency_entries(data)
+    else:
+        yield from _iter_uv_kindling_dependency_entries(data)
 
 
 def _find_kindling_dependencies(
@@ -1856,6 +1950,100 @@ def _declared_kindling_version(entry: Any) -> Optional[str]:
     if isinstance(entry, str):
         return entry
     return None
+
+
+_DESCENDANT_SCAN_EXCLUDES = {
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "dist",
+    "build",
+    ".worktrees",
+    "site-packages",
+}
+
+
+def _discover_descendant_pyprojects(root_path: Path) -> List[Path]:
+    """Find pyproject.toml files in project/app directories nested under
+    root_path (e.g. apps/*/pyproject.toml in a monorepo). Does not descend
+    past a found pyproject.toml -- nested Poetry projects aren't expected to
+    nest further -- nor into common non-project directories.
+    """
+    found: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dirnames[:] = [
+            d for d in dirnames if d not in _DESCENDANT_SCAN_EXCLUDES and not d.startswith(".")
+        ]
+        current = Path(dirpath)
+        if current == root_path:
+            continue
+        if "pyproject.toml" in filenames:
+            found.append(current / "pyproject.toml")
+            dirnames[:] = []
+    return sorted(found)
+
+
+def _reconcile_root_kindling_dependencies(
+    root_pyproject_path: Path, project_path: Path
+) -> Dict[str, Tuple[Optional[str], List[str], Any]]:
+    """When root_pyproject_path declares no spark-kindling* dependency, look
+    for one declared in a nested package/app under project_path (e.g. a
+    monorepo's apps/*/pyproject.toml) so the root can adopt it as the single
+    version installed and available to the whole tree.
+
+    Every nested project that declares Kindling must pin the same release --
+    the root is a single install, not a per-app one -- so this raises if they
+    disagree rather than silently preferring one.
+
+    Returns {distribution: (group, extras, raw_entry)} to add at the root,
+    or {} if no nested project declares Kindling either.
+    """
+    by_project: Dict[Path, Dict[str, Tuple[Optional[str], List[str], Any]]] = {}
+    for path in _discover_descendant_pyprojects(project_path):
+        try:
+            entries = {
+                name: (group, _dependency_extras(entry), entry)
+                for name, group, entry in _iter_kindling_dependency_entries(path)
+            }
+        except Exception:
+            continue
+        if entries:
+            by_project[path] = entries
+
+    if not by_project:
+        return {}
+
+    versions_by_project: Dict[Path, str] = {}
+    for path, entries in by_project.items():
+        versions = {
+            v for v in (_declared_kindling_version(entry) for _, _, entry in entries.values()) if v
+        }
+        if len(versions) == 1:
+            versions_by_project[path] = next(iter(versions))
+
+    distinct_versions = set(versions_by_project.values())
+    if len(distinct_versions) > 1:
+        lines = "\n".join(
+            f"  {path}: {version}" for path, version in sorted(versions_by_project.items())
+        )
+        raise click.ClickException(
+            f"No spark-kindling* dependency declared at {root_pyproject_path}, and "
+            "nested projects disagree on which Kindling release to use:\n"
+            f"{lines}\n"
+            "Reconcile them to a single release (e.g. `kindling env update` in each) "
+            "before running this at the root."
+        )
+
+    merged: Dict[str, Tuple[Optional[str], List[str], Any]] = {}
+    for entries in by_project.values():
+        for name, (group, extras, entry) in entries.items():
+            merged.setdefault(name, (group, extras, entry))
+    return merged
 
 
 def _resolve_kindling_release_wheels(
@@ -1926,6 +2114,91 @@ def _poetry_add_url(
     for extra in extras or []:
         command.extend(["--extras", extra])
     _run_checked(command, cwd=project_path)
+
+
+def _remove_stray_bare_uv_dependency(project_path: Path, distribution: str) -> None:
+    """`uv add <url> --group G` on an already bare-declared dependency
+    doesn't move it into the group -- verified empirically -- it leaves a
+    duplicate: the package ends up listed in both [project.dependencies]
+    and [dependency-groups.G] at once. Strip the stray bare entry so the
+    package is declared in the group only, matching intent.
+    """
+    pyproject_path = project_path / "pyproject.toml"
+    try:
+        data = _load_pyproject_toml(pyproject_path)
+    except Exception:
+        return
+    main_deps = data.get("project", {}).get("dependencies", [])
+    if not isinstance(main_deps, list):
+        return
+    canonical = _canonical_distribution_name(distribution)
+    is_stray = any(
+        isinstance(requirement, str)
+        and _canonical_distribution_name(_parse_pep508_name_extras(requirement)[0]) == canonical
+        for requirement in main_deps
+    )
+    if is_stray:
+        _run_checked(["uv", "remove", distribution], cwd=project_path)
+
+
+def _uv_add_url(
+    project_path: Path,
+    distribution: str,
+    url: str,
+    *,
+    group: Optional[str] = None,
+    extras: Optional[List[str]] = None,
+) -> None:
+    """Run `uv add <url>`, re-supplying group/extras explicitly -- uv has
+    the same class of footgun `_poetry_add_url` documents (see
+    `_remove_stray_bare_uv_dependency`), so group/extras must be passed
+    explicitly on every call here too.
+    """
+    command = ["uv", "add", url]
+    if group:
+        command.extend(["--group", group])
+    for extra in extras or []:
+        command.extend(["--extra", extra])
+    _run_checked(command, cwd=project_path)
+    if group:
+        _remove_stray_bare_uv_dependency(project_path, distribution)
+
+
+def _add_kindling_dependency_url(
+    project_path: Path,
+    schema: str,
+    distribution: str,
+    url: str,
+    *,
+    group: Optional[str] = None,
+    extras: Optional[List[str]] = None,
+) -> None:
+    """Pin `distribution` to `url` in whichever dependency schema the target
+    project already uses."""
+    if schema == "poetry":
+        _poetry_add_url(project_path, url, group=group, extras=extras)
+    else:
+        _uv_add_url(project_path, distribution, url, group=group, extras=extras)
+
+
+def _sync_command(schema: str, *, no_sync: bool) -> List[str]:
+    """Command to install/sync a project's declared dependencies.
+
+    `poetry install --sync` and plain `uv sync` are both already "exact"
+    (remove anything not declared) by default -- `--no-sync` opts out of
+    that via Poetry's `--sync` flag being omitted, or uv's `--inexact`.
+    uv's default group ("dev") is already included in `uv sync` with no
+    extra flags needed, matching Poetry's `--with dev`.
+    """
+    if schema == "poetry":
+        command = ["poetry", "install", "--with", "dev"]
+        if not no_sync:
+            command.append("--sync")
+        return command
+    command = ["uv", "sync"]
+    if no_sync:
+        command.append("--inexact")
+    return command
 
 
 def _print_kindling_version_report(pyproject_path: Path) -> None:
@@ -2248,15 +2521,35 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
     Kindling package in a release is versioned together, so one release
     resolves every dependency at once -- no local wheel cache or Poetry
     source configuration required.
+
+    If nothing is declared at PROJECT itself, looks for a Kindling
+    dependency in a nested package/app pyproject.toml (e.g. a monorepo's
+    apps/*/pyproject.toml) and adopts it before updating -- the project
+    root is the single source of truth for what's installed. Fails if
+    nested projects disagree on which release to use.
     """
     project_path = project_path.expanduser().resolve()
     pyproject_path = project_path / "pyproject.toml"
     if not pyproject_path.exists():
         raise click.ClickException(f"No pyproject.toml found at {project_path}.")
+    schema = _detect_pyproject_schema(_load_pyproject_toml(pyproject_path))
 
     declared = _find_kindling_dependencies(pyproject_path)
     if not declared:
-        raise click.ClickException(f"No spark-kindling* dependencies found in {pyproject_path}.")
+        to_copy = _reconcile_root_kindling_dependencies(pyproject_path, project_path)
+        if not to_copy:
+            raise click.ClickException(
+                f"No spark-kindling* dependencies found in {pyproject_path}."
+            )
+        click.echo(
+            f"No spark-kindling* dependency declared at {pyproject_path}; "
+            "adopting from nested project(s):"
+        )
+        for distribution in sorted(to_copy):
+            group, extras, _entry = to_copy[distribution]
+            location = f" [{group}]" if group else ""
+            click.echo(f"  {distribution}{location}")
+        declared = {name: (group, extras) for name, (group, extras, _entry) in to_copy.items()}
 
     resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
     wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
@@ -2268,7 +2561,9 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
         if match is None:
             click.echo(f"  skipped {distribution}: not published in Kindling {resolved_version}")
             continue
-        _poetry_add_url(project_path, match["url"], group=group, extras=extras)
+        _add_kindling_dependency_url(
+            project_path, schema, distribution, match["url"], group=group, extras=extras
+        )
         location = f" [{group}]" if group else ""
         click.echo(f"  {distribution} -> {match['version']}{location}")
         updated = True
@@ -2278,10 +2573,7 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
             f"None of the declared Kindling dependencies were found in release {resolved_version}."
         )
 
-    install_command = ["poetry", "install", "--with", "dev"]
-    if not no_sync:
-        install_command.append("--sync")
-    _run_checked(install_command, cwd=project_path)
+    _run_checked(_sync_command(schema, no_sync=no_sync), cwd=project_path)
 
     click.echo(f"\nKindling packages in {project_path} are up to date at {resolved_version}.")
 
@@ -2338,6 +2630,7 @@ def env_add(
     pyproject_path = project_path / "pyproject.toml"
     if not pyproject_path.exists():
         raise click.ClickException(f"No pyproject.toml found at {project_path}.")
+    schema = _detect_pyproject_schema(_load_pyproject_toml(pyproject_path))
 
     normalized_target = _canonical_distribution_name(package)
     resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
@@ -2372,7 +2665,9 @@ def env_add(
         group, extras = dependency_group, []
 
     click.echo(f"Resolving {package} {match['version']} from Kindling {resolved_version} ({repo})")
-    _poetry_add_url(project_path, match["url"], group=group, extras=extras)
+    _add_kindling_dependency_url(
+        project_path, schema, normalized_target, match["url"], group=group, extras=extras
+    )
 
     location = f" [{group}]" if group else ""
     click.echo(f"\nAdded {package} {match['version']}{location} to {pyproject_path}.")
@@ -2417,11 +2712,15 @@ def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) ->
     Checks pyproject.toml for any 'spark-kindling'/'spark-kindling-*'
     dependency. If none is declared -- a project created without
     `kindling repo init`, or one that predates this devcontainer's package
-    model -- adds the framework, SDK, and CLI pinned to the target Kindling
-    release (default: latest) via `poetry add <release wheel URL>`. If
-    Kindling is already declared, this leaves it untouched: the project's
-    own pyproject.toml/poetry.lock remain authoritative. Either way,
-    finishes with `poetry install --sync`.
+    model -- looks for one declared in a nested package/app pyproject.toml
+    (e.g. a monorepo's apps/*/pyproject.toml) and adopts it; only if no
+    nested project declares Kindling either does it add the framework, SDK,
+    and CLI pinned to the target Kindling release (default: latest) via
+    `poetry add <release wheel URL>`. Fails if nested projects disagree on
+    which release to use. If Kindling is already declared at the project
+    root, this leaves it untouched: the project's own pyproject.toml/
+    poetry.lock remain authoritative. Either way, finishes with `poetry
+    install --sync`.
 
     This is what the generated devcontainer's `postCreateCommand` runs on
     every container creation, so a domain project always ends up with a
@@ -2432,31 +2731,397 @@ def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) ->
     pyproject_path = project_path / "pyproject.toml"
     if not pyproject_path.exists():
         raise click.ClickException(f"No pyproject.toml found at {project_path}.")
+    schema = _detect_pyproject_schema(_load_pyproject_toml(pyproject_path))
 
     if _find_kindling_dependencies(pyproject_path):
         click.echo(f"Kindling is already declared in {pyproject_path}.")
     else:
-        click.echo(f"No Kindling dependency found in {pyproject_path}; adding it.")
-        resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
-        wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
-
-        for distribution, group, extras in _BOOTSTRAP_PACKAGES:
-            match = wheels_by_distribution.get(distribution)
-            if match is None:
-                raise click.ClickException(
-                    f"'{distribution}' is not among the wheel assets in Kindling "
-                    f"{resolved_version} ({repo})."
+        to_copy = _reconcile_root_kindling_dependencies(pyproject_path, project_path)
+        if to_copy:
+            click.echo(
+                f"No Kindling dependency found in {pyproject_path}; "
+                "copying from nested project(s):"
+            )
+            for distribution, (group, extras, entry) in sorted(to_copy.items()):
+                url = entry.get("url") if isinstance(entry, dict) else None
+                if not url:
+                    continue
+                _add_kindling_dependency_url(
+                    project_path, schema, distribution, url, group=group, extras=extras
                 )
-            _poetry_add_url(project_path, match["url"], group=group, extras=extras)
-            location = f" [{group}]" if group else ""
-            click.echo(f"  added {distribution} {match['version']}{location}")
+                location = f" [{group}]" if group else ""
+                click.echo(f"  added {distribution}{location} (from nested project)")
+        else:
+            click.echo(f"No Kindling dependency found in {pyproject_path}; adding it.")
+            resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
+            wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
 
-    install_command = ["poetry", "install", "--with", "dev"]
-    if not no_sync:
-        install_command.append("--sync")
-    _run_checked(install_command, cwd=project_path)
+            for distribution, group, extras in _BOOTSTRAP_PACKAGES:
+                match = wheels_by_distribution.get(distribution)
+                if match is None:
+                    raise click.ClickException(
+                        f"'{distribution}' is not among the wheel assets in Kindling "
+                        f"{resolved_version} ({repo})."
+                    )
+                _add_kindling_dependency_url(
+                    project_path, schema, distribution, match["url"], group=group, extras=extras
+                )
+                location = f" [{group}]" if group else ""
+                click.echo(f"  added {distribution} {match['version']}{location}")
+
+    _run_checked(_sync_command(schema, no_sync=no_sync), cwd=project_path)
 
     click.echo(f"\nKindling is ready in {project_path}.")
+
+
+def _poetry_authors_to_pep621(authors: List[str]) -> List[Dict[str, str]]:
+    """Convert Poetry's `authors = ["Name <email>", ...]` to PEP 621's
+    `authors = [{name=..., email=...}, ...]`."""
+    result: List[Dict[str, str]] = []
+    for author in authors:
+        match = re.match(r"^\s*(.*?)\s*<([^<>]+)>\s*$", author)
+        if match:
+            name, email = match.group(1), match.group(2)
+            result.append({"name": name, "email": email} if name else {"email": email})
+        elif author.strip():
+            result.append({"name": author.strip()})
+    return result
+
+
+_CARET_SPECIFIER_RE = re.compile(r"^\^(\d+)(?:\.(\d+))?(?:\.(\d+))?$")
+
+
+def _convert_caret_specifier(specifier: str) -> Optional[str]:
+    """Convert a Poetry caret range (e.g. '^3.10') to a PEP 508 specifier
+    (e.g. '>=3.10,<4.0'), per Poetry's own caret semantics: the leftmost
+    nonzero component is the one allowed to bump."""
+    match = _CARET_SPECIFIER_RE.match(specifier.strip())
+    if not match:
+        return None
+    major = int(match.group(1))
+    minor = int(match.group(2)) if match.group(2) is not None else None
+    if major > 0:
+        upper = f"{major + 1}.0.0"
+    elif minor:
+        upper = f"0.{minor + 1}.0"
+    else:
+        upper = "0.0.1"
+    lower = specifier.strip()[1:]
+    return f">={lower},<{upper}"
+
+
+def _poetry_python_constraint_to_requires_python(constraint: str) -> str:
+    """Best-effort conversion of a Poetry `python = ...` constraint to a
+    PEP 621 `requires-python` specifier."""
+    converted = _convert_caret_specifier(constraint)
+    return converted if converted is not None else constraint.strip()
+
+
+def _poetry_dependency_to_pep508(name: str, entry: Any) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Convert one non-Kindling Poetry dependency entry to a (PEP 508
+    requirement string, uv [tool.uv.sources] override or None) pair.
+
+    Best-effort: a specifier this can't confidently convert (e.g. an
+    unusual constraint table) is dropped, leaving the bare package name --
+    `uv add`/manual review can tighten it afterward, which is safer than
+    guessing wrong.
+    """
+    if isinstance(entry, str):
+        specifier = entry.strip()
+        if specifier in ("", "*"):
+            return name, None
+        if specifier[0] in ">=<~!":
+            return f"{name}{specifier}", None
+        caret_converted = _convert_caret_specifier(specifier)
+        if caret_converted is not None:
+            return f"{name}{caret_converted}", None
+        return name, None
+    if isinstance(entry, dict):
+        extras = entry.get("extras")
+        extras_suffix = f"[{','.join(extras)}]" if isinstance(extras, list) and extras else ""
+        if isinstance(entry.get("url"), str):
+            return f"{name}{extras_suffix}", {"url": entry["url"]}
+        if isinstance(entry.get("path"), str):
+            return f"{name}{extras_suffix}", {"path": entry["path"]}
+        version = entry.get("version")
+        if isinstance(version, str) and version.strip():
+            specifier = version.strip()
+            if specifier[0] in ">=<~!":
+                return f"{name}{extras_suffix}{specifier}", None
+            caret_converted = _convert_caret_specifier(specifier)
+            if caret_converted is not None:
+                return f"{name}{extras_suffix}{caret_converted}", None
+        return f"{name}{extras_suffix}", None
+    return name, None
+
+
+_TOML_TOP_LEVEL_HEADER_RE = re.compile(r"^(\[+)([^\[\]]+)\]+", re.MULTILINE)
+
+
+def _extract_raw_toml_sections(text: str, table_prefixes: Tuple[str, ...]) -> str:
+    """Return the exact original text (comments, formatting, and all) of
+    every top-level TOML table whose dotted name matches one of
+    table_prefixes, by slicing between successive top-level [...] headers
+    rather than re-serializing parsed data. Used to carry sections this
+    migration doesn't rewrite (poe tasks, pytest config, ...) through
+    untouched.
+    """
+    headers = list(_TOML_TOP_LEVEL_HEADER_RE.finditer(text))
+    kept_blocks = []
+    for i, match in enumerate(headers):
+        brackets, header_name = match.group(1), match.group(2).strip()
+        if brackets != "[":  # skip [[array-of-tables]] headers -- unused by our templates
+            continue
+        if any(
+            header_name == prefix or header_name.startswith(prefix + ".")
+            for prefix in table_prefixes
+        ):
+            start = match.start()
+            end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+            kept_blocks.append(text[start:end].rstrip("\n"))
+    return "\n\n".join(kept_blocks)
+
+
+def _render_uv_pyproject_toml(data: Dict[str, Any], original_text: str) -> str:
+    """Render a uv/PEP 621-schema pyproject.toml equivalent to a Poetry-schema
+    one, converting [tool.poetry.*] to [project]/[tool.uv.sources]/
+    [dependency-groups] and switching the build backend to uv_build. Every
+    other top-level tool table (poe tasks, pytest config, ...) is carried
+    through as the original, unmodified text.
+    """
+    poetry = data.get("tool", {}).get("poetry", {})
+    name = poetry.get("name", "")
+    version = poetry.get("version", "0.1.0")
+    description = poetry.get("description")
+    readme = poetry.get("readme")
+    authors = _poetry_authors_to_pep621(poetry.get("authors") or [])
+
+    main_deps = poetry.get("dependencies", {})
+    python_constraint = main_deps.get("python") if isinstance(main_deps, dict) else None
+
+    dependencies: List[str] = []
+    sources: Dict[str, Dict[str, Any]] = {}
+    if isinstance(main_deps, dict):
+        for dep_name, entry in main_deps.items():
+            if dep_name == "python":
+                continue
+            requirement, source = _poetry_dependency_to_pep508(dep_name, entry)
+            dependencies.append(requirement)
+            if source is not None:
+                sources[dep_name] = source
+
+    groups: Dict[str, List[str]] = {}
+    poetry_groups = poetry.get("group", {})
+    if isinstance(poetry_groups, dict):
+        for group_name, group_data in poetry_groups.items():
+            group_deps = group_data.get("dependencies", {}) if isinstance(group_data, dict) else {}
+            reqs: List[str] = []
+            if isinstance(group_deps, dict):
+                for dep_name, entry in group_deps.items():
+                    requirement, source = _poetry_dependency_to_pep508(dep_name, entry)
+                    reqs.append(requirement)
+                    if source is not None:
+                        sources[dep_name] = source
+            groups[group_name] = reqs
+
+    lines: List[str] = ["[project]", f'name = "{name}"', f'version = "{version}"']
+    if description:
+        lines.append(f'description = "{description}"')
+    if readme:
+        lines.append(f'readme = "{readme}"')
+    if authors:
+        authors_toml = ", ".join(
+            "{ " + ", ".join(f'{k} = "{v}"' for k, v in author.items()) + " }" for author in authors
+        )
+        lines.append(f"authors = [{authors_toml}]")
+    else:
+        lines.append("authors = []")
+    if python_constraint:
+        requires_python = _poetry_python_constraint_to_requires_python(str(python_constraint))
+        lines.append(f'requires-python = "{requires_python}"')
+    if dependencies:
+        deps_toml = ",\n    ".join(f'"{d}"' for d in dependencies)
+        lines.append(f"dependencies = [\n    {deps_toml},\n]")
+    else:
+        lines.append("dependencies = []")
+
+    lines += [
+        "",
+        "[build-system]",
+        'requires = ["uv_build>=0.12.5,<0.13.0"]',
+        'build-backend = "uv_build"',
+    ]
+
+    if sources:
+        lines += ["", "[tool.uv.sources]"]
+        for dep_name in sorted(sources):
+            source_toml = ", ".join(f'{k} = "{v}"' for k, v in sources[dep_name].items())
+            lines.append(f"{dep_name} = {{ {source_toml} }}")
+
+    if groups:
+        lines += ["", "[dependency-groups]"]
+        for group_name in sorted(groups):
+            reqs_toml = ", ".join(f'"{r}"' for r in groups[group_name])
+            lines.append(f"{group_name} = [{reqs_toml}]")
+
+    preserved = _extract_raw_toml_sections(
+        original_text,
+        tuple(f"tool.{name}" for name in data.get("tool", {}) if name not in ("poetry", "uv")),
+    )
+    # Poe's `build` task is the one command line in a preserved-verbatim
+    # section that's actually Poetry-specific -- everything else there
+    # (test tasks, pytest config, ...) is dependency-manager-agnostic.
+    preserved = preserved.replace('"poetry build"', '"uv build"')
+    if preserved:
+        lines += ["", preserved]
+
+    return "\n".join(lines) + "\n"
+
+
+def _ensure_uv_workspace_member(workspace_root: Path, member_path: Path) -> None:
+    """Ensure workspace_root has a uv workspace pyproject.toml declaring
+    member_path as a member, creating a minimal non-buildable root project
+    if none exists yet. Idempotent -- already-declared members are left
+    alone.
+    """
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    root_pyproject_path = workspace_root / "pyproject.toml"
+    try:
+        relative_member = member_path.resolve().relative_to(workspace_root)
+    except ValueError as exc:
+        raise click.ClickException(
+            f"{member_path} is not inside workspace root {workspace_root}."
+        ) from exc
+    member_str = relative_member.as_posix()
+
+    if not root_pyproject_path.exists():
+        root_name = _canonical_distribution_name(workspace_root.name) or "workspace-root"
+        root_pyproject_path.write_text(
+            "[project]\n"
+            f'name = "{root_name}"\n'
+            'version = "0.0.0"\n'
+            "dependencies = []\n\n"
+            "[tool.uv]\n"
+            "package = false\n\n"
+            "[tool.uv.workspace]\n"
+            f'members = ["{member_str}"]\n',
+            encoding="utf-8",
+        )
+        click.echo(f"Created workspace root {root_pyproject_path} with member {member_str}.")
+        return
+
+    root_data = _load_pyproject_toml(root_pyproject_path)
+    existing_members = (
+        root_data.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+    )
+    if not isinstance(existing_members, list):
+        existing_members = []
+    if member_str in existing_members:
+        click.echo(f"{root_pyproject_path} already declares {member_str} as a workspace member.")
+        return
+
+    text = root_pyproject_path.read_text(encoding="utf-8")
+    has_workspace_table = "workspace" in root_data.get("tool", {}).get("uv", {})
+    if has_workspace_table:
+        updated_members = existing_members + [member_str]
+        members_toml = ", ".join(f'"{m}"' for m in updated_members)
+        if "members" in root_data.get("tool", {}).get("uv", {}).get("workspace", {}):
+            new_text = re.sub(
+                r"members\s*=\s*\[[^\]]*\]", f"members = [{members_toml}]", text, count=1
+            )
+        else:
+            new_text = re.sub(
+                r"(\[tool\.uv\.workspace\])",
+                f"\\1\nmembers = [{members_toml}]",
+                text,
+                count=1,
+            )
+    else:
+        addition = f'\n[tool.uv.workspace]\nmembers = ["{member_str}"]\n'
+        new_text = text.rstrip("\n") + "\n" + addition
+    root_pyproject_path.write_text(new_text, encoding="utf-8")
+    click.echo(f"Added {member_str} as a workspace member in {root_pyproject_path}.")
+
+
+@env_group.command("migrate")
+@click.option(
+    "--to",
+    "target",
+    type=click.Choice(["uv"]),
+    required=True,
+    help="Dependency-manager schema to migrate this project to.",
+)
+@click.option(
+    "--project",
+    "project_path",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=Path("."),
+    show_default=True,
+    help="Project to migrate.",
+)
+@click.option(
+    "--workspace-root",
+    "workspace_root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help=(
+        "Monorepo root to declare (or extend) as a uv workspace with this "
+        "project as a member -- creates a minimal root pyproject.toml if "
+        "none exists yet."
+    ),
+)
+@click.option(
+    "--no-sync",
+    is_flag=True,
+    help="Skip running `uv sync` after migrating.",
+)
+def env_migrate(
+    target: str, project_path: Path, workspace_root: Optional[Path], no_sync: bool
+) -> None:
+    """Convert a project's pyproject.toml from Poetry's schema to uv's.
+
+    Rewrites [tool.poetry.*] to PEP 621 ([project], [tool.uv.sources],
+    [dependency-groups]) in place and switches the build backend to
+    uv_build. Every other top-level tool table (poe tasks, pytest config,
+    ...) is carried through as its original, unmodified text -- only the
+    dependency-management schema changes. Idempotent: running it again on an
+    already-uv project reports that and does nothing further to the file.
+
+    \b
+    With --workspace-root, also declares this project as a member of a uv
+    workspace at that root (creating a minimal root pyproject.toml there if
+    none exists), for the monorepo apps/packages layout where the root is
+    meant to converge on one Kindling version across every package.
+    """
+    project_path = project_path.expanduser().resolve()
+    pyproject_path = project_path / "pyproject.toml"
+    if not pyproject_path.exists():
+        raise click.ClickException(f"No pyproject.toml found at {project_path}.")
+
+    original_text = pyproject_path.read_text(encoding="utf-8")
+    data = _load_pyproject_toml(pyproject_path)
+    schema = _detect_pyproject_schema(data)
+    if schema == target:
+        click.echo(f"{pyproject_path} is already {target}-schema; nothing to migrate.")
+    else:
+        migrated_text = _render_uv_pyproject_toml(data, original_text)
+        pyproject_path.write_text(migrated_text, encoding="utf-8")
+        click.echo(f"Migrated {pyproject_path} from Poetry to {target}.")
+
+        lock_path = project_path / "poetry.lock"
+        if lock_path.exists():
+            lock_path.unlink()
+            click.echo(f"Removed {lock_path} (superseded by uv.lock).")
+
+    if workspace_root is not None:
+        _ensure_uv_workspace_member(workspace_root.expanduser().resolve(), project_path)
+
+    sync_command = ["uv", "sync"]
+    if no_sync:
+        sync_command.append("--inexact")
+    _run_checked(sync_command, cwd=project_path)
+
+    click.echo(f"\n{project_path} is on uv.")
 
 
 @cli.group("workspace")
