@@ -9,8 +9,9 @@ enabling uv workspaces for the apps/packages monorepo layout domain teams
 already build on top of Kindling. This framework repo's own internal build
 (the 10 packages under `packages/`) is explicitly **out of scope** — see
 "Deliberately Out of Scope" — since nothing here depends on it changing.
-Does not cover changing the build backend (see "What doesn't need to
-change").
+The migration script switches converted domain projects' build backend to
+uv's own (`uv_build`) as part of the conversion (see "Migration Touchpoints"
+below); this repo's own internal build stays on `poetry-core`.
 
 ---
 
@@ -124,11 +125,14 @@ migration, not a config swap.
   build`, etc. keep working; only *what* `poe build`/`update-kindling`
   shell out to changes (`poetry build` → `uv build`, `kindling env update`
   is internal and just needs its own implementation updated).
-- **The build backend.** `poetry-core` is a standalone PEP 517 backend —
-  it doesn't require Poetry itself to be installed to build a wheel, and uv
-  (or any PEP 517 frontend) can invoke it directly. `[build-system] requires
-  = ["poetry-core>=1.0.0"]` can stay as-is; switching to `hatchling` or
-  another backend is a separate, independent decision, not a prerequisite.
+- **The build backend, in principle.** `poetry-core` is a standalone PEP
+  517 backend — it doesn't require Poetry itself to be installed to build a
+  wheel, and uv (or any PEP 517 frontend) can invoke it directly, so
+  `[build-system] requires = ["poetry-core>=1.0.0"]` could stay as-is with
+  no functional need to change it. In practice the migration script
+  switches converted projects to `uv_build` anyway, for consistency with
+  the rest of an all-uv project rather than out of necessity — see
+  "Migration Touchpoints" below.
 - **The GitHub-Releases-as-source-of-truth model.** `_resolve_kindling_release_wheels`,
   `_github_release_for_tag`, `_resolve_github_version` — the whole "GitHub
   Releases holds the checksummed wheel assets, `poetry add <url>` pins one

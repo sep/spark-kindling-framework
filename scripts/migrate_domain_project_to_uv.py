@@ -60,12 +60,21 @@ def _convert_caret_specifier(specifier: str) -> Optional[str]:
         return None
     major = int(match.group(1))
     minor = int(match.group(2)) if match.group(2) is not None else None
+    patch = int(match.group(3)) if match.group(3) is not None else None
     if major > 0:
         upper = f"{major + 1}.0.0"
     elif minor:
         upper = f"0.{minor + 1}.0"
+    elif patch is not None:
+        # ^0.0.x: minor is 0, so patch is the leftmost (only) nonzero-eligible
+        # component -- e.g. ^0.0.3 := >=0.0.3,<0.0.4.
+        upper = f"0.0.{patch + 1}"
+    elif minor is not None:
+        # ^0.0 (no patch given): minor is the last specified component.
+        upper = "0.1.0"
     else:
-        upper = "0.0.1"
+        # ^0 (only major given, and it's 0).
+        upper = "1.0.0"
     lower = specifier.strip()[1:]
     return f">={lower},<{upper}"
 
@@ -337,10 +346,10 @@ def main() -> None:
     if args.workspace_root is not None:
         ensure_uv_workspace_member(args.workspace_root.expanduser().resolve(), project_path)
 
-    sync_command = ["uv", "sync"]
     if args.no_sync:
-        sync_command.append("--inexact")
-    subprocess.run(sync_command, cwd=project_path, check=True)  # nosec B603
+        print("Skipping `uv sync` (--no-sync).")
+    else:
+        subprocess.run(["uv", "sync"], cwd=project_path, check=True)  # nosec B603
 
     print(f"\n{project_path} is on uv.")
 
