@@ -905,8 +905,40 @@ def _discover_app_py_under(app_root: Path) -> Path:
     return found[0]
 
 
-def _load_app_module(app_path: Path, env: Optional[str], config_dir: Optional[Path] = None) -> None:
-    """Import app.py and call its initialize() function."""
+def _preinitialize_for_inspection(app_dir: Path, env: str) -> None:
+    """Initialize the Kindling framework before an app module is (re)loaded.
+
+    Entity/pipe registration decorators (``@DataEntities.entity``,
+    ``@DataPipes.pipe``) raise ``KindlingNotInitializedError`` unless the
+    framework is already initialized at import time. Well-behaved app.py
+    files defer their decorator-bearing imports inside ``initialize()``,
+    but an app.py that imports a registering module above its own
+    `initialize()` definition fires that decorator during `exec_module`,
+    before `_load_app_module` ever gets a chance to call `initialize()`.
+
+    Mirrors the order `kindling_cli._runner` already uses for `kindling app
+    run` (initialize the framework, then exec the app entrypoint), using the
+    same settings.yaml/settings.<env>.yaml discovery `kindling config show`
+    uses so the config an inspection command reports matches what it
+    resolved. Idempotent: an app.py that also defines `initialize()` and
+    calls `initialize_framework()` itself will simply short-circuit as
+    already-initialized.
+    """
+    from kindling.bootstrap import initialize_framework
+
+    _, config_paths = _load_effective_raw_config(app_dir, env, None)
+    initialize_framework(
+        {
+            "platform": "standalone",
+            "environment": env,
+            "config_files": [str(path) for path in config_paths],
+            "install_bootstrap_dependencies": False,
+        }
+    )
+
+
+def _exec_app_module(app_path: Path, env: Optional[str], config_dir: Optional[Path] = None) -> None:
+    """Import app.py and call its initialize() function (single attempt)."""
     import importlib.util
     import inspect
 
@@ -965,6 +997,37 @@ def _load_app_module(app_path: Path, env: Optional[str], config_dir: Optional[Pa
                 sys.path.remove(inserted_path)
             except ValueError:
                 pass
+
+
+def _load_app_module(
+    app_path: Path,
+    env: Optional[str],
+    config_dir: Optional[Path] = None,
+    allow_preinitialize: bool = False,
+) -> None:
+    """Import app.py and call its initialize() function.
+
+    On a first attempt that fails because a `@DataEntities.entity` /
+    `@DataPipes.pipe` decorator fired before `initialize()` ran, retries
+    once after pre-initializing the framework (see
+    `_preinitialize_for_inspection`) when `allow_preinitialize` is set --
+    matching the order `kindling app run` already uses (initialize, then
+    load the app entrypoint; see `kindling_cli._runner`). Apps that follow
+    the documented convention (defer registering imports inside
+    `initialize()`) succeed on the first attempt and never trigger this
+    fallback, so this stays a no-op for every app.py that already works
+    today. Used by inspection-only commands (`entity tags`, `app validate`)
+    that read registered entity/pipe definitions rather than running them.
+    """
+    from kindling.data_entities import KindlingNotInitializedError
+
+    try:
+        _exec_app_module(app_path, env, config_dir)
+    except KindlingNotInitializedError:
+        if not allow_preinitialize:
+            raise
+        _preinitialize_for_inspection(app_path.parent, env or os.getenv("KINDLING_ENV", "local"))
+        _exec_app_module(app_path, env, config_dir)
 
 
 def _detect_platform_from_environment() -> Optional[str]:
@@ -1248,7 +1311,7 @@ def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
     resolved_app = _discover_app_py(app_path)
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
     # [implementer] keep validate environment handling symmetric with run — TASK-20260430-002
-    _load_app_module(resolved_app, env=resolved_env)
+    _load_app_module(resolved_app, env=resolved_env, allow_preinitialize=True)
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
@@ -6807,7 +6870,7 @@ def entity_tags(
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
     resolved_app = _discover_app_py(app_path)
-    _load_app_module(resolved_app, env=resolved_env)
+    _load_app_module(resolved_app, env=resolved_env, allow_preinitialize=True)
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     entity_def = entity_registry.get_entity_definition(entity_id)
