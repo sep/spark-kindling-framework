@@ -72,10 +72,11 @@ cardinality).
 declares a fixed envelope — `event_id, event_type, generation,
 event_class, subject_type, subject_id, event_ts, source_system,
 correlation_id, payload, attributes, ingested_at` — where `payload`/
-`attributes` are `MapType(StringType(), StringType())`. `BaseEventMetadata`
-(`registry.py:31-47`) declares `payload_columns` as a flat `List[str]`,
-folded into that one string map by `TemporalPipeTranslator
-.select_event_envelope` (`translation.py:415-450`). There is no typed,
+`attributes` are `MapType(StringType(), StringType())`. In the same
+package, `BaseEventMetadata` (`kindling_ext_temporal/registry.py:31-47`)
+declares `payload_columns` as a flat `List[str]`, folded into that one
+string map by `TemporalPipeTranslator.select_event_envelope`
+(`kindling_ext_temporal/translation.py:415-450`). There is no typed,
 per-`event_type` payload schema today. The base proposal names this gap
 explicitly: *"The payload has no schema, so semantic drift is silent...
 the missing piece is a payload contract per `event_type`"*
@@ -83,26 +84,27 @@ the missing piece is a payload contract per `event_type`"*
 
 ### Episode pairing is one-to-one by construction; membership is unimplemented design
 
-`EpisodeRunner._paired_boundaries` (`engine.py:264-443`) joins every
-start-event row to candidate end-event rows sharing `subject_type`/
-`subject_id` with `end.event_ts >= start.event_ts`, then keeps only the
-earliest via `row_number()==1` partitioned by `start.event_id`
-(`engine.py:301-315`) — each start pairs to exactly one end. Nothing
-filters interior events at all. No persisted membership table exists
-anywhere in the extension (`entities.py`, `engine.py`, `chain.py`,
-`translation.py`, `registry.py` — zero hits for "membership"). The base
-proposal's "Episode Membership" section (`temporal_event_segmentation.md:911-928`)
-sketches exactly this schema (`episode_id, event_id, event_ts, offset_ms,
-ordinal_in_episode, membership_reason`) but calls it optional and lists
-*"Should episode membership be opt-in per episode definition?"* as an
-open question (`:1757`) — design-only, not code.
+`EpisodeRunner._paired_boundaries` (`kindling_ext_temporal/engine.py:264-443`)
+joins every start-event row to candidate end-event rows sharing
+`subject_type`/`subject_id` with `end.event_ts >= start.event_ts`, then
+keeps only the earliest via `row_number()==1` partitioned by
+`start.event_id` (`kindling_ext_temporal/engine.py:301-315`) — each start
+pairs to exactly one end. Nothing filters interior events at all. No
+persisted membership table exists anywhere in the extension
+(`kindling_ext_temporal/{entities,engine,chain,translation,registry}.py`
+— zero hits for "membership"). The base proposal's "Episode Membership"
+section (`temporal_event_segmentation.md:911-928`) sketches exactly this
+schema (`episode_id, event_id, event_ts, offset_ms, ordinal_in_episode,
+membership_reason`) but calls it optional and lists *"Should episode
+membership be opt-in per episode definition?"* as an open question
+(`:1757`) — design-only, not code.
 
 Across distinct episode-type declarations, the same raw event **can**
 already be consumed by more than one episode declaration: each
 `DataEpisodes.episode()` call independently filters the events entity by
-its own `start_event`/`end_event` type strings (`engine.py:274-278`) with
-no exclusivity enforced — this is the natural entry point for "one event,
-multiple episode types."
+its own `start_event`/`end_event` type strings
+(`kindling_ext_temporal/engine.py:274-278`) with no exclusivity enforced —
+this is the natural entry point for "one event, multiple episode types."
 
 ### The deterministic-hash identity pattern is already validated, just not shared
 
@@ -111,8 +113,9 @@ over `uuid()` specifically because "retries, re-pulls, and backfills
 produce the same key" (`surrogate_keys.md:33-37, 73-78`) — nondeterminism
 "breaks every idempotency property the framework leans on." The temporal
 extension already hand-rolls this same pattern three times, independently:
-event ID (`translation.py:424-433`), condition boundary event ID
-(`engine.py:112-120`), and episode ID (`engine.py:425-432`) — each a
+event ID (`kindling_ext_temporal/translation.py:424-433`), condition
+boundary event ID (`kindling_ext_temporal/engine.py:112-120`), and
+episode ID (`kindling_ext_temporal/engine.py:425-432`) — each a
 one-off `sha2(concat_ws("||", ...), 256)` expression, not a shared
 utility. `packages/kindling/entity_resolution.py` does **not** provide
 identity/dedup utilities despite the name — it resolves table names and
@@ -201,8 +204,8 @@ the number of consumers.
 | Grain | Key strategy | Rationale |
 |---|---|---|
 | Raw | Preserve source-native identity verbatim as `source_native_id`/`source_offset` — never discard it, but it is **not** the canonical identity | Transport identity varies even across live sources (Event Hub vs. Kafka nulls different fields) and is absent for backfill sources; canonical identity can't depend on it. |
-| Typed/canonical event | `event_id = deterministic_hash(event_type, subject_id, event_ts, <domain-stable fields>)` | Already the validated pattern from `surrogate_keys.md` and already used ad hoc in `translation.py`; deterministic hash reproduces the same ID across retries/backfills. |
-| Temporal (episode) | `episode_id = deterministic_hash(episode_type, start_event_id)`, anchored on the start boundary, stable across boundary revisions | Already the implemented pattern (`engine.py:425-432`); a revised end boundary must update the same row via merge-by-key, not mint a new episode — needs to become an explicit, tested guarantee. |
+| Typed/canonical event | `event_id = deterministic_hash(event_type, subject_id, event_ts, <domain-stable fields>)` | Already the validated pattern from `surrogate_keys.md` and already used ad hoc in `kindling_ext_temporal/translation.py`; deterministic hash reproduces the same ID across retries/backfills. |
+| Temporal (episode) | `episode_id = deterministic_hash(episode_type, start_event_id)`, anchored on the start boundary, stable across boundary revisions | Already the implemented pattern (`kindling_ext_temporal/engine.py:425-432`); a revised end boundary must update the same row via merge-by-key, not mint a new episode — needs to become an explicit, tested guarantee. |
 | Membership (new) | Natural composite key `(episode_id, event_id)` — no hash needed, both halves already deterministic | Net-new grain; the same `event_id` legitimately recurs under multiple `episode_id`s since episode declarations aren't mutually exclusive over the events entity. |
 | Summary | `merge_columns=["episode_id"]`, plain SCD1, one writer | No new identity concept — built from the already-deduplicated membership grain. |
 
