@@ -1,5 +1,14 @@
 # Google Cloud Dataproc Platform Evaluation
 
+**Status:** Not started — parked pending a product decision (`P3`). No
+`platform_dataproc.py` or Dataproc-specific package/runtime/docs/test
+support exists. Tracked by
+[issue #69](https://github.com/sep/spark-kindling-framework/issues/69);
+see also `docs/audit/2026-08-documentation-currency.md`, which notes this
+evaluation's architecture baseline predates the current split between
+runtime platform services and design-time SDK submission APIs and should
+be rewritten against that before implementation, if pursued.
+
 ## Executive Summary
 
 This document evaluates adding Google Cloud Dataproc as a fourth platform to the Kindling framework, alongside Microsoft Fabric, Azure Synapse Analytics, and Databricks. The evaluation covers API compatibility, implementation complexity, and strategic considerations.
