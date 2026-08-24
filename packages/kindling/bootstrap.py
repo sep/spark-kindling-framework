@@ -1682,7 +1682,6 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
     resolve the concrete class keep working.
     """
     from injector import singleton
-
     from kindling.plain_telemetry import (
         PlainPythonLoggerProvider,
         PlainPythonTraceProvider,
@@ -1797,6 +1796,52 @@ def _resolve_registered_tag_secrets(logger) -> None:
         )
 
 
+def _config_service_matches_request(config_service, config: Dict[str, Any]) -> bool:
+    """True if ``config_service`` is already initialized with the same
+    ``environment``/``config_files`` this call is requesting.
+
+    Two separate "already initialized, skip re-init" short-circuits in
+    ``initialize_framework`` exist for idempotent re-entry -- e.g.
+    re-running a notebook cell that calls ``initialize()`` with an
+    unchanged ``BOOTSTRAP_CONFIG`` shouldn't tear down and rebuild Spark/
+    platform services or reload Dynaconf. But neither compared anything
+    about the *requested* config before skipping, so a second call in the
+    same process that explicitly passes a different ``environment``/
+    ``config_files`` (a distinct app, a different env in a test, a second
+    ``kindling.initialize()`` call) still short-circuited -- silently
+    keeping the *first* call's Dynaconf state (and therefore its
+    ``entity_tags:``/``dataentities:`` overlays) instead of loading what was
+    just asked for. Only short-circuit when the request actually matches
+    what is already loaded.
+    """
+    if not (hasattr(config_service, "dynaconf") and config_service.dynaconf is not None):
+        return False
+
+    existing = getattr(config_service, "initial_config", None) or {}
+
+    requested_env = config.get("environment")
+    if requested_env is not None and requested_env != existing.get("environment"):
+        return False
+
+    requested_files = config.get("config_files")
+    if requested_files is not None and requested_files != existing.get("config_files"):
+        return False
+
+    return True
+
+
+def _initialized_config_matches(config: Dict[str, Any]) -> bool:
+    """Same check as `_config_service_matches_request`, looking up the
+    current ConfigService singleton itself (for the outer
+    ``is_framework_initialized()`` short-circuit, which runs before any
+    local `config_service` reference is in scope)."""
+    try:
+        existing_config_service = get_kindling_service(ConfigService)
+    except Exception:
+        return False
+    return _config_service_matches_request(existing_config_service, config)
+
+
 def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None):
     """Linear framework initialization with Dynaconf config loading"""
 
@@ -1804,13 +1849,33 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     if app_name is None:
         app_name = config.get("app_name")
 
-    # Check if framework is already initialized
-    if is_framework_initialized():
+    # Check if framework is already initialized -- with the config this call
+    # is actually requesting. See _initialized_config_matches.
+    already_initialized = is_framework_initialized()
+    if already_initialized and _initialized_config_matches(config):
         _BOOTSTRAP_LOGGER.debug("Framework already initialized, skipping re-initialization")
         existing_service = get_kindling_service(PlatformServiceProvider).get_service()
         logger_provider = get_kindling_service(PythonLoggerProvider)
         _import_local_package_registrations(logger_provider.get_logger("KindlingBootstrap"))
         return existing_service
+
+    if already_initialized:
+        # Not a caller bug by itself -- a notebook cell can legitimately be
+        # re-run with an edited BOOTSTRAP_CONFIG pointing at a new
+        # environment -- but it's unusual enough in real (non-test,
+        # non-notebook) usage to be worth a visible signal: this exact
+        # silently-reusing-stale-config gap is what let a prior call's
+        # entity_tags:/dataentities: overlays leak into an unrelated
+        # environment's resolved config before this check existed.
+        _BOOTSTRAP_LOGGER.warning(
+            "initialize_framework() called again with a different environment/"
+            "config_files than the currently-initialized configuration "
+            "(requesting environment=%r) -- reconfiguring. Expected for a "
+            "deliberate re-init (e.g. a notebook cell re-run with edited "
+            "settings); if unexpected, a prior kindling.reset() call is "
+            "probably missing.",
+            config.get("environment"),
+        )
 
     # Full (non-short-circuited) initialization: record phase timings for the
     # retro-flushed bootstrap span tree. Short-circuited re-inits above
@@ -1872,12 +1937,14 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
     from kindling.spark_config import configure_injector_with_config
 
-    # Check if ConfigService is already properly initialized
+    # Check if ConfigService is already properly initialized with this
+    # request's environment/config_files (see _config_service_matches_request
+    # -- a stale Dynaconf from a differently-configured prior call in this
+    # process must not be reused just because *some* Dynaconf is present).
     with _bootstrap_phase("config_init"):
         try:
             config_service = get_kindling_service(ConfigService)
-            # Check if it's actually initialized (dynaconf will be None if not)
-            if hasattr(config_service, "dynaconf") and config_service.dynaconf is not None:
+            if _config_service_matches_request(config_service, config):
                 _BOOTSTRAP_LOGGER.debug(
                     "Config service already initialized, skipping configuration"
                 )
