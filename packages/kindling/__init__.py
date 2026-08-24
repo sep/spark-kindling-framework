@@ -77,6 +77,9 @@ def initialize(config=None, app_name=None, engine=None):
         config["engine_owns_incrementality"] = bool(
             getattr(extension, "owns_incrementality", False)
         )
+        config["engine_supports_multi_source_temporal_chain"] = bool(
+            getattr(extension, "supports_multi_source_temporal_chain", False)
+        )
 
     result = initialize_framework(config)
 
@@ -126,7 +129,13 @@ def _load_engine_extension(engine_name):
     The returned object must provide ``activate()`` (called once, after
     framework initialization) and may provide ``owns_incrementality``
     (bool — the engine manages incremental reads itself, so the watermark
-    aspect is not registered) and ``declare_pipeline(pipe_ids=None)``.
+    aspect is not registered), ``supports_multi_source_temporal_chain``
+    (bool — the engine's declarative lowering re-derives temporal base-event
+    wiring directly from the registry rather than running the chain pipe's
+    own Python body, so kindling_ext_temporal's single-driving-entity
+    requirement does not apply to it; see
+    kindling_ext_temporal.chain.declare_temporal_chain), and
+    ``declare_pipeline(pipe_ids=None)``.
 
     Loading is side-effect free: nothing is activated here.
     """

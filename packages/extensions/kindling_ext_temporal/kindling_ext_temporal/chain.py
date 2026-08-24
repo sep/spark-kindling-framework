@@ -49,9 +49,18 @@ so most apps never need to call either function directly; keep
 lowerings registered side by side (e.g. inspecting one hop in isolation).
 
 Phase-1 constraint: all base events must share one input entity (the
-chain's driving source). Heterogeneous bronze sources should normalize
-into a shared staging entity first; native multi-source chaining is a
-planned follow-up.
+chain's driving source) UNLESS the active execution engine declares
+``supports_multi_source_temporal_chain`` (see
+``kindling.initialize(engine=...)``/``_load_engine_extension``) — such an
+engine's own declarative lowering re-derives base-event wiring directly
+from the registry instead of running this module's composite pipe body,
+so the single-driving-entity restriction doesn't apply to it. Today only
+``kindling_ext_databricks``'s Lakeflow lowering
+(``temporal_lowering.declare_stratified_temporal``) declares this; it
+lowers each base event to its own native ``append_flow`` into one shared
+stratum-0 streaming table, multi-source natively. On every other engine,
+heterogeneous bronze sources still need to normalize into a shared
+staging entity first.
 """
 
 from collections import Counter
@@ -83,6 +92,20 @@ DEFAULT_MAX_GENERATIONS = 10
 
 AUTOCOLLAPSE_CONFIG_KEY = "kindling.temporal.autocollapse"
 DEFAULT_AUTOCOLLAPSE = True
+
+# Set by kindling.initialize(engine=...) from the active engine extension's
+# supports_multi_source_temporal_chain flag -- see this module's docstring.
+MULTI_SOURCE_ENGINE_CONFIG_KEY = "engine_supports_multi_source_temporal_chain"
+
+
+def _engine_supports_multi_source_chain() -> bool:
+    try:
+        from kindling.spark_config import ConfigService
+
+        value = GlobalInjector.get(ConfigService).get(MULTI_SOURCE_ENGINE_CONFIG_KEY, None)
+    except Exception:  # noqa: BLE001 - config service unavailable in bare tests
+        return False
+    return parse_bool_config(value, default=False)
 
 
 def chain_events_pipe_id(chainid: str) -> str:
@@ -281,6 +304,33 @@ def _chain_events_execute(
     return execute
 
 
+def _multi_source_chain_events_unsupported(chainid, driving_entities):
+    """Placeholder execute body for a chain registered with >1 driving entity.
+
+    Reachable only when ``_engine_supports_multi_source_chain()`` allowed
+    ``declare_temporal_chain`` to skip the single-driving-entity guard --
+    meaning the active engine's own declarative lowering (e.g.
+    ``kindling_ext_databricks.temporal_lowering.declare_stratified_temporal``)
+    re-derives base-event wiring directly from the registry and never calls
+    this body at all. It exists purely so an accidental non-declarative run
+    of this pipe id (e.g. ``run_datapipes`` instead of
+    ``kindling.declare_pipeline()``) fails with a clear, actionable message
+    instead of a confusing KeyError from ``_chain_events_execute``.
+    """
+
+    def execute(**_entity_dfs):
+        raise RuntimeError(
+            f"Temporal chain '{chainid}' was declared for multiple driving "
+            f"entities ({', '.join(driving_entities)}), which only a "
+            "declarative execution engine that supports "
+            "multi-source temporal chains (e.g. engine='databricks_sdp') can "
+            "run natively. Call kindling.declare_pipeline() for this chain "
+            "instead of run_datapipes()/run_datapipes_dag()."
+        )
+
+    return execute
+
+
 def _chain_episodes_execute(events_entity_id, episode_defs):
     """Build the episodes body: pair every declaration, one merged frame."""
 
@@ -344,13 +394,18 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
         )
 
     driving_entities = sorted({metadata.input_entity_id for metadata in base_defs})
-    if len(driving_entities) > 1:
+    multi_source = len(driving_entities) > 1
+    if multi_source and not _engine_supports_multi_source_chain():
         raise ValueError(
             f"Temporal chain '{chainid}': base events read from multiple entities "
-            f"({', '.join(driving_entities)}); the chain needs one driving entity. "
-            "Normalize heterogeneous sources into a shared staging entity first."
+            f"({', '.join(driving_entities)}); the chain needs one driving entity "
+            "on this execution engine. Normalize heterogeneous sources into a "
+            "shared staging entity first, or select an execution engine that "
+            "declares supports_multi_source_temporal_chain (e.g. "
+            "kindling.initialize(engine='databricks_sdp')), which lowers each "
+            "base event to its own native flow instead of running this "
+            "module's composite pipe body."
         )
-    driving_entity_id = driving_entities[0]
 
     # A chain with zero declared condition engines still wires the
     # conditions entity unconditionally -- pre-existing behavior, left
@@ -375,7 +430,7 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
         conditions_current_id = resolver.get_conditions_current_entity_id()
         TemporalPipeTranslator.ensure_entity(entity_registry, conditions_entity)
 
-    events_input_entity_ids = [driving_entity_id]
+    events_input_entity_ids = list(driving_entities)
     if conditions_current_id is not None:
         events_input_entity_ids.append(conditions_current_id)
 
@@ -383,13 +438,17 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
     pipe_registry.register_pipe(
         events_pipe,
         name=f"Temporal events chain: {chainid}",
-        execute=_chain_events_execute(
-            driving_entity_id,
-            conditions_current_id,
-            base_defs,
-            episode_defs,
-            has_table_engine=has_table_engine,
-            has_registry_engine=has_registry_engine,
+        execute=(
+            _multi_source_chain_events_unsupported(chainid, driving_entities)
+            if multi_source
+            else _chain_events_execute(
+                driving_entities[0],
+                conditions_current_id,
+                base_defs,
+                episode_defs,
+                has_table_engine=has_table_engine,
+                has_registry_engine=has_registry_engine,
+            )
         ),
         tags={
             "pipe_type": "temporal.chain_events",
