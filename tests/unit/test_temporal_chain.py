@@ -36,9 +36,11 @@ def _temporal_service_get(
     condition_registry=None,
     entity_registry=None,
     pipe_registry=None,
+    config_service=None,
 ):
     from kindling.data_entities import DataEntityRegistry
     from kindling.data_pipes import DataPipesRegistry
+    from kindling.spark_config import ConfigService
     from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
         TemporalConditionRegistry,
@@ -66,12 +68,16 @@ def _temporal_service_get(
             return entity_registry
         if dep is DataPipesRegistry and pipe_registry is not None:
             return pipe_registry
+        if dep is ConfigService and config_service is not None:
+            return config_service
         raise AssertionError(f"Unexpected service request: {dep}")
 
     return _get
 
 
-def _register_base_event(event_registry, entity_registry, pipe_registry, eventid):
+def _register_base_event(
+    event_registry, entity_registry, pipe_registry, eventid, input_entity_id="bronze.telemetry"
+):
     from kindling_ext_temporal import DataEvents
 
     DataEvents.reset()
@@ -86,7 +92,7 @@ def _register_base_event(event_registry, entity_registry, pipe_registry, eventid
 
         @DataEvents.base_event(
             eventid=eventid,
-            input_entity_id="bronze.telemetry",
+            input_entity_id=input_entity_id,
             subject_type="machine",
             subject_keys=["machine_id"],
             time_column="event_ts",
@@ -240,6 +246,163 @@ def test_declare_temporal_chain_mixed_sources_still_includes_conditions_current(
     assert events_pipe.input_entity_ids == ["bronze.telemetry", "silver.conditions.current"]
     assert entity_registry.get_entity_definition("silver.conditions") is not None
     assert entity_registry.get_entity_definition("silver.conditions.current") is not None
+
+
+# --- multi-source chains: single-driving-entity guard scoped to the engine -
+
+
+class _FakeConfigService:
+    def __init__(self, values):
+        self.values = values
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+
+def _register_two_base_events_with_different_entities(
+    event_registry, entity_registry, pipe_registry
+):
+    _register_base_event(
+        event_registry, entity_registry, pipe_registry, "telemetry.base", "silver.device_telemetry"
+    )
+    _register_base_event(
+        event_registry,
+        entity_registry,
+        pipe_registry,
+        "twin_change.base",
+        "silver.device_twin_change",
+    )
+
+
+def test_declare_temporal_chain_multi_source_raises_by_default():
+    """No engine configured (or one that doesn't declare
+    supports_multi_source_temporal_chain): the single-driving-entity
+    restriction still applies exactly as before this fix."""
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import TemporalEventRegistryManager
+    from kindling_ext_temporal.chain import declare_temporal_chain
+
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    _register_two_base_events_with_different_entities(
+        event_registry, entity_registry, pipe_registry
+    )
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            event_registry=event_registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+        ),
+    ):
+        with pytest.raises(ValueError, match="multiple entities"):
+            declare_temporal_chain("t1")
+
+
+def test_declare_temporal_chain_multi_source_raises_when_engine_explicitly_unsupported():
+    """A ConfigService that resolves but doesn't set the flag (e.g. the
+    plain OSS pyspark.pipelines engine, which sets owns_incrementality but
+    NOT supports_multi_source_temporal_chain) must still raise."""
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import TemporalEventRegistryManager
+    from kindling_ext_temporal.chain import declare_temporal_chain
+
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+    config_service = _FakeConfigService({"engine_owns_incrementality": True})
+
+    _register_two_base_events_with_different_entities(
+        event_registry, entity_registry, pipe_registry
+    )
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            event_registry=event_registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+            config_service=config_service,
+        ),
+    ):
+        with pytest.raises(ValueError, match="multiple entities"):
+            declare_temporal_chain("t1")
+
+
+def test_declare_temporal_chain_multi_source_succeeds_when_engine_supports_it():
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import TemporalEventRegistryManager
+    from kindling_ext_temporal.chain import declare_temporal_chain
+
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+    config_service = _FakeConfigService({"engine_supports_multi_source_temporal_chain": True})
+
+    _register_two_base_events_with_different_entities(
+        event_registry, entity_registry, pipe_registry
+    )
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            event_registry=event_registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+            config_service=config_service,
+        ),
+    ):
+        pipe_ids = declare_temporal_chain("t1")
+
+    events_pipe = pipe_registry.get_pipe_definition("temporal.chain.events.t1")
+    assert events_pipe.input_entity_ids == [
+        "silver.device_telemetry",
+        "silver.device_twin_change",
+        "silver.conditions.current",
+    ]
+    assert "temporal.chain.events.t1" in pipe_ids
+
+
+def test_declare_temporal_chain_multi_source_execute_raises_a_clear_error_if_run_directly():
+    """Defensive coverage: the composite pipe's execute body is never
+    called by the declarative engine that unlocked registration (it
+    re-derives everything from the registry directly), but a stray
+    generic-engine run of this pipe id must fail loudly, not with a
+    confusing KeyError from _chain_events_execute."""
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
+    from kindling_ext_temporal import TemporalEventRegistryManager
+    from kindling_ext_temporal.chain import declare_temporal_chain
+
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+    config_service = _FakeConfigService({"engine_supports_multi_source_temporal_chain": True})
+
+    _register_two_base_events_with_different_entities(
+        event_registry, entity_registry, pipe_registry
+    )
+
+    with patch(
+        "kindling.injection.GlobalInjector.get",
+        side_effect=_temporal_service_get(
+            event_registry=event_registry,
+            entity_registry=entity_registry,
+            pipe_registry=pipe_registry,
+            config_service=config_service,
+        ),
+    ):
+        declare_temporal_chain("t1")
+
+    events_pipe = pipe_registry.get_pipe_definition("temporal.chain.events.t1")
+    with pytest.raises(RuntimeError, match="multiple driving entities"):
+        events_pipe.execute()
 
 
 class _FakePipeDef:

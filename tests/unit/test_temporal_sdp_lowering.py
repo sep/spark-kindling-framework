@@ -159,3 +159,114 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch):
     assert flow["stored_as_scd_type"] == 2
     assert "silver_episodes__episode_snapshot" in dp.views
     assert set(dp.materialized_views) == {"silver_events__determinations", "silver_events"}
+
+
+def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
+    """gh: declare_temporal_chain()'s single-driving-entity guard is scoped
+    to engines that actually run its composite pipe body (see chain.py's
+    supports_multi_source_temporal_chain check) -- this engine's own
+    lowering never runs that body at all, so it must land every base event
+    declaration as its own independent append_flow into one shared
+    stratum-0 streaming table, each reading its own source entity, exactly
+    like the single-entity case above but with N sources instead of one.
+    """
+    from kindling.data_entities import (
+        DataEntityManager,
+        DataEntityRegistry,
+        EntityNameMapper,
+    )
+    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
+    from kindling.spark_config import ConfigService
+    from kindling_ext_databricks import temporal_lowering
+    from kindling_ext_temporal import (
+        DataEvents,
+        SimpleTemporalEntityResolver,
+        TemporalEntityResolver,
+        TemporalEpisodeRegistry,
+        TemporalEpisodeRegistryManager,
+        TemporalEventRegistry,
+        TemporalEventRegistryManager,
+        declare_temporal_chain,
+    )
+
+    class _FakeConfigService:
+        def __init__(self, values):
+            self.values = values
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+    DataEvents.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+    resolver = SimpleTemporalEntityResolver()
+
+    name_mapper = SimpleNamespace(get_table_name=lambda entity: f"cat.sch.{entity.entityid}")
+    config_service = _FakeConfigService({"engine_supports_multi_source_temporal_chain": True})
+    services = {
+        TemporalEntityResolver: resolver,
+        TemporalEventRegistry: event_registry,
+        TemporalEpisodeRegistry: episode_registry,
+        DataEntityRegistry: entity_registry,
+        DataPipesRegistry: pipe_registry,
+        EntityNameMapper: name_mapper,
+        ConfigService: config_service,
+    }
+
+    def service_get(dep):
+        try:
+            return services[dep]
+        except KeyError as exc:
+            raise AssertionError(f"Unexpected service request: {dep}") from exc
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=service_get):
+
+        @DataEvents.base_event(
+            eventid="telemetry.base",
+            input_entity_id="silver.device_telemetry",
+            subject_type="device",
+            subject_keys=["device_id"],
+            time_column="reading_ts",
+            event_type="telemetry.observed",
+            payload_columns=["temperature"],
+        )
+        def normalize_telemetry(df):
+            return df
+
+        @DataEvents.base_event(
+            eventid="twin_change.base",
+            input_entity_id="silver.device_twin_change",
+            subject_type="device",
+            subject_keys=["device_id"],
+            time_column="changed_at",
+            event_type="twin.changed",
+            payload_columns=["property_name", "property_value"],
+        )
+        def normalize_twin_change(df):
+            return df
+
+        # This is the fix under test: two distinct input_entity_id values,
+        # with no shared staging entity, no longer raise on this engine.
+        declare_temporal_chain()
+
+        with patch.object(temporal_lowering, "_spark", lambda: MagicMock()):
+            dp = FakeDp()
+            temporal_lowering.declare_stratified_temporal(
+                dp, events_name="silver_events", episodes_name=None, max_generations=0
+            )
+
+    assert dp.streaming_tables == ["silver_events__g0"]
+    flow_targets_and_names = dict(dp.append_flows)
+    assert set(flow_targets_and_names) == {"silver_events__g0"}
+    flow_names = [name for _, name in dp.append_flows]
+    assert flow_names == [
+        "silver_events__g0_telemetry_base",
+        "silver_events__g0_twin_change_base",
+    ]
+    # Exactly one shared stratum-0 target for both sources -- the fan-in.
+    assert [target for target, _ in dp.append_flows] == [
+        "silver_events__g0",
+        "silver_events__g0",
+    ]

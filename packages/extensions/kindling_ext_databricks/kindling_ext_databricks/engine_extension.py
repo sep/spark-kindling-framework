@@ -19,6 +19,15 @@ class DatabricksSdpEngineExtension:
 
     name = "databricks_sdp"
     owns_incrementality = True
+    # temporal_lowering.declare_stratified_temporal lowers each
+    # DataEvents.base_event declaration to its own native Lakeflow
+    # append_flow into a shared stratum-0 streaming table -- it re-derives
+    # base-event wiring directly from the registry and never runs
+    # kindling_ext_temporal.chain's composite pipe body, so that module's
+    # single-driving-entity requirement doesn't apply here. The plain OSS
+    # pyspark.pipelines engine has no equivalent native lowering yet, so it
+    # does NOT declare this.
+    supports_multi_source_temporal_chain = True
 
     def activate(self) -> None:
         from kindling_ext_sdp.bootstrap import activate_sdp_mode
