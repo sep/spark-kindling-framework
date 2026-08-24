@@ -1,9 +1,17 @@
 # Temporal Events and Episode Primitives for Kindling
 
-**Status:** Draft — mechanism validated as a real, recurring need across current
-clients. The first executable Kindling extension slice has landed, but it does
-not yet implement the full proposal; see
-`packages/extensions/kindling_ext_temporal/README.md` for the current implementation checklist.
+**Status:** MVP shipped — all MVP checklist items (entities, condition
+ingestion with quarantine, DataEvents/DataEpisodes registries,
+generation-stratified engine, SDP lowering) are implemented in
+`packages/extensions/kindling_ext_temporal/` with unit/integration/system
+coverage. Registry-declared condition sources (`DataConditions.register()`,
+alongside table-backed rules-as-data) shipped afterward via PR #224.
+Post-MVP residuals (cross-subject relation conditions, open-episode
+determination events, bitemporal replay, deterministic `event_id`
+contracts) remain demand-driven; tracked by
+[issue #206](https://github.com/sep/spark-kindling-framework/issues/206).
+See `packages/extensions/kindling_ext_temporal/README.md` for the current
+"Not yet implemented" list.
 **Created:** 2026-07-06
 **Related:** `event_condition_episode_ontology.md` (the implementation-agnostic
 model this proposal applies to Kindling), `data_entities.md`, `data_pipes.md`,

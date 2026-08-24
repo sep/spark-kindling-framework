@@ -1,7 +1,8 @@
 # Kindling Patterns CLI Proposal
 
 **Date:** 2026-03-27
-**Status:** Proposal
+**Status:** Superseded and archived — the CLI adopted `app init --pattern`
+instead of a separate `kindling pattern` command group.
 **Scope:** CLI pattern scaffolding, medallion architecture bootstrapping, starter app generation
 
 ---

@@ -1,13 +1,18 @@
 # Spark Declarative Pipelines Execution Engine for Kindling
 
-**Status:** Draft — direction reviewed in design discussion; prerequisite
-watermark refactor implemented (PR #158); not yet scheduled.
+**Status:** Partially implemented. Phases 1–3 and 5 have shipped: the shared
+declaration plan, OSS SDP emitter, write-inert bootstrap, local dry-run harness,
+metadata emission, Databricks expectations adapter, and SCD-to-AUTO-CDC mapping
+are present in `kindling_ext_sdp` and `kindling_ext_databricks`. Generic
+streaming-table/append-flow support, dual-engine parity coverage, and the open
+questions below remain.
 **Created:** 2026-07-13
 **Related:** `package_config_architecture.md` (post-registration config
 overlay this engine's bootstrap ordering depends on),
 `temporal_event_segmentation.md` (extension explicitly scoped to the runner
 engine — see "What Stays Runner-Only"), PR #158 (watermark aspect — the
-implemented precedent for engine-owned incrementality).
+implemented precedent for engine-owned incrementality), and
+`obsolete/sdp_engine_phase1_notes.md` (implemented Phase-1 decision record).
 
 ## Recommendation
 

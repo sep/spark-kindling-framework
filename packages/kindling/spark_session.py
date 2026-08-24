@@ -88,6 +88,20 @@ def _create_delta_enabled_session():
         .config("spark.ui.enabled", os.getenv("KINDLING_SPARK_UI_ENABLED", "false"))
     )
     builder = _apply_abfss_jars(builder)
+
+    # Under pytest-xdist, multiple worker processes independently resolve
+    # delta-spark's Maven dependency at session-startup time. Left on Ivy's
+    # single default cache directory, concurrent workers can race on that
+    # shared cache (one worker's retrieve step finding a jar another worker
+    # is still writing), producing sporadic ClassNotFoundException/
+    # FileNotFoundException failures. Give each worker its own cache;
+    # production runs (no PYTEST_XDIST_WORKER) are unaffected.
+    xdist_worker = os.getenv("PYTEST_XDIST_WORKER")
+    if xdist_worker:
+        ivy_dir = os.path.join(os.path.expanduser("~"), ".ivy2-test-workers", xdist_worker)
+        os.makedirs(ivy_dir, exist_ok=True)
+        builder = builder.config("spark.jars.ivy", ivy_dir)
+
     return configure_spark_with_delta_pip(builder).getOrCreate()
 
 

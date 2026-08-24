@@ -12,10 +12,14 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Use the versioned devcontainer image — has Java 21, Poetry, and kindling
-    # wheels pre-installed so `poetry install` resolves without hitting PyPI.
+    # The devcontainer image supplies Java 21 and Poetry; it is not tied to a
+    # Kindling version, so it's referenced by :latest here rather than a
+    # release tag that may never have had a matching image published (the
+    # image is only rebuilt when its own inputs change, not on every
+    # Kindling release). `poetry install` resolves Kindling packages
+    # directly from their pinned GitHub release wheel URLs in poetry.lock.
     container:
-      image: ghcr.io/sep/spark-kindling-framework/devcontainer:{{ kindling_version }}
+      image: ghcr.io/sep/spark-kindling-framework/devcontainer:latest
       credentials:
         username: ${{ "{{" }} github.actor {{ "}}" }}
         password: ${{ "{{" }} secrets.GITHUB_TOKEN {{ "}}" }}

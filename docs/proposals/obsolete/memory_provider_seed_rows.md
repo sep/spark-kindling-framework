@@ -1,6 +1,6 @@
 # Memory Provider Inline Seed Rows
 
-**Status:** Implemented (guide documentation pending)
+**Status:** Implemented, documented, and archived
 **Created:** 2026-05-13
 **Related:** entity_providers.md, entity_configuration.md, config_reference.md, local_python_first.md
 

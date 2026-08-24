@@ -16,9 +16,7 @@ AUTO CDC mapping (#166) against the real API:
   the zero-input pipe body itself (content selected by the
   ``lakeflow_scd.snapshot`` pipeline configuration value, ``v1``/``v2``)
   so two pipeline updates with different configuration demonstrate SCD2
-  version chaining without any additional dataset: the system-test
-  service principal has CREATE TABLE but not CREATE MATERIALIZED VIEW on
-  the target schema, so a materialized-view seed dataset cannot deploy.
+  version chaining without any additional dataset.
 
 Registration only happens inside :func:`register_all`; importing this
 module has no side effects (the selector requires declaration-only apps).
@@ -28,9 +26,10 @@ from datetime import datetime
 
 
 def register_all() -> None:
+    from pyspark.sql.types import StringType, StructField, StructType, TimestampType
+
     from kindling.data_entities import DataEntities
     from kindling.data_pipes import DataPipes
-    from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
     customers_schema = StructType(
         [

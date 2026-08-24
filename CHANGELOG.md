@@ -25,6 +25,36 @@ All notable changes to spark-kindling are documented here.
   documented sugar for `--param print_trace=true`/`--param
   kindling.telemetry.tracing.level=<level>`. See
   `docs/proposals/kindling_cli_devex_gaps.md`.
+- **`kindling env check` reports Kindling version alignment**: if
+  `pyproject.toml` declares any Kindling dependency, prints its pinned
+  version and whether a newer release is available (e.g. `spark-kindling:
+  1.2.3 (latest: 1.3.0 -- run \`kindling env update\`)`). Informational only
+  — never fails the check, and degrades gracefully without network access.
+- **`kindling env bootstrap`**: ensures a project can load Kindling, adding
+  the framework, SDK, and CLI (pinned to a release wheel URL, default:
+  latest) only if none is declared yet in `pyproject.toml`; otherwise a
+  no-op aside from `poetry install --sync`. This is now the generated
+  devcontainer's `postCreateCommand` — the devcontainer image itself no
+  longer installs the Kindling framework or SDK directly (see Changed).
+- **`kindling env add <package>`**: adds a Kindling framework or extension
+  package (e.g. `spark-kindling-ext-databricks`) as a project dependency,
+  pinned to the exact wheel published in a Kindling GitHub release (default:
+  latest) via `poetry add <release wheel URL>`. No local wheel cache or
+  Poetry source configuration is required. If the package is already
+  declared anywhere in the project, its existing dependency group and
+  `extras` are read from `pyproject.toml` and re-supplied automatically —
+  Poetry does not preserve either on its own when re-adding an existing
+  URL dependency.
+- **Databricks Lakeflow system test for the general SDP execution path**:
+  `tests/system/extensions/databricks/test_lakeflow_engine_platform.py`
+  deploys a new `lakeflow-engine-test-app` (two materialized views, SDP
+  inferring the dependency between them) into a real serverless pipeline
+  and validates application selection, `sdp`/`databricks_sdp` configuration
+  overlays, dataset metadata, and Lakeflow expectations (warn/drop).
+  Wheel-version resolution, notebook generation, update polling,
+  error-event reporting, SQL execution, and warehouse selection — duplicated
+  across the existing SCD and temporal Lakeflow platform tests — are now
+  shared via a new `lakeflow_test_helpers.py`.
 - **Generic `provider.kafka.<option>` passthrough for the Event Hub
   provider's Kafka transport**: any tag under that prefix is forwarded
   verbatim as a Kafka connector option (prefix stripped) instead of
@@ -35,6 +65,58 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- **`kindling env update` no longer mutates `/opt/kindling-packages`**: it now
+  scans `pyproject.toml` for every dependency named `spark-kindling` or
+  `spark-kindling-*` (framework, SDK, CLI, and any extensions added via
+  `env add`), wherever declared, and re-points each at its matching wheel in
+  the target Kindling release via `poetry add <release wheel URL>` — no
+  local wheel cache, PEP 503 index, or Poetry source configuration involved.
+  Existing dependency group and `extras` are preserved automatically.
+  `--package-dir`, `--no-project`, `--no-global`, and `--no-sudo` are removed
+  since there is no longer a shared cache or global reinstall step.
+- **`kindling repo init`/`kindling package init` now generate Kindling
+  dependencies pinned to a release wheel URL** (`spark-kindling = { url =
+  "https://github.com/sep/spark-kindling-framework/releases/download/v<version>/
+  spark_kindling-<version>-py3-none-any.whl", extras = [...] }`) instead of an
+  open-ended `>=<version>` constraint against a local `[[tool.poetry.source]]`
+  index. Generated projects no longer need `/opt/kindling-packages` or a
+  local Poetry source at all — `poetry.lock` is the sole source of truth for
+  the pinned version. The generated devcontainer's `postCreateCommand` is
+  now `kindling env bootstrap` (see Added), also fixing a dead health check
+  that always failed (`import spark_kindling` — the importable module is
+  `kindling`, not `spark_kindling`) and silently ran on every container
+  creation.
+- **The devcontainer image no longer builds or installs the Kindling
+  framework/SDK from source**: `.github/Dockerfile.devcontainer` previously
+  ran `poetry build` against whatever source commit triggered the image
+  build and `pip install`ed the result into system Python. That wheel's
+  version only corresponds to a real, fetchable GitHub release when the
+  image is built from a release tag — a `workflow_dispatch` dev build is
+  not, and every project's release-wheel-URL dependency (pinned from that
+  image's installed version, see above) would silently 404 on
+  `poetry install`. The image now installs only the Kindling CLI, resolved
+  from the latest *published* GitHub release, and relies on
+  `kindling env bootstrap` to add the framework/SDK to each project as a
+  normal Poetry dependency.
+- **The devcontainer image build is no longer tied to Kindling release
+  tags**: since it no longer bundles a specific Kindling version (see
+  above), `.github/workflows/ci.yml` now rebuilds and publishes it when its
+  own inputs change (`.github/Dockerfile.devcontainer`,
+  `.github/kindling-agent-reference.md`) on a push to `main`, via a new
+  `devcontainer_changed` classifier output — not when a Kindling package
+  release happens to be classified `runtime`. `workflow_dispatch` remains
+  available as a manual trigger. The published tag is now `build-<sha>`
+  rather than a Kindling version string.
+- **Generated CI (`kindling repo init`) now runs in `devcontainer:latest`**
+  instead of `devcontainer:<kindling_version>`. That version-tagged image was
+  never guaranteed to exist — the devcontainer is only rebuilt when its own
+  inputs change (see above), not on every Kindling release — so a project
+  pinned to a version that never got a matching image build would have had
+  CI fail to pull its container entirely.
+- **Proposal archive reconciled with shipped and superseded work**: ten completed
+  or superseded design records moved under `docs/proposals/obsolete/`; active
+  SDP, Event Hub transport, and package-config proposals now state their actual
+  implemented scope and remaining work.
 - **`kindling.bootstrap.load_workspace_packages` now defaults to `false` on
   every platform**, not just `standalone`. Previously fabric/synapse/
   databricks defaulted to `true`, silently scanning and loading
@@ -44,6 +126,31 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **`GET /releases/latest` could resolve to an alpha release**: `ci.yml`'s
+  release-publishing steps never set `prerelease` on `softprops/action-gh-
+  release`, so every tag-pushed release — including alpha releases like
+  `v0.12.22a1`/`v0.12.22a2` (both confirmed published with
+  `prerelease: false`) — was eligible to be GitHub's "latest" release.
+  Anything resolving "latest" during the window before the next full release
+  shipped (`kindling env update`/`env add`/`env bootstrap`, or the
+  `spark_kindling-current-url.txt` install recipe in the docs) would have
+  silently picked up an alpha. A new step computes `prerelease` from the tag
+  using the same PEP 440 alpha/beta/rc pattern `bump_version.py` already
+  uses (`softprops/action-gh-release`'s own `prerelease: auto` detection
+  expects a hyphenated SemVer prerelease tag, which this project's
+  `0.12.22a1`-style tags are not, so it wasn't a safe alternative).
+- **Event Hub AMQP header decoding (`provider.amqp_headers: true`) could
+  crash Spark executors with `ModuleNotFoundError: No module named
+  'kindling'`**: `_decode_amqp_headers_udf` wrapped a module-level function,
+  which Spark ships to every executor via cloudpickle by *reference*
+  (reconstructed with `import kindling...` on the receiving side) — fatal on
+  any executor without kindling installed, which is every executor by
+  design (kindling stays driver-side). The UDF's function is now built
+  entirely inside a local factory (`_build_decode_amqp_headers_udf`), so
+  cloudpickle embeds it by value instead — no import of anything beyond the
+  stdlib `struct` module required to unpickle or run it on a worker. A new
+  regression test spawns a real subprocess with kindling's import path
+  removed and proves the UDF's function unpickles and runs correctly there.
 - **Databricks SDK job submission ignored `KINDLING_ARTIFACTS_STORAGE_PATH`**
   (gh#216): `DatabricksAPI.from_env()` only ever read the legacy
   `AZURE_STORAGE_ACCOUNT`/`AZURE_CONTAINER`/`AZURE_BASE_PATH` triple, so
@@ -196,7 +303,7 @@ All notable changes to spark-kindling are documented here.
     explicitly rather than inferred from time containment.
   - Public `kindling.test_framework.RecordingTraceProvider` for asserting
     span structure in tests (`find()`/`tree()` helpers).
-  - Decision record: `docs/proposals/comprehensive_tracing_instrumentation.md`.
+  - Decision record: `docs/proposals/obsolete/comprehensive_tracing_instrumentation.md`.
 
 ### Changed
 

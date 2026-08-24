@@ -1,25 +1,29 @@
 # Kindling developer environment image.
 #
-# Published to ghcr.io/sep/spark-kindling-framework/devcontainer:<version>
-# as part of each kindling release. Repos scaffolded with `kindling repo init`
-# use this as their devcontainer base so developers get a fully-working
-# environment without any install steps beyond `poetry install`.
+# Published to ghcr.io/sep/spark-kindling-framework/devcontainer:latest.
+# Repos scaffolded with `kindling repo init` use this as their devcontainer
+# base. This image intentionally does NOT install the Kindling framework or
+# SDK: those are per-project Poetry dependencies, pinned to a specific
+# Kindling release wheel URL in each project's own pyproject.toml/poetry.lock
+# (see templates/pyproject.toml.j2). Baking them into the image here would
+# mean building from source at whatever commit triggered the image build,
+# which only matches a real, fetchable GitHub release when the build runs
+# from a release tag -- a workflow_dispatch dev build does not, and the
+# resulting version-pinned dependency in every project created afterward
+# would silently 404 on `poetry install`.
 #
 # What's baked in:
 #   - Python 3.11 + Java 21 (for PySpark 3.5)
 #   - Poetry (for project-level dependency management)
-#   - spark-kindling, spark-kindling-cli, and spark-kindling-sdk wheels at /opt/kindling-packages/
-#   - A PEP 503 simple index at /opt/kindling-packages/simple/ so Poetry
-#     resolves these packages without hitting PyPI
+#   - The Kindling CLI only, installed from the latest published GitHub
+#     release (never built from source), so `kindling env bootstrap` is
+#     always available to add the framework/SDK to a project that doesn't
+#     declare them yet -- see postCreateCommand in devcontainer.json.j2.
 #   - Hadoop Azure JARs at /opt/hadoop-jars (ABFSS integration tests)
 #   - /tmp/hadoop-jars symlink expected by conftest.py fixtures
 #   - /spark-warehouse pre-created and owned by vscode
 
-ARG KINDLING_VERSION=0.9.26
-
 FROM mcr.microsoft.com/devcontainers/python:3.11
-
-ARG KINDLING_VERSION
 
 # System deps: Java 21 for PySpark 3.5
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
@@ -40,36 +44,26 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 # Install Poetry and Poe globally (version-pinned for reproducibility)
 RUN pip install --no-cache-dir poetry==1.8.3 poethepoet==0.45.0
 
-# Build kindling wheels from source and install them.
-# The source tree is copied in at build time; /build is removed afterwards
-# so it doesn't bloat the final layer.
-WORKDIR /build
-COPY pyproject.toml poetry.lock README.md ./
-COPY packages/ ./packages/
-COPY .github/create_simple_index.py ./
-
-RUN poetry build --output /opt/kindling-packages/wheels/ \
-    && cd packages/kindling_cli && poetry build --output /opt/kindling-packages/wheels/ \
-    && cd /build/packages/kindling_sdk && poetry build --output /opt/kindling-packages/wheels/ 2>/dev/null || true
-
-# Create a PEP 503 simple index from the wheels so Poetry can resolve them
-# without a network call to PyPI.
-RUN python3 create_simple_index.py
-
-# Pre-install the kindling wheels into the system Python so that Poetry's
-# environment resolution (and plain `import kindling`) works immediately.
+# Install only the Kindling CLI (and its spark-kindling-sdk dependency),
+# resolved from the latest published GitHub release -- a real, fetchable
+# release, unlike a wheel built from whatever source commit triggered this
+# image build. The CLI's own version doesn't need to match any project's
+# pinned framework version: it's a bootstrap tool, not a runtime dependency
+# domain app code imports.
 #
-# Glob for the actual built filenames rather than assuming they match
-# KINDLING_VERSION: the wheels are built from whatever version is in
-# pyproject.toml at RUN time (line 46), which only equals KINDLING_VERSION
-# when this image is built from a release tag. A workflow_dispatch dev
-# build tags the image `dev-<sha>` (a non-PEP-440 string poetry never
-# produces as a wheel version), so the exact-filename form silently found
-# no file and failed the whole build.
-RUN pip install --no-cache-dir \
-    $(ls /opt/kindling-packages/wheels/spark_kindling-*-py3-none-any.whl | head -1)"[standalone]" \
-    $(ls /opt/kindling-packages/wheels/spark_kindling_cli-*-py3-none-any.whl | head -1) \
-    $(ls /opt/kindling-packages/wheels/spark_kindling_sdk-*-py3-none-any.whl | head -1)
+# spark-kindling-sdk is fetched alongside it because the CLI wheel's own
+# metadata declares a hard `spark-kindling-sdk>=<version>` requirement (a
+# plain version constraint, not a URL -- poetry-core bakes the root
+# project's path dependency into that form when building a standalone
+# wheel), and spark-kindling-sdk has never been published to PyPI. Passing
+# both wheels to the same `pip install` lets pip's resolver satisfy that
+# requirement from the second URL instead of trying PyPI.
+RUN LATEST_RELEASE_JSON="$(curl -fsSL https://api.github.com/repos/sep/spark-kindling-framework/releases/latest)" \
+    && LATEST_CLI_WHEEL_URL="$(echo "$LATEST_RELEASE_JSON" \
+        | python3 -c "import json, sys; assets = json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].startswith('spark_kindling_cli-') and a['name'].endswith('.whl')))")" \
+    && LATEST_SDK_WHEEL_URL="$(echo "$LATEST_RELEASE_JSON" \
+        | python3 -c "import json, sys; assets = json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].startswith('spark_kindling_sdk-') and a['name'].endswith('.whl')))")" \
+    && pip install --no-cache-dir "$LATEST_CLI_WHEEL_URL" "$LATEST_SDK_WHEEL_URL"
 
 # Pre-download Hadoop Azure JARs needed for local ABFSS integration tests.
 # Stored in /opt/hadoop-jars (stable image layer).
@@ -89,9 +83,6 @@ RUN mkdir -p /opt/hadoop-jars \
 
 RUN mkdir -p /spark-warehouse && chown -R vscode:vscode /spark-warehouse
 
-# Remove build source — wheels and index are all that consumers need
-RUN rm -rf /build
-
 # ── Agent reference doc ───────────────────────────────────────────────────────
 # Baked in at a well-known path so downstream projects can generate
 # tool-specific agent instruction files via `kindling agent setup`.
@@ -105,5 +96,4 @@ RUN mkdir -p /home/vscode/.claude \
     && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.vscode-server
 
 LABEL org.opencontainers.image.source="https://github.com/sep/spark-kindling-framework"
-LABEL org.opencontainers.image.description="Kindling developer environment — Python 3.11, Java 21, kindling wheels, Hadoop JARs"
-LABEL org.opencontainers.image.version="${KINDLING_VERSION}"
+LABEL org.opencontainers.image.description="Kindling developer environment — Python 3.11, Java 21, Kindling CLI, Hadoop JARs"

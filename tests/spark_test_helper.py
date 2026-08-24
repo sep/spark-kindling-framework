@@ -50,6 +50,23 @@ def check_required_env_vars(required_vars=None, check_env=True):
     return True
 
 
+def _worker_scoped_ivy_dir():
+    """Give each pytest-xdist worker process its own Ivy cache directory.
+
+    configure_spark_with_delta_pip only sets spark.jars.packages and relies on
+    Spark's built-in Ivy resolver, which otherwise defaults to one shared
+    cache (~/.ivy2.5.2/cache) for every process. Concurrent xdist worker
+    processes resolving/writing to that same cache at session-startup time
+    can race, leaving a corrupt/incomplete delta-spark jar that then fails to
+    load DeltaCatalog (ClassNotFoundException) for whichever test happens to
+    hit that worker's Spark session next.
+    """
+    worker = os.getenv("PYTEST_XDIST_WORKER", "master")
+    ivy_dir = os.path.join(os.path.expanduser("~"), ".ivy2-test-workers", worker)
+    os.makedirs(ivy_dir, exist_ok=True)
+    return ivy_dir
+
+
 def _get_azure_cloud_config(cloud):
     """
     Get cloud-specific configuration for Azure storage.
@@ -151,6 +168,7 @@ def get_local_spark_session(
             "spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog"
         )
         .config("spark.sql.warehouse.dir", "/tmp/spark-warehouse")
+        .config("spark.jars.ivy", _worker_scoped_ivy_dir())
         # Delta Lake optimizations
         .config("spark.databricks.delta.retentionDurationCheck.enabled", "false")
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true")
@@ -211,6 +229,7 @@ def get_standalone_spark_session(app_name="KindlingTest"):
         )
         .config("spark.sql.warehouse.dir", "/tmp/spark-warehouse")
         .config("spark.ui.enabled", "false")
+        .config("spark.jars.ivy", _worker_scoped_ivy_dir())
     )
 
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
@@ -283,6 +302,7 @@ def get_local_spark_session_with_azure(
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true")
         .config("spark.executor.memory", "1g")
         .config("spark.driver.memory", "1g")
+        .config("spark.jars.ivy", _worker_scoped_ivy_dir())
     )
 
     if storage_account:

@@ -38,69 +38,37 @@ Usage:
 
 import base64
 import os
-import re
-import time
 import uuid
-from pathlib import Path
 
 import pytest
 
-WORKSPACE_ROOT = Path(__file__).parent.parent.parent.parent
-PACKAGES_VOLUME = "/Volumes/{catalog}/{schema}/artifacts/packages"
-
-
-def _wheel_version(pyproject: Path) -> str:
-    match = re.search(r'^version = "([^"]+)"', pyproject.read_text(), re.MULTILINE)
-    assert match, f"no version in {pyproject}"
-    return match.group(1)
+from tests.system.extensions.databricks.lakeflow_test_helpers import (
+    PACKAGES_VOLUME,
+    WORKSPACE_ROOT,
+    execute_statement,
+    pipeline_notebook,
+    print_error_events,
+    select_warehouse_id,
+    wait_for_update,
+    wheel_version,
+)
 
 
 def _pipeline_notebook(pkg_root: str) -> str:
     repo = WORKSPACE_ROOT.parent
-    wheels = " ".join(
+    return pipeline_notebook(
         [
-            f"{pkg_root}/spark_kindling-{_wheel_version(repo / 'pyproject.toml')}-py3-none-any.whl",
+            f"{pkg_root}/spark_kindling-{wheel_version(repo / 'pyproject.toml')}-py3-none-any.whl",
             f"{pkg_root}/spark_kindling_ext_sdp-"
-            f"{_wheel_version(repo / 'packages/extensions/kindling_ext_sdp/pyproject.toml')}-py3-none-any.whl",
+            f"{wheel_version(repo / 'packages/extensions/kindling_ext_sdp/pyproject.toml')}-py3-none-any.whl",
             f"{pkg_root}/spark_kindling_ext_databricks-"
-            f"{_wheel_version(repo / 'packages/extensions/kindling_ext_databricks/pyproject.toml')}-py3-none-any.whl",
+            f"{wheel_version(repo / 'packages/extensions/kindling_ext_databricks/pyproject.toml')}-py3-none-any.whl",
             f"{pkg_root}/spark_kindling_ext_temporal-"
-            f"{_wheel_version(repo / 'packages/extensions/kindling_ext_temporal/pyproject.toml')}-py3-none-any.whl",
+            f"{wheel_version(repo / 'packages/extensions/kindling_ext_temporal/pyproject.toml')}-py3-none-any.whl",
             f"{pkg_root}/lakeflow_temporal_test_app-"
-            f"{_wheel_version(WORKSPACE_ROOT / 'data-apps/lakeflow-temporal-test-app/pyproject.toml')}-py3-none-any.whl",
+            f"{wheel_version(WORKSPACE_ROOT / 'data-apps/lakeflow-temporal-test-app/pyproject.toml')}-py3-none-any.whl",
         ]
     )
-    return f"""# Databricks notebook source
-# MAGIC %pip install {wheels}
-
-# COMMAND ----------
-
-from kindling_ext_databricks.lakeflow_app_selector import declare_from_pipeline_config
-
-declare_from_pipeline_config()
-"""
-
-
-def _wait_for_update(w, pipeline_id, update_id, max_wait=1800.0):
-    deadline = time.time() + max_wait
-    state = None
-    while time.time() < deadline:
-        info = w.pipelines.get_update(pipeline_id, update_id)
-        state = info.update.state.value if info.update and info.update.state else None
-        if state in {"COMPLETED", "FAILED", "CANCELED"}:
-            return state
-        time.sleep(15)
-    return state or "TIMEOUT"
-
-
-def _print_error_events(w, pipeline_id):
-    for event in list(w.pipelines.list_pipeline_events(pipeline_id, max_results=50)):
-        if event.level and event.level.value == "ERROR":
-            print(f"[ERROR] {event.event_type}: {(event.message or '').strip()[:2000]}")
-            error = getattr(event, "error", None)
-            if error and getattr(error, "exceptions", None):
-                for exc in error.exceptions:
-                    print("  EXC:", (exc.message or "").strip()[:2000])
 
 
 @pytest.mark.system
@@ -118,39 +86,12 @@ class TestTemporalLakeflowPlatform:
         schema = os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA", "default")
         pkg_root = PACKAGES_VOLUME.format(catalog=catalog, schema=schema)
 
-        warehouses = sorted(
-            (
-                wh
-                for wh in w.warehouses.list()
-                if wh.state and wh.state.value in ("RUNNING", "STOPPED")
-            ),
-            key=lambda wh: wh.state.value != "RUNNING",
-        )
-        if not warehouses:
+        warehouse_id = select_warehouse_id(w, os.getenv("SYSTEM_TEST_SQL_WAREHOUSE_ID"))
+        if not warehouse_id:
             pytest.skip("No SQL warehouse available to seed/verify pipeline data.")
-        warehouse_id = os.getenv("SYSTEM_TEST_SQL_WAREHOUSE_ID") or warehouses[0].id
 
         def sql(statement, parameters=None):
-            from databricks.sdk.service.sql import StatementParameterListItem
-
-            params = None
-            if parameters:
-                params = [
-                    StatementParameterListItem(name=key, value=value, type="STRING")
-                    for key, value in parameters.items()
-                ]
-            result = w.statement_execution.execute_statement(
-                warehouse_id=warehouse_id,
-                statement=statement,
-                wait_timeout="50s",
-                parameters=params,
-            )
-            state = result.status.state.value if result.status else None
-            assert state == "SUCCEEDED", (
-                f"SQL failed: "
-                f"{result.status.error.message if result.status and result.status.error else state}"
-            )
-            return result.result.data_array if result.result else []
+            return execute_statement(w, warehouse_id, statement, parameters)
 
         test_id = str(uuid.uuid4())[:8]
         prefix = f"systest_lftemporal_{test_id}_"
@@ -235,9 +176,9 @@ class TestTemporalLakeflowPlatform:
         try:
             # ---------------- update 1 ------------------------------------
             update = w.pipelines.start_update(pipeline_id)
-            state = _wait_for_update(w, pipeline_id, update.update_id)
+            state = wait_for_update(w, pipeline_id, update.update_id)
             if state != "COMPLETED":
-                _print_error_events(w, pipeline_id)
+                print_error_events(w, pipeline_id)
             assert state == "COMPLETED", f"update 1 ended {state}"
 
             current = {
@@ -275,9 +216,9 @@ class TestTemporalLakeflowPlatform:
                 "('machine-late', TIMESTAMP'2026-07-14 12:10:00', 80.0)"
             )
             update = w.pipelines.start_update(pipeline_id)
-            state = _wait_for_update(w, pipeline_id, update.update_id)
+            state = wait_for_update(w, pipeline_id, update.update_id)
             if state != "COMPLETED":
-                _print_error_events(w, pipeline_id)
+                print_error_events(w, pipeline_id)
             assert state == "COMPLETED", f"update 2 ended {state}"
 
             versions = sql(

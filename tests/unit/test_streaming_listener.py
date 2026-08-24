@@ -13,6 +13,7 @@ import time
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
+
 from kindling.streaming_listener import (
     KindlingStreamingListener,
     StreamingEvent,
@@ -801,10 +802,19 @@ class TestPeriodicMetrics:
                 mock_event.name = f"q{i}"
                 listener.onQueryStarted(mock_event)
 
-            # Wait long enough for the metrics interval to fire
-            time.sleep(1.5)
+            # Poll instead of a single fixed sleep -- a hardcoded wait just
+            # past the 0.5s interval is prone to flaking under CPU
+            # contention (background thread scheduling delay), since it
+            # gives no margin if the poll loop or GC pauses briefly.
+            deadline = time.monotonic() + 5.0
+            logged = False
+            while time.monotonic() < deadline:
+                info_calls = [str(c) for c in listener.logger.info.call_args_list]
+                if any("Streaming listener metrics" in c for c in info_calls):
+                    logged = True
+                    break
+                time.sleep(0.1)
 
-            info_calls = [str(c) for c in listener.logger.info.call_args_list]
-            assert any("Streaming listener metrics" in c for c in info_calls)
+            assert logged, "Expected periodic metrics log within 5s of the 0.5s interval"
         finally:
             listener.stop()

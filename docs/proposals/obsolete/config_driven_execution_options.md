@@ -2,7 +2,7 @@
 
 **Status:** Phase 1 shipped (#169); Phase 2 (retry) shipped (#173); Phase 3 (skip_dependents) implemented
 **Author:** derived from migration-gap analysis (see
-[Migrating from runMultiple](../guide/migrating_from_runmultiple.md))
+[Migrating from runMultiple](../../guide/migrating_from_runmultiple.md))
 
 ## Problem
 

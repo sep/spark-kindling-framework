@@ -218,7 +218,7 @@ to be motivated by the workbench, and each is independently useful.
    per-environment? The git-backed model suggests promote-like-code.
 3. **Large artifacts** — JSON-in-git works for mappings measured in KB–MB.
    Reference data measured in GB needs a Delta-backed variant with the same
-   lifecycle; the seed-rows work (`memory_provider_seed_rows.md`) is
+   lifecycle; the seed-rows work (`obsolete/memory_provider_seed_rows.md`) is
    adjacent.
 4. **Concurrent drafts** — two engineers drafting against the same artifact:
    git branching answers storage, but the UX for merge/conflict in a form
@@ -251,9 +251,9 @@ first three exist.
   artifact surface should follow
 - `docs/proposals/kindling_core_runner_split.md` — the design-time/runtime
   split this platform would build on
-- `docs/proposals/memory_provider_seed_rows.md` — adjacent: seeded reference
+- `docs/proposals/obsolete/memory_provider_seed_rows.md` — adjacent: seeded reference
   data as entities
-- `docs/proposals/kindling_patterns_cli.md` — precedent for opinionated
+- `docs/proposals/obsolete/kindling_patterns_cli.md` — precedent for opinionated
   layers above raw config
-- `docs/proposals/config_driven_execution_options.md` — config-first
+- `docs/proposals/obsolete/config_driven_execution_options.md` — config-first
   execution principle the platform inherits

@@ -48,7 +48,6 @@ local_workspace/
 
 # IDEs
 .vscode/
-!.vscode/mcp.json
 .idea/
 *.code-workspace
 *.swp
@@ -135,3 +134,5 @@ dev-attach.sh
 .gc/
 .gc.legacy-*/
 .beads.gate.lock
+
+.vscode/

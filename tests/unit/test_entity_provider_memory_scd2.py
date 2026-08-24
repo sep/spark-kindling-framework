@@ -3,24 +3,21 @@ Unit tests for MemoryEntityProvider.merge_to_entity (SCD1, insert-only, SCD2).
 
 Uses a real SparkSession — not a MagicMock — because this exercises genuine
 DataFrame join/filter/union logic that a mock cannot meaningfully stand in
-for. Deliberately does not depend on conftest.py's shared, Delta-configured
-``spark_session`` fixture: that fixture's builder unconditionally sets
-``spark.sql.catalog.spark_catalog`` to Delta's catalog class, and
-``SparkSession.getOrCreate()`` applies that onto whatever SparkSession is
-already active in the process, including a plain one some earlier,
-unrelated unit test created without delta-spark on its classpath — which
-then breaks every later query with "Cannot find catalog plugin class."
-Memory needs no Delta capability at all, so a local, Delta-free fixture
-sidesteps the conflict regardless of what else ran earlier in the suite.
+for. Module-scoped rather than depending on conftest.py's session-scoped
+``spark_session`` fixture, since Memory doesn't need that fixture's lifetime.
+Built via ``get_standalone_spark_session`` (always Delta-configured) rather
+than a bare ``SparkSession.builder...getOrCreate()``: Spark sessions are a
+JVM-wide singleton per process, so whichever test creates the first one in
+a given pytest-xdist worker fixes its config for every later test in that
+worker regardless of file — a bare, Delta-free builder here would silently
+leave Delta-dependent tests elsewhere in the worker without a working
+DeltaCatalog.
 """
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-from kindling.data_entities import EntityMetadata
-from kindling.entity_provider_memory import MemoryEntityProvider
-from pyspark.sql import SparkSession
 from pyspark.sql.functions import lit
 from pyspark.sql.types import (
     IntegerType,
@@ -30,6 +27,8 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+from kindling.data_entities import EntityMetadata
+from kindling.entity_provider_memory import MemoryEntityProvider
 from tests.conftest import _sockets_permitted
 
 TS = lambda day, hour=0: datetime(2026, 7, day, hour, 0, 0)  # noqa: E731
@@ -37,15 +36,16 @@ TS = lambda day, hour=0: datetime(2026, 7, day, hour, 0, 0)  # noqa: E731
 
 @pytest.fixture(scope="module")
 def spark_session():
-    """Plain (non-Delta) SparkSession, module-scoped — see module docstring."""
     if not _sockets_permitted():
         pytest.skip(
             "Sockets are not permitted in this environment; cannot start a real SparkSession."
         )
-    spark = SparkSession.builder.appName("MemorySCD2Tests").master("local[2]").getOrCreate()
-    spark.sparkContext.setLogLevel("ERROR")
+    from tests.spark_test_helper import get_standalone_spark_session
+
+    spark = get_standalone_spark_session("MemorySCD2Tests")
     yield spark
-    spark.stop()
+    # Not spark.stop() here: this may be the same JVM-singleton session
+    # other tests elsewhere in this xdist worker are still relying on.
 
 
 BUSINESS_SCHEMA = StructType(
@@ -69,7 +69,14 @@ SCD2_SCHEMA = StructType(
 def _make_provider(spark_session):
     logger_provider = MagicMock()
     logger_provider.get_logger.return_value = MagicMock()
-    provider = MemoryEntityProvider(logger_provider)
+    # MemoryEntityProvider.__init__ eagerly calls get_or_create_spark_session()
+    # -- intercept it so construction can't create its own bare, non-Delta
+    # session as a throwaway side effect before we assign the real one below.
+    with patch(
+        "kindling.entity_provider_memory.get_or_create_spark_session",
+        return_value=spark_session,
+    ):
+        provider = MemoryEntityProvider(logger_provider)
     provider.spark = spark_session
     return provider
 

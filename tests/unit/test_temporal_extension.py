@@ -28,8 +28,6 @@ def _temporal_service_get(
     entity_registry=None,
     pipe_registry=None,
 ):
-    from kindling.data_entities import DataEntityRegistry
-    from kindling.data_pipes import DataPipesRegistry
     from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
         TemporalConditionRegistry,
@@ -37,6 +35,9 @@ def _temporal_service_get(
         TemporalEpisodeRegistry,
         TemporalEventRegistry,
     )
+
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
 
     def _get(dep):
         if dep is TemporalEntityResolver:
@@ -123,9 +124,10 @@ def test_base_event_pipe_id_is_namespaced():
 
 
 def test_base_event_decorator_registers_metadata():
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -178,9 +180,10 @@ def test_base_event_decorator_registers_metadata():
 
 
 def test_base_event_registration_accepts_none_tags_and_requires_metadata():
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -238,9 +241,10 @@ def test_base_event_registration_accepts_none_tags_and_requires_metadata():
 
 
 def test_condition_engine_registration_is_not_condition_specific():
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     registry = TemporalEventRegistryManager(_logger_provider())
@@ -275,9 +279,10 @@ def test_condition_engine_registration_is_not_condition_specific():
 
 
 def test_episode_registration_uses_canonical_entities():
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
 
     DataEpisodes.reset()
     registry = TemporalEpisodeRegistryManager(_logger_provider())
@@ -342,9 +347,10 @@ def test_episode_registration_uses_canonical_entities():
 
 
 def test_episode_registration_accepts_explicit_determination_event_and_pipe_id():
+    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_ext_temporal import DataEpisodes, TemporalEpisodeRegistryManager
 
     DataEpisodes.reset()
     registry = TemporalEpisodeRegistryManager(_logger_provider())
@@ -408,10 +414,11 @@ def test_translator_prior_episodes_prefers_execution_parameter():
 
 
 def test_translator_prior_episodes_reads_existing_entity_through_provider():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
     from kindling.data_entities import DataEntityRegistry
     from kindling.entity_provider_registry import EntityProviderRegistry
     from kindling.spark_config import ConfigService
-    from kindling_ext_temporal import TemporalPipeTranslator
 
     state_df = object()
     entity = Mock(entityid="silver.episodes")
@@ -445,10 +452,11 @@ def test_translator_prior_episodes_reads_existing_entity_through_provider():
 
 
 def test_translator_prior_episodes_none_when_entity_missing_or_disabled():
+    from kindling_ext_temporal import TemporalPipeTranslator
+
     from kindling.data_entities import DataEntityRegistry
     from kindling.entity_provider_registry import EntityProviderRegistry
     from kindling.spark_config import ConfigService
-    from kindling_ext_temporal import TemporalPipeTranslator
 
     entity_registry = Mock()
     entity_registry.get_entity_definition.return_value = Mock(entityid="silver.episodes")
@@ -553,7 +561,6 @@ def test_translator_evaluation_time_defaults_to_none_without_config_service():
 
 
 def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
-    from kindling.data_entities import DataEntityManager, EntityMetadata
     from kindling_ext_temporal import (
         BaseEventMetadata,
         ConditionEngineMetadata,
@@ -561,6 +568,8 @@ def test_translator_handles_none_tags_on_temporal_metadata_and_entities():
         TemporalPipeTranslator,
         events_schema,
     )
+
+    from kindling.data_entities import DataEntityManager, EntityMetadata
 
     base_event = BaseEventMetadata(
         eventid="telemetry.none_tags",
@@ -752,40 +761,35 @@ def test_conditions_ingestion_result_and_config_key():
 
 @pytest.fixture(scope="module")
 def _memory_spark_session():
-    """Plain (non-Delta) SparkSession — see test_entity_provider_memory_scd2.py's
-    module docstring for why this avoids conftest.py's shared, Delta-configured
-    spark_session fixture (MemoryEntityProvider never needs Delta, and that
-    fixture forces Delta config onto whatever SparkSession is already active
-    in the process, which breaks if an earlier, unrelated test created a plain
-    one first)."""
-    from pyspark.sql import SparkSession
-
+    """Module-scoped rather than conftest.py's session-scoped fixture, since
+    this doesn't need that fixture's lifetime. Built via
+    get_standalone_spark_session (see test_entity_provider_memory_scd2.py's
+    module docstring) so it's always Delta-configured regardless of xdist
+    worker test order."""
     from tests.conftest import _sockets_permitted
+    from tests.spark_test_helper import get_standalone_spark_session
 
     if not _sockets_permitted():
         pytest.skip(
             "Sockets are not permitted in this environment; cannot start a real SparkSession."
         )
-    spark = (
-        SparkSession.builder.appName("TemporalConditionsIngestTests")
-        .master("local[2]")
-        .getOrCreate()
-    )
-    spark.sparkContext.setLogLevel("ERROR")
+    spark = get_standalone_spark_session("TemporalConditionsIngestTests")
     yield spark
-    spark.stop()
+    # Not spark.stop() here: this may be the same JVM-singleton session
+    # other tests elsewhere in this xdist worker are still relying on.
 
 
 def test_ingest_conditions_end_to_end_against_memory_provider(_memory_spark_session, monkeypatch):
     """Acceptance criterion #2: ingest_conditions() against a real MemoryEntityProvider
     — validation/quarantine on first ingest, then an SCD2 re-ingest that changes a
     tracked field (enabled) closes the old version and opens exactly one new one."""
-    from kindling.entity_provider_memory import MemoryEntityProvider
     from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,
         conditions_schema,
         ingest_conditions,
     )
+
+    from kindling.entity_provider_memory import MemoryEntityProvider
 
     spark = _memory_spark_session
     monkeypatch.setattr(
@@ -1079,9 +1083,10 @@ def test_data_conditions_reset_clears_registered_conditions():
 
 
 def test_condition_engine_registry_source_has_no_table_entities():
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -1116,9 +1121,10 @@ def test_condition_engine_registry_source_has_no_table_entities():
 
 
 def test_condition_engine_rejects_invalid_condition_source():
+    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
+
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager
-    from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -1140,14 +1146,15 @@ def test_condition_engine_rejects_invalid_condition_source():
 
 
 def test_condition_engine_registry_source_rejects_cycle_at_declaration_time():
-    from kindling.data_entities import DataEntityManager
-    from kindling.data_pipes import DataPipesManager
     from kindling_ext_temporal import (
         ConditionRule,
         ConditionValidationError,
         DataEvents,
         TemporalEventRegistryManager,
     )
+
+    from kindling.data_entities import DataEntityManager
+    from kindling.data_pipes import DataPipesManager
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
@@ -1268,17 +1275,18 @@ def test_condition_engine_execute_registry_source_calls_execute_rules_directly()
 
 @pytest.fixture(scope="module")
 def spark():
-    from pyspark.sql import SparkSession
+    """Built via get_standalone_spark_session (see
+    test_entity_provider_memory_scd2.py's module docstring) so it's always
+    Delta-configured regardless of xdist worker test order. shuffle.partitions
+    is a runtime SQL conf, so it's safe to set post-hoc even if this reuses an
+    already-active session from elsewhere in the worker."""
+    from tests.spark_test_helper import get_standalone_spark_session
 
-    spark = (
-        SparkSession.builder.appName("TemporalExtensionUnit")
-        .master("local[1]")
-        .config("spark.sql.shuffle.partitions", "1")
-        .config("spark.ui.enabled", "false")
-        .getOrCreate()
-    )
+    spark = get_standalone_spark_session("TemporalExtensionUnit")
+    spark.conf.set("spark.sql.shuffle.partitions", "1")
     yield spark
-    spark.stop()
+    # Not spark.stop() here: this may be the same JVM-singleton session
+    # other tests elsewhere in this xdist worker are still relying on.
 
 
 def _predicate_events_df(spark):

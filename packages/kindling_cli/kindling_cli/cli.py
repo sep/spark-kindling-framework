@@ -16,7 +16,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import click
@@ -2473,16 +2473,6 @@ def _check_hadoop_jars() -> Tuple[bool, str]:
     )
 
 
-_KINDLING_ENV_PACKAGES = ("spark-kindling", "spark-kindling-sdk", "spark-kindling-cli")
-
-
-def _can_write_path(path: Path) -> bool:
-    probe = path
-    while not probe.exists() and probe.parent != probe:
-        probe = probe.parent
-    return os.access(probe, os.W_OK)
-
-
 def _run_checked(cmd: List[str], *, cwd: Optional[Path] = None) -> None:
     try:
         subprocess.run(cmd, cwd=cwd, check=True)
@@ -2492,106 +2482,208 @@ def _run_checked(cmd: List[str], *, cwd: Optional[Path] = None) -> None:
         raise click.ClickException(f"Command failed ({exc.returncode}): {' '.join(cmd)}") from exc
 
 
-def _copy_with_optional_sudo(src: Path, dest: Path, *, use_sudo: bool) -> None:
-    if _can_write_path(dest.parent):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
-        return
-
-    if not use_sudo:
-        raise click.ClickException(
-            f"{dest.parent} is not writable. Re-run without --no-sudo or choose --package-dir."
-        )
-
-    _run_checked(["sudo", "mkdir", "-p", str(dest.parent)])
-    _run_checked(["sudo", "cp", str(src), str(dest)])
+_KINDLING_DISTRIBUTION_PREFIX = "spark-kindling"
 
 
-def _write_simple_index(packages_dir: Path) -> int:
-    wheels_dir = packages_dir / "wheels"
-    simple_dir = packages_dir / "simple"
-    simple_dir.mkdir(parents=True, exist_ok=True)
+def _canonical_distribution_name(name: str) -> str:
+    """Normalize a distribution name the way PyPI does (PEP 503): lowercase,
+    with runs of '-', '_', '.' collapsed to a single '-'."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
-    packages: Dict[str, List[Path]] = {}
-    for whl in sorted(wheels_dir.glob("*.whl")):
-        raw_name = whl.name.split("-")[0]
-        normalized_name = re.sub(r"[-_.]+", "-", raw_name).lower()
-        packages.setdefault(normalized_name, []).append(whl)
 
-    links = "\n".join(f'<a href="{name}/">{name}</a>' for name in sorted(packages))
-    (simple_dir / "index.html").write_text(
-        f"<!DOCTYPE html><html><body>\n{links}\n</body></html>\n",
-        encoding="utf-8",
+def _is_kindling_distribution(name: str) -> bool:
+    normalized = _canonical_distribution_name(name)
+    return normalized == _KINDLING_DISTRIBUTION_PREFIX or normalized.startswith(
+        f"{_KINDLING_DISTRIBUTION_PREFIX}-"
     )
 
-    for package_name, wheels in packages.items():
-        package_dir = simple_dir / package_name
-        package_dir.mkdir(exist_ok=True)
-        entries = []
-        for whl in wheels:
-            digest = hashlib.sha256(whl.read_bytes()).hexdigest()
-            entries.append(f'<a href="file://{whl.resolve()}#sha256={digest}">{whl.name}</a>')
-        body = "\n".join(entries)
-        (package_dir / "index.html").write_text(
-            f"<!DOCTYPE html><html><body>\n{body}\n</body></html>\n",
-            encoding="utf-8",
+
+def _load_pyproject_toml(pyproject_path: Path) -> Dict[str, Any]:
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
+    return tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+
+
+def _dependency_extras(entry: Any) -> List[str]:
+    if isinstance(entry, dict):
+        extras = entry.get("extras", [])
+        if isinstance(extras, list):
+            return [str(extra) for extra in extras]
+    return []
+
+
+def _iter_kindling_dependency_entries(
+    pyproject_path: Path,
+) -> Iterator[Tuple[str, Optional[str], Any]]:
+    """Yield (distribution_name, group_or_None, raw_entry) for every declared
+    'spark-kindling'/'spark-kindling-*' dependency in pyproject.toml,
+    wherever it's declared -- the main dependency table or any dependency
+    group.
+    """
+    data = _load_pyproject_toml(pyproject_path)
+    poetry = data.get("tool", {}).get("poetry", {})
+
+    main_deps = poetry.get("dependencies", {})
+    if isinstance(main_deps, dict):
+        for name, entry in main_deps.items():
+            if _is_kindling_distribution(name):
+                yield name, None, entry
+
+    groups = poetry.get("group", {})
+    if isinstance(groups, dict):
+        for group_name, group_data in groups.items():
+            group_deps = group_data.get("dependencies", {}) if isinstance(group_data, dict) else {}
+            if isinstance(group_deps, dict):
+                for name, entry in group_deps.items():
+                    if _is_kindling_distribution(name):
+                        yield name, group_name, entry
+
+
+def _find_kindling_dependencies(
+    pyproject_path: Path,
+) -> Dict[str, Tuple[Optional[str], List[str]]]:
+    """Find every declared Kindling dependency (the framework, SDK, CLI, or
+    an extension added via `kindling env add`).
+
+    Returns {distribution_name: (group_or_None, extras)}.
+    """
+    return {
+        name: (group, _dependency_extras(entry))
+        for name, group, entry in _iter_kindling_dependency_entries(pyproject_path)
+    }
+
+
+_RELEASE_WHEEL_URL_VERSION_RE = re.compile(r"/releases/download/v([^/]+)/")
+
+
+def _declared_kindling_version(entry: Any) -> Optional[str]:
+    """Best-effort extraction of the pinned version from a declared Kindling
+    dependency entry, whether it's a release wheel URL (current convention)
+    or a legacy version constraint string/table."""
+    if isinstance(entry, dict):
+        url = entry.get("url")
+        if isinstance(url, str):
+            match = _RELEASE_WHEEL_URL_VERSION_RE.search(url)
+            if match:
+                return match.group(1)
+        version = entry.get("version")
+        if isinstance(version, str):
+            return version
+        return None
+    if isinstance(entry, str):
+        return entry
+    return None
+
+
+def _resolve_kindling_release_wheels(
+    version: str, repo: str = KINDLING_GITHUB_REPO
+) -> Tuple[str, List[Dict[str, str]]]:
+    """Resolve a Kindling release and list its wheel assets, without
+    downloading any wheel bytes -- `poetry add <url>` fetches each wheel
+    directly once it's actually added to a project.
+
+    Returns (resolved_version, [{"distribution", "version", "name", "url"}, ...]).
+    """
+    resolved_version = _resolve_github_version(version, repo=repo)
+    tag = f"v{resolved_version}" if not resolved_version.startswith("v") else resolved_version
+    release = _github_release_for_tag(tag, repo=repo)
+    assets = release.get("assets", [])
+    if not isinstance(assets, list):
+        raise click.ClickException(f"GitHub release {tag} in {repo} returned malformed assets.")
+
+    wheels: List[Dict[str, str]] = []
+    for asset in assets:
+        if not (
+            isinstance(asset, dict)
+            and isinstance(asset.get("name"), str)
+            and asset["name"].endswith(".whl")
+        ):
+            continue
+        download_url = asset.get("browser_download_url")
+        if not isinstance(download_url, str) or not download_url:
+            raise click.ClickException(
+                f"Release asset {asset['name']} in {tag} does not include a download URL."
+            )
+        parts = asset["name"][: -len(".whl")].split("-")
+        if len(parts) < 2:
+            continue
+        wheels.append(
+            {
+                "distribution": _canonical_distribution_name(parts[0]),
+                "version": parts[1],
+                "name": asset["name"],
+                "url": download_url,
+            }
         )
 
-    return len(packages)
+    if not wheels:
+        raise click.ClickException(f"No wheel assets found in GitHub release {tag} in {repo}.")
+    return resolved_version, wheels
 
 
-def _refresh_simple_index(packages_dir: Path, *, use_sudo: bool) -> int:
-    simple_dir = packages_dir / "simple"
-    if _can_write_path(simple_dir):
-        return _write_simple_index(packages_dir)
+def _poetry_add_url(
+    project_path: Path,
+    url: str,
+    *,
+    group: Optional[str] = None,
+    extras: Optional[List[str]] = None,
+) -> None:
+    """Run `poetry add <url>`, re-supplying group/extras explicitly.
 
-    if not use_sudo:
-        raise click.ClickException(
-            f"{simple_dir} is not writable. Re-run without --no-sudo or choose --package-dir."
-        )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        temp_root = Path(tmp) / "kindling-packages"
-        temp_wheels = temp_root / "wheels"
-        temp_wheels.mkdir(parents=True)
-        for whl in sorted((packages_dir / "wheels").glob("*.whl")):
-            shutil.copy2(whl, temp_wheels / whl.name)
-        package_count = _write_simple_index(temp_root)
-        _run_checked(["sudo", "rm", "-rf", str(simple_dir)])
-        _run_checked(["sudo", "mkdir", "-p", str(packages_dir)])
-        _run_checked(["sudo", "cp", "-R", str(temp_root / "simple"), str(simple_dir)])
-        return package_count
+    Poetry does not infer either from a package's prior pyproject.toml
+    entry: a bare `poetry add <url>` on an already-declared dependency
+    silently drops its extras, and updates the wrong scope entirely
+    (creating a conflicting duplicate in [tool.poetry.dependencies]) if
+    the package actually lives in a dependency group. Both must be passed
+    explicitly on every call to correctly update an existing entry.
+    """
+    command = ["poetry", "add", url]
+    if group:
+        command.extend(["--group", group])
+    for extra in extras or []:
+        command.extend(["--extras", extra])
+    _run_checked(command, cwd=project_path)
 
 
-def _update_kindling_project(project_path: Path, *, sync: bool) -> None:
-    if not (project_path / "pyproject.toml").exists():
-        click.echo(f"Skipping Poetry update; no pyproject.toml found at {project_path}.")
+def _print_kindling_version_report(pyproject_path: Path) -> None:
+    """Print each declared Kindling package's pinned version, and whether a
+    newer release is available. Purely informational -- being behind the
+    latest release doesn't fail the environment check, since it's a valid
+    state, not a broken one.
+    """
+    try:
+        entries = list(_iter_kindling_dependency_entries(pyproject_path))
+    except Exception as exc:  # malformed pyproject.toml -- degrade, don't fail the check
+        click.echo(f"\n(could not read Kindling dependencies from {pyproject_path}: {exc})")
+        return
+    if not entries:
         return
 
-    command = ["poetry", "update", *_KINDLING_ENV_PACKAGES]
-    _run_checked(command, cwd=project_path)
-    install_command = ["poetry", "install", "--with", "dev"]
-    if sync:
-        install_command.append("--sync")
-    _run_checked(install_command, cwd=project_path)
-
-
-def _install_global_wheels(wheels: List[Path], *, use_sudo: bool) -> None:
-    specs = [
-        f"{wheel}[standalone]" if wheel.name.startswith("spark_kindling-") else str(wheel)
-        for wheel in wheels
-    ]
-    command = [sys.executable, "-m", "pip", "install", "--upgrade", *specs]
+    resolved_latest: Optional[str] = None
+    latest_error: Optional[str] = None
     try:
-        subprocess.run(command, check=True)
-    except FileNotFoundError as exc:
-        raise click.ClickException(f"Command not found: {sys.executable}") from exc
-    except subprocess.CalledProcessError as exc:
-        if not use_sudo:
-            raise click.ClickException(
-                "Global Kindling install failed. Re-run without --no-sudo or pass --no-global."
-            ) from exc
-        _run_checked(["sudo", *command])
+        resolved_latest, _ = _resolve_kindling_release_wheels("latest")
+    except Exception as exc:  # network optional -- degrade, don't fail the check
+        latest_error = str(exc)
+
+    click.echo("\nKindling packages:")
+    for distribution, group, entry in sorted(entries, key=lambda item: item[0]):
+        declared_version = _declared_kindling_version(entry)
+        location = f" [{group}]" if group else ""
+        if declared_version is None:
+            status = "unknown (unrecognized dependency format)"
+        elif resolved_latest is None:
+            status = declared_version
+        elif declared_version == resolved_latest:
+            status = f"{declared_version} (up to date)"
+        else:
+            status = f"{declared_version} (latest: {resolved_latest} -- run `kindling env update`)"
+        click.echo(f"  {distribution}{location}: {status}")
+
+    if latest_error:
+        click.echo(f"  (could not check latest release: {latest_error})")
 
 
 @env_group.command("check")
@@ -2655,6 +2747,12 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
     \b
     To download all required JARs run:
       kindling env ensure
+
+    \b
+    If pyproject.toml declares any Kindling dependency, also reports each
+    one's pinned version and whether a newer release is available (network
+    permitting; this never fails the check). Run `kindling env update` to
+    upgrade.
     """
     if config_path is None:
         config_path = Path("settings.yaml")
@@ -2732,7 +2830,13 @@ def env_check(config_path: Optional[Path], local_checks: bool, platform: Optiona
             else:
                 checks.append(("azure_auth", True, "az login / managed identity"))
 
-    if _print_check_results(checks):
+    passed = _print_check_results(checks)
+
+    project_pyproject = Path("pyproject.toml")
+    if project_pyproject.exists():
+        _print_kindling_version_report(project_pyproject)
+
+    if passed:
         click.echo("Environment check passed.")
         return
 
@@ -2831,7 +2935,7 @@ def env_ensure(cloud: Optional[str]) -> None:
     "--version",
     default="latest",
     show_default=True,
-    help="Kindling release version or tag to install.",
+    help="Kindling release version or tag to update to.",
 )
 @click.option(
     "--repo",
@@ -2840,11 +2944,80 @@ def env_ensure(cloud: Optional[str]) -> None:
     help="GitHub repository containing Kindling release wheel assets.",
 )
 @click.option(
-    "--package-dir",
+    "--project",
+    "project_path",
     type=click.Path(path_type=Path, file_okay=False),
-    default=Path("/opt/kindling-packages"),
+    default=Path("."),
     show_default=True,
-    help="Local wheel cache used by generated pyproject.toml files.",
+    help="Poetry project to update.",
+)
+@click.option(
+    "--no-sync",
+    is_flag=True,
+    help="Run poetry install without --sync.",
+)
+def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> None:
+    """Update every Kindling package this project already depends on.
+
+    Finds every dependency named 'spark-kindling' or 'spark-kindling-*'
+    (the framework, SDK, CLI, and any extensions added via
+    `kindling env add`) declared anywhere in pyproject.toml, and points
+    each one at its matching wheel in the target Kindling release
+    (default: latest) via `poetry add <release wheel url>`. Every
+    Kindling package in a release is versioned together, so one release
+    resolves every dependency at once -- no local wheel cache or Poetry
+    source configuration required.
+    """
+    project_path = project_path.expanduser().resolve()
+    pyproject_path = project_path / "pyproject.toml"
+    if not pyproject_path.exists():
+        raise click.ClickException(f"No pyproject.toml found at {project_path}.")
+
+    declared = _find_kindling_dependencies(pyproject_path)
+    if not declared:
+        raise click.ClickException(f"No spark-kindling* dependencies found in {pyproject_path}.")
+
+    resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
+    wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
+
+    click.echo(f"Updating Kindling packages in {pyproject_path} to {resolved_version} ({repo})")
+    updated = False
+    for distribution, (group, extras) in sorted(declared.items()):
+        match = wheels_by_distribution.get(_canonical_distribution_name(distribution))
+        if match is None:
+            click.echo(f"  skipped {distribution}: not published in Kindling {resolved_version}")
+            continue
+        _poetry_add_url(project_path, match["url"], group=group, extras=extras)
+        location = f" [{group}]" if group else ""
+        click.echo(f"  {distribution} -> {match['version']}{location}")
+        updated = True
+
+    if not updated:
+        raise click.ClickException(
+            f"None of the declared Kindling dependencies were found in release {resolved_version}."
+        )
+
+    install_command = ["poetry", "install", "--with", "dev"]
+    if not no_sync:
+        install_command.append("--sync")
+    _run_checked(install_command, cwd=project_path)
+
+    click.echo(f"\nKindling packages in {project_path} are up to date at {resolved_version}.")
+
+
+@env_group.command("add")
+@click.argument("package")
+@click.option(
+    "--version",
+    default="latest",
+    show_default=True,
+    help="Kindling release version or tag to resolve PACKAGE's version from.",
+)
+@click.option(
+    "--repo",
+    default=KINDLING_GITHUB_REPO,
+    show_default=True,
+    help="GitHub repository containing Kindling release wheel assets.",
 )
 @click.option(
     "--project",
@@ -2852,82 +3025,157 @@ def env_ensure(cloud: Optional[str]) -> None:
     type=click.Path(path_type=Path, file_okay=False),
     default=Path("."),
     show_default=True,
-    help="Poetry project to update after refreshing the local wheel cache.",
+    help="Poetry project to add the dependency to.",
 )
 @click.option(
-    "--no-project",
-    is_flag=True,
-    help="Refresh the devcontainer cache only; skip Poetry update/install.",
+    "--group",
+    "dependency_group",
+    default=None,
+    help="Poetry dependency group for PACKAGE if it isn't already declared "
+    "(e.g. 'dev'). Ignored if PACKAGE already exists in a group.",
+)
+def env_add(
+    package: str,
+    version: str,
+    repo: str,
+    project_path: Path,
+    dependency_group: Optional[str],
+) -> None:
+    """Add a Kindling framework or extension package as a project dependency.
+
+    Resolves PACKAGE's wheel from the given Kindling release (default:
+    latest) and runs `poetry add <release wheel url>`, pinning PACKAGE to
+    the exact wheel published for that release -- no local wheel cache or
+    Poetry source configuration required.
+
+    \b
+    Examples:
+        kindling env add spark-kindling-ext-databricks
+        kindling env add spark-kindling-ext-sdp --group dev
+    """
+    project_path = project_path.expanduser().resolve()
+    pyproject_path = project_path / "pyproject.toml"
+    if not pyproject_path.exists():
+        raise click.ClickException(f"No pyproject.toml found at {project_path}.")
+
+    normalized_target = _canonical_distribution_name(package)
+    resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
+    match = next((wheel for wheel in wheels if wheel["distribution"] == normalized_target), None)
+    if match is None:
+        available = sorted({wheel["distribution"] for wheel in wheels})
+        raise click.ClickException(
+            f"'{package}' is not among the wheel assets in Kindling {resolved_version} "
+            f"({repo}). Available: {', '.join(available)}"
+        )
+
+    declared = _find_kindling_dependencies(pyproject_path)
+    existing = next(
+        (
+            v
+            for name, v in declared.items()
+            if _canonical_distribution_name(name) == normalized_target
+        ),
+        None,
+    )
+    if existing is not None:
+        existing_group, existing_extras = existing
+        if dependency_group and dependency_group != existing_group:
+            location = (
+                "main dependencies" if existing_group is None else f"'{existing_group}' group"
+            )
+            click.echo(
+                f"'{package}' is already declared in the {location}; ignoring --group {dependency_group}."
+            )
+        group, extras = existing_group, existing_extras
+    else:
+        group, extras = dependency_group, []
+
+    click.echo(f"Resolving {package} {match['version']} from Kindling {resolved_version} ({repo})")
+    _poetry_add_url(project_path, match["url"], group=group, extras=extras)
+
+    location = f" [{group}]" if group else ""
+    click.echo(f"\nAdded {package} {match['version']}{location} to {pyproject_path}.")
+
+
+_BOOTSTRAP_PACKAGES: Tuple[Tuple[str, Optional[str], List[str]], ...] = (
+    ("spark-kindling", None, ["standalone"]),
+    ("spark-kindling-sdk", "dev", []),
+    ("spark-kindling-cli", "dev", []),
+)
+
+
+@env_group.command("bootstrap")
+@click.option(
+    "--version",
+    default="latest",
+    show_default=True,
+    help="Kindling release version or tag to install if no Kindling dependency is declared yet.",
 )
 @click.option(
-    "--no-global",
-    is_flag=True,
-    help="Skip reinstalling Kindling into the current Python environment.",
+    "--repo",
+    default=KINDLING_GITHUB_REPO,
+    show_default=True,
+    help="GitHub repository containing Kindling release wheel assets.",
+)
+@click.option(
+    "--project",
+    "project_path",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=Path("."),
+    show_default=True,
+    help="Poetry project to bootstrap.",
 )
 @click.option(
     "--no-sync",
     is_flag=True,
     help="Run poetry install without --sync.",
 )
-@click.option(
-    "--no-sudo",
-    is_flag=True,
-    help="Do not use sudo when /opt/kindling-packages is not writable.",
-)
-def env_update(
-    version: str,
-    repo: str,
-    package_dir: Path,
-    project_path: Path,
-    no_project: bool,
-    no_global: bool,
-    no_sync: bool,
-    no_sudo: bool,
-) -> None:
-    """Update Kindling packages in a domain devcontainer without rebuilding it.
+def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) -> None:
+    """Ensure a project can load Kindling, adding it if it isn't declared yet.
 
-    \b
-    This refreshes the local wheel cache used by generated pyproject.toml files:
+    Checks pyproject.toml for any 'spark-kindling'/'spark-kindling-*'
+    dependency. If none is declared -- a project created without
+    `kindling repo init`, or one that predates this devcontainer's package
+    model -- adds the framework, SDK, and CLI pinned to the target Kindling
+    release (default: latest) via `poetry add <release wheel URL>`. If
+    Kindling is already declared, this leaves it untouched: the project's
+    own pyproject.toml/poetry.lock remain authoritative. Either way,
+    finishes with `poetry install --sync`.
 
-      /opt/kindling-packages/wheels/
-      /opt/kindling-packages/simple/
-
-    Then it optionally reinstalls the current Python environment's Kindling
-    packages and updates the current Poetry project against that refreshed
-    local index.
+    This is what the generated devcontainer's `postCreateCommand` runs on
+    every container creation, so a domain project always ends up with a
+    working Kindling install without the devcontainer image itself
+    installing Kindling packages directly.
     """
-    resolved_version = _resolve_github_version(version, repo=repo)
-    package_dir = package_dir.expanduser().resolve()
     project_path = project_path.expanduser().resolve()
-    use_sudo = not no_sudo
+    pyproject_path = project_path / "pyproject.toml"
+    if not pyproject_path.exists():
+        raise click.ClickException(f"No pyproject.toml found at {project_path}.")
 
-    click.echo(f"Updating Kindling devcontainer packages to {resolved_version} from {repo}")
-    with tempfile.TemporaryDirectory() as tmp:
-        download_dir = Path(tmp)
-        _download_github_release_assets(resolved_version, download_dir, repo=repo)
-        wheels = sorted(download_dir.glob("*.whl"))
-        if not wheels:
-            raise click.ClickException(
-                f"No wheel assets downloaded for Kindling {resolved_version}."
-            )
+    if _find_kindling_dependencies(pyproject_path):
+        click.echo(f"Kindling is already declared in {pyproject_path}.")
+    else:
+        click.echo(f"No Kindling dependency found in {pyproject_path}; adding it.")
+        resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
+        wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
 
-        wheels_dir = package_dir / "wheels"
-        for wheel in wheels:
-            _copy_with_optional_sudo(wheel, wheels_dir / wheel.name, use_sudo=use_sudo)
-            click.echo(f"  cached {wheel.name}")
+        for distribution, group, extras in _BOOTSTRAP_PACKAGES:
+            match = wheels_by_distribution.get(distribution)
+            if match is None:
+                raise click.ClickException(
+                    f"'{distribution}' is not among the wheel assets in Kindling "
+                    f"{resolved_version} ({repo})."
+                )
+            _poetry_add_url(project_path, match["url"], group=group, extras=extras)
+            location = f" [{group}]" if group else ""
+            click.echo(f"  added {distribution} {match['version']}{location}")
 
-        package_count = _refresh_simple_index(package_dir, use_sudo=use_sudo)
-        click.echo(f"  refreshed {package_dir / 'simple'} ({package_count} package(s))")
+    install_command = ["poetry", "install", "--with", "dev"]
+    if not no_sync:
+        install_command.append("--sync")
+    _run_checked(install_command, cwd=project_path)
 
-        if not no_global:
-            _install_global_wheels(wheels, use_sudo=use_sudo)
-            click.echo("  updated current Python environment")
-
-    if not no_project:
-        _update_kindling_project(project_path, sync=not no_sync)
-        click.echo(f"  updated Poetry project at {project_path}")
-
-    click.echo(f"\nKindling devcontainer packages are up to date at {resolved_version}.")
+    click.echo(f"\nKindling is ready in {project_path}.")
 
 
 @cli.group("workspace")

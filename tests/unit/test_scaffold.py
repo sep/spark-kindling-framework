@@ -275,11 +275,15 @@ def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path
     generate_package(cfg)
 
     pyproject = (_package_root(repo_root, "proj") / "pyproject.toml").read_text()
-    assert "spark-kindling = {version = " in pyproject
+    assert "spark-kindling = { url = " in pyproject
+    assert "/spark_kindling-" in pyproject  # pinned to a release wheel URL
     assert 'extras = ["standalone"]' in pyproject
     assert 'poethepoet = ">=0.24.0"' in pyproject
-    assert "spark-kindling-cli = {version = " in pyproject
-    assert "kindling-local" in pyproject  # local PEP 503 index source
+    assert "spark-kindling-cli = { url = " in pyproject
+    assert "/spark_kindling_cli-" in pyproject
+    assert "spark-kindling-sdk = { url = " in pyproject
+    assert "/spark_kindling_sdk-" in pyproject
+    assert "kindling-local" not in pyproject  # no local PEP 503 index source anymore
     assert 'test = { sequence = ["test-unit", "test-component"] }' in pyproject
     assert 'test-unit = "pytest tests/unit -v"' in pyproject
     assert 'test-component = "pytest tests/component -v"' in pyproject
