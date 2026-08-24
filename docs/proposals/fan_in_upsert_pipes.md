@@ -56,9 +56,9 @@ Concretely:
    entity, not just the last one registered.
 4. Keep `duplicate_output_entity` as the default guard for ordinary
    full-row writers; gate the exception behind the entity's explicit
-   `fan_in` flag.
-5. Have `kindling_ext_sdp` positively refuse to lower `fan_in` entities,
-   with a dedicated diagnostic — fail closed, not silently wrong.
+   `entity.fan_in` flag.
+5. Have `kindling_ext_sdp` positively refuse to lower `entity.fan_in`
+   entities, with a dedicated diagnostic — fail closed, not silently wrong.
 
 ## Evidence: current state
 
@@ -67,8 +67,10 @@ Concretely:
 - `EntityMetadata` (`packages/kindling/data_entities.py:225-244`) has
   `merge_columns` (join keys only) and a single `schema` — nothing
   expresses which pipe owns which non-key column.
-- `PipeMetadata` (`packages/kindling/data_pipes.py:27-36`) has one scalar
-  `output_entity_id` — no owned-column list, no fan-in mode.
+- `PipeMetadata` (`packages/kindling/data_pipes.py:27-36`) has a scalar
+  `output_entity_id` and `output_type` alongside `pipeid`, `name`,
+  `execute`, `tags`, `input_entity_ids`, and `use_watermark` — none of
+  which expresses an owned-column list or a fan-in mode.
 
 ### Delta's merge already does column-subset semantics — by accident
 
@@ -318,7 +320,7 @@ just the last one registered.
   `entity.fan_in=true` — this remains the correct guard against
   accidental multi-producer conflicts for the overwhelming majority of
   entities (ordinary full-row writers).
-- `kindling_ext_sdp` additionally and positively excludes `fan_in`
+- `kindling_ext_sdp` additionally and positively excludes `entity.fan_in`
   entities from declaration (new `fan_in_entity_not_declarable` rule,
   mirroring the existing `output_entity_not_table_backed` rule) — fail
   closed with an actionable diagnostic rather than emitting the
@@ -372,8 +374,8 @@ entity/pipe names for the `gold.item_summary` placeholder used here)
   fires exactly as today (protects the default path).
 - `pipe_graph.py` builds dependency edges from all producers, not just
   the last registered.
-- SDP: a `fan_in=true` entity → the new rejection code, not the generic
-  `duplicate_output_entity` message.
+- SDP: an `entity.fan_in=true` entity → the new rejection code, not the
+  generic `duplicate_output_entity` message.
 - Concurrent merges into disjoint columns on the same Delta table
   converge to the correct final row under the retry wrapper.
 
