@@ -123,6 +123,20 @@ All notable changes to spark-kindling are documented here.
   workspace/notebook packages during bootstrap unless an app explicitly
   opted out. Apps that rely on workspace-package loading must now set
   `kindling.bootstrap.load_workspace_packages: true` explicitly.
+- **`kindling env add`/`env update`/`env bootstrap`/`env check` now read and
+  write uv's dependency schema exclusively** (`[project.dependencies]` +
+  `[tool.uv.sources]` + `[dependency-groups]`), shelling out to `uv add`/
+  `uv sync` instead of `poetry add`/`poetry install --sync`. The
+  Poetry-schema code path was removed outright rather than kept alongside
+  it — these commands no longer work against a `[tool.poetry.dependencies]`
+  project. A one-off `scripts/migrate_domain_project_to_uv.py` converts an
+  existing Poetry project to uv in place (optionally wiring up a
+  `[tool.uv.workspace]` root); it is a standalone script, not a
+  `kindling_cli` command, meant to run once per project and then be
+  deleted. New-project scaffolding (`kindling repo init`/`package init`,
+  the generated devcontainer/CI templates) is unchanged and still
+  Poetry-based — see `docs/proposals/poetry_to_uv_migration.md` for the
+  scope and rationale.
 
 ### Fixed
 

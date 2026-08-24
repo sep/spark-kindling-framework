@@ -2514,31 +2514,90 @@ def _dependency_extras(entry: Any) -> List[str]:
     return []
 
 
+_PEP508_NAME_EXTRAS_RE = re.compile(
+    r"^\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\s*(\[[^\]]*\])?"
+)
+
+
+def _parse_pep508_name_extras(requirement: str) -> Tuple[str, List[str]]:
+    """Best-effort (name, extras) from a PEP 508 requirement string (e.g.
+    'spark-kindling[standalone]>=1.0'). Ignores any version specifier/marker
+    -- callers only need the name (to match spark-kindling*) and the extras
+    uv stores inline in the requirement string rather than in a separate
+    table."""
+    match = _PEP508_NAME_EXTRAS_RE.match(requirement)
+    if not match:
+        return requirement.strip(), []
+    name = match.group(1)
+    extras_str = match.group(2)
+    if not extras_str:
+        return name, []
+    extras = [e.strip() for e in extras_str[1:-1].split(",") if e.strip()]
+    return name, extras
+
+
+def _uv_source_for(sources: Dict[str, Any], name: str) -> Any:
+    canonical = _canonical_distribution_name(name)
+    for key, value in sources.items():
+        if _canonical_distribution_name(key) == canonical:
+            return value
+    return None
+
+
+def _uv_synthetic_entry(sources: Dict[str, Any], name: str, extras: List[str]) -> Dict[str, Any]:
+    """Build a Poetry-shaped entry dict ({"url": ..., "extras": [...]}) from
+    a uv dependency's [tool.uv.sources] override, so _dependency_extras and
+    _declared_kindling_version (written against Poetry's dict shape) work
+    unchanged against a uv project too."""
+    entry: Dict[str, Any] = {}
+    source = _uv_source_for(sources, name)
+    if isinstance(source, dict) and isinstance(source.get("url"), str):
+        entry["url"] = source["url"]
+    if extras:
+        entry["extras"] = extras
+    return entry
+
+
+def _iter_uv_kindling_dependency_entries(
+    data: Dict[str, Any],
+) -> Iterator[Tuple[str, Optional[str], Any]]:
+    project = data.get("project", {})
+    sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+    if not isinstance(sources, dict):
+        sources = {}
+
+    main_deps = project.get("dependencies", [])
+    if isinstance(main_deps, list):
+        for requirement in main_deps:
+            if not isinstance(requirement, str):
+                continue
+            name, extras = _parse_pep508_name_extras(requirement)
+            if _is_kindling_distribution(name):
+                yield name, None, _uv_synthetic_entry(sources, name, extras)
+
+    groups = data.get("dependency-groups", {})
+    if isinstance(groups, dict):
+        for group_name, group_reqs in groups.items():
+            if not isinstance(group_reqs, list):
+                continue
+            for requirement in group_reqs:
+                if not isinstance(requirement, str):
+                    continue  # skip {include-group = "..."} entries
+                name, extras = _parse_pep508_name_extras(requirement)
+                if _is_kindling_distribution(name):
+                    yield name, group_name, _uv_synthetic_entry(sources, name, extras)
+
+
 def _iter_kindling_dependency_entries(
     pyproject_path: Path,
 ) -> Iterator[Tuple[str, Optional[str], Any]]:
     """Yield (distribution_name, group_or_None, raw_entry) for every declared
     'spark-kindling'/'spark-kindling-*' dependency in pyproject.toml,
-    wherever it's declared -- the main dependency table or any dependency
-    group.
+    wherever it's declared -- [project.dependencies] or any
+    [dependency-groups] group.
     """
     data = _load_pyproject_toml(pyproject_path)
-    poetry = data.get("tool", {}).get("poetry", {})
-
-    main_deps = poetry.get("dependencies", {})
-    if isinstance(main_deps, dict):
-        for name, entry in main_deps.items():
-            if _is_kindling_distribution(name):
-                yield name, None, entry
-
-    groups = poetry.get("group", {})
-    if isinstance(groups, dict):
-        for group_name, group_data in groups.items():
-            group_deps = group_data.get("dependencies", {}) if isinstance(group_data, dict) else {}
-            if isinstance(group_deps, dict):
-                for name, entry in group_deps.items():
-                    if _is_kindling_distribution(name):
-                        yield name, group_name, entry
+    yield from _iter_uv_kindling_dependency_entries(data)
 
 
 def _find_kindling_dependencies(
@@ -2577,11 +2636,105 @@ def _declared_kindling_version(entry: Any) -> Optional[str]:
     return None
 
 
+_DESCENDANT_SCAN_EXCLUDES = {
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "dist",
+    "build",
+    ".worktrees",
+    "site-packages",
+}
+
+
+def _discover_descendant_pyprojects(root_path: Path) -> List[Path]:
+    """Find pyproject.toml files in project/app directories nested under
+    root_path (e.g. apps/*/pyproject.toml in a monorepo). Does not descend
+    past a found pyproject.toml -- nested projects aren't expected to nest
+    further -- nor into common non-project directories.
+    """
+    found: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dirnames[:] = [
+            d for d in dirnames if d not in _DESCENDANT_SCAN_EXCLUDES and not d.startswith(".")
+        ]
+        current = Path(dirpath)
+        if current == root_path:
+            continue
+        if "pyproject.toml" in filenames:
+            found.append(current / "pyproject.toml")
+            dirnames[:] = []
+    return sorted(found)
+
+
+def _reconcile_root_kindling_dependencies(
+    root_pyproject_path: Path, project_path: Path
+) -> Dict[str, Tuple[Optional[str], List[str], Any]]:
+    """When root_pyproject_path declares no spark-kindling* dependency, look
+    for one declared in a nested package/app under project_path (e.g. a
+    monorepo's apps/*/pyproject.toml) so the root can adopt it as the single
+    version installed and available to the whole tree.
+
+    Every nested project that declares Kindling must pin the same release --
+    the root is a single install, not a per-app one -- so this raises if they
+    disagree rather than silently preferring one.
+
+    Returns {distribution: (group, extras, raw_entry)} to add at the root,
+    or {} if no nested project declares Kindling either.
+    """
+    by_project: Dict[Path, Dict[str, Tuple[Optional[str], List[str], Any]]] = {}
+    for path in _discover_descendant_pyprojects(project_path):
+        try:
+            entries = {
+                name: (group, _dependency_extras(entry), entry)
+                for name, group, entry in _iter_kindling_dependency_entries(path)
+            }
+        except Exception:
+            continue
+        if entries:
+            by_project[path] = entries
+
+    if not by_project:
+        return {}
+
+    versions_by_project: Dict[Path, str] = {}
+    for path, entries in by_project.items():
+        versions = {
+            v for v in (_declared_kindling_version(entry) for _, _, entry in entries.values()) if v
+        }
+        if len(versions) == 1:
+            versions_by_project[path] = next(iter(versions))
+
+    distinct_versions = set(versions_by_project.values())
+    if len(distinct_versions) > 1:
+        lines = "\n".join(
+            f"  {path}: {version}" for path, version in sorted(versions_by_project.items())
+        )
+        raise click.ClickException(
+            f"No spark-kindling* dependency declared at {root_pyproject_path}, and "
+            "nested projects disagree on which Kindling release to use:\n"
+            f"{lines}\n"
+            "Reconcile them to a single release (e.g. `kindling env update` in each) "
+            "before running this at the root."
+        )
+
+    merged: Dict[str, Tuple[Optional[str], List[str], Any]] = {}
+    for entries in by_project.values():
+        for name, (group, extras, entry) in entries.items():
+            merged.setdefault(name, (group, extras, entry))
+    return merged
+
+
 def _resolve_kindling_release_wheels(
     version: str, repo: str = KINDLING_GITHUB_REPO
 ) -> Tuple[str, List[Dict[str, str]]]:
     """Resolve a Kindling release and list its wheel assets, without
-    downloading any wheel bytes -- `poetry add <url>` fetches each wheel
+    downloading any wheel bytes -- `uv add <url>` fetches each wheel
     directly once it's actually added to a project.
 
     Returns (resolved_version, [{"distribution", "version", "name", "url"}, ...]).
@@ -2623,28 +2776,67 @@ def _resolve_kindling_release_wheels(
     return resolved_version, wheels
 
 
-def _poetry_add_url(
+def _remove_stray_bare_uv_dependency(project_path: Path, distribution: str) -> None:
+    """`uv add <url> --group G` on an already bare-declared dependency
+    doesn't move it into the group -- verified empirically -- it leaves a
+    duplicate: the package ends up listed in both [project.dependencies]
+    and [dependency-groups.G] at once. Strip the stray bare entry so the
+    package is declared in the group only, matching intent.
+    """
+    pyproject_path = project_path / "pyproject.toml"
+    try:
+        data = _load_pyproject_toml(pyproject_path)
+    except Exception:
+        return
+    main_deps = data.get("project", {}).get("dependencies", [])
+    if not isinstance(main_deps, list):
+        return
+    canonical = _canonical_distribution_name(distribution)
+    is_stray = any(
+        isinstance(requirement, str)
+        and _canonical_distribution_name(_parse_pep508_name_extras(requirement)[0]) == canonical
+        for requirement in main_deps
+    )
+    if is_stray:
+        _run_checked(["uv", "remove", distribution], cwd=project_path)
+
+
+def _uv_add_url(
     project_path: Path,
+    distribution: str,
     url: str,
     *,
     group: Optional[str] = None,
     extras: Optional[List[str]] = None,
 ) -> None:
-    """Run `poetry add <url>`, re-supplying group/extras explicitly.
+    """Run `uv add <url>`, re-supplying group/extras explicitly.
 
-    Poetry does not infer either from a package's prior pyproject.toml
-    entry: a bare `poetry add <url>` on an already-declared dependency
-    silently drops its extras, and updates the wrong scope entirely
-    (creating a conflicting duplicate in [tool.poetry.dependencies]) if
-    the package actually lives in a dependency group. Both must be passed
-    explicitly on every call to correctly update an existing entry.
+    uv does not infer either from a package's prior pyproject.toml entry: a
+    bare `uv add <url>` on an already-declared dependency leaves a stray
+    duplicate in [project.dependencies] instead of moving it into its
+    group (verified empirically) -- see `_remove_stray_bare_uv_dependency`.
     """
-    command = ["poetry", "add", url]
+    command = ["uv", "add", url]
     if group:
         command.extend(["--group", group])
     for extra in extras or []:
-        command.extend(["--extras", extra])
+        command.extend(["--extra", extra])
     _run_checked(command, cwd=project_path)
+    if group:
+        _remove_stray_bare_uv_dependency(project_path, distribution)
+
+
+def _sync_command(*, no_sync: bool) -> List[str]:
+    """Command to install/sync a project's declared dependencies. `uv sync`
+    is already "exact" (removes anything not declared) by default, and
+    already includes the default ("dev") dependency group with no extra
+    flags needed -- `--inexact` opts out of the removal-of-extraneous-
+    packages behavior.
+    """
+    command = ["uv", "sync"]
+    if no_sync:
+        command.append("--inexact")
+    return command
 
 
 def _print_kindling_version_report(pyproject_path: Path) -> None:
@@ -2949,12 +3141,12 @@ def env_ensure(cloud: Optional[str]) -> None:
     type=click.Path(path_type=Path, file_okay=False),
     default=Path("."),
     show_default=True,
-    help="Poetry project to update.",
+    help="uv project to update.",
 )
 @click.option(
     "--no-sync",
     is_flag=True,
-    help="Run poetry install without --sync.",
+    help="Run uv sync with --inexact (don't remove extraneous packages).",
 )
 def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> None:
     """Update every Kindling package this project already depends on.
@@ -2963,10 +3155,16 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
     (the framework, SDK, CLI, and any extensions added via
     `kindling env add`) declared anywhere in pyproject.toml, and points
     each one at its matching wheel in the target Kindling release
-    (default: latest) via `poetry add <release wheel url>`. Every
+    (default: latest) via `uv add <release wheel url>`. Every
     Kindling package in a release is versioned together, so one release
     resolves every dependency at once -- no local wheel cache or Poetry
     source configuration required.
+
+    If nothing is declared at PROJECT itself, looks for a Kindling
+    dependency in a nested package/app pyproject.toml (e.g. a monorepo's
+    apps/*/pyproject.toml) and adopts it before updating -- the project
+    root is the single source of truth for what's installed. Fails if
+    nested projects disagree on which release to use.
     """
     project_path = project_path.expanduser().resolve()
     pyproject_path = project_path / "pyproject.toml"
@@ -2975,7 +3173,20 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
 
     declared = _find_kindling_dependencies(pyproject_path)
     if not declared:
-        raise click.ClickException(f"No spark-kindling* dependencies found in {pyproject_path}.")
+        to_copy = _reconcile_root_kindling_dependencies(pyproject_path, project_path)
+        if not to_copy:
+            raise click.ClickException(
+                f"No spark-kindling* dependencies found in {pyproject_path}."
+            )
+        click.echo(
+            f"No spark-kindling* dependency declared at {pyproject_path}; "
+            "adopting from nested project(s):"
+        )
+        for distribution in sorted(to_copy):
+            group, extras, _entry = to_copy[distribution]
+            location = f" [{group}]" if group else ""
+            click.echo(f"  {distribution}{location}")
+        declared = {name: (group, extras) for name, (group, extras, _entry) in to_copy.items()}
 
     resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
     wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
@@ -2987,7 +3198,7 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
         if match is None:
             click.echo(f"  skipped {distribution}: not published in Kindling {resolved_version}")
             continue
-        _poetry_add_url(project_path, match["url"], group=group, extras=extras)
+        _uv_add_url(project_path, distribution, match["url"], group=group, extras=extras)
         location = f" [{group}]" if group else ""
         click.echo(f"  {distribution} -> {match['version']}{location}")
         updated = True
@@ -2997,10 +3208,7 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
             f"None of the declared Kindling dependencies were found in release {resolved_version}."
         )
 
-    install_command = ["poetry", "install", "--with", "dev"]
-    if not no_sync:
-        install_command.append("--sync")
-    _run_checked(install_command, cwd=project_path)
+    _run_checked(_sync_command(no_sync=no_sync), cwd=project_path)
 
     click.echo(f"\nKindling packages in {project_path} are up to date at {resolved_version}.")
 
@@ -3025,13 +3233,13 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
     type=click.Path(path_type=Path, file_okay=False),
     default=Path("."),
     show_default=True,
-    help="Poetry project to add the dependency to.",
+    help="uv project to add the dependency to.",
 )
 @click.option(
     "--group",
     "dependency_group",
     default=None,
-    help="Poetry dependency group for PACKAGE if it isn't already declared "
+    help="Dependency group for PACKAGE if it isn't already declared "
     "(e.g. 'dev'). Ignored if PACKAGE already exists in a group.",
 )
 def env_add(
@@ -3044,9 +3252,9 @@ def env_add(
     """Add a Kindling framework or extension package as a project dependency.
 
     Resolves PACKAGE's wheel from the given Kindling release (default:
-    latest) and runs `poetry add <release wheel url>`, pinning PACKAGE to
+    latest) and runs `uv add <release wheel url>`, pinning PACKAGE to
     the exact wheel published for that release -- no local wheel cache or
-    Poetry source configuration required.
+    Poetry-style source configuration required.
 
     \b
     Examples:
@@ -3091,7 +3299,7 @@ def env_add(
         group, extras = dependency_group, []
 
     click.echo(f"Resolving {package} {match['version']} from Kindling {resolved_version} ({repo})")
-    _poetry_add_url(project_path, match["url"], group=group, extras=extras)
+    _uv_add_url(project_path, normalized_target, match["url"], group=group, extras=extras)
 
     location = f" [{group}]" if group else ""
     click.echo(f"\nAdded {package} {match['version']}{location} to {pyproject_path}.")
@@ -3123,12 +3331,12 @@ _BOOTSTRAP_PACKAGES: Tuple[Tuple[str, Optional[str], List[str]], ...] = (
     type=click.Path(path_type=Path, file_okay=False),
     default=Path("."),
     show_default=True,
-    help="Poetry project to bootstrap.",
+    help="uv project to bootstrap.",
 )
 @click.option(
     "--no-sync",
     is_flag=True,
-    help="Run poetry install without --sync.",
+    help="Run uv sync with --inexact (don't remove extraneous packages).",
 )
 def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) -> None:
     """Ensure a project can load Kindling, adding it if it isn't declared yet.
@@ -3136,11 +3344,14 @@ def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) ->
     Checks pyproject.toml for any 'spark-kindling'/'spark-kindling-*'
     dependency. If none is declared -- a project created without
     `kindling repo init`, or one that predates this devcontainer's package
-    model -- adds the framework, SDK, and CLI pinned to the target Kindling
-    release (default: latest) via `poetry add <release wheel URL>`. If
-    Kindling is already declared, this leaves it untouched: the project's
-    own pyproject.toml/poetry.lock remain authoritative. Either way,
-    finishes with `poetry install --sync`.
+    model -- looks for one declared in a nested package/app pyproject.toml
+    (e.g. a monorepo's apps/*/pyproject.toml) and adopts it; only if no
+    nested project declares Kindling either does it add the framework, SDK,
+    and CLI pinned to the target Kindling release (default: latest) via
+    `uv add <release wheel URL>`. Fails if nested projects disagree on
+    which release to use. If Kindling is already declared at the project
+    root, this leaves it untouched: the project's own pyproject.toml/
+    uv.lock remain authoritative. Either way, finishes with `uv sync`.
 
     This is what the generated devcontainer's `postCreateCommand` runs on
     every container creation, so a domain project always ends up with a
@@ -3155,25 +3366,36 @@ def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) ->
     if _find_kindling_dependencies(pyproject_path):
         click.echo(f"Kindling is already declared in {pyproject_path}.")
     else:
-        click.echo(f"No Kindling dependency found in {pyproject_path}; adding it.")
-        resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
-        wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
+        to_copy = _reconcile_root_kindling_dependencies(pyproject_path, project_path)
+        if to_copy:
+            click.echo(
+                f"No Kindling dependency found in {pyproject_path}; "
+                "copying from nested project(s):"
+            )
+            for distribution, (group, extras, entry) in sorted(to_copy.items()):
+                url = entry.get("url") if isinstance(entry, dict) else None
+                if not url:
+                    continue
+                _uv_add_url(project_path, distribution, url, group=group, extras=extras)
+                location = f" [{group}]" if group else ""
+                click.echo(f"  added {distribution}{location} (from nested project)")
+        else:
+            click.echo(f"No Kindling dependency found in {pyproject_path}; adding it.")
+            resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
+            wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
 
-        for distribution, group, extras in _BOOTSTRAP_PACKAGES:
-            match = wheels_by_distribution.get(distribution)
-            if match is None:
-                raise click.ClickException(
-                    f"'{distribution}' is not among the wheel assets in Kindling "
-                    f"{resolved_version} ({repo})."
-                )
-            _poetry_add_url(project_path, match["url"], group=group, extras=extras)
-            location = f" [{group}]" if group else ""
-            click.echo(f"  added {distribution} {match['version']}{location}")
+            for distribution, group, extras in _BOOTSTRAP_PACKAGES:
+                match = wheels_by_distribution.get(distribution)
+                if match is None:
+                    raise click.ClickException(
+                        f"'{distribution}' is not among the wheel assets in Kindling "
+                        f"{resolved_version} ({repo})."
+                    )
+                _uv_add_url(project_path, distribution, match["url"], group=group, extras=extras)
+                location = f" [{group}]" if group else ""
+                click.echo(f"  added {distribution} {match['version']}{location}")
 
-    install_command = ["poetry", "install", "--with", "dev"]
-    if not no_sync:
-        install_command.append("--sync")
-    _run_checked(install_command, cwd=project_path)
+    _run_checked(_sync_command(no_sync=no_sync), cwd=project_path)
 
     click.echo(f"\nKindling is ready in {project_path}.")
 
