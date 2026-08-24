@@ -19,10 +19,13 @@ has more than one settings file layered with `dataentities:`,
 sections — and no single command tells a new contributor "is my project
 actually healthy" the way `env check` tells them "is my machine ready."
 
-This proposal adds five new commands and one flag, all inside existing
-command groups (`config`, `entity`, `pipeline`) plus one new top-level
-utility command (`doctor`), each chosen to close a verified gap rather than
-duplicate something a flag combination already does.
+This proposal adds seven new commands and one flag, all inside existing
+command groups (`config`, `entity`, `pipeline`, `app`, `package`) --
+deliberately no new top-level command. An earlier draft of this proposal
+added a top-level `kindling doctor` composite health check; that idea is
+now folded into the existing `app`/`package` groups as `app check`/
+`package check`, consistent with the CLI's existing `env check` naming
+(see Design Principle 1 and the "Proposed Commands" section below).
 
 | Command | Group | Fills |
 |---|---|---|
@@ -31,7 +34,8 @@ duplicate something a flag combination already does.
 | `kindling entity list` | `entity` | No top-level entity listing (only nested under `app inspect`) |
 | `kindling entity tags` | `entity` | No way to see resolved tags + which layer set them |
 | `kindling pipeline show` | `pipeline` | No pipe-level analog to `entity show` at all |
-| `kindling doctor` | (top-level) | No single "is my project healthy" composite check |
+| `kindling app check` | `app` | No single "is my app healthy" composite check (import smoke test, entity/pipe graph, runtime version skew) |
+| `kindling package check` | `package` | No package-level health check before `package deploy` (metadata, layout, wheel build) |
 | `--trace` on `app run`/`pipeline run` | `app`, `pipeline` | Bootstrap trace printing exists but is undiscoverable |
 
 ---
@@ -60,7 +64,7 @@ usage grows, that manual process gets more error-prone, not less.
 
 Separately, `pipeline list` — the sibling of `entity show`/`entity validate`
 — was never given a pipe-level equivalent to those two commands. And
-there is no single top-level "is my project okay" check comparable to what
+there is no single "is my app/package okay" check comparable to what
 `env check` already does for the machine.
 
 ---
@@ -72,9 +76,15 @@ These follow directly from the existing CLI's own conventions:
 1. **New commands live inside existing groups wherever the noun already
    exists.** `config show`/`config diff` join `config init`/`config set`;
    `entity list`/`entity tags` join `entity show`/`entity validate`;
-   `pipeline show` joins `pipeline run`/`pipeline list`. Only `doctor` is
-   top-level, matching the precedent of `--version` as a top-level utility
-   rather than a subcommand.
+   `pipeline show` joins `pipeline run`/`pipeline list`; the composite
+   health check is split as `app check` (app-level: entity/pipe graph,
+   app-import smoke test, runtime version skew) and `package check`
+   (package-level: metadata, layout, wheel build), each joining its own
+   group's existing verbs, using the `check` verb the CLI already
+   established with `env check`. No new top-level command is introduced —
+   a project that wants "check everything" composes its own `poe`/Make
+   task calling both, rather than this proposal building a meta-command
+   that calls both for them.
 
 2. **`--env` resolution always falls back to `KINDLING_ENV`.** A consistency
    audit found `entity show`/`entity validate`/`app inspect` silently
@@ -240,42 +250,86 @@ Prints: pipe name, `input_entity_ids`, `output_entity_id`, `output_type`,
 and — with `--tags` — the resolved tag dict with provenance, exactly as
 `entity tags` does but sourced from `datapipes:`/`datapipes-bytag:`.
 
-### `kindling doctor`
+### `kindling app check`
 
-A single composite health check for a project, one level above `env check`
-(which only checks the machine, not the project). Read-only, uses the same
-`[PASS]`/`[FAIL]` reporting convention as `env check`/`app validate` rather
-than inventing a third status-report style (a consistency-audit finding
-was that two incompatible check-report formats already coexist between
-`env check`/`app validate` and `entity validate` — `doctor` should not add
-a third).
+A composite health check for a single app, superset of `app validate`,
+reported with the same `[PASS]`/`[FAIL]` convention as `env check`/
+`app validate` rather than inventing a third status-report style (a
+consistency-audit finding was that two incompatible check-report formats
+already coexist between `env check`/`app validate` and `entity
+validate` — `app check` should not add a third).
 
 ```bash
-kindling doctor
-kindling doctor --app myapp --env dev
-kindling doctor --platform databricks
+kindling app check
+kindling app check --app myapp --env dev
+kindling app check --platform databricks
 ```
 
 Composes, without duplicating logic:
 
-- Everything `env check` already reports (delegates to the same internal
-  checks: Python version, config file presence, `kindling:` section).
-- `--local`/`--platform` pass-through, identical semantics to `env check`.
-- **New:** CLI/SDK/deployed-runtime version skew — reuses the existing
-  runtime-outdated warning logic, today only triggered as a side effect
-  inside `app run`/`package deploy`, promoted here to a named,
-  always-visible check.
 - **New:** an app-import smoke test — attempts to load the discovered
   `app.py` module and reports import/registration errors as a
   `[FAIL] app_import` line, without executing any pipe (mirrors what
   `app validate` does for the entity/pipe graph, but catches the class of
   errors that happen *before* the registries are even populated — plain
-  Python import errors, missing `initialize()`, etc.).
+  Python import errors, missing `initialize()`, etc.). `app validate`
+  today lets this class of failure abort the command outright with a
+  `ClickException`; `app check` instead converts it into a named,
+  reportable check line and skips the graph checks below if it fails.
+- Everything `app validate` already checks once import succeeds:
+  entities/pipes registered, every pipe's input/output entities resolve,
+  every Delta entity declares `merge_columns`.
+- **New:** CLI/deployed-runtime version skew, gated behind `--platform`
+  (plus the same `--artifacts-path`/`--storage-account`/`--container`/
+  `--base-path` options `package deploy` already exposes) since it needs
+  artifact-storage access — reuses the existing runtime-outdated warning
+  logic, today only triggered as a side effect inside `app run`/
+  `package deploy`, promoted here to a named check. Without `--platform`,
+  or if no artifacts destination can be resolved, this check is skipped
+  (reported as a non-blocking note, not a failure) rather than forcing
+  every local `app check` invocation to need remote credentials.
 - A one-line summary of registered entity/pipe counts (reusing the same
   counts `app validate` already prints).
 
 Exit code: `0` if every check passes, `1` otherwise — same convention as
-`env check`.
+`env check`. Supports `--json` per Design Principle 3.
+
+### `kindling package check`
+
+The package-level counterpart, checking the things `package deploy`
+depends on *before* a developer runs a real deploy: valid Poetry
+metadata, a plausible `src/` layout, and (unless `--skip-build`) that the
+package's wheel actually builds via the same `poetry build` invocation
+`package deploy` uses internally.
+
+```bash
+kindling package check my-domain-package
+kindling package check my-domain-package --local-folder packages/my-domain-package
+kindling package check my-domain-package --skip-build
+```
+
+Composes, without duplicating logic:
+
+- `pyproject`: `tool.poetry.name`/`version` are present and parse (reuses
+  `package deploy`'s own metadata loader).
+- `src_layout`: a `src/` directory exists under the package root and
+  contains at least one importable Python package (an `__init__.py`
+  under a subdirectory) — layout-agnostic across the `medallion`/
+  `minimal` scaffold styles `package init --layers` produces.
+- `wheel_build` (skippable via `--skip-build` for a fast check in tight
+  loops): actually runs `poetry build --format wheel`, the same call
+  `package deploy` makes, and reports success/failure rather than
+  inferring buildability from file presence alone.
+
+Exit code: `0` if every check passes, `1` otherwise. Supports `--json`.
+
+`kindling app check` and `kindling package check` are deliberately
+separate, uncomposed commands — see Design Principle 1. A project that
+wants both run together (e.g. in CI) composes them itself:
+
+```bash
+# poe check = kindling app check && kindling package check my-pkg
+```
 
 ### `--trace` on `kindling app run` / `kindling pipeline run`
 
@@ -313,10 +367,14 @@ plumbing.
   new commands — a separate, smaller proposal (or a fast-follow PR) is the
   right vehicle so it can be reviewed and versioned independently of new
   surface area.
-- **No `--fix` mode on `doctor`.** Auto-remediation (e.g. running
-  `env ensure` automatically) is tempting but changes `doctor` from a
-  read-only diagnostic into a side-effecting command, which would need its
-  own confirmation-prompt story (see Design Principle 5) — deferred.
+- **No `--fix` mode on `app check`/`package check`.** Auto-remediation
+  (e.g. running `env ensure` automatically) is tempting but changes them
+  from a read-only diagnostic into a side-effecting command, which would
+  need its own confirmation-prompt story (see Design Principle 5) —
+  deferred.
+- **No meta-command that runs `app check` and `package check` together.**
+  A project that wants "check everything" composes its own `poe`/Make
+  task; see Design Principle 1.
 - **No secret *values* ever appear by default** anywhere in this proposal;
   `--reveal-secrets` is opt-in and always paired with a warning banner.
 
@@ -333,10 +391,11 @@ my entity/config end up like this." Ship together.
 Additive, symmetric commands with no shared new plumbing beyond Phase 1's
 tag-resolution helper (reused by `pipeline show --tags`).
 
-### Phase 3 — `doctor`
-Composes existing checks plus two new ones (version skew, app-import smoke
-test); no new resolution logic needed, so it's independent of Phases 1-2
-and can ship whenever convenient.
+### Phase 3 — `app check` + `package check`
+Composes existing checks plus the new ones each needs (app-import smoke
+test and gated version skew for `app check`; metadata/layout/wheel-build
+for `package check`); no new resolution logic needed, so it's independent
+of Phases 1-2 and can ship whenever convenient.
 
 ### Phase 4 — `config diff` + `--trace`/`--trace-level`
 `config diff` is a thin diffing wrapper over Phase 1's `config show`.
@@ -356,8 +415,9 @@ are low-risk, low-effort, and can land in any order relative to Phase 3.
 3. `kindling entity list`/`kindling pipeline show` do not change any
    existing command's output — `app inspect --entities` and `pipeline list`
    keep working exactly as before.
-4. `kindling doctor` exits `0` iff every constituent check passes, matching
-   `env check`'s exit-code convention.
+4. `kindling app check` and `kindling package check` each exit `0` iff
+   every constituent check passes, matching `env check`'s exit-code
+   convention.
 5. `--trace`/`--trace-level` are documented in `--help` text for both
    `app run` and `pipeline run`, and are provably equivalent to the
    existing `--param print_trace=...`/
@@ -374,8 +434,8 @@ problem — "why did this entity/pipe end up with this config" — into a
 one-command answer, using logic the framework already has. Everything
 else in this proposal is either symmetric scaffolding around that same
 idea (`entity list`, `pipeline show`, `config diff`) or a low-cost,
-low-risk addition (`doctor`, `--trace`) that composes existing behavior
-rather than inventing new subsystems.
+low-risk addition (`app check`, `package check`, `--trace`) that composes
+existing behavior rather than inventing new subsystems.
 
 ---
 
