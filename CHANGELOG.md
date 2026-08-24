@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32a1] - 2026-08-24
+
 ### Added
 
 - **New CLI config/entity/pipe introspection and health-check commands**:
