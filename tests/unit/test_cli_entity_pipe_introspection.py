@@ -277,6 +277,33 @@ class TestEntityList:
         assert "<secret: kv/token>" in result.output
         assert "@secret:kv/token" not in result.output
 
+    def test_tags_are_redacted_when_secret_already_resolved(self, monkeypatch):
+        """A live SecretProvider resolves `@secret:` tags to plaintext at
+        registration time (see data_entities.py), so the live tag value
+        never looks like a reference by the time `entity list` reads it.
+        Redaction must fall back to the never-resolved raw registration
+        tags, not just re-check the live value."""
+        from kindling.data_entities import DataEntityRegistry
+
+        registry = _FakeEntityRegistry(
+            {
+                "bronze.orders": _make_entity(
+                    "bronze.orders", tags={"provider.token": "sk-live-plaintext-value"}
+                )
+            },
+            raw_params={"bronze.orders": {"tags": {"provider.token": "@secret:kv/token"}}},
+        )
+        _patch_registry(monkeypatch, DataEntityRegistry, registry)
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            app_path = _write_app(Path("app.py"))
+            result = runner.invoke(cli, ["entity", "list", "--app", str(app_path), "--tags"])
+
+        assert result.exit_code == 0, result.output
+        assert "<secret: kv/token>" in result.output
+        assert "sk-live-plaintext-value" not in result.output
+
     def test_no_entities_message(self, monkeypatch):
         from kindling.data_entities import DataEntityRegistry
 

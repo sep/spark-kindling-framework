@@ -5949,8 +5949,10 @@ def entity_list(
     """List all registered entities for an app.
 
     Top-level, symmetric with `pipeline list` -- `app inspect --entities`
-    keeps working unchanged; this is additive. Any tag value that still
-    looks like an unresolved `@secret:` reference is redacted; there is no
+    keeps working unchanged; this is additive. Secret-valued tags are
+    redacted the same way `kindling entity tags` does (replaying the
+    on-disk config to catch values a live SecretProvider already resolved,
+    not just literal `@secret:` references still unresolved); there is no
     --reveal-secrets escape hatch here (use `kindling entity tags` for that).
 
     \b
@@ -5977,6 +5979,30 @@ def entity_list(
         entity_def = registry.get_entity_definition(entity_id)
         return dict((entity_def.tags if entity_def else {}) or {})
 
+    # Redaction can't just re-check the live tag value for an `@secret:`
+    # prefix: DataEntityRegistry resolves config-file-declared secrets in
+    # place at registration time (see data_entities.py), so a resolved
+    # secret's live value never looks like a reference anymore. Replay the
+    # same static-config pass `entity tags` uses instead, which redacts
+    # from the never-resolved on-disk YAML.
+    raw_config, _ = _load_effective_raw_config(resolved_app.parent, resolved_env, None)
+
+    def _redacted_tags(entity_id: str) -> Dict[str, Any]:
+        final_tags = _safe_tags(entity_id)
+        literal_tags = _raw_registration_tags(registry, entity_id, final_tags)
+        computed_tags, provenance = _resolve_tag_provenance(
+            literal_tags,
+            entity_id,
+            raw_config.get("dataentities-bytag"),
+            raw_config.get("dataentities"),
+            (raw_config.get("entity_tags") or {}).get(entity_id),
+            bytag_label="dataentities-bytag:",
+            idglob_label=f"dataentities: {entity_id}",
+            exact_label=f"entity_tags: {entity_id}",
+        )
+        view = _build_tag_view(final_tags, computed_tags, provenance, reveal_secrets=False)
+        return {key: entry["value"] for key, entry in view.items()}
+
     if json_output:
         entities = []
         for entity_id in entity_ids:
@@ -5986,7 +6012,7 @@ def entity_list(
                 "provider_type": tags.get("provider_type", "delta"),
             }
             if show_tags:
-                item["tags"] = _redact_config_tree(tags, reveal=False)
+                item["tags"] = _redacted_tags(entity_id)
             entities.append(item)
         _emit_json({"env": resolved_env, "entities": entities})
         return
@@ -5999,7 +6025,7 @@ def entity_list(
     if show_tags:
         rows = []
         for entity_id in entity_ids:
-            tags = _redact_config_tree(_safe_tags(entity_id), reveal=False)
+            tags = _redacted_tags(entity_id)
             tags_display = ", ".join(f"{key}={value}" for key, value in sorted(tags.items()))
             rows.append([entity_id, tags_display or "(none)"])
         click.echo(_format_table(["Entity", "Tags"], rows))
