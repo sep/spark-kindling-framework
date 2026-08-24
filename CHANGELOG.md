@@ -140,6 +140,20 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **`kindling entity tags`/`kindling app validate` could fail with
+  `KindlingNotInitializedError`**: both commands load `app.py` by executing
+  it and only calling its `initialize()` afterward, so an `app.py` that
+  imports an entity/pipe-registering module above its own `initialize()`
+  definition (a natural but undocumented-against ordering mistake) fired
+  that module's `@DataEntities.entity`/`@DataPipes.pipe` decorator before
+  the framework was up. `_load_app_module` now retries once — pre-
+  initializing the framework (using the same settings.yaml/
+  settings.\<env\>.yaml discovery `kindling config show` already uses, so
+  reported tag provenance is unaffected) and reloading — whenever the first
+  attempt fails that way, matching the initialize-then-load order `kindling
+  app run` already uses. Apps that already defer their registering imports
+  inside `initialize()` succeed on the first attempt as before; `kindling
+  config show` and `kindling pipeline run`/`migrate *` are unaffected.
 - **`GET /releases/latest` could resolve to an alpha release**: `ci.yml`'s
   release-publishing steps never set `prerelease` on `softprops/action-gh-
   release`, so every tag-pushed release — including alpha releases like
