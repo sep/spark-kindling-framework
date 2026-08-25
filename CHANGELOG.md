@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32a4] - 2026-08-25
+
 ### Fixed
 
 - **`kindling env update` left a nested project's own Kindling pin
