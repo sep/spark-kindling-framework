@@ -18,13 +18,27 @@ path (not mocks) -- the bug is specifically about what real Dynaconf state
 survives a second call, so mocking `configure_injector_with_config` away
 (as tests/unit/test_bootstrap_standalone.py does for its unrelated
 call-argument assertions) would hide it.
+
+Each test's actual repro runs in a subprocess, not in-process. In-process,
+this test is at the mercy of whatever else already ran in the same pytest
+worker: `GlobalInjector.reset()` (used elsewhere, e.g.
+test_bootstrap_standalone.py) discards the module-level
+`@singleton_autobind()` bindings (`DynaconfConfig`, `SparkPlatformServiceProvider`,
+...) for good -- the next `initialize_framework()` call in that same
+process fails outright (`Can't instantiate abstract class ConfigService`),
+regardless of anything this file does. Under xdist's parallel test
+distribution, which test lands in which worker (and in what order) isn't
+under this file's control, so that failure showed up in CI even though a
+plain sequential local run never hit it. A subprocess is immune to any of
+that by construction -- exactly how this bug was originally isolated and
+verified by hand.
 """
 
+import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
-
-import pytest
-from kindling.data_entities import DataEntities
-from kindling.injection import GlobalInjector
 
 
 def _write_settings(app_dir: Path) -> None:
@@ -44,8 +58,48 @@ def _write_settings(app_dir: Path) -> None:
     )
 
 
-def _register_widgets_entity():
+def _run_repro(script: str, tmp_path: Path) -> dict:
+    """Run `script` in a fresh subprocess with tmp_path and a result-file
+    path as argv, returning the JSON the script wrote to that file. Never
+    parse subprocess stdout for the result -- Spark/Ivy/logging noise on
+    stdout would make that fragile."""
+    result_path = tmp_path / "result.json"
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), str(result_path)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert proc.returncode == 0, (
+        f"repro subprocess failed (exit {proc.returncode})\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
+    return json.loads(result_path.read_text(encoding="utf-8"))
+
+
+_DIFFERENT_ENV_REPRO = textwrap.dedent("""
+    import json
+    import sys
+
+    from kindling.bootstrap import initialize_framework
+    from kindling.data_entities import DataEntities, DataEntityRegistry
+    from kindling.injection import GlobalInjector
     from pyspark.sql.types import StringType, StructField, StructType
+
+    tmp_path, result_path = sys.argv[1], sys.argv[2]
+
+    initialize_framework({
+        "platform": "standalone",
+        "environment": "other",
+        "config_files": [f"{tmp_path}/settings.yaml", f"{tmp_path}/settings.other.yaml"],
+        "install_bootstrap_dependencies": False,
+    })
+    initialize_framework({
+        "platform": "standalone",
+        "environment": "dev",
+        "config_files": [f"{tmp_path}/settings.yaml", f"{tmp_path}/settings.dev.yaml"],
+        "install_bootstrap_dependencies": False,
+    })
 
     DataEntities.entity(
         entityid="bronze.widgets",
@@ -55,76 +109,43 @@ def _register_widgets_entity():
         schema=StructType([StructField("id", StringType(), False)]),
     )
 
-
-@pytest.fixture(autouse=True)
-def _reset_entity_registry():
-    """DataEntities.reset() only, not GlobalInjector.reset(): the module-
-    level @singleton_autobind() registrations (DynaconfConfig,
-    SparkPlatformServiceProvider, ...) run once at first import of
-    `kindling`, binding into whichever Injector exists at that moment.
-    GlobalInjector.reset() discards that Injector for good -- the next
-    access builds a fresh auto_bind one with none of those bindings, so a
-    real initialize_framework() call after a reset fails outright
-    (`Can't instantiate abstract class ConfigService`). The bug under test
-    is specifically about repeated initialize_framework() calls *without*
-    a reset in between (e.g. two tests, or two notebook cells, in one
-    process), so not resetting is also the faithful reproduction.
-
-    A real `initialize_framework()` call also registers Kindling's custom
-    Dynaconf secret loader via a process-wide `LOADERS_FOR_DYNACONF` env
-    var (`register_kindling_loaders()`), which otherwise leaks into any
-    later test in the same process that builds its own bare `Dynaconf(...)`
-    expecting `@secret:` references to stay literal until it resolves them
-    itself. Unregister it afterward so this file doesn't destabilize
-    unrelated secret-resolution tests that happen to run later.
-    """
-    DataEntities.reset()
-    yield
-    DataEntities.reset()
-    from kindling.config_loaders import unregister_kindling_loaders
-
-    unregister_kindling_loaders()
+    registry = GlobalInjector.get(DataEntityRegistry)
+    entity = registry.get_entity_definition("bronze.widgets")
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump({"tags": entity.tags}, f)
+    """)
 
 
 def test_reinit_with_different_environment_does_not_leak_prior_overlay(tmp_path):
     """A second initialize_framework() call in the same process, with an
     explicit different environment/config_files, must load *that* config --
     not silently keep the first call's."""
-    from kindling.bootstrap import initialize_framework
-    from kindling.data_entities import DataEntityRegistry
-
     _write_settings(tmp_path)
 
-    initialize_framework(
-        {
-            "platform": "standalone",
-            "environment": "other",
-            "config_files": [
-                str(tmp_path / "settings.yaml"),
-                str(tmp_path / "settings.other.yaml"),
-            ],
-            "install_bootstrap_dependencies": False,
-        }
-    )
+    result = _run_repro(_DIFFERENT_ENV_REPRO, tmp_path)
 
-    initialize_framework(
-        {
-            "platform": "standalone",
-            "environment": "dev",
-            "config_files": [
-                str(tmp_path / "settings.yaml"),
-                str(tmp_path / "settings.dev.yaml"),
-            ],
-            "install_bootstrap_dependencies": False,
-        }
-    )
+    assert result["tags"] == {"write.mode": "append"}
 
-    _register_widgets_entity()
 
-    registry = GlobalInjector.get(DataEntityRegistry)
-    entity = registry.get_entity_definition("bronze.widgets")
+_SAME_CONFIG_REPRO = textwrap.dedent("""
+    import json
+    import sys
 
-    assert entity.tags == {"write.mode": "append"}
+    from kindling.bootstrap import initialize_framework
+
+    tmp_path, result_path = sys.argv[1], sys.argv[2]
+    cfg = {
+        "platform": "standalone",
+        "environment": "dev",
+        "config_files": [f"{tmp_path}/settings.yaml", f"{tmp_path}/settings.dev.yaml"],
+        "install_bootstrap_dependencies": False,
+    }
+
+    first = initialize_framework(dict(cfg))
+    second = initialize_framework(dict(cfg))
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump({"same_instance": first is second}, f)
+    """)
 
 
 def test_reinit_with_same_config_still_short_circuits(tmp_path):
@@ -132,20 +153,8 @@ def test_reinit_with_same_config_still_short_circuits(tmp_path):
     environment/config_files (e.g. a notebook cell re-run) must remain a
     cheap no-op -- this guards against overcorrecting the leak fix into
     always reloading."""
-    from kindling.bootstrap import initialize_framework
-
     _write_settings(tmp_path)
-    cfg = {
-        "platform": "standalone",
-        "environment": "dev",
-        "config_files": [
-            str(tmp_path / "settings.yaml"),
-            str(tmp_path / "settings.dev.yaml"),
-        ],
-        "install_bootstrap_dependencies": False,
-    }
 
-    first = initialize_framework(dict(cfg))
-    second = initialize_framework(dict(cfg))
+    result = _run_repro(_SAME_CONFIG_REPRO, tmp_path)
 
-    assert first is second
+    assert result["same_instance"] is True
