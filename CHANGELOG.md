@@ -6,6 +6,18 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **`kindling app deploy --platform databricks` silently uploaded nothing on
+  a Unity Catalog volume-only setup.** `DatabricksAPI.deploy_app`/
+  `cleanup_app` only understood ABFSS (`storage_account`/`container`),
+  even though the rest of the class already resolves a Volumes artifacts
+  root (`artifacts_path`/`KINDLING_ARTIFACTS_STORAGE_PATH`) for job
+  submission and cluster logs. With no ABFSS storage account configured,
+  app deploy printed "Storage account/container not configured. Files not
+  uploaded." and reported the deploy as successful anyway. Both methods now
+  resolve the artifacts destination the same way the rest of the class
+  does and upload through the shared `ArtifactStore` abstraction, so a
+  Volumes-only Databricks setup works without also needing an Azure
+  storage account.
 - **`kindling env update`/`kindling env bootstrap` could leave a uv workspace
   looking "in sync" while installing none of its Kindling packages.** Both
   commands finish by running `uv sync`, but bare `uv sync` at a `[tool.uv.
