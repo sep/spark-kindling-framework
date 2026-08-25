@@ -4,6 +4,21 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **A parallel batch generation's first write to a new Delta destination
+  could fail with `IllegalStateException: No api url found in local
+  command context`** on a Unity Catalog-governed (Shared/Standard access
+  mode) cluster. `GenerationExecutor` hands each pipe in a parallel
+  generation to a `ThreadPoolExecutor` worker thread; if that pipe's
+  output table didn't exist yet, the managed-table-creating `saveAsTable`
+  call happened on the worker thread instead of the thread that owns the
+  Spark Connect session's command context, and Unity Catalog's ACL
+  permission check couldn't resolve the workspace API URL from there.
+  `GenerationExecutor` now ensures every pipe's output destination exists
+  up front, sequentially, on the calling thread, before any pipe in a
+  parallel generation is dispatched to a worker thread.
+
 ## [0.12.32a8] - 2026-08-25
 
 ### Fixed

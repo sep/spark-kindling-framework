@@ -36,6 +36,7 @@ from kindling.data_pipes import (
     EntityReadPersistStrategy,
     PipeMetadata,
 )
+from kindling.entity_provider import can_ensure_destination
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.execution_strategy import (
     ExecutionPlan,
@@ -938,6 +939,46 @@ class GenerationExecutor(SignalEmitter):
 
         return gen_result
 
+    def _ensure_destinations_before_parallel(self, pipe_ids: List[str]) -> None:
+        """Pre-create output destinations on the calling thread, before any
+        pipe in this generation is handed to a ThreadPoolExecutor worker.
+
+        A destination-creating write (e.g. Delta's first saveAsTable for a
+        managed table) issued from a worker thread instead of the thread
+        that owns the session's command context can fail on a Unity
+        Catalog-governed cluster with "No api url found in local command
+        context" (the ACL permission check can't resolve the workspace API
+        URL off that thread). Ensuring the destination here -- sequentially,
+        on this thread -- means the first write inside a worker thread never
+        has to create anything. Best-effort: a resolution or ensure failure
+        here is swallowed and left for the write path's own (already
+        existing) ensure/create fallback to surface properly.
+        """
+        if self.provider_registry is None:
+            return
+        for pipe_id in pipe_ids:
+            try:
+                pipe = self.pipes_registry.get_pipe_definition(pipe_id)
+                entity = self.entity_registry.get_entity_definition(pipe.output_entity_id)
+                provider = self.provider_registry.get_provider_for_entity(entity)
+            except Exception as e:
+                self.logger.debug(
+                    f"Best-effort destination pre-creation skipped for pipe "
+                    f"'{pipe_id}': could not resolve its output provider: {e}",
+                    exc_info=True,
+                )
+                continue
+            if provider is None or not can_ensure_destination(provider):
+                continue
+            try:
+                provider.ensure_destination(entity)
+            except Exception as e:
+                self.logger.debug(
+                    f"Best-effort destination pre-creation failed for pipe "
+                    f"'{pipe_id}' (entity '{entity.entityid}'): {e}",
+                    exc_info=True,
+                )
+
     def _execute_generation_parallel(
         self,
         generation: Generation,
@@ -955,6 +996,8 @@ class GenerationExecutor(SignalEmitter):
             f"Parallel execution: {len(generation.pipe_ids)} pipes with "
             f"{effective_workers} workers"
         )
+
+        self._ensure_destinations_before_parallel(generation.pipe_ids)
 
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             future_to_pipe = {
