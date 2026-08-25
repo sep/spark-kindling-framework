@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32a6] - 2026-08-25
+
 ### Fixed
 
 - **`kindling env update` still failed with "conflicting URLs" the first
