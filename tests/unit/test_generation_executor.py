@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, Mock, call, patch
 import pytest
 from kindling.data_pipes import PipeMetadata
 from kindling.entity_provider import (
+    DestinationEnsuringProvider,
     StreamableEntityProvider,
     StreamWritableEntityProvider,
 )
@@ -1213,6 +1214,72 @@ class TestParallelExecution:
         result = executor.execute(plan, parallel=True)
 
         assert result.success_count == 1
+
+    def test_parallel_ensures_destinations_before_dispatch(
+        self, executor, pipes_registry, persist_strategy, entity_registry, provider_registry
+    ):
+        """Regression: a destination-creating write (e.g. Delta's first
+        saveAsTable for a managed table) must never be the first thing that
+        happens on a ThreadPoolExecutor worker thread. On a Unity
+        Catalog-governed cluster that fails with "No api url found in local
+        command context" because the ACL permission check can't resolve the
+        workspace API URL off the thread that owns the session's command
+        context. Destinations must be ensured up front, sequentially, on the
+        calling thread -- before any pipe is handed to a worker thread.
+        """
+        # The `executor` fixture doesn't wire provider_registry through to
+        # GenerationExecutor itself (only to its pipe_stream_starter), so
+        # attach it directly -- exactly like production DI would.
+        executor.provider_registry = provider_registry
+
+        pipe1 = make_pipe("pipe1", inputs=["entity.a"], output="entity.out1")
+        pipe2 = make_pipe("pipe2", inputs=["entity.b"], output="entity.out2")
+        pipes_registry.get_pipe_definition.side_effect = lambda pid: {
+            "pipe1": pipe1,
+            "pipe2": pipe2,
+        }[pid]
+
+        def make_entity(eid):
+            entity = Mock()
+            entity.entityid = eid
+            return entity
+
+        entities = {}
+
+        def get_entity(eid):
+            if eid not in entities:
+                entities[eid] = make_entity(eid)
+            return entities[eid]
+
+        entity_registry.get_entity_definition = Mock(side_effect=get_entity)
+
+        provider = Mock(spec=DestinationEnsuringProvider)
+        provider_registry.get_provider_for_entity = Mock(return_value=provider)
+
+        call_order = []
+        provider.ensure_destination = Mock(
+            side_effect=lambda entity: call_order.append(f"ensure:{entity.entityid}")
+        )
+
+        def track_reader(*args, **kwargs):
+            call_order.append("read")
+            return Mock()
+
+        persist_strategy.create_pipe_entity_reader.return_value = Mock(side_effect=track_reader)
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        plan = make_plan(
+            ["pipe1", "pipe2"],
+            [Generation(number=0, pipe_ids=["pipe1", "pipe2"], dependencies=[])],
+        )
+
+        result = executor.execute(plan, parallel=True, max_workers=2)
+
+        assert result.success_count == 2
+        assert provider.ensure_destination.call_count == 2
+        last_ensure = max(i for i, c in enumerate(call_order) if c.startswith("ensure:"))
+        first_read = min(i for i, c in enumerate(call_order) if c == "read")
+        assert last_ensure < first_read
 
 
 # ---- Signal Tests ----
