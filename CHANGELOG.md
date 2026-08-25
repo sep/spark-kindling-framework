@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32a3] - 2026-08-25
+
 ### Fixed
 
 - Updated `kindling package deploy` and `kindling package check` to read PEP 621
