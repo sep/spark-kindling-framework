@@ -392,7 +392,8 @@ class DatabricksAPI(PlatformAPI):
             raise
 
     def deploy_app(self, app_name: str, app_files: Dict[str, str]) -> str:
-        """Upload app files to ABFSS storage
+        """Upload app files to the configured Kindling artifacts store (a
+        Unity Catalog volume or an ABFSS container).
 
         Args:
             app_name: Application name
@@ -405,7 +406,9 @@ class DatabricksAPI(PlatformAPI):
         return self._upload_files(app_files, target_path)
 
     def cleanup_app(self, app_name: str) -> bool:
-        """Delete app files from ABFSS storage
+        """Delete app files from the configured Kindling artifacts store
+        (a Unity Catalog volume or an ABFSS container -- whichever
+        `_resolve_artifacts_storage_path` resolves).
 
         Args:
             app_name: Application name to clean up
@@ -414,33 +417,17 @@ class DatabricksAPI(PlatformAPI):
             True if cleanup succeeded, False otherwise
         """
         try:
-            from azure.identity import DefaultAzureCredential
-            from azure.storage.filedatalake import DataLakeServiceClient
-        except ImportError:
-            print("⚠️  azure-storage-file-datalake not installed. Cleanup skipped.")
-            return False
-
-        if not self.storage_account or not self.container:
-            print("⚠️  Storage account/container not configured. Cleanup skipped.")
+            storage_root = self._resolve_artifacts_storage_path({}, "uc")
+        except ValueError:
+            print("⚠️  Artifacts storage not configured. Cleanup skipped.")
             return False
 
         try:
-            account_url = azure_storage_account_url(self.storage_account)
-            credential = self.credential if self.credential else DefaultAzureCredential()
-            storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
-            file_system_client = storage_client.get_file_system_client(file_system=self.container)
-
-            # Construct full path
+            store = artifact_store_for(storage_root, workspace_client=self.client)
             app_path = f"data-apps/{app_name}"
-            if self.base_path:
-                full_path = f"{self.base_path}/{app_path}"
-            else:
-                full_path = app_path
-
-            # Delete the directory recursively
-            dir_client = file_system_client.get_directory_client(full_path)
-            dir_client.delete_directory()
-            print(f"🗑️  Cleaned up app files at: {full_path}")
+            removed = store.delete_prefix(app_path)
+            full_path = f"{store.root.rstrip('/')}/{app_path}"
+            print(f"🗑️  Cleaned up app files at: {full_path} ({removed} file(s))")
             return True
         except Exception as e:
             print(f"⚠️  Failed to cleanup app {app_name}: {e}")
@@ -722,81 +709,60 @@ class DatabricksAPI(PlatformAPI):
         }
 
     def _upload_files(self, files: Dict[str, str], target_path: str) -> str:
-        """Upload files to ABFSS storage path (same pattern as Fabric/Synapse)
+        """Upload files to the configured Kindling artifacts store, which
+        Databricks can read at runtime.
 
-        Files are uploaded to Azure Data Lake Storage which Databricks can access at runtime.
+        Uses `_resolve_artifacts_storage_path` (a Unity Catalog volume via
+        `artifacts_path`/`KINDLING_ARTIFACTS_STORAGE_PATH`, falling back to
+        the legacy `storage_account`/`container` ABFSS pair) so app file
+        upload supports the same destinations job submission already does --
+        previously this method only understood ABFSS, silently no-oping for
+        a Volumes-only setup even though the rest of this class resolves
+        Volumes paths fine.
 
         Args:
             files: Dictionary of {filename: content}
-            target_path: Relative path within container (e.g., "data-apps/my-app")
+            target_path: Relative path within the artifacts root (e.g.,
+                "data-apps/my-app")
 
         Returns:
-            ABFSS path reference for use in job definition
+            Full artifacts path reference for use in job definitions
 
         Note:
-            Requires storage_account and container to be configured.
-            Files are uploaded using Azure Storage SDK.
-            This is an internal method - use deploy_app() for public API.
+            This is an internal method - use deploy_app() for the public API.
         """
         try:
-            from azure.identity import DefaultAzureCredential
-            from azure.storage.filedatalake import DataLakeServiceClient
-        except ImportError:
-            print("⚠️  azure-storage-file-datalake not installed. Files not uploaded.")
-            print("   Install with: pip install azure-storage-file-datalake")
-            return target_path
-
-        if not self.storage_account or not self.container:
-            print("⚠️  Storage account/container not configured. Files not uploaded.")
+            storage_root = self._resolve_artifacts_storage_path({}, "uc")
+        except ValueError:
+            print("⚠️  Artifacts storage not configured. Files not uploaded.")
             print(f"   Files prepared: {list(files.keys())}")
             return target_path
 
-        # Initialize storage client
-        account_url = azure_storage_account_url(self.storage_account)
-        credential = DefaultAzureCredential()
-        storage_client = DataLakeServiceClient(account_url=account_url, credential=credential)
+        store = artifact_store_for(storage_root, workspace_client=self.client)
 
-        # Get file system (container) client
-        file_system_client = storage_client.get_file_system_client(file_system=self.container)
-
-        # Construct full path with base_path if provided
-        if self.base_path:
-            full_target_path = f"{self.base_path}/{target_path}"
-        else:
-            full_target_path = target_path
-
-        # Upload each file
         uploaded_count = 0
         failed_uploads: list[str] = []
         for filename, content in files.items():
-            file_path = f"{full_target_path}/{filename}"
+            rel_path = f"{target_path}/{filename}"
             try:
-                # Get file client
-                file_client = file_system_client.get_file_client(file_path)
-
-                # Upload file (overwrite if exists)
-                file_client.upload_data(
-                    content.encode("utf-8") if isinstance(content, str) else content,
-                    overwrite=True,
-                )
+                data = content.encode("utf-8") if isinstance(content, str) else content
+                store.upload_file(rel_path, data, overwrite=True)
                 uploaded_count += 1
             except Exception as e:
                 print(f"⚠️  Failed to upload {filename}: {e}")
                 failed_uploads.append(f"{filename}: {e}")
 
-        # Construct ABFSS path
-        abfss_path = azure_abfss_uri(self.container, self.storage_account, full_target_path)
-
-        print(f"📂 Uploaded {uploaded_count}/{len(files)} files to: {abfss_path}")
+        full_path = f"{store.root.rstrip('/')}/{target_path}"
+        print(f"📂 Uploaded {uploaded_count}/{len(files)} files to: {full_path}")
 
         if uploaded_count != len(files):
             failure_summary = "; ".join(failed_uploads) if failed_uploads else "unknown error"
             raise RuntimeError(
-                f"Failed to upload all app files to {abfss_path}: "
+                f"Failed to upload all app files to {full_path}: "
                 f"uploaded {uploaded_count}/{len(files)} files. Details: {failure_summary}"
             )
 
-        return abfss_path
+        return full_path
 
     def _update_job_files(self, job_id: str, files_path: str) -> None:
         """Update job definition with file paths (internal)

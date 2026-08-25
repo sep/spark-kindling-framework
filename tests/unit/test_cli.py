@@ -24,6 +24,7 @@ from kindling_cli.cli import (
     _render_starter_notebook_source,
     _resolve_account_url,
     _resolve_remote_platform,
+    _sync_command,
     cli,
 )
 
@@ -241,6 +242,19 @@ def _write_pyproject(project_dir, body):
     (project_dir / "pyproject.toml").write_text(body, encoding="utf-8")
 
 
+def test_sync_command_always_includes_all_packages():
+    """A workspace root that declares no Kindling dependency of its own (the
+    shape `_reconcile_root_kindling_dependencies` adopts from) must still
+    sync every member's dependencies -- bare `uv sync` only installs the
+    current package's own deps, silently skipping a member like
+    `packages/<app>` that actually declares spark-kindling."""
+    assert _sync_command(no_sync=False) == ["uv", "sync", "--all-packages"]
+
+
+def test_sync_command_inexact_keeps_all_packages():
+    assert _sync_command(no_sync=True) == ["uv", "sync", "--all-packages", "--inexact"]
+
+
 def test_env_update_updates_declared_kindling_dependencies(monkeypatch, tmp_path):
     project_dir = tmp_path / "project"
     _write_pyproject(
@@ -291,7 +305,7 @@ def test_env_update_updates_declared_kindling_dependencies(monkeypatch, tmp_path
         ],
         resolved,
     ) in commands
-    assert (["uv", "sync"], resolved) in commands
+    assert (["uv", "sync", "--all-packages"], resolved) in commands
 
 
 def test_env_update_skips_dependency_missing_from_release(monkeypatch, tmp_path):
@@ -665,7 +679,7 @@ def test_env_bootstrap_adds_kindling_when_undeclared(monkeypatch, tmp_path):
         ],
         resolved,
     ) in commands
-    assert (["uv", "sync"], resolved) in commands
+    assert (["uv", "sync", "--all-packages"], resolved) in commands
 
 
 def test_uv_add_url_removes_stray_bare_duplicate_after_group_add(monkeypatch, tmp_path):
@@ -752,7 +766,7 @@ def test_env_bootstrap_leaves_existing_kindling_declaration_untouched(monkeypatc
 
     assert result.exit_code == 0, result.output
     assert "already declared" in result.output
-    assert commands == [(["uv", "sync"], project_dir.resolve())]
+    assert commands == [(["uv", "sync", "--all-packages"], project_dir.resolve())]
 
 
 def test_env_bootstrap_fails_without_pyproject_toml(tmp_path):
@@ -1678,11 +1692,10 @@ version = "1.2.3"
 
         assert result.exit_code == 0, result.output
         assert calls["build_cmd"] == [
-            "poetry",
+            "uv",
             "build",
-            "--format",
-            "wheel",
-            "--output",
+            "--wheel",
+            "--out-dir",
             str(package_dir.resolve() / "dist"),
         ]
         assert calls["build_cwd"] == package_dir.resolve()
@@ -4647,7 +4660,7 @@ class TestArtifactStoreDestinations:
             package_dir = Path("packages/domain_records")
             package_dir.mkdir(parents=True)
             (package_dir / "pyproject.toml").write_text(
-                '[tool.poetry]\nname = "domain-records"\nversion = "1.2.3"\n',
+                '[project]\nname = "domain-records"\nversion = "1.2.3"\n',
                 encoding="utf-8",
             )
             result = runner.invoke(
@@ -4691,7 +4704,7 @@ class TestArtifactStoreDestinations:
             package_dir = Path("packages/domain_records")
             package_dir.mkdir(parents=True)
             (package_dir / "pyproject.toml").write_text(
-                '[tool.poetry]\nname = "domain-records"\nversion = "1.2.3"\n',
+                '[project]\nname = "domain-records"\nversion = "1.2.3"\n',
                 encoding="utf-8",
             )
             result = runner.invoke(
