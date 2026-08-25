@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32a5] - 2026-08-25
+
 ### Fixed
 
 - **A keyless/append-only entity (`merge_columns=[]`) with an unset
