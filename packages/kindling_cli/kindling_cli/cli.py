@@ -2938,8 +2938,19 @@ def _sync_command(*, no_sync: bool) -> List[str]:
     already includes the default ("dev") dependency group with no extra
     flags needed -- `--inexact` opts out of the removal-of-extraneous-
     packages behavior.
+
+    `--all-packages` is required for a `[tool.uv.workspace]` project whose
+    root itself declares no Kindling dependency (the common shape this
+    adopts-from-nested-project code path exists for -- see
+    `_reconcile_root_kindling_dependencies`): bare `uv sync` only installs
+    the *current* package's own dependencies, so a workspace member like
+    `packages/<app>` that actually declares `spark-kindling` would be
+    silently skipped, leaving a venv `uv` considers fully synced but with
+    no Kindling packages (and no `kindling` console script) installed at
+    all. Harmless on a non-workspace project -- there's only one package to
+    sync either way.
     """
-    command = ["uv", "sync"]
+    command = ["uv", "sync", "--all-packages"]
     if no_sync:
         command.append("--inexact")
     return command
