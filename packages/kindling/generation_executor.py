@@ -961,7 +961,12 @@ class GenerationExecutor(SignalEmitter):
                 pipe = self.pipes_registry.get_pipe_definition(pipe_id)
                 entity = self.entity_registry.get_entity_definition(pipe.output_entity_id)
                 provider = self.provider_registry.get_provider_for_entity(entity)
-            except Exception:
+            except Exception as e:
+                self.logger.debug(
+                    f"Best-effort destination pre-creation skipped for pipe "
+                    f"'{pipe_id}': could not resolve its output provider: {e}",
+                    exc_info=True,
+                )
                 continue
             if provider is None or not can_ensure_destination(provider):
                 continue
@@ -970,7 +975,8 @@ class GenerationExecutor(SignalEmitter):
             except Exception as e:
                 self.logger.debug(
                     f"Best-effort destination pre-creation failed for pipe "
-                    f"'{pipe_id}' (entity '{entity.entityid}'): {e}"
+                    f"'{pipe_id}' (entity '{entity.entityid}'): {e}",
+                    exc_info=True,
                 )
 
     def _execute_generation_parallel(
