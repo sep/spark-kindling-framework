@@ -11,7 +11,6 @@ The tag is shared with the streaming path (SimplePipeStreamStarter):
 from unittest.mock import MagicMock, Mock
 
 import pytest
-
 from kindling.data_entities import DataEntityManager
 from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
 from kindling.simple_read_persist_strategy import SimpleReadPersistStrategy
@@ -67,6 +66,40 @@ def _capture_emitted_signals(strategy):
 
 def test_default_merges_when_provider_supports_merge():
     dst_entity = Mock(entityid="entity.dst", tags={})
+    out_provider = Mock(spec=_MergeWritableProvider)
+    out_provider.check_entity_exists.return_value = True
+
+    persist, _ = _make_strategy(dst_entity, out_provider)
+    persist(Mock(name="df"))
+
+    out_provider.merge_to_entity.assert_called_once()
+    out_provider.append_to_entity.assert_not_called()
+
+
+def test_default_appends_when_entity_has_no_merge_columns():
+    """Regression: a keyless/append-only entity (merge_columns=[]) with an
+    unset write.mode tag must default to append, not merge -- merging with
+    no key columns fails deep inside _build_merge_condition (cols[0] on an
+    empty list) rather than here. Mirrors the streaming path
+    (SimplePipeStreamStarter), which already makes this same check.
+    """
+    dst_entity = Mock(entityid="entity.dst", tags={}, merge_columns=[])
+    out_provider = Mock(spec=_MergeWritableProvider)
+    out_provider.check_entity_exists.return_value = True
+
+    persist, _ = _make_strategy(dst_entity, out_provider)
+    persist(Mock(name="df"))
+
+    out_provider.append_to_entity.assert_called_once()
+    out_provider.merge_to_entity.assert_not_called()
+
+
+def test_write_mode_merge_explicit_still_merges_keyless_entity():
+    """An explicit write.mode='merge' is honored even with no
+    merge_columns -- only the *default* (unset) case falls back to
+    append; explicit intent still reaches the provider (which may itself
+    raise a clearer error for a genuinely keyless merge attempt)."""
+    dst_entity = Mock(entityid="entity.dst", tags={"write.mode": "merge"}, merge_columns=[])
     out_provider = Mock(spec=_MergeWritableProvider)
     out_provider.check_entity_exists.return_value = True
 

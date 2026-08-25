@@ -5,8 +5,6 @@ from contextlib import nullcontext
 from functools import reduce
 from pathlib import Path
 
-from pyspark.sql.functions import col
-
 from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.entity_provider_csv import (
@@ -20,6 +18,7 @@ from kindling.spark_config import ConfigService
 from kindling.spark_log import *
 from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
 from kindling.watermarking import *
+from pyspark.sql.functions import col
 
 
 def _is_local_execution() -> bool:
@@ -334,6 +333,20 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                     "support merge operations"
                 )
 
+            # Unset write.mode defaults to merge only when the entity
+            # actually declares merge/business keys -- mirrors the
+            # streaming path (SimplePipeStreamStarter). A keyless/
+            # append-only entity (merge_columns=[]) must default to
+            # append instead of calling merge_to_entity with no keys,
+            # which fails deep inside _build_merge_condition (cols[0] on
+            # an empty list) rather than with a clear error here.
+            write_mode_was_unset = not write_mode
+            if write_mode_was_unset:
+                wants_merge = bool(getattr(output_entity, "merge_columns", None)) and hasattr(
+                    output_provider, "merge_to_entity"
+                )
+                write_mode = "merge" if wants_merge else "append"
+
             from kindling.entity_provider import WritableEntityProvider
 
             if output_provider.check_entity_exists(output_entity):
@@ -341,10 +354,16 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                 if write_mode != "append" and hasattr(output_provider, "merge_to_entity"):
                     output_provider.merge_to_entity(df, output_entity)
                 elif isinstance(output_provider, WritableEntityProvider):
-                    if not write_mode:
+                    if write_mode_was_unset:
                         provider_type = (output_entity.tags or {}).get("provider_type", "delta")
+                        reason = (
+                            "does not support merge"
+                            if not hasattr(output_provider, "merge_to_entity")
+                            else "has no merge_columns declared"
+                        )
                         self.logger.info(
-                            f"Provider '{provider_type}' does not support merge, using append"
+                            f"Entity '{output_entity.entityid}': provider "
+                            f"'{provider_type}' {reason}, using append"
                         )
                     output_provider.append_to_entity(df, output_entity)
                 else:
