@@ -6,6 +6,20 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **`kindling env update` left a nested project's own Kindling pin
+  untouched, breaking the next `uv sync`/`uv add` in the workspace.** It
+  only rewrote the version at `--project`'s own pyproject.toml (adopting
+  a nested project's declaration into the root when the root had none),
+  but never updated that nested project's own copy, nor any other
+  workspace member that independently declares Kindling. In a `[tool.uv.
+  workspace]` monorepo this left the root and a member pinned to two
+  different releases, and uv's resolver correctly refused to lock the
+  result ("conflicting URLs for package spark-kindling") on the very next
+  sync -- recreating the exact same conflict on every subsequent release.
+  `env update` now also updates every other project under `--project`
+  that declares its own Kindling dependency, so the whole workspace
+  converges on one release together.
+
 - **Remote app runs could silently install a very old, wrong Kindling
   wheel.** `DataAppManager._select_best_wheel` (used to resolve an
   unpinned `spark-kindling`/`spark-kindling-*` entry in `lake-reqs.txt`
