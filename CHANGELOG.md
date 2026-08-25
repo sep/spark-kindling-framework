@@ -4,6 +4,21 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **A keyless/append-only entity (`merge_columns=[]`) with an unset
+  `write.mode` tag crashed with `IndexError: list index out of range`
+  instead of appending.** The batch persist path
+  (`SimpleReadPersistStrategy._persist_output`) called `merge_to_entity`
+  whenever `write.mode` was unset and the provider supported merge,
+  regardless of whether the entity actually declared any merge/business
+  keys -- `_build_merge_condition` then indexed `cols[0]` on an empty
+  list. The streaming path (`SimplePipeStreamStarter`) already checks
+  `merge_columns` before defaulting to merge; the batch path now mirrors
+  it, defaulting to append when the entity has no merge columns. An
+  explicit `write.mode: merge`/`insert` tag still reaches the provider
+  unchanged.
+
 ## [0.12.32a4] - 2026-08-25
 
 ### Fixed
