@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32a2] - 2026-08-25
+
 ### Changed
 
 - **The CLI now owns framework bootstrap for every local/standalone
