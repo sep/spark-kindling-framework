@@ -385,6 +385,65 @@ def test_env_update_copies_kindling_dependency_from_nested_project(monkeypatch, 
     ) in commands
 
 
+def test_env_update_propagates_to_nested_project_with_its_own_pin(monkeypatch, tmp_path):
+    """Regression: a workspace root with its own Kindling dependency AND a
+    nested member with its own independent pin must both move to the new
+    release. Previously only the root got updated, leaving the nested
+    member's stale pin to conflict with the root's new one on the very
+    next `uv sync`/`uv add` in the workspace ("conflicting URLs" from uv).
+    """
+    root_dir = tmp_path / "root"
+    _write_pyproject(
+        root_dir,
+        "[project]\nname = 'root'\nversion = '0.1.0'\ndependencies = []\n\n"
+        "[tool.uv.workspace]\nmembers = ['.', 'packages/member']\n",
+    )
+    _write_pyproject(
+        root_dir / "packages" / "member",
+        "[project]\nname = 'member'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling[standalone]"]\n\n'
+        "[tool.uv.sources]\n"
+        'spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/'
+        'releases/download/v1.0.0/spark_kindling-1.0.0-py3-none-any.whl" }\n',
+    )
+    # Root adopts nothing here -- it declares its own copy directly, same as
+    # after a prior `env update` adoption.
+    (root_dir / "pyproject.toml").write_text(
+        "[project]\nname = 'root'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling[standalone]"]\n\n'
+        "[tool.uv.sources]\n"
+        'spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/'
+        'releases/download/v1.0.0/spark_kindling-1.0.0-py3-none-any.whl" }\n\n'
+        "[tool.uv.workspace]\nmembers = ['.', 'packages/member']\n",
+        encoding="utf-8",
+    )
+    commands = []
+
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets("spark_kindling-1.2.3-py3-none-any.whl"),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(cli, ["env", "update", "--project", str(root_dir)])
+
+    assert result.exit_code == 0, result.output
+    resolved_root = root_dir.resolve()
+    resolved_member = (root_dir / "packages" / "member").resolve()
+    expected_cmd = [
+        "uv",
+        "add",
+        _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"),
+        "--extra",
+        "standalone",
+    ]
+    assert (expected_cmd, resolved_root) in commands
+    assert (expected_cmd, resolved_member) in commands
+
+
 def test_env_update_fails_when_nested_projects_disagree_on_version(tmp_path):
     root_dir = tmp_path / "root"
     _write_pyproject(root_dir, "[project]\nname = 'root'\nversion = '0.1.0'\ndependencies = []\n")

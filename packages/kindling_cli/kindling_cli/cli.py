@@ -3282,6 +3282,14 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
     apps/*/pyproject.toml) and adopts it before updating -- the project
     root is the single source of truth for what's installed. Fails if
     nested projects disagree on which release to use.
+
+    Also updates every OTHER nested project that independently declares a
+    Kindling dependency of its own (not just the one adopted into the
+    root), so a uv workspace member with its own separate pin converges on
+    the same release too -- otherwise that member's pin silently diverges
+    from the root's and the next `uv sync`/`uv add` in the workspace fails
+    with a hard "conflicting URLs" resolution error instead of updating
+    cleanly.
     """
     project_path = project_path.expanduser().resolve()
     pyproject_path = project_path / "pyproject.toml"
@@ -3305,20 +3313,33 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
             click.echo(f"  {distribution}{location}")
         declared = {name: (group, extras) for name, (group, extras, _entry) in to_copy.items()}
 
+    # Every nested project that independently declares Kindling must move
+    # to the same release too, or its untouched pin diverges from the
+    # root's and breaks the next uv resolution in the workspace.
+    targets: Dict[Path, Dict[str, Tuple[Optional[str], List[str]]]] = {project_path: declared}
+    for nested_pyproject in _discover_descendant_pyprojects(project_path):
+        nested_declared = _find_kindling_dependencies(nested_pyproject)
+        if nested_declared:
+            targets[nested_pyproject.parent] = nested_declared
+
     resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
     wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
 
-    click.echo(f"Updating Kindling packages in {pyproject_path} to {resolved_version} ({repo})")
+    click.echo(f"Updating Kindling packages to {resolved_version} ({repo})")
     updated = False
-    for distribution, (group, extras) in sorted(declared.items()):
-        match = wheels_by_distribution.get(_canonical_distribution_name(distribution))
-        if match is None:
-            click.echo(f"  skipped {distribution}: not published in Kindling {resolved_version}")
-            continue
-        _uv_add_url(project_path, distribution, match["url"], group=group, extras=extras)
-        location = f" [{group}]" if group else ""
-        click.echo(f"  {distribution} -> {match['version']}{location}")
-        updated = True
+    for target_dir, target_declared in sorted(targets.items()):
+        for distribution, (group, extras) in sorted(target_declared.items()):
+            match = wheels_by_distribution.get(_canonical_distribution_name(distribution))
+            if match is None:
+                click.echo(
+                    f"  [{target_dir}] skipped {distribution}: not published in "
+                    f"Kindling {resolved_version}"
+                )
+                continue
+            _uv_add_url(target_dir, distribution, match["url"], group=group, extras=extras)
+            location = f" [{group}]" if group else ""
+            click.echo(f"  [{target_dir}] {distribution} -> {match['version']}{location}")
+            updated = True
 
     if not updated:
         raise click.ClickException(
