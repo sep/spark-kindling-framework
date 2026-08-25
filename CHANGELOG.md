@@ -4,6 +4,21 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **A watermarked read against a memory-backed entity crashed with
+  `AttributeError: '...EntityProvider' object has no attribute
+  'get_entity_version'`.** `WatermarkManager._read_changes` routed any
+  provider that isn't `IncrementalReadableEntityProvider` into
+  `_legacy_version_read`, which assumed it must therefore implement the
+  older `EntityProvider` interface's version-tracking methods
+  (`get_entity_version`/`read_entity_since_version`). A provider built on
+  the newer split-interface design (`BaseEntityProvider` et al. --
+  `MemoryEntityProvider` among them) is neither, and has no notion of a
+  table "version" at all. `_legacy_version_read` now detects that case
+  and falls back to a plain full read every time instead of crashing;
+  watermarking simply has no effect for such an entity.
+
 ## [0.12.32a6] - 2026-08-25
 
 ### Fixed

@@ -410,7 +410,25 @@ class WatermarkManager(WatermarkService, SignalEmitter):
     ) -> Tuple[Optional[DataFrame], Optional[str]]:
         """Version-based incremental read for providers that implement the
         legacy EntityProvider interface but not
-        IncrementalReadableEntityProvider."""
+        IncrementalReadableEntityProvider.
+
+        A provider using the newer split-interface design (BaseEntityProvider
+        et al., e.g. MemoryEntityProvider) is neither of those -- it has no
+        notion of a table "version" to track at all. Detect that case and
+        fall back to a plain full read every time instead of crashing with
+        AttributeError on get_entity_version/read_entity_since_version;
+        watermarking simply has no effect for such an entity.
+        """
+        if not hasattr(provider, "get_entity_version"):
+            self.logger.warning(
+                f"Provider for entity '{entity.entityid}' does not support "
+                "version-tracked incremental reads (neither "
+                "IncrementalReadableEntityProvider nor the legacy version "
+                "API); falling back to a full read every time. Watermarking "
+                "has no effect for this entity."
+            )
+            return provider.read_entity(entity), None
+
         watermark_version = int(cursor) if cursor is not None else None
 
         if watermark_version is None and not provider.check_entity_exists(entity):
