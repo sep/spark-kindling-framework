@@ -2,12 +2,12 @@
 
 Run locally:    kindling app run .
 Run remotely:   kindling app run . --platform <platform>
+
+Entities and pipes are declared in the {{ package_kebab_name }} package
+(see lake-reqs.txt) and registered automatically -- no imports needed here.
 """
 
 import logging
 
-# Import your domain modules here to register entities and pipes:
-# import {{ package_snake_name }}.entities.records  # noqa: F401
-# import {{ package_snake_name }}.pipes.bronze_to_silver  # noqa: F401
-
-logging.getLogger(__name__).info("Hello from {{ kebab_name }}!")
+if __name__ == "__main__":
+    logging.getLogger(__name__).info("Hello from {{ kebab_name }}!")

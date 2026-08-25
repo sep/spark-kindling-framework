@@ -3166,7 +3166,8 @@ def test_run_missing_config_gives_actionable_message():
         assert "--config" in result.output
 
 
-def test_load_app_module_syntax_error_gives_actionable_message(tmp_path):
+def test_load_app_module_syntax_error_gives_actionable_message(tmp_path, monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._bootstrap_app", lambda *a, **kw: None)
     app_py = tmp_path / "app.py"
     app_py.write_text("def foo(:\n    pass\n", encoding="utf-8")
     try:
@@ -3179,7 +3180,8 @@ def test_load_app_module_syntax_error_gives_actionable_message(tmp_path):
         assert "Hint:" in msg
 
 
-def test_load_app_module_import_error_gives_actionable_message(tmp_path):
+def test_load_app_module_import_error_gives_actionable_message(tmp_path, monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._bootstrap_app", lambda *a, **kw: None)
     app_py = tmp_path / "app.py"
     app_py.write_text("from nonexistent_package_xyz import something\n", encoding="utf-8")
     try:
@@ -4172,7 +4174,7 @@ def _make_fake_migrate_modules(
     monkeypatch.setitem(sys.modules, "kindling.data_entities", fake_entities)
     monkeypatch.setitem(sys.modules, "kindling.injection", fake_injection)
     monkeypatch.setattr("kindling_cli.cli._load_app_module", lambda *a, **kw: None)
-    monkeypatch.setattr("kindling_cli.cli._discover_app_py", lambda p: Path(p or "app.py"))
+    monkeypatch.setattr("kindling_cli.cli._discover_app_py", lambda p, **kw: Path(p or "app.py"))
 
     return fake_svc, fake_plan, fake_entity
 

@@ -5,7 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
 from click.testing import CliRunner
+from kindling.data_entities import DataEntityRegistry
 from kindling_cli.cli import (
     _fixture_csv_path,
     _format_table,
@@ -14,7 +16,14 @@ from kindling_cli.cli import (
     cli,
 )
 
-from kindling.data_entities import DataEntityRegistry
+
+@pytest.fixture(autouse=True)
+def _mock_bootstrap_app(monkeypatch):
+    """The CLI now always calls a real `initialize_framework()` via
+    `_bootstrap_app` before loading app.py; these tests mock
+    `GlobalInjector.get` narrowly and don't want a real bootstrap call."""
+    monkeypatch.setattr("kindling_cli.cli._bootstrap_app", lambda *a, **kw: None)
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -1,3 +1,5 @@
 # Artifact-backed wheels loaded from artifacts/packages/ at runtime.
-# One package spec per line, e.g.:
-#   {{ package_kebab_name }}==1.0.0
+# One package spec per line. Also tells `kindling entity tags`/`app
+# validate`/`app run` which packages' entities/pipes to auto-register --
+# no manual imports needed in app.py.
+{{ package_kebab_name }}

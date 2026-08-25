@@ -35,4 +35,4 @@ src/{{ snake_name }}/
 
 - Add a new entity: create a class registered with `DataEntities.entity(...)` in `entities/`
 - Add a new pipe: create a function decorated with `@DataPipes.pipe` in `pipes/`
-- Register new modules from an app's `app.py` → `register_all()`
+- New modules are discovered and registered automatically -- no import wiring needed in an app's `app.py`

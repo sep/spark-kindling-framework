@@ -1,8 +1,9 @@
 """Pipe definitions for {{ kebab_name }}.
 
-Each @DataPipes.pipe decorator fires at import time.
-Import order matters: initialize_framework() must run before this module
-is imported (see apps/<app>/app.py register_all).
+Each @DataPipes.pipe decorator fires at import time. The CLI/runner
+initializes the framework and auto-imports this module (via the app's
+lake-reqs.txt declaring this package) before anything else runs -- no
+manual import wiring needed in app.py.
 """
 
 from kindling.data_pipes import DataPipes
