@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32a7] - 2026-08-25
+
 ### Fixed
 
 - **A watermarked read against a memory-backed entity crashed with
