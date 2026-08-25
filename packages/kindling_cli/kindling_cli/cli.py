@@ -2938,8 +2938,19 @@ def _sync_command(*, no_sync: bool) -> List[str]:
     already includes the default ("dev") dependency group with no extra
     flags needed -- `--inexact` opts out of the removal-of-extraneous-
     packages behavior.
+
+    `--all-packages` is required for a `[tool.uv.workspace]` project whose
+    root itself declares no Kindling dependency (the common shape this
+    adopts-from-nested-project code path exists for -- see
+    `_reconcile_root_kindling_dependencies`): bare `uv sync` only installs
+    the *current* package's own dependencies, so a workspace member like
+    `packages/<app>` that actually declares `spark-kindling` would be
+    silently skipped, leaving a venv `uv` considers fully synced but with
+    no Kindling packages (and no `kindling` console script) installed at
+    all. Harmless on a non-workspace project -- there's only one package to
+    sync either way.
     """
-    command = ["uv", "sync"]
+    command = ["uv", "sync", "--all-packages"]
     if no_sync:
         command.append("--inexact")
     return command
@@ -3802,7 +3813,7 @@ def _deploy_wheels(store: ArtifactStore, wheels: List[Path], quiet: bool = False
 
 
 def _load_package_metadata(package_root: Path) -> Tuple[str, str]:
-    """Read package name and version from a Poetry pyproject.toml."""
+    """Read package name and version from PEP 621 or legacy Poetry metadata."""
     pyproject_path = package_root / "pyproject.toml"
     if not pyproject_path.exists():
         raise click.ClickException(f"Package pyproject.toml not found: {pyproject_path}")
@@ -3820,16 +3831,18 @@ def _load_package_metadata(package_root: Path) -> Tuple[str, str]:
 
     try:
         data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-        poetry_data = data.get("tool", {}).get("poetry", {})
-        package_name = str(poetry_data["name"]).strip()
-        package_version = str(poetry_data["version"]).strip()
+        metadata = data.get("project") or data.get("tool", {}).get("poetry", {})
+        package_name = str(metadata["name"]).strip()
+        package_version = str(metadata["version"]).strip()
     except Exception as exc:
         raise click.ClickException(
-            f"Could not read tool.poetry.name/version from {pyproject_path}: {exc}"
+            f"Could not read project.name/version from {pyproject_path}: {exc}"
         ) from exc
 
     if not package_name or not package_version:
-        raise click.ClickException(f"{pyproject_path} must define tool.poetry.name and version.")
+        raise click.ClickException(
+            f"{pyproject_path} must define project.name and project.version."
+        )
     return package_name, package_version
 
 
@@ -3841,7 +3854,7 @@ def _wheel_distribution_name(package_name: str) -> str:
 
 
 def _build_package_wheel(package_root: Path, dist_dir: Path) -> Path:
-    """Build a package wheel with Poetry and return the matching wheel path."""
+    """Build a package wheel with uv and return the matching wheel path."""
     package_name, package_version = _load_package_metadata(package_root)
     normalized_name = _wheel_distribution_name(package_name)
 
@@ -3852,11 +3865,10 @@ def _build_package_wheel(package_root: Path, dist_dir: Path) -> Path:
 
     before = {path.resolve() for path in resolved_dist.glob("*.whl")}
     cmd = [
-        "poetry",
+        "uv",
         "build",
-        "--format",
-        "wheel",
-        "--output",
+        "--wheel",
+        "--out-dir",
         str(resolved_dist),
     ]
     click.echo(f"Building wheel in {package_root}...")
@@ -7814,10 +7826,10 @@ def package_check(
 ) -> None:
     """Run a health check for a package before deploying it.
 
-    Checks the things `package deploy` depends on: valid Poetry metadata
-    (tool.poetry.name/version), a plausible src/ layout, and (unless
+    Checks the things `package deploy` depends on: valid project metadata
+    (project.name/version), a plausible src/ layout, and (unless
     --skip-build) that the package's wheel actually builds via the same
-    `poetry build` invocation `package deploy` uses internally, rather than
+    `uv build` invocation `package deploy` uses internally, rather than
     inferring buildability from file presence alone. Exits 0 iff every
     check passes.
 

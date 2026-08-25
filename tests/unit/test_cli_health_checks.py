@@ -14,9 +14,10 @@ from unittest.mock import Mock
 
 import pytest
 from click.testing import CliRunner
+from kindling_cli.cli import _detect_runtime_version_skew, cli
+
 from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import DataPipesRegistry
-from kindling_cli.cli import _detect_runtime_version_skew, cli
 
 
 @pytest.fixture(autouse=True)
@@ -248,7 +249,7 @@ class TestPackageCheck:
     def _write_package(self, root: Path, with_src: bool = True) -> Path:
         root.mkdir(parents=True, exist_ok=True)
         (root / "pyproject.toml").write_text(
-            '[tool.poetry]\nname = "domain-records"\nversion = "1.2.3"\n',
+            '[project]\nname = "domain-records"\nversion = "1.2.3"\n',
             encoding="utf-8",
         )
         if with_src:
@@ -324,7 +325,7 @@ class TestPackageCheck:
         assert result.exit_code == 1
         assert "[FAIL] src_layout" in result.output
 
-    def test_wheel_build_check_runs_poetry_build(self, monkeypatch):
+    def test_wheel_build_check_runs_uv_build(self, monkeypatch):
         calls = {}
 
         def fake_run(cmd, cwd=None, capture_output=False, text=False):
@@ -348,8 +349,33 @@ class TestPackageCheck:
             )
 
         assert result.exit_code == 0, result.output
-        assert calls["cmd"][:2] == ["poetry", "build"]
+        assert calls["cmd"][:3] == ["uv", "build", "--wheel"]
         assert "[PASS] wheel_build: built domain_records-1.2.3-py3-none-any.whl" in result.output
+
+    def test_legacy_poetry_metadata_remains_supported(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            package_dir = Path("packages/domain_records")
+            self._write_package(package_dir)
+            (package_dir / "pyproject.toml").write_text(
+                '[tool.poetry]\nname = "domain-records"\nversion = "1.2.3"\n',
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(
+                cli,
+                [
+                    "package",
+                    "check",
+                    "domain-records",
+                    "--local-folder",
+                    str(package_dir),
+                    "--skip-build",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "[PASS] pyproject: domain-records 1.2.3" in result.output
 
     def test_wheel_build_failure_reports_check_failure(self, monkeypatch):
         def fake_run(cmd, cwd=None, capture_output=False, text=False):

@@ -18,6 +18,27 @@ All notable changes to spark-kindling are documented here.
   does and upload through the shared `ArtifactStore` abstraction, so a
   Volumes-only Databricks setup works without also needing an Azure
   storage account.
+- **`kindling env update`/`kindling env bootstrap` could leave a uv workspace
+  looking "in sync" while installing none of its Kindling packages.** Both
+  commands finish by running `uv sync`, but bare `uv sync` at a `[tool.uv.
+  workspace]` root only installs the *root* package's own dependencies --
+  for a project shaped like the CLI's own "adopt from nested project" case
+  (a thin root with no Kindling dependency of its own, real dependencies
+  declared by a workspace member under `packages/`/`apps/`), that silently
+  skipped the member entirely. `uv` still reported the sync as clean, but
+  `spark-kindling`/`spark-kindling-cli` were never installed and the
+  `kindling` console script never got created in `.venv/bin`, so `kindling`
+  on `PATH` fell through to any devcontainer-preinstalled global CLI
+  instead. Both commands now run `uv sync --all-packages`, which is a no-op
+  on a non-workspace project.
+
+## [0.12.32a3] - 2026-08-25
+
+### Fixed
+
+- Updated `kindling package deploy` and `kindling package check` to read PEP 621
+  project metadata and build wheels with uv, while retaining support for legacy
+  Poetry metadata.
 
 ## [0.12.32a2] - 2026-08-25
 
