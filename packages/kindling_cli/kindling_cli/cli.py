@@ -2882,7 +2882,9 @@ def _resolve_kindling_release_wheels(
     return resolved_version, wheels
 
 
-def _remove_stray_bare_uv_dependency(project_path: Path, distribution: str) -> None:
+def _remove_stray_bare_uv_dependency(
+    project_path: Path, distribution: str, *, frozen: bool = False
+) -> None:
     """`uv add <url> --group G` on an already bare-declared dependency
     doesn't move it into the group -- verified empirically -- it leaves a
     duplicate: the package ends up listed in both [project.dependencies]
@@ -2904,7 +2906,10 @@ def _remove_stray_bare_uv_dependency(project_path: Path, distribution: str) -> N
         for requirement in main_deps
     )
     if is_stray:
-        _run_checked(["uv", "remove", distribution], cwd=project_path)
+        command = ["uv", "remove", distribution]
+        if frozen:
+            command.append("--frozen")
+        _run_checked(command, cwd=project_path)
 
 
 def _uv_add_url(
@@ -2914,6 +2919,7 @@ def _uv_add_url(
     *,
     group: Optional[str] = None,
     extras: Optional[List[str]] = None,
+    frozen: bool = False,
 ) -> None:
     """Run `uv add <url>`, re-supplying group/extras explicitly.
 
@@ -2921,15 +2927,28 @@ def _uv_add_url(
     bare `uv add <url>` on an already-declared dependency leaves a stray
     duplicate in [project.dependencies] instead of moving it into its
     group (verified empirically) -- see `_remove_stray_bare_uv_dependency`.
+
+    `frozen=True` skips uv's own lock/resolve step (writes the manifest
+    only). Required when updating more than one project in the same uv
+    workspace in sequence: `uv add`/`uv remove` always locks the *whole*
+    workspace against what's on disk right now, so updating project A
+    while project B (a workspace member with its own separate Kindling
+    pin) still has yesterday's URL on disk fails immediately with
+    "conflicting URLs for package spark-kindling" -- even though the
+    very next iteration was about to fix B too. `env update`'s caller
+    resolves the real lock once, via a single `uv sync` after every
+    target's pyproject.toml has been rewritten.
     """
     command = ["uv", "add", url]
     if group:
         command.extend(["--group", group])
     for extra in extras or []:
         command.extend(["--extra", extra])
+    if frozen:
+        command.append("--frozen")
     _run_checked(command, cwd=project_path)
     if group:
-        _remove_stray_bare_uv_dependency(project_path, distribution)
+        _remove_stray_bare_uv_dependency(project_path, distribution, frozen=frozen)
 
 
 def _sync_command(*, no_sync: bool) -> List[str]:
@@ -3325,6 +3344,14 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
     resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
     wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
 
+    # Updating more than one project means every `uv add` after the first
+    # would otherwise see a workspace still holding yesterday's URL in a
+    # not-yet-updated target and fail to lock -- skip each individual
+    # add's lock/resolve (`--frozen`) and let the trailing `uv sync`
+    # below resolve the whole workspace once, after every pyproject.toml
+    # is already rewritten.
+    frozen_add = len(targets) > 1
+
     click.echo(f"Updating Kindling packages to {resolved_version} ({repo})")
     updated = False
     for target_dir, target_declared in sorted(targets.items()):
@@ -3336,7 +3363,14 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
                     f"Kindling {resolved_version}"
                 )
                 continue
-            _uv_add_url(target_dir, distribution, match["url"], group=group, extras=extras)
+            _uv_add_url(
+                target_dir,
+                distribution,
+                match["url"],
+                group=group,
+                extras=extras,
+                frozen=frozen_add,
+            )
             location = f" [{group}]" if group else ""
             click.echo(f"  [{target_dir}] {distribution} -> {match['version']}{location}")
             updated = True
