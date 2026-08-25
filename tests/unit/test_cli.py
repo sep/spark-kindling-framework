@@ -1692,11 +1692,10 @@ version = "1.2.3"
 
         assert result.exit_code == 0, result.output
         assert calls["build_cmd"] == [
-            "poetry",
+            "uv",
             "build",
-            "--format",
-            "wheel",
-            "--output",
+            "--wheel",
+            "--out-dir",
             str(package_dir.resolve() / "dist"),
         ]
         assert calls["build_cwd"] == package_dir.resolve()
@@ -4661,7 +4660,7 @@ class TestArtifactStoreDestinations:
             package_dir = Path("packages/domain_records")
             package_dir.mkdir(parents=True)
             (package_dir / "pyproject.toml").write_text(
-                '[tool.poetry]\nname = "domain-records"\nversion = "1.2.3"\n',
+                '[project]\nname = "domain-records"\nversion = "1.2.3"\n',
                 encoding="utf-8",
             )
             result = runner.invoke(
@@ -4705,7 +4704,7 @@ class TestArtifactStoreDestinations:
             package_dir = Path("packages/domain_records")
             package_dir.mkdir(parents=True)
             (package_dir / "pyproject.toml").write_text(
-                '[tool.poetry]\nname = "domain-records"\nversion = "1.2.3"\n',
+                '[project]\nname = "domain-records"\nversion = "1.2.3"\n',
                 encoding="utf-8",
             )
             result = runner.invoke(

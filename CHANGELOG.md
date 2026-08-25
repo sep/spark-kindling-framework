@@ -20,6 +20,14 @@ All notable changes to spark-kindling are documented here.
   instead. Both commands now run `uv sync --all-packages`, which is a no-op
   on a non-workspace project.
 
+## [0.12.32a3] - 2026-08-25
+
+### Fixed
+
+- Updated `kindling package deploy` and `kindling package check` to read PEP 621
+  project metadata and build wheels with uv, while retaining support for legacy
+  Poetry metadata.
+
 ## [0.12.32a2] - 2026-08-25
 
 ### Changed
