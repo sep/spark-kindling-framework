@@ -178,12 +178,17 @@ def _read_lake_requirement_package_names(app_dir: Path) -> List[str]:
     Used to drive kindling.bootstrap's entity/pipe registration walker
     (initialize_framework's `registration_packages`), so a package's
     entities/pipes get registered without app.py needing to hand-import
-    them. A distribution's kebab-case name always maps to its top-level
-    import name with hyphens replaced by underscores -- this is a Python
-    packaging guarantee, not an approximation, so no extra lookup is
-    needed. Packages with no entities/pipes/ingestion namespace at all
-    (e.g. a telemetry extension) are harmless here -- the walker already
-    tolerates a missing namespace.
+    them. Normalizes kebab-case to snake_case (hyphens to underscores) --
+    true by construction for a Kindling-scaffolded package (its
+    distribution name and top-level import name are always generated in
+    lockstep, see AppScaffoldConfig.package_kebab_name/package_snake_name
+    in scaffold.py), but not a general Python packaging guarantee for an
+    arbitrary third-party distribution, whose import name can differ
+    entirely from its distribution name. A mismatch here isn't fatal
+    either way: it just means that entry contributes nothing to
+    registration, same as a listed package with no entities/pipes/
+    ingestion namespace at all (e.g. a telemetry extension) -- the walker
+    already tolerates a missing/wrong namespace.
     """
     names = []
     seen = set()

@@ -964,7 +964,7 @@ def _bootstrap_app(
 
     cfg_root = config_dir.expanduser().resolve() if config_dir else app_dir
     resolved_platform = platform or "standalone"
-    _, config_paths = _load_effective_raw_config(cfg_root, env, platform)
+    _, config_paths = _load_effective_raw_config(cfg_root, env, resolved_platform)
     initialize_framework(
         {
             "platform": resolved_platform,
