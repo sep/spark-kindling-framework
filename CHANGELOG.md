@@ -4,6 +4,21 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32a8] - 2026-08-25
+
+### Fixed
+
+- **`remove_duplicates()` built `Window.partitionBy()` with no columns for
+  append-only/keyless entities (`merge_columns=[]`)**, e.g.
+  `temporal.chain.events`. An empty `partitionBy()` collapses to a single
+  global partition, so ranking would silently keep only one arbitrary row
+  from the entire dataset, and trigger Spark's "No Partition Defined for
+  Window operation" warning on every initial full read
+  (`WatermarkManager._legacy_version_read` and
+  `DeltaEntityProvider.read_entity_changes`). `remove_duplicates()` now
+  skips window/row-number ranking entirely when `keycolumns` is empty, so
+  every row passes through unchanged.
+
 ## [0.12.32a7] - 2026-08-25
 
 ### Fixed
