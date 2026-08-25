@@ -4,6 +4,20 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **`kindling env update` still failed with "conflicting URLs" the first
+  time it tried to update a workspace member alongside the root.** The
+  fix that made `env update` propagate to every nested project declaring
+  Kindling (previous release) called `uv add` once per project in
+  sequence -- but `uv add`/`uv remove` always locks the *whole* uv
+  workspace against what's on disk right now, so updating the root while
+  a member's pyproject.toml still held yesterday's URL failed
+  immediately, before the loop ever reached that member. Each `uv add`
+  in a multi-project update now passes `--frozen` (write the manifest
+  only, no per-add lock), and the trailing `uv sync` resolves the whole
+  workspace once, after every target has already been rewritten.
+
 ## [0.12.32a5] - 2026-08-25
 
 ### Fixed

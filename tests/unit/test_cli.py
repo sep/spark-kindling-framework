@@ -380,6 +380,7 @@ def test_env_update_copies_kindling_dependency_from_nested_project(monkeypatch, 
             _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"),
             "--extra",
             "standalone",
+            "--frozen",
         ],
         resolved,
     ) in commands
@@ -439,6 +440,7 @@ def test_env_update_propagates_to_nested_project_with_its_own_pin(monkeypatch, t
         _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"),
         "--extra",
         "standalone",
+        "--frozen",
     ]
     assert (expected_cmd, resolved_root) in commands
     assert (expected_cmd, resolved_member) in commands
