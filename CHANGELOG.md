@@ -4,6 +4,21 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **Remote app runs could silently install a very old, wrong Kindling
+  wheel.** `DataAppManager._select_best_wheel` (used to resolve an
+  unpinned `spark-kindling`/`spark-kindling-*` entry in `lake-reqs.txt`
+  against every wheel in the artifacts `packages/` directory) sorted
+  candidates ascending by `(priority, version)` and returned index `0` --
+  which picks the *lowest* version within the winning priority group, the
+  opposite of the intended "prefer higher version." Any lake packages
+  directory holding more than one version of the same wheel (the normal
+  state after more than one `kindling runtime deploy`/release) could
+  resolve an unpinned dependency to the oldest version present instead of
+  the newest, with no warning. Now correctly picks the highest version
+  within the best-priority group.
+
 ## [0.12.32a2] - 2026-08-25
 
 ### Changed
