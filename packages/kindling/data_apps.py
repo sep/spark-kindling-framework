@@ -1333,9 +1333,19 @@ class DataAppManager(DataAppRunner):
         )
 
     def _select_best_wheel(self, candidates: List[WheelCandidate]) -> WheelCandidate:
-        """Select the best wheel from candidates (prefer platform-specific, higher version)"""
-        candidates.sort(key=lambda w: w.sort_key)
-        return candidates[0]
+        """Select the best wheel from candidates (prefer platform-specific, higher version).
+
+        `sort_key` is `(priority, version)`, both ascending -- sorting the
+        whole list ascending and taking index 0 previously picked the
+        *lowest* version within the winning priority group (e.g. an old
+        0.12.9 wheel over a current 0.12.32a2 one sitting in the same lake
+        packages/ directory), the opposite of "higher version" above. Filter
+        to the best (lowest-numbered) priority group first, then take the
+        max version within it.
+        """
+        best_priority = min(candidate.priority for candidate in candidates)
+        same_priority = [c for c in candidates if c.priority == best_priority]
+        return max(same_priority, key=lambda w: w.sort_key[1])
 
     def _load_app_code(self, app_name: str, entry_point: str) -> Tuple[str, str]:
         try:

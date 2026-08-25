@@ -15,7 +15,6 @@ from typing import Any, Dict, List
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-
 from kindling.data_apps import (
     DataAppConfig,
     DataAppConstants,
@@ -97,6 +96,56 @@ class TestWheelCandidate:
         # Test malformed version handling
         candidate_bad = WheelCandidate("", "", 2, None)
         assert candidate_bad.sort_key == (2, Version("0.0.0"))
+
+
+class TestSelectBestWheel:
+    """Regression tests for _select_best_wheel picking the wrong version.
+
+    sort_key is (priority, version), both ascending. Sorting the whole list
+    ascending and taking index 0 (the prior implementation) picks the
+    *lowest* version within the winning priority group, not the highest --
+    e.g. an unpinned `spark-kindling` spec resolving against a lake
+    packages/ directory holding both 0.12.9 and 0.12.32a2 picked 0.12.9.
+    """
+
+    def test_picks_highest_version_among_equal_priority(self):
+        old = WheelCandidate(
+            "/a/pkg-0.12.9-py3-none-any.whl", "pkg-0.12.9-py3-none-any.whl", 2, "0.12.9"
+        )
+        new = WheelCandidate(
+            "/a/pkg-0.12.32a2-py3-none-any.whl", "pkg-0.12.32a2-py3-none-any.whl", 2, "0.12.32a2"
+        )
+
+        best = DataAppManager._select_best_wheel(None, [old, new])
+
+        assert best is new
+
+    def test_picks_highest_version_regardless_of_list_order(self):
+        old = WheelCandidate(
+            "/a/pkg-0.12.9-py3-none-any.whl", "pkg-0.12.9-py3-none-any.whl", 2, "0.12.9"
+        )
+        new = WheelCandidate(
+            "/a/pkg-0.12.32a2-py3-none-any.whl", "pkg-0.12.32a2-py3-none-any.whl", 2, "0.12.32a2"
+        )
+
+        best = DataAppManager._select_best_wheel(None, [new, old])
+
+        assert best is new
+
+    def test_still_prefers_platform_specific_priority_over_higher_generic_version(self):
+        generic_newer = WheelCandidate(
+            "/a/pkg-2.0.0-py3-none-any.whl", "pkg-2.0.0-py3-none-any.whl", 2, "2.0.0"
+        )
+        platform_specific_older = WheelCandidate(
+            "/a/pkg_databricks-1.0.0-py3-none-any.whl",
+            "pkg_databricks-1.0.0-py3-none-any.whl",
+            1,
+            "1.0.0",
+        )
+
+        best = DataAppManager._select_best_wheel(None, [generic_newer, platform_specific_older])
+
+        assert best is platform_specific_older
 
 
 class TestAppManagerHelpers:
