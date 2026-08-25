@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32a9] - 2026-08-25
+
 ### Fixed
 
 - **A parallel batch generation's first write to a new Delta destination
