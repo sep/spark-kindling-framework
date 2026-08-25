@@ -4,11 +4,25 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import click
+import pytest
 from click.testing import CliRunner
-from kindling_cli.cli import _discover_app_py, cli
-
 from kindling.data_entities import DataEntities, DataEntityRegistry
 from kindling.data_pipes import DataPipes, DataPipesExecution, DataPipesRegistry
+from kindling_cli.cli import _discover_app_py, cli
+
+
+@pytest.fixture(autouse=True)
+def _mock_bootstrap_app(monkeypatch):
+    """The CLI now always calls a real `initialize_framework()` via
+    `_bootstrap_app` before loading app.py -- these tests exercise CLI
+    command logic (executor dispatch, error messages, tag resolution),
+    not real framework bootstrap, and already mock `GlobalInjector.get`
+    narrowly (raising on any unexpected service lookup), so a real
+    bootstrap call would fail loudly here. app.py's own `initialize()`,
+    if the fixture app defines one, still runs -- only the CLI's own
+    pre-load bootstrap step is mocked out."""
+    monkeypatch.setattr("kindling_cli.cli._bootstrap_app", lambda *a, **kw: None)
 
 
 def _write_app(path: Path, body: str | None = None) -> Path:
@@ -69,14 +83,35 @@ def test_discover_app_py_missing_override_raises_clear_error():
 
 
 def test_discover_app_py_missing_auto_discovery_raises_clear_error():
+    with CliRunner().isolated_filesystem():
+        Path("settings.yaml").write_text("name: test\n", encoding="utf-8")
+
+        with pytest.raises(click.ClickException, match="Could not find app.py"):
+            _discover_app_py(None)
+
+
+def test_pipeline_run_with_no_app_py_reports_unknown_pipe(monkeypatch):
+    """app.py is optional now -- a directory with no app.py and no
+    registered pipes still bootstraps (nothing to register), so the
+    command fails on "pipe not found", not "could not find app.py"."""
     runner = CliRunner()
+    pipe_registry = Mock()
+    pipe_registry.get_pipe_definition.return_value = None
+    pipe_registry.get_pipe_ids.return_value = []
+
+    def fake_get(service_type):
+        if service_type is DataPipesRegistry:
+            return pipe_registry
+        raise AssertionError(f"unexpected service: {service_type!r}")
+
+    monkeypatch.setattr("kindling.injection.GlobalInjector.get", fake_get)
+
     with runner.isolated_filesystem():
         Path("settings.yaml").write_text("name: test\n", encoding="utf-8")
         result = runner.invoke(cli, ["pipeline", "run", "pipe.one"])
 
         assert result.exit_code != 0
-        assert "Could not find app.py" in result.output
-        assert "--app path/to/app.py" in result.output
+        assert "Pipe 'pipe.one' not found" in result.output
 
 
 def test_run_pipe_happy_path_calls_registered_executor(monkeypatch):

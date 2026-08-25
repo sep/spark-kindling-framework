@@ -202,10 +202,16 @@ def test_app_py_batch_scaffold_has_no_live_domain_imports(tmp_path):
     generate_app(cfg)
 
     app = (repo_root / "apps" / "acme_app" / "app.py").read_text()
-    # Template provides example comments, not live imports — the package doesn't exist yet
-    assert "acme.entities.records" in app
+    # Entities/pipes are auto-registered from lake-reqs.txt's declared
+    # package -- app.py has no domain imports at all, live or commented.
+    assert "acme.entities" not in app
     live_imports = [l for l in app.splitlines() if l.startswith("import acme")]
     assert not live_imports, f"Unexpected live domain imports: {live_imports}"
+    assert 'if __name__ == "__main__":' in app
+    assert "from kindling.apps import run_batch_app" in app
+
+    lake_reqs = (repo_root / "apps" / "acme_app" / "lake-reqs.txt").read_text()
+    assert "acme" in lake_reqs
 
 
 def test_app_py_batch_scaffold_minimal_has_no_live_domain_imports(tmp_path):
@@ -217,7 +223,7 @@ def test_app_py_batch_scaffold_minimal_has_no_live_domain_imports(tmp_path):
     generate_app(cfg)
 
     app = (repo_root / "apps" / "acme_app" / "app.py").read_text()
-    assert "acme.entities.records" in app
+    assert "acme.entities" not in app
     live_imports = [l for l in app.splitlines() if l.startswith("import acme")]
     assert not live_imports, f"Unexpected live domain imports: {live_imports}"
 

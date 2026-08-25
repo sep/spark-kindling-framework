@@ -4,6 +4,50 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Changed
+
+- **The CLI now owns framework bootstrap for every local/standalone
+  command; apps no longer call `initialize_framework()` themselves.**
+  Previously, `entity tags`/`entity list/show/validate`/`app validate/
+  check/inspect`/`pipeline run/list/show`/`migrate *` all required
+  `app.py` to define an `initialize(env, config_dir)` function that
+  called `initialize_framework()` itself (hardcoding `platform:
+  "standalone"`), while `kindling app run` used a completely different,
+  incompatible convention (a top-level script, framework already
+  initialized externally, no `initialize()` at all) — a freshly
+  scaffolded app failed every inspection command until someone hand-wrote
+  `initialize()`. Now the CLI resolves env/platform/config_files itself
+  (the same resolution `kindling config show` already does) and calls
+  `initialize_framework()` unconditionally before loading any app code,
+  for both conventions alike. `--platform` (already accepted by `entity
+  tags`/`pipeline show --tags`) now actually reaches the framework
+  instead of being silently dropped in favor of standalone.
+- **Entity/pipe registration is driven by `lake-reqs.txt`, not hand-written
+  imports.** The existing `--local-package` auto-registration walker
+  (`pkgutil.walk_packages` over `<package>.entities/.pipes/.ingestion`,
+  in `kindling.bootstrap`) is now driven by every package `lake-reqs.txt`
+  declares, not just packages passed via `--local-package` — an app
+  never "owns" a package (entities/pipes always live in one or more
+  separate `packages/<name>/` packages this app depends on), and
+  `lake-reqs.txt` is the existing, already-per-line manifest of those
+  dependencies. `app.py` is now optional everywhere except `kindling app
+  run` (nothing to execute without it); when present, it's imported for
+  its `if __name__ == "__main__":` block only — plain Python semantics
+  mean inspection commands (which import, never exec-as-main) never run
+  it, so custom execution logic there can't accidentally fire during
+  `entity tags`/`app validate`. New `kindling.apps` module
+  (`run_batch_app`/`run_streaming_app`/`run_file_ingestion_app`) holds
+  the reusable execution helpers a thin app's `__main__` block calls —
+  the CLI/runner never special-cases an app's execution pattern.
+  Existing hand-written `initialize()`/`register_all()` apps (with no
+  `lake-reqs.txt`) need zero changes: `initialize()` is still called
+  when present, so `register_all()`'s imports still fire and any other
+  custom logic in it is preserved; its own `initialize_framework()` call
+  becomes a harmless no-op re-init. Scaffold templates updated to match:
+  `lake-reqs.txt` declares the app's package by default, and the four
+  `app*.py.j2` templates lost their dead "import your domain modules"
+  comment boilerplate.
+
 ## [0.12.32a1] - 2026-08-24
 
 ### Added

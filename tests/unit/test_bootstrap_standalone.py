@@ -189,3 +189,74 @@ def test_import_local_package_registrations_ignores_missing_namespaces(monkeypat
             None,
         )
     ]
+
+
+def _write_demo_package(tmp_path, monkeypatch, name: str, namespaces=("entities", "pipes")):
+    """Build a minimal importable package with the given registration
+    namespaces, each side-effecting an env var on import -- mirrors
+    test_import_local_package_registrations_loads_entities_pipes_and_ingestion's
+    fixture, parameterized for reuse across the explicit-arg/merge tests."""
+    src_dir = tmp_path / "src"
+    package_dir = src_dir / name
+    for namespace in namespaces:
+        module_dir = package_dir / namespace
+        module_dir.mkdir(parents=True)
+        (module_dir / "__init__.py").write_text("", encoding="utf-8")
+        (module_dir / "registered.py").write_text(
+            f"import os\nos.environ['{name.upper()}_{namespace.upper()}_IMPORTED'] = '1'\n",
+            encoding="utf-8",
+        )
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(src_dir))
+    for namespace in namespaces:
+        monkeypatch.delenv(f"{name.upper()}_{namespace.upper()}_IMPORTED", raising=False)
+    for module_name in list(sys.modules):
+        if module_name.startswith(name):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+
+def test_import_local_package_registrations_accepts_explicit_registration_packages(
+    tmp_path, monkeypatch
+):
+    """The in-process caller (initialize_framework's `registration_packages`
+    config key) doesn't need KINDLING_LOCAL_PACKAGE_MODULES set at all --
+    passing the package name as the second positional arg is enough."""
+    from kindling.bootstrap import _import_local_package_registrations
+
+    _write_demo_package(tmp_path, monkeypatch, "explicit_domain")
+    monkeypatch.delenv("KINDLING_LOCAL_PACKAGE_MODULES", raising=False)
+    logger = StrictKindlingLogger()
+
+    _import_local_package_registrations(logger, ["explicit_domain"])
+
+    assert os.environ["EXPLICIT_DOMAIN_ENTITIES_IMPORTED"] == "1"
+    assert os.environ["EXPLICIT_DOMAIN_PIPES_IMPORTED"] == "1"
+    assert logger.info_messages == [
+        (
+            "Imported 4 local package registration modules from explicit_domain",
+            None,
+        )
+    ]
+
+
+def test_import_local_package_registrations_merges_explicit_and_env_roots(tmp_path, monkeypatch):
+    """Both sources (explicit arg, from lake-reqs.txt/registration_packages;
+    env var, from --local-package) contribute roots, de-duplicated, without
+    either one clobbering the other."""
+    from kindling.bootstrap import _import_local_package_registrations
+
+    _write_demo_package(tmp_path, monkeypatch, "explicit_pkg")
+    _write_demo_package(tmp_path, monkeypatch, "env_pkg")
+    monkeypatch.setenv("KINDLING_LOCAL_PACKAGE_MODULES", json.dumps(["env_pkg"]))
+    logger = StrictKindlingLogger()
+
+    _import_local_package_registrations(logger, ["explicit_pkg"])
+
+    assert os.environ["EXPLICIT_PKG_ENTITIES_IMPORTED"] == "1"
+    assert os.environ["ENV_PKG_ENTITIES_IMPORTED"] == "1"
+    assert logger.info_messages == [
+        (
+            "Imported 8 local package registration modules from explicit_pkg, env_pkg",
+            None,
+        )
+    ]

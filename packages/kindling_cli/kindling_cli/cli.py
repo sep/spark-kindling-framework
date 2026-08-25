@@ -848,8 +848,23 @@ def _discover_local_app_names() -> List[Tuple[str, Path]]:
     return results
 
 
-def _discover_app_py(app_path: Optional[Path]) -> Path:
-    """Find a Kindling app.py from an explicit path or conventional local layout."""
+def _app_settings_dir(app_path: Optional[Path]) -> Path:
+    """Directory to look for settings/lake-reqs.txt in, whether or not
+    app.py exists -- app.py is optional under the CLI-owned-bootstrap
+    contract, but its directory (or cwd, absent an app path) still locates
+    per-app config."""
+    return app_path.parent if app_path is not None else Path.cwd()
+
+
+def _discover_app_py(app_path: Optional[Path], *, allow_missing: bool = False) -> Optional[Path]:
+    """Find a Kindling app.py from an explicit path or conventional local layout.
+
+    An app.py is optional (a package-only app, declaring its dependency
+    packages via lake-reqs.txt with no custom code, is fully valid) --
+    pass allow_missing=True to return None instead of raising when none is
+    found. Defaults to False so any caller not yet updated for optional
+    app.py keeps today's strict behavior.
+    """
     if app_path is not None:
         resolved_app_path = app_path.expanduser().resolve()
         if not resolved_app_path.exists():
@@ -867,6 +882,8 @@ def _discover_app_py(app_path: Optional[Path]) -> Path:
     ]
     found = [c.resolve() for c in candidates if c.exists()]
     if not found:
+        if allow_missing:
+            return None
         raise click.ClickException(
             "Could not find app.py. Run from an app directory or repo root, "
             "or pass --app path/to/app.py"
@@ -905,40 +922,79 @@ def _discover_app_py_under(app_root: Path) -> Path:
     return found[0]
 
 
-def _preinitialize_for_inspection(app_dir: Path, env: str) -> None:
-    """Initialize the Kindling framework before an app module is (re)loaded.
+def _read_app_lake_requirement_packages(app_dir: Path) -> List[str]:
+    """The packages this app depends on (lake-reqs.txt), as importable
+    names -- an app never "owns" a package itself; entities/pipes always
+    live in one or more separate packages under packages/<name>/, and
+    lake-reqs.txt is the existing, already-per-line manifest of which ones
+    an app needs. Delegates to kindling_cli._runner, which already parses
+    this file for the (related) purpose of ensuring these packages are
+    installed before running."""
+    from kindling_cli._runner import _read_lake_requirement_package_names
 
-    Entity/pipe registration decorators (``@DataEntities.entity``,
-    ``@DataPipes.pipe``) raise ``KindlingNotInitializedError`` unless the
-    framework is already initialized at import time. Well-behaved app.py
-    files defer their decorator-bearing imports inside ``initialize()``,
-    but an app.py that imports a registering module above its own
-    `initialize()` definition fires that decorator during `exec_module`,
-    before `_load_app_module` ever gets a chance to call `initialize()`.
+    return _read_lake_requirement_package_names(app_dir)
 
-    Mirrors the order `kindling_cli._runner` already uses for `kindling app
-    run` (initialize the framework, then exec the app entrypoint), using the
-    same settings.yaml/settings.<env>.yaml discovery `kindling config show`
-    uses so the config an inspection command reports matches what it
-    resolved. Idempotent: an app.py that also defines `initialize()` and
-    calls `initialize_framework()` itself will simply short-circuit as
-    already-initialized.
+
+def _bootstrap_app(
+    app_dir: Path,
+    env: str,
+    config_dir: Optional[Path] = None,
+    platform: Optional[str] = None,
+) -> None:
+    """Initialize the Kindling framework before any app code is loaded.
+
+    The CLI is the sole caller of `initialize_framework()` for local/
+    standalone commands -- no app ever calls it directly anymore, and no
+    app hardcodes its own platform. Entity/pipe registration comes from
+    the walker (`kindling.bootstrap`'s `_import_local_package_registrations`),
+    driven by the packages this app declares in lake-reqs.txt, not by
+    app.py's own imports.
+
+    `platform` defaults to "standalone" (today's behavior, unchanged) when
+    not given -- pass the resolved `--platform` value from commands that
+    already expose it (`entity tags`, `pipeline show --tags`, `app check`)
+    so remote-platform inspection actually initializes for that platform
+    instead of always silently using standalone's platform service and
+    secret resolution.
+
+    This is the seam unit tests should monkeypatch to a no-op rather than
+    writing a dummy `initialize()` into a fixture app.py.
     """
     from kindling.bootstrap import initialize_framework
 
-    _, config_paths = _load_effective_raw_config(app_dir, env, None)
+    cfg_root = config_dir.expanduser().resolve() if config_dir else app_dir
+    resolved_platform = platform or "standalone"
+    _, config_paths = _load_effective_raw_config(cfg_root, env, platform)
     initialize_framework(
         {
-            "platform": "standalone",
+            "platform": resolved_platform,
             "environment": env,
             "config_files": [str(path) for path in config_paths],
             "install_bootstrap_dependencies": False,
+            "registration_packages": _read_app_lake_requirement_packages(app_dir),
         }
     )
 
 
-def _exec_app_module(app_path: Path, env: Optional[str], config_dir: Optional[Path] = None) -> None:
-    """Import app.py and call its initialize() function (single attempt)."""
+def _load_app_module_if_present(
+    app_path: Optional[Path], env: Optional[str], config_dir: Optional[Path] = None
+) -> None:
+    """Import app.py, if it exists, for whatever it declares -- entities/
+    pipes are already registered by `_bootstrap_app`'s walker by this
+    point, independent of app.py's own content. A no-op when app_path is
+    None: a package-only app (lake-reqs.txt, no app.py) is still fully
+    inspectable.
+
+    For backward compatibility, an `initialize()` function is still called
+    if app.py defines one (same env/config_dir contract as before) -- its
+    own `initialize_framework()` call becomes a harmless no-op (same
+    env/config already loaded), but any other custom logic in it still
+    runs, so apps that predate lake-reqs.txt-driven registration keep
+    working unchanged. It is no longer required.
+    """
+    if app_path is None:
+        return
+
     import importlib.util
     import inspect
 
@@ -975,10 +1031,7 @@ def _exec_app_module(app_path: Path, env: Optional[str], config_dir: Optional[Pa
 
         initialize = getattr(module, "initialize", None)
         if initialize is None:
-            raise click.ClickException(
-                f"app.py at {app_path} has no initialize() function. "
-                "Ensure it follows the Kindling app.py convention."
-            )
+            return
 
         kwargs: Dict[str, Any] = {"env": env}
         if config_dir is not None:
@@ -1000,34 +1053,24 @@ def _exec_app_module(app_path: Path, env: Optional[str], config_dir: Optional[Pa
 
 
 def _load_app_module(
-    app_path: Path,
+    app_path: Optional[Path],
     env: Optional[str],
     config_dir: Optional[Path] = None,
-    allow_preinitialize: bool = False,
+    platform: Optional[str] = None,
 ) -> None:
-    """Import app.py and call its initialize() function.
+    """Bootstrap the framework, then optionally load app.py.
 
-    On a first attempt that fails because a `@DataEntities.entity` /
-    `@DataPipes.pipe` decorator fired before `initialize()` ran, retries
-    once after pre-initializing the framework (see
-    `_preinitialize_for_inspection`) when `allow_preinitialize` is set --
-    matching the order `kindling app run` already uses (initialize, then
-    load the app entrypoint; see `kindling_cli._runner`). Apps that follow
-    the documented convention (defer registering imports inside
-    `initialize()`) succeed on the first attempt and never trigger this
-    fallback, so this stays a no-op for every app.py that already works
-    today. Used by inspection-only commands (`entity tags`, `app validate`)
-    that read registered entity/pipe definitions rather than running them.
+    Unconditional, non-retrying: the CLI always initializes before any app
+    code runs, so the entity/pipe-decorator-fires-before-init ordering bug
+    this used to retry around can no longer occur. app.py is optional --
+    a package-only app (lake-reqs.txt, no hand-written initialize()) is
+    fully supported. `platform` defaults to standalone -- see
+    `_bootstrap_app`.
     """
-    from kindling.data_entities import KindlingNotInitializedError
-
-    try:
-        _exec_app_module(app_path, env, config_dir)
-    except KindlingNotInitializedError:
-        if not allow_preinitialize:
-            raise
-        _preinitialize_for_inspection(app_path.parent, env or os.getenv("KINDLING_ENV", "local"))
-        _exec_app_module(app_path, env, config_dir)
+    resolved_env = env or os.getenv("KINDLING_ENV", "local")
+    app_dir = _app_settings_dir(app_path)
+    _bootstrap_app(app_dir, resolved_env, config_dir, platform)
+    _load_app_module_if_present(app_path, env, config_dir)
 
 
 def _detect_platform_from_environment() -> Optional[str]:
@@ -1197,7 +1240,7 @@ def _run_local_pipe(
             "Config file not found at settings.yaml.\n"
             "  Hint: Run `kindling config init` to generate a starter config, or use --config <path>."
         )
-    resolved_app = _discover_app_py(app_path)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
     _load_app_module(resolved_app, resolved_env, config_dir)
 
     registry = GlobalInjector.get(DataPipesRegistry)
@@ -1308,10 +1351,10 @@ def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
             "kindling package is required. Install with: pip install spark-kindling[standalone]"
         ) from exc
 
-    resolved_app = _discover_app_py(app_path)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
     # [implementer] keep validate environment handling symmetric with run — TASK-20260430-002
-    _load_app_module(resolved_app, env=resolved_env, allow_preinitialize=True)
+    _load_app_module(resolved_app, env=resolved_env)
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
@@ -1446,7 +1489,7 @@ def pipeline_list(
         ) from exc
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
-    resolved_app = _discover_app_py(app_path)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
     _load_app_module(resolved_app, resolved_env)
 
     registry = GlobalInjector.get(DataPipesRegistry)
@@ -1523,8 +1566,8 @@ def pipeline_show(
         ) from exc
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
-    resolved_app = _discover_app_py(app_path)
-    _load_app_module(resolved_app, env=resolved_env)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
+    _load_app_module(resolved_app, env=resolved_env, platform=platform)
 
     registry = GlobalInjector.get(DataPipesRegistry)
     pipe_def = registry.get_pipe_definition(pipe_id)
@@ -1537,7 +1580,7 @@ def pipeline_show(
         final_tags = dict(pipe_def.tags or {})
         literal_tags = _raw_registration_tags(registry, pipe_id, final_tags)
 
-        settings_dir = resolved_app.parent
+        settings_dir = _app_settings_dir(resolved_app)
         raw_config, _ = _load_effective_raw_config(settings_dir, resolved_env, platform)
         computed_tags, provenance = _resolve_tag_provenance(
             literal_tags,
@@ -1640,7 +1683,7 @@ def _bootstrap_migrate(
         ) from exc
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
-    resolved_app = _discover_app_py(app_path)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
     _load_app_module(resolved_app, resolved_env, config_dir)
 
 
@@ -2019,8 +2062,8 @@ def config_show(
       kindling config show --app myapp --key kindling.telemetry.tracing.level
     """
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
-    resolved_app = _discover_app_py(app_path)
-    settings_dir = resolved_app.parent
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
+    settings_dir = _app_settings_dir(resolved_app)
     merged, used_files = _load_effective_raw_config(settings_dir, resolved_env, platform)
 
     if not used_files:
@@ -2145,8 +2188,8 @@ def config_diff(
     resolved_env_b = diff_env or resolved_env_a
     resolved_platform_b = diff_platform if diff_platform is not None else platform
 
-    resolved_app = _discover_app_py(app_path)
-    settings_dir = resolved_app.parent
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
+    settings_dir = _app_settings_dir(resolved_app)
     config_a, sources_a = _load_effective_raw_config(settings_dir, resolved_env_a, platform)
     config_b, sources_b = _load_effective_raw_config(
         settings_dir, resolved_env_b, resolved_platform_b
@@ -4619,12 +4662,15 @@ def app_check(
     pipe_registry = None
 
     try:
-        resolved_app = _discover_app_py(app_path)
+        resolved_app = _discover_app_py(app_path, allow_missing=True)
         _load_app_module(resolved_app, env=resolved_env)
     except click.ClickException as exc:
         checks.append(("app_import", False, str(exc)))
     else:
-        checks.append(("app_import", True, f"Imported {resolved_app} and ran initialize()"))
+        if resolved_app is not None:
+            checks.append(("app_import", True, f"Bootstrapped and imported {resolved_app}"))
+        else:
+            checks.append(("app_import", True, "Bootstrapped (no app.py — package-only app)"))
 
         entity_registry = GlobalInjector.get(DataEntityRegistry)
         pipe_registry = GlobalInjector.get(DataPipesRegistry)
@@ -6502,7 +6548,7 @@ def entity_list(
         ) from exc
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
-    resolved_app = _discover_app_py(app_path)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
     _load_app_module(resolved_app, env=resolved_env)
 
     registry = GlobalInjector.get(DataEntityRegistry)
@@ -6518,7 +6564,7 @@ def entity_list(
     # secret's live value never looks like a reference anymore. Replay the
     # same static-config pass `entity tags` uses instead, which redacts
     # from the never-resolved on-disk YAML.
-    raw_config, _ = _load_effective_raw_config(resolved_app.parent, resolved_env, None)
+    raw_config, _ = _load_effective_raw_config(_app_settings_dir(resolved_app), resolved_env, None)
 
     def _redacted_tags(entity_id: str) -> Dict[str, Any]:
         final_tags = _safe_tags(entity_id)
@@ -6613,7 +6659,7 @@ def entity_show(
             "kindling package is required. Install with: pip install spark-kindling[standalone]"
         ) from exc
 
-    resolved_app = _discover_app_py(app_path)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
     _load_app_module(resolved_app, env=env)
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
@@ -6694,7 +6740,7 @@ def entity_validate(
             "kindling package is required. Install with: pip install spark-kindling[standalone]"
         ) from exc
 
-    resolved_app = _discover_app_py(app_path)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
     _load_app_module(resolved_app, env=env)
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
@@ -6869,8 +6915,8 @@ def entity_tags(
         ) from exc
 
     resolved_env = env or os.getenv("KINDLING_ENV", "local")
-    resolved_app = _discover_app_py(app_path)
-    _load_app_module(resolved_app, env=resolved_env, allow_preinitialize=True)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
+    _load_app_module(resolved_app, env=resolved_env, platform=platform)
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     entity_def = entity_registry.get_entity_definition(entity_id)
@@ -6882,7 +6928,7 @@ def entity_tags(
     final_tags = dict(entity_def.tags or {})
     literal_tags = _raw_registration_tags(entity_registry, entity_id, final_tags)
 
-    settings_dir = resolved_app.parent
+    settings_dir = _app_settings_dir(resolved_app)
     raw_config, _ = _load_effective_raw_config(settings_dir, resolved_env, platform)
     computed_tags, provenance = _resolve_tag_provenance(
         literal_tags,
@@ -6970,7 +7016,7 @@ def app_inspect(
             "kindling package is required. Install with: pip install spark-kindling[standalone]"
         ) from exc
 
-    resolved_app = _discover_app_py(app_path)
+    resolved_app = _discover_app_py(app_path, allow_missing=True)
     _load_app_module(resolved_app, env=env)
 
     click.echo(f"App: {app_name}  [env: {env}]")

@@ -2,15 +2,12 @@
 
 Run locally:    kindling app run .
 Run remotely:   kindling app run . --platform <platform>
+
+Entities and pipes are declared in the {{ package_kebab_name }} package
+(see lake-reqs.txt) and registered automatically -- no imports needed here.
 """
 
-# Import your domain package(s) here so their entities and pipes are registered.
-# Example:
-#   import {{ package_snake_name }}.entities.records  # noqa: F401
-#   import {{ package_snake_name }}.pipes.bronze_to_silver  # noqa: F401
-from kindling.data_pipes import DataPipesExecution, DataPipesRegistry
-from kindling.injection import get_kindling_service
+if __name__ == "__main__":
+    from kindling.apps import run_batch_app
 
-registry = get_kindling_service(DataPipesRegistry)
-execution = get_kindling_service(DataPipesExecution)
-execution.run_datapipes(sorted(registry.get_pipe_ids()), use_dag=True)
+    run_batch_app()

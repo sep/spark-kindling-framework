@@ -168,6 +168,32 @@ def test_read_lake_requirements_skips_blank_and_comment_lines(tmp_path):
     assert result == ["foo", "bar"]
 
 
+def test_read_lake_requirement_package_names_strips_version_and_normalizes(tmp_path):
+    """A distribution's kebab-case name always maps to its importable
+    top-level name with hyphens replaced by underscores -- this drives the
+    kindling.bootstrap registration walker's `registration_packages`."""
+    (tmp_path / "lake-reqs.txt").write_text(
+        "sales-ops==1.0.0\nshared-domain\n# spark-kindling-ext-otel-azure>=0.3.0\n",
+        encoding="utf-8",
+    )
+
+    result = _runner._read_lake_requirement_package_names(tmp_path)
+
+    assert result == ["sales_ops", "shared_domain"]
+
+
+def test_read_lake_requirement_package_names_missing_file_returns_empty(tmp_path):
+    assert _runner._read_lake_requirement_package_names(tmp_path) == []
+
+
+def test_read_lake_requirement_package_names_deduplicates(tmp_path):
+    (tmp_path / "lake-reqs.txt").write_text(
+        "sales-ops==1.0.0\nsales_ops==2.0.0\n", encoding="utf-8"
+    )
+
+    assert _runner._read_lake_requirement_package_names(tmp_path) == ["sales_ops"]
+
+
 def test_is_editable_install_returns_true_for_editable(tmp_path):
     direct_url = tmp_path / "direct_url.json"
     direct_url.write_text(
@@ -295,3 +321,28 @@ def test_install_lake_requirements_load_lake_warns_on_exception():
     ):
         # should not raise
         _runner._install_lake_requirements(["my-pkg==1.0.0"], "myapp", load_lake=True)
+
+
+def test_main_threads_lake_requirement_package_names_into_registration_packages(
+    tmp_path, monkeypatch
+):
+    """main() must pass lake-reqs.txt's packages to initialize_framework's
+    `registration_packages`, not just install them -- otherwise `app run`
+    wouldn't get the same auto-registration entity tags/app validate do."""
+    app_path = tmp_path / "app.py"
+    app_path.write_text("pass\n", encoding="utf-8")
+    (tmp_path / "lake-reqs.txt").write_text("sales-ops==1.0.0\n", encoding="utf-8")
+
+    monkeypatch.setattr(_runner.sys, "argv", ["_runner", str(app_path), "--env", "dev"])
+    monkeypatch.setattr(_runner, "_install_lake_requirements", lambda *a, **kw: None)
+    captured = {}
+
+    def fake_initialize_framework(config):
+        captured.update(config)
+        return None
+
+    with patch("kindling.bootstrap.initialize_framework", side_effect=fake_initialize_framework):
+        _runner.main()
+
+    assert captured["registration_packages"] == ["sales_ops"]
+    assert captured["environment"] == "dev"

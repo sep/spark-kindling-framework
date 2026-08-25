@@ -2,25 +2,12 @@
 
 Run locally:    kindling app run .
 Run remotely:   kindling app run . --platform <platform>
+
+Entities and pipes are declared in the {{ package_kebab_name }} package
+(see lake-reqs.txt) and registered automatically -- no imports needed here.
 """
 
-import os
+if __name__ == "__main__":
+    from kindling.apps import run_streaming_app
 
-# Import your domain package(s) here so their entities and pipes are registered.
-# Example:
-#   import {{ package_snake_name }}.entities.records  # noqa: F401
-#   import {{ package_snake_name }}.pipes.bronze_to_silver  # noqa: F401
-from kindling.data_pipes import DataPipesRegistry
-from kindling.execution_orchestrator import ExecutionOrchestrator
-from kindling.injection import get_kindling_service
-
-registry = get_kindling_service(DataPipesRegistry)
-orchestrator = get_kindling_service(ExecutionOrchestrator)
-
-checkpoint_path = os.environ.get("KINDLING_CHECKPOINT_PATH")
-streaming_options = {"base_checkpoint_path": checkpoint_path} if checkpoint_path else None
-
-orchestrator.execute_streaming(
-    sorted(registry.get_pipe_ids()),
-    streaming_options=streaming_options,
-)
+    run_streaming_app()

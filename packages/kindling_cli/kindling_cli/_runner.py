@@ -170,6 +170,32 @@ def _read_lake_requirements(app_dir: Path) -> List[str]:
     ]
 
 
+def _read_lake_requirement_package_names(app_dir: Path) -> List[str]:
+    """Return the importable (snake_case) package names declared in
+    lake-reqs.txt -- the packages this app depends on, which may include
+    the app's own domain package(s) as well as shared/extension packages.
+
+    Used to drive kindling.bootstrap's entity/pipe registration walker
+    (initialize_framework's `registration_packages`), so a package's
+    entities/pipes get registered without app.py needing to hand-import
+    them. A distribution's kebab-case name always maps to its top-level
+    import name with hyphens replaced by underscores -- this is a Python
+    packaging guarantee, not an approximation, so no extra lookup is
+    needed. Packages with no entities/pipes/ingestion namespace at all
+    (e.g. a telemetry extension) are harmless here -- the walker already
+    tolerates a missing namespace.
+    """
+    names = []
+    seen = set()
+    for spec in _read_lake_requirements(app_dir):
+        dist_name = _dist_name_from_spec(spec)
+        package_name = _normalize_distribution_name(dist_name)
+        if package_name and package_name not in seen:
+            seen.add(package_name)
+            names.append(package_name)
+    return names
+
+
 def _install_lake_requirements(
     lake_requirements: List[str], app_name: str, load_lake: bool = False
 ) -> None:
@@ -251,6 +277,14 @@ def main() -> None:
     try:
         from kindling.bootstrap import initialize_framework
 
+        # Install (or confirm locally available) lake-reqs.txt packages
+        # before bootstrapping, so the framework's registration walker
+        # (registration_packages below) finds them already importable
+        # rather than racing an install that hasn't happened yet.
+        lake_requirements = _read_lake_requirements(app_path.parent)
+        _install_lake_requirements(lake_requirements, app_path.stem, load_lake=args.load_lake)
+        registration_packages = _read_lake_requirement_package_names(app_path.parent)
+
         raw_parameters = os.getenv("KINDLING_RUN_PARAMETERS", "")
         parameters = json.loads(raw_parameters) if raw_parameters else {}
         if not isinstance(parameters, dict):
@@ -261,11 +295,9 @@ def main() -> None:
                 "platform": "standalone",
                 "environment": args.env,
                 "config_files": config_files,
+                "registration_packages": registration_packages,
             }
         )
-
-        lake_requirements = _read_lake_requirements(app_path.parent)
-        _install_lake_requirements(lake_requirements, app_path.stem, load_lake=args.load_lake)
 
         code = app_path.read_text(encoding="utf-8")
         exec_globals = {

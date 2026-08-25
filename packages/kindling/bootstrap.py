@@ -190,7 +190,7 @@ def _get_spark_kindling_config() -> Dict[str, Any]:
     return mapped
 
 
-def _load_local_package_module_roots() -> List[str]:
+def _load_env_local_package_module_roots() -> List[str]:
     raw_modules = (os.getenv(_LOCAL_PACKAGE_MODULES_ENV) or "").strip()
     if not raw_modules:
         return []
@@ -215,6 +215,25 @@ def _load_local_package_module_roots() -> List[str]:
     return modules
 
 
+def _load_local_package_module_roots(explicit_roots: Optional[List[str]] = None) -> List[str]:
+    """Merge explicit_roots (e.g. initialize_framework's `registration_packages`
+    config key) with KINDLING_LOCAL_PACKAGE_MODULES (env var; --local-package /
+    the app-run subprocess boundary), de-duplicated, explicit-first."""
+    roots: List[str] = []
+    seen = set()
+    for value in explicit_roots or []:
+        if isinstance(value, str) and value.strip():
+            stripped = value.strip()
+            if stripped not in seen:
+                seen.add(stripped)
+                roots.append(stripped)
+    for value in _load_env_local_package_module_roots():
+        if value not in seen:
+            seen.add(value)
+            roots.append(value)
+    return roots
+
+
 def _import_registration_namespace(module_name: str) -> int:
     imported_count = 0
     package = importlib.import_module(module_name)
@@ -230,8 +249,10 @@ def _import_registration_namespace(module_name: str) -> int:
     return imported_count
 
 
-def _import_local_package_registrations(logger) -> None:
-    module_roots = _load_local_package_module_roots()
+def _import_local_package_registrations(
+    logger, registration_packages: Optional[List[str]] = None
+) -> None:
+    module_roots = _load_local_package_module_roots(registration_packages)
     if not module_roots:
         return
 
@@ -1849,6 +1870,14 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     if app_name is None:
         app_name = config.get("app_name")
 
+    raw_registration_packages = config.get("registration_packages")
+    if raw_registration_packages is None:
+        registration_packages: List[str] = []
+    elif isinstance(raw_registration_packages, str):
+        registration_packages = [raw_registration_packages]
+    else:
+        registration_packages = [str(pkg) for pkg in raw_registration_packages]
+
     # Check if framework is already initialized -- with the config this call
     # is actually requesting. See _initialized_config_matches.
     already_initialized = is_framework_initialized()
@@ -1856,7 +1885,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         _BOOTSTRAP_LOGGER.debug("Framework already initialized, skipping re-initialization")
         existing_service = get_kindling_service(PlatformServiceProvider).get_service()
         logger_provider = get_kindling_service(PythonLoggerProvider)
-        _import_local_package_registrations(logger_provider.get_logger("KindlingBootstrap"))
+        _import_local_package_registrations(
+            logger_provider.get_logger("KindlingBootstrap"), registration_packages
+        )
         return existing_service
 
     if already_initialized:
@@ -2137,7 +2168,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # This must happen after the session exists so conf.set() works.
         with _bootstrap_phase("registrations_import"):
             _apply_spark_configs(config_service, logger)
-            _import_local_package_registrations(logger)
+            _import_local_package_registrations(logger, registration_packages)
 
         # Overlay datapipes:/dataentities: config sections onto everything
         # registered so far; the managers keep the compiled patterns so

@@ -91,4 +91,4 @@ settings.local.yaml
 ```
 
 Add entities, pipes, and transforms in `packages/{{ package_snake_name }}/src/{{ package_snake_name }}/`.
-Then import new modules in this app's `app.py` → `register_all()`.
+New modules are discovered and registered automatically -- no import wiring needed in `app.py`.
