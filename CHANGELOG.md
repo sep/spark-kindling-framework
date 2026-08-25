@@ -4,6 +4,46 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **Remote app runs could silently install a very old, wrong Kindling
+  wheel.** `DataAppManager._select_best_wheel` (used to resolve an
+  unpinned `spark-kindling`/`spark-kindling-*` entry in `lake-reqs.txt`
+  against every wheel in the artifacts `packages/` directory) sorted
+  candidates ascending by `(priority, version)` and returned index `0` --
+  which picks the *lowest* version within the winning priority group, the
+  opposite of the intended "prefer higher version." Any lake packages
+  directory holding more than one version of the same wheel (the normal
+  state after more than one `kindling runtime deploy`/release) could
+  resolve an unpinned dependency to the oldest version present instead of
+  the newest, with no warning. Now correctly picks the highest version
+  within the best-priority group.
+- **`kindling app deploy --platform databricks` silently uploaded nothing on
+  a Unity Catalog volume-only setup.** `DatabricksAPI.deploy_app`/
+  `cleanup_app` only understood ABFSS (`storage_account`/`container`),
+  even though the rest of the class already resolves a Volumes artifacts
+  root (`artifacts_path`/`KINDLING_ARTIFACTS_STORAGE_PATH`) for job
+  submission and cluster logs. With no ABFSS storage account configured,
+  app deploy printed "Storage account/container not configured. Files not
+  uploaded." and reported the deploy as successful anyway. Both methods now
+  resolve the artifacts destination the same way the rest of the class
+  does and upload through the shared `ArtifactStore` abstraction, so a
+  Volumes-only Databricks setup works without also needing an Azure
+  storage account.
+- **`kindling env update`/`kindling env bootstrap` could leave a uv workspace
+  looking "in sync" while installing none of its Kindling packages.** Both
+  commands finish by running `uv sync`, but bare `uv sync` at a `[tool.uv.
+  workspace]` root only installs the *root* package's own dependencies --
+  for a project shaped like the CLI's own "adopt from nested project" case
+  (a thin root with no Kindling dependency of its own, real dependencies
+  declared by a workspace member under `packages/`/`apps/`), that silently
+  skipped the member entirely. `uv` still reported the sync as clean, but
+  `spark-kindling`/`spark-kindling-cli` were never installed and the
+  `kindling` console script never got created in `.venv/bin`, so `kindling`
+  on `PATH` fell through to any devcontainer-preinstalled global CLI
+  instead. Both commands now run `uv sync --all-packages`, which is a no-op
+  on a non-workspace project.
+
 ## [0.12.32a3] - 2026-08-25
 
 ### Fixed
