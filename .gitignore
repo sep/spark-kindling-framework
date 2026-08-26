@@ -136,3 +136,4 @@ dev-attach.sh
 .beads.gate.lock
 
 .vscode/
+.feature-config

@@ -8,6 +8,49 @@ projects. This does not define the contributor container for the
 
 ---
 
+## Spark 4 standalone addendum (2026-08-24)
+
+The original contract correctly keeps incompatible Spark runtimes out of one
+Python environment, but its wording predates a supported standalone Spark 4
+runner. Add that runner as a new, opt-in installation profile without renaming
+or changing the existing profile:
+
+```text
+spark-kindling[standalone]     -> existing Spark 3.5 / Delta 3.x environment
+spark-kindling[standalone-4x]  -> new, separately resolved Spark 4.1 / Delta 4.x environment
+```
+
+`standalone` remains the default emitted by existing scaffolds and retains its
+current dependency contract. This is a backward-compatibility requirement, not
+an alias scheduled for removal. New projects explicitly selecting Spark 4 use
+`standalone-4x`; an environment must never request both extras.
+
+The initial `standalone-4x` compatibility window is deliberately narrower than
+its public name: Spark `>=4.1,<4.2` paired with a CI-certified Delta 4 release.
+The `4x` name describes the opt-in compatibility family, not a promise that
+untested future Spark 4 minors are accepted automatically. Expanding the range
+requires the same unit, Delta merge/streaming, ABFSS, packaging, and checkpoint
+restart gates as the initial certification.
+
+This changes two statements later in this proposal:
+
+- "the main domain environment uses Spark 3.5" remains true for existing and
+  default projects, but Spark 4 projects may select an alternative main
+  environment using `standalone-4x`;
+- Spark 4.1 is no longer only an SDP dry-run runtime. The SDP harness may still
+  use an isolated environment in Spark 3.5 projects, while a Spark 4 standalone
+  project can use its selected runtime for both runner and SDP validation.
+
+Before publishing the extra, build-wheel metadata tests must prove that bare
+Kindling installs neither Spark family, each extra resolves only its intended
+Spark/Delta pair, managed-platform extras remain runtime-neutral, and requesting
+both standalone profiles fails resolution. If Poetry cannot emit those mutually
+exclusive requirements safely in one distribution, use a dependency-only
+companion distribution for Spark 4 rather than weakening `standalone` or
+broadening both Spark and Delta across incompatible major versions.
+
+---
+
 ## Implementation Update (2026-08-18)
 
 The core problem this proposal targets — project state, not container state,
