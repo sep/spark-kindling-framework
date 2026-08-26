@@ -4,6 +4,11 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.32] - 2026-08-26
+
+Stable release. Promotes the 0.12.32a3–a9 alpha series (see entries below)
+to stable; no code changes since 0.12.32a9.
+
 ## [0.12.32a9] - 2026-08-25
 
 ### Fixed
