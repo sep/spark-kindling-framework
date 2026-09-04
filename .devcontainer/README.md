@@ -90,7 +90,7 @@ service_client = BlobServiceClient(account_url, credential=credential)
 
 ## Java Version
 
-The container uses **Java 11** (not Java 21) for compatibility with PySpark 3.4.3 and production Azure environments (Synapse, Fabric, Databricks).
+The container uses **Java 21** for Spark 3.5-based local development.
 
 ## Rebuilding the Container
 
@@ -99,9 +99,9 @@ If you modify the Dockerfile or docker-compose.yml:
 1. In VS Code: Press `F1` → Select **"Dev Containers: Rebuild Container"**
 2. Or from terminal:
    ```bash
-   docker-compose down
-   docker-compose build --no-cache
-   docker-compose up -d
+   docker compose down
+   docker compose build --no-cache
+   docker compose up -d
    ```
 
 ## Development Workflow
@@ -111,17 +111,17 @@ If you modify the Dockerfile or docker-compose.yml:
 poetry install
 
 # Run tests
-pytest tests/
+poe test-quick
 
 # Run specific test suite
-pytest tests/unit/ -v
-pytest tests/integration/ -v
+poe test-unit
+poe test-integration
 
 # Format code
-black packages/ tests/
+poe format
 
 # Lint code
-flake8 packages/ tests/
+poe lint
 ```
 
 ## Troubleshooting
@@ -134,6 +134,20 @@ Increase driver memory in your SparkSession config:
 
 ### Azure CLI Not Found
 Rebuild the container to ensure Azure CLI is installed.
+
+### Reopen/Rebuild Fails With Missing `/tmp/devcontainercli-*` Compose Files
+If VS Code logs mention old files under `/tmp/devcontainercli-...` or tries to
+reuse a container created from missing temp compose files, remove the stale
+container and rebuild from the repo's current config:
+
+```bash
+docker ps -a --filter name=spark-kindling-framework_devcontainer-devcontainer
+docker rm -f spark-kindling-framework_devcontainer-devcontainer-1
+docker compose -f .devcontainer/docker-compose.yml build devcontainer
+```
+
+Then reopen the workspace in the container again. This failure is usually stale
+Docker state, not a broken repo Dockerfile.
 
 ### Port Conflicts
 If port 4040 (Spark UI) is already in use, Spark will automatically try 4041, 4042, etc.
@@ -148,7 +162,7 @@ If port 4040 (Spark UI) is already in use, Spark will automatically try 4041, 40
 ## Next Steps
 
 1. Install dependencies: `poetry install`
-2. Run tests to verify setup: `pytest tests/ -v`
+2. Run tests to verify setup: `poe test-quick`
 3. Start developing your Spark data pipelines!
 
 For more information, see the main [README.md](../README.md) and [documentation](../docs/).
