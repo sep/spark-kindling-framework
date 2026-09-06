@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
 from kindling.common_transforms import *
+from kindling.data_pipes import is_driving_input
 from kindling.entity_provider import IncrementalReadableEntityProvider
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import *
@@ -519,13 +520,27 @@ class WatermarkAspect(SignalEmitter):
     read time and carried through the persist/failure signals — a
     deliberate future design, not something to approximate here.
 
-    Driving-source convention: a pipe operates on a single source of
-    truth — its FIRST input entity — and every other input is reference
-    data, read in full. Only the driving source is watermarked. A table fed
-    by multiple sources is built by multiple pipes each contributing its
-    own driving source, not by one pipe with several watermarked inputs.
-    (``DataPipesExecuter._populate_source_dict`` implements the read side
-    of this convention by passing ``use_watermark`` only for input 0.)
+    Driving-source convention: a pipe's DRIVING inputs are watermarked and
+    every other input is reference data, read in full. By default a pipe
+    has exactly one driving input — its FIRST input entity — and that
+    default is what the overwhelming majority of pipes want. A pipe opts
+    into several incrementally-read inputs by declaring
+    ``driving_entity_ids`` (``kindling.data_pipes``), which is for
+    ADDITIVE/union shapes: many sources appending into one table, where a
+    single writer is required (declarative engines reject duplicate
+    producers) but per-source incrementality still matters. Joining two
+    driving inputs is out of contract — that is the alignment problem the
+    one-driving-source default exists to avoid.
+
+    Captures are therefore keyed (pipe_id, source_entity_id): a pipe with
+    several driving inputs advances several cursors on one persist, which
+    the durable store already supports (exactly one cursor per (source,
+    reader)). Advance is all-or-nothing per run — either the output
+    persisted and every contributing source advances, or none does.
+    (``DataPipesExecuter._populate_source_dict`` and
+    ``GenerationExecutor._execute_pipe_batch`` implement the read side,
+    both resolving membership through
+    ``kindling.data_pipes.is_driving_input``.)
 
     The aspect is registered at bootstrap for non-standalone platforms.
     Local/standalone execution deliberately runs without it: reads fall
@@ -550,8 +565,10 @@ class WatermarkAspect(SignalEmitter):
         self.logger = lp.get_logger("WatermarkAspect")
         self._signals = signal_provider
         self._init_signal_emitter(signal_provider)
-        # pipe_id -> (source_entity_id, cursor) captured at read time
-        self._pending: Dict[str, Tuple[str, str]] = {}
+        # pipe_id -> {source_entity_id: cursor} captured at read time. One
+        # entry per DRIVING input, so a pipe declaring several advances
+        # several cursors on one persist.
+        self._pending: Dict[str, Dict[str, str]] = {}
         self._registered = False
 
     def register(self) -> None:
@@ -584,19 +601,20 @@ class WatermarkAspect(SignalEmitter):
         if entity is None or pipe is None:
             return None
         if not use_watermark:
-            # A non-watermarked read of the pipe's DRIVING source (a
+            # A non-watermarked read of one of the pipe's DRIVING sources (a
             # full-refresh run, or a pipe with watermarking disabled)
-            # supersedes any version captured by an earlier failed
-            # watermarked execution. Clear it so the persist that follows
-            # this read cannot save a stale watermark. Reference-input
-            # reads (non-driving) must not clear the driving capture.
-            input_ids = getattr(pipe, "input_entity_ids", None) or []
-            if input_ids and entity.entityid == input_ids[0]:
-                self._pending.pop(pipe.pipeid, None)
+            # supersedes any version captured for that source by an earlier
+            # failed watermarked execution. Clear it so the persist that
+            # follows this read cannot save a stale watermark. Reference-input
+            # reads (non-driving) must not clear any driving capture, and a
+            # full refresh reads every driving input, so clearing per source
+            # across those reads empties the whole map.
+            if is_driving_input(pipe, entity.entityid):
+                self._clear_capture(pipe.pipeid, entity.entityid)
             return None
         df, cursor = self.wms.read_changes(entity, pipe)
         if cursor is not None:
-            if pipe.pipeid in self._pending:
+            if entity.entityid in self._pending.get(pipe.pipeid, {}):
                 # Every normal lifecycle path (persist, persist-failure,
                 # pipe-failure, skip, full-refresh) clears the capture, so
                 # finding one here means a prior run crashed without
@@ -606,33 +624,48 @@ class WatermarkAspect(SignalEmitter):
                 # class docstring's concurrency contract.
                 self.logger.warning(
                     f"Replacing existing pending watermark capture for pipe "
-                    f"'{pipe.pipeid}' — prior execution ended without a "
-                    f"lifecycle signal, or concurrent same-pipe executions "
-                    f"are overlapping (unsupported). Last capture wins."
+                    f"'{pipe.pipeid}' source '{entity.entityid}' — prior "
+                    f"execution ended without a lifecycle signal, or "
+                    f"concurrent same-pipe executions are overlapping "
+                    f"(unsupported). Last capture wins."
                 )
-            self._pending[pipe.pipeid] = (entity.entityid, cursor)
+            self._pending.setdefault(pipe.pipeid, {})[entity.entityid] = cursor
         else:
-            self._pending.pop(pipe.pipeid, None)
+            self._clear_capture(pipe.pipeid, entity.entityid)
         return ResolvedRead(df=df)
 
+    def _clear_capture(self, pipe_id: str, source_entity_id: str) -> None:
+        """Drop one source's capture, and the pipe's entry once it is empty."""
+        captures = self._pending.get(pipe_id)
+        if captures is None:
+            return
+        captures.pop(source_entity_id, None)
+        if not captures:
+            self._pending.pop(pipe_id, None)
+
     def _on_after_persist(self, sender, *, pipe_id=None, persist_id=None, **kwargs):
+        # All-or-nothing per run: the output persisted, so every source that
+        # contributed to it advances together. A lenient variant (advance
+        # only the sources whose rows actually landed) would need the persist
+        # path to report per-source contribution — deliberately not designed
+        # here; see docs/proposals/collector_driving_inputs.md, open question 1.
         pending = self._pending.pop(pipe_id, None)
-        if pending is None:
+        if not pending:
             return None
-        source_entity_id, cursor = pending
-        self.wms.save_cursor(source_entity_id, pipe_id, cursor, str(uuid.uuid4()))
-        try:
-            legacy_version = int(cursor)
-        except (TypeError, ValueError):
-            legacy_version = None
-        self.emit(
-            "persist.watermark_saved",
-            pipe_id=pipe_id,
-            source_entity_id=source_entity_id,
-            cursor=cursor,
-            version=legacy_version,
-            persist_id=persist_id,
-        )
+        for source_entity_id, cursor in pending.items():
+            self.wms.save_cursor(source_entity_id, pipe_id, cursor, str(uuid.uuid4()))
+            try:
+                legacy_version = int(cursor)
+            except (TypeError, ValueError):
+                legacy_version = None
+            self.emit(
+                "persist.watermark_saved",
+                pipe_id=pipe_id,
+                source_entity_id=source_entity_id,
+                cursor=cursor,
+                version=legacy_version,
+                persist_id=persist_id,
+            )
         return None
 
     def _on_persist_failed(self, sender, *, pipe_id=None, **kwargs):

@@ -34,6 +34,94 @@ class PipeMetadata:
     output_entity_id: str
     output_type: str
     use_watermark: bool = False
+    # The inputs read INCREMENTALLY (watermarked). ``None`` resolves to
+    # ``[input_entity_ids[0]]`` — byte-for-byte the historical
+    # single-driving-source convention, which remains the default for
+    # every pipe that does not declare otherwise.
+    #
+    # This names the driving set rather than the reference set on purpose:
+    # if references were named and "the rest" inferred as driving, adding
+    # an input later would silently make it incremental, handing a join
+    # only its NEW rows — a quiet correctness bug. The opposite mistake (a
+    # driving input defaulting to reference) is merely a full read: slower,
+    # and loud in run times. Default toward the loud failure.
+    #
+    # Declaring several driving inputs is for ADDITIVE/union shapes. A body
+    # that joins two driving inputs is out of contract — the alignment
+    # question it raises (the fact arrived, its dimension row has not) is
+    # exactly what the single-driving-source convention exists to avoid.
+    driving_entity_ids: Optional[List[str]] = None
+
+    def __post_init__(self):
+        # Validated here rather than in the decorator so the config
+        # overlay path (``datapipes:``/``datapipes-bytag:``, which rebuilds
+        # metadata) is covered by the same check.
+        if self.driving_entity_ids is None:
+            return
+        if not self.driving_entity_ids:
+            raise ValueError(
+                f"Pipe '{self.pipeid}': driving_entity_ids must be non-empty when "
+                f"present. Omit it entirely to get the default "
+                f"[input_entity_ids[0]]."
+            )
+        declared_inputs = self.input_entity_ids or []
+        unknown = [eid for eid in self.driving_entity_ids if eid not in declared_inputs]
+        if unknown:
+            raise ValueError(
+                f"Pipe '{self.pipeid}': driving_entity_ids entries {unknown} are not "
+                f"declared in input_entity_ids {list(declared_inputs)}. Every driving "
+                f"input must also be an input."
+            )
+
+    @property
+    def resolved_driving_entity_ids(self) -> List[str]:
+        """This pipe's driving inputs, with the default applied."""
+        return resolve_driving_entity_ids(self)
+
+    def is_driving_input(self, entity_id: str) -> bool:
+        """Whether ``entity_id`` is read incrementally by this pipe."""
+        return is_driving_input(self, entity_id)
+
+
+def resolve_driving_entity_ids(pipe) -> List[str]:
+    """The inputs ``pipe`` reads incrementally, with the default applied.
+
+    Returns ``pipe.driving_entity_ids`` when declared, otherwise
+    ``[input_entity_ids[0]]`` — the historical driving-source convention.
+
+    Duck-typed via ``getattr`` on purpose: aspects and execution engines
+    hold pipe-like objects that are not always ``PipeMetadata``.
+    """
+    declared = getattr(pipe, "driving_entity_ids", None)
+    if declared:
+        return list(declared)
+    input_ids = getattr(pipe, "input_entity_ids", None) or []
+    return list(input_ids[:1])
+
+
+def is_driving_input(pipe, entity_id: str) -> bool:
+    """Whether ``entity_id`` is one of ``pipe``'s driving (incremental) inputs.
+
+    The single place the driving-source rule is decided. Both executers,
+    the watermark aspect and the persist strategy resolve it through here
+    rather than re-deriving "input 0" positionally.
+    """
+    return entity_id in set(resolve_driving_entity_ids(pipe))
+
+
+def driving_reads_all_empty(pipe, input_entities: Dict[str, Any]) -> bool:
+    """The skip condition: EVERY driving read produced no data.
+
+    ``input_entities`` is keyed as the pipe body receives it
+    (``entity_id.replace(".", "_")``). A pipe with no driving inputs at all
+    never skips on this rule.
+    """
+    frames = [
+        input_entities[key]
+        for key in (eid.replace(".", "_") for eid in resolve_driving_entity_ids(pipe))
+        if key in input_entities
+    ]
+    return bool(frames) and all(frame is None for frame in frames)
 
 
 class EntityReadPersistStrategy(ABC):
@@ -705,9 +793,11 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
             True if pipe was skipped (no data), False otherwise
         """
         input_entities = self._populate_source_dict(entity_reader, pipe)
-        first_source = list(input_entities.values())[0]
         self.logger.debug(f"Prepping data pipe: {pipe.pipeid}")
-        if first_source is not None:
+        # Skip only when EVERY driving read came back empty. One driving
+        # source having no new data is not a reason to skip when another
+        # does — the pipe still has work to contribute.
+        if not driving_reads_all_empty(pipe, input_entities):
             self.logger.debug(f"Executing data pipe: {pipe.pipeid}")
             processedDf = pipe.execute(**input_entities)
             activator(processedDf)
@@ -720,18 +810,18 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         self, entity_reader: Callable[[str], DataFrame], pipe
     ) -> dict[str, DataFrame]:
         result = {}
-        for i, entity_id in enumerate(pipe.input_entity_ids):
-            # Driving-source convention: a pipe operates on ONE source of
-            # truth — its first input — and every other input is reference
-            # data, read in full. Only the driving source is ever read
-            # incrementally (watermarked). A multi-source output table is
-            # built by multiple pipes, each with its own driving source,
-            # never by one pipe with several watermarked inputs. See
-            # WatermarkAspect (kindling.watermarking) for the write side.
-            is_first = i == 0
+        driving = set(resolve_driving_entity_ids(pipe))
+        for entity_id in pipe.input_entity_ids:
+            # Driving-source convention: a pipe's DRIVING inputs are read
+            # incrementally (watermarked); every other input is reference
+            # data, read in full. By default there is exactly one driving
+            # input — the first — and a pipe opts into more by declaring
+            # ``driving_entity_ids``. See WatermarkAspect
+            # (kindling.watermarking) for the write side.
             key = entity_id.replace(".", "_")
             result[key] = entity_reader(
-                self.dpe.get_entity_definition(entity_id), pipe.use_watermark and is_first
+                self.dpe.get_entity_definition(entity_id),
+                pipe.use_watermark and entity_id in driving,
             )
         return result
 
