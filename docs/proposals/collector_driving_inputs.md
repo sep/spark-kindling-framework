@@ -1,8 +1,9 @@
 # Multiple Driving Inputs (and Collector Pipes)
 
-**Status:** Phase 1 implemented: batch execution supports declared driving
-inputs, all-driving-input skip decisions, and per-source watermark captures.
-Streaming parity, temporal-chain adoption, and collector sugar remain proposed.
+**Status:** Phases 1 and 2 implemented: batch execution supports declared
+driving inputs, all-driving-input skip decisions, and per-source watermark
+captures; streaming execution reads declared driving inputs as streams.
+Temporal-chain adoption and collector sugar remain proposed.
 
 **Phase 1 usage:** Pass `driving_entity_ids=["bronze.a", "bronze.b"]` on a
 pipe that declares both entities in `input_entity_ids`. With
@@ -12,8 +13,9 @@ provided list must be nonempty and contain only declared input IDs. The pipe
 executes when any driving read has data, so its body must handle `None` for
 an empty driving input. Multiple driving inputs are intended for additive
 union/collector transformations; joining independent change slices does not
-provide a complete join. This phase does not change streaming input selection
-or permit multiple writers to the same target.
+provide a complete join. Phase 2 applies the same declaration to streaming
+input selection. The single-writer restriction remains in force: this proposal
+does not permit multiple writers to the same target.
 
 Cursor saves occur after output persistence and are not a multi-source
 transaction. A failed save is logged and its capture retained while the other
@@ -165,6 +167,9 @@ So "go streaming" does not sidestep this: the identical restriction is
 hard-coded a second time, in a second module. One declared field fixes
 both.
 
+Phase 2 removes this duplicate in `pipe_streaming.py`; the streaming runner
+now uses the same declared driving set as the batch runner.
+
 ### The temporal extension already hand-rolls the derived case
 
 `chain.py:396` derives its driving-entity set by scanning
@@ -252,10 +257,11 @@ temporal events table dedupes on `event_id`).
 ### Streaming lowering
 
 `SimplePipeStreamStarter` reads each driving input via
-`read_entity_as_stream` and unions them (schema-uniform by precondition);
-references stay `read_entity`. One checkpoint per pipe, as today
-(`{checkpoint_root}/{pipeid}`), with Spark tracking per-source offsets
-inside it.
+`read_entity_as_stream` and every reference via `read_entity`, then passes
+every input to the pipe body under the existing kwarg keys. The pipe body
+performs the union; the resulting query has N streaming sources and one
+checkpoint per pipe, as today (`{checkpoint_root}/{pipeid}`), with Spark
+tracking per-source offsets inside it.
 
 Operational note worth documenting rather than solving here: a unioned
 streaming query advances at the pace of its slowest source (Spark's global
@@ -264,6 +270,13 @@ later changes the query's source list, which a checkpoint cannot absorb
 cleanly. Where per-source independence matters more than a single query,
 the `flows` shape (N contributor pipes, engine-native) is the better
 lowering — see "Open questions".
+
+Known gap: `kindling_ext_sdp` `_build_dataset_function` still streams
+`position == 0` when `stream_first_input` is set (`oss_engine.py:177-181`),
+so a non-default driving declaration is honored by the runner and not by the
+SDP lowering. Fixing that requires deciding open question 4 (`flows` vs
+`fused`), and phase 2 leaves it unchanged. Follow-up bead `kind-9xfq` is
+recorded in `docs/builds/kind-a61/decomposition.md`.
 
 ### Collector sugar
 
@@ -319,8 +332,10 @@ which point the two proposals converge on one entity-level opt-in.
    (`watermarking.py:522-528`, `data_pipes.py:724-730`,
    `simple_read_persist_strategy.py:196-200`).
 
-**Phase 2 — streaming parity.** `pipe_streaming.py` reads driving inputs
-as streams and unions them.
+**Phase 2 — streaming parity (implemented).** `pipe_streaming.py` reads every
+driving input as a stream, reads references as static inputs, preserves the
+existing kwargs and checkpoint behavior, and leaves the pipe body to perform
+the union.
 
 **Phase 3 — temporal consumer.** Chain-events body unions per-source
 envelopes (group `base_defs` by `input_entity_id`); delete
@@ -347,7 +362,8 @@ existing code.
   cursors unmoved; replay re-reads and dedupes.
 - Full-refresh (`no_watermark=True`) reads every driving input in full and
   clears every capture.
-- Streaming: driving inputs unioned, references static.
+- Streaming (done): every driving input read as a stream, references static,
+  kwargs and checkpoint unchanged, body performs the union.
 - Temporal: the existing multi-source tests
   (`tests/unit/test_temporal_chain.py:251-400`) invert — multi-source now
   succeeds with no engine flag; add an execution test that a two-source
