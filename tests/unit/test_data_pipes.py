@@ -4,11 +4,11 @@ Tests the pipe registration system, metadata handling, and the DataPipesManager.
 """
 
 from dataclasses import fields
-from typing import Callable, Dict, List
+from types import SimpleNamespace
+from typing import Callable, Dict, List, Optional
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
-
 from kindling.data_entities import KindlingNotInitializedError
 from kindling.data_pipes import (
     DataPipes,
@@ -19,8 +19,18 @@ from kindling.data_pipes import (
     EntityReadPersistStrategy,
     PipeMetadata,
     StageProcessingService,
+    resolve_driving_entity_ids,
 )
 from kindling.injection import GlobalInjector
+
+from tests.unit.driving_entity_execution_matrix import (
+    DRIVING_ENTITY_EXECUTION_CASES,
+    assert_driving_entity_execution_case,
+    build_entity_reader_for_case,
+    build_execution_result,
+    build_pipe_for_case,
+    driving_entity_case_id,
+)
 
 
 class TestPipeMetadata:
@@ -38,6 +48,7 @@ class TestPipeMetadata:
             "output_entity_id",
             "output_type",
             "use_watermark",
+            "driving_entity_ids",
         }
 
         assert (
@@ -55,11 +66,13 @@ class TestPipeMetadata:
         assert "input_entity_ids" in field_annotations
         assert "output_entity_id" in field_annotations
         assert "output_type" in field_annotations
+        assert "driving_entity_ids" in field_annotations
 
         # Check collection types
         assert field_annotations["execute"] == Callable
         assert field_annotations["tags"] == Dict[str, str]
         assert field_annotations["input_entity_ids"] == List[str]
+        assert field_annotations["driving_entity_ids"] == Optional[List[str]]
 
     def test_pipe_metadata_creation(self):
         """Test creating a PipeMetadata instance with all fields"""
@@ -82,8 +95,26 @@ class TestPipeMetadata:
         assert metadata.execute == sample_func
         assert metadata.tags == {"env": "test", "version": "1.0"}
         assert metadata.input_entity_ids == ["entity1", "entity2"]
+        assert metadata.driving_entity_ids is None
         assert metadata.output_entity_id == "output_entity"
         assert metadata.output_type == "delta"
+
+    def test_pipe_metadata_accepts_declared_driving_entities(self):
+        def sample_func(df1, df2):
+            return df1
+
+        metadata = PipeMetadata(
+            pipeid="test_pipe",
+            name="Test Pipe",
+            execute=sample_func,
+            tags={},
+            input_entity_ids=["entity1", "entity2"],
+            output_entity_id="output_entity",
+            output_type="delta",
+            driving_entity_ids=["entity2", "entity1"],
+        )
+
+        assert metadata.driving_entity_ids == ["entity2", "entity1"]
 
     def test_pipe_metadata_with_lambda(self):
         """Test PipeMetadata with lambda function"""
@@ -122,6 +153,51 @@ class TestPipeMetadata:
 
         assert metadata.tags == {}
         assert metadata.input_entity_ids == []
+
+
+class TestDrivingEntityResolution:
+    """Tests for resolving pipe driving entity ids."""
+
+    def test_omitted_driving_entity_ids_default_to_first_input(self):
+        pipe = SimpleNamespace(input_entity_ids=["entity1", "entity2"])
+
+        assert resolve_driving_entity_ids(pipe) == ["entity1"]
+
+    def test_none_driving_entity_ids_default_to_first_input(self):
+        pipe = SimpleNamespace(
+            input_entity_ids=["entity1", "entity2"],
+            driving_entity_ids=None,
+        )
+
+        assert resolve_driving_entity_ids(pipe) == ["entity1"]
+
+    def test_declared_driving_entity_ids_preserve_order(self):
+        pipe = SimpleNamespace(
+            input_entity_ids=["entity1", "entity2", "entity3"],
+            driving_entity_ids=["entity3", "entity1"],
+        )
+
+        assert resolve_driving_entity_ids(pipe) == ["entity3", "entity1"]
+
+    def test_zero_inputs_resolve_to_empty_list(self):
+        pipe = SimpleNamespace(input_entity_ids=[])
+
+        assert resolve_driving_entity_ids(pipe) == []
+
+    def test_mock_driving_entity_ids_attribute_resolves_to_default(self):
+        pipe = Mock()
+        pipe.input_entity_ids = ["entity1", "entity2"]
+        pipe.driving_entity_ids = Mock()
+
+        assert resolve_driving_entity_ids(pipe) == ["entity1"]
+
+    def test_string_driving_entity_ids_does_not_resolve_to_characters(self):
+        pipe = SimpleNamespace(
+            input_entity_ids=["entity1", "entity2"],
+            driving_entity_ids="entity2",
+        )
+
+        assert resolve_driving_entity_ids(pipe) == ["entity1"]
 
 
 class TestDataPipesManager:
@@ -229,6 +305,54 @@ class TestDataPipesManager:
         pipe = manager.registry["test_pipe"]
         assert pipe.name == "Second Version"
         assert pipe.tags == {"version": "2"}
+
+    def test_register_pipe_rejects_empty_driving_entity_ids(self):
+        """Test registration rejects present-but-empty driving_entity_ids."""
+        mock_logger_provider = Mock()
+        mock_logger = Mock()
+        mock_logger_provider.get_logger.return_value = mock_logger
+
+        manager = DataPipesManager(mock_logger_provider)
+
+        with pytest.raises(ValueError) as exc_info:
+            manager.register_pipe(
+                "test_pipe",
+                name="Test Pipe",
+                execute=lambda: None,
+                tags={},
+                input_entity_ids=["entity1"],
+                output_entity_id="output",
+                output_type="delta",
+                driving_entity_ids=[],
+            )
+
+        message = str(exc_info.value)
+        assert "test_pipe" in message
+        assert "driving_entity_ids" in message
+
+    def test_register_pipe_rejects_driving_entity_ids_outside_inputs(self):
+        """Test registration rejects driving ids absent from input_entity_ids."""
+        mock_logger_provider = Mock()
+        mock_logger = Mock()
+        mock_logger_provider.get_logger.return_value = mock_logger
+
+        manager = DataPipesManager(mock_logger_provider)
+
+        with pytest.raises(ValueError) as exc_info:
+            manager.register_pipe(
+                "test_pipe",
+                name="Test Pipe",
+                execute=lambda: None,
+                tags={},
+                input_entity_ids=["entity1", "entity2"],
+                output_entity_id="output",
+                output_type="delta",
+                driving_entity_ids=["entity2", "missing.entity"],
+            )
+
+        message = str(exc_info.value)
+        assert "test_pipe" in message
+        assert "missing.entity" in message
 
     def test_get_pipe_ids_empty(self):
         """Test getting pipe IDs from empty registry"""
@@ -401,6 +525,7 @@ class TestDataPipesDecorator:
         assert "input_entity_ids" in error_message
         assert "output_entity_id" in error_message
         assert "output_type" in error_message
+        assert "driving_entity_ids" not in error_message
 
     def test_decorator_validates_partial_missing_fields(self):
         """Test that decorator validates when some fields are missing"""
@@ -440,6 +565,26 @@ class TestDataPipesDecorator:
         assert call_args[0][0] == "test_pipe"
         assert call_args[1]["name"] == "Test Pipe"
         assert call_args[1]["execute"] == test_func
+
+    def test_decorator_accepts_driving_entity_ids(self):
+        """Test pipe decorator passes through declared driving_entity_ids."""
+        mock_registry = MagicMock()
+        DataPipes.dpregistry = mock_registry
+
+        @DataPipes.pipe(
+            pipeid="test_pipe",
+            name="Test Pipe",
+            tags={"env": "test"},
+            input_entity_ids=["entity1", "entity2"],
+            output_entity_id="output_entity",
+            output_type="delta",
+            driving_entity_ids=["entity2"],
+        )
+        def test_func(entity1, entity2):
+            return entity1
+
+        call_args = mock_registry.register_pipe.call_args
+        assert call_args[1]["driving_entity_ids"] == ["entity2"]
 
     def test_decorator_returns_original_function(self):
         """Test that decorator returns the original function"""
@@ -721,6 +866,48 @@ class TestDataPipesExecuter:
         assert mock_reader.call_args.args[1] is False
         self.mock_erps.create_pipe_persist_activator.assert_called_once_with(effective_pipe)
 
+    def test_run_datapipes_no_watermark_reads_all_declared_driving_inputs_in_full(self):
+        """Sequential no_watermark=True reads every driving input without watermarking."""
+        executer = DataPipesExecuter(
+            self.mock_logger_provider,
+            self.mock_entity_registry,
+            self.mock_pipes_registry,
+            self.mock_erps,
+            self.mock_trace_provider,
+        )
+
+        mock_df = Mock()
+        registered_pipe = PipeMetadata(
+            pipeid="test_pipe",
+            name="Test Pipe",
+            execute=Mock(return_value=mock_df),
+            tags={},
+            input_entity_ids=["source.a", "source.b", "source.ref"],
+            output_entity_id="target.entity",
+            output_type="delta",
+            use_watermark=True,
+            driving_entity_ids=["source.a", "source.b"],
+        )
+        self.mock_pipes_registry.get_pipe_definition.return_value = registered_pipe
+        self.mock_entity_registry.get_entity_definition.side_effect = lambda entity_id: Mock(
+            entityid=entity_id
+        )
+        mock_reader = Mock(return_value=mock_df)
+        self.mock_erps.create_pipe_entity_reader.return_value = mock_reader
+        self.mock_erps.create_pipe_persist_activator.return_value = Mock()
+
+        executer.run_datapipes(["test_pipe"], no_watermark=True)
+
+        effective_pipe = self.mock_erps.create_pipe_entity_reader.call_args.args[0]
+        assert effective_pipe.use_watermark is False
+        assert effective_pipe.driving_entity_ids == ["source.a", "source.b"]
+        assert registered_pipe.use_watermark is True
+        assert [call.args[1] for call in mock_reader.call_args_list] == [
+            False,
+            False,
+            False,
+        ]
+
     def test_execute_datapipe_with_single_input(self):
         """Test _execute_datapipe with single input entity"""
         executer = DataPipesExecuter(
@@ -788,8 +975,8 @@ class TestDataPipesExecuter:
         assert "entity1" in call_kwargs
         assert "entity2" in call_kwargs
 
-    def test_execute_datapipe_skips_when_first_source_is_none(self):
-        """Test _execute_datapipe skips execution when first source is None"""
+    def test_execute_datapipe_skips_when_single_driving_source_is_none(self):
+        """Test _execute_datapipe skips when the only driving read is None"""
         executer = DataPipesExecuter(
             self.mock_logger_provider,
             self.mock_entity_registry,
@@ -860,9 +1047,39 @@ class TestDataPipesExecuter:
         # Verify entity_reader was called with correct parameters
         calls = mock_entity_reader.call_args_list
         assert len(calls) == 3
-        assert calls[0][0][1] == True  # First entity, is_first=True
-        assert calls[1][0][1] == False  # Second entity, is_first=False
-        assert calls[2][0][1] == False  # Third entity, is_first=False
+        assert calls[0][0][1] == True  # Default driving entity is input 0.
+        assert calls[1][0][1] == False  # Non-driving reference input.
+        assert calls[2][0][1] == False  # Non-driving reference input.
+
+    @pytest.mark.parametrize(
+        "case",
+        DRIVING_ENTITY_EXECUTION_CASES,
+        ids=driving_entity_case_id,
+    )
+    def test_driving_entity_read_skip_matrix(self, case):
+        """Sequential execution matches the shared driving-input matrix."""
+        executer = DataPipesExecuter(
+            self.mock_logger_provider,
+            self.mock_entity_registry,
+            self.mock_pipes_registry,
+            self.mock_erps,
+            self.mock_trace_provider,
+        )
+        pipe, execute, output_frame = build_pipe_for_case(case)
+        read_calls = []
+        entity_reader = build_entity_reader_for_case(case, read_calls)
+        activator = Mock()
+        self.mock_entity_registry.get_entity_definition.side_effect = lambda eid: Mock(entityid=eid)
+
+        skipped = executer._execute_datapipe(entity_reader, activator, pipe)
+
+        status = "skipped" if skipped else "success"
+        result = build_execution_result(status, read_calls, execute, activator)
+        assert_driving_entity_execution_case(case, result)
+        if status == "success":
+            activator.assert_called_once_with(output_frame)
+        else:
+            activator.assert_not_called()
 
     def test_implements_data_pipes_execution_interface(self):
         """Test that DataPipesExecuter implements DataPipesExecution interface"""

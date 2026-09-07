@@ -1,10 +1,10 @@
 """Unit tests for WatermarkAspect pending-state lifecycle.
 
-The aspect captures (source_entity_id, version) per pipe at read time and
-advances the watermark only after a successful persist. These tests pin
-the lifecycle guarantees around failure and full-refresh paths — in
-particular that a version captured by a FAILED execution can never be
-saved by a later execution of the same pipe.
+The aspect captures source cursor state per pipe at read time and advances
+watermarks only after a successful persist. These tests pin the lifecycle
+guarantees around failure and full-refresh paths — in particular that a cursor
+captured by a FAILED execution can never be saved by a later execution of the
+same pipe.
 """
 
 from types import SimpleNamespace
@@ -47,12 +47,31 @@ def _emit(signal_provider, name, **kwargs):
     return signal.send(None, **kwargs)
 
 
-def _pipe(pipeid="pipe.p1", inputs=("bronze.src", "bronze.ref")):
-    return SimpleNamespace(pipeid=pipeid, name=pipeid, input_entity_ids=list(inputs))
+def _pipe(
+    pipeid="pipe.p1",
+    inputs=("bronze.src", "bronze.ref"),
+    driving_entity_ids=None,
+):
+    pipe = SimpleNamespace(pipeid=pipeid, name=pipeid, input_entity_ids=list(inputs))
+    if driving_entity_ids is not None:
+        pipe.driving_entity_ids = list(driving_entity_ids)
+    return pipe
 
 
 def _entity(entityid="bronze.src"):
     return SimpleNamespace(entityid=entityid, name=entityid)
+
+
+def _record_saved_events(signal_provider):
+    events = []
+
+    def _record(sender, **kwargs):
+        events.append(dict(kwargs))
+
+    signal = signal_provider.get_signal("persist.watermark_saved")
+    signal = signal or signal_provider.create_signal("persist.watermark_saved")
+    signal.connect(_record, weak=False)
+    return events
 
 
 class TestHappyPath:
@@ -125,6 +144,179 @@ class TestHappyPath:
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="x")
 
         wms.save_cursor.assert_called_once()
+
+    def test_multi_driving_reads_persist_every_captured_source(self, aspect, wms, signal_provider):
+        pipe = _pipe(
+            inputs=("bronze.src_a", "bronze.src_b", "bronze.ref"),
+            driving_entity_ids=("bronze.src_a", "bronze.src_b"),
+        )
+        saved_events = _record_saved_events(signal_provider)
+        wms.read_changes.side_effect = [
+            (MagicMock(name="df-a"), "7"),
+            (MagicMock(name="df-b"), "8"),
+        ]
+
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src_a"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src_b"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        assert aspect._pending == {
+            pipe.pipeid: {
+                "bronze.src_a": "7",
+                "bronze.src_b": "8",
+            }
+        }
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.ref"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=False,
+        )
+
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="x")
+
+        saved = [
+            (call.args[0], call.args[1], call.args[2]) for call in wms.save_cursor.call_args_list
+        ]
+        assert saved == [
+            ("bronze.src_a", pipe.pipeid, "7"),
+            ("bronze.src_b", pipe.pipeid, "8"),
+        ]
+        assert [
+            (event["source_entity_id"], event["cursor"], event["version"], event["persist_id"])
+            for event in saved_events
+        ] == [
+            ("bronze.src_a", "7", 7, "x"),
+            ("bronze.src_b", "8", 8, "x"),
+        ]
+
+    def test_second_source_save_failure_leaves_only_unsaved_source_pending(
+        self, aspect, wms, signal_provider, aspect_logger
+    ):
+        pipe = _pipe(
+            inputs=("bronze.src_a", "bronze.src_b"),
+            driving_entity_ids=("bronze.src_a", "bronze.src_b"),
+        )
+        saved_events = _record_saved_events(signal_provider)
+        wms.read_changes.side_effect = [
+            (MagicMock(name="df-a"), "7"),
+            (MagicMock(name="df-b"), "8"),
+        ]
+        wms.save_cursor.side_effect = [None, RuntimeError("boom")]
+
+        for source in ("bronze.src_a", "bronze.src_b"):
+            _emit(
+                signal_provider,
+                "read.resolve_read",
+                entity=_entity(source),
+                pipe=pipe,
+                pipe_id=pipe.pipeid,
+                use_watermark=True,
+            )
+
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="x")
+
+        saved = [
+            (call.args[0], call.args[1], call.args[2]) for call in wms.save_cursor.call_args_list
+        ]
+        assert saved == [
+            ("bronze.src_a", pipe.pipeid, "7"),
+            ("bronze.src_b", pipe.pipeid, "8"),
+        ]
+        assert [
+            (event["source_entity_id"], event["cursor"], event["version"], event["persist_id"])
+            for event in saved_events
+        ] == [("bronze.src_a", "7", 7, "x")]
+        assert aspect._pending == {pipe.pipeid: {"bronze.src_b": "8"}}
+        aspect_logger.exception.assert_called_once()
+
+        wms.save_cursor.reset_mock()
+        wms.save_cursor.side_effect = None
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="y")
+
+        wms.save_cursor.assert_called_once()
+        assert wms.save_cursor.call_args[0][0] == "bronze.src_b"
+        assert wms.save_cursor.call_args[0][2] == "8"
+        assert [
+            (event["source_entity_id"], event["cursor"], event["version"], event["persist_id"])
+            for event in saved_events
+        ] == [
+            ("bronze.src_a", "7", 7, "x"),
+            ("bronze.src_b", "8", 8, "y"),
+        ]
+        assert aspect._pending == {}
+
+
+class TestCursorSaveRetryDiagnostics:
+    @pytest.mark.parametrize("retry_cursor", ["7", "8"])
+    def test_retry_read_does_not_warn_but_subsequent_overlap_does(
+        self, aspect, wms, aspect_logger, retry_cursor
+    ):
+        pipe = _pipe()
+        read = dict(entity=_entity(), pipe=pipe, use_watermark=True)
+        aspect._on_resolve_read(None, **read)
+        wms.save_cursor.side_effect = RuntimeError("cursor store unavailable")
+        aspect._on_after_persist(None, pipe_id=pipe.pipeid)
+
+        wms.read_changes.return_value = (MagicMock(name="retry-df"), retry_cursor)
+        aspect._on_resolve_read(None, **read)
+        aspect_logger.warning.assert_not_called()
+        assert aspect._pending == {pipe.pipeid: {"bronze.src": retry_cursor}}
+
+        aspect._on_resolve_read(None, **read)
+        aspect_logger.warning.assert_called_once()
+        wms.save_cursor.side_effect = None
+        aspect._on_after_persist(None, pipe_id=pipe.pipeid)
+        assert wms.save_cursor.call_args.args[2] == retry_cursor
+        assert aspect._pending == {}
+        assert aspect._failed_saves == {}
+
+    @pytest.mark.parametrize(
+        "cleanup",
+        ["persist_success", "persist_failure", "pipe_failure", "full_refresh", "empty_read"],
+    )
+    def test_cleared_retry_does_not_hide_a_later_unexpected_replacement(
+        self, aspect, wms, aspect_logger, cleanup
+    ):
+        pipe = _pipe()
+        read = dict(entity=_entity(), pipe=pipe, use_watermark=True)
+        aspect._on_resolve_read(None, **read)
+        wms.save_cursor.side_effect = RuntimeError("cursor store unavailable")
+        aspect._on_after_persist(None, pipe_id=pipe.pipeid)
+
+        if cleanup == "persist_success":
+            wms.save_cursor.side_effect = None
+            aspect._on_after_persist(None, pipe_id=pipe.pipeid)
+        elif cleanup == "persist_failure":
+            aspect._on_persist_failed(None, pipe_id=pipe.pipeid)
+        elif cleanup == "pipe_failure":
+            aspect._on_pipe_failed(None, pipe_id=pipe.pipeid)
+        elif cleanup == "full_refresh":
+            aspect._on_resolve_read(None, **{**read, "use_watermark": False})
+        else:
+            wms.read_changes.return_value = (None, None)
+            aspect._on_resolve_read(None, **read)
+        assert aspect._failed_saves == {}
+
+        wms.read_changes.return_value = (MagicMock(name="new-df"), "9")
+        aspect._on_resolve_read(None, **read)
+        aspect_logger.warning.assert_not_called()
+        aspect._on_resolve_read(None, **read)
+        aspect_logger.warning.assert_called_once()
 
 
 class TestStalePendingLifecycle:
@@ -203,15 +395,193 @@ class TestStalePendingLifecycle:
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
         wms.save_cursor.assert_not_called()
 
+    def test_no_new_data_read_clears_only_that_source(self, aspect, wms, signal_provider):
+        pipe = _pipe(
+            inputs=("bronze.src_a", "bronze.src_b"),
+            driving_entity_ids=("bronze.src_a", "bronze.src_b"),
+        )
+        wms.read_changes.side_effect = [
+            (MagicMock(name="df-a"), "10"),
+            (MagicMock(name="df-b"), "20"),
+        ]
+        for source in ("bronze.src_a", "bronze.src_b"):
+            _emit(
+                signal_provider,
+                "read.resolve_read",
+                entity=_entity(source),
+                pipe=pipe,
+                pipe_id=pipe.pipeid,
+                use_watermark=True,
+            )
+
+        wms.read_changes.side_effect = None
+        wms.read_changes.return_value = (None, None)
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src_a"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
+
+        wms.save_cursor.assert_called_once()
+        assert wms.save_cursor.call_args[0][0] == "bronze.src_b"
+        assert wms.save_cursor.call_args[0][2] == "20"
+
+    def test_non_watermarked_driving_read_clears_only_that_source(
+        self, aspect, wms, signal_provider
+    ):
+        pipe = _pipe(
+            inputs=("bronze.src_a", "bronze.src_b", "bronze.ref"),
+            driving_entity_ids=("bronze.src_a", "bronze.src_b"),
+        )
+        wms.read_changes.side_effect = [
+            (MagicMock(name="df-a"), "10"),
+            (MagicMock(name="df-b"), "20"),
+        ]
+        for source in ("bronze.src_a", "bronze.src_b"):
+            _emit(
+                signal_provider,
+                "read.resolve_read",
+                entity=_entity(source),
+                pipe=pipe,
+                pipe_id=pipe.pipeid,
+                use_watermark=True,
+            )
+
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src_a"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=False,
+        )
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.ref"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=False,
+        )
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
+
+        wms.save_cursor.assert_called_once()
+        assert wms.save_cursor.call_args[0][0] == "bronze.src_b"
+        assert wms.save_cursor.call_args[0][2] == "20"
+
+    def test_no_watermark_driving_reads_clear_all_pending_sources(
+        self, aspect, wms, signal_provider
+    ):
+        pipe = _pipe(
+            inputs=("bronze.src_a", "bronze.src_b"),
+            driving_entity_ids=("bronze.src_a", "bronze.src_b"),
+        )
+        wms.read_changes.side_effect = [
+            (MagicMock(name="df-a"), "10"),
+            (MagicMock(name="df-b"), "20"),
+        ]
+        for source in ("bronze.src_a", "bronze.src_b"):
+            _emit(
+                signal_provider,
+                "read.resolve_read",
+                entity=_entity(source),
+                pipe=pipe,
+                pipe_id=pipe.pipeid,
+                use_watermark=True,
+            )
+
+        for source in ("bronze.src_a", "bronze.src_b"):
+            _emit(
+                signal_provider,
+                "read.resolve_read",
+                entity=_entity(source),
+                pipe=pipe,
+                pipe_id=pipe.pipeid,
+                use_watermark=False,
+            )
+
+        assert aspect._pending == {}
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
+        wms.save_cursor.assert_not_called()
+
+    def test_pipe_failure_after_first_driving_read_clears_partial_capture(
+        self, aspect, wms, signal_provider
+    ):
+        pipe = _pipe(
+            inputs=("bronze.src_a", "bronze.src_b"),
+            driving_entity_ids=("bronze.src_a", "bronze.src_b"),
+        )
+        wms.read_changes.return_value = (MagicMock(name="df-a"), "10")
+
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src_a"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        _emit(signal_provider, "datapipes.pipe_failed", pipe_id=pipe.pipeid, error="boom")
+
+        assert aspect._pending == {}
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
+        wms.save_cursor.assert_not_called()
+
     @pytest.mark.parametrize("skip_signal", ["datapipes.pipe_skipped", "orchestrator.pipe_skipped"])
     def test_pipe_skip_clears_pending(self, aspect, wms, signal_provider, skip_signal):
-        """Driving read had data, but the pipe was skipped (e.g. a
-        reference input was unavailable) — nothing persisted, so the
-        capture must not survive to a later after_persist."""
+        """All driving reads were empty, so nothing persisted and the capture
+        must not survive to a later after_persist."""
         pipe = _pipe()
         self._capture_then_fail_before_persist(signal_provider, pipe)
         _emit(signal_provider, skip_signal, pipe_id=pipe.pipeid, skip_reason="no_data")
 
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
+        wms.save_cursor.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "discard_signal",
+        [
+            "persist.persist_failed",
+            "datapipes.pipe_failed",
+            "orchestrator.pipe_failed",
+            "datapipes.pipe_skipped",
+            "orchestrator.pipe_skipped",
+        ],
+    )
+    def test_discard_signals_clear_all_pending_sources(
+        self, aspect, wms, signal_provider, discard_signal
+    ):
+        pipe = _pipe(
+            inputs=("bronze.src_a", "bronze.src_b"),
+            driving_entity_ids=("bronze.src_a", "bronze.src_b"),
+        )
+        wms.read_changes.side_effect = [
+            (MagicMock(name="df-a"), "10"),
+            (MagicMock(name="df-b"), "20"),
+        ]
+        for source in ("bronze.src_a", "bronze.src_b"):
+            _emit(
+                signal_provider,
+                "read.resolve_read",
+                entity=_entity(source),
+                pipe=pipe,
+                pipe_id=pipe.pipeid,
+                use_watermark=True,
+            )
+
+        _emit(
+            signal_provider,
+            discard_signal,
+            pipe_id=pipe.pipeid,
+            error="boom",
+            skip_reason="no_data",
+        )
+
+        assert aspect._pending == {}
         _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="z")
         wms.save_cursor.assert_not_called()
 
@@ -250,6 +620,56 @@ class TestStalePendingLifecycle:
 
         wms.save_cursor.assert_called_once()
         assert wms.save_cursor.call_args[0][2] == "12"
+
+    def test_duplicate_capture_warning_is_per_source(
+        self, aspect, wms, signal_provider, aspect_logger
+    ):
+        pipe = _pipe(
+            inputs=("bronze.src_a", "bronze.src_b"),
+            driving_entity_ids=("bronze.src_a", "bronze.src_b"),
+        )
+        wms.read_changes.side_effect = [
+            (MagicMock(name="df-a-1"), "10"),
+            (MagicMock(name="df-b"), "20"),
+            (MagicMock(name="df-a-2"), "12"),
+        ]
+
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src_a"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src_b"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        aspect_logger.warning.assert_not_called()
+
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src_a"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+
+        aspect_logger.warning.assert_called_once()
+        message = aspect_logger.warning.call_args[0][0]
+        assert pipe.pipeid in message
+        assert "bronze.src_a" in message
+
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="a")
+
+        saved = [(call.args[0], call.args[2]) for call in wms.save_cursor.call_args_list]
+        assert saved == [("bronze.src_a", "12"), ("bronze.src_b", "20")]
 
     def test_failure_in_one_pipe_does_not_affect_another(self, aspect, wms, signal_provider):
         pipe_a = _pipe("pipe.a")

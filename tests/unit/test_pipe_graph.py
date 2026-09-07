@@ -204,9 +204,9 @@ class TestPipeGraphBuilder:
         """Create a graph builder with mocks."""
         return PipeGraphBuilder(mock_registry, mock_logger_provider)
 
-    def create_pipe_metadata(self, pipe_id, input_entities, output_entity):
+    def create_pipe_metadata(self, pipe_id, input_entities, output_entity, **overrides):
         """Helper to create pipe metadata."""
-        return PipeMetadata(
+        params = dict(
             pipeid=pipe_id,
             name=pipe_id,
             execute=lambda: None,
@@ -215,6 +215,8 @@ class TestPipeGraphBuilder:
             output_entity_id=output_entity,
             output_type="delta",
         )
+        params.update(overrides)
+        return PipeMetadata(**params)
 
     def test_build_simple_graph(self, builder, mock_registry):
         """Test building a simple linear graph."""
@@ -266,6 +268,27 @@ class TestPipeGraphBuilder:
         assert graph.get_root_nodes() == ["pipe1"]
         assert graph.get_leaf_nodes() == ["pipe4"]
         assert set(graph.get_dependencies("pipe4")) == {"pipe2", "pipe3"}
+
+    def test_driving_entity_subset_does_not_filter_graph_edges(self, builder, mock_registry):
+        mock_registry.pipe_defs = {
+            "pipe1": self.create_pipe_metadata("pipe1", [], "entity.a"),
+            "pipe2": self.create_pipe_metadata("pipe2", [], "entity.b"),
+            "pipe3": self.create_pipe_metadata(
+                "pipe3",
+                ["entity.a", "entity.b"],
+                "entity.c",
+                driving_entity_ids=["entity.b"],
+            ),
+        }
+
+        graph = builder.build_graph(["pipe1", "pipe2", "pipe3"])
+
+        assert graph.nodes["pipe3"].input_entities == ["entity.a", "entity.b"]
+        assert {(edge.from_pipe, edge.to_pipe, edge.entity) for edge in graph.edges} == {
+            ("pipe1", "pipe3", "entity.a"),
+            ("pipe2", "pipe3", "entity.b"),
+        }
+        assert set(graph.get_dependencies("pipe3")) == {"pipe1", "pipe2"}
 
     def test_detect_simple_cycle(self, builder, mock_registry):
         """Test detecting a simple 2-node cycle."""

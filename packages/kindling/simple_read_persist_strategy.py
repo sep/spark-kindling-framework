@@ -194,11 +194,15 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
             if pipe.input_entity_ids and len(pipe.input_entity_ids) > 0:
 
-                # Driving-source convention: input 0 is the pipe's single
-                # source of truth; other inputs are reference data. See
-                # WatermarkAspect (kindling.watermarking) for the full
+                # Driving-source convention: driving_entity_ids declares the
+                # source-of-truth inputs rather than deriving them from
+                # position. Omitting it resolves to [input_entity_ids[0]], the
+                # single-driving default for existing pipes. Pipes skip only
+                # when all driving reads are empty, not when input 0 is empty.
+                # See WatermarkAspect (kindling.watermarking) for the full
                 # statement of the convention.
-                src_input_entity = strategy.der.get_entity_definition(pipe.input_entity_ids[0])
+                driving_ids = resolve_driving_entity_ids(pipe)
+                src_input_entity = strategy.der.get_entity_definition(driving_ids[0])
                 src_input_entity_id = src_input_entity.entityid
 
                 output_entity = strategy.der.get_entity_definition(pipe.output_entity_id)

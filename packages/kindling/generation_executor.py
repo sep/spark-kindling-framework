@@ -35,6 +35,8 @@ from kindling.data_pipes import (
     DataPipesRegistry,
     EntityReadPersistStrategy,
     PipeMetadata,
+    driving_reads_all_empty,
+    resolve_driving_entity_ids,
 )
 from kindling.entity_provider import can_ensure_destination
 from kindling.entity_provider_registry import EntityProviderRegistry
@@ -1192,21 +1194,18 @@ class GenerationExecutor(SignalEmitter):
 
         # Read input entities
         input_entities = {}
-        for i, entity_id in enumerate(pipe.input_entity_ids):
-            is_first = i == 0
+        driving = set(resolve_driving_entity_ids(pipe))
+        for entity_id in pipe.input_entity_ids:
             key = entity_id.replace(".", "_")
             input_entities[key] = self._read_batch_input_entity(
                 entity_id=entity_id,
                 entity_reader=entity_reader,
-                use_watermark=pipe.use_watermark and is_first,
+                use_watermark=pipe.use_watermark and entity_id in driving,
                 run_id=run_id,
             )
 
-        # Check if first source has data (only if there are inputs)
-        if input_entities:
-            first_source = list(input_entities.values())[0]
-            if first_source is None:
-                return PipeResult(pipe_id=pipe.pipeid, status="skipped")
+        if driving_reads_all_empty(pipe, input_entities):
+            return PipeResult(pipe_id=pipe.pipeid, status="skipped")
 
         # Transform
         processed_df = pipe.execute(**input_entities)

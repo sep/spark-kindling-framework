@@ -9,8 +9,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
-from pyspark.sql import DataFrame
-
 from kindling.config_patterns import ConfigPatternMatcher, TagRuleMatcher
 from kindling.injection import *
 from kindling.sentinels import UNSET
@@ -19,6 +17,7 @@ from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
 from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
+from pyspark.sql import DataFrame
 
 from .data_entities import *
 from .data_entities import _raise_if_not_initialized
@@ -34,6 +33,63 @@ class PipeMetadata:
     output_entity_id: str
     output_type: str
     use_watermark: bool = False
+    driving_entity_ids: Optional[List[str]] = None
+
+    def __post_init__(self):
+        _validate_driving_entity_ids(
+            self.pipeid,
+            self.input_entity_ids,
+            self.driving_entity_ids,
+        )
+
+
+def _validate_driving_entity_ids(
+    pipeid: str,
+    input_entity_ids: Optional[List[str]],
+    driving_entity_ids: Optional[List[str]],
+) -> None:
+    if driving_entity_ids is None:
+        return
+    if not isinstance(driving_entity_ids, list) or not all(
+        isinstance(entity_id, str) for entity_id in driving_entity_ids
+    ):
+        raise ValueError(f"Pipe '{pipeid}': driving_entity_ids must be a list of entity ids")
+    if not driving_entity_ids:
+        raise ValueError(f"Pipe '{pipeid}': driving_entity_ids cannot be empty when provided")
+
+    declared_input_ids = set(input_entity_ids or [])
+    missing = [entity_id for entity_id in driving_entity_ids if entity_id not in declared_input_ids]
+    if missing:
+        raise ValueError(
+            f"Pipe '{pipeid}': driving_entity_ids contains ids not present "
+            f"in input_entity_ids: {missing}"
+        )
+
+
+def resolve_driving_entity_ids(pipe) -> List[str]:
+    """Return the inputs read incrementally by ``pipe``."""
+    declared = getattr(pipe, "driving_entity_ids", None)
+    if isinstance(declared, (list, tuple)) and declared:
+        return list(declared)
+    input_ids = getattr(pipe, "input_entity_ids", None) or []
+    return list(input_ids[:1])
+
+
+def is_driving_input(pipe, entity_id: str) -> bool:
+    """Whether ``entity_id`` is one of ``pipe``'s driving inputs."""
+    return entity_id in set(resolve_driving_entity_ids(pipe))
+
+
+def driving_reads_all_empty(pipe, input_entities: Dict[str, Any]) -> bool:
+    """Whether every present driving read returned no data."""
+    # Only keys present in input_entities are considered. If every driving key
+    # is absent, this returns False and the pipe executes with incomplete kwargs.
+    frames = [
+        input_entities[key]
+        for key in (eid.replace(".", "_") for eid in resolve_driving_entity_ids(pipe))
+        if key in input_entities
+    ]
+    return bool(frames) and all(frame is None for frame in frames)
 
 
 class EntityReadPersistStrategy(ABC):
@@ -309,8 +365,10 @@ class DataPipesManager(DataPipesRegistry):
         self.logger.debug("Data pipes manager initialized ...")
 
     def register_pipe(self, pipeid, **decorator_params):
-        self._raw_params[pipeid] = dict(decorator_params)
-        self.registry[pipeid] = self._build_metadata(pipeid, decorator_params)
+        raw_params = dict(decorator_params)
+        metadata = self._build_validated_metadata(pipeid, raw_params)
+        self._raw_params[pipeid] = raw_params
+        self.registry[pipeid] = metadata
         self.logger.debug(f"Pipe registered: {pipeid}")
 
     def unregister_pipe(self, pipeid):
@@ -340,7 +398,7 @@ class DataPipesManager(DataPipesRegistry):
         self._matcher = ConfigPatternMatcher(config_service.get("datapipes"))
         self._tag_matcher = TagRuleMatcher(config_service.get("datapipes-bytag"))
         for pipeid, raw_params in self._raw_params.items():
-            self.registry[pipeid] = self._build_metadata(pipeid, raw_params)
+            self.registry[pipeid] = self._build_validated_metadata(pipeid, raw_params)
         self.logger.debug(f"Config overrides applied to {len(self._raw_params)} pipe(s)")
 
     def resolve_secret_tags(self, secret_provider) -> List[str]:
@@ -415,6 +473,24 @@ class DataPipesManager(DataPipesRegistry):
             if key in raw_params:
                 params[key] = raw_params[key]
         return PipeMetadata(pipeid, **params)
+
+    def _build_validated_metadata(self, pipeid, raw_params):
+        try:
+            return self._build_metadata(pipeid, raw_params)
+        except ValueError as error:
+            if self._has_matching_config_override(pipeid, raw_params):
+                raise ValueError(
+                    f"Config overrides applied to pipe '{pipeid}' "
+                    f"produced invalid metadata: {error}"
+                ) from error
+            raise
+
+    def _has_matching_config_override(self, pipeid, raw_params):
+        id_override = self._matcher is not None and self._matcher.get_matching_overrides(pipeid)
+        tag_override = self._tag_matcher is not None and self._tag_matcher.get_matching_overrides(
+            raw_params.get("tags") or {}
+        )
+        return bool(id_override or tag_override)
 
     def get_pipe_ids(self) -> List[str]:
         return list(self.registry.keys())
@@ -705,9 +781,8 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
             True if pipe was skipped (no data), False otherwise
         """
         input_entities = self._populate_source_dict(entity_reader, pipe)
-        first_source = list(input_entities.values())[0]
         self.logger.debug(f"Prepping data pipe: {pipe.pipeid}")
-        if first_source is not None:
+        if not driving_reads_all_empty(pipe, input_entities):
             self.logger.debug(f"Executing data pipe: {pipe.pipeid}")
             processedDf = pipe.execute(**input_entities)
             activator(processedDf)
@@ -720,18 +795,18 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
         self, entity_reader: Callable[[str], DataFrame], pipe
     ) -> dict[str, DataFrame]:
         result = {}
-        for i, entity_id in enumerate(pipe.input_entity_ids):
-            # Driving-source convention: a pipe operates on ONE source of
-            # truth — its first input — and every other input is reference
-            # data, read in full. Only the driving source is ever read
-            # incrementally (watermarked). A multi-source output table is
-            # built by multiple pipes, each with its own driving source,
-            # never by one pipe with several watermarked inputs. See
+        driving = set(resolve_driving_entity_ids(pipe))
+        for entity_id in pipe.input_entity_ids:
+            # Driving-source convention: driving_entity_ids declares the
+            # source-of-truth inputs instead of inferring them from position.
+            # When omitted, the driving set resolves to [input_entity_ids[0]],
+            # preserving the current single-driving default. Pipes skip only
+            # when all driving reads are empty, not when input 0 is empty. See
             # WatermarkAspect (kindling.watermarking) for the write side.
-            is_first = i == 0
             key = entity_id.replace(".", "_")
             result[key] = entity_reader(
-                self.dpe.get_entity_definition(entity_id), pipe.use_watermark and is_first
+                self.dpe.get_entity_definition(entity_id),
+                pipe.use_watermark and entity_id in driving,
             )
         return result
 

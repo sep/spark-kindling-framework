@@ -217,6 +217,40 @@ class TestInputClassification:
             "gold.orders_summary",
         }
 
+    def test_driving_entity_ids_do_not_change_sdp_producers_or_input_classification(
+        self, entity_registry, pipes
+    ):
+        driven_pipes = [
+            (
+                make_pipe(
+                    "bronze_to_silver.orders",
+                    ["bronze.orders", "ref.customers"],
+                    "silver.orders",
+                    driving_entity_ids=["bronze.orders", "ref.customers"],
+                )
+                if pipe.pipeid == "bronze_to_silver.orders"
+                else pipe
+            )
+            for pipe in pipes
+        ]
+        engine = make_engine(entity_registry, FakePipeRegistry(driven_pipes))
+
+        assert engine.validate() == []
+        plan = engine.build_plan()
+        silver = plan.get_dataset("silver.orders")
+
+        assert sum(dataset.name == "silver.orders" for dataset in plan.datasets) == 1
+        assert silver.pipe_id == "bronze_to_silver.orders"
+        assert [classified.entity_id for classified in silver.inputs] == [
+            "bronze.orders",
+            "ref.customers",
+        ]
+        by_id = {classified.entity_id: classified for classified in silver.inputs}
+        assert by_id["bronze.orders"].classification is InputClassification.INTERNAL
+        assert by_id["bronze.orders"].produced_by == "ingest.orders"
+        assert by_id["ref.customers"].classification is InputClassification.EXTERNAL
+        assert by_id["ref.customers"].produced_by is None
+
 
 # --------------------------------------------------------------------- #
 # Dataset-type selection precedence                                      #

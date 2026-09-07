@@ -4,6 +4,20 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- Batch pipes can declare `driving_entity_ids` to read multiple inputs
+  incrementally, with independent source cursors and execution whenever any
+  driving input has data. Omission preserves the first-input default; other
+  inputs remain full reference reads.
+
+### Fixed
+
+- A failed watermark cursor save after a successful output write no longer
+  aborts updates for other driving sources or reports the output persist as
+  failed. Failed captures remain pending for retry; the next read recognizes
+  that retry without emitting a misleading missing-lifecycle warning.
+
 ## [0.12.32] - 2026-08-26
 
 Stable release. Promotes the 0.12.32a3–a9 alpha series (see entries below)

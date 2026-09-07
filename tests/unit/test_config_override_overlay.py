@@ -9,7 +9,6 @@ the bootstrap.apply_config_overrides() helper.
 from unittest.mock import MagicMock, Mock
 
 import pytest
-
 from kindling.data_entities import DataEntityManager, EntityMetadata
 from kindling.data_pipes import DataPipesManager, PipeMetadata
 
@@ -77,9 +76,9 @@ class TestPipeConfigOverlay:
 
         assert manager.get_pipe_definition("bronze.ingest_orders").execute is sample_execute
 
-    def test_name_output_type_use_watermark_overridable(self):
+    def test_name_output_type_use_watermark_and_driving_entities_overridable(self):
         manager = make_pipes_manager()
-        register_sample_pipe(manager)
+        register_sample_pipe(manager, input_entity_ids=["raw.orders", "raw.customers"])
         config_service = make_config_service(
             {
                 "datapipes": {
@@ -88,6 +87,7 @@ class TestPipeConfigOverlay:
                         "output_type": "memory",
                         "use_watermark": True,
                         "input_entity_ids": ["raw.orders_v2"],
+                        "driving_entity_ids": ["raw.orders_v2"],
                     }
                 }
             }
@@ -100,6 +100,22 @@ class TestPipeConfigOverlay:
         assert pipe.output_type == "memory"
         assert pipe.use_watermark is True
         assert pipe.input_entity_ids == ["raw.orders_v2"]
+        assert pipe.driving_entity_ids == ["raw.orders_v2"]
+
+    def test_invalid_driving_entities_overlay_raises_with_pipe_id(self):
+        manager = make_pipes_manager()
+        register_sample_pipe(manager, input_entity_ids=["raw.orders", "raw.customers"])
+        config_service = make_config_service(
+            {"datapipes": {"bronze.ingest_orders": {"driving_entity_ids": ["missing.entity"]}}}
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            manager.apply_config_overrides(config_service)
+
+        message = str(exc_info.value)
+        assert "Config overrides" in message
+        assert "bronze.ingest_orders" in message
+        assert "missing.entity" in message
 
     def test_unknown_and_underscore_keys_are_inert(self):
         baseline_manager = make_pipes_manager()
@@ -235,12 +251,23 @@ class TestPipeTagBasedConfigOverlay:
         manager = make_pipes_manager()
         register_sample_pipe(manager, tags={"criticality": "high"})
         config_service = make_config_service(
-            {"datapipes-bytag": {"criticality": {"high": {"output_type": "memory"}}}}
+            {
+                "datapipes-bytag": {
+                    "criticality": {
+                        "high": {
+                            "output_type": "memory",
+                            "driving_entity_ids": ["raw.orders"],
+                        }
+                    }
+                }
+            }
         )
 
         manager.apply_config_overrides(config_service)
 
-        assert manager.get_pipe_definition("bronze.ingest_orders").output_type == "memory"
+        pipe = manager.get_pipe_definition("bronze.ingest_orders")
+        assert pipe.output_type == "memory"
+        assert pipe.driving_entity_ids == ["raw.orders"]
 
     def test_id_glob_pattern_overrides_broader_tag_based_default(self):
         manager = make_pipes_manager()
