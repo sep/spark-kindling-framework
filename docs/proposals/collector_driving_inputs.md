@@ -277,7 +277,7 @@ Known gap: `kindling_ext_sdp` `_build_dataset_function` still streams
 `position == 0` when `stream_first_input` is set (`oss_engine.py:177-181`),
 so a non-default driving declaration is honored by the runner and not by the
 SDP lowering. Fixing that requires deciding open question 4 (`flows` vs
-`fused`), and phase 2 leaves it unchanged. Follow-up bead `kind-9xfq` is
+`fused`), and phase 2 leaves it unchanged. Follow-up bead `kind-9xfq`
 tracks the deferred SDP lowering decision.
 
 ### Collector sugar
