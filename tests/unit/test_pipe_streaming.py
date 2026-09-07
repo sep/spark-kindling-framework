@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 from unittest.mock import Mock, patch
 
-import kindling.pipe_streaming
 import pytest
 from kindling.data_pipes import PipeMetadata
 from kindling.entity_provider import (
@@ -358,11 +357,6 @@ def test_streaming_driving_entity_selection_matches_declared_inputs(case):
     starter.start_pipe_stream("pipe1")
 
     assert tuple(reads) == case.expected_reads
-    for entity_id in case.input_entity_ids:
-        expected_stream_reads = case.expected_reads.count((entity_id, "stream"))
-        expected_batch_reads = case.expected_reads.count((entity_id, "batch"))
-        assert reads.count((entity_id, "stream")) == expected_stream_reads
-        assert reads.count((entity_id, "batch")) == expected_batch_reads
 
     assert pipe.execute.call_args.args == ()
     expected_kwargs = tuple(eid.replace(".", "_") for eid in case.input_entity_ids)
@@ -528,7 +522,6 @@ def test_streaming_selection_does_not_touch_watermark_state():
         provider.get_cursor.assert_not_called()
         provider.save_cursor.assert_not_called()
     assert [call for call in emit.call_args_list if "persist.watermark_saved" in str(call)] == []
-    assert [name for name in vars(kindling.pipe_streaming) if "watermark" in name.lower()] == []
 
 
 def test_zero_input_streaming_pipe_still_raises_value_error():

@@ -78,7 +78,7 @@ exceptional case declare itself. Everything else stays exactly as it is.**
 4. The skip rule becomes "skip when *every* driving read is empty" rather
    than "skip when input 0 is empty".
 5. The streaming starter uses the same field: driving inputs are read as
-   streams and unioned; the rest stay static reads.
+   streams and the rest stay static reads; the pipe body performs the union.
 6. `DataPipes.collector(...)` is optional sugar over (1): a pipe whose
    body unions its driving inputs. A **collector is not a new species of
    pipe or entity** — it is a pipe with more than one driving input.

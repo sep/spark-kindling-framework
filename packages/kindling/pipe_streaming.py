@@ -57,7 +57,8 @@ class SimplePipeStreamStarter(PipeStreamStarter):
         # in ``input_entity_ids`` order and composes them itself -- the
         # starter does not union. Streaming offsets live in Spark's
         # checkpoint, so selection here depends only on declared driving
-        # inputs; see the batch aspect for the corresponding convention.
+        # inputs; see WatermarkAspect (kindling.watermarking) for the full
+        # statement of the convention.
         #
         # Two operational consequences of several driving inputs in one
         # query, documented rather than solved here:
