@@ -1,8 +1,9 @@
 # Multiple Driving Inputs (and Collector Pipes)
 
-**Status:** Phase 1 implemented: batch execution supports declared driving
-inputs, all-driving-input skip decisions, and per-source watermark captures.
-Streaming parity, temporal-chain adoption, and collector sugar remain proposed.
+**Status:** Phases 1 and 3 implemented: batch execution supports declared
+driving inputs, all-driving-input skip decisions, per-source watermark
+captures, and temporal-chain adoption. Streaming parity and collector sugar
+remain proposed.
 
 **Phase 1 usage:** Pass `driving_entity_ids=["bronze.a", "bronze.b"]` on a
 pipe that declares both entities in `input_entity_ids`. With
@@ -322,8 +323,8 @@ which point the two proposals converge on one entity-level opt-in.
 **Phase 2 — streaming parity.** `pipe_streaming.py` reads driving inputs
 as streams and unions them.
 
-**Phase 3 — temporal consumer.** Chain-events body unions per-source
-envelopes (group `base_defs` by `input_entity_id`); delete
+**Phase 3 — temporal consumer.** Implemented. Chain-events body unions
+per-source envelopes (group `base_defs` by `input_entity_id`); delete
 `_multi_source_chain_events_unsupported`, the guard at `chain.py:396-407`,
 `MULTI_SOURCE_ENGINE_CONFIG_KEY`, the `initialize()` plumbing
 (`kindling/__init__.py:80-82`), and the flag on

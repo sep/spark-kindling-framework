@@ -70,8 +70,8 @@ walkthrough is in `docs/guide/temporal_end_to_end.md`.
 declarations) lowers the registered graph into two composite pipes that any
 Kindling engine executes as ordinary pipes:
 
-- `temporal.chain.events.<chainid>` — reads the base events' shared driving
-  entity (watermarked) and the conditions current view; computes base
+- `temporal.chain.events.<chainid>` — reads the base events' driving entities
+  (each watermarked independently) and the conditions current view; computes base
   envelopes, condition boundary passes, and episode-determination events as
   in-memory generation strata, feeding determination events back into
   further condition passes until quiescence (capped by
@@ -87,8 +87,7 @@ engines require), only true boundary inputs carry watermark cursors, and
 determination events derive from the same pre-revision prior state as the
 episode rows. The per-declaration pipes remain registered and independently
 executable; the chain is an alternative lowering over the same metadata.
-Phase-1 constraint: all base events must share one driving input entity
-(normalize heterogeneous sources into a staging entity first).
+Multi-source chains need no staging entity and no engine opt-in.
 
 ## Configuration
 

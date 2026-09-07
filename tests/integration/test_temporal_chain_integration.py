@@ -60,6 +60,7 @@ EVAL_RUN1 = datetime(2026, 7, 14, 12, 30, 0)
 EVAL_RUN2 = datetime(2026, 7, 14, 12, 45, 0)
 
 TELEMETRY_COLUMNS = ["machine_id", "reading_ts", "temperature"]
+TWIN_CHANGE_COLUMNS = ["machine_id", "changed_at", "property_name", "property_value"]
 
 
 def _telemetry_run1(spark):
@@ -75,6 +76,16 @@ def _telemetry_run1(spark):
 
 def _telemetry_run2(spark):
     return spark.createDataFrame([("machine-late", T_END, 80.0)], TELEMETRY_COLUMNS)
+
+
+def _twin_change_run1(spark):
+    return spark.createDataFrame(
+        [
+            ("machine-twin", datetime(2026, 7, 14, 12, 1, 0), "status", "online"),
+            ("machine-firmware", datetime(2026, 7, 14, 12, 2, 0), "firmware", "2.0"),
+        ],
+        TWIN_CHANGE_COLUMNS,
+    )
 
 
 def _conditions_df(spark):
@@ -101,6 +112,41 @@ def _conditions_df(spark):
                 "machine",
                 {
                     "enter_when": "payload['status'] = 'closed'",
+                    "exit_when": "false",
+                },
+                True,
+                valid_from,
+                None,
+            ),
+        ],
+        conditions_schema(),
+    )
+
+
+def _multi_source_conditions_df(spark):
+    from kindling_ext_temporal import conditions_schema
+
+    valid_from = datetime(2026, 7, 14, 11, 0, 0)
+    return spark.createDataFrame(
+        [
+            (
+                "condition.temperature_high",
+                ["telemetry.observed"],
+                "machine",
+                {
+                    "enter_when": "cast(payload['temperature'] as double) > 90",
+                    "exit_when": "cast(payload['temperature'] as double) <= 90",
+                },
+                True,
+                valid_from,
+                None,
+            ),
+            (
+                "condition.twin_status_change",
+                ["twin.changed"],
+                "machine",
+                {
+                    "enter_when": "payload['property_name'] = 'status'",
                     "exit_when": "false",
                 },
                 True,
@@ -171,6 +217,83 @@ def temporal_graph(spark):
             expires_after_seconds=300,
         )
         chain_pipe_ids = declare_temporal_chain()
+
+    return pipe_registry, chain_pipe_ids
+
+
+@pytest.fixture()
+def multi_source_temporal_graph(spark):
+    """Register a two-source chain independently from the single-source fixture."""
+    from kindling.data_entities import DataEntityManager, DataEntityRegistry
+    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
+    from kindling_ext_temporal import (
+        DataEpisodes,
+        DataEvents,
+        SimpleTemporalEntityResolver,
+        TemporalEntityResolver,
+        TemporalEpisodeRegistry,
+        TemporalEpisodeRegistryManager,
+        TemporalEventRegistry,
+        TemporalEventRegistryManager,
+        declare_temporal_chain,
+    )
+
+    DataEvents.reset()
+    DataEpisodes.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    services = _service_get(
+        {
+            TemporalEntityResolver: SimpleTemporalEntityResolver(),
+            TemporalEventRegistry: event_registry,
+            TemporalEpisodeRegistry: episode_registry,
+            DataEntityRegistry: entity_registry,
+            DataPipesRegistry: pipe_registry,
+        }
+    )
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=services):
+
+        @DataEvents.base_event(
+            eventid="telemetry.base",
+            input_entity_id="bronze.telemetry",
+            subject_type="machine",
+            subject_keys=["machine_id"],
+            time_column="reading_ts",
+            event_type="telemetry.observed",
+            payload_columns=["temperature"],
+            source_system="telemetry",
+            use_watermark=True,
+        )
+        def normalize_telemetry(df):
+            return df
+
+        @DataEvents.base_event(
+            eventid="twin_change.base",
+            input_entity_id="bronze.twin_change",
+            subject_type="machine",
+            subject_keys=["machine_id"],
+            time_column="changed_at",
+            event_type="twin.changed",
+            payload_columns=["property_name", "property_value"],
+            source_system="twin-change",
+            use_watermark=True,
+        )
+        def normalize_twin_change(df):
+            return df
+
+        DataEvents.condition_engine(engineid="default")
+        DataEpisodes.episode(
+            episodeid="episode.temperature_high_active",
+            start_event="condition.temperature_high.entered",
+            end_event="condition.temperature_high.exited",
+            subject_type="machine",
+            expires_after_seconds=300,
+        )
+        chain_pipe_ids = declare_temporal_chain("multi")
 
     return pipe_registry, chain_pipe_ids
 
@@ -263,6 +386,88 @@ def test_chain_matches_per_pipe_lowering_and_converges_in_one_run(spark, tempora
         for row in chain_events.select("event_type", "generation").distinct().collect()
     }
     assert generations["condition.thermal_excursion.entered"] == 3
+
+
+def test_chain_unions_base_envelopes_from_multiple_sources(spark, multi_source_temporal_graph):
+    pipe_registry, chain_pipe_ids = multi_source_temporal_graph
+    assert chain_pipe_ids == ["temporal.chain.events.multi", "temporal.chain.episodes.multi"]
+
+    telemetry = _telemetry_run1(spark)
+    twin_change = _twin_change_run1(spark)
+    conditions = _multi_source_conditions_df(spark)
+    chain_events_pipe = pipe_registry.get_pipe_definition(chain_pipe_ids[0])
+    chain_episodes_pipe = pipe_registry.get_pipe_definition(chain_pipe_ids[1])
+
+    events = chain_events_pipe.execute(
+        bronze_telemetry=telemetry,
+        bronze_twin_change=twin_change,
+        silver_conditions_current=conditions,
+        temporal_evaluation_time=EVAL_RUN1,
+        silver_episodes=None,
+    )
+
+    base_rows = events.filter("event_class = 'base'").select(
+        "event_type", "source_system", "subject_id", "event_ts"
+    )
+    base_counts = {}
+    for row in base_rows.collect():
+        key = (row.event_type, row.source_system)
+        base_counts[key] = base_counts.get(key, 0) + 1
+
+    assert base_counts == {
+        ("telemetry.observed", "telemetry"): 3,
+        ("twin.changed", "twin-change"): 2,
+    }
+    assert {
+        (row.subject_id, row.event_ts)
+        for row in base_rows.filter("event_type = 'telemetry.observed'").collect()
+    } == {
+        ("machine-hot", T0),
+        ("machine-hot", T_END),
+        ("machine-late", T0),
+    }
+    assert {
+        (row.subject_id, row.event_ts)
+        for row in base_rows.filter("event_type = 'twin.changed'").collect()
+    } == {
+        ("machine-twin", datetime(2026, 7, 14, 12, 1, 0)),
+        ("machine-firmware", datetime(2026, 7, 14, 12, 2, 0)),
+    }
+
+    event_types = {row.event_type for row in events.select("event_type").collect()}
+    assert "condition.temperature_high.entered" in event_types
+    assert "condition.twin_status_change.entered" in event_types
+    assert "episode.temperature_high_active.closed" in event_types
+
+    episodes = chain_episodes_pipe.execute(
+        silver_events=events,
+        temporal_evaluation_time=EVAL_RUN1,
+        silver_episodes=None,
+    )
+    assert any(
+        row.subject_id == "machine-hot" and row.status == "closed"
+        for row in episodes.select("subject_id", "status").collect()
+    )
+
+    telemetry_only_events = chain_events_pipe.execute(
+        bronze_telemetry=telemetry,
+        bronze_twin_change=None,
+        silver_conditions_current=conditions,
+        temporal_evaluation_time=EVAL_RUN1,
+        silver_episodes=None,
+    )
+    telemetry_only_base = telemetry_only_events.filter("event_class = 'base'").select(
+        "event_type", "source_system"
+    )
+    assert {(row.event_type, row.source_system) for row in telemetry_only_base.collect()} == {
+        ("telemetry.observed", "telemetry")
+    }
+
+    telemetry_only_types = {
+        row.event_type for row in telemetry_only_events.select("event_type").collect()
+    }
+    assert "condition.temperature_high.entered" in telemetry_only_types
+    assert "condition.twin_status_change.entered" not in telemetry_only_types
 
 
 def test_chain_cross_run_revision_with_prior_state(spark, temporal_graph):

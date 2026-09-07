@@ -12,8 +12,9 @@ acyclic single-writer dataset graph (Lakeflow/SDP).
 composite pipes that any Kindling execution engine can run as-is:
 
 ``temporal.chain.events.<chainid>``
-    inputs: the base events' shared driving entity (watermarked) + the
-    conditions current view. Sole writer of the events entity. Its body
+    inputs: the base events' driving entities (each watermarked
+    independently) and the conditions current view. Sole writer of the events
+    entity. Its body
     computes base envelopes, then loops: condition boundary passes over the
     newest stratum, episode-determination events over the accumulated
     union (prior episode state via the existing engine-owned read) — until
@@ -48,19 +49,9 @@ so most apps never need to call either function directly; keep
 ``declare_temporal_chain`` around when you deliberately want both
 lowerings registered side by side (e.g. inspecting one hop in isolation).
 
-Phase-1 constraint: all base events must share one input entity (the
-chain's driving source) UNLESS the active execution engine declares
-``supports_multi_source_temporal_chain`` (see
-``kindling.initialize(engine=...)``/``_load_engine_extension``) — such an
-engine's own declarative lowering re-derives base-event wiring directly
-from the registry instead of running this module's composite pipe body,
-so the single-driving-entity restriction doesn't apply to it. Today only
-``kindling_ext_databricks``'s Lakeflow lowering
-(``temporal_lowering.declare_stratified_temporal``) declares this; it
-lowers each base event to its own native ``append_flow`` into one shared
-stratum-0 streaming table, multi-source natively. On every other engine,
-heterogeneous bronze sources still need to normalize into a shared
-staging entity first.
+Base events may read from any number of input entities. Each source is
+watermarked independently, and the chain body projects each base event's
+envelope from its own source frame before unioning the base stratum.
 """
 
 from collections import Counter
@@ -92,20 +83,6 @@ DEFAULT_MAX_GENERATIONS = 10
 
 AUTOCOLLAPSE_CONFIG_KEY = "kindling.temporal.autocollapse"
 DEFAULT_AUTOCOLLAPSE = True
-
-# Set by kindling.initialize(engine=...) from the active engine extension's
-# supports_multi_source_temporal_chain flag -- see this module's docstring.
-MULTI_SOURCE_ENGINE_CONFIG_KEY = "engine_supports_multi_source_temporal_chain"
-
-
-def _engine_supports_multi_source_chain() -> bool:
-    try:
-        from kindling.spark_config import ConfigService
-
-        value = GlobalInjector.get(ConfigService).get(MULTI_SOURCE_ENGINE_CONFIG_KEY, None)
-    except Exception:  # noqa: BLE001 - config service unavailable in bare tests
-        return False
-    return parse_bool_config(value, default=False)
 
 
 def chain_events_pipe_id(chainid: str) -> str:
@@ -148,7 +125,8 @@ def _resolve_max_generations(entity_dfs: Dict[str, Any]) -> int:
 
 
 def _chain_events_execute(
-    driving_entity_id,
+    chainid,
+    driving_entity_ids,
     conditions_current_id,
     base_defs,
     episode_defs,
@@ -174,14 +152,29 @@ def _chain_events_execute(
     """
 
     def execute(**entity_dfs):
-        driving_key = driving_entity_id.replace(".", "_")
-        try:
-            driving_df = entity_dfs[driving_key]
-        except KeyError as exc:
-            available = ", ".join(sorted(entity_dfs.keys()))
+        source_frames = {}
+        for entity_id in driving_entity_ids:
+            driving_key = entity_id.replace(".", "_")
+            try:
+                frame = entity_dfs[driving_key]
+            except KeyError as exc:
+                available = ", ".join(sorted(entity_dfs.keys()))
+                raise ValueError(
+                    f"Temporal events chain expected input '{driving_key}', got: {available}"
+                ) from exc
+            # Phase-1 convention: an empty watermarked read arrives as None and
+            # contributes no envelopes. Scheduled runs skip before executing
+            # when every driving read is empty.
+            if frame is not None:
+                source_frames[entity_id] = frame
+
+        if not source_frames:
             raise ValueError(
-                f"Temporal events chain expected input '{driving_key}', got: {available}"
-            ) from exc
+                f"Temporal chain '{chainid}': every driving input "
+                f"({', '.join(driving_entity_ids)}) read empty; the chain has "
+                "no base events to compute. A scheduled run skips this pipe "
+                "instead of executing it."
+            )
 
         from .engine import ConditionEngineRunner, EpisodeRunner
         from .validation import (
@@ -191,15 +184,23 @@ def _chain_events_execute(
         )
 
         evaluation_time = TemporalPipeTranslator.resolve_evaluation_time(entity_dfs)
+        ordered_defs = sorted(
+            (metadata for metadata in base_defs if metadata.input_entity_id in source_frames),
+            key=lambda metadata: driving_entity_ids.index(metadata.input_entity_id),
+        )
 
         stratum = _checkpoint(
             _union(
                 [
                     TemporalPipeTranslator.select_event_envelope(
-                        metadata.transform(driving_df) if metadata.transform else driving_df,
+                        (
+                            metadata.transform(source_frames[metadata.input_entity_id])
+                            if metadata.transform
+                            else source_frames[metadata.input_entity_id]
+                        ),
                         metadata,
                     )
-                    for metadata in base_defs
+                    for metadata in ordered_defs
                 ]
             )
         )
@@ -215,7 +216,9 @@ def _chain_events_execute(
                     f"Temporal events chain expected input '{conditions_key}', got: {available}"
                 ) from exc
             validator = TemporalConditionValidator(
-                expression_parser=ActiveSparkSqlExpressionParser(driving_df.sparkSession)
+                expression_parser=ActiveSparkSqlExpressionParser(
+                    next(iter(source_frames.values())).sparkSession
+                )
             )
             table_rules = validator.validate_or_raise(conditions_df.collect()).valid_rules
 
@@ -304,33 +307,6 @@ def _chain_events_execute(
     return execute
 
 
-def _multi_source_chain_events_unsupported(chainid, driving_entities):
-    """Placeholder execute body for a chain registered with >1 driving entity.
-
-    Reachable only when ``_engine_supports_multi_source_chain()`` allowed
-    ``declare_temporal_chain`` to skip the single-driving-entity guard --
-    meaning the active engine's own declarative lowering (e.g.
-    ``kindling_ext_databricks.temporal_lowering.declare_stratified_temporal``)
-    re-derives base-event wiring directly from the registry and never calls
-    this body at all. It exists purely so an accidental non-declarative run
-    of this pipe id (e.g. ``run_datapipes`` instead of
-    ``kindling.declare_pipeline()``) fails with a clear, actionable message
-    instead of a confusing KeyError from ``_chain_events_execute``.
-    """
-
-    def execute(**_entity_dfs):
-        raise RuntimeError(
-            f"Temporal chain '{chainid}' was declared for multiple driving "
-            f"entities ({', '.join(driving_entities)}), which only a "
-            "declarative execution engine that supports "
-            "multi-source temporal chains (e.g. engine='databricks_sdp') can "
-            "run natively. Call kindling.declare_pipeline() for this chain "
-            "instead of run_datapipes()/run_datapipes_dag()."
-        )
-
-    return execute
-
-
 def _chain_episodes_execute(events_entity_id, episode_defs):
     """Build the episodes body: pair every declaration, one merged frame."""
 
@@ -394,18 +370,6 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
         )
 
     driving_entities = sorted({metadata.input_entity_id for metadata in base_defs})
-    multi_source = len(driving_entities) > 1
-    if multi_source and not _engine_supports_multi_source_chain():
-        raise ValueError(
-            f"Temporal chain '{chainid}': base events read from multiple entities "
-            f"({', '.join(driving_entities)}); the chain needs one driving entity "
-            "on this execution engine. Normalize heterogeneous sources into a "
-            "shared staging entity first, or select an execution engine that "
-            "declares supports_multi_source_temporal_chain (e.g. "
-            "kindling.initialize(engine='databricks_sdp')), which lowers each "
-            "base event to its own native flow instead of running this "
-            "module's composite pipe body."
-        )
 
     # A chain with zero declared condition engines still wires the
     # conditions entity unconditionally -- pre-existing behavior, left
@@ -438,17 +402,14 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
     pipe_registry.register_pipe(
         events_pipe,
         name=f"Temporal events chain: {chainid}",
-        execute=(
-            _multi_source_chain_events_unsupported(chainid, driving_entities)
-            if multi_source
-            else _chain_events_execute(
-                driving_entities[0],
-                conditions_current_id,
-                base_defs,
-                episode_defs,
-                has_table_engine=has_table_engine,
-                has_registry_engine=has_registry_engine,
-            )
+        execute=_chain_events_execute(
+            chainid,
+            driving_entities,
+            conditions_current_id,
+            base_defs,
+            episode_defs,
+            has_table_engine=has_table_engine,
+            has_registry_engine=has_registry_engine,
         ),
         tags={
             "pipe_type": "temporal.chain_events",
@@ -458,6 +419,7 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
             "temporal.reads_prior_state": "true",
         },
         input_entity_ids=events_input_entity_ids,
+        driving_entity_ids=list(driving_entities),
         output_entity_id=events_entity.entityid,
         output_type=(events_entity.tags or {}).get("provider_type", "delta"),
         use_watermark=True,

@@ -162,13 +162,10 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch):
 
 
 def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
-    """gh: declare_temporal_chain()'s single-driving-entity guard is scoped
-    to engines that actually run its composite pipe body (see chain.py's
-    supports_multi_source_temporal_chain check) -- this engine's own
-    lowering never runs that body at all, so it must land every base event
-    declaration as its own independent append_flow into one shared
-    stratum-0 streaming table, each reading its own source entity, exactly
-    like the single-entity case above but with N sources instead of one.
+    """The Databricks lowering lands every base event declaration as its
+    own independent append_flow into one shared stratum-0 streaming table,
+    each reading its own source entity, exactly like the single-entity case
+    above but with N sources instead of one.
     """
     from kindling.data_entities import (
         DataEntityManager,
@@ -176,7 +173,6 @@ def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
         EntityNameMapper,
     )
     from kindling.data_pipes import DataPipesManager, DataPipesRegistry
-    from kindling.spark_config import ConfigService
     from kindling_ext_databricks import temporal_lowering
     from kindling_ext_temporal import (
         DataEvents,
@@ -189,13 +185,6 @@ def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
         declare_temporal_chain,
     )
 
-    class _FakeConfigService:
-        def __init__(self, values):
-            self.values = values
-
-        def get(self, key, default=None):
-            return self.values.get(key, default)
-
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
     episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
@@ -204,7 +193,6 @@ def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
     resolver = SimpleTemporalEntityResolver()
 
     name_mapper = SimpleNamespace(get_table_name=lambda entity: f"cat.sch.{entity.entityid}")
-    config_service = _FakeConfigService({"engine_supports_multi_source_temporal_chain": True})
     services = {
         TemporalEntityResolver: resolver,
         TemporalEventRegistry: event_registry,
@@ -212,7 +200,6 @@ def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
         DataEntityRegistry: entity_registry,
         DataPipesRegistry: pipe_registry,
         EntityNameMapper: name_mapper,
-        ConfigService: config_service,
     }
 
     def service_get(dep):
