@@ -10,6 +10,10 @@ All notable changes to spark-kindling are documented here.
   incrementally, with independent source cursors and execution whenever any
   driving input has data. Omission preserves the first-input default; other
   inputs remain full reference reads.
+- Temporal chains can span multiple base-event source entities, with each
+  source watermarked independently. Reverting this after apps adopt
+  multi-source chains would require those apps to normalize sources into a
+  staging entity again.
 
 ### Changed
 
@@ -23,6 +27,12 @@ All notable changes to spark-kindling are documented here.
   composes them. Two consequences of several driving sources in one query:
   it advances at the pace of its slowest source, and adding a source later
   needs a new checkpoint.
+
+### Removed
+
+- Removed the temporal chain multi-source engine attribute, config key, and
+  single-driving-entity restriction. No action is required for downstream
+  engines.
 
 ### Fixed
 

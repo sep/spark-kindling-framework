@@ -1,9 +1,10 @@
 # Multiple Driving Inputs (and Collector Pipes)
 
-**Status:** Phases 1 and 2 implemented: batch execution supports declared
+**Status:** Phases 1, 2, and 3 implemented: batch execution supports declared
 driving inputs, all-driving-input skip decisions, and per-source watermark
-captures; streaming execution reads declared driving inputs as streams.
-Temporal-chain adoption and collector sugar remain proposed.
+captures; streaming execution reads declared driving inputs as streams;
+temporal chains consume multiple base-event sources. Collector sugar
+remains proposed.
 
 **Phase 1 usage:** Pass `driving_entity_ids=["bronze.a", "bronze.b"]` on a
 pipe that declares both entities in `input_entity_ids`. With
@@ -172,7 +173,7 @@ now uses the same declared driving set as the batch runner.
 
 ### The temporal extension already hand-rolls the derived case
 
-`chain.py:396` derives its driving-entity set by scanning
+`chain.py` derives its driving-entity set by scanning
 `TemporalEventRegistry` rather than asking the author to list sources, and
 `collapse_temporal_chain` (`chain.py:514-542`) fuses N registered
 declarations into one composite pipe precisely because the target needs a
@@ -238,16 +239,17 @@ watermark decision — the actual scope of the change.
    data. Reference-input unavailability keeps its current behavior
    (`datapipes.pipe_skipped` / `orchestrator.pipe_skipped`, which already
    discard captures).
-3. **Capture**: `_pending[pipe_id]` becomes `Dict[source_entity_id,
-   cursor]`. The "replacing an existing capture" warning
-   (`watermarking.py:599-612`) applies per source.
-4. **Advance**: `_on_after_persist` pops the map and calls `save_cursor`
-   once per entry. All-or-nothing per run: either the output persisted and
-   every contributing source advances, or nothing does.
-5. **Discard**: persist failure / pipe failure / skip clears the whole
-   map, as today.
-6. **Stale-clear**: `watermarking.py:594`'s `entity.entityid ==
-   input_ids[0]` becomes membership in the driving set.
+3. **Capture**: `_pending[pipe_id]` maps each source entity to its cursor.
+   Unexpected replacement warnings apply per source; a read following a
+   known cursor-save failure is recognized as a retry.
+4. **Advance**: after successful output persistence, `_on_after_persist`
+   saves each source cursor independently. A cursor-save failure is logged
+   and retained for retry while saves for other sources continue. Cursor
+   updates are not a transaction across sources.
+5. **Discard**: persist failure / pipe failure / skip clears all pending
+   captures and failed-save markers for the pipe.
+6. **Stale-clear**: a non-watermarked read clears that driving source's
+   capture; reference reads leave driving captures intact.
 
 At-least-once semantics are unchanged, so a replay re-reads a driving
 slice. Collectors are therefore expected to be idempotent at the target —
@@ -275,8 +277,8 @@ Known gap: `kindling_ext_sdp` `_build_dataset_function` still streams
 `position == 0` when `stream_first_input` is set (`oss_engine.py:177-181`),
 so a non-default driving declaration is honored by the runner and not by the
 SDP lowering. Fixing that requires deciding open question 4 (`flows` vs
-`fused`), and phase 2 leaves it unchanged. Follow-up bead `kind-9xfq` is
-recorded in `docs/builds/kind-a61/decomposition.md`.
+`fused`), and phase 2 leaves it unchanged. Follow-up bead `kind-9xfq`
+tracks the deferred SDP lowering decision.
 
 ### Collector sugar
 
@@ -337,12 +339,11 @@ driving input as a stream, reads references as static inputs, preserves the
 existing kwargs and checkpoint behavior, and leaves the pipe body to perform
 the union.
 
-**Phase 3 — temporal consumer.** Chain-events body unions per-source
-envelopes (group `base_defs` by `input_entity_id`); delete
-`_multi_source_chain_events_unsupported`, the guard at `chain.py:396-407`,
-`MULTI_SOURCE_ENGINE_CONFIG_KEY`, the `initialize()` plumbing
-(`kindling/__init__.py:80-82`), and the flag on
-`DatabricksSdpEngineExtension`.
+**Phase 3 — temporal consumer (implemented).** The chain-events body groups
+base events by source entity, builds per-source envelopes, and unions them.
+Every distinct source is declared as driving in first-registration order.
+The single-source guard and the multi-source engine/config opt-in have been
+removed, including their initialization and Databricks SDP plumbing.
 
 **Phase 4 (optional) — collector sugar.** `DataPipes.collector`.
 
@@ -365,19 +366,19 @@ existing code.
 - Streaming (done): every driving input read as a stream, references static,
   kwargs and checkpoint unchanged, body performs the union.
 - Temporal: the existing multi-source tests
-  (`tests/unit/test_temporal_chain.py:251-400`) invert — multi-source now
-  succeeds with no engine flag; add an execution test that a two-source
-  chain produces envelopes from both.
+  (`tests/unit/test_temporal_chain.py`) verify multi-source declaration
+  without an engine flag, stable source order, and partial-source execution.
+  Integration coverage verifies envelopes from both sources.
 - SDP: a two-driving-input pipe still declares cleanly (one producer, no
   `duplicate_output_entity`).
 
 ## Open questions
 
-1. **Strict vs lenient cursor advance.** Phase 1 specifies all-or-nothing
-   (one persist, all cursors advance together). A lenient variant —
-   advance only the sources whose rows actually landed — is what would let
-   one broken source not hold back the others, but it needs the persist
-   path to report which sources contributed. Defer, or design now?
+1. **Contribution-aware cursor advance.** The implemented behavior saves
+   all captured source cursors after the shared output persists, with
+   independent retries for cursor-save failures. Advancing only sources
+   whose rows actually contributed would require the persist path to
+   report source contributions; that separate policy remains deferred.
 2. **Detecting out-of-contract joins.** Nothing stops a body from joining
    two driving inputs. Options: document only; require an explicit
    `driving_semantics="union"`; or attempt static detection (not
@@ -409,6 +410,6 @@ existing code.
 - `packages/kindling/simple_read_persist_strategy.py:196-201` — persist attribution
 - `packages/extensions/kindling_ext_sdp/kindling_ext_sdp/declaration_engine.py:199-213`, `242-271` — producer map, `duplicate_output_entity`
 - `packages/extensions/kindling_ext_databricks/kindling_ext_databricks/temporal_lowering.py:249-262` — append-flow-per-base-event, working today
-- `packages/extensions/kindling_ext_temporal/kindling_ext_temporal/chain.py:396-407`, `514-542` — the guard, and the fuse it guards
+- `packages/extensions/kindling_ext_temporal/kindling_ext_temporal/chain.py` — multi-source chain declaration and envelope union
 - `docs/proposals/fan_in_upsert_pipes.md` — keyed fan-in flavor
 - `docs/proposals/declarative_pipelines_engine.md` — "Multiple flows into one target"
