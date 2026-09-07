@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.33] - 2026-09-07
+
 ### Added
 
 - Batch pipes can declare `driving_entity_ids` to read multiple inputs
