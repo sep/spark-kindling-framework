@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
@@ -556,6 +556,8 @@ class WatermarkAspect(SignalEmitter):
         self._init_signal_emitter(signal_provider)
         # pipe_id -> source_entity_id -> cursor captured at read time
         self._pending: Dict[str, Dict[str, str]] = {}
+        # Sources deliberately retained after a failed post-persist cursor save.
+        self._failed_saves: Dict[str, Set[str]] = {}
         self._registered = False
 
     def register(self) -> None:
@@ -585,6 +587,11 @@ class WatermarkAspect(SignalEmitter):
         self.logger.debug("WatermarkAspect registered")
 
     def _clear_capture(self, pipe_id: str, source_entity_id: str) -> None:
+        failed_sources = self._failed_saves.get(pipe_id)
+        if failed_sources is not None:
+            failed_sources.discard(source_entity_id)
+            if not failed_sources:
+                self._failed_saves.pop(pipe_id, None)
         pending_sources = self._pending.get(pipe_id)
         if pending_sources is None:
             return
@@ -608,14 +615,11 @@ class WatermarkAspect(SignalEmitter):
         df, cursor = self.wms.read_changes(entity, pipe)
         if cursor is not None:
             pending_sources = self._pending.setdefault(pipe.pipeid, {})
-            if entity.entityid in pending_sources:
-                # Every normal lifecycle path (persist, persist-failure,
-                # pipe-failure, skip, full-refresh) clears the capture, so
-                # finding one for this source here means a prior run crashed without
-                # emitting signals — or two executions of this pipe are
-                # overlapping in this process, which the watermark model
-                # does not support (one cursor per source/reader). See the
-                # class docstring's concurrency contract.
+            retry_after_save_failure = entity.entityid in self._failed_saves.get(pipe.pipeid, set())
+            if entity.entityid in pending_sources and not retry_after_save_failure:
+                # Known cursor-save failures intentionally retain a capture.
+                # Other replacements indicate a missing lifecycle signal or
+                # overlapping executions (unsupported by the watermark model).
                 self.logger.warning(
                     f"Replacing existing pending watermark capture for pipe "
                     f"'{pipe.pipeid}' and source '{entity.entityid}' — prior "
@@ -623,6 +627,15 @@ class WatermarkAspect(SignalEmitter):
                     f"same-pipe executions are overlapping (unsupported). Last "
                     f"capture wins for this source."
                 )
+            if retry_after_save_failure:
+                self.logger.debug(
+                    f"Retrying watermark capture after cursor-save failure for "
+                    f"pipe '{pipe.pipeid}' and source '{entity.entityid}'."
+                )
+                # Consume the retry marker; another read without a lifecycle
+                # event must still trigger the unexpected-replacement warning.
+                self._clear_capture(pipe.pipeid, entity.entityid)
+                pending_sources = self._pending.setdefault(pipe.pipeid, {})
             pending_sources[entity.entityid] = cursor
         else:
             self._clear_capture(pipe.pipeid, entity.entityid)
@@ -636,13 +649,14 @@ class WatermarkAspect(SignalEmitter):
             try:
                 self.wms.save_cursor(source_entity_id, pipe_id, cursor, str(uuid.uuid4()))
             except Exception as exc:
+                self._failed_saves.setdefault(pipe_id, set()).add(source_entity_id)
                 self.logger.exception(
                     f"Failed to save watermark cursor for pipe '{pipe_id}' "
                     f"and source '{source_entity_id}'; leaving capture "
                     f"pending for retry: {exc}"
                 )
                 continue
-            pending_sources.pop(source_entity_id, None)
+            self._clear_capture(pipe_id, source_entity_id)
             try:
                 legacy_version = int(cursor)
             except (TypeError, ValueError):
@@ -661,8 +675,10 @@ class WatermarkAspect(SignalEmitter):
 
     def _on_persist_failed(self, sender, *, pipe_id=None, **kwargs):
         self._pending.pop(pipe_id, None)
+        self._failed_saves.pop(pipe_id, None)
         return None
 
     def _on_pipe_failed(self, sender, *, pipe_id=None, **kwargs):
         self._pending.pop(pipe_id, None)
+        self._failed_saves.pop(pipe_id, None)
         return None

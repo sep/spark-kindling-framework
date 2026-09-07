@@ -261,6 +261,64 @@ class TestHappyPath:
         assert aspect._pending == {}
 
 
+class TestCursorSaveRetryDiagnostics:
+    @pytest.mark.parametrize("retry_cursor", ["7", "8"])
+    def test_retry_read_does_not_warn_but_subsequent_overlap_does(
+        self, aspect, wms, aspect_logger, retry_cursor
+    ):
+        pipe = _pipe()
+        read = dict(entity=_entity(), pipe=pipe, use_watermark=True)
+        aspect._on_resolve_read(None, **read)
+        wms.save_cursor.side_effect = RuntimeError("cursor store unavailable")
+        aspect._on_after_persist(None, pipe_id=pipe.pipeid)
+
+        wms.read_changes.return_value = (MagicMock(name="retry-df"), retry_cursor)
+        aspect._on_resolve_read(None, **read)
+        aspect_logger.warning.assert_not_called()
+        assert aspect._pending == {pipe.pipeid: {"bronze.src": retry_cursor}}
+
+        aspect._on_resolve_read(None, **read)
+        aspect_logger.warning.assert_called_once()
+        wms.save_cursor.side_effect = None
+        aspect._on_after_persist(None, pipe_id=pipe.pipeid)
+        assert wms.save_cursor.call_args.args[2] == retry_cursor
+        assert aspect._pending == {}
+        assert aspect._failed_saves == {}
+
+    @pytest.mark.parametrize(
+        "cleanup",
+        ["persist_success", "persist_failure", "pipe_failure", "full_refresh", "empty_read"],
+    )
+    def test_cleared_retry_does_not_hide_a_later_unexpected_replacement(
+        self, aspect, wms, aspect_logger, cleanup
+    ):
+        pipe = _pipe()
+        read = dict(entity=_entity(), pipe=pipe, use_watermark=True)
+        aspect._on_resolve_read(None, **read)
+        wms.save_cursor.side_effect = RuntimeError("cursor store unavailable")
+        aspect._on_after_persist(None, pipe_id=pipe.pipeid)
+
+        if cleanup == "persist_success":
+            wms.save_cursor.side_effect = None
+            aspect._on_after_persist(None, pipe_id=pipe.pipeid)
+        elif cleanup == "persist_failure":
+            aspect._on_persist_failed(None, pipe_id=pipe.pipeid)
+        elif cleanup == "pipe_failure":
+            aspect._on_pipe_failed(None, pipe_id=pipe.pipeid)
+        elif cleanup == "full_refresh":
+            aspect._on_resolve_read(None, **{**read, "use_watermark": False})
+        else:
+            wms.read_changes.return_value = (None, None)
+            aspect._on_resolve_read(None, **read)
+        assert aspect._failed_saves == {}
+
+        wms.read_changes.return_value = (MagicMock(name="new-df"), "9")
+        aspect._on_resolve_read(None, **read)
+        aspect_logger.warning.assert_not_called()
+        aspect._on_resolve_read(None, **read)
+        aspect_logger.warning.assert_called_once()
+
+
 class TestStalePendingLifecycle:
     """A version captured by a failed execution must never be saved later."""
 

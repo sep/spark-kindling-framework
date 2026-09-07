@@ -15,7 +15,8 @@ All notable changes to spark-kindling are documented here.
 
 - A failed watermark cursor save after a successful output write no longer
   aborts updates for other driving sources or reports the output persist as
-  failed. Failed captures remain pending for retry.
+  failed. Failed captures remain pending for retry; the next read recognizes
+  that retry without emitting a misleading missing-lifecycle warning.
 
 ## [0.12.32] - 2026-08-26
 
