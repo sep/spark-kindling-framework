@@ -124,6 +124,34 @@ def _resolve_max_generations(entity_dfs: Dict[str, Any]) -> int:
     return int(value)
 
 
+def _resolve_source_frames(chainid, driving_entity_ids, entity_dfs):
+    """Map each driving entity id to its non-empty frame for this run."""
+    source_frames = {}
+    for entity_id in driving_entity_ids:
+        driving_key = entity_id.replace(".", "_")
+        try:
+            frame = entity_dfs[driving_key]
+        except KeyError as exc:
+            available = ", ".join(sorted(entity_dfs.keys()))
+            raise ValueError(
+                f"Temporal events chain expected input '{driving_key}', got: {available}"
+            ) from exc
+        # Phase-1 convention: an empty watermarked read arrives as None and
+        # contributes no envelopes. Scheduled runs skip before executing
+        # when every driving read is empty.
+        if frame is not None:
+            source_frames[entity_id] = frame
+
+    if not source_frames:
+        raise ValueError(
+            f"Temporal chain '{chainid}': every driving input "
+            f"({', '.join(driving_entity_ids)}) read empty; the chain has "
+            "no base events to compute. A scheduled run skips this pipe "
+            "instead of executing it."
+        )
+    return source_frames
+
+
 def _chain_events_execute(
     chainid,
     driving_entity_ids,
@@ -135,6 +163,10 @@ def _chain_events_execute(
     has_registry_engine,
 ):
     """Build the events-chain body: strata in memory, one returned frame.
+
+    ``chainid`` identifies the chain in generated pipe ids and diagnostics.
+    ``driving_entity_ids`` is the ordered base-event source list; each source
+    is watermarked independently and may be skipped when its read is empty.
 
     ``conditions_current_id`` is ``None`` for a purely-registry chain (at
     least one condition engine declared, none of them table-sourced) — the
@@ -152,29 +184,7 @@ def _chain_events_execute(
     """
 
     def execute(**entity_dfs):
-        source_frames = {}
-        for entity_id in driving_entity_ids:
-            driving_key = entity_id.replace(".", "_")
-            try:
-                frame = entity_dfs[driving_key]
-            except KeyError as exc:
-                available = ", ".join(sorted(entity_dfs.keys()))
-                raise ValueError(
-                    f"Temporal events chain expected input '{driving_key}', got: {available}"
-                ) from exc
-            # Phase-1 convention: an empty watermarked read arrives as None and
-            # contributes no envelopes. Scheduled runs skip before executing
-            # when every driving read is empty.
-            if frame is not None:
-                source_frames[entity_id] = frame
-
-        if not source_frames:
-            raise ValueError(
-                f"Temporal chain '{chainid}': every driving input "
-                f"({', '.join(driving_entity_ids)}) read empty; the chain has "
-                "no base events to compute. A scheduled run skips this pipe "
-                "instead of executing it."
-            )
+        source_frames = _resolve_source_frames(chainid, driving_entity_ids, entity_dfs)
 
         from .engine import ConditionEngineRunner, EpisodeRunner
         from .validation import (
@@ -215,6 +225,7 @@ def _chain_events_execute(
                 raise ValueError(
                     f"Temporal events chain expected input '{conditions_key}', got: {available}"
                 ) from exc
+            # Driving frames are read through one Spark session for a pipe run.
             validator = TemporalConditionValidator(
                 expression_parser=ActiveSparkSqlExpressionParser(
                     next(iter(source_frames.values())).sparkSession

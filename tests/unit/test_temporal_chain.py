@@ -418,7 +418,13 @@ def test_declare_temporal_chain_multi_source_execute_raises_when_all_sources_non
         chain_module.declare_temporal_chain("t1")
 
         events_pipe = pipe_registry.get_pipe_definition("temporal.chain.events.t1")
-        with pytest.raises(ValueError, match="Temporal chain 't1': every driving input"):
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"Temporal chain 't1': every driving input "
+                r"\(silver\.device_telemetry, silver\.device_twin_change\)"
+            ),
+        ):
             events_pipe.execute(
                 silver_device_telemetry=None,
                 silver_device_twin_change=None,
