@@ -10,12 +10,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-
 from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
 from kindling.injection import GlobalInjector
 from kindling.simple_read_persist_strategy import SimpleReadPersistStrategy
 from kindling.test_framework import RecordingTraceProvider
 from kindling.trace_ops import COMPONENT_PIPES, TracingGates
+
 from tests.conftest import _sockets_permitted
 
 
@@ -138,6 +138,56 @@ class TestPersistReraiseFix:
 
         legacy = [s for s in tp.spans if s.component == "data_utils"]
         assert legacy == [], "Inner data_utils spans were consolidated away"
+        out_provider.merge_to_entity.assert_called_once()
+
+    def test_persist_attribution_uses_first_declared_driving_input_for_span_and_signals(self):
+        dst_entity = Mock(entityid="entity.dst", tags={}, merge_columns=["id"])
+        out_provider = Mock(spec=_MergeWritableProvider)
+        out_provider.check_entity_exists.return_value = True
+
+        der = Mock()
+        der.get_entity_definition.side_effect = lambda eid: {
+            "entity.first": Mock(entityid="entity.first", tags={}),
+            "entity.second": Mock(entityid="entity.second", tags={}),
+            "entity.dst": dst_entity,
+        }[eid]
+        provider_registry = Mock()
+        provider_registry.get_provider_for_entity.return_value = out_provider
+        lp = Mock()
+        lp.get_logger.return_value = Mock()
+
+        tp = RecordingTraceProvider()
+        strategy = SimpleReadPersistStrategy(
+            ep=Mock(),
+            der=der,
+            tp=tp,
+            lp=lp,
+            provider_registry=provider_registry,
+            signal_provider=None,
+        )
+        pipe = Mock(
+            pipeid="pipe1",
+            input_entity_ids=["entity.first", "entity.second"],
+            driving_entity_ids=["entity.second"],
+            output_entity_id="entity.dst",
+        )
+        emitted = []
+
+        def _spy(signal_name, **kwargs):
+            if signal_name.startswith("persist."):
+                emitted.append((signal_name, kwargs))
+            return []
+
+        strategy.emit = _spy
+
+        strategy.create_pipe_persist_activator(pipe)(Mock(name="df"))
+
+        span = tp.find(component=COMPONENT_PIPES, operation="persist")[0]
+        assert span.details["source_entity_id"] == "entity.second"
+        assert [(signal_name, payload["source_entity_id"]) for signal_name, payload in emitted] == [
+            ("persist.before_persist", "entity.second"),
+            ("persist.after_persist", "entity.second"),
+        ]
         out_provider.merge_to_entity.assert_called_once()
 
     def test_persist_span_disabled_when_tracing_off(self):

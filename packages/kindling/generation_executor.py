@@ -1192,10 +1192,7 @@ class GenerationExecutor(SignalEmitter):
         entity_reader = self.persist_strategy.create_pipe_entity_reader(pipe)
         activator = self.persist_strategy.create_pipe_persist_activator(pipe)
 
-        # Read input entities. Driving inputs are read incrementally
-        # (watermarked); the rest are reference data, read in full. Resolved
-        # through the shared helper so this executer and the sequential one
-        # cannot drift on the rule.
+        # Read input entities
         input_entities = {}
         driving = set(resolve_driving_entity_ids(pipe))
         for entity_id in pipe.input_entity_ids:
@@ -1207,7 +1204,6 @@ class GenerationExecutor(SignalEmitter):
                 run_id=run_id,
             )
 
-        # Skip only when EVERY driving read came back empty.
         if driving_reads_all_empty(pipe, input_entities):
             return PipeResult(pipe_id=pipe.pipeid, status="skipped")
 

@@ -30,6 +30,15 @@ from kindling.generation_executor import (
 from kindling.pipe_graph import PipeEdge, PipeGraph, PipeNode
 from kindling.pipe_streaming import SimplePipeStreamStarter
 
+from tests.unit.driving_entity_execution_matrix import (
+    DRIVING_ENTITY_EXECUTION_CASES,
+    assert_driving_entity_execution_case,
+    build_entity_reader_for_case,
+    build_execution_result,
+    build_pipe_for_case,
+    driving_entity_case_id,
+)
+
 # ---- Fixtures ----
 
 
@@ -154,7 +163,14 @@ def executor(
     )
 
 
-def make_pipe(pipe_id, inputs=None, output=None, tags=None, use_watermark=False):
+def make_pipe(
+    pipe_id,
+    inputs=None,
+    output=None,
+    tags=None,
+    use_watermark=False,
+    driving_entity_ids=None,
+):
     """Helper to create a PipeMetadata object."""
     return PipeMetadata(
         pipeid=pipe_id,
@@ -165,6 +181,7 @@ def make_pipe(pipe_id, inputs=None, output=None, tags=None, use_watermark=False)
         output_entity_id=output or f"entity.{pipe_id}",
         output_type="delta",
         use_watermark=use_watermark,
+        driving_entity_ids=driving_entity_ids,
     )
 
 
@@ -447,6 +464,76 @@ class TestBatchExecution:
         reader.assert_called_once()
         assert reader.call_args.args[1] is False
 
+    def test_batch_reads_only_declared_driving_inputs_with_watermark(
+        self, executor, persist_strategy, entity_registry
+    ):
+        """Batch reads use the shared driving input resolver."""
+        pipe = make_pipe(
+            "pipe1",
+            inputs=["entity.a", "entity.b", "entity.c"],
+            output="entity.dst",
+            use_watermark=True,
+            driving_entity_ids=["entity.b"],
+        )
+        entity_registry.get_entity_definition.side_effect = lambda eid: Mock(entityid=eid)
+        read_calls = []
+
+        def reader(entity, use_watermark):
+            read_calls.append((entity.entityid, use_watermark))
+            return Mock()
+
+        persist_strategy.create_pipe_entity_reader.return_value = reader
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        result = executor._execute_pipe_batch(pipe, run_id="run-1")
+
+        assert result.status == "success"
+        assert read_calls == [
+            ("entity.a", False),
+            ("entity.b", True),
+            ("entity.c", False),
+        ]
+
+    def test_no_watermark_reads_all_declared_driving_inputs_in_full(
+        self, executor, pipes_registry, persist_strategy, entity_registry
+    ):
+        """DAG no_watermark=True reads every driving input without watermarking."""
+        pipe = make_pipe(
+            "pipe1",
+            inputs=["entity.src_a", "entity.src_b", "entity.ref"],
+            output="entity.dst",
+            use_watermark=True,
+            driving_entity_ids=["entity.src_a", "entity.src_b"],
+        )
+        pipes_registry.get_pipe_definition.return_value = pipe
+        entity_registry.get_entity_definition.side_effect = lambda entity_id: Mock(
+            entityid=entity_id
+        )
+
+        mock_df = Mock()
+        reader = Mock(return_value=mock_df)
+        persist_strategy.create_pipe_entity_reader.return_value = reader
+        persist_strategy.create_pipe_persist_activator.return_value = Mock()
+
+        plan = make_plan(
+            ["pipe1"],
+            [Generation(number=0, pipe_ids=["pipe1"], dependencies=[])],
+            strategy="batch",
+        )
+
+        result = executor.execute(plan, no_watermark=True)
+
+        assert result.success_count == 1
+        effective_pipe = persist_strategy.create_pipe_entity_reader.call_args.args[0]
+        assert effective_pipe.use_watermark is False
+        assert effective_pipe.driving_entity_ids == ["entity.src_a", "entity.src_b"]
+        assert pipe.use_watermark is True
+        assert [call.args[1] for call in reader.call_args_list] == [
+            False,
+            False,
+            False,
+        ]
+
     def test_multi_generation_batch(
         self, executor, pipes_registry, persist_strategy, entity_registry
     ):
@@ -576,6 +663,37 @@ class TestBatchExecution:
         assert result.skipped_count == 1
         assert result.success_count == 0
         assert result.all_succeeded is True  # skipped counts as succeeded
+
+    @pytest.mark.parametrize(
+        "case",
+        DRIVING_ENTITY_EXECUTION_CASES,
+        ids=driving_entity_case_id,
+    )
+    def test_driving_entity_read_skip_matrix(
+        self, case, executor, persist_strategy, entity_registry
+    ):
+        """DAG batch execution matches the shared driving-input matrix."""
+        pipe, execute, output_frame = build_pipe_for_case(case)
+        read_calls = []
+        entity_reader = build_entity_reader_for_case(case, read_calls)
+        activator = Mock()
+        entity_registry.get_entity_definition.side_effect = lambda eid: Mock(entityid=eid)
+        persist_strategy.create_pipe_entity_reader.return_value = entity_reader
+        persist_strategy.create_pipe_persist_activator.return_value = activator
+
+        pipe_result = executor._execute_pipe_batch(pipe, run_id="run-1")
+
+        result = build_execution_result(
+            pipe_result.status,
+            read_calls,
+            execute,
+            activator,
+        )
+        assert_driving_entity_execution_case(case, result)
+        if pipe_result.status == "success":
+            activator.assert_called_once_with(output_frame)
+        else:
+            activator.assert_not_called()
 
     def test_batch_fail_fast(self, executor, pipes_registry, persist_strategy, entity_registry):
         """Fail fast stops on first error within a generation."""

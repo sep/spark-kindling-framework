@@ -467,8 +467,9 @@ class WatermarkManager(WatermarkService, SignalEmitter):
 class ResolvedRead:
     """Marker returned by a ``read.resolve_read`` handler that has taken
     ownership of the read. ``df`` may be None, meaning "resolved: no new
-    data" (the pipe should skip) — distinct from no handler resolving at
-    all, which falls through to an ordinary full provider read."""
+    data" for one source contributing to the pipe's skip decision — distinct
+    from no handler resolving at all, which falls through to an ordinary full
+    provider read."""
 
     df: Optional[DataFrame]
 
@@ -483,10 +484,10 @@ class WatermarkAspect(SignalEmitter):
     - ``read.resolve_read`` (sync, interdicting): when the read is for a
       pipe's driving source with ``use_watermark`` enabled, this aspect
       performs the incremental changes read and records the **cursor** that
-      read covers, keyed by pipe. The cursor is an opaque, provider-defined
-      incremental position — a Delta table version, a REST provider's
-      created/updated timestamp, queue offsets — which this aspect stores
-      and returns verbatim, never interprets (see
+      read covers, keyed by pipe and source. The cursor is an opaque,
+      provider-defined incremental position — a Delta table version, a REST
+      provider's created/updated timestamp, queue offsets — which this aspect
+      stores and returns verbatim, never interprets (see
       ``IncrementalReadableEntityProvider``).
     - ``persist.after_persist``: advances the watermark to the recorded
       cursor — the cursor that was READ, never re-derived at persist
@@ -502,45 +503,33 @@ class WatermarkAspect(SignalEmitter):
       guard, a non-watermarked read of a pipe's driving source (a
       full-refresh run) also clears any stale capture for that pipe.
     - ``datapipes.pipe_skipped`` / ``orchestrator.pipe_skipped``: a pipe
-      whose driving read produced data can still be skipped when another
-      input is unavailable — nothing persists, so the capture is discarded
-      for the same reason.
+      whose driving reads were all empty never persists, so its captures are
+      discarded for the same reason.
 
     Concurrency contract: **concurrent executions of the same pipe within
     one process are unsupported.** This is inherent to the watermark
     model — there is exactly one cursor per (source, reader), so two
     concurrent incremental executions of one pipe would race on the cursor
     and merge overlapping slices regardless of this aspect's bookkeeping.
-    Pending captures are therefore keyed by pipe id alone; both executers
-    run a pipe at most once per run. If a watermarked capture replaces an
-    existing one (a crashed run that emitted no lifecycle signals, or a
-    genuinely concurrent overlapping run), the aspect logs a warning and
-    last-capture-wins. If concurrent same-pipe execution ever becomes a
-    requirement, the right shape is an execution-scoped token minted at
-    read time and carried through the persist/failure signals — a
-    deliberate future design, not something to approximate here.
+    Pending captures are therefore keyed by pipe id and source id; both
+    executers run a pipe at most once per run. If a watermarked capture
+    replaces an existing one for the same source (a crashed run that emitted
+    no lifecycle signals, or a genuinely concurrent overlapping run), the
+    aspect logs a warning and last-capture-wins for that source. If
+    concurrent same-pipe execution ever becomes a requirement, the right
+    shape is an execution-scoped token minted at read time and carried
+    through the persist/failure signals — a deliberate future design, not
+    something to approximate here.
 
-    Driving-source convention: a pipe's DRIVING inputs are watermarked and
-    every other input is reference data, read in full. By default a pipe
-    has exactly one driving input — its FIRST input entity — and that
-    default is what the overwhelming majority of pipes want. A pipe opts
-    into several incrementally-read inputs by declaring
-    ``driving_entity_ids`` (``kindling.data_pipes``), which is for
-    ADDITIVE/union shapes: many sources appending into one table, where a
-    single writer is required (declarative engines reject duplicate
-    producers) but per-source incrementality still matters. Joining two
-    driving inputs is out of contract — that is the alignment problem the
-    one-driving-source default exists to avoid.
-
-    Captures are therefore keyed (pipe_id, source_entity_id): a pipe with
-    several driving inputs advances several cursors on one persist, which
-    the durable store already supports (exactly one cursor per (source,
-    reader)). Advance is all-or-nothing per run — either the output
-    persisted and every contributing source advances, or none does.
-    (``DataPipesExecuter._populate_source_dict`` and
-    ``GenerationExecutor._execute_pipe_batch`` implement the read side,
-    both resolving membership through
-    ``kindling.data_pipes.is_driving_input``.)
+    Driving-source convention: a pipe declares its source-of-truth inputs
+    with ``driving_entity_ids``; this set is not inferred from position.
+    Omitting ``driving_entity_ids`` resolves to ``[input_entity_ids[0]]``,
+    preserving the single-driving default used by existing pipes. Driving
+    inputs are read incrementally and can capture watermarks; non-driving
+    inputs are reference data read in full. A pipe is skipped only when all
+    driving reads are empty, not when positional input 0 is empty.
+    ``DataPipesExecuter._populate_source_dict`` implements the read side of
+    this convention.
 
     The aspect is registered at bootstrap for non-standalone platforms.
     Local/standalone execution deliberately runs without it: reads fall
@@ -565,9 +554,7 @@ class WatermarkAspect(SignalEmitter):
         self.logger = lp.get_logger("WatermarkAspect")
         self._signals = signal_provider
         self._init_signal_emitter(signal_provider)
-        # pipe_id -> {source_entity_id: cursor} captured at read time. One
-        # entry per DRIVING input, so a pipe declaring several advances
-        # several cursors on one persist.
+        # pipe_id -> source_entity_id -> cursor captured at read time
         self._pending: Dict[str, Dict[str, str]] = {}
         self._registered = False
 
@@ -585,8 +572,8 @@ class WatermarkAspect(SignalEmitter):
             # cannot outlive the execution that captured it.
             ("datapipes.pipe_failed", self._on_pipe_failed),
             ("orchestrator.pipe_failed", self._on_pipe_failed),
-            # A skipped pipe (driving read had data, another input didn't)
-            # never persists — its capture dies with the execution too.
+            # A skipped pipe never persists — its captures die with the
+            # execution too.
             ("datapipes.pipe_skipped", self._on_pipe_failed),
             ("orchestrator.pipe_skipped", self._on_pipe_failed),
         ):
@@ -597,63 +584,65 @@ class WatermarkAspect(SignalEmitter):
         self._registered = True
         self.logger.debug("WatermarkAspect registered")
 
+    def _clear_capture(self, pipe_id: str, source_entity_id: str) -> None:
+        pending_sources = self._pending.get(pipe_id)
+        if pending_sources is None:
+            return
+        pending_sources.pop(source_entity_id, None)
+        if not pending_sources:
+            self._pending.pop(pipe_id, None)
+
     def _on_resolve_read(self, sender, *, entity=None, pipe=None, use_watermark=False, **kwargs):
         if entity is None or pipe is None:
             return None
         if not use_watermark:
-            # A non-watermarked read of one of the pipe's DRIVING sources (a
+            # A non-watermarked read of the pipe's DRIVING source (a
             # full-refresh run, or a pipe with watermarking disabled)
-            # supersedes any version captured for that source by an earlier
-            # failed watermarked execution. Clear it so the persist that
-            # follows this read cannot save a stale watermark. Reference-input
-            # reads (non-driving) must not clear any driving capture, and a
-            # full refresh reads every driving input, so clearing per source
-            # across those reads empties the whole map.
+            # supersedes any version captured by an earlier failed
+            # watermarked execution. Clear it so the persist that follows
+            # this read cannot save a stale watermark. Reference-input
+            # reads (non-driving) must not clear the driving capture.
             if is_driving_input(pipe, entity.entityid):
                 self._clear_capture(pipe.pipeid, entity.entityid)
             return None
         df, cursor = self.wms.read_changes(entity, pipe)
         if cursor is not None:
-            if entity.entityid in self._pending.get(pipe.pipeid, {}):
+            pending_sources = self._pending.setdefault(pipe.pipeid, {})
+            if entity.entityid in pending_sources:
                 # Every normal lifecycle path (persist, persist-failure,
                 # pipe-failure, skip, full-refresh) clears the capture, so
-                # finding one here means a prior run crashed without
+                # finding one for this source here means a prior run crashed without
                 # emitting signals — or two executions of this pipe are
                 # overlapping in this process, which the watermark model
                 # does not support (one cursor per source/reader). See the
                 # class docstring's concurrency contract.
                 self.logger.warning(
                     f"Replacing existing pending watermark capture for pipe "
-                    f"'{pipe.pipeid}' source '{entity.entityid}' — prior "
-                    f"execution ended without a lifecycle signal, or "
-                    f"concurrent same-pipe executions are overlapping "
-                    f"(unsupported). Last capture wins."
+                    f"'{pipe.pipeid}' and source '{entity.entityid}' — prior "
+                    f"execution ended without a lifecycle signal, or concurrent "
+                    f"same-pipe executions are overlapping (unsupported). Last "
+                    f"capture wins for this source."
                 )
-            self._pending.setdefault(pipe.pipeid, {})[entity.entityid] = cursor
+            pending_sources[entity.entityid] = cursor
         else:
             self._clear_capture(pipe.pipeid, entity.entityid)
         return ResolvedRead(df=df)
 
-    def _clear_capture(self, pipe_id: str, source_entity_id: str) -> None:
-        """Drop one source's capture, and the pipe's entry once it is empty."""
-        captures = self._pending.get(pipe_id)
-        if captures is None:
-            return
-        captures.pop(source_entity_id, None)
-        if not captures:
-            self._pending.pop(pipe_id, None)
-
     def _on_after_persist(self, sender, *, pipe_id=None, persist_id=None, **kwargs):
-        # All-or-nothing per run: the output persisted, so every source that
-        # contributed to it advances together. A lenient variant (advance
-        # only the sources whose rows actually landed) would need the persist
-        # path to report per-source contribution — deliberately not designed
-        # here; see docs/proposals/collector_driving_inputs.md, open question 1.
-        pending = self._pending.pop(pipe_id, None)
-        if not pending:
+        pending_sources = self._pending.get(pipe_id)
+        if pending_sources is None:
             return None
-        for source_entity_id, cursor in pending.items():
-            self.wms.save_cursor(source_entity_id, pipe_id, cursor, str(uuid.uuid4()))
+        for source_entity_id, cursor in list(pending_sources.items()):
+            try:
+                self.wms.save_cursor(source_entity_id, pipe_id, cursor, str(uuid.uuid4()))
+            except Exception as exc:
+                self.logger.exception(
+                    f"Failed to save watermark cursor for pipe '{pipe_id}' "
+                    f"and source '{source_entity_id}'; leaving capture "
+                    f"pending for retry: {exc}"
+                )
+                continue
+            pending_sources.pop(source_entity_id, None)
             try:
                 legacy_version = int(cursor)
             except (TypeError, ValueError):
@@ -666,6 +655,8 @@ class WatermarkAspect(SignalEmitter):
                 version=legacy_version,
                 persist_id=persist_id,
             )
+        if not pending_sources:
+            self._pending.pop(pipe_id, None)
         return None
 
     def _on_persist_failed(self, sender, *, pipe_id=None, **kwargs):

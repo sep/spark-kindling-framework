@@ -1,6 +1,24 @@
 # Multiple Driving Inputs (and Collector Pipes)
 
-**Status:** Proposed. No framework or application code changes made yet.
+**Status:** Phase 1 implemented: batch execution supports declared driving
+inputs, all-driving-input skip decisions, and per-source watermark captures.
+Streaming parity, temporal-chain adoption, and collector sugar remain proposed.
+
+**Phase 1 usage:** Pass `driving_entity_ids=["bronze.a", "bronze.b"]` on a
+pipe that declares both entities in `input_entity_ids`. With
+`use_watermark=True`, each driving input is read incrementally; other inputs
+are read in full. Omitting the field retains the first-input default. A
+provided list must be nonempty and contain only declared input IDs. The pipe
+executes when any driving read has data, so its body must handle `None` for
+an empty driving input. Multiple driving inputs are intended for additive
+union/collector transformations; joining independent change slices does not
+provide a complete join. This phase does not change streaming input selection
+or permit multiple writers to the same target.
+
+Cursor saves occur after output persistence and are not a multi-source
+transaction. A failed save is logged and its capture retained while the other
+sources continue; failed/skipped pipe lifecycle events clear pending captures.
+Consumers must retain the existing replay/idempotency assumptions.
 **Created:** 2026-09-03
 **Related:** `fan_in_upsert_pipes.md` (the *keyed* fan-in flavor — different
 merge semantics, different engine support; see "Relationship to keyed
