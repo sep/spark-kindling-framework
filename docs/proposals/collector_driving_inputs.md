@@ -173,7 +173,7 @@ now uses the same declared driving set as the batch runner.
 
 ### The temporal extension already hand-rolls the derived case
 
-`chain.py:396` derives its driving-entity set by scanning
+`chain.py` derives its driving-entity set by scanning
 `TemporalEventRegistry` rather than asking the author to list sources, and
 `collapse_temporal_chain` (`chain.py:514-542`) fuses N registered
 declarations into one composite pipe precisely because the target needs a
@@ -278,7 +278,7 @@ Known gap: `kindling_ext_sdp` `_build_dataset_function` still streams
 so a non-default driving declaration is honored by the runner and not by the
 SDP lowering. Fixing that requires deciding open question 4 (`flows` vs
 `fused`), and phase 2 leaves it unchanged. Follow-up bead `kind-9xfq` is
-recorded in `docs/builds/kind-a61/decomposition.md`.
+tracks the deferred SDP lowering decision.
 
 ### Collector sugar
 

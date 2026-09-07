@@ -15,12 +15,6 @@ All notable changes to spark-kindling are documented here.
   multi-source chains would require those apps to normalize sources into a
   staging entity again.
 
-### Removed
-
-- Removed the temporal chain multi-source engine attribute, config key, and
-  single-driving-entity restriction. No action is required for downstream
-  engines.
-
 ### Changed
 
 - Streaming pipes select their streamed inputs from `driving_entity_ids`:
@@ -33,6 +27,12 @@ All notable changes to spark-kindling are documented here.
   composes them. Two consequences of several driving sources in one query:
   it advances at the pace of its slowest source, and adding a source later
   needs a new checkpoint.
+
+### Removed
+
+- Removed the temporal chain multi-source engine attribute, config key, and
+  single-driving-entity restriction. No action is required for downstream
+  engines.
 
 ### Fixed
 
