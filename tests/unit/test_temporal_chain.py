@@ -289,7 +289,14 @@ def test_declare_temporal_chain_multi_source_succeeds_without_engine_flag():
     assert pipe_ids == ["temporal.chain.events.t1"]
 
 
-def test_declare_temporal_chain_multi_source_declares_every_source_as_driving():
+@pytest.mark.parametrize(
+    "sources",
+    [
+        ["silver.device_telemetry", "silver.device_twin_change"],
+        ["silver.z_source", "silver.a_source", "silver.z_source"],
+    ],
+)
+def test_declare_temporal_chain_multi_source_declares_every_source_as_driving(sources):
     from kindling.data_entities import DataEntityManager
     from kindling.data_pipes import DataPipesManager, resolve_driving_entity_ids
     from kindling_ext_temporal import DataEvents, TemporalEventRegistryManager
@@ -300,9 +307,11 @@ def test_declare_temporal_chain_multi_source_declares_every_source_as_driving():
     entity_registry = DataEntityManager()
     pipe_registry = DataPipesManager(_logger_provider())
 
-    _register_two_base_events_with_different_entities(
-        event_registry, entity_registry, pipe_registry
-    )
+    for index, source in enumerate(sources):
+        _register_base_event(
+            event_registry, entity_registry, pipe_registry, f"base.{index}", source
+        )
+    expected_sources = list(dict.fromkeys(sources))
 
     with patch(
         "kindling.injection.GlobalInjector.get",
@@ -316,19 +325,9 @@ def test_declare_temporal_chain_multi_source_declares_every_source_as_driving():
         pipe_ids = declare_temporal_chain("t1")
 
     events_pipe = pipe_registry.get_pipe_definition("temporal.chain.events.t1")
-    assert events_pipe.input_entity_ids == [
-        "silver.device_telemetry",
-        "silver.device_twin_change",
-        "silver.conditions.current",
-    ]
-    assert events_pipe.driving_entity_ids == [
-        "silver.device_telemetry",
-        "silver.device_twin_change",
-    ]
-    assert resolve_driving_entity_ids(events_pipe) == [
-        "silver.device_telemetry",
-        "silver.device_twin_change",
-    ]
+    assert events_pipe.input_entity_ids == [*expected_sources, "silver.conditions.current"]
+    assert events_pipe.driving_entity_ids == expected_sources
+    assert resolve_driving_entity_ids(events_pipe) == expected_sources
     assert "temporal.chain.events.t1" in pipe_ids
 
 

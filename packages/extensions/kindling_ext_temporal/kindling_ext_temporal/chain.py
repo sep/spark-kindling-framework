@@ -380,7 +380,7 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
             "DataEvents.base_event(...) before declaring the chain."
         )
 
-    driving_entities = sorted({metadata.input_entity_id for metadata in base_defs})
+    driving_entities = list(dict.fromkeys(metadata.input_entity_id for metadata in base_defs))
 
     # A chain with zero declared condition engines still wires the
     # conditions entity unconditionally -- pre-existing behavior, left

@@ -21,6 +21,19 @@ All notable changes to spark-kindling are documented here.
   single-driving-entity restriction. No action is required for downstream
   engines.
 
+### Changed
+
+- Streaming pipes select their streamed inputs from `driving_entity_ids`:
+  every declared driving input is read as a stream and every other input
+  stays a full reference read, so one declaration means the same thing in
+  batch and in streaming. Omitting the field preserves the first-input
+  default. A pipe still runs as one query against one checkpoint
+  (`{checkpoint_root}/{pipeid}`), with Spark tracking per-source offsets
+  inside it, and the pipe body still receives one frame per input and
+  composes them. Two consequences of several driving sources in one query:
+  it advances at the pace of its slowest source, and adding a source later
+  needs a new checkpoint.
+
 ### Fixed
 
 - A failed watermark cursor save after a successful output write no longer
