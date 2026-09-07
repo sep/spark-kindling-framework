@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from typing import Optional, Tuple
 from unittest.mock import Mock, patch
 
 import pytest
@@ -208,6 +210,183 @@ def _make_starter(dst_entity, out_provider):
     }[entity.entityid]
 
     return SimplePipeStreamStarter(cs, dpr, provider_registry, der, epl, plp), pipe
+
+
+def _make_selection_starter(
+    input_entity_ids, driving_entity_ids=None, non_streamable_entity_ids=()
+):
+    """Build a starter that records each input's stream-vs-batch read path."""
+    cs = Mock()
+    cs.get.side_effect = lambda key: (
+        "/checkpoints" if key == "kindling.storage.checkpoint_root" else None
+    )
+    dpr = Mock()
+    der = Mock()
+    provider_registry = Mock()
+    epl = Mock()
+    plp = Mock()
+    plp.get_logger.return_value = Mock()
+
+    frames = {
+        entity_id: Mock(name=f"{entity_id.replace('.', '_')}_frame")
+        for entity_id in input_entity_ids
+    }
+    reads = []
+    non_streamable = set(non_streamable_entity_ids)
+
+    pipe = PipeMetadata(
+        pipeid="pipe1",
+        name="pipe1",
+        execute=Mock(return_value=Mock(name="transformed_stream")),
+        tags={},
+        input_entity_ids=list(input_entity_ids),
+        output_entity_id="entity.dst",
+        output_type="delta",
+        driving_entity_ids=(list(driving_entity_ids) if driving_entity_ids is not None else None),
+    )
+    dpr.get_pipe_definition.return_value = pipe
+
+    input_entities = {
+        entity_id: Mock(entityid=entity_id, tags={"provider_type": "delta"})
+        for entity_id in input_entity_ids
+    }
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={
+            "provider_type": "delta",
+            "provider.access_mode": "catalog",
+            "provider.table_name": "main.analytics.entity_dst",
+        },
+        merge_columns=[],
+    )
+    entities = {**input_entities, "entity.dst": dst_entity}
+    der.get_entity_definition.side_effect = lambda eid: entities[eid]
+
+    def read_stream(entity):
+        reads.append((entity.entityid, "stream"))
+        return frames[entity.entityid]
+
+    def read_batch(entity):
+        reads.append((entity.entityid, "batch"))
+        return frames[entity.entityid]
+
+    input_providers = {}
+    for entity_id in input_entity_ids:
+        if entity_id in non_streamable:
+            provider = Mock()
+        else:
+            provider = Mock(spec=StreamableEntityProvider)
+            provider.read_entity_as_stream.side_effect = read_stream
+        provider.read_entity = Mock(side_effect=read_batch)
+        input_providers[entity_id] = provider
+
+    out_provider = Mock(spec=StreamWritableEntityProvider)
+    writer = Mock()
+    writer.toTable.return_value = Mock(id="q-selection")
+
+    def append_as_stream(df, entity, checkpoint_path):
+        return writer
+
+    out_provider.append_as_stream.side_effect = append_as_stream
+
+    providers = {**input_providers, "entity.dst": out_provider}
+    provider_registry.get_provider_for_entity.side_effect = lambda entity: providers[
+        entity.entityid
+    ]
+
+    starter = SimplePipeStreamStarter(cs, dpr, provider_registry, der, epl, plp)
+    return starter, pipe, reads, frames, out_provider
+
+
+@dataclass(frozen=True)
+class _StreamingSelectionCase:
+    case_id: str
+    input_entity_ids: Tuple[str, ...]
+    driving_entity_ids: Optional[Tuple[str, ...]]
+    expected_reads: Tuple[Tuple[str, str], ...]
+
+
+_STREAMING_SELECTION_CASES = (
+    _StreamingSelectionCase(
+        case_id="default_first_input",
+        input_entity_ids=("source.orders", "reference.customers"),
+        driving_entity_ids=None,
+        expected_reads=(
+            ("source.orders", "stream"),
+            ("reference.customers", "batch"),
+        ),
+    ),
+    _StreamingSelectionCase(
+        case_id="two_declared_driving_inputs_plus_reference",
+        input_entity_ids=("source.orders", "source.lines", "reference.customers"),
+        driving_entity_ids=("source.orders", "source.lines"),
+        expected_reads=(
+            ("source.orders", "stream"),
+            ("source.lines", "stream"),
+            ("reference.customers", "batch"),
+        ),
+    ),
+    _StreamingSelectionCase(
+        case_id="declared_driving_input_not_first",
+        input_entity_ids=("reference.calendar", "source.orders"),
+        driving_entity_ids=("source.orders",),
+        expected_reads=(
+            ("reference.calendar", "batch"),
+            ("source.orders", "stream"),
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "case",
+    _STREAMING_SELECTION_CASES,
+    ids=lambda case: case.case_id,
+)
+def test_streaming_driving_entity_selection_matches_declared_inputs(case):
+    starter, pipe, reads, frames, out_provider = _make_selection_starter(
+        case.input_entity_ids, driving_entity_ids=case.driving_entity_ids
+    )
+
+    starter.start_pipe_stream("pipe1")
+
+    assert tuple(reads) == case.expected_reads
+    for entity_id in case.input_entity_ids:
+        expected_stream_reads = case.expected_reads.count((entity_id, "stream"))
+        expected_batch_reads = case.expected_reads.count((entity_id, "batch"))
+        assert reads.count((entity_id, "stream")) == expected_stream_reads
+        assert reads.count((entity_id, "batch")) == expected_batch_reads
+
+    assert pipe.execute.call_args.args == ()
+    expected_kwargs = tuple(eid.replace(".", "_") for eid in case.input_entity_ids)
+    assert tuple(pipe.execute.call_args.kwargs) == expected_kwargs
+    for entity_id in case.input_entity_ids:
+        assert pipe.execute.call_args.kwargs[entity_id.replace(".", "_")] is frames[entity_id]
+
+    out_provider.append_as_stream.assert_called_once()
+    assert out_provider.append_as_stream.call_args.args[2] == "/checkpoints/pipe1"
+
+
+def test_declared_driving_input_not_first_is_streamed(recwarn):
+    starter, pipe, reads, frames, _ = _make_selection_starter(
+        ("reference.calendar", "source.orders"),
+        driving_entity_ids=("source.orders",),
+    )
+
+    starter.start_pipe_stream("pipe1")
+
+    assert tuple(reads) == (
+        ("reference.calendar", "batch"),
+        ("source.orders", "stream"),
+    )
+    assert pipe.execute.call_args.args == ()
+    assert tuple(pipe.execute.call_args.kwargs) == (
+        "reference_calendar",
+        "source_orders",
+    )
+    assert pipe.execute.call_args.kwargs["reference_calendar"] is frames["reference.calendar"]
+    assert pipe.execute.call_args.kwargs["source_orders"] is frames["source.orders"]
+    assert list(recwarn) == []
 
 
 def test_merge_columns_route_to_merge_as_stream_when_provider_supports_merge():
