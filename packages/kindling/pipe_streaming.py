@@ -47,32 +47,64 @@ class SimplePipeStreamStarter(PipeStreamStarter):
         if not pipe.input_entity_ids:
             raise ValueError(f"Streaming pipe '{pipeid}' has no input entities")
 
-        # Convention:
-        # - first input entity is streaming input
-        # - remaining input entities are direct (batch/static) reads for joins/lookups
-        input_entity = self.der.get_entity_definition(pipe.input_entity_ids[0])
-        output_entity = self.der.get_entity_definition(pipe.output_entity_id)
+        # Driving-source convention: a pipe declares its source-of-truth
+        # inputs with ``driving_entity_ids``; this set is not inferred from
+        # position. Omitting ``driving_entity_ids`` resolves to the first
+        # declared input, preserving the single-driving default used by
+        # existing streaming pipes. Driving inputs are read as
+        # streams; every other input is reference data read in full
+        # (stream-static joins). The pipe body receives one kwarg per input
+        # in ``input_entity_ids`` order and composes them itself -- the
+        # starter does not union. Streaming offsets live in Spark's
+        # checkpoint, so selection here depends only on declared driving
+        # inputs; see the batch aspect for the corresponding convention.
+        #
+        # Two operational consequences of several driving inputs in one
+        # query, documented rather than solved here:
+        # - The query advances at the pace of its slowest source: Spark's
+        #   global event-time progress is the minimum across sources.
+        # - Adding a driving input later changes the query's source list,
+        #   which an existing checkpoint cannot absorb cleanly; the query
+        #   needs a new checkpoint, and replay into the sink has to be
+        #   reasoned about.
+        # Where per-source independence matters more than a single query,
+        # the `flows` shape (N contributor pipes, engine-native) is the
+        # better lowering -- see docs/proposals/collector_driving_inputs.md.
+        driving_entity_ids = set(resolve_driving_entity_ids(pipe))
 
-        # Resolve providers via registry based on entity tags
-        input_provider = self.provider_registry.get_provider_for_entity(input_entity)
+        input_entities = {}
+        input_providers = {}
+        for entity_id in pipe.input_entity_ids:
+            entity = self.der.get_entity_definition(entity_id)
+            input_entities[entity_id] = entity
+            input_providers[entity_id] = self.provider_registry.get_provider_for_entity(entity)
+
+        output_entity = self.der.get_entity_definition(pipe.output_entity_id)
         output_provider = self.provider_registry.get_provider_for_entity(output_entity)
 
-        # Read input as stream (provider knows its own format)
-        if not is_streamable(input_provider):
-            raise TypeError(
-                f"Input provider for entity '{input_entity.entityid}' "
-                f"(type={input_entity.tags.get('provider_type')}) "
-                f"does not support streaming reads"
-            )
-        stream = input_provider.read_entity_as_stream(input_entity)
-        input_entity_frames = {pipe.input_entity_ids[0].replace(".", "_"): stream}
+        # Check every driving provider before opening any stream: a pipe with
+        # one undeliverable driving declaration must not leave a half-built
+        # plan or an opened stream behind.
+        for entity_id in pipe.input_entity_ids:
+            if entity_id not in driving_entity_ids:
+                continue
+            entity = input_entities[entity_id]
+            if not is_streamable(input_providers[entity_id]):
+                raise TypeError(
+                    f"Input provider for entity '{entity.entityid}' "
+                    f"(type={entity.tags.get('provider_type')}) "
+                    f"does not support streaming reads"
+                )
 
-        for static_entity_id in pipe.input_entity_ids[1:]:
-            static_entity = self.der.get_entity_definition(static_entity_id)
-            static_provider = self.provider_registry.get_provider_for_entity(static_entity)
-            input_entity_frames[static_entity_id.replace(".", "_")] = static_provider.read_entity(
-                static_entity
-            )
+        input_entity_frames = {}
+        for entity_id in pipe.input_entity_ids:
+            entity = input_entities[entity_id]
+            provider = input_providers[entity_id]
+            if entity_id in driving_entity_ids:
+                frame = provider.read_entity_as_stream(entity)
+            else:
+                frame = provider.read_entity(entity)
+            input_entity_frames[entity_id.replace(".", "_")] = frame
 
         # Transform
         # Prefer kwargs execution (consistent with batch pipe execution), but keep
@@ -84,7 +116,7 @@ class SimplePipeStreamStarter(PipeStreamStarter):
             if len(input_entity_frames) != 1:
                 raise
             try:
-                transformed_stream = pipe.execute(stream)
+                transformed_stream = pipe.execute(next(iter(input_entity_frames.values())))
             except TypeError:
                 # Preserve the more-informative kwargs failure.
                 raise kw_err
