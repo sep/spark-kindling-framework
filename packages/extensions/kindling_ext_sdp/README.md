@@ -71,8 +71,18 @@ See:
 
 ## Output dataset naming
 
-Configure names within the pipeline's target catalog/schema independently
-of logical entity IDs and external table resolution:
+Pipeline-local dataset names are single-part identifiers within the pipeline's
+target catalog/schema. By default they now project the shared table naming
+policy used by the runtime resolver:
+
+```yaml
+kindling:
+  storage:
+    table_naming: leaf
+    table_schema: cwmdp
+```
+
+An explicit SDP-only setting is still supported:
 
 ```yaml
 kindling:
@@ -82,16 +92,24 @@ kindling:
 
 | Mode | Logical entity ID | Emitted dataset name |
 |---|---|---|
-| `normalized` (default) | `silver.device_telemetry` | `silver_device_telemetry` |
+| `normalized` / `legacy` | `silver.device_telemetry` | `silver_device_telemetry` |
 | `leaf` | `silver.device_telemetry` | `device_telemetry` |
 
 Both modes replace hyphens with underscores. Config values ignore surrounding
-whitespace and case; an omitted or null value uses `normalized`. Unknown modes
-are reported alongside other declaration validation errors.
+whitespace and case. When `kindling.sdp.dataset_naming` is omitted or null,
+`declare_pipeline()` projects `kindling.storage.table_naming`: `leaf` stays
+`leaf`, while absent policy, `legacy`, and `normalized` emit normalized names.
+Unknown modes are reported alongside other declaration validation errors.
 The setting is resolved by `declare_pipeline()` after configuration overlays
 and applies to both `sdp` and `databricks_sdp`. Direct engine constructors
 accept `dataset_naming="leaf"`; `DatasetNameMapper` implements the shared
 pipeline-local naming strategy.
+
+Per-entity `provider.table_naming` tags can override the shared global policy.
+If an explicit `kindling.sdp.dataset_naming` disagrees with the shared policy
+or a per-entity tag, validation raises `naming_policy_conflict`. Set
+`kindling.sdp.dataset_naming_divergence: intentional` only when the pipeline
+local name is deliberately different from the external table naming policy.
 
 Names must be unique (case-insensitively) among selected outputs in one
 declaration plan. Use `kindling.declare_pipeline(pipe_ids=[...])` to select
@@ -99,37 +117,37 @@ the pipes belonging to each resource. Separate bronze and silver resources
 can each emit `device_telemetry`; selecting both same-leaf outputs in one
 resource fails before emission with the conflicting entity and pipe IDs.
 
-Internal batch/stream reads use these single-part names. External reads
-retain their existing resolver behavior; this setting does not change
-`EntityNameMapper`, `provider.table_catalog`, logical IDs, or pipe function
-argument names. It does not choose the pipeline's catalog/schema.
-
-
-### Reading leaf-named outputs from elsewhere
-
-Enabling `leaf` does not change the consumer's `EntityNameMapper`. With
-catalog `dev_silver` and schema `cwmdp` configured, that mapper still resolves
-`silver.device_telemetry` to `dev_silver.cwmdp.silver_device_telemetry`,
-while the leaf-mode pipeline writes `dev_silver.cwmdp.device_telemetry`.
-Align the consumer's entity metadata explicitly:
+Internal batch/stream reads use these single-part names. With an explicit
+shared naming policy configured, external reads are resolved through the
+injected `EntityNameMapper`, so a consumer reads the same external name that
+the producer writes:
 
 ```yaml
+kindling:
+  storage:
+    table_naming: leaf
+    table_schema: cwmdp
+
 dataentities:
-  silver.device_telemetry:
+  "silver.**":
     tags:
-      provider.table_name: dev_silver.cwmdp.device_telemetry
+      provider.table_catalog: dev_silver
 ```
 
-`provider.table_name` is a complete override: supply the fully qualified name;
-it takes precedence over `provider.table_catalog` and `provider.table_schema`.
-The pipeline continues to declare the single-part name `device_telemetry`.
-Use corresponding overrides for other entities and resource destinations.
+Here `silver.device_telemetry` declares the pipeline-local dataset
+`device_telemetry` and resolves external reads/writes as
+`dev_silver.cwmdp.device_telemetry`. With no shared table-naming policy
+configured, external reads keep the historical bare logical-ID behavior.
+
+`provider.table_name` remains a complete external override: supply the fully
+qualified name when one entity is an exception. It takes precedence over
+`provider.table_catalog`, `provider.table_schema`, and table naming policy, but
+the pipeline continues to declare a single-part dataset name.
 
 Temporal chain base-event sources currently always use external table
 resolution, even if a producing pipe is selected in the same pipeline.
-Keep those sources in an upstream resource and align their external names as
-above; producing a source in the same resource does not establish a local
-temporal dependency.
+Keep those sources in an upstream resource; producing a source in the same
+resource does not establish a local temporal dependency.
 
 ### Generated dataset names
 

@@ -104,7 +104,9 @@ These keys are used by the config-driven `EntityNameMapper`/`EntityPathLocator` 
 - `kindling.storage.table_catalog`: Default catalog for `catalog` access mode tables (when the engine supports catalogs). Leave unset for Hive metastore-only Databricks workspaces.
 - `kindling.storage.table_schema`: Default schema/database for `catalog` access mode tables.
 - `kindling.storage.table_schema_location`: Optional schema/database LOCATION for engines that require it for managed table creation (notably Synapse). When set, Kindling may `CREATE SCHEMA IF NOT EXISTS ... LOCATION ...` as a best-effort convenience before name-based table writes.
-- `kindling.storage.table_name_prefix`: Optional prefix added to the generated leaf table name.
+- `kindling.storage.table_naming`: Declarative table-component policy: `legacy` (default when unset), `normalized`, or `leaf`. `legacy` preserves the conditional resolver branches listed below; `normalized` flattens the full logical entity ID; `leaf` uses only the final dot segment. Dots and hyphens become underscores.
+- `kindling.storage.table_name_prefix`: Optional prefix added by the external resolver when composing table names. It is not part of the shared table-component derivation and is not applied to SDP/Lakeflow pipeline-local dataset names.
+- `kindling.storage.collision_check`: External-address collision validation scope: `off` (default), `pipeline`, or `registry`. The check is metadata-only and opt-in.
 - `kindling.storage.table_root`: Default path root for `storage` access mode entities (default `Tables`).
 - `kindling.storage.checkpoint_root`: Default checkpoint root used by system test apps (common default `Files/checkpoints`).
 - `kindling.databricks.volume_staging_root`: Optional Databricks-specific governed staging root for bootstrap wheel/config temp files. When omitted, Databricks bootstrap will try to derive a volume-backed staging root from `kindling.storage.checkpoint_root` or `kindling.storage.table_root` before falling back to DBFS.
@@ -113,8 +115,62 @@ Per-entity tags (highest precedence, override all of the above):
 
 - `provider.table_catalog` / `provider.table_schema`: Explicit catalog/schema override for a single entity.
 - `provider.table_name`: Full table-name override, bypassing catalog/schema resolution entirely.
+- `provider.table_naming`: Per-entity table-component policy using the same `legacy` | `normalized` | `leaf` vocabulary as `kindling.storage.table_naming`; this overrides the global policy.
+- `provider.table_alias_of`: Logical entity ID intentionally sharing an external table address with this entity. `kindling.storage.collision_check` excludes the alias when it points to another member of the same resolved address group.
 
-These tags can be set directly on an entity's `tags=`, or assigned to a whole family of entities by tag value via `dataentities-bytag:` (see "Tag-Based Config Overrides" below) — e.g. tagging every `tier: bronze` entity with `provider.table_catalog: dev_bronze` without needing an entityid naming convention.
+These tags can be set directly on an entity's `tags=`, assigned by id glob through `dataentities:`, or assigned to a whole family of entities by tag value via `dataentities-bytag:` (see "Tag-Based Config Overrides" below) — e.g. tagging every `tier: bronze` entity with `provider.table_catalog: dev_bronze` without needing an entityid naming convention.
+
+`provider.table_name` is terminal: when set, Kindling uses that exact external table name and ignores catalog/schema and table-naming derivation for the external address. Without a full override, precedence is `provider.table_naming` > `kindling.storage.table_naming` > legacy resolver behavior.
+
+Legacy resolver behavior is a set of conditional compatibility branches, not a uniform normalization rule: (a) full `provider.table_name` is returned verbatim; (b) no storage namespace treats two- and three-part logical IDs as already qualified; (c) configured schema flattens the whole logical ID below that schema; (d) configured catalog without schema layers the catalog onto the logical ID's own dot structure; and (e) no resolved catalog/schema flattens the bare leaf. These branches remain the default when the new policy key is absent or explicitly `legacy`.
+
+Worked tier-placement example:
+
+```yaml
+kindling:
+  storage:
+    table_naming: leaf
+    table_schema: cwmdp
+
+dataentities:
+  "bronze.**":
+    tags:
+      provider.table_catalog: dev_bronze
+  "silver.**":
+    tags:
+      provider.table_catalog: dev_silver
+  "gold.**":
+    tags:
+      provider.table_catalog: dev_gold
+  "reference.**":
+    tags:
+      provider.table_catalog: ${REFERENCE_CATALOG}
+```
+
+With that policy, `silver.device_telemetry` resolves externally as `dev_silver.cwmdp.device_telemetry`, not `dev_silver.cwmdp.silver_device_telemetry`. The reference tier uses the same `provider.table_catalog` tag with an operator-supplied value, typically from a Bundle/environment variable; Kindling does not define a separate reference-catalog key.
+
+Equivalent tag-rule formulation:
+
+```yaml
+dataentities-bytag:
+  tier:
+    bronze:
+      tags:
+        provider.table_catalog: dev_bronze
+        provider.table_naming: leaf
+    silver:
+      tags:
+        provider.table_catalog: dev_silver
+        provider.table_naming: leaf
+    gold:
+      tags:
+        provider.table_catalog: dev_gold
+        provider.table_naming: leaf
+    reference:
+      tags:
+        provider.table_catalog: ${REFERENCE_CATALOG}
+        provider.table_naming: leaf
+```
 
 ### Tag-Based Config Overrides
 
@@ -250,6 +306,10 @@ Provider configuration is driven by entity tags. Tags with the `provider.` prefi
 Common tags:
 
 - `provider_type`: Provider selector (for example `delta`, `csv`, `eventhub`, `memory`).
+- `provider.table_catalog` / `provider.table_schema`: Per-entity external catalog/schema placement.
+- `provider.table_name`: Complete external table-name override.
+- `provider.table_naming`: Per-entity table-component policy: `legacy`, `normalized`, or `leaf`.
+- `provider.table_alias_of`: Intentional external-address alias for opt-in collision validation.
 
 ### Delta Provider (`provider_type: delta`)
 
@@ -367,15 +427,27 @@ Streaming writes:
 
 ## SDP and Databricks Lakeflow
 
-- `kindling.sdp.dataset_naming`: `normalized` (default) or `leaf`.
+- `kindling.sdp.dataset_naming`: `normalized`, `leaf`, or `legacy` (projected to `normalized`).
   Controls single-part pipeline output names and internal references for
-  both `engine="sdp"` and `engine="databricks_sdp"`. `normalized` turns
-  `silver.device_telemetry` into `silver_device_telemetry`; `leaf` emits
-  `device_telemetry`. Both normalize hyphens to underscores. Configuration
-  values ignore surrounding whitespace and case; null uses the default.
-  External `EntityNameMapper` resolution remains independent. See the
+  both `engine="sdp"` and `engine="databricks_sdp"`. When omitted or null,
+  SDP projects the shared `kindling.storage.table_naming` policy: `leaf`
+  emits `device_telemetry`, while `legacy`, `normalized`, or an absent shared
+  policy emits `silver_device_telemetry`. Configuration values ignore
+  surrounding whitespace and case.
+- `kindling.sdp.dataset_naming_divergence`: `error` (default) or
+  `intentional`. With `error`, an explicit `kindling.sdp.dataset_naming`
+  value that disagrees with the shared policy or an entity's
+  `provider.table_naming` is reported as `naming_policy_conflict`. Use
+  `intentional` only when a pipeline-local name is deliberately different
+  from the external table naming policy.
+  Pipeline-local declarations and in-pipeline reads are always single-part;
+  full external `provider.table_name` overrides never emit multipart dataset
+  names. When an explicit shared naming policy is configured, SDP external
+  reads resolve through the injected `EntityNameMapper` so consumers read the
+  same external name producers write. With no shared policy configured,
+  external reads keep the historical bare logical-ID behavior. See the
   [SDP extension documentation](../../packages/extensions/kindling_ext_sdp/README.md#output-dataset-naming)
-  for consumer alignment, resource scoping, and generated-name reservations.
+  for resource scoping, generated-name reservations, and external-read behavior.
 - `spark.kindling.bootstrap.config_files`: Canonical Databricks Lakeflow
   pipeline `configuration:` key for explicit settings files. It maps through
   the shared SparkConf ingestion path to bootstrap `config_files`; use a JSON
