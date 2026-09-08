@@ -1,11 +1,35 @@
 # Lakeflow Structured Configuration
 
-**Status:** Accepted for implementation.
+**Status:** Superseded.
 **Created:** 2026-09-08
+**Superseded:** 2026-09-08 by the Lakeflow canonical-configuration
+correction (`fix/lakeflow-canonical-config`).
 **Related:** `package_config_architecture.md`,
 `docs/guide/dab_config_promotion.md`,
 `docs/guide/lakeflow_app_selection.md`,
 `docs/contributing/databricks_execution_contract.md`.
+
+## Superseding Correction
+
+This proposal correctly identified the need to carry structured
+`dataentities:` / `datapipes:` configuration into Lakeflow and the evidence that
+literal dotted entity IDs must survive configuration loading. Its implementation
+conclusion was wrong: Lakeflow should not own a separate config key, list
+parser, YAML pre-parser, section validator, or file-access path.
+
+Current guidance is to use Kindling's canonical configuration lifecycle:
+`spark.kindling.bootstrap.config_files` for explicit settings files, or
+`spark.kindling.bootstrap.artifacts_storage_path` with
+`spark.kindling.bootstrap.environment` and
+`spark.kindling.bootstrap.workspace_id` for discovered hierarchy loading. The
+selector sets `declaration_only=true`, supplies the selected `app_name` to
+`kindling.initialize()`, and leaves parsing, validation, precedence, and
+structured overlays to shared bootstrap/Dynaconf code.
+
+Probe A below is now treated as the shared `_merge_dotted_key()` defect: mapping
+payload keys must stay literal, while top-level dotted bootstrap paths still
+split. Probes B-D remain useful evidence, but no longer justify a
+Lakeflow-specific transport or parser.
 
 ## Problem
 
@@ -98,9 +122,12 @@ new merge path.
 | OPT-003 | `kindling.lakeflow.config_resource`: a package resource such as `my_app:config/lakeflow.yaml` | App wheel readability is structurally likely because `register_all()` already requires the package to import, but resource values are baked into the wheel and still must become filesystem paths, likely through `importlib.resources.as_file()`, before reaching the same `config_files` plumbing. | Deferred follow-up |
 | OPT-004 | Flat escaped-key encoding for entity IDs | Decoding would still have to feed the result through settings files to avoid Probe A. This adds a proprietary escaping convention without structural benefit. | Rejected |
 
-## Decision
+## Superseded Decision
 
-Ship exactly one supported surface: `kindling.lakeflow.config_files`.
+The superseded v0.12.35 decision shipped one Lakeflow-specific surface:
+`kindling.lakeflow.config_files`. This is historical context, not current
+guidance; the key now exists only as a deprecated compatibility alias whose
+removal is eligible at 0.13.0.
 
 The key is read by direct `spark.conf.get(key, None)` point lookup from a module
 constant in the selector. It is not listed in `kindling.lakeflow.config_keys`.

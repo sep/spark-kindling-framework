@@ -1,0 +1,24 @@
+kindling:
+  storage:
+    table_schema: dev_schema
+  telemetry:
+    logging:
+      level: ERROR
+
+dataentities:
+  bronze.device_telemetry:
+    tags:
+      provider.table_name: dev_bronze.dev_schema.device_telemetry
+      placement.source: environment
+  silver.device_telemetry:
+    tags:
+      provider.table_name: dev_silver.dev_schema.device_telemetry
+      placement.source: environment
+  silver.events:
+    tags:
+      provider.table_name: dev_silver.dev_schema.events
+      placement.source: environment
+  silver.episodes:
+    tags:
+      provider.table_name: dev_silver.dev_schema.episodes
+      placement.source: environment

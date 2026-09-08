@@ -1,0 +1,44 @@
+kindling:
+  platform:
+    environment: databricks
+  sdp:
+    dataset_naming: normalized
+  storage:
+    table_schema: base_schema
+  telemetry:
+    logging:
+      level: INFO
+
+dataentities-bytag:
+  tier:
+    bronze:
+      tags:
+        provider.table_catalog: base_bronze
+        retention.days: "3"
+    silver:
+      tags:
+        provider.table_catalog: base_silver
+        retention.days: "7"
+
+dataentities:
+  bronze.device_telemetry:
+    tags:
+      provider.table_name: base_bronze.base_schema.device_telemetry
+      placement.source: base
+  silver.device_telemetry:
+    tags:
+      provider.table_name: base_silver.base_schema.device_telemetry
+      placement.source: base
+  silver.events:
+    tags:
+      provider.table_name: base_silver.base_schema.events
+      placement.source: base
+  silver.episodes:
+    tags:
+      provider.table_name: base_silver.base_schema.episodes
+      placement.source: base
+
+datapipes:
+  bronze.ingest_telemetry:
+    tags:
+      placement.source: base

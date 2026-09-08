@@ -1,0 +1,48 @@
+bundle:
+  name: lakeflow-telemetry
+
+targets:
+  dev:
+    workspace:
+      host: https://adb-lakeflow-telemetry.azuredatabricks.net
+      file_path: /Workspace/Shared/kindling/lakeflow-telemetry/dev
+
+sync:
+  include:
+    - config/**
+    - data-apps/**
+
+resources:
+  pipelines:
+    telemetry_bronze:
+      name: telemetry-bronze
+      catalog: dev_bronze
+      target: cwmdp
+      configuration:
+        "kindling.data_app": telemetry
+        "kindling.lakeflow.allowed_apps": telemetry
+        "kindling.lakeflow.pipes": bronze.ingest_telemetry
+        "spark.kindling.bootstrap.environment": dev
+        "spark.kindling.bootstrap.workspace_id": adb-lakeflow-telemetry
+        "spark.kindling.bootstrap.config_files": >-
+          ["/Workspace/Shared/kindling/lakeflow-telemetry/dev/config/settings.yaml",
+          "/Workspace/Shared/kindling/lakeflow-telemetry/dev/config/settings.databricks.yaml",
+          "/Workspace/Shared/kindling/lakeflow-telemetry/dev/config/workspace_adb-lakeflow-telemetry.yaml",
+          "/Workspace/Shared/kindling/lakeflow-telemetry/dev/config/settings.dev.yaml",
+          "/Workspace/Shared/kindling/lakeflow-telemetry/dev/data-apps/telemetry/settings.yaml"]
+    telemetry_silver:
+      name: telemetry-silver
+      catalog: dev_silver
+      target: cwmdp
+      configuration:
+        "kindling.data_app": telemetry
+        "kindling.lakeflow.allowed_apps": telemetry
+        "kindling.lakeflow.pipes": silver.build_telemetry,silver.derive_events,silver.derive_episodes
+        "spark.kindling.bootstrap.environment": dev
+        "spark.kindling.bootstrap.workspace_id": adb-lakeflow-telemetry
+        "spark.kindling.bootstrap.config_files": >-
+          ["/Workspace/Shared/kindling/lakeflow-telemetry/dev/config/settings.yaml",
+          "/Workspace/Shared/kindling/lakeflow-telemetry/dev/config/settings.databricks.yaml",
+          "/Workspace/Shared/kindling/lakeflow-telemetry/dev/config/workspace_adb-lakeflow-telemetry.yaml",
+          "/Workspace/Shared/kindling/lakeflow-telemetry/dev/config/settings.dev.yaml",
+          "/Workspace/Shared/kindling/lakeflow-telemetry/dev/data-apps/telemetry/settings.yaml"]

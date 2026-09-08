@@ -1,0 +1,15 @@
+kindling:
+  storage:
+    table_schema: workspace_schema
+  telemetry:
+    logging:
+      level: DEBUG
+
+dataentities-bytag:
+  tier:
+    bronze:
+      tags:
+        retention.days: "5"
+    silver:
+      tags:
+        retention.days: "14"

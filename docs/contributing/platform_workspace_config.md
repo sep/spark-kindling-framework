@@ -30,6 +30,14 @@ loaded after and win over the corresponding global platform/environment files (2
 so an app's own overlay always takes precedence over workspace/global config for the
 same key.
 
+Databricks Lakeflow follows this same order. The Lakeflow selector supplies the
+selected `app_name` to `kindling.initialize()`, sets `declaration_only=true`,
+and bridges `spark.kindling.*` pipeline settings through the shared SparkConf
+reader. It does not add a Lakeflow-specific config-file step; use
+`spark.kindling.bootstrap.config_files` for explicit settings files or
+`spark.kindling.bootstrap.artifacts_storage_path` for the normal discovered
+hierarchy.
+
 Legacy filenames are still checked as a fallback when the canonical name above isn't
 found: `platform_{platform}.yaml`, `env_{environment}.yaml`, `app.{platform}.yaml`,
 and `app.{environment}.yaml` (app-scoped). Prefer the canonical names for anything new.

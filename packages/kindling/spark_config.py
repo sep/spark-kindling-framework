@@ -37,6 +37,19 @@ def _log_settings_files_load_order(settings_files: List[str]) -> None:
     )
 
 
+def peek_settings_value(config_files: Optional[List[str]], key: str, default: Any = None) -> Any:
+    """Read one value from explicit settings files using the normal Dynaconf loader."""
+    if not config_files:
+        return default
+    settings = Dynaconf(
+        settings_files=config_files,
+        environments=False,
+        MERGE_ENABLED_FOR_DYNACONF=True,
+        envvar_prefix="KINDLING",
+    )
+    return settings.get(key, default)
+
+
 class ConfigService(ABC):
     """Abstract configuration service interface.
 
@@ -189,6 +202,8 @@ class DynaconfConfig(ConfigService):
             "kindling.BOOTSTRAP.load_local": "load_local_packages",  # deprecated alias
             "kindling.BOOTSTRAP.load_workspace_packages": "load_workspace_packages",
             "kindling.BOOTSTRAP.load_lake": "use_lake_packages",
+            "kindling.BOOTSTRAP.declaration_only": "declaration_only",
+            "kindling.BOOTSTRAP.discover_config_files": "discover_config_files",
             "kindling.REQUIRED_PACKAGES": "required_packages",
             "kindling.extensions": "extensions",  # lowercase - matches YAML
             "kindling.EXTENSIONS": "extensions",  # uppercase - backwards compat
@@ -268,11 +283,20 @@ class DynaconfConfig(ConfigService):
         if isinstance(value, dict):
             existing_leaf = current.get(leaf_key)
             merged = existing_leaf if isinstance(existing_leaf, dict) else {}
-            for nested_key, nested_value in value.items():
-                DynaconfConfig._merge_dotted_key(merged, nested_key, nested_value)
+            DynaconfConfig._deep_merge_literal(merged, value)
             current[leaf_key] = merged
         else:
             current[leaf_key] = value
+
+    @staticmethod
+    def _deep_merge_literal(target: Dict[str, Any], value: Dict[str, Any]) -> None:
+        """Deep-merge dict payloads without interpreting their keys as dotted paths."""
+        for key, nested_value in value.items():
+            existing = target.get(key)
+            if isinstance(existing, dict) and isinstance(nested_value, dict):
+                DynaconfConfig._deep_merge_literal(existing, nested_value)
+            else:
+                target[key] = nested_value
 
     def _apply_bootstrap_overrides(self, bootstrap_config: Dict) -> Dict:
         """
@@ -291,6 +315,8 @@ class DynaconfConfig(ConfigService):
             "load_local_packages": "BOOTSTRAP.load_local",  # deprecated alias
             "load_workspace_packages": "BOOTSTRAP.load_workspace_packages",
             "use_lake_packages": "BOOTSTRAP.load_lake",
+            "declaration_only": "BOOTSTRAP.declaration_only",
+            "discover_config_files": "BOOTSTRAP.discover_config_files",
             "required_packages": "REQUIRED_PACKAGES",
             "extensions": "EXTENSIONS",
             "ignored_folders": "IGNORED_FOLDERS",

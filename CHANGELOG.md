@@ -4,6 +4,41 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- Bootstrap config now supports `declaration_only` to initialize declaration
+  state without dependency installation, watermark registration, workspace
+  package loading, or `app_name` auto-run.
+- Bootstrap config now supports `discover_config_files` to control
+  `artifacts_storage_path` configuration discovery independently from
+  `use_lake_packages`.
+
+### Fixed
+
+- Databricks Lakeflow app selection now feeds the selected app name and
+  canonical `spark.kindling.*` settings into shared bootstrap configuration,
+  so `data-apps/{app}/settings*.yaml` overlays and bootstrap aliases resolve
+  the same way they do outside Lakeflow.
+- Restricted-runtime SparkConf ingestion now lives in the shared bootstrap
+  layer and falls back through `RuntimeConfig.getAll()`,
+  `SparkContext.getConf().getAll()`, `SET`, and explicit point lookups without
+  raising from the cascade.
+- `use_lake_packages: false` no longer suppresses configuration discovery when
+  `artifacts_storage_path` is set; use `discover_config_files: false` for an
+  explicit opt-out.
+- Bootstrap dictionary payloads under structured sections preserve literal
+  dotted mapping keys such as `bronze.device_telemetry` and dotted metadata
+  keys such as `provider.path`.
+
+### Deprecated
+
+- `kindling.lakeflow.config_files` is now a warning-only compatibility alias
+  for `spark.kindling.bootstrap.config_files`; removal is eligible at 0.13.0.
+  The alias no longer owns Lakeflow-specific file validation or YAML parsing.
+- `LakeflowConfigSourceError` remains importable for one release cycle as a
+  deprecated alias of `LakeflowAppSelectionError`; source diagnostics now come
+  from the shared configuration loader.
+
 ## [0.12.35] - 2026-09-08
 
 ### Added
