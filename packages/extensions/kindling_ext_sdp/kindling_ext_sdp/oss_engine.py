@@ -97,6 +97,7 @@ class OssSdpEngine(DeclarationEngine):
         dataset_naming_explicit: bool = False,
         dataset_naming_divergence: str = "error",
         name_resolver: Any = None,
+        collision_check: object = "off",
     ):
         super().__init__(
             entity_registry,
@@ -108,6 +109,7 @@ class OssSdpEngine(DeclarationEngine):
             dataset_naming_explicit=dataset_naming_explicit,
             dataset_naming_divergence=dataset_naming_divergence,
             name_resolver=name_resolver,
+            collision_check=collision_check,
         )
         self._dp_module = dp_module
         self._session_provider = session_provider or _default_session_provider

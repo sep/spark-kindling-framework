@@ -1,9 +1,11 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Mapping, Optional
+from typing import Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 GLOBAL_NAMING_KEY = "kindling.storage.table_naming"
 ENTITY_NAMING_TAG = "provider.table_naming"
+STORAGE_COLLISION_CHECK_KEY = "kindling.storage.collision_check"
+ENTITY_ALIAS_OF_TAG = "provider.table_alias_of"
 
 
 class TableNamingMode(str, Enum):
@@ -19,6 +21,7 @@ _ALLOWED_MODES = (
     TableNamingMode.NORMALIZED.value,
     TableNamingMode.LEAF.value,
 )
+_ALLOWED_COLLISION_CHECK_MODES = ("off", "pipeline", "registry")
 
 
 def normalize_table_leaf(name: str) -> str:
@@ -53,6 +56,25 @@ def parse_table_naming_mode(
     entity_clause = f" for entity '{entity_id}'" if entity_id is not None else ""
     raise ValueError(
         f"Invalid {key} value {raw_value!r}{entity_clause}; " f"expected {_allowed_modes_text()}."
+    )
+
+
+def parse_collision_check_mode(value: object) -> str:
+    """Parse the external-address collision-check scope."""
+    if value is None:
+        return "off"
+
+    raw_value = str(value).strip()
+    if not raw_value:
+        return "off"
+
+    lowered = raw_value.lower()
+    if lowered in _ALLOWED_COLLISION_CHECK_MODES:
+        return lowered
+
+    allowed = "'off', 'pipeline', or 'registry'"
+    raise ValueError(
+        f"Invalid {STORAGE_COLLISION_CHECK_KEY} value {raw_value!r}; expected {allowed}."
     )
 
 
@@ -104,3 +126,81 @@ class TableNamingPolicy:
         if mode is None or mode == TableNamingMode.LEGACY:
             return None
         return derive_table_component(entity_id, mode)
+
+
+@dataclass(frozen=True)
+class Collision:
+    """A set of distinct entities resolving to one external table address."""
+
+    address: str
+    entity_ids: Tuple[str, ...]
+
+
+def _add_collision_candidate(
+    groups: Dict[str, Tuple[str, List[str], Set[str]]],
+    entity_id: str,
+    resolved_name: str,
+) -> None:
+    entity_key = str(entity_id)
+    address = str(resolved_name).strip()
+    if not entity_key or not address:
+        return
+
+    folded_address = address.casefold()
+    if folded_address not in groups:
+        groups[folded_address] = (address, [], set())
+    _address, entity_ids, seen = groups[folded_address]
+    if entity_key in seen:
+        return
+    seen.add(entity_key)
+    entity_ids.append(entity_key)
+
+
+def _is_intentional_alias(
+    entity_id: str,
+    member_set: Set[str],
+    tags_by_entity: Mapping[str, Mapping[str, object]],
+) -> bool:
+    tags = tags_by_entity.get(entity_id) or {}
+    alias_of = str(tags.get(ENTITY_ALIAS_OF_TAG, "") or "").strip()
+    return bool(alias_of and alias_of != entity_id and alias_of in member_set)
+
+
+def _non_alias_members(
+    entity_ids: List[str],
+    tags_by_entity: Mapping[str, Mapping[str, object]],
+) -> Tuple[str, ...]:
+    member_set = set(entity_ids)
+    return tuple(
+        sorted(
+            {
+                entity_id
+                for entity_id in entity_ids
+                if not _is_intentional_alias(entity_id, member_set, tags_by_entity)
+            }
+        )
+    )
+
+
+def find_external_collisions(
+    resolved_entities: Iterable[Tuple[str, str]],
+    entity_tags: Optional[Mapping[str, Mapping[str, object]]] = None,
+) -> Tuple[Collision, ...]:
+    """Find distinct logical entities that resolve to the same external address.
+
+    The function is pure metadata logic: callers provide already-resolved
+    external names and entity tags. Intentional aliases are excluded only when
+    ``provider.table_alias_of`` points to another entity in the same address
+    group.
+    """
+    tags_by_entity = entity_tags or {}
+    groups: Dict[str, Tuple[str, List[str], Set[str]]] = {}
+    for entity_id, resolved_name in resolved_entities:
+        _add_collision_candidate(groups, entity_id, resolved_name)
+
+    collisions: List[Collision] = []
+    for address, entity_ids, _seen in groups.values():
+        member_ids = _non_alias_members(entity_ids, tags_by_entity)
+        if len(member_ids) > 1:
+            collisions.append(Collision(address, member_ids))
+    return tuple(collisions)

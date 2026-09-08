@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from kindling.entity_naming import (
     ENTITY_NAMING_TAG,
     GLOBAL_NAMING_KEY,
+    STORAGE_COLLISION_CHECK_KEY,
     TableNamingPolicy,
     sdp_mode_for,
 )
@@ -34,7 +35,6 @@ from kindling_ext_sdp.oss_engine import OssSdpEngine
 
 SDP_DATASET_NAMING_KEY = "kindling.sdp.dataset_naming"
 SDP_DATASET_NAMING_DIVERGENCE_KEY = "kindling.sdp.dataset_naming_divergence"
-STORAGE_COLLISION_CHECK_KEY = "kindling.storage.collision_check"
 
 
 def activate_sdp_mode() -> None:
@@ -202,6 +202,7 @@ def declare_pipeline(
         shared_naming=shared_naming,
         dataset_naming_explicit=dataset_naming_explicit,
         dataset_naming_divergence=config_service.get(SDP_DATASET_NAMING_DIVERGENCE_KEY, "error"),
+        collision_check=config_service.get(STORAGE_COLLISION_CHECK_KEY, "off"),
         external_read_resolver=external_read_resolver,
         external_stream_read_resolver=external_stream_read_resolver,
         name_resolver=name_resolver,

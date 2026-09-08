@@ -37,8 +37,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from kindling.entity_naming import (
     ENTITY_NAMING_TAG,
     GLOBAL_NAMING_KEY,
+    STORAGE_COLLISION_CHECK_KEY,
     TableNamingMode,
     TableNamingPolicy,
+    find_external_collisions,
+    parse_collision_check_mode,
     parse_table_naming_mode,
     sdp_mode_for,
 )
@@ -82,12 +85,13 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class _NamingContext:
+class _NamingContext:  # pylint: disable=too-many-instance-attributes
     dataset_naming: str
     shared_naming: Optional[TableNamingPolicy]
     dataset_naming_explicit: bool
     dataset_naming_divergence: str
     name_resolver: Any
+    collision_check: str
     dataset_naming_valid: bool = True
     divergence_logged: bool = False
 
@@ -153,6 +157,7 @@ class DeclarationEngine(ABC):
         dataset_naming_explicit: bool = False,
         dataset_naming_divergence: str = "error",
         name_resolver: Any = None,
+        collision_check: object = "off",
     ):
         self.entity_registry = entity_registry
         self.pipe_registry = pipe_registry
@@ -164,8 +169,17 @@ class DeclarationEngine(ABC):
             dataset_naming_explicit=dataset_naming_explicit,
             dataset_naming_divergence=str(dataset_naming_divergence or "error").strip().lower(),
             name_resolver=name_resolver,
+            collision_check="off",
         )
         self._initial_issues: List[DeclarationIssue] = []
+        try:
+            self._naming.collision_check = parse_collision_check_mode(collision_check)
+        except ValueError as exc:
+            self._initial_issues.append(
+                DeclarationIssue(
+                    pipe_id="<pipeline>", code="invalid_collision_check", reason=str(exc)
+                )
+            )
         if self._naming.shared_naming is not None:
             try:
                 self._naming.shared_naming.global_mode
@@ -279,6 +293,7 @@ class DeclarationEngine(ABC):
             issues.extend(self._validate_inputs(pipe, producers))
             issues.extend(self._validate_capabilities(pipe))
             issues.extend(self._validate_dataset_type(pipe))
+        issues.extend(self._validate_external_address_collisions(selected))
         return issues
 
     def _emitted_dataset_names(self, pipe) -> List[Tuple[str, str]]:
@@ -428,6 +443,82 @@ class DeclarationEngine(ABC):
                 self._naming.divergence_logged = True
             return False
         return True
+
+    def _collision_scope_entity_ids(self, selected: List[str]) -> List[str]:
+        if self._naming.collision_check == "registry":
+            candidates = self.entity_registry.get_entity_ids()
+        else:
+            candidates = []
+            for pipe_id in selected:
+                pipe = self.pipe_registry.get_pipe_definition(pipe_id)
+                if pipe is not None and pipe.output_entity_id:
+                    candidates.append(pipe.output_entity_id)
+
+        entity_ids = []
+        seen = set()
+        for entity_id in candidates:
+            if not entity_id or entity_id in seen:
+                continue
+            seen.add(entity_id)
+            entity_ids.append(entity_id)
+        return entity_ids
+
+    def _validate_external_address_collisions(self, selected: List[str]) -> List[DeclarationIssue]:
+        if self._naming.collision_check == "off":
+            return []
+
+        if self._naming.name_resolver is None:
+            return [
+                DeclarationIssue(
+                    pipe_id="<pipeline>",
+                    code="collision_check_unavailable",
+                    reason=(
+                        f"{STORAGE_COLLISION_CHECK_KEY}='{self._naming.collision_check}' "
+                        "requires an EntityNameMapper-backed name_resolver; bootstrap "
+                        "must supply one so explicit collision validation is not "
+                        "silently skipped."
+                    ),
+                )
+            ]
+
+        resolved = []
+        tags_by_entity = {}
+        issues: List[DeclarationIssue] = []
+        for entity_id in self._collision_scope_entity_ids(selected):
+            entity = self.entity_registry.get_entity_definition(entity_id)
+            if entity is None:
+                continue
+            tags_by_entity[entity_id] = entity.tags or {}
+            try:
+                resolved.append((entity_id, self._naming.name_resolver.get_table_name(entity)))
+            except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+                issues.append(
+                    DeclarationIssue(
+                        pipe_id="<pipeline>",
+                        code="external_address_resolution_failed",
+                        reason=(
+                            f"{STORAGE_COLLISION_CHECK_KEY}='{self._naming.collision_check}' "
+                            f"could not resolve entity '{entity_id}': {exc}"
+                        ),
+                    )
+                )
+
+        for collision in find_external_collisions(resolved, tags_by_entity):
+            entity_list = "', '".join(collision.entity_ids)
+            issues.append(
+                DeclarationIssue(
+                    pipe_id="<pipeline>",
+                    code="duplicate_external_address",
+                    reason=(
+                        f"entities '{entity_list}' resolve to the same external "
+                        f"address '{collision.address}' under "
+                        f"{STORAGE_COLLISION_CHECK_KEY}='{self._naming.collision_check}'. "
+                        "Use distinct catalog/schema/table placement or declare an "
+                        "intentional alias with provider.table_alias_of."
+                    ),
+                )
+            )
+        return issues
 
     def classify_inputs(
         self, pipe_id: str, pipe_ids: Optional[List[str]] = None
