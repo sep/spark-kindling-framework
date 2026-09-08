@@ -315,12 +315,13 @@ class DeclarationEngine(ABC):
         return mode
 
     def _entity_table_naming_mode(self, entity_id: str) -> Optional[TableNamingMode]:
-        shared_naming = self._naming.shared_naming
-        if shared_naming is None:
+        if self._naming.shared_naming is None:
             return None
         entity = self.entity_registry.get_entity_definition(entity_id)
         tags = (entity.tags if entity is not None else None) or {}
-        return shared_naming.mode_for(entity_id, tags)
+        return parse_table_naming_mode(
+            tags.get(ENTITY_NAMING_TAG), key=ENTITY_NAMING_TAG, entity_id=entity_id
+        )
 
     def _effective_dataset_mode(self, entity_id: str) -> str:
         mode = self._lookup_entity_table_naming_mode(entity_id)

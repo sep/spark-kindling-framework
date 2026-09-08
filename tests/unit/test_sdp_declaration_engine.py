@@ -675,6 +675,32 @@ class TestSharedEntityNaming:
 
         assert engine.validate() == []
 
+    def test_intentional_global_divergence_keeps_explicit_dataset_naming(self):
+        engine = make_engine(
+            FakeEntityRegistry(
+                [
+                    make_entity("bronze.device_telemetry", tags={"read_only": "true"}),
+                    make_entity("silver.device_telemetry"),
+                ]
+            ),
+            FakePipeRegistry(
+                [
+                    make_pipe(
+                        "bronze_to_silver.device_telemetry",
+                        ["bronze.device_telemetry"],
+                        "silver.device_telemetry",
+                    )
+                ]
+            ),
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value("leaf"),
+            dataset_naming_explicit=True,
+            dataset_naming_divergence="intentional",
+        )
+
+        assert engine.validate() == []
+        assert engine.dataset_name("silver.device_telemetry") == "silver_device_telemetry"
+
     def test_collision_check_off_does_not_resolve_external_addresses(
         self, entity_registry, pipe_registry
     ):

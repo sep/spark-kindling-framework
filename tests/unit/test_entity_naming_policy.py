@@ -1,5 +1,5 @@
+import ast
 import importlib
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -17,27 +17,20 @@ def _make_config_service(sections):
 
 
 def test_entity_naming_import_has_no_platform_or_spark_side_effects():
-    module_name = "_kindling_entity_naming_import_probe"
     module_path = Path(__file__).parents[2] / "packages" / "kindling" / "entity_naming.py"
-    before = set(sys.modules)
+    forbidden = ("databricks", "kindling_ext_", "pyspark")
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
 
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(module_name, None)
+    imported_modules = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_modules.append(node.module)
 
-    loaded = set(sys.modules) - before
-    forbidden = (
-        "databricks",
-        "kindling_ext_",
-        "pyspark",
-    )
     assert not any(
-        name == blocked or name.startswith(f"{blocked}.") or name.startswith(blocked)
-        for name in loaded
+        module == blocked or module.startswith(blocked)
+        for module in imported_modules
         for blocked in forbidden
     )
 

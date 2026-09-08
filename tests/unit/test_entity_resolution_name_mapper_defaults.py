@@ -447,6 +447,16 @@ class TestTableNamingPolicy:
 
         assert mapper.get_table_name(_entity("silver.orders")) == "lakehouse.orders"
 
+    def test_synapse_schema_fallback_emits_two_part_policy_name(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.synapse.schema": "warehouse",
+            }
+        )
+
+        assert mapper.get_table_name(_entity("silver.orders")) == "warehouse.orders"
+
     def test_databricks_uc_policy_name_requires_catalog(self):
         mapper = _make_mapper_with_config(
             {
