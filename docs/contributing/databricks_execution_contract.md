@@ -209,12 +209,21 @@ catalog/schema still flattens its logical ID unless `provider.table_name`
 supplies the complete qualified leaf table. For example, set
 `provider.table_name: dev_silver.cwmdp.device_telemetry` when reading
 `silver.device_telemetry` produced with leaf naming. Catalog/schema tags do
-not alter an explicit `provider.table_name`.
+not alter an explicit `provider.table_name`. Bundle-backed structured
+configuration can now carry that override declaratively: point
+`kindling.lakeflow.config_files` at the deployed YAML and put the same
+`provider.table_name` tag in the consumer app's `dataentities:` section. The
+SDP extension README has the companion example in
+[Reading leaf-named outputs from elsewhere](../../packages/extensions/kindling_ext_sdp/README.md#reading-leaf-named-outputs-from-elsewhere).
 
 Temporal chain driving sources currently always use external table resolution.
 They should be produced in an upstream resource, not as leaf-named outputs in
 the same pipeline: the lowering does not create a pipeline-local dependency for
-those sources. Events/episodes and generated helper references are local.
+those sources. If the base event source is produced by another leaf-named
+resource, align that external read with the same complete `provider.table_name`
+override; `provider.table_catalog` and `provider.table_schema` still only feed
+the external resolver. Events/episodes and generated helper references are
+local.
 
 Adapters contribute generated dataset-name reservations to plan validation.
 Lakeflow reserves AUTO CDC source names, the configured temporal strata and
