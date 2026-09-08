@@ -1,24 +1,25 @@
 kindling:
   storage:
-    table_schema: dev_schema
+    table_naming: leaf
+    table_schema: cwmdp
   telemetry:
     logging:
       level: ERROR
 
 dataentities:
-  bronze.device_telemetry:
+  "bronze.**":
     tags:
-      provider.table_name: dev_bronze.dev_schema.device_telemetry
+      provider.table_catalog: dev_bronze
       placement.source: environment
-  silver.device_telemetry:
+  "silver.**":
     tags:
-      provider.table_name: dev_silver.dev_schema.device_telemetry
+      provider.table_catalog: dev_silver
       placement.source: environment
-  silver.events:
+  "gold.**":
     tags:
-      provider.table_name: dev_silver.dev_schema.events
+      provider.table_catalog: dev_gold
       placement.source: environment
-  silver.episodes:
+  "reference.**":
     tags:
-      provider.table_name: dev_silver.dev_schema.episodes
+      provider.table_catalog: dev_reference
       placement.source: environment

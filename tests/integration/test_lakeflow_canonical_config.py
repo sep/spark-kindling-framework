@@ -68,13 +68,12 @@ def _initialize_config(initial_config: dict):
 
 def _resolved_values(initial_config: dict) -> dict:
     service = _initialize_config(initial_config)
-    dataentities = service.get("dataentities")
     return {
         "platform": service.get("kindling.platform.environment"),
         "dataset_naming": service.get("kindling.sdp.dataset_naming"),
+        "table_naming": service.get("kindling.storage.table_naming"),
         "logging_level": service.get("kindling.telemetry.logging.level"),
         "table_schema": service.get("kindling.storage.table_schema"),
-        "events_table": dataentities["silver.events"]["tags"]["provider.table_name"],
     }
 
 
@@ -105,10 +104,10 @@ def test_example_layers_resolve_in_documented_order():
 
     assert values == {
         "platform": "databricks",
-        "dataset_naming": "leaf",
+        "dataset_naming": None,
+        "table_naming": "leaf",
         "logging_level": "CRITICAL",
         "table_schema": "cwmdp",
-        "events_table": "dev_silver.cwmdp.events",
     }
 
 
@@ -164,6 +163,7 @@ def test_example_dataentities_resolve_external_table_names():
     for entity_id, expected in expected_names.items():
         entity = manager.get_entity_definition(entity_id)
         assert mapper.get_table_name(entity) == expected
-        assert entity.tags["placement.source"] == "app"
+        assert entity.tags["placement.source"] == "environment"
+        assert "provider.table_name" not in entity.tags
 
     assert manager.get_entity_definition("silver.events").tags["retention.days"] == "14"
