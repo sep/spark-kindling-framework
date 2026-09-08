@@ -182,3 +182,44 @@ resolution is untouched for every job config that doesn't opt into
 - The new regression test covers the prior blind spot — it is the first
   Kindling system test to run a job on a Shared/user-isolation-mode
   cluster, forced independently of whatever the CI cluster happens to be.
+
+
+## SDP/Lakeflow dataset naming boundary
+
+Logical entity IDs remain registry keys. SDP output declarations use a
+separate `DatasetNameMapper`, configured once per engine from
+`kindling.sdp.dataset_naming` after overlays: `normalized` preserves the
+historical dot/hyphen-to-underscore convention; `leaf` selects the final
+dot-separated segment and normalizes hyphens.
+
+All pipeline-local declarations and references use this mapper, including
+Lakeflow AUTO CDC and temporal generated datasets. Pipeline destinations
+supply catalog/schema. External reads retain their existing resolution
+path, including `EntityNameMapper` catalog overrides; applying output
+naming to an external entity would lose its cross-pipeline destination.
+
+Validation compares emitted output names case-insensitively within the
+selected declaration plan. Registry entries outside that selection do
+not reserve names. This permits one leaf name in several medallion
+resources while rejecting ambiguous local graph references before emission.
+
+
+Leaf output naming requires consumer alignment: an external entity with explicit
+catalog/schema still flattens its logical ID unless `provider.table_name`
+supplies the complete qualified leaf table. For example, set
+`provider.table_name: dev_silver.cwmdp.device_telemetry` when reading
+`silver.device_telemetry` produced with leaf naming. Catalog/schema tags do
+not alter an explicit `provider.table_name`.
+
+Temporal chain driving sources currently always use external table resolution.
+They should be produced in an upstream resource, not as leaf-named outputs in
+the same pipeline: the lowering does not create a pipeline-local dependency for
+those sources. Events/episodes and generated helper references are local.
+
+Adapters contribute generated dataset-name reservations to plan validation.
+Lakeflow reserves AUTO CDC source names, the configured temporal strata and
+conditional determination/snapshot helper names, and the implicitly emitted
+chain-episodes sibling. Conditional helpers remain reserved even when unused
+by the current rules, avoiding collisions after rule updates. Unity Catalog
+treats dotted declaration names as schema-qualified and pipeline views reject
+multipart names, which is why the local mapper always emits single-part names.

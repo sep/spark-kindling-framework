@@ -63,14 +63,9 @@ def _logger_provider():
     return provider
 
 
-def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch):
-    from kindling.data_entities import (
-        DataEntityManager,
-        DataEntityRegistry,
-        EntityNameMapper,
-    )
-    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
-    from kindling_ext_databricks import temporal_lowering
+@pytest.mark.parametrize("mode", ["normalized", "leaf"])
+def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch, mode):
+    from kindling_ext_databricks import DatabricksSdpEngine, temporal_lowering
     from kindling_ext_temporal import (
         DataEpisodes,
         DataEvents,
@@ -83,11 +78,23 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch):
         declare_temporal_chain,
     )
 
+    from kindling.data_entities import (
+        DataEntityManager,
+        DataEntityRegistry,
+        EntityMetadata,
+        EntityNameMapper,
+    )
+    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
+    from kindling.spark_config import ConfigService
+
     DataEvents.reset()
     DataEpisodes.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
     episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
     entity_registry = DataEntityManager()
+    entity_registry.registry["bronze.telemetry"] = EntityMetadata(
+        entityid="bronze.telemetry", name="telemetry", schema=None, merge_columns=[], tags={}
+    )
     pipe_registry = DataPipesManager(_logger_provider())
     resolver = SimpleTemporalEntityResolver()
 
@@ -99,6 +106,7 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch):
         DataEntityRegistry: entity_registry,
         DataPipesRegistry: pipe_registry,
         EntityNameMapper: name_mapper,
+        ConfigService: SimpleNamespace(get=lambda key, default=None: 2),
     }
 
     def service_get(dep):
@@ -130,35 +138,53 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch):
             subject_type="machine",
             expires_after_seconds=300,
         )
-        declare_temporal_chain()
+        selected = declare_temporal_chain()
 
         # Rules are unreadable in this hermetic test (first-run path).
-        monkeypatch.setattr(temporal_lowering, "_spark", lambda: MagicMock())
+        spark = MagicMock()
+        monkeypatch.setattr(temporal_lowering, "_spark", lambda: spark)
 
         dp = FakeDp()
-        temporal_lowering.declare_stratified_temporal(
-            dp, events_name="silver_events", episodes_name="silver_episodes", max_generations=2
+        engine = DatabricksSdpEngine(
+            entity_registry, pipe_registry, dp_module=dp, dataset_naming=mode
         )
+        engine.declare_pipeline(engine.build_plan(selected))
 
+    events_name = "events" if mode == "leaf" else "silver_events"
+    episodes_name = "episodes" if mode == "leaf" else "silver_episodes"
     assert dp.streaming_tables == [
-        "silver_events__g0",
-        "silver_events__g1",
-        "silver_events__g2",
-        "silver_episodes",
+        f"{events_name}__g0",
+        f"{events_name}__g1",
+        f"{events_name}__g2",
+        episodes_name,
     ]
     assert [target for target, _ in dp.append_flows] == [
-        "silver_events__g0",
-        "silver_events__g1",
-        "silver_events__g2",
+        f"{events_name}__g0",
+        f"{events_name}__g1",
+        f"{events_name}__g2",
     ]
     assert len(dp.auto_cdc_snapshot_flows) == 1
     flow = dp.auto_cdc_snapshot_flows[0]
-    assert flow["target"] == "silver_episodes"
-    assert flow["source"] == "silver_episodes__episode_snapshot"
+    assert flow["target"] == episodes_name
+    assert flow["source"] == f"{episodes_name}__episode_snapshot"
     assert flow["keys"] == ["episode_id"]
     assert flow["stored_as_scd_type"] == 2
-    assert "silver_episodes__episode_snapshot" in dp.views
-    assert set(dp.materialized_views) == {"silver_events__determinations", "silver_events"}
+    assert f"{episodes_name}__episode_snapshot" in dp.views
+    assert set(dp.materialized_views) == {f"{events_name}__determinations", events_name}
+
+    # Evaluate the public graph surfaces to verify their references as well.
+    spark.table.reset_mock()
+    dp.materialized_views[events_name]()
+    assert [call.args[0] for call in spark.table.call_args_list] == [
+        f"{events_name}__g0",
+        f"{events_name}__g1",
+        f"{events_name}__g2",
+        f"{events_name}__determinations",
+    ]
+    monkeypatch.setattr(temporal_lowering, "_project_determination_events", lambda *args: None)
+    spark.table.reset_mock()
+    dp.materialized_views[f"{events_name}__determinations"]()
+    spark.table.assert_called_once_with(episodes_name)
 
 
 def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
@@ -167,12 +193,6 @@ def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
     each reading its own source entity, exactly like the single-entity case
     above but with N sources instead of one.
     """
-    from kindling.data_entities import (
-        DataEntityManager,
-        DataEntityRegistry,
-        EntityNameMapper,
-    )
-    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
     from kindling_ext_databricks import temporal_lowering
     from kindling_ext_temporal import (
         DataEvents,
@@ -184,6 +204,13 @@ def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
         TemporalEventRegistryManager,
         declare_temporal_chain,
     )
+
+    from kindling.data_entities import (
+        DataEntityManager,
+        DataEntityRegistry,
+        EntityNameMapper,
+    )
+    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())

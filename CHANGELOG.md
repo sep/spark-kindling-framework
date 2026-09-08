@@ -4,6 +4,24 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.34] - 2026-09-08
+
+### Added
+
+- Configurable SDP and Databricks Lakeflow output dataset names via
+  `kindling.sdp.dataset_naming: leaf`. The default keeps replacing dots
+  with underscores. Internal reads, AUTO CDC, and temporal declarations
+  use the configured names.
+
+### Changed
+
+- Declaration validation rejects collisions among selected output names and
+  generated AUTO CDC/temporal datasets, including implicitly emitted episodes.
+  Conditional temporal helper names are reserved for future rule updates.
+- Dataset naming configuration accepts case and surrounding whitespace; invalid
+  modes are collected with other declaration errors. External table resolution
+  stays independent and is documented with explicit consumer-name overrides.
+
 ## [0.12.33] - 2026-09-07
 
 ### Added

@@ -96,3 +96,35 @@ snapshots per update.
 - Bitemporal AUTO CDC (`stored_as_scd_type="bitemporal"`) — Beta;
   tracked, not adopted (proposal decision).
 - Current-view companion as a declared view.
+
+
+## Output dataset naming
+
+Lakeflow uses the shared [SDP dataset naming configuration](../kindling_ext_sdp/README.md#output-dataset-naming):
+
+```yaml
+kindling:
+  sdp:
+    dataset_naming: leaf
+```
+
+With a pipeline destination of catalog `dev_silver`, schema `cwmdp`,
+`silver.device_telemetry` is declared as `device_telemetry`, producing
+`dev_silver.cwmdp.device_telemetry`. Set separate destinations and select
+the appropriate pipes for each medallion resource. Same-leaf outputs in
+one plan are rejected.
+
+This also controls AUTO CDC targets and temporary sources, temporal
+events/episodes, and their generated strata, snapshots, and internal
+references. Cross-pipeline external table resolution remains independent,
+including temporal reads through `EntityNameMapper` and entity
+`provider.table_catalog` overrides. Omitting the setting preserves the
+existing `silver_device_telemetry` convention.
+
+
+When consuming these outputs, explicitly align external entity metadata with
+the leaf table, for example
+`provider.table_name: dev_silver.cwmdp.device_telemetry`. Otherwise a consumer
+configured with catalog and schema still resolves the historical flattened
+name. See [external reads and generated-name reservations](../kindling_ext_sdp/README.md#reading-leaf-named-outputs-from-elsewhere)
+for the complete example and the temporal source limitation.

@@ -13,20 +13,41 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
-def pipeline_dataset_name(entity_id: str) -> str:
-    """The emitted (physical) dataset name for a Kindling entity id.
+@dataclass(frozen=True)
+class DatasetNameMapper:
+    """Map logical entity IDs to pipeline-local, single-part dataset names.
 
-    Datasets are emitted with single-part names inside the pipeline's
-    target catalog/schema, dots normalized to underscores — the same leaf
-    normalization the runner engine's EntityNameMapper applies. Unity
-    Catalog pipelines interpret a dotted dataset name as schema-qualified
-    (``silver.customers`` becomes ``<catalog>.silver.customers``), which
-    bypasses the pipeline target schema and requires CREATE SCHEMA on the
-    catalog; pipeline-scoped views reject dotted names outright ("View
-    with multipart name ... is not supported"). Plan-level
-    ``DatasetDeclaration.name`` stays the logical entity id.
+    This is independent of EntityNameMapper, which resolves external tables.
+    Both modes preserve the historical hyphen-to-underscore normalization.
     """
-    return entity_id.replace(".", "_").replace("-", "_")
+
+    mode: str = "normalized"
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("normalized", "leaf"):
+            raise ValueError(
+                "Invalid kindling.sdp.dataset_naming value "
+                f"{self.mode!r}; expected 'normalized' or 'leaf'."
+            )
+
+    def __call__(self, entity_id: str) -> str:
+        """Return the emitted name within the pipeline's catalog/schema.
+
+        Unity Catalog interprets dotted names as schema-qualified, bypassing
+        the pipeline target schema. Pipeline-scoped views reject multipart
+        names outright, so both naming modes emit single-part identifiers.
+        """
+        name = entity_id.rsplit(".", 1)[-1] if self.mode == "leaf" else entity_id
+        return name.replace(".", "_").replace("-", "_")
+
+
+def pipeline_dataset_name(entity_id: str) -> str:
+    """Return the historical default name (compatibility helper).
+
+    Engines use their configured DatasetNameMapper instead. Logical entity
+    IDs in DatasetDeclaration.name remain unchanged.
+    """
+    return DatasetNameMapper()(entity_id)
 
 
 class DatasetType(str, Enum):
@@ -83,9 +104,8 @@ class DatasetDeclaration:
     """One declared dataset (one pipe output) in the plan.
 
     ``name`` is the Kindling entity id (e.g. ``silver.orders``). Mapping to
-    catalog/schema/table names under Unity Catalog and OSS catalogs is an
-    explicit open question in the proposal ("Catalog naming") and is
-    deferred; consumers must treat ``name`` as a logical identifier.
+    emitted pipeline-local names uses the engine's DatasetNameMapper;
+    consumers must treat ``name`` as a logical identifier.
     """
 
     name: str

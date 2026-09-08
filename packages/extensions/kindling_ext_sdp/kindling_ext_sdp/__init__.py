@@ -33,6 +33,7 @@ from kindling_ext_sdp.declaration_engine import (
 from kindling_ext_sdp.declaration_plan import (
     ClassifiedInput,
     DatasetDeclaration,
+    DatasetNameMapper,
     DatasetType,
     DeclarationIssue,
     DeclarationPlan,
@@ -59,6 +60,7 @@ __all__ = [
     "DATASET_TYPE_CONFIG_KEY",
     "DATASET_TYPE_TAG",
     "DatasetDeclaration",
+    "DatasetNameMapper",
     "DatasetType",
     "DeclarationEngine",
     "DeclarationIssue",

@@ -361,6 +361,18 @@ Streaming writes:
 - `provider.output_mode`: `append` | `complete` | `update` (default `append`).
 - `provider.query_name`: Streaming query name (default entity name).
 
+## SDP and Databricks Lakeflow
+
+- `kindling.sdp.dataset_naming`: `normalized` (default) or `leaf`.
+  Controls single-part pipeline output names and internal references for
+  both `engine="sdp"` and `engine="databricks_sdp"`. `normalized` turns
+  `silver.device_telemetry` into `silver_device_telemetry`; `leaf` emits
+  `device_telemetry`. Both normalize hyphens to underscores. Configuration
+  values ignore surrounding whitespace and case; null uses the default.
+  External `EntityNameMapper` resolution remains independent. See the
+  [SDP extension documentation](../../packages/extensions/kindling_ext_sdp/README.md#output-dataset-naming)
+  for consumer alignment, resource scoping, and generated-name reservations.
+
 ## Testing-Only Settings
 
 These are not framework defaults; they are typically injected by system tests or test apps.
