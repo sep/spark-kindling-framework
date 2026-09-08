@@ -137,3 +137,7 @@ dev-attach.sh
 
 .vscode/
 .feature-config
+
+# Operational agent artifacts live in external Gas City storage.
+/plans/
+/docs/builds
