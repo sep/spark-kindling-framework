@@ -34,12 +34,11 @@ def _path_exists(path: str) -> bool:
         return False
 
 
-def _warn_unreadable_explicit_config_files(initial_config: Dict[str, Any], source_key: str) -> None:
+def _warn_missing_explicit_config_files(initial_config: Dict[str, Any], source_key: str) -> None:
     paths = _config_file_paths(initial_config.get("config_files"))
     if paths and not any(_path_exists(path) for path in paths):
         _CONFIG_LOGGER.warning(
-            "Explicit configuration files from %s were not readable; Dynaconf will "
-            "continue without loading them: %s",
+            "None of the explicit configuration paths from %s exist on the local filesystem: %s",
             source_key,
             ", ".join(paths),
         )
@@ -199,7 +198,7 @@ class DynaconfConfig(ConfigService):
         self._reload_context = reload_context  # Store for hot-reload
 
         settings_files = config_files or []
-        _warn_unreadable_explicit_config_files(self.initial_config, config_files_source_key)
+        _warn_missing_explicit_config_files(self.initial_config, config_files_source_key)
         _log_settings_files_load_order(settings_files)
 
         # Load YAML configs first
