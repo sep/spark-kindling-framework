@@ -1,5 +1,11 @@
 """Hermetic tests for evaluation-time Lakeflow Kindling app selection."""
 
+import json
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -50,6 +56,12 @@ class FakeSpark3:
         self.sparkContext = FakeSparkContext(values)
 
 
+class SparkPointLookupOnly:
+    def __init__(self, values):
+        self.conf = FakeSparkConfWithoutGetAll(values)
+        # No sparkContext attribute at all, no SQL: enumeration is dead.
+
+
 class FakeEntryPoint:
     def __init__(self, name, value):
         self.name = name
@@ -60,6 +72,35 @@ def _module(name, register_all):
     module = ModuleType(name)
     module.register_all = register_all
     return module
+
+
+def _run_repro(script: str, tmp_path: Path) -> dict:
+    result_path = tmp_path / "result.json"
+    repo_root = Path(__file__).parents[2]
+    pythonpath = os.pathsep.join(
+        [
+            str(repo_root / "packages"),
+            str(repo_root / "packages" / "kindling_cli"),
+            str(repo_root / "packages" / "kindling_sdk"),
+            str(repo_root / "packages" / "extensions" / "kindling_ext_sdp"),
+            str(repo_root / "packages" / "extensions" / "kindling_ext_databricks"),
+            os.environ.get("PYTHONPATH", ""),
+        ]
+    )
+    env = {**os.environ, "PYTHONPATH": pythonpath}
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), str(result_path)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=repo_root,
+        env=env,
+    )
+    assert proc.returncode == 0, (
+        f"repro subprocess failed (exit {proc.returncode})\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
+    return json.loads(result_path.read_text(encoding="utf-8"))
 
 
 def test_data_app_entry_point_group_is_discovered_without_loading_modules(monkeypatch):
@@ -222,6 +263,7 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
     assert captured["config"]["kindling.lakeflow.allowed_apps"] == "orders"
     assert "datapipes.silver.orders.engine" in captured["config"]
     assert "spark.sql.shuffle.partitions" not in captured["config"]
+    assert "config_files" not in captured["config"]
 
 
 def test_pipeline_configuration_falls_back_to_spark_context_conf(monkeypatch):
@@ -471,11 +513,6 @@ def test_pipeline_config_explicit_platform_wins():
 def test_restricted_runtime_bridges_named_config_keys():
     """Serverless/shared runtimes allow point lookups but no enumeration."""
 
-    class SparkPointLookupOnly:
-        def __init__(self, values):
-            self.conf = FakeSparkConfWithoutGetAll(values)
-            # No sparkContext attribute at all, no SQL: enumeration is dead.
-
     config = selector._pipeline_config_for_kindling(
         SparkPointLookupOnly(
             {
@@ -493,6 +530,346 @@ def test_restricted_runtime_bridges_named_config_keys():
     assert config["kindling.storage.table_catalog"] == "main"
     assert config["datapipes.orders.engine.sdp.dataset_type"] == "streaming_table"
     assert "kindling.unrelated" not in config
+
+
+def test_config_files_key_is_point_looked_up_without_config_keys(tmp_path):
+    settings = tmp_path / "settings.yaml"
+    settings.write_text("dataentities: {}\n", encoding="utf-8")
+
+    config_keys = "kindling.storage.table_catalog"
+    config = selector._pipeline_config_for_kindling(
+        SparkPointLookupOnly(
+            {
+                "kindling.data_app": "orders",
+                "kindling.lakeflow.config_keys": config_keys,
+                "kindling.storage.table_catalog": "main",
+                selector.CONFIG_FILES_CONFIG_KEY: str(settings),
+            }
+        ),
+        "orders",
+    )
+
+    assert selector.CONFIG_FILES_CONFIG_KEY not in config_keys
+    assert config["config_files"] == [os.path.abspath(settings)]
+    assert config["kindling.storage.table_catalog"] == "main"
+
+
+def test_config_files_key_empty_string_is_noop():
+    config = selector._pipeline_config_for_kindling(
+        FakeSpark({"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: ""}),
+        "orders",
+    )
+
+    assert "config_files" not in config
+
+
+def test_config_files_are_split_normalized_and_ordered(tmp_path):
+    first = tmp_path / "first.yaml"
+    second = tmp_path / "second.yml"
+    first.write_text("dataentities: {}\n", encoding="utf-8")
+    second.write_text("datapipes: {}\n", encoding="utf-8")
+
+    config = selector._pipeline_config_for_kindling(
+        FakeSpark(
+            {
+                "kindling.data_app": "orders",
+                selector.CONFIG_FILES_CONFIG_KEY: f" {first}, , {second} ",
+            }
+        ),
+        "orders",
+    )
+
+    assert config["config_files"] == [os.path.abspath(first), os.path.abspath(second)]
+
+
+@pytest.mark.parametrize("raw_value", [",", " , "])
+def test_config_files_path_free_value_raises(raw_value):
+    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
+        selector._pipeline_config_for_kindling(
+            FakeSpark({"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: raw_value}),
+            "orders",
+        )
+
+    message = str(exc_info.value)
+    assert selector.CONFIG_FILES_CONFIG_KEY in message
+    assert raw_value in message
+
+
+def test_config_files_missing_path_raises_config_source_error(tmp_path):
+    missing = tmp_path / "missing.yaml"
+
+    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
+        selector._pipeline_config_for_kindling(
+            FakeSpark(
+                {"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: str(missing)}
+            ),
+            "orders",
+        )
+
+    message = str(exc_info.value)
+    assert selector.CONFIG_FILES_CONFIG_KEY in message
+    assert str(missing) in message
+
+
+def test_config_files_unsupported_suffix_raises_config_source_error(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text('{"dataentities": {}}\n', encoding="utf-8")
+
+    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
+        selector._pipeline_config_for_kindling(
+            FakeSpark(
+                {"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: str(settings)}
+            ),
+            "orders",
+        )
+
+    message = str(exc_info.value)
+    assert selector.CONFIG_FILES_CONFIG_KEY in message
+    assert str(settings) in message
+    assert ".yaml" in message
+    assert ".yml" in message
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("dataentities:\n  bronze.device_telemetry: [\n", "could not parse YAML"),
+        ("- not-a-mapping\n", "must contain a mapping"),
+        ("dataentities: 42\n", "section 'dataentities' must be a mapping"),
+        (
+            "dataentities:\n  bronze.device_telemetry: scalar\n",
+            "section 'dataentities' entry 'bronze.device_telemetry' must be a mapping",
+        ),
+        ("datapipes-bytag: 42\n", "section 'datapipes-bytag' must be a mapping"),
+    ],
+)
+def test_config_files_invalid_yaml_shapes_raise_config_source_error(tmp_path, content, expected):
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(content, encoding="utf-8")
+
+    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
+        selector._pipeline_config_for_kindling(
+            FakeSpark(
+                {"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: str(settings)}
+            ),
+            "orders",
+        )
+
+    message = str(exc_info.value)
+    assert selector.CONFIG_FILES_CONFIG_KEY in message
+    assert str(settings) in message
+    assert expected in message
+
+
+def test_config_source_error_is_exported():
+    import kindling_ext_databricks as databricks_ext
+
+    assert databricks_ext.LakeflowConfigSourceError is selector.LakeflowConfigSourceError
+
+
+_REAL_SELECTOR_REPRO = textwrap.dedent("""
+    import json
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    import kindling
+    from kindling.data_entities import DataEntities, DataEntityRegistry, EntityNameMapper
+    from kindling.data_pipes import DataPipes, DataPipesRegistry
+    from kindling.injection import GlobalInjector, get_kindling_service
+    from kindling.spark_config import ConfigService
+    from kindling_ext_databricks import lakeflow_app_selector as selector
+    from pyspark.sql.types import StringType, StructField, StructType
+
+    tmp_path, result_path = sys.argv[1], sys.argv[2]
+    settings_path = f"{tmp_path}/settings.yaml"
+    with open(settings_path, "w", encoding="utf-8") as config_file:
+        config_file.write(
+            "kindling:\\n"
+            "  data_app: yaml_app\\n"
+            "  lakeflow:\\n"
+            "    allowed_apps: yaml_app\\n"
+            "  sdp:\\n"
+            "    dataset_naming: leaf\\n"
+            "dataentities-bytag:\\n"
+            "  tier:\\n"
+            "    bronze:\\n"
+            "      tags:\\n"
+            "        provider.table_catalog: dev_bronze\\n"
+            "        from_bytag: 'yes'\\n"
+            "dataentities:\\n"
+            "  bronze.device_telemetry:\\n"
+            "    tags:\\n"
+            "      provider.table_name: dev_bronze.cwmdp.device_telemetry\\n"
+            "      from_dataentities: exact\\n"
+            "    partition_columns:\\n"
+            "      - event_date\\n"
+            "datapipes:\\n"
+            "  bronze.ingest_telemetry:\\n"
+            "    tags:\\n"
+            "      from_datapipes: yaml\\n"
+            "    output_type: memory\\n"
+        )
+
+    class FakeConf:
+        def __init__(self, values):
+            self.values = dict(values)
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def getAll(self):
+            return dict(self.values)
+
+    class FakeSpark:
+        def __init__(self, values):
+            self.conf = FakeConf(values)
+
+    class FakeEntryPoint:
+        name = "orders"
+        value = "orders_app"
+
+    schema = StructType([StructField("id", StringType(), nullable=False)])
+    extension = SimpleNamespace(owns_incrementality=True, activate=lambda: None)
+    kindling._active_engine_extension = None
+    kindling._load_engine_extension = lambda _: extension
+    selector._registered_data_app_entry_points = lambda: {"orders": FakeEntryPoint()}
+
+    def register_import_time_entity():
+        DataEntities.entity(
+            entityid="bronze.device_telemetry",
+            name="device_telemetry",
+            merge_columns=["id"],
+            tags={"tier": "bronze"},
+            schema=schema,
+        )
+
+    def register_all():
+        DataEntities.entity(
+            entityid="bronze.registered_later",
+            name="registered_later",
+            merge_columns=["id"],
+            tags={"tier": "bronze"},
+            schema=schema,
+        )
+
+        @DataPipes.pipe(
+            pipeid="bronze.ingest_telemetry",
+            name="Ingest Telemetry",
+            input_entity_ids=["bronze.device_telemetry"],
+            output_entity_id="bronze.registered_later",
+            output_type="delta",
+            tags={"source": "app"},
+        )
+        def ingest_telemetry(**dataframes):
+            return next(iter(dataframes.values()), None)
+
+    def import_module(_):
+        register_import_time_entity()
+        module = ModuleType("orders_app")
+        module.register_all = register_all
+        return module
+
+    selector.importlib = SimpleNamespace(import_module=import_module)
+    kindling.declare_pipeline = lambda pipe_ids=None: sorted(
+        get_kindling_service(DataPipesRegistry).get_pipe_ids()
+        if pipe_ids is None
+        else pipe_ids
+    )
+
+    spark = FakeSpark(
+        {
+            "kindling.data_app": "orders",
+            "kindling.lakeflow.allowed_apps": "orders",
+            selector.CONFIG_FILES_CONFIG_KEY: settings_path,
+            "kindling.sdp.dataset_naming": "normalized",
+            "datapipes.bronze.ingest_telemetry.engine.sdp.dataset_type": "streaming_table",
+        }
+    )
+    first_plan = selector.declare_from_pipeline_config(spark)
+    second_plan = selector.declare_from_pipeline_config(spark)
+
+    entity_registry = get_kindling_service(DataEntityRegistry)
+    pipe_registry = get_kindling_service(DataPipesRegistry)
+    config_service = get_kindling_service(ConfigService)
+    name_mapper = GlobalInjector.get(EntityNameMapper)
+    import_time_entity = entity_registry.get_entity_definition("bronze.device_telemetry")
+    register_all_entity = entity_registry.get_entity_definition("bronze.registered_later")
+    pipe = pipe_registry.get_pipe_definition("bronze.ingest_telemetry")
+
+    with open(result_path, "w", encoding="utf-8") as result_file:
+        json.dump(
+            {
+                "first_plan": first_plan,
+                "second_plan": second_plan,
+                "config_files": config_service.initial_config.get("config_files"),
+                "data_app": config_service.get("kindling.data_app"),
+                "allowlist": config_service.get("kindling.lakeflow.allowed_apps"),
+                "dataset_naming": config_service.get("kindling.sdp.dataset_naming"),
+                "engine_dataset_type": config_service.get(
+                    "datapipes.bronze.ingest_telemetry.engine.sdp.dataset_type"
+                ),
+                "import_time_tags": import_time_entity.tags,
+                "import_time_partitions": import_time_entity.partition_columns,
+                "register_all_tags": register_all_entity.tags,
+                "pipe_tags": pipe.tags,
+                "pipe_output_type": pipe.output_type,
+                "physical_name": name_mapper.get_table_name(import_time_entity),
+            },
+            result_file,
+        )
+    """)
+
+
+def test_config_files_reach_real_initialize_registry_overlays_and_reentry(tmp_path):
+    result = _run_repro(_REAL_SELECTOR_REPRO, tmp_path)
+
+    assert result["first_plan"] == ["bronze.ingest_telemetry"]
+    assert result["second_plan"] == ["bronze.ingest_telemetry"]
+    assert result["config_files"] == [str(tmp_path / "settings.yaml")]
+    assert result["data_app"] == "orders"
+    assert result["allowlist"] == "orders"
+    assert result["dataset_naming"] == "normalized"
+    assert result["engine_dataset_type"] == "streaming_table"
+    assert result["import_time_tags"] == {
+        "tier": "bronze",
+        "provider.table_catalog": "dev_bronze",
+        "from_bytag": "yes",
+        "provider.table_name": "dev_bronze.cwmdp.device_telemetry",
+        "from_dataentities": "exact",
+    }
+    assert result["import_time_partitions"] == ["event_date"]
+    assert result["register_all_tags"] == {
+        "tier": "bronze",
+        "provider.table_catalog": "dev_bronze",
+        "from_bytag": "yes",
+    }
+    assert result["pipe_tags"] == {"source": "app", "from_datapipes": "yaml"}
+    assert result["pipe_output_type"] == "memory"
+    assert result["physical_name"] == "dev_bronze.cwmdp.device_telemetry"
+
+
+def test_structured_config_cannot_authorize_non_allowlisted_app(monkeypatch, tmp_path):
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(
+        "kindling:\n" "  data_app: customers\n" "  lakeflow:\n" "    allowed_apps: orders\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        selector,
+        "_registered_data_app_entry_points",
+        lambda: {"orders": FakeEntryPoint("orders", "orders_app")},
+    )
+
+    with pytest.raises(selector.LakeflowAppNotAuthorizedError, match="allowed_apps"):
+        selector.declare_from_pipeline_config(
+            FakeSpark(
+                {
+                    "kindling.data_app": "orders",
+                    "kindling.lakeflow.allowed_apps": "customers",
+                    selector.CONFIG_FILES_CONFIG_KEY: str(settings),
+                }
+            )
+        )
 
 
 def test_enumeration_falls_back_to_sql_set():

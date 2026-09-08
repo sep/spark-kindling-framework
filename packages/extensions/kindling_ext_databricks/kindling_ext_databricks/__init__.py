@@ -26,6 +26,7 @@ from kindling_ext_databricks.lakeflow_app_selector import (
     LakeflowAppNotAuthorizedError,
     LakeflowAppNotFoundError,
     LakeflowAppSelectionError,
+    LakeflowConfigSourceError,
     declare_from_pipeline_config,
 )
 
@@ -39,6 +40,7 @@ __all__ = [
     "DATA_APP_CONFIG_KEY",
     "EXPECTATION_DECORATORS",
     "LakeflowAppConflictError",
+    "LakeflowConfigSourceError",
     "LakeflowAppDeclarationError",
     "LakeflowAppNotAuthorizedError",
     "LakeflowAppNotFoundError",
