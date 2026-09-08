@@ -549,7 +549,6 @@ def test_config_files_key_is_point_looked_up_without_config_keys(tmp_path):
         "orders",
     )
 
-    assert selector.CONFIG_FILES_CONFIG_KEY not in config_keys
     assert config["config_files"] == [os.path.abspath(settings)]
     assert config["kindling.storage.table_catalog"] == "main"
 
@@ -563,23 +562,38 @@ def test_config_files_key_empty_string_is_noop():
     assert "config_files" not in config
 
 
-def test_config_files_are_split_normalized_and_ordered(tmp_path):
+def test_config_files_are_split_normalized_and_ordered(monkeypatch, tmp_path):
     first = tmp_path / "first.yaml"
-    second = tmp_path / "second.yml"
+    second = tmp_path / "nested" / "second.yml"
+    second.parent.mkdir()
     first.write_text("dataentities: {}\n", encoding="utf-8")
     second.write_text("datapipes: {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
     config = selector._pipeline_config_for_kindling(
         FakeSpark(
             {
                 "kindling.data_app": "orders",
-                selector.CONFIG_FILES_CONFIG_KEY: f" {first}, , {second} ",
+                selector.CONFIG_FILES_CONFIG_KEY: " first.yaml, , nested/second.yml ",
             }
         ),
         "orders",
     )
 
     assert config["config_files"] == [os.path.abspath(first), os.path.abspath(second)]
+
+
+@pytest.mark.parametrize("content", ["", "   \n", "# Bundle placeholder\n"])
+def test_config_files_empty_yaml_sources_are_noop(tmp_path, content):
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(content, encoding="utf-8")
+
+    config = selector._pipeline_config_for_kindling(
+        FakeSpark({"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: str(settings)}),
+        "orders",
+    )
+
+    assert config["config_files"] == [os.path.abspath(settings)]
 
 
 @pytest.mark.parametrize("raw_value", [",", " , "])
@@ -609,6 +623,51 @@ def test_config_files_missing_path_raises_config_source_error(tmp_path):
     message = str(exc_info.value)
     assert selector.CONFIG_FILES_CONFIG_KEY in message
     assert str(missing) in message
+
+
+def test_config_files_missing_relative_path_reports_resolved_source(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    missing = tmp_path / "missing.yaml"
+
+    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
+        selector._pipeline_config_for_kindling(
+            FakeSpark(
+                {"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: "missing.yaml"}
+            ),
+            "orders",
+        )
+
+    message = str(exc_info.value)
+    assert selector.CONFIG_FILES_CONFIG_KEY in message
+    assert str(missing) in message
+
+
+def test_config_files_unreadable_path_raises_config_source_error(tmp_path):
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root can read chmod 0 files")
+
+    settings = tmp_path / "settings.yaml"
+    settings.write_text("dataentities: {}\n", encoding="utf-8")
+    settings.chmod(0)
+
+    try:
+        with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
+            selector._pipeline_config_for_kindling(
+                FakeSpark(
+                    {
+                        "kindling.data_app": "orders",
+                        selector.CONFIG_FILES_CONFIG_KEY: str(settings),
+                    }
+                ),
+                "orders",
+            )
+    finally:
+        settings.chmod(0o600)
+
+    message = str(exc_info.value)
+    assert selector.CONFIG_FILES_CONFIG_KEY in message
+    assert str(settings) in message
+    assert "could not read YAML source" in message
 
 
 def test_config_files_unsupported_suffix_raises_config_source_error(tmp_path):
@@ -786,7 +845,9 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
         }
     )
     first_plan = selector.declare_from_pipeline_config(spark)
+    first_config_service = get_kindling_service(ConfigService)
     second_plan = selector.declare_from_pipeline_config(spark)
+    second_config_service = get_kindling_service(ConfigService)
 
     entity_registry = get_kindling_service(DataEntityRegistry)
     pipe_registry = get_kindling_service(DataPipesRegistry)
@@ -801,6 +862,7 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
             {
                 "first_plan": first_plan,
                 "second_plan": second_plan,
+                "same_config_service": first_config_service is second_config_service,
                 "config_files": config_service.initial_config.get("config_files"),
                 "data_app": config_service.get("kindling.data_app"),
                 "allowlist": config_service.get("kindling.lakeflow.allowed_apps"),
@@ -825,6 +887,7 @@ def test_config_files_reach_real_initialize_registry_overlays_and_reentry(tmp_pa
 
     assert result["first_plan"] == ["bronze.ingest_telemetry"]
     assert result["second_plan"] == ["bronze.ingest_telemetry"]
+    assert result["same_config_service"] is True
     assert result["config_files"] == [str(tmp_path / "settings.yaml")]
     assert result["data_app"] == "orders"
     assert result["allowlist"] == "orders"

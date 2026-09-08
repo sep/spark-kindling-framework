@@ -151,10 +151,11 @@ for placement-heavy configuration. A `kindling.platform.environment` value in
 the structured YAML is inert because platform defaulting reads only the bridged
 configuration dict.
 
-The Lakeflow config source is intentionally strict. Missing paths, blank files,
-invalid YAML, non-mapping YAML documents, and non-mapping structured sections
-raise `LakeflowConfigSourceError`, a `LakeflowAppSelectionError` subclass, with
-the key and resolved source path in the message. Through
+The Lakeflow config source is intentionally strict. Blank or comment-only YAML
+source files are accepted as no-op sources. Missing paths, invalid YAML,
+non-mapping YAML documents, and non-mapping structured sections raise
+`LakeflowConfigSourceError`, a `LakeflowAppSelectionError` subclass, with the
+key and resolved source path in the message. Through
 `kindling.lakeflow.config_files`, a non-mapping per-entity override is also a
 hard error even though other `config_files` callers may only warn.
 

@@ -166,6 +166,12 @@ def _spark_conf_items(spark: Any) -> Iterable[Tuple[str, Any]]:
 
 
 def _validate_structured_config_file(path: str) -> None:
+    """Pre-check a structured config source for clearer Lakeflow diagnostics.
+
+    Dynaconf remains the authoritative parser during ``initialize()``; this
+    guard only catches common source mistakes early. Empty YAML documents are
+    accepted as no-op sources.
+    """
     if not os.path.isfile(path):
         raise LakeflowConfigSourceError(
             f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' points to "

@@ -388,8 +388,9 @@ Streaming writes:
   default win over both. A `kindling.platform.environment` value in one of
   these YAML files is inert because platform defaulting only sees the
   bridged dict.
-  A missing source file, blank file, invalid YAML document, non-mapping
-  document, non-mapping supported section such as `dataentities:`, or
+  Blank or comment-only YAML source files are accepted as no-op sources. A
+  missing source file, invalid YAML document, non-mapping document,
+  non-mapping supported section such as `dataentities:`, or
   non-mapping per-entity override raises `LakeflowConfigSourceError` naming
   `kindling.lakeflow.config_files` and the resolved source path. The error
   subclasses `LakeflowAppSelectionError`.
