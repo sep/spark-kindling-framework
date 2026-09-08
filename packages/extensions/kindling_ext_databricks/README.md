@@ -128,3 +128,112 @@ the leaf table, for example
 configured with catalog and schema still resolves the historical flattened
 name. See [external reads and generated-name reservations](../kindling_ext_sdp/README.md#reading-leaf-named-outputs-from-elsewhere)
 for the complete example and the temporal source limitation.
+
+## Structured configuration from a Bundle
+
+Lakeflow pipelines can point Kindling at structured YAML files deployed by a
+Databricks Asset Bundle. Set `kindling.lakeflow.config_files` in the pipeline
+`configuration:` block to a comma-separated, order-preserving list of deployed
+`.yaml` or `.yml` paths. The selector reads this key with a direct
+`spark.conf.get` point lookup, normalizes every path to an absolute path, and
+passes the list through the same bootstrap `config_files` route used by
+`kindling.initialize(config={"config_files": [...]})`. Do not also list these
+paths in `kindling.lakeflow.config_keys`.
+
+The files support the same structured sections as ordinary Kindling YAML:
+`dataentities:`, `dataentities-bytag:`, `datapipes:`, and
+`datapipes-bytag:`. Structured files load first, then flat `kindling.*`
+pipeline configuration keys are bridged as bootstrap config and win over the
+YAML values. The selector's authoritative `kindling.data_app`,
+`kindling.lakeflow.allowed_apps`, and platform default win over both. Existing
+flat keys keep working and keep winning, so this is an additive migration path
+for placement-heavy configuration. A `kindling.platform.environment` value in
+the structured YAML is inert because platform defaulting reads only the bridged
+configuration dict.
+
+The Lakeflow config source is intentionally strict. Missing paths, blank files,
+invalid YAML, non-mapping YAML documents, and non-mapping structured sections
+raise `LakeflowConfigSourceError`, a `LakeflowAppSelectionError` subclass, with
+the key and resolved source path in the message. Through
+`kindling.lakeflow.config_files`, a non-mapping per-entity override is also a
+hard error even though other `config_files` callers may only warn.
+
+Use Bundle sync to deploy the config directory to a stable workspace path. This
+matches the transport pattern in the
+[DAB config promotion guide](../../../docs/guide/dab_config_promotion.md):
+
+```yaml
+# databricks.yml
+bundle:
+  name: telemetry-lakeflow
+
+targets:
+  dev:
+    workspace:
+      host: https://adb-<dev>.azuredatabricks.net
+      file_path: /Workspace/Shared/kindling/dev
+
+sync:
+  include:
+    - config/**
+
+resources:
+  pipelines:
+    telemetry_bronze:
+      name: telemetry-bronze
+      catalog: dev_bronze
+      target: cwmdp
+      configuration:
+        "kindling.data_app": telemetry_bronze
+        "kindling.sdp.dataset_naming": leaf
+        "kindling.lakeflow.config_files": /Workspace/Shared/kindling/dev/config/lakeflow-placement.yaml
+    telemetry_silver:
+      name: telemetry-silver
+      catalog: dev_silver
+      target: cwmdp
+      configuration:
+        "kindling.data_app": telemetry_silver
+        "kindling.sdp.dataset_naming": leaf
+        "kindling.lakeflow.config_files": /Workspace/Shared/kindling/dev/config/lakeflow-placement.yaml
+```
+
+```yaml
+# config/lakeflow-placement.yaml
+dataentities:
+  bronze.device_telemetry:
+    tags:
+      provider.table_name: dev_bronze.cwmdp.device_telemetry
+  silver.device_telemetry:
+    tags:
+      provider.table_name: dev_silver.cwmdp.device_telemetry
+  silver.events:
+    tags:
+      provider.table_name: dev_silver.cwmdp.events
+  silver.episodes:
+    tags:
+      provider.table_name: dev_silver.cwmdp.episodes
+```
+
+With `dataset_naming: leaf`, dotted logical IDs stay unchanged in the Kindling
+registry while Lakeflow emits single-part output names inside each pipeline
+destination:
+
+| Logical ID | Pipeline destination | Physical table |
+|---|---|---|
+| `bronze.device_telemetry` | `dev_bronze.cwmdp` | `dev_bronze.cwmdp.device_telemetry` |
+| `silver.device_telemetry` | `dev_silver.cwmdp` | `dev_silver.cwmdp.device_telemetry` |
+| `silver.events` | `dev_silver.cwmdp` | `dev_silver.cwmdp.events` |
+| `silver.episodes` | `dev_silver.cwmdp` | `dev_silver.cwmdp.episodes` |
+
+Pipeline-local outputs get those names from `dataset_naming: leaf` plus the
+pipeline catalog/schema. External reads of the same tables still use the
+ordinary entity resolver, so they need the fully qualified
+`provider.table_name` overrides shown in the structured YAML. A catalog/schema
+override alone is not enough: it would still resolve the default flattened
+table name. Temporal chain base-event sources always resolve externally, so
+keep their external table overrides in the same structured YAML.
+
+Workspace files under `/Workspace/...` are documented as driver-readable for
+clusters and jobs. Readability from a Lakeflow serverless pipeline has not yet
+been confirmed; if that is required, deploy the same YAML to a Unity Catalog
+volume path and reference that path in `kindling.lakeflow.config_files`.

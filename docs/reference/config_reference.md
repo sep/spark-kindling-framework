@@ -372,6 +372,27 @@ Streaming writes:
   External `EntityNameMapper` resolution remains independent. See the
   [SDP extension documentation](../../packages/extensions/kindling_ext_sdp/README.md#output-dataset-naming)
   for consumer alignment, resource scoping, and generated-name reservations.
+- `kindling.lakeflow.config_files`: Databricks Lakeflow pipeline
+  `configuration:` key containing a comma-separated, order-preserving list
+  of deployed `.yaml` or `.yml` files. Restricted Lakeflow runtimes may not
+  expose enumerable Spark configuration, so the app selector reads this key
+  with `spark.conf.get(key, None)`, normalizes every path with
+  `os.path.abspath`, and passes the list through the bootstrap
+  `config_files` route as Dynaconf `settings_files`. Do not include this key
+  in `kindling.lakeflow.config_keys`.
+  Supported sections are `dataentities:`, `dataentities-bytag:`,
+  `datapipes:`, and `datapipes-bytag:`. Structured YAML files load first;
+  flat bridged pipeline configuration keys are then applied as bootstrap
+  config and win over those files. The selector's authoritative
+  `kindling.data_app`, `kindling.lakeflow.allowed_apps`, and platform
+  default win over both. A `kindling.platform.environment` value in one of
+  these YAML files is inert because platform defaulting only sees the
+  bridged dict.
+  A missing source file, blank file, invalid YAML document, non-mapping
+  document, non-mapping supported section such as `dataentities:`, or
+  non-mapping per-entity override raises `LakeflowConfigSourceError` naming
+  `kindling.lakeflow.config_files` and the resolved source path. The error
+  subclasses `LakeflowAppSelectionError`.
 
 ## Testing-Only Settings
 
