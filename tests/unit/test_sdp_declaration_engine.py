@@ -11,6 +11,7 @@ import sys
 import pytest
 from kindling.data_entities import EntityMetadata
 from kindling.data_pipes import PipeMetadata
+from kindling.entity_naming import TableNamingPolicy
 
 # The extension package root is added to sys.path by tests/conftest.py,
 # matching the other extension packages (kindling_ext_visualization, ...).
@@ -132,12 +133,13 @@ def pipe_registry(pipes):
     return FakePipeRegistry(pipes)
 
 
-def make_engine(entity_registry, pipe_registry, capabilities=OSS_SDP, engine_config=None):
+def make_engine(entity_registry, pipe_registry, capabilities=OSS_SDP, engine_config=None, **kwargs):
     return PlanOnlyEngine(
         entity_registry=entity_registry,
         pipe_registry=pipe_registry,
         capabilities=capabilities,
         engine_config=engine_config,
+        **kwargs,
     )
 
 
@@ -483,6 +485,142 @@ class TestValidation:
             for pipe in pipes
         ]
         engine = make_engine(entity_registry, FakePipeRegistry(watermarked))
+
+        assert engine.validate() == []
+
+
+class TestSharedEntityNaming:
+    def test_provider_table_naming_tag_selects_effective_dataset_mode(
+        self, entities, pipe_registry
+    ):
+        tagged = [
+            (
+                make_entity("silver.orders", tags={"provider.table_naming": "leaf"})
+                if entity.entityid == "silver.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value(None),
+        )
+
+        assert engine.dataset_name.mode == "normalized"
+        assert engine.dataset_name("silver.orders") == "orders"
+        assert engine.validate() == []
+
+    def test_legacy_provider_table_naming_tag_is_normalized_alias(self, entities, pipe_registry):
+        tagged = [
+            (
+                make_entity("silver.orders", tags={"provider.table_naming": "legacy"})
+                if entity.entityid == "silver.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            dataset_naming="leaf",
+            shared_naming=TableNamingPolicy.from_config_value(None),
+        )
+
+        assert engine.dataset_name("silver.orders") == "silver_orders"
+        assert engine.validate() == []
+
+    def test_invalid_provider_table_naming_is_accumulated_with_other_issues(self, entities):
+        tagged = [
+            (
+                make_entity("bronze.orders", tags={"provider.table_naming": "lief"})
+                if entity.entityid == "bronze.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        pipes = FakePipeRegistry([make_pipe("broken.pipe", ["missing.input"], "bronze.orders")])
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipes,
+            shared_naming=TableNamingPolicy.from_config_value(None),
+        )
+
+        issues = engine.validate()
+
+        codes = issue_codes(issues)
+        assert "invalid_table_naming" in codes
+        assert "input_entity_not_registered" in codes
+        reason = next(issue.reason for issue in issues if issue.code == "invalid_table_naming")
+        assert "provider.table_naming" in reason
+        assert "lief" in reason
+        assert "bronze.orders" in reason
+        assert "legacy" in reason and "normalized" in reason and "leaf" in reason
+
+    def test_explicit_sdp_global_shared_policy_conflict_is_a_declaration_issue(
+        self, entity_registry, pipe_registry
+    ):
+        engine = make_engine(
+            entity_registry,
+            pipe_registry,
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value("leaf"),
+            dataset_naming_explicit=True,
+        )
+
+        issues = engine.validate()
+
+        conflict = next(issue for issue in issues if issue.code == "naming_policy_conflict")
+        assert conflict.pipe_id == "<pipeline>"
+        assert "kindling.storage.table_naming='leaf'" in conflict.reason
+        assert "kindling.sdp.dataset_naming='normalized'" in conflict.reason
+
+    def test_explicit_sdp_per_entity_conflict_reports_entity_and_tag_wins(
+        self, entities, pipe_registry
+    ):
+        tagged = [
+            (
+                make_entity("silver.orders", tags={"provider.table_naming": "leaf"})
+                if entity.entityid == "silver.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value(None),
+            dataset_naming_explicit=True,
+        )
+
+        issues = engine.validate()
+
+        conflict = next(issue for issue in issues if issue.code == "naming_policy_conflict")
+        assert conflict.pipe_id == "bronze_to_silver.orders"
+        assert "silver.orders" in conflict.reason
+        assert "provider.table_naming='leaf'" in conflict.reason
+        assert "per-entity tag wins" in conflict.reason
+        assert engine.dataset_name("silver.orders") == "orders"
+
+    def test_intentional_divergence_downgrades_conflicts(self, entities, pipe_registry):
+        tagged = [
+            (
+                make_entity("gold.orders_summary", tags={"provider.table_naming": "leaf"})
+                if entity.entityid == "gold.orders_summary"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value(None),
+            dataset_naming_explicit=True,
+            dataset_naming_divergence="intentional",
+        )
 
         assert engine.validate() == []
 

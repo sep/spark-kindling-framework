@@ -203,3 +203,136 @@ def test_sdp_dataset_naming_is_independent_of_core_entity_name_mapper():
         core_mapper.get_table_name(SimpleNamespace(entityid="silver.device_telemetry", tags={}))
         == "published.silver_device_telemetry"
     )
+
+
+def test_bootstrap_derives_dataset_naming_from_shared_policy(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from kindling.data_entities import DataEntityRegistry, EntityNameMapper
+    from kindling.data_pipes import DataPipesRegistry
+    from kindling.injection import GlobalInjector
+    from kindling.spark_config import ConfigService
+    from kindling_ext_sdp.bootstrap import declare_pipeline
+    from kindling_ext_sdp.oss_engine import OssSdpEngine
+
+    pipes = MagicMock()
+    pipes.get_pipe_ids.return_value = []
+    services = {
+        DataEntityRegistry: MagicMock(),
+        DataPipesRegistry: pipes,
+        ConfigService: FakeConfigService({"kindling.storage.table_naming": "leaf"}),
+        EntityNameMapper: MagicMock(),
+    }
+    monkeypatch.setattr(GlobalInjector, "get", services.__getitem__)
+    engines = []
+
+    def factory(*args, **kwargs):
+        engine = OssSdpEngine(*args, **kwargs)
+        engines.append(engine)
+        return engine
+
+    declare_pipeline(engine_factory=factory, dp_module=MagicMock())
+
+    assert engines[0].dataset_name.mode == "leaf"
+    assert engines[0].dataset_name("silver.device_telemetry") == "device_telemetry"
+
+
+def test_bootstrap_leaves_external_read_resolvers_unset_without_policy(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
+    from kindling.injection import GlobalInjector
+    from kindling.spark_config import ConfigService
+    from kindling_ext_sdp.bootstrap import declare_pipeline
+
+    pipes = MagicMock()
+    pipes.get_pipe_ids.return_value = []
+    services = {
+        DataEntityRegistry: MagicMock(),
+        DataPipesRegistry: pipes,
+        ConfigService: FakeConfigService({}),
+    }
+    monkeypatch.setattr(GlobalInjector, "get", services.__getitem__)
+    engines = []
+
+    class CapturingEngine:
+        def __init__(self, *args, **kwargs):
+            engines.append(kwargs)
+
+        def build_plan(self, selected):
+            return ("plan", selected)
+
+        def declare_pipeline(self, plan):
+            self.plan = plan
+
+    declare_pipeline(engine_factory=CapturingEngine, dp_module=MagicMock())
+
+    assert engines[0]["external_read_resolver"] is None
+    assert engines[0]["external_stream_read_resolver"] is None
+    assert "name_resolver" in engines[0]
+    assert engines[0]["name_resolver"] is None
+
+
+@pytest.mark.parametrize(
+    "values, entity_tags",
+    [
+        ({"kindling.storage.table_naming": "leaf"}, {}),
+        ({}, {"provider.table_naming": "leaf"}),
+    ],
+)
+def test_bootstrap_wires_external_read_resolvers_when_policy_is_configured(
+    monkeypatch, values, entity_tags
+):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from kindling.data_entities import DataEntityRegistry, EntityNameMapper
+    from kindling.data_pipes import DataPipesRegistry
+    from kindling.injection import GlobalInjector
+    from kindling.spark_config import ConfigService
+    from kindling_ext_sdp.bootstrap import declare_pipeline
+
+    entity = SimpleNamespace(entityid="bronze.device_telemetry", tags=entity_tags)
+    entities = MagicMock()
+    entities.get_entity_definition.return_value = entity
+    pipe = SimpleNamespace(
+        pipeid="clean",
+        input_entity_ids=["bronze.device_telemetry"],
+        output_entity_id="silver.device_telemetry",
+    )
+    pipes = MagicMock()
+    pipes.get_pipe_ids.return_value = ["clean"]
+    pipes.get_pipe_definition.return_value = pipe
+    mapper = MagicMock()
+    mapper.get_table_name.return_value = "dev.cwmdp.device_telemetry"
+    services = {
+        DataEntityRegistry: entities,
+        DataPipesRegistry: pipes,
+        ConfigService: FakeConfigService(values),
+        EntityNameMapper: mapper,
+    }
+    monkeypatch.setattr(GlobalInjector, "get", services.__getitem__)
+    engines = []
+
+    class CapturingEngine:
+        def __init__(self, *args, **kwargs):
+            engines.append(kwargs)
+
+        def build_plan(self, selected):
+            return ("plan", selected)
+
+        def declare_pipeline(self, plan):
+            self.plan = plan
+
+    declare_pipeline(engine_factory=CapturingEngine, dp_module=MagicMock())
+
+    spark = MagicMock()
+    engines[0]["external_read_resolver"](spark, "bronze.device_telemetry")
+    engines[0]["external_stream_read_resolver"](spark, "bronze.device_telemetry")
+
+    assert engines[0]["name_resolver"] is mapper
+    assert mapper.get_table_name.call_count == 2
+    mapper.get_table_name.assert_called_with(entity)
+    spark.table.assert_called_once_with("dev.cwmdp.device_telemetry")
+    spark.readStream.table.assert_called_once_with("dev.cwmdp.device_telemetry")

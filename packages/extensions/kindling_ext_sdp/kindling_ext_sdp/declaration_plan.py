@@ -12,6 +12,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from kindling.entity_naming import (
+    TableNamingMode,
+    derive_table_component,
+    parse_table_naming_mode,
+    sdp_mode_for,
+)
+
 
 @dataclass(frozen=True)
 class DatasetNameMapper:
@@ -22,13 +29,11 @@ class DatasetNameMapper:
     """
 
     mode: str = "normalized"
+    entity_mode_lookup: Optional[Callable[[str], Optional[TableNamingMode]]] = None
 
     def __post_init__(self) -> None:
-        if self.mode not in ("normalized", "leaf"):
-            raise ValueError(
-                "Invalid kindling.sdp.dataset_naming value "
-                f"{self.mode!r}; expected 'normalized' or 'leaf'."
-            )
+        mode = parse_table_naming_mode(self.mode, key="kindling.sdp.dataset_naming")
+        object.__setattr__(self, "mode", sdp_mode_for(mode))
 
     def __call__(self, entity_id: str) -> str:
         """Return the emitted name within the pipeline's catalog/schema.
@@ -37,8 +42,11 @@ class DatasetNameMapper:
         the pipeline target schema. Pipeline-scoped views reject multipart
         names outright, so both naming modes emit single-part identifiers.
         """
-        name = entity_id.rsplit(".", 1)[-1] if self.mode == "leaf" else entity_id
-        return name.replace(".", "_").replace("-", "_")
+        entity_mode = self.entity_mode_lookup(entity_id) if self.entity_mode_lookup else None
+        mode = sdp_mode_for(entity_mode) if entity_mode is not None else self.mode
+        if mode == TableNamingMode.LEAF.value:
+            return derive_table_component(entity_id, TableNamingMode.LEAF)
+        return derive_table_component(entity_id, TableNamingMode.NORMALIZED)
 
 
 def pipeline_dataset_name(entity_id: str) -> str:

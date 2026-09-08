@@ -15,6 +15,8 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 from kindling_ext_sdp import (
     DatasetType,
     OssSdpEngine,
@@ -25,9 +27,6 @@ from kindling_ext_sdp import (
     dry_run,
     write_pipeline_spec,
 )
-
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures: fake registries (same graph as test_sdp_declaration_engine) #
@@ -508,10 +507,15 @@ def test_duplicate_leaf_names_fail_before_emission(graph):
 
 
 def test_default_name_helper_is_backward_compatible():
-    from kindling_ext_sdp.declaration_plan import pipeline_dataset_name
+    from kindling_ext_sdp.declaration_plan import (
+        DatasetNameMapper,
+        pipeline_dataset_name,
+    )
 
     assert pipeline_dataset_name("silver.device_telemetry") == "silver_device_telemetry"
     assert pipeline_dataset_name("silver.device-telemetry") == "silver_device_telemetry"
+    assert DatasetNameMapper("legacy").mode == "normalized"
+    assert DatasetNameMapper("legacy")("silver.device-telemetry") == "silver_device_telemetry"
 
 
 def test_invalid_dataset_naming_fails_clearly(graph):
@@ -532,6 +536,20 @@ def test_default_normalization_collisions_are_rejected():
     pipes = FakePipeRegistry([make_pipe("one", [], "a.b"), make_pipe("two", [], "a_b")])
     with pytest.raises(DeclarationValidationError, match="duplicate_dataset_name"):
         OssSdpEngine(entities, pipes).build_plan()
+
+
+def test_pipeline_local_name_stays_single_part_with_multipart_external_override(graph):
+    graph.entity_registry.registry["silver.orders"] = make_entity(
+        "silver.orders",
+        tags={"provider.table_name": "dev_silver.cwmdp.orders"},
+    )
+    dp = FakeDpModule()
+    engine = make_engine(graph, dp_module=dp, dataset_naming="leaf")
+
+    dataset = engine.build_plan(["bronze_to_silver.orders"]).get_dataset("silver.orders")
+
+    assert engine._declaration_kwargs(dataset)["name"] == "orders"
+    assert "." not in engine._declaration_kwargs(dataset)["name"]
 
 
 @pytest.mark.parametrize("streaming", [False, True])

@@ -82,7 +82,7 @@ class OssSdpEngine(DeclarationEngine):
             ``spark.readStream.table(entity_id)``.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         entity_registry,
         pipe_registry,
@@ -93,9 +93,21 @@ class OssSdpEngine(DeclarationEngine):
         external_read_resolver: Optional[Callable[[Any, str], Any]] = None,
         external_stream_read_resolver: Optional[Callable[[Any, str], Any]] = None,
         dataset_naming: str = "normalized",
+        shared_naming: Any = None,
+        dataset_naming_explicit: bool = False,
+        dataset_naming_divergence: str = "error",
+        name_resolver: Any = None,
     ):
         super().__init__(
-            entity_registry, pipe_registry, capabilities, engine_config, dataset_naming
+            entity_registry,
+            pipe_registry,
+            capabilities,
+            engine_config,
+            dataset_naming,
+            shared_naming=shared_naming,
+            dataset_naming_explicit=dataset_naming_explicit,
+            dataset_naming_divergence=dataset_naming_divergence,
+            name_resolver=name_resolver,
         )
         self._dp_module = dp_module
         self._session_provider = session_provider or _default_session_provider
