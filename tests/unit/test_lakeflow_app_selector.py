@@ -602,7 +602,8 @@ def test_config_source_error_is_exported():
     import kindling_ext_databricks as databricks_ext
 
     assert databricks_ext.LakeflowConfigSourceError is selector.LakeflowConfigSourceError
-    assert selector.LakeflowConfigSourceError is selector.LakeflowAppSelectionError
+    assert issubclass(selector.LakeflowConfigSourceError, selector.LakeflowAppSelectionError)
+    assert selector.LakeflowConfigSourceError is not selector.LakeflowAppSelectionError
 
 
 _REAL_SELECTOR_REPRO = textwrap.dedent("""

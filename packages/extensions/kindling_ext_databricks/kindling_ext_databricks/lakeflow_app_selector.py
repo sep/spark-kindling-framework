@@ -15,7 +15,7 @@ import dataclasses
 import importlib
 import logging
 from types import CodeType, ModuleType
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from kindling.bootstrap import (
     iter_spark_conf_items,
@@ -61,9 +61,8 @@ class LakeflowAppConflictError(LakeflowAppSelectionError):
     """An app changed an already-registered entity or pipe definition."""
 
 
-# Deprecated compatibility alias retained for one release cycle. Source
-# problems now come from Kindling's shared configuration loader.
-LakeflowConfigSourceError = LakeflowAppSelectionError
+class LakeflowConfigSourceError(LakeflowAppSelectionError):
+    """Deprecated compatibility error; no longer raised by this selector."""
 
 
 def _registered_data_app_entry_points() -> Dict[str, Any]:

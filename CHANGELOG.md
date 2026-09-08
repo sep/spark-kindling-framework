@@ -26,6 +26,9 @@ All notable changes to spark-kindling are documented here.
 - `use_lake_packages: false` no longer suppresses configuration discovery when
   `artifacts_storage_path` is set; use `discover_config_files: false` for an
   explicit opt-out.
+- Explicit `config_files` now warn when none of the listed paths are readable,
+  and comma-separated canonical SparkConf values are split with a migration
+  warning instead of being treated as one path.
 - Bootstrap dictionary payloads under structured sections preserve literal
   dotted mapping keys such as `bronze.device_telemetry` and dotted metadata
   keys such as `provider.path`.
@@ -36,8 +39,8 @@ All notable changes to spark-kindling are documented here.
   for `spark.kindling.bootstrap.config_files`; removal is eligible at 0.13.0.
   The alias no longer owns Lakeflow-specific file validation or YAML parsing.
 - `LakeflowConfigSourceError` remains importable for one release cycle as a
-  deprecated alias of `LakeflowAppSelectionError`; source diagnostics now come
-  from the shared configuration loader.
+  deprecated subclass of `LakeflowAppSelectionError`; it is no longer raised,
+  and source diagnostics now come from the shared configuration loader.
 
 ## [0.12.35] - 2026-09-08
 

@@ -34,7 +34,7 @@ def spark():
     )
 
     # get_or_create_spark_session() prefers __main__.spark (notebook
-    # convention) -- point it at this session so the provider uses it, and
+    # convention) — point it at this session so the provider uses it, and
     # clear it afterward so no stale/stopped session leaks to later tests.
     import __main__
 

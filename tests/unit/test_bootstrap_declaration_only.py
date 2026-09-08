@@ -46,6 +46,7 @@ def _initialize_with_mocks(config, config_values=None, platform_side_effect=None
     data_app_runner.run_app.side_effect = AssertionError("declaration must not run app")
     mock_spark = MagicMock()
     mock_spark.conf.getAll.return_value = {}
+    mock_spark.conf.set.side_effect = AssertionError("declaration must not write SparkConf")
 
     def _get_service(iface):
         if iface is ConfigService:
@@ -65,6 +66,15 @@ def _initialize_with_mocks(config, config_values=None, platform_side_effect=None
         raise AssertionError(f"Unexpected service lookup: {iface}")
 
     standalone_service = MagicMock(name="standalone_service")
+    standalone_service._get_token.side_effect = AssertionError(
+        "declaration must not acquire platform tokens"
+    )
+    standalone_service.storage.write.side_effect = AssertionError(
+        "declaration must not write through platform storage"
+    )
+    standalone_service.write.side_effect = AssertionError(
+        "declaration must not write through platform services"
+    )
     side_effect = platform_side_effect or [standalone_service]
 
     with (
@@ -95,6 +105,7 @@ def _initialize_with_mocks(config, config_values=None, platform_side_effect=None
         "mock_load_workspace_packages": mock_load_workspace_packages,
         "notebook_manager": notebook_manager,
         "data_app_runner": data_app_runner,
+        "mock_spark": mock_spark,
     }
 
 
@@ -113,6 +124,10 @@ def test_declaration_only_suppresses_runtime_side_effects():
     result["mock_watermark"].assert_not_called()
     result["mock_load_workspace_packages"].assert_not_called()
     result["data_app_runner"].run_app.assert_not_called()
+    result["result"]._get_token.assert_not_called()
+    result["result"].storage.write.assert_not_called()
+    result["result"].write.assert_not_called()
+    result["mock_spark"].conf.set.assert_not_called()
     assert result["notebook_manager"]._notebook_cache == []
 
 

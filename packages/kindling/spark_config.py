@@ -13,6 +13,36 @@ from .spark_session import *
 
 _CONFIG_LOGGER = logging.getLogger("kindling.config")
 _MISSING = object()
+_CONFIG_FILES_SOURCE_METADATA_KEY = "_kindling_config_files_source_key"
+
+
+def _config_file_paths(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, Path)):
+        return [str(value)]
+    try:
+        return [str(path) for path in value]
+    except TypeError:
+        return [str(value)]
+
+
+def _path_exists(path: str) -> bool:
+    try:
+        return Path(path).exists()
+    except (OSError, ValueError):
+        return False
+
+
+def _warn_unreadable_explicit_config_files(initial_config: Dict[str, Any], source_key: str) -> None:
+    paths = _config_file_paths(initial_config.get("config_files"))
+    if paths and not any(_path_exists(path) for path in paths):
+        _CONFIG_LOGGER.warning(
+            "Explicit configuration files from %s were not readable; Dynaconf will "
+            "continue without loading them: %s",
+            source_key,
+            ", ".join(paths),
+        )
 
 
 def _log_settings_files_load_order(settings_files: List[str]) -> None:
@@ -160,11 +190,16 @@ class DynaconfConfig(ConfigService):
         reload_context: Optional[Dict[str, Any]] = None,
     ) -> None:
 
+        initial_config_values = dict(initial_config or {})
+        config_files_source_key = initial_config_values.pop(
+            _CONFIG_FILES_SOURCE_METADATA_KEY, "config_files"
+        )
         self.spark = get_or_create_spark_session()
-        self.initial_config = initial_config or {}
+        self.initial_config = initial_config_values
         self._reload_context = reload_context  # Store for hot-reload
 
         settings_files = config_files or []
+        _warn_unreadable_explicit_config_files(self.initial_config, config_files_source_key)
         _log_settings_files_load_order(settings_files)
 
         # Load YAML configs first

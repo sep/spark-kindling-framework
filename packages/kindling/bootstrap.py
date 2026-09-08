@@ -39,6 +39,8 @@ level_hierarchy = {
 
 _BOOTSTRAP_STAGE_ID = uuid.uuid4().hex[:12]
 _BOOTSTRAP_LOGGER = logging.getLogger("kindling.bootstrap")
+_CONFIG_FILES_SOURCE_METADATA_KEY = "_kindling_config_files_source_key"
+_SPARK_CONFIG_FILES_KEY = "spark.kindling.bootstrap.config_files"
 _LOCAL_PACKAGE_MODULES_ENV = "KINDLING_LOCAL_PACKAGE_MODULES"
 _LOCAL_PACKAGE_REGISTRATION_NAMESPACES = ("entities", "pipes", "ingestion")
 
@@ -255,7 +257,18 @@ def map_spark_kindling_items(items: Iterable[Tuple[str, Any]]) -> Dict[str, Any]
             bootstrap_key = suffix[len(bootstrap_prefix) :]
             if not bootstrap_key:
                 continue
-            mapped[bootstrap_aliases.get(bootstrap_key, bootstrap_key)] = value
+            mapped_key = bootstrap_aliases.get(bootstrap_key, bootstrap_key)
+            if mapped_key == "config_files" and isinstance(value, str) and "," in value:
+                comma_paths = [part.strip() for part in value.split(",") if part.strip()]
+                if comma_paths:
+                    _BOOTSTRAP_LOGGER.warning(
+                        "SparkConf key '%s' should use a JSON array string for multiple "
+                        "config files; treating comma-separated value as %s.",
+                        key,
+                        comma_paths,
+                    )
+                    value = comma_paths
+            mapped[mapped_key] = value
         else:
             mapped[f"kindling.{suffix}"] = value
 
@@ -406,11 +419,14 @@ def apply_config_overrides() -> None:
 def _merge_with_spark_kindling_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Merge SparkConf-derived config with explicit config (explicit wins)."""
     spark_kindling_config = _get_spark_kindling_config()
+    explicit_config = dict(config or {})
     if not spark_kindling_config:
-        return dict(config or {})
+        return explicit_config
 
     merged = dict(spark_kindling_config)
-    merged.update(config or {})
+    if "config_files" in spark_kindling_config and "config_files" not in explicit_config:
+        merged[_CONFIG_FILES_SOURCE_METADATA_KEY] = _SPARK_CONFIG_FILES_KEY
+    merged.update(explicit_config)
     _BOOTSTRAP_LOGGER.debug(
         "Merged %s SparkConf settings from spark.kindling.*", len(spark_kindling_config)
     )
@@ -2043,6 +2059,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     explicit_discover_config_files = discover_config_files_value is not None and _as_bool(
         discover_config_files_value
     )
+    # Loading packages from artifacts storage relies on the same storage utilities as
+    # config discovery. Keep packaged jobs strict so they do not silently start with
+    # only explicit config_files when artifact discovery is unavailable.
     strict_config_discovery = explicit_discover_config_files or use_lake_packages
 
     # Early platform detection for config loading

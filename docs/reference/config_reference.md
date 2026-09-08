@@ -20,9 +20,9 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 - `platform_environment`: Alias for `platform` used by platform runner internals.
 - `environment`: Environment name used for config layering (for example `development`, `prod`).
 - `workspace_id`: Workspace identifier used for workspace-specific config selection.
-- `use_lake_packages`: If true, load Kindling and extensions from artifacts storage (instead of local environment). Defaults to `false` when `platform` is `standalone`, `true` otherwise. This does not opt out of configuration discovery; use `discover_config_files` for that.
-- `discover_config_files`: Boolean; controls whether `artifacts_storage_path` is used to discover the canonical config hierarchy. Defaults to `true` when `artifacts_storage_path` is set. An explicit `true` requires storage utilities; the implicit default degrades to explicit `config_files` only when storage utilities are unavailable.
-- `declaration_only`: Boolean; initialize enough framework state to resolve configuration and declarations without runtime side effects. Suppresses bootstrap dependency installation, watermark aspect registration, workspace package loading, and `app_name` auto-run. Used by Databricks Lakeflow declaration.
+- `use_lake_packages`: If true, load Kindling and extensions from artifacts storage (instead of local environment). Defaults to `false` when `platform` is `standalone`, `true` otherwise. This does not opt out of configuration discovery; use `discover_config_files` for that. Artifact-backed package loading also makes configuration discovery strict because both paths require storage utilities.
+- `discover_config_files`: Boolean; controls whether `artifacts_storage_path` is used to discover the canonical config hierarchy. Defaults to `true` when `artifacts_storage_path` is set. An explicit `true` requires storage utilities; the implicit default degrades to explicit `config_files` only when storage utilities are unavailable and `use_lake_packages` is not requiring artifact-backed loading.
+- `declaration_only`: Boolean; initialize enough framework state to resolve configuration and declarations without runtime side effects. Suppresses bootstrap dependency installation, watermark aspect registration, workspace package loading, and `app_name` auto-run. If real platform-service construction fails during declaration-only initialization, Kindling warns and falls back to the standalone service for declaration-time operations. Used by Databricks Lakeflow declaration.
 - `load_workspace_packages`: If true, load workspace packages (notebooks) after platform init.
   (`load_local_packages` still accepted as a deprecated alias.)
 - `temp_path`: Temporary file path root used during wheel/extension install; `kindling.temp_path` is the YAML equivalent.
@@ -401,8 +401,8 @@ Streaming writes:
   paths unmodified to bootstrap `config_files`. It no longer validates paths,
   suffixes, YAML, or structured sections, and it is not the recommended
   configuration path. `LakeflowConfigSourceError` remains for one cycle as a
-  deprecated alias of `LakeflowAppSelectionError`; source diagnostics now come
-  from the shared loader.
+  deprecated subclass of `LakeflowAppSelectionError`; it is no longer raised,
+  and source diagnostics now come from the shared loader.
 
 ## Testing-Only Settings
 

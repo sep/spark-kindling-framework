@@ -1,4 +1,8 @@
+import logging
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class FakeConf:
@@ -51,6 +55,8 @@ def test_map_spark_kindling_items_maps_bootstrap_aliases_and_coerces_values():
             ("spark.kindling.bootstrap.load_lake", "false"),
             ("spark.kindling.bootstrap.load_local", "true"),
             ("spark.kindling.bootstrap.config_files", '["settings.yaml"]'),
+            ("spark.kindling.pipeline.max_workers", "5"),
+            ("spark.kindling.pipeline.sample_ratio", "1.5"),
             ("spark.kindling.telemetry.logging.level", '"DEBUG"'),
             ("spark.executor.memory", "8g"),
         ]
@@ -60,8 +66,61 @@ def test_map_spark_kindling_items_maps_bootstrap_aliases_and_coerces_values():
         "use_lake_packages": False,
         "load_workspace_packages": True,
         "config_files": ["settings.yaml"],
+        "kindling.pipeline.max_workers": 5,
+        "kindling.pipeline.sample_ratio": 1.5,
         "kindling.telemetry.logging.level": "DEBUG",
     }
+
+
+def test_config_files_comma_string_from_spark_conf_is_split_with_warning(caplog):
+    from kindling.bootstrap import map_spark_kindling_items
+
+    with caplog.at_level(logging.WARNING, logger="kindling.bootstrap"):
+        result = map_spark_kindling_items(
+            [("spark.kindling.bootstrap.config_files", "first.yaml, second.yaml")]
+        )
+
+    assert result == {"config_files": ["first.yaml", "second.yaml"]}
+    assert "spark.kindling.bootstrap.config_files" in caplog.text
+    assert "JSON array string" in caplog.text
+
+
+def test_dynaconf_config_warns_for_missing_spark_conf_config_files(caplog, tmp_path):
+    from kindling.spark_config import DynaconfConfig
+
+    missing = tmp_path / "missing.yaml"
+
+    with patch("kindling.spark_config.get_or_create_spark_session", return_value=MagicMock()):
+        config = DynaconfConfig()
+        with caplog.at_level(logging.WARNING, logger="kindling.config"):
+            config.initialize(
+                config_files=[str(missing)],
+                initial_config={
+                    "config_files": [str(missing)],
+                    "_kindling_config_files_source_key": ("spark.kindling.bootstrap.config_files"),
+                },
+            )
+
+    assert "spark.kindling.bootstrap.config_files" in caplog.text
+    assert str(missing) in caplog.text
+
+
+def test_dynaconf_config_raises_for_malformed_spark_conf_config_file(tmp_path):
+    from kindling.spark_config import DynaconfConfig
+
+    malformed = tmp_path / "settings.yaml"
+    malformed.write_text("kindling:\n  platform: [\n", encoding="utf-8")
+
+    with patch("kindling.spark_config.get_or_create_spark_session", return_value=MagicMock()):
+        config = DynaconfConfig()
+        with pytest.raises(Exception, match="while parsing"):
+            config.initialize(
+                config_files=[str(malformed)],
+                initial_config={
+                    "config_files": [str(malformed)],
+                    "_kindling_config_files_source_key": ("spark.kindling.bootstrap.config_files"),
+                },
+            )
 
 
 def test_iter_spark_conf_items_uses_spark_context_after_runtime_config_failure():
