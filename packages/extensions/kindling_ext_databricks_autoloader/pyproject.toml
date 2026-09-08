@@ -18,8 +18,8 @@ python = "^3.10"
 # cloudFiles is a Databricks-runtime Spark option, not a separate Python
 # SDK -- this extension only needs core kindling, not
 # spark-kindling-ext-databricks (that package is the unrelated Lakeflow
-# SDP adapter; see plans/autoloader-file-ingestion/implementation-plan.md
-# Decision Addendum #1).
+# SDP adapter; see docs/proposals/autoloader_file_ingestion.md
+# for the extension boundary decision).
 spark-kindling = ">=0.10.0"
 
 [tool.poetry.group.dev.dependencies]

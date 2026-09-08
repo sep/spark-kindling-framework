@@ -1,6 +1,6 @@
 # Databricks Auto Loader file-ingestion decisions
 
-Status: implemented. This record preserves the design decisions from the August 2026 Auto Loader planning work for issue #228. Usage and current behavior are documented in the [extension README](../../packages/extensions/kindling_ext_databricks_autoloader/README.md) and [file-ingestion guide](../guide/file_ingestion.md).
+**Status:** implemented. This record preserves the design decisions from the August 2026 Auto Loader planning work for issue #228. Usage and current behavior are documented in the [extension README](../../packages/extensions/kindling_ext_databricks_autoloader/README.md) and [file-ingestion guide](../guide/file_ingestion.md).
 
 - Keep Auto Loader in the capability-specific `kindling_ext_databricks_autoloader` extension. It does not depend on the Lakeflow declaration engine; batch ingestion remains platform-neutral.
 - Use one stream per ingestion entry. A separate `source_glob` filters discovery while existing regex patterns retain named-group enrichment and destination resolution. Regex and glob semantics are not interchangeable.
