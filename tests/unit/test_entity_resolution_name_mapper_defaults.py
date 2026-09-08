@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+from kindling.entity_naming import ENTITY_NAMING_TAG, GLOBAL_NAMING_KEY
 from kindling.entity_resolution import ConfigDrivenEntityNameMapper
 from kindling.spark_config import ConfigService
 
@@ -303,3 +305,219 @@ class TestPerEntityTagOverride:
         )
 
         assert mapper.get_table_name(entity) == "explicit.table"
+
+
+class TestTableNamingPolicy:
+    def test_table_naming_config_does_not_count_as_namespace_config(self):
+        mapper = _make_mapper_with_config({GLOBAL_NAMING_KEY: "leaf"})
+
+        assert mapper._has_storage_namespace_config({}) is False
+        requested_keys = [call.args[0] for call in mapper.config.get.call_args_list]
+        assert requested_keys == [
+            "kindling.storage.table_catalog",
+            "kindling.storage.table_schema",
+            "kindling.storage.table_name_prefix",
+            "kindling.databricks.catalog",
+            "kindling.databricks.schema",
+            "kindling.fabric.catalog",
+            "kindling.fabric.schema",
+            "kindling.synapse.schema",
+        ]
+        assert GLOBAL_NAMING_KEY not in requested_keys
+
+    def test_provider_table_name_wins_over_table_naming_policy(self):
+        mapper = _make_mapper_with_config({GLOBAL_NAMING_KEY: "not-a-mode"})
+        entity = _entity_with_tags(
+            "silver.device_telemetry",
+            {
+                ENTITY_NAMING_TAG: "not-a-mode",
+                "provider.table_name": "custom_catalog.custom_schema.custom_table",
+            },
+        )
+
+        assert mapper.get_table_name(entity) == "custom_catalog.custom_schema.custom_table"
+
+    def test_global_leaf_mode_uses_leaf_component_under_configured_schema(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.storage.table_schema": "analytics",
+            }
+        )
+
+        assert mapper.get_table_name(_entity("silver.device-telemetry")) == (
+            "analytics.device_telemetry"
+        )
+
+    def test_global_normalized_mode_uses_full_entity_id_under_configured_schema(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "normalized",
+                "kindling.storage.table_schema": "analytics",
+            }
+        )
+
+        assert mapper.get_table_name(_entity("silver.device-telemetry")) == (
+            "analytics.silver_device_telemetry"
+        )
+
+    def test_table_naming_policy_applies_catalog_and_prefix(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.storage.table_catalog": "maincat",
+                "kindling.storage.table_schema": "analytics",
+                "kindling.storage.table_name_prefix": "pfx_",
+            }
+        )
+
+        assert mapper.get_table_name(_entity("silver.device-telemetry")) == (
+            "maincat.analytics.pfx_device_telemetry"
+        )
+
+    def test_provider_table_naming_overrides_global_table_naming(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "normalized",
+                "kindling.storage.table_schema": "analytics",
+            }
+        )
+        entity = _entity_with_tags("silver.device-telemetry", {ENTITY_NAMING_TAG: "leaf"})
+
+        assert mapper.get_table_name(entity) == "analytics.device_telemetry"
+
+    def test_provider_legacy_table_naming_preserves_no_namespace_branch(self):
+        mapper = _make_mapper_with_config({GLOBAL_NAMING_KEY: "leaf"})
+        entity = _entity_with_tags(
+            "iot_telemetry.event_hub_raw.raw_telemetry_events",
+            {ENTITY_NAMING_TAG: "legacy"},
+        )
+
+        assert mapper.get_table_name(entity) == ("iot_telemetry.event_hub_raw.raw_telemetry_events")
+
+    def test_provider_legacy_table_naming_preserves_schema_flattening_branch(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.storage.table_schema": "analytics",
+            }
+        )
+        entity = _entity_with_tags(
+            "staging.device_telemetry",
+            {ENTITY_NAMING_TAG: "legacy"},
+        )
+
+        assert mapper.get_table_name(entity) == "analytics.staging_device_telemetry"
+
+    def test_provider_legacy_table_naming_preserves_catalog_only_branch(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.storage.table_catalog": "maincat",
+            }
+        )
+        entity = _entity_with_tags(
+            "staging.device-telemetry",
+            {ENTITY_NAMING_TAG: "legacy"},
+        )
+
+        assert mapper.get_table_name(entity) == "maincat.staging.device_telemetry"
+
+    def test_provider_legacy_table_naming_preserves_prefix_only_branch(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.storage.table_name_prefix": "pfx_",
+            }
+        )
+        entity = _entity_with_tags(
+            "staging.device-telemetry",
+            {ENTITY_NAMING_TAG: "legacy"},
+        )
+
+        assert mapper.get_table_name(entity) == "pfx_staging_device_telemetry"
+
+    def test_fabric_schema_fallback_emits_two_part_policy_name(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.fabric.schema": "lakehouse",
+            }
+        )
+
+        assert mapper.get_table_name(_entity("silver.orders")) == "lakehouse.orders"
+
+    def test_databricks_uc_policy_name_requires_catalog(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.storage.table_schema": "analytics",
+                "kindling.features.databricks.uc_enabled": True,
+            }
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            mapper.get_table_name(_entity("silver.orders"))
+
+        message = str(exc_info.value)
+        assert "insufficient_namespace" in message
+        assert "kindling.storage.table_catalog" in message
+        assert "kindling.storage.table_schema" in message
+        assert "silver.orders" in message
+        assert "leaf" in message
+
+    def test_databricks_uc_policy_name_emits_three_part_name_with_catalog(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.storage.table_catalog": "maincat",
+                "kindling.storage.table_schema": "analytics",
+                "kindling.features.databricks.uc_enabled": True,
+            }
+        )
+
+        assert mapper.get_table_name(_entity("silver.orders")) == "maincat.analytics.orders"
+
+    def test_explicit_policy_without_schema_raises_insufficient_namespace(self):
+        mapper = _make_mapper_with_config({GLOBAL_NAMING_KEY: "leaf"})
+
+        with pytest.raises(ValueError) as exc_info:
+            mapper.get_table_name(_entity("silver.device_telemetry"))
+
+        message = str(exc_info.value)
+        assert "insufficient_namespace" in message
+        assert "kindling.storage.table_schema" in message
+        assert "silver.device_telemetry" in message
+        assert "leaf" in message
+
+    def test_invalid_provider_table_naming_error_names_entity(self):
+        mapper = _make_mapper_with_config(
+            {
+                GLOBAL_NAMING_KEY: "leaf",
+                "kindling.storage.table_schema": "analytics",
+            }
+        )
+        entity = _entity_with_tags(
+            "silver.device_telemetry",
+            {ENTITY_NAMING_TAG: "per-leaf"},
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            mapper.get_table_name(entity)
+
+        message = str(exc_info.value)
+        assert ENTITY_NAMING_TAG in message
+        assert "'per-leaf'" in message
+        assert "silver.device_telemetry" in message
+        assert "'legacy', 'normalized', or 'leaf'" in message
+
+    def test_invalid_global_table_naming_error_names_config_key(self):
+        mapper = _make_mapper_with_config({GLOBAL_NAMING_KEY: "per-leaf"})
+
+        with pytest.raises(ValueError) as exc_info:
+            mapper.get_table_name(_entity("silver.device_telemetry"))
+
+        message = str(exc_info.value)
+        assert GLOBAL_NAMING_KEY in message
+        assert "'per-leaf'" in message
+        assert "'legacy', 'normalized', or 'leaf'" in message
