@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.35] - 2026-09-08
+
 ### Added
 
 - Databricks Lakeflow pipelines can set `kindling.lakeflow.config_files`
