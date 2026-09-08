@@ -4,6 +4,18 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.35] - 2026-09-08
+
+### Added
+
+- Databricks Lakeflow pipelines can set `kindling.lakeflow.config_files`
+  to a comma-separated list of deployed YAML paths for structured Kindling
+  configuration loaded by `declare_from_pipeline_config()`. The files can
+  define `dataentities:`, `dataentities-bytag:`, `datapipes:`, and
+  `datapipes-bytag:` sections while preserving dotted logical entity IDs;
+  flat bridged pipeline-configuration keys still take precedence, and
+  behavior is unchanged when the key is unset.
+
 ## [0.12.34] - 2026-09-08
 
 ### Added
