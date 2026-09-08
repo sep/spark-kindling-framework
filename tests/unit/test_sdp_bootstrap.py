@@ -109,3 +109,51 @@ class TestEngineConfigResolution:
 
         assert set(resolved) == {"silver.orders"}
         assert resolved["silver.orders"]["sdp"] == {"dataset_type": "materialized_view"}
+
+
+@pytest.mark.parametrize("engine_name", ["sdp", "databricks_sdp"])
+@pytest.mark.parametrize(
+    "configured_mode, expected_mode",
+    [
+        ("absent", "normalized"),
+        (None, "normalized"),
+        ("leaf", "leaf"),
+        (" Leaf ", "leaf"),
+        ("NORMALIZED", "normalized"),
+    ],
+)
+def test_bootstrap_resolves_dataset_naming_from_config(
+    monkeypatch, engine_name, configured_mode, expected_mode
+):
+    from unittest.mock import MagicMock
+
+    from kindling_ext_databricks import DatabricksSdpEngine
+    from kindling_ext_sdp.bootstrap import declare_pipeline
+    from kindling_ext_sdp.oss_engine import OssSdpEngine
+
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
+    from kindling.injection import GlobalInjector
+    from kindling.spark_config import ConfigService
+
+    values = {} if configured_mode == "absent" else {"kindling.sdp.dataset_naming": configured_mode}
+    pipes = MagicMock()
+    pipes.get_pipe_ids.return_value = []
+    services = {
+        DataEntityRegistry: MagicMock(),
+        DataPipesRegistry: pipes,
+        ConfigService: FakeConfigService(values),
+    }
+    monkeypatch.setattr(GlobalInjector, "get", services.__getitem__)
+    engine_class = OssSdpEngine if engine_name == "sdp" else DatabricksSdpEngine
+    engines = []
+
+    def factory(*args, **kwargs):
+        engine = engine_class(*args, **kwargs)
+        engines.append(engine)
+        return engine
+
+    declare_pipeline(engine_factory=factory, dp_module=MagicMock())
+    assert engines[0].dataset_name.mode == expected_mode
+    expected_name = "device_telemetry" if expected_mode == "leaf" else "silver_device_telemetry"
+    assert engines[0].dataset_name("silver.device_telemetry") == expected_name

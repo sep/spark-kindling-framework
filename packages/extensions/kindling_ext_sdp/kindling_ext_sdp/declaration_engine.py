@@ -40,6 +40,7 @@ from kindling_ext_sdp.capabilities import (
 from kindling_ext_sdp.declaration_plan import (
     ClassifiedInput,
     DatasetDeclaration,
+    DatasetNameMapper,
     DatasetType,
     DeclarationIssue,
     DeclarationPlan,
@@ -101,6 +102,8 @@ class DeclarationEngine(ABC):
             ``{"silver.orders": {"sdp": {"dataset_type": ...},
             "databricks_sdp": {"expectations": ...}}}``). Must be resolved
             from config **after** the post-registration overlay.
+        dataset_naming: Pipeline-local output naming mode: "normalized"
+            (default) or "leaf". Independent of external EntityNameMapper.
     """
 
     def __init__(
@@ -109,11 +112,22 @@ class DeclarationEngine(ABC):
         pipe_registry,
         capabilities: CapabilitySet,
         engine_config: Optional[Dict[str, Dict[str, Any]]] = None,
+        dataset_naming: str = "normalized",
     ):
         self.entity_registry = entity_registry
         self.pipe_registry = pipe_registry
         self.capabilities = capabilities
         self.engine_config = dict(engine_config or {})
+        self._dataset_naming_issue: Optional[DeclarationIssue] = None
+        try:
+            self.dataset_name = DatasetNameMapper(dataset_naming)
+        except ValueError as exc:
+            self._dataset_naming_issue = DeclarationIssue(
+                pipe_id="<pipeline>", code="invalid_dataset_naming", reason=str(exc)
+            )
+            # Continue collecting unrelated validation issues; an invalid
+            # configuration can never reach emission through build_plan().
+            self.dataset_name = DatasetNameMapper()
 
     # ------------------------------------------------------------------ #
     # Phase 2 surface                                                     #
@@ -159,6 +173,9 @@ class DeclarationEngine(ABC):
         producers = self._producers_by_entity(selected)
 
         issues: List[DeclarationIssue] = []
+        if self._dataset_naming_issue is not None:
+            issues.append(self._dataset_naming_issue)
+        emitted_outputs: Dict[str, Tuple[str, str]] = {}
         for pipe_id in selected:
             pipe = self.pipe_registry.get_pipe_definition(pipe_id)
             if pipe is None:
@@ -170,11 +187,37 @@ class DeclarationEngine(ABC):
                     )
                 )
                 continue
+            for owner, emitted in self._emitted_dataset_names(pipe):
+                # Spark/Lakeflow dataset identifiers are case-insensitive.
+                previous = emitted_outputs.setdefault(emitted.casefold(), (pipe_id, owner))
+                if previous[1] != owner:
+                    issues.append(
+                        DeclarationIssue(
+                            pipe_id=pipe_id,
+                            code="duplicate_dataset_name",
+                            reason=(
+                                f"outputs '{previous[1]}' (pipe '{previous[0]}') and "
+                                f"'{owner}' resolve to the same emitted "
+                                f"dataset name '{emitted}' with kindling.sdp.dataset_naming="
+                                f"'{self.dataset_name.mode}'. Select these outputs in separate "
+                                "pipelines or choose distinct dataset names."
+                            ),
+                        )
+                    )
             issues.extend(self._validate_output(pipe, producers))
             issues.extend(self._validate_inputs(pipe, producers))
             issues.extend(self._validate_capabilities(pipe))
             issues.extend(self._validate_dataset_type(pipe))
         return issues
+
+    def _emitted_dataset_names(self, pipe) -> List[Tuple[str, str]]:
+        """Return (owner description, local name) reservations for validation.
+
+        Adapters include generated datasets and implicitly emitted siblings.
+        """
+        if not pipe.output_entity_id:
+            return []
+        return [(pipe.output_entity_id, self.dataset_name(pipe.output_entity_id))]
 
     def classify_inputs(
         self, pipe_id: str, pipe_ids: Optional[List[str]] = None

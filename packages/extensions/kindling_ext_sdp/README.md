@@ -67,3 +67,80 @@ See:
 - `docs/proposals/declarative_pipelines_engine.md` — the full proposal.
 - `docs/proposals/obsolete/sdp_engine_phase1_notes.md` — Phase-1 architecture
   decisions (bootstrap ordering, provider write-inertness, deferrals).
+
+
+## Output dataset naming
+
+Configure names within the pipeline's target catalog/schema independently
+of logical entity IDs and external table resolution:
+
+```yaml
+kindling:
+  sdp:
+    dataset_naming: leaf
+```
+
+| Mode | Logical entity ID | Emitted dataset name |
+|---|---|---|
+| `normalized` (default) | `silver.device_telemetry` | `silver_device_telemetry` |
+| `leaf` | `silver.device_telemetry` | `device_telemetry` |
+
+Both modes replace hyphens with underscores. Config values ignore surrounding
+whitespace and case; an omitted or null value uses `normalized`. Unknown modes
+are reported alongside other declaration validation errors.
+The setting is resolved by `declare_pipeline()` after configuration overlays
+and applies to both `sdp` and `databricks_sdp`. Direct engine constructors
+accept `dataset_naming="leaf"`; `DatasetNameMapper` implements the shared
+pipeline-local naming strategy.
+
+Names must be unique (case-insensitively) among selected outputs in one
+declaration plan. Use `kindling.declare_pipeline(pipe_ids=[...])` to select
+the pipes belonging to each resource. Separate bronze and silver resources
+can each emit `device_telemetry`; selecting both same-leaf outputs in one
+resource fails before emission with the conflicting entity and pipe IDs.
+
+Internal batch/stream reads use these single-part names. External reads
+retain their existing resolver behavior; this setting does not change
+`EntityNameMapper`, `provider.table_catalog`, logical IDs, or pipe function
+argument names. It does not choose the pipeline's catalog/schema.
+
+
+### Reading leaf-named outputs from elsewhere
+
+Enabling `leaf` does not change the consumer's `EntityNameMapper`. With
+catalog `dev_silver` and schema `cwmdp` configured, that mapper still resolves
+`silver.device_telemetry` to `dev_silver.cwmdp.silver_device_telemetry`,
+while the leaf-mode pipeline writes `dev_silver.cwmdp.device_telemetry`.
+Align the consumer's entity metadata explicitly:
+
+```yaml
+dataentities:
+  silver.device_telemetry:
+    tags:
+      provider.table_name: dev_silver.cwmdp.device_telemetry
+```
+
+`provider.table_name` is a complete override: supply the fully qualified name;
+it takes precedence over `provider.table_catalog` and `provider.table_schema`.
+The pipeline continues to declare the single-part name `device_telemetry`.
+Use corresponding overrides for other entities and resource destinations.
+
+Temporal chain base-event sources currently always use external table
+resolution, even if a producing pipe is selected in the same pipeline.
+Keep those sources in an upstream resource and align their external names as
+above; producing a source in the same resource does not establish a local
+temporal dependency.
+
+### Generated dataset names
+
+Lakeflow reserves helper names as well as selected outputs. Validation rejects
+collisions with AUTO CDC `<target>__scd_source`, temporal `<events>__g0..N`
+(where N is `kindling.temporal.max_generations`), `<events>__ghi`,
+`<events>__determinations`, and `<episodes>__episode_snapshot`.
+Conditional temporal helper names are reserved even when the current rules
+do not use them, so later rule changes cannot introduce name collisions.
+
+Selecting a temporal chain-events pipe also reserves and emits its registered
+chain-episodes sibling, even when the episodes pipe is not explicitly selected.
+These reservations apply only to the resource containing that chain or CDC
+target; other pipeline resources can use the same names.

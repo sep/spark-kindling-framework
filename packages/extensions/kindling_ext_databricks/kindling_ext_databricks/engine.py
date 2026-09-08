@@ -29,7 +29,7 @@ Databricks (Enzyme) is engine behavior, not a declaration keyword.
 Documented as a hint pending verification against a live workspace.
 """
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from kindling_ext_databricks.auto_cdc import (
     SCD_SOURCE_SUFFIX,
@@ -42,9 +42,10 @@ from kindling_ext_sdp.declaration_plan import (
     DatasetDeclaration,
     DatasetType,
     DeclarationIssue,
-    pipeline_dataset_name,
 )
 from kindling_ext_sdp.oss_engine import OssSdpEngine
+
+from kindling.data_pipes import PipeMetadata
 
 #: Engine-config key -> Lakeflow expectation decorator (warn/drop/fail).
 EXPECTATION_DECORATORS = {
@@ -106,6 +107,73 @@ class DatabricksSdpEngine(OssSdpEngine):
                 issues.append(DeclarationIssue(pipe_id=pipe_id, code=code, reason=reason))
         return issues
 
+    def _emitted_dataset_names(self, pipe) -> List[Tuple[str, str]]:
+        """Reserve outputs plus the adapter's generated dataset namespace."""
+        names = super()._emitted_dataset_names(pipe)
+        if not names:
+            return names
+        kind = str((pipe.tags or {}).get("temporal.kind", ""))
+        if kind == "chain_episodes":
+            # Share the reservation identity with the events sibling that
+            # owns emission, but still validate explicitly selected outputs.
+            owner, target = names[0]
+            return [(f"{owner} (chain episodes)", target)]
+        entity = self.entity_registry.get_entity_definition(pipe.output_entity_id)
+        tags = (entity.tags if entity else None) or {}
+        owner, target = names[0]
+        if kind == "chain_events":
+            from kindling_ext_databricks.temporal_lowering import (
+                DETERMINATIONS_SUFFIX,
+                SNAPSHOT_SUFFIX,
+                STRATUM_SUFFIX,
+            )
+
+            episodes_pipe, max_generations = self._temporal_chain_settings(tags)
+            names.extend(
+                (
+                    f"{owner} (temporal stratum {generation})",
+                    f"{target}{STRATUM_SUFFIX}{generation}",
+                )
+                for generation in range(max_generations + 1)
+            )
+            if episodes_pipe:
+                episodes_id = episodes_pipe.output_entity_id
+                episodes = self.dataset_name(episodes_id)
+                names.extend(
+                    [
+                        (f"{episodes_id} (chain episodes)", episodes),
+                        (f"{episodes_id} (episode snapshot)", f"{episodes}{SNAPSHOT_SUFFIX}"),
+                        (f"{owner} (determinations)", f"{target}{DETERMINATIONS_SUFFIX}"),
+                        (f"{owner} (higher stratum)", f"{target}{STRATUM_SUFFIX}hi"),
+                    ]
+                )
+            return names
+        if scd_spec_from_tags(tags) is not None:
+            names.append((f"{owner} (AUTO CDC source)", f"{target}{SCD_SOURCE_SUFFIX}"))
+        return names
+
+    def _temporal_chain_settings(self, tags: Dict[str, str]) -> Tuple[Optional[PipeMetadata], int]:
+        """Resolve the sibling and topology shared by validation and emission."""
+        from kindling_ext_temporal.chain import (
+            DEFAULT_MAX_GENERATIONS,
+            MAX_GENERATIONS_CONFIG_KEY,
+            chain_episodes_pipe_id,
+        )
+
+        chain_id = (tags or {}).get("temporal.chain_id", "default")
+        episodes_pipe = self.pipe_registry.get_pipe_definition(chain_episodes_pipe_id(chain_id))
+        if episodes_pipe is not None and not episodes_pipe.output_entity_id:
+            episodes_pipe = None
+        try:
+            from kindling.injection import GlobalInjector
+            from kindling.spark_config import ConfigService
+
+            value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
+        except Exception:  # noqa: BLE001 - config service unavailable in bare tests
+            value = None
+        max_generations = DEFAULT_MAX_GENERATIONS if value is None else int(value)
+        return episodes_pipe, max_generations
+
     def _declare_dataset(self, dp, dataset: DatasetDeclaration) -> None:
         # Chain markers live on the PIPE's tags; dataset.tags carries the
         # output entity's tags (temporal.kind=events/episodes there).
@@ -143,11 +211,6 @@ class DatabricksSdpEngine(OssSdpEngine):
             from kindling_ext_databricks.temporal_lowering import (
                 declare_stratified_temporal,
             )
-            from kindling_ext_temporal.chain import (
-                DEFAULT_MAX_GENERATIONS,
-                MAX_GENERATIONS_CONFIG_KEY,
-                chain_episodes_pipe_id,
-            )
         except ImportError as exc:
             raise RuntimeError(
                 f"Dataset '{dataset.name}' is a temporal chain pipe but "
@@ -155,27 +218,12 @@ class DatabricksSdpEngine(OssSdpEngine):
                 "environment."
             ) from exc
 
-        chain_id = (dataset.tags or {}).get("temporal.chain_id", "default")
-        episodes_name = None
-        episodes_pipe = self.pipe_registry.get_pipe_definition(chain_episodes_pipe_id(chain_id))
-        if episodes_pipe is not None and episodes_pipe.output_entity_id:
-            episodes_name = pipeline_dataset_name(episodes_pipe.output_entity_id)
-
-        max_generations = DEFAULT_MAX_GENERATIONS
-        try:
-            from kindling.injection import GlobalInjector
-            from kindling.spark_config import ConfigService
-
-            value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
-        except Exception:  # noqa: BLE001 - config service unavailable in bare tests
-            value = None
-        if value is not None:
-            # A malformed value must be loud, not silently defaulted.
-            max_generations = int(value)
+        episodes_pipe, max_generations = self._temporal_chain_settings(dataset.tags)
+        episodes_name = self.dataset_name(episodes_pipe.output_entity_id) if episodes_pipe else None
 
         declare_stratified_temporal(
             dp,
-            events_name=pipeline_dataset_name(dataset.name),
+            events_name=self.dataset_name(dataset.name),
             episodes_name=episodes_name,
             max_generations=max_generations,
         )
@@ -210,7 +258,7 @@ class DatabricksSdpEngine(OssSdpEngine):
                 f"Dataset '{dataset.name}': output entity could not be resolved "
                 "while declaring its AUTO CDC flow."
             )
-        target_name = pipeline_dataset_name(dataset.name)
+        target_name = self.dataset_name(dataset.name)
         source_name = f"{target_name}{SCD_SOURCE_SUFFIX}"
 
         view_decorator = getattr(dp, "temporary_view", None) or getattr(dp, "view", None)

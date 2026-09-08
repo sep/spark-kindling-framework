@@ -9,8 +9,6 @@ Databricks CDC reference.
 """
 
 import pytest
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
 from kindling_ext_databricks import (
     DatabricksSdpEngine,
     scd_spec_from_tags,
@@ -18,6 +16,9 @@ from kindling_ext_databricks import (
 )
 from kindling_ext_sdp import DeclarationValidationError
 from kindling_ext_sdp.declaration_plan import DatasetDeclaration, DatasetType
+
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures                                                               #
@@ -504,3 +505,105 @@ class TestScdSpecParsing:
 
         codes = [code for code, _ in validate_scd_spec(spec, [])]
         assert codes == ["scd_type_unsupported", "scd_sequence_by_required", "scd_keys_required"]
+
+
+@pytest.mark.parametrize("tags", [CHANGE_FEED_TAGS, SNAPSHOT_TAGS])
+def test_leaf_naming_is_consistent_for_auto_cdc(tags):
+    entities, pipes = scd_graph(tags)
+    # An internal driving input with a distinct leaf exercises stream and batch reads.
+    entities["bronze.changes"] = make_entity("bronze.changes")
+    pipes["changes"] = make_pipe("changes", [], "bronze.changes")
+    pipes["scd.customers"] = make_pipe("scd.customers", ["bronze.changes"], "silver.customers")
+    from unittest.mock import MagicMock
+
+    spark = MagicMock()
+    dp = FakeLakeflowDp()
+    engine = DatabricksSdpEngine(
+        entities, pipes, dp_module=dp, dataset_naming="leaf", session_provider=lambda: spark
+    )
+    engine.declare_pipeline(engine.build_plan())
+    assert set(dp.streaming_tables) == {"customers"}
+    assert set(dp.views) == {"customers__scd_source"}
+    flow = (dp.cdc_flows + dp.snapshot_flows)[0]
+    assert flow["target"] == "customers"
+    assert flow["source"] == "customers__scd_source"
+    dp.views["customers__scd_source"]()
+    if tags == SNAPSHOT_TAGS:
+        spark.table.assert_called_once_with("changes")
+        spark.readStream.table.assert_not_called()
+    else:
+        spark.readStream.table.assert_called_once_with("changes")
+        spark.table.assert_not_called()
+
+
+def test_generated_auto_cdc_source_collisions_fail_before_emission():
+    entities, pipes = scd_graph(CHANGE_FEED_TAGS)
+    entities["bronze.customers__scd_source"] = make_entity("bronze.customers__scd_source")
+    pipes["other"] = make_pipe("other", [], "bronze.customers__scd_source")
+    dp = FakeLakeflowDp()
+    engine = DatabricksSdpEngine(entities, pipes, dp_module=dp, dataset_naming="leaf")
+    with pytest.raises(DeclarationValidationError, match="customers__scd_source") as exc:
+        engine.build_plan()
+    assert "AUTO CDC source" in str(exc.value)
+    assert not dp.views
+    # A different resource can use that leaf if it does not emit the SCD target.
+    assert engine.build_plan(["other"]).datasets[0].name == "bronze.customers__scd_source"
+
+
+@pytest.mark.parametrize(
+    "other_leaf",
+    [
+        "events__g0",
+        "events__g2",
+        "events__ghi",
+        "events__determinations",
+        "episodes__episode_snapshot",
+        "episodes",
+    ],
+)
+@pytest.mark.parametrize("select_episodes", [False, True])
+def test_temporal_generated_and_implicit_sibling_collisions(
+    monkeypatch, other_leaf, select_episodes
+):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.syspath_prepend(
+        str(Path(__file__).resolve().parents[2] / "packages/extensions/kindling_ext_temporal")
+    )
+    from kindling_ext_temporal.chain import chain_episodes_pipe_id, chain_events_pipe_id
+
+    from kindling.injection import GlobalInjector
+
+    monkeypatch.setattr(
+        GlobalInjector, "get", lambda dep: SimpleNamespace(get=lambda key, default=None: 2)
+    )
+    events_id = chain_events_pipe_id("default")
+    episodes_id = chain_episodes_pipe_id("default")
+    entities = FakeRegistry(
+        {
+            name: make_entity(name)
+            for name in ("silver.events", "silver.episodes", f"gold.{other_leaf}")
+        }
+    )
+    pipes = FakeRegistry(
+        {
+            events_id: make_pipe(
+                events_id, [], "silver.events", tags={"temporal.kind": "chain_events"}
+            ),
+            episodes_id: make_pipe(
+                episodes_id,
+                ["silver.events"],
+                "silver.episodes",
+                tags={"temporal.kind": "chain_episodes"},
+            ),
+            "other": make_pipe("other", [], f"gold.{other_leaf}"),
+        }
+    )
+    engine = DatabricksSdpEngine(entities, pipes, dataset_naming="leaf")
+    selected = [events_id, "other"] + ([episodes_id] if select_episodes else [])
+    with pytest.raises(DeclarationValidationError, match="duplicate_dataset_name") as exc:
+        engine.build_plan(selected)
+    assert other_leaf in str(exc.value)
+    # Implicit siblings and helper names belong only to their resource.
+    assert engine.build_plan(["other"]).datasets[0].name == f"gold.{other_leaf}"

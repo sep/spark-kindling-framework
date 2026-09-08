@@ -15,8 +15,6 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
 from kindling_ext_sdp import (
     DatasetType,
     OssSdpEngine,
@@ -27,6 +25,9 @@ from kindling_ext_sdp import (
     dry_run,
     write_pipeline_spec,
 )
+
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures: fake registries (same graph as test_sdp_declaration_engine) #
@@ -426,3 +427,163 @@ class TestDryRunHarness:
         stub.touch()
 
         assert spark_env_for_executable(stub) == {}
+
+
+@pytest.mark.parametrize("engine_name", ["sdp", "databricks_sdp"])
+@pytest.mark.parametrize(
+    "mode, expected", [("normalized", "silver_device_telemetry"), ("leaf", "device_telemetry")]
+)
+def test_configured_dataset_names_and_internal_reads(engine_name, mode, expected):
+    from kindling_ext_databricks import DatabricksSdpEngine
+
+    entities = FakeEntityRegistry(
+        [make_entity("silver.device_telemetry"), make_entity("gold.shower_sessions")]
+    )
+    captured = {}
+    pipes = FakePipeRegistry(
+        [
+            make_pipe("telemetry", [], "silver.device_telemetry"),
+            make_pipe(
+                "sessions",
+                ["silver.device_telemetry"],
+                "gold.shower_sessions",
+                execute=lambda **dfs: captured.update(dfs),
+            ),
+        ]
+    )
+    dp = FakeDpModule()
+    spark = FakeSession()
+    engine_class = OssSdpEngine if engine_name == "sdp" else DatabricksSdpEngine
+    engine = engine_class(
+        entities, pipes, dp_module=dp, session_provider=lambda: spark, dataset_naming=mode
+    )
+    plan = engine.build_plan()
+    engine.declare_pipeline(plan)
+    assert plan.datasets[0].name == "silver.device_telemetry"
+    assert expected in dp.declared
+    assert dp.declared[expected].__name__ == expected
+    sessions = "shower_sessions" if mode == "leaf" else "gold_shower_sessions"
+    dp.declared[sessions]()
+    assert spark.reads == [expected]
+    assert captured == {"silver_device_telemetry": f"df:{expected}"}
+
+
+def test_leaf_names_are_scoped_to_selected_pipeline_resource(graph):
+    from kindling_ext_databricks import DatabricksSdpEngine
+
+    # Both resources share the registries; selection defines the naming scope.
+    for pipe_id in graph.pipe_registry.get_pipe_ids():
+        dp = FakeDpModule()
+        external_reads = []
+        engine = DatabricksSdpEngine(
+            graph.entity_registry,
+            graph.pipe_registry,
+            dp_module=dp,
+            dataset_naming="leaf",
+            session_provider=FakeSession,
+            external_read_resolver=lambda spark, entity_id: external_reads.append(entity_id),
+        )
+        plan = engine.build_plan([pipe_id])
+        engine.declare_pipeline(plan)
+        assert list(dp.declared) == ["orders"]
+        dp.declared["orders"]()
+        assert external_reads == list(
+            graph.pipe_registry.get_pipe_definition(pipe_id).input_entity_ids
+        )
+
+
+def test_duplicate_leaf_names_fail_before_emission(graph):
+    from kindling_ext_sdp import DeclarationValidationError
+
+    engine = make_engine(graph, dataset_naming="leaf")
+    with pytest.raises(DeclarationValidationError) as exc:
+        engine.build_plan()
+    message = str(exc.value)
+    assert "duplicate_dataset_name" in message
+    assert "bronze.orders" in message
+    assert "silver.orders" in message
+    assert "emitted dataset name 'orders'" in message
+    assert "separate pipelines" in message
+    assert engine._dp_module.declared == {}
+
+
+def test_default_name_helper_is_backward_compatible():
+    from kindling_ext_sdp.declaration_plan import pipeline_dataset_name
+
+    assert pipeline_dataset_name("silver.device_telemetry") == "silver_device_telemetry"
+    assert pipeline_dataset_name("silver.device-telemetry") == "silver_device_telemetry"
+
+
+def test_invalid_dataset_naming_fails_clearly(graph):
+    from kindling_ext_sdp import DeclarationValidationError
+
+    engine = make_engine(graph, dataset_naming="typo")
+    with pytest.raises(DeclarationValidationError, match="kindling.sdp.dataset_naming.*'typo'"):
+        engine.build_plan()
+
+    codes = {issue.code for issue in engine.validate(["missing"])}
+    assert codes == {"invalid_dataset_naming", "unknown_pipe"}
+
+
+def test_default_normalization_collisions_are_rejected():
+    from kindling_ext_sdp import DeclarationValidationError
+
+    entities = FakeEntityRegistry([make_entity("a.b"), make_entity("a_b")])
+    pipes = FakePipeRegistry([make_pipe("one", [], "a.b"), make_pipe("two", [], "a_b")])
+    with pytest.raises(DeclarationValidationError, match="duplicate_dataset_name"):
+        OssSdpEngine(entities, pipes).build_plan()
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("explicit_name", [None, "dev_bronze.cwmdp.device_telemetry"])
+def test_leaf_naming_preserves_external_entity_name_mapper_catalog(streaming, explicit_name):
+    from unittest.mock import MagicMock
+
+    from kindling.entity_resolution import ConfigDrivenEntityNameMapper
+
+    tags = {"provider.table_catalog": "dev_bronze"}
+    if explicit_name:
+        tags["provider.table_name"] = explicit_name
+    external = make_entity("bronze.device_telemetry", tags=tags)
+    entities = FakeEntityRegistry([external, make_entity("silver.device_telemetry")])
+    pipes = FakePipeRegistry(
+        [make_pipe("clean", ["bronze.device_telemetry"], "silver.device_telemetry")]
+    )
+    config = MagicMock()
+    config.get.return_value = None
+    mapper = ConfigDrivenEntityNameMapper(config, MagicMock())
+    spark = MagicMock()
+
+    def external_read(session, entity_id):
+        return session.table(mapper.get_table_name(entities.get_entity_definition(entity_id)))
+
+    def external_stream_read(session, entity_id):
+        return session.readStream.table(
+            mapper.get_table_name(entities.get_entity_definition(entity_id))
+        )
+
+    engine = OssSdpEngine(
+        entities,
+        pipes,
+        dataset_naming="leaf",
+        session_provider=lambda: spark,
+        external_read_resolver=external_read,
+        external_stream_read_resolver=external_stream_read,
+    )
+    dataset = engine.build_plan().datasets[0]
+    assert engine._declaration_kwargs(dataset)["name"] == "device_telemetry"
+    engine._build_dataset_function(dataset, stream_first_input=streaming)()
+    reader = spark.readStream.table if streaming else spark.table
+    reader.assert_called_once_with(explicit_name or "dev_bronze.bronze.device_telemetry")
+
+
+@pytest.mark.parametrize("mode", ["normalized", "leaf"])
+def test_dataset_collision_names_are_case_insensitive(mode):
+    from kindling_ext_sdp import DeclarationValidationError
+
+    entities = FakeEntityRegistry([make_entity("silver.Orders"), make_entity("silver.orders")])
+    pipes = FakePipeRegistry(
+        [make_pipe("one", [], "silver.Orders"), make_pipe("two", [], "silver.orders")]
+    )
+    with pytest.raises(DeclarationValidationError, match="duplicate_dataset_name"):
+        OssSdpEngine(entities, pipes, dataset_naming=mode).build_plan()

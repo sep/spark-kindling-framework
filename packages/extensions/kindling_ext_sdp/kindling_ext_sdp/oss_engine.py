@@ -29,7 +29,6 @@ from kindling_ext_sdp.declaration_plan import (
     DatasetType,
     DeclarationPlan,
     InputClassification,
-    pipeline_dataset_name,
 )
 
 
@@ -93,8 +92,11 @@ class OssSdpEngine(DeclarationEngine):
         session_provider: Optional[Callable[[], Any]] = None,
         external_read_resolver: Optional[Callable[[Any, str], Any]] = None,
         external_stream_read_resolver: Optional[Callable[[Any, str], Any]] = None,
+        dataset_naming: str = "normalized",
     ):
-        super().__init__(entity_registry, pipe_registry, capabilities, engine_config)
+        super().__init__(
+            entity_registry, pipe_registry, capabilities, engine_config, dataset_naming
+        )
         self._dp_module = dp_module
         self._session_provider = session_provider or _default_session_provider
         self._external_read_resolver = external_read_resolver
@@ -126,7 +128,7 @@ class OssSdpEngine(DeclarationEngine):
         """Entity metadata → the OSS decorator surface (Spark 4.1 keywords:
         name, comment, table_properties, partition_cols, cluster_by,
         schema). Empty values are omitted rather than passed as empties."""
-        kwargs: dict = {"name": pipeline_dataset_name(dataset.name)}
+        kwargs: dict = {"name": self.dataset_name(dataset.name)}
         if dataset.comment:
             kwargs["comment"] = dataset.comment
         if dataset.table_properties:
@@ -163,6 +165,7 @@ class OssSdpEngine(DeclarationEngine):
         session_provider = self._session_provider
         resolver = self._external_read_resolver
         stream_resolver = self._external_stream_read_resolver
+        dataset_name = self.dataset_name
 
         def dataset_function():
             spark = session_provider()
@@ -171,7 +174,7 @@ class OssSdpEngine(DeclarationEngine):
                 if pipe_input.classification is InputClassification.INTERNAL:
                     # In-pipeline references use the emitted (single-part)
                     # dataset name so SDP infers the graph edge.
-                    table_name = pipeline_dataset_name(pipe_input.entity_id)
+                    table_name = dataset_name(pipe_input.entity_id)
                 else:
                     table_name = pipe_input.entity_id
                 if stream_first_input and position == 0:
@@ -186,6 +189,6 @@ class OssSdpEngine(DeclarationEngine):
                 input_dfs[pipe_input.entity_id.replace(".", "_")] = df
             return dataset.execute(**input_dfs)
 
-        dataset_function.__name__ = dataset.name.replace(".", "_")
+        dataset_function.__name__ = dataset_name(dataset.name)
         dataset_function.__qualname__ = dataset_function.__name__
         return dataset_function

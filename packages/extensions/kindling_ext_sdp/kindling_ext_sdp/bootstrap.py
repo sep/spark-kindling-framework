@@ -59,7 +59,7 @@ def declare_pipeline(
     """Build, validate, and declare the pipeline from the live registries.
 
     ``engine_factory(entity_registry, pipe_registry, engine_config=...,
-    dp_module=...)`` constructs the concrete engine; defaults to
+    dp_module=..., dataset_naming=...)`` constructs the concrete engine; defaults to
     :class:`OssSdpEngine`. Adapter packages (``kindling_ext_databricks``)
     pass their own engine class here and reuse everything else.
 
@@ -83,6 +83,11 @@ def declare_pipeline(
         pipe_registry,
         engine_config=resolve_engine_config(config_service, selected),
         dp_module=dp_module,
+        dataset_naming=str(
+            config_service.get("kindling.sdp.dataset_naming", "normalized") or "normalized"
+        )
+        .strip()
+        .lower(),
     )
     plan = engine.build_plan(selected)
     engine.declare_pipeline(plan)
