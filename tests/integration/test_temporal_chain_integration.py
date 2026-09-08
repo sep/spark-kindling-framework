@@ -54,6 +54,35 @@ def _service_get(services):
     return _get
 
 
+def _config_service(sections):
+    config_service = MagicMock()
+    config_service.get.side_effect = lambda key, default=None: sections.get(key, default)
+    return config_service
+
+
+def _temporal_leaf_config():
+    return {
+        "kindling.storage.table_naming": "leaf",
+        "kindling.storage.table_schema": "cwmdp",
+        "kindling.features.databricks.uc_enabled": False,
+        "dataentities": {
+            "silver.**": {
+                "tags": {
+                    "provider.table_naming": "leaf",
+                    "provider.table_schema": "cwmdp",
+                }
+            }
+        },
+        "dataentities-bytag": {
+            "temporal.kind": {
+                "events": {"tags": {"provider.table_catalog": "dev_events"}},
+                "conditions": {"tags": {"provider.table_catalog": "dev_conditions"}},
+                "episodes": {"tags": {"provider.table_catalog": "dev_episodes"}},
+            }
+        },
+    }
+
+
 T0 = datetime(2026, 7, 14, 12, 0, 0)
 T_END = datetime(2026, 7, 14, 12, 10, 0)
 EVAL_RUN1 = datetime(2026, 7, 14, 12, 30, 0)
@@ -320,6 +349,85 @@ def _episode_key_rows(episodes_df):
         )
         for row in episodes_df.collect()
     }
+
+
+def test_temporal_entities_resolve_leaf_names_through_core_mapper():
+    from kindling.data_entities import DataEntityManager, DataEntityRegistry
+    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
+    from kindling.entity_resolution import ConfigDrivenEntityNameMapper
+    from kindling_ext_temporal import (
+        DataEpisodes,
+        DataEvents,
+        SimpleTemporalEntityResolver,
+        TemporalEntityResolver,
+        TemporalEpisodeRegistry,
+        TemporalEpisodeRegistryManager,
+        TemporalEventRegistry,
+        TemporalEventRegistryManager,
+        declare_temporal_chain,
+    )
+
+    DataEvents.reset()
+    DataEpisodes.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    pipe_registry = DataPipesManager(_logger_provider())
+    config_service = _config_service(_temporal_leaf_config())
+
+    services = _service_get(
+        {
+            TemporalEntityResolver: SimpleTemporalEntityResolver(),
+            TemporalEventRegistry: event_registry,
+            TemporalEpisodeRegistry: episode_registry,
+            DataEntityRegistry: entity_registry,
+            DataPipesRegistry: pipe_registry,
+        }
+    )
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=services):
+
+        @DataEvents.base_event(
+            eventid="telemetry.base",
+            input_entity_id="silver.device_telemetry",
+            subject_type="machine",
+            subject_keys=["machine_id"],
+            time_column="reading_ts",
+            event_type="telemetry.observed",
+            payload_columns=["temperature"],
+        )
+        def normalize(df):
+            return df
+
+        DataEvents.condition_engine(engineid="default")
+        DataEpisodes.episode(
+            episodeid="episode.temperature_high_active",
+            start_event="condition.temperature_high.entered",
+            end_event="condition.temperature_high.exited",
+            subject_type="machine",
+            expires_after_seconds=300,
+        )
+        declare_temporal_chain()
+
+    entity_registry.apply_config_overrides(config_service)
+    name_mapper = ConfigDrivenEntityNameMapper(config_service, _logger_provider())
+
+    assert {
+        entity_id: name_mapper.get_table_name(entity_registry.get_entity_definition(entity_id))
+        for entity_id in ("silver.events", "silver.conditions", "silver.episodes")
+    } == {
+        "silver.events": "dev_events.cwmdp.events",
+        "silver.conditions": "dev_conditions.cwmdp.conditions",
+        "silver.episodes": "dev_episodes.cwmdp.episodes",
+    }
+    assert all(
+        "provider.table_name" not in (entity_registry.get_entity_definition(entity_id).tags or {})
+        for entity_id in entity_registry.get_entity_ids()
+    )
+    assert not any(
+        entity_id.endswith(("__g0", "__determinations", "__episode_snapshot", "__scd_source"))
+        for entity_id in entity_registry.get_entity_ids()
+    )
 
 
 def test_chain_matches_per_pipe_lowering_and_converges_in_one_run(spark, temporal_graph):
