@@ -11,6 +11,12 @@ import sys
 import pytest
 from kindling.data_entities import EntityMetadata
 from kindling.data_pipes import PipeMetadata
+from kindling.entity_provider import (
+    DeclarableStreamingSource,
+    SourceValidationIssue,
+    StreamableEntityProvider,
+    StreamingSourceSpec,
+)
 
 # The extension package root is added to sys.path by tests/conftest.py,
 # matching the other extension packages (kindling_ext_visualization, ...).
@@ -21,9 +27,11 @@ from kindling_ext_sdp import (
     DeclarationEngine,
     DeclarationValidationError,
     InputClassification,
+    SdpWriteGuardProvider,
     supports_auto_cdc,
     supports_expectations,
     supports_incremental_mv_refresh,
+    supports_streaming_source_lowering,
 )
 
 # --------------------------------------------------------------------- #
@@ -132,17 +140,87 @@ def pipe_registry(pipes):
     return FakePipeRegistry(pipes)
 
 
-def make_engine(entity_registry, pipe_registry, capabilities=OSS_SDP, engine_config=None):
+def make_engine(
+    entity_registry,
+    pipe_registry,
+    capabilities=OSS_SDP,
+    engine_config=None,
+    **kwargs,
+):
     return PlanOnlyEngine(
         entity_registry=entity_registry,
         pipe_registry=pipe_registry,
         capabilities=capabilities,
         engine_config=engine_config,
+        **kwargs,
     )
 
 
 def issue_codes(issues):
     return [issue.code for issue in issues]
+
+
+def streaming_spec(**overrides):
+    params = dict(
+        provider_type="fake_stream",
+        source_format="kafka",
+        source_identity="events@example.servicebus.windows.net",
+        supported_option_names=("provider.fake",),
+    )
+    params.update(overrides)
+    return StreamingSourceSpec(**params)
+
+
+class FakeDeclarableStreamingProvider(DeclarableStreamingSource, StreamableEntityProvider):
+    def __init__(self, spec):
+        self.spec = spec
+        self.read_calls = []
+
+    def streaming_source_spec(self, entity_metadata):
+        return self.spec
+
+    def read_entity_as_stream(self, entity_metadata, format=None, options=None):
+        self.read_calls.append((entity_metadata, format, options))
+        return "stream"
+
+
+def fake_stream_resolver(provider):
+    def resolver(entity):
+        if (entity.tags or {}).get("provider_type") == "fake_stream":
+            return provider
+        return None
+
+    return resolver
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_default_resolver_inspects_public_capabilities_before_construction(monkeypatch, streaming):
+    import __main__
+    from kindling.entity_provider_registry import EntityProviderRegistry
+    from kindling.injection import GlobalInjector
+    from kindling_ext_sdp.declaration_engine import _default_provider_resolver
+
+    entity = make_entity("landing.stream", tags={"provider_type": "custom"})
+    resolved = object()
+    calls = []
+
+    class Registry:
+        def get_provider_class(self, provider_type):
+            assert provider_type == "custom"
+            return FakeDeclarableStreamingProvider if streaming else object
+
+        def get_provider_for_entity(self, metadata):
+            calls.append(metadata)
+            return resolved
+
+    def get_registry(cls):
+        assert cls is EntityProviderRegistry
+        return Registry()
+
+    monkeypatch.setattr(__main__, "_global_injector_instance", object(), raising=False)
+    monkeypatch.setattr(GlobalInjector, "get", get_registry)
+    assert _default_provider_resolver(entity) is (resolved if streaming else None)
+    assert calls == ([entity] if streaming else [])
 
 
 # --------------------------------------------------------------------- #
@@ -250,6 +328,270 @@ class TestInputClassification:
         assert by_id["bronze.orders"].produced_by == "ingest.orders"
         assert by_id["ref.customers"].classification is InputClassification.EXTERNAL
         assert by_id["ref.customers"].produced_by is None
+        assert by_id["ref.customers"].driving is True
+
+
+class TestStreamingSourceClassification:
+    def test_capable_external_provider_is_classified_as_streaming_source(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry([make_pipe("ingest.events", ["landing.events"], "bronze.events")])
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        plan = engine.build_plan()
+        dataset = plan.get_dataset("bronze.events")
+        (source,) = dataset.inputs
+
+        assert source.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
+        assert source.driving is True
+        assert source.streaming_source is provider.spec
+        assert dataset.streaming_source_inputs == (source,)
+        assert dataset.dataset_type is DatasetType.STREAMING_TABLE
+
+    def test_guard_wrapped_capable_provider_is_still_detected(self):
+        provider = SdpWriteGuardProvider(FakeDeclarableStreamingProvider(streaming_spec()))
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry([make_pipe("ingest.events", ["landing.events"], "bronze.events")])
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        (source,) = engine.classify_inputs("ingest.events")
+
+        assert source.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
+        assert source.streaming_source is provider._inner.spec
+
+    def test_source_spec_validation_issues_become_declaration_issues(self):
+        provider = FakeDeclarableStreamingProvider(
+            streaming_spec(
+                validation_issues=(
+                    SourceValidationIssue(
+                        tag="provider.transport",
+                        constraint="the eventhubs transport cannot run in Lakeflow",
+                        remediation="set provider.transport to kafka",
+                    ),
+                )
+            )
+        )
+        entities = FakeEntityRegistry(
+            [
+                make_entity(
+                    "landing.events",
+                    tags={
+                        "provider_type": "fake_stream",
+                        "provider.eventhub.connectionString": "Endpoint=sb://host/;SharedAccessKey=secret",
+                    },
+                ),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry([make_pipe("ingest.events", ["landing.events"], "bronze.events")])
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        assert issue_codes(issues) == ["streaming_source_invalid"]
+        assert "provider.transport" in issues[0].reason
+        assert "secret" not in str(issues[0])
+
+    def test_streaming_source_must_be_driving_input(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("ref.devices"),
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry(
+            [
+                make_pipe(
+                    "ingest.events",
+                    ["ref.devices", "landing.events"],
+                    "bronze.events",
+                )
+            ]
+        )
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        assert "streaming_source_not_driving_input" in issue_codes(issues)
+
+    def test_multiple_streaming_sources_are_rejected(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.a", tags={"provider_type": "fake_stream"}),
+                make_entity("landing.b", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry(
+            [
+                make_pipe(
+                    "ingest.events",
+                    ["landing.a", "landing.b"],
+                    "bronze.events",
+                    driving_entity_ids=["landing.a", "landing.b"],
+                )
+            ]
+        )
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        assert "multiple_streaming_sources_not_supported" in issue_codes(issues)
+
+    def test_streaming_source_cannot_drive_temporal_chain_lowering(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry(
+            [
+                make_pipe(
+                    "ingest.events",
+                    ["landing.events"],
+                    "bronze.events",
+                    tags={"temporal.kind": "chain_events"},
+                )
+            ]
+        )
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        unsupported = [
+            issue for issue in issues if issue.code == "streaming_source_lowering_not_supported"
+        ]
+        assert len(unsupported) == 1
+        assert "temporal chain" in unsupported[0].reason
+        assert "target 'databricks_sdp'" not in unsupported[0].reason
+
+    def test_streaming_source_cannot_drive_auto_cdc_lowering(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events", tags={"scd.type": "2"}),
+            ]
+        )
+        pipes = FakePipeRegistry([make_pipe("ingest.events", ["landing.events"], "bronze.events")])
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        unsupported = [
+            issue for issue in issues if issue.code == "streaming_source_lowering_not_supported"
+        ]
+        assert len(unsupported) == 1
+        assert "AUTO CDC" in unsupported[0].reason
+        assert "target 'databricks_sdp'" not in unsupported[0].reason
+
+    def test_later_delta_input_remains_external_storage_read(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("ref.devices"),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry(
+            [
+                make_pipe(
+                    "ingest.events",
+                    ["landing.events", "ref.devices"],
+                    "bronze.events",
+                )
+            ]
+        )
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        inputs = engine.classify_inputs("ingest.events")
+
+        assert [classified.classification for classified in inputs] == [
+            InputClassification.EXTERNAL_STREAMING_SOURCE,
+            InputClassification.EXTERNAL,
+        ]
+
+    def test_plan_repr_and_serialization_do_not_contain_entity_secret_values(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity(
+                    "landing.events",
+                    tags={
+                        "provider_type": "fake_stream",
+                        "provider.eventhub.connectionString": "secret-connection-value",
+                    },
+                ),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry([make_pipe("ingest.events", ["landing.events"], "bronze.events")])
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        plan = engine.build_plan()
+
+        assert "secret-connection-value" not in repr(plan)
 
 
 # --------------------------------------------------------------------- #
@@ -328,6 +670,46 @@ class TestDatasetTypeSelection:
         assert issues[0].pipe_id == "ingest.orders"
         assert "delta_live_table" in issues[0].reason
         assert "materialized_view" in issues[0].reason
+
+    def test_streaming_driving_input_conflicts_with_explicit_materialized_view(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events", tags={"sdp.dataset_type": "materialized_view"}),
+            ]
+        )
+        pipes = FakePipeRegistry([make_pipe("ingest.events", ["landing.events"], "bronze.events")])
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        assert "streaming_dataset_type_conflict" in issue_codes(issues)
+
+    def test_streaming_driving_input_conflicts_with_derived_dataset_kind(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events", tags={"dataset.kind": "derived"}),
+            ]
+        )
+        pipes = FakePipeRegistry([make_pipe("ingest.events", ["landing.events"], "bronze.events")])
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        assert "streaming_dataset_type_conflict" in issue_codes(issues)
 
 
 # --------------------------------------------------------------------- #
@@ -506,9 +888,11 @@ class TestCapabilityGating:
         assert not supports_expectations(OSS_SDP)
         assert not supports_auto_cdc(OSS_SDP)
         assert not supports_incremental_mv_refresh(OSS_SDP)
+        assert not supports_streaming_source_lowering(OSS_SDP)
         assert supports_expectations(DATABRICKS_SDP)
         assert supports_auto_cdc(DATABRICKS_SDP)
         assert supports_incremental_mv_refresh(DATABRICKS_SDP)
+        assert supports_streaming_source_lowering(DATABRICKS_SDP)
         assert OSS_SDP.engine_name == "sdp"
         assert DATABRICKS_SDP.engine_name == "databricks_sdp"
 
@@ -586,6 +970,26 @@ class TestCapabilityGating:
         engine = make_engine(FakeEntityRegistry(tagged), pipe_registry, capabilities=DATABRICKS_SDP)
 
         assert engine.validate() == []
+
+    def test_provider_streaming_source_fails_on_oss(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry([make_pipe("ingest.events", ["landing.events"], "bronze.events")])
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=OSS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        assert "streaming_source_lowering_not_supported" in issue_codes(issues)
 
 
 # --------------------------------------------------------------------- #

@@ -24,6 +24,7 @@ from kindling_ext_sdp.capabilities import (
     supports_auto_cdc,
     supports_expectations,
     supports_incremental_mv_refresh,
+    supports_streaming_source_lowering,
 )
 from kindling_ext_sdp.declaration_engine import (
     DATASET_TYPE_CONFIG_KEY,
@@ -82,4 +83,5 @@ __all__ = [
     "supports_auto_cdc",
     "supports_expectations",
     "supports_incremental_mv_refresh",
+    "supports_streaming_source_lowering",
 ]

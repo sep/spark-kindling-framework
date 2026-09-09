@@ -16,6 +16,7 @@ The framework uses **interface composition** rather than a single monolithic abs
 | `StreamWritableEntityProvider` | Optional | Streaming write (append) |
 | `StreamMergeableEntityProvider` | Optional | Streaming merge (per micro-batch upsert) |
 | `DestinationEnsuringProvider` | Optional | Pre-create the write destination |
+| `DeclarableStreamingSource` | Optional | Secret-safe declaration metadata for provider-owned streaming sources |
 
 This means a read-only CSV provider only implements `BaseEntityProvider`, while a full-featured Delta provider implements all of them.
 
@@ -30,7 +31,14 @@ runs where the JVM Kusto connector cannot). Extensions add `adx`
 Capability helpers are provided for runtime checks:
 
 ```python
-from kindling.entity_provider import is_streamable, is_writable, is_stream_writable, is_stream_mergeable, can_ensure_destination
+from kindling.entity_provider import (
+    can_ensure_destination,
+    is_declarable_streaming_source,
+    is_stream_mergeable,
+    is_stream_writable,
+    is_streamable,
+    is_writable,
+)
 
 if is_writable(provider):
     provider.write_to_entity(df, entity)
@@ -138,6 +146,47 @@ class StreamMergeableEntityProvider(ABC):
     ) -> StreamingQuery:
         """Merge streaming DataFrame into entity, one micro-batch at a time."""
 ```
+
+### DeclarableStreamingSource
+
+Optional declaration-only capability for providers whose streaming source can
+be owned by a declarative engine such as Databricks Lakeflow. Implementations
+must also implement `StreamableEntityProvider`; `read_entity_as_stream()`
+remains the only runtime operation that constructs a streaming DataFrame.
+
+```python
+class DeclarableStreamingSource(ABC):
+    @abstractmethod
+    def streaming_source_spec(
+        self,
+        entity_metadata: EntityMetadata,
+    ) -> StreamingSourceSpec:
+        """Return secret-safe declaration metadata and validation issues."""
+```
+
+`streaming_source_spec()` is called while building an inert declaration plan.
+It must not create a DataFrame, start a read, touch the JVM, contact the
+source system, or resolve secrets. It returns structural metadata only:
+
+```python
+@dataclass(frozen=True)
+class StreamingSourceSpec:
+    provider_type: str
+    source_format: str
+    source_identity: str
+    supported_option_names: Tuple[str, ...] = ()
+    applied_option_names: Tuple[str, ...] = ()
+    preprocessing: Optional[PreprocessingSpec] = None
+    validation_issues: Tuple[SourceValidationIssue, ...] = ()
+```
+
+Specs and validation issues must be safe to render in plans, logs, and
+exceptions. Include option/tag names and constraints, but never connection
+strings, SAS keys, passwords, JAAS values, resolved `@secret` values, or other
+secret-bearing option values. At evaluation time the declarative engine
+resolves the provider again and calls `read_entity_as_stream()` with the
+`DECLARATIVE_SOURCE_OPTION` option so the provider can preserve any schema
+needed by declarative lowering without changing batch reads.
 
 ### DestinationEnsuringProvider
 
@@ -463,4 +512,7 @@ class CustomEntityProvider(BaseEntityProvider, WritableEntityProvider):
         ...
 ```
 
-A read-only provider (e.g. CSV, EventHub source) only needs to implement `BaseEntityProvider`.
+A read-only batch provider such as CSV only needs to implement
+`BaseEntityProvider`. A read-only streaming source such as Event Hub also
+implements `StreamableEntityProvider`, and can implement
+`DeclarableStreamingSource` when a declarative engine may own that stream.

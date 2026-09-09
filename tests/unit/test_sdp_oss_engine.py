@@ -15,8 +15,13 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 from kindling_ext_sdp import (
+    ClassifiedInput,
+    DatasetDeclaration,
     DatasetType,
+    InputClassification,
     OssSdpEngine,
     SdpModeWriteError,
     SdpRuntimeUnavailableError,
@@ -25,9 +30,6 @@ from kindling_ext_sdp import (
     dry_run,
     write_pipeline_spec,
 )
-
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures: fake registries (same graph as test_sdp_declaration_engine) #
@@ -213,6 +215,130 @@ class TestEmission:
         assert resolved == ["ref.customers"], "internal inputs must not hit the resolver"
         assert session.reads == ["bronze_orders"]
         assert graph.captured["ref_customers"] == "resolved:ref.customers"
+
+    def test_stream_driving_inputs_honors_non_default_driving_entity_ids(self, graph):
+        captured = {}
+
+        def execute(**dfs):
+            captured.update(dfs)
+            return "df:out"
+
+        graph.pipe_registry.registry["bronze_to_silver.orders"] = make_pipe(
+            "bronze_to_silver.orders",
+            ["bronze.orders", "ref.customers"],
+            "silver.orders",
+            execute=execute,
+            driving_entity_ids=["ref.customers"],
+        )
+        dp = FakeDpModule()
+        session = FakeSession()
+        stream_reads = []
+
+        def stream_resolver(_spark, entity_id):
+            stream_reads.append(entity_id)
+            return f"stream:{entity_id}"
+
+        engine = make_engine(
+            graph,
+            dp_module=dp,
+            session_provider=lambda: session,
+            external_stream_read_resolver=stream_resolver,
+        )
+        dataset = engine.build_plan().get_dataset("silver.orders")
+
+        engine._build_dataset_function(dataset, stream_driving_inputs=True)()
+
+        assert session.reads == ["bronze_orders"]
+        assert stream_reads == ["ref.customers"]
+        assert captured == {
+            "bronze_orders": "df:bronze_orders",
+            "ref_customers": "stream:ref.customers",
+        }
+
+    def test_provider_streaming_source_uses_provider_resolver(self, graph):
+        provider_reads = []
+        static_reads = []
+        captured = {}
+
+        dataset = DatasetDeclaration(
+            name="silver.orders",
+            dataset_type=DatasetType.STREAMING_TABLE,
+            execute=lambda **dfs: captured.update(dfs) or "df:out",
+            pipe_id="stream.orders",
+            inputs=(
+                ClassifiedInput(
+                    "landing.orders",
+                    InputClassification.EXTERNAL_STREAMING_SOURCE,
+                    driving=True,
+                ),
+                ClassifiedInput("ref.customers", InputClassification.EXTERNAL),
+            ),
+        )
+
+        def provider_stream_resolver(_spark, entity_id):
+            provider_reads.append(entity_id)
+            return f"provider-stream:{entity_id}"
+
+        def external_read_resolver(_spark, entity_id):
+            static_reads.append(entity_id)
+            return f"static:{entity_id}"
+
+        engine = make_engine(
+            graph,
+            provider_stream_resolver=provider_stream_resolver,
+            external_read_resolver=external_read_resolver,
+        )
+
+        result = engine._build_dataset_function(dataset, stream_driving_inputs=True)()
+
+        assert result == "df:out"
+        assert provider_reads == ["landing.orders"]
+        assert static_reads == ["ref.customers"]
+        assert captured == {
+            "landing_orders": "provider-stream:landing.orders",
+            "ref_customers": "static:ref.customers",
+        }
+
+    def test_default_provider_stream_resolver_passes_declarative_option(self, graph, monkeypatch):
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.entity_provider import DECLARATIVE_SOURCE_OPTION
+        from kindling.entity_provider_registry import EntityProviderRegistry
+        from kindling.injection import GlobalInjector
+        from kindling_ext_sdp.oss_engine import _default_provider_stream_resolver
+
+        entity = make_entity("stream.orders")
+        provider_calls = []
+
+        class EntityRegistry:
+            def get_entity_definition(self, entity_id):
+                assert entity_id == "stream.orders"
+                return entity
+
+        class Provider:
+            def read_entity_as_stream(self, entity_metadata, options=None):
+                provider_calls.append((entity_metadata, options))
+                return "stream-df"
+
+        class ProviderRegistry:
+            def get_provider_for_entity(self, entity_metadata):
+                assert entity_metadata is entity
+                return Provider()
+
+        def fake_get(interface):
+            if interface is DataEntityRegistry:
+                return EntityRegistry()
+            if interface is EntityProviderRegistry:
+                return ProviderRegistry()
+            raise AssertionError(f"unexpected interface: {interface!r}")
+
+        monkeypatch.setattr(GlobalInjector, "get", fake_get)
+
+        result = _default_provider_stream_resolver(object(), "stream.orders")
+
+        assert result == "stream-df"
+        assert provider_calls == [
+            (entity, {DECLARATIVE_SOURCE_OPTION: True}),
+        ]
 
     def test_streaming_table_fails_fast_as_phase4(self, graph):
         graph.entity_registry.registry["silver.orders"] = make_entity(
@@ -572,7 +698,7 @@ def test_leaf_naming_preserves_external_entity_name_mapper_catalog(streaming, ex
     )
     dataset = engine.build_plan().datasets[0]
     assert engine._declaration_kwargs(dataset)["name"] == "device_telemetry"
-    engine._build_dataset_function(dataset, stream_first_input=streaming)()
+    engine._build_dataset_function(dataset, stream_driving_inputs=streaming)()
     reader = spark.readStream.table if streaming else spark.table
     reader.assert_called_once_with(explicit_name or "dev_bronze.bronze.device_telemetry")
 

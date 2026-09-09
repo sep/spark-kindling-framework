@@ -279,7 +279,14 @@ not a single `.csv` file — merge them downstream if a single file is required.
 - `provider.eventhub.connectionString`: Event Hubs connection string.
 - `provider.eventhub.name`: Event Hub name.
 - `provider.eventhub.consumerGroup`: Consumer group (default `$Default`).
+- `provider.transport`: `auto` (default), `kafka`, or `eventhubs`. On
+  Databricks, `auto` resolves to Kafka, which is the only transport accepted
+  for declarable Lakeflow streaming-source lowering. The legacy `eventhubs`
+  connector can still be selected explicitly for runner usage on supported
+  runtimes, but Lakeflow declarations reject it before emission.
 - `provider.startingPosition`: `earliest` | `latest` or JSON offset specification (default `latest`).
+  Kafka declarative reads support only `earliest` and `latest`; JSON Event
+  Hubs offset specifications are legacy-connector-only.
 - `provider.maxEventsPerTrigger`: Max events per micro-batch (streaming only).
 - `provider.receiverTimeout`: Receiver timeout (ms).
 - `provider.operationTimeout`: Operation timeout (ms).
@@ -346,6 +353,15 @@ not a single `.csv` file — merge them downstream if a single file is required.
   Output stays `map<string,string>` either way (numeric/timestamp values
   become their string representation); interpreting what a given header
   *name* means is still the consuming pipe's job.
+
+For Databricks Lakeflow declarations, an Event Hub entity can be the single
+driving input of a normal Kindling pipe. The SDP planner asks the provider for
+a `StreamingSourceSpec`, validates the source configuration without emitting
+secret-bearing values, and the Databricks adapter lowers the output to one
+Lakeflow streaming table plus one append flow. Later pipe inputs remain
+static reads. Lakeflow owns checkpoints, query startup, retries, and
+persistence; application code and Kindling providers do not set
+`checkpointLocation`, call `writeStream`, or start the query.
 
 ### Memory Provider (`provider_type: memory`)
 

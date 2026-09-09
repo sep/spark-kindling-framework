@@ -31,6 +31,7 @@ Documented as a hint pending verification against a live workspace.
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from kindling.data_pipes import PipeMetadata
 from kindling_ext_databricks.auto_cdc import (
     SCD_SOURCE_SUFFIX,
     ScdSpec,
@@ -44,8 +45,6 @@ from kindling_ext_sdp.declaration_plan import (
     DeclarationIssue,
 )
 from kindling_ext_sdp.oss_engine import OssSdpEngine
-
-from kindling.data_pipes import PipeMetadata
 
 #: Engine-config key -> Lakeflow expectation decorator (warn/drop/fail).
 EXPECTATION_DECORATORS = {
@@ -189,6 +188,9 @@ class DatabricksSdpEngine(OssSdpEngine):
         if scd_spec is not None:
             self._declare_scd_dataset(dp, dataset, scd_spec)
             return
+        if dataset.streaming_source_inputs:
+            self._declare_streaming_source_dataset(dp, dataset)
+            return
         if dataset.dataset_type is not DatasetType.MATERIALIZED_VIEW:
             raise NotImplementedError(
                 f"Dataset '{dataset.name}': dataset_type "
@@ -198,6 +200,28 @@ class DatabricksSdpEngine(OssSdpEngine):
         query_function = self._build_dataset_function(dataset)
         query_function = self._apply_expectations(dp, dataset, query_function)
         dp.materialized_view(**self._declaration_kwargs(dataset))(query_function)
+
+    def _declare_streaming_source_dataset(self, dp, dataset: DatasetDeclaration) -> None:
+        """Lower a provider-owned streaming source to a Lakeflow append flow.
+
+        The output entity's runner-shape ``schema`` is not forwarded to
+        ``create_streaming_table`` until Lakeflow platform evidence proves
+        the exact schema contract; the target schema is inferred from the
+        append-flow DataFrame.
+        """
+        target_name = self.dataset_name(dataset.name)
+        flow_name = f"{target_name}_flow"
+        query_function = self._build_dataset_function(dataset, stream_driving_inputs=True)
+        query_function.__name__ = flow_name
+        query_function.__qualname__ = flow_name
+        query_function = self._apply_expectations(dp, dataset, query_function)
+        query_function.__name__ = flow_name
+        query_function.__qualname__ = flow_name
+
+        target_kwargs = self._declaration_kwargs(dataset)
+        target_kwargs.pop("schema", None)  # runner-shape schema; see docstring
+        dp.create_streaming_table(**target_kwargs)
+        dp.append_flow(target=target_name, name=flow_name)(query_function)
 
     def _declare_temporal_chain(self, dp, dataset: DatasetDeclaration) -> None:
         """Lower a temporal chain-events pipe as the stratified dataset graph.
@@ -239,9 +263,9 @@ class DatabricksSdpEngine(OssSdpEngine):
 
         1. A pipeline-scoped view holding the pipe's change/snapshot
            source (expectations, if any, attach here — data quality is
-           checked on the incoming feed). For a CHANGE FEED the driving
-           input (first, per the runner's driving-source convention) is
-           read with ``spark.readStream.table()`` so the flow consumes it
+           checked on the incoming feed). For a CHANGE FEED the inputs
+           selected by ``driving_entity_ids`` are read with
+           ``spark.readStream.table()`` so the flow consumes them
            incrementally — no hand-rolled foreachBatch; remaining inputs
            stay batch reads (stream-static joins). A SNAPSHOT source keeps
            batch reads: the API diffs whole snapshots per update.
@@ -269,7 +293,7 @@ class DatabricksSdpEngine(OssSdpEngine):
                 "AUTO CDC source with."
             )
         query_function = self._build_dataset_function(
-            dataset, stream_first_input=not spec.is_snapshot
+            dataset, stream_driving_inputs=not spec.is_snapshot
         )
         query_function = self._apply_expectations(dp, dataset, query_function)
         view_decorator(name=source_name)(query_function)

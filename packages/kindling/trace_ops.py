@@ -71,6 +71,7 @@ TRACED_PROVIDER_OPS = (
 UNTRACED_PROVIDER_OPS = (
     "check_entity_exists",
     "get_entity_version",
+    "streaming_source_spec",
 )
 
 _WRAP_MARKER = "_kindling_op_tracing_wrapped"

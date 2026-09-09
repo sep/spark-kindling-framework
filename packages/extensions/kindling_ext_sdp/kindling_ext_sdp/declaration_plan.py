@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from kindling.entity_provider import StreamingSourceSpec
+
 
 @dataclass(frozen=True)
 class DatasetNameMapper:
@@ -58,12 +60,11 @@ class DatasetType(str, Enum):
     (``datapipes.<pipeid>.engine.sdp.dataset_type``) second, default
     ``materialized_view``.
 
-    NOTE — open question in the proposal ("`dataset_type` placement"):
-    materialized-view-vs-streaming-table is a property of the output
-    *dataset* (entity-level metadata), but engine config naturally hangs off
-    the pipe. Phase 1 resolves the precedence (entity tag wins over pipe
-    engine config) but the ownership question stays open until Phase 4
-    (streaming tables) forces it.
+    NOTE — streaming-source lowering settles the Phase-4 placement question:
+    the output entity tag still wins over pipe engine config, but a
+    provider-owned streaming driving input infers ``streaming_table`` and
+    explicit materialized-view requests fail with
+    ``streaming_dataset_type_conflict`` instead of being silently overridden.
     """
 
     MATERIALIZED_VIEW = "materialized_view"
@@ -80,6 +81,10 @@ class InputClassification(str, Enum):
     EXTERNAL — nothing in the pipeline produces it: it is a read from
     storage (an external table read).
 
+    EXTERNAL_STREAMING_SOURCE — nothing in the pipeline produces it, and
+    the provider can declare an external streaming source that the target
+    engine may lower to native streaming declarations.
+
     Derived purely from the registries: "does any registered pipe output
     this entity id?" (the engine's core Phase-1 logic per the proposal's
     Model Mapping section).
@@ -87,6 +92,7 @@ class InputClassification(str, Enum):
 
     INTERNAL = "internal"
     EXTERNAL = "external"
+    EXTERNAL_STREAMING_SOURCE = "external_streaming_source"
 
 
 @dataclass(frozen=True)
@@ -97,6 +103,10 @@ class ClassifiedInput:
     classification: InputClassification
     #: For INTERNAL inputs: the pipe id that produces this entity.
     produced_by: Optional[str] = None
+    #: Whether this entity id is selected by resolve_driving_entity_ids(pipe).
+    driving: bool = False
+    #: For EXTERNAL_STREAMING_SOURCE inputs: provider-owned source metadata.
+    streaming_source: Optional[StreamingSourceSpec] = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +142,15 @@ class DatasetDeclaration:
     #: watermark machinery, which SDP mode never registers. Declare the
     #: tag explicitly if CDF is wanted for external consumers.
     table_properties: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def streaming_source_inputs(self) -> Tuple[ClassifiedInput, ...]:
+        """Inputs declared as provider-owned streaming sources."""
+        return tuple(
+            pipe_input
+            for pipe_input in self.inputs
+            if pipe_input.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
+        )
 
 
 @dataclass(frozen=True)

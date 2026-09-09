@@ -9,6 +9,8 @@ Databricks CDC reference.
 """
 
 import pytest
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 from kindling_ext_databricks import (
     DatabricksSdpEngine,
     scd_spec_from_tags,
@@ -16,9 +18,6 @@ from kindling_ext_databricks import (
 )
 from kindling_ext_sdp import DeclarationValidationError
 from kindling_ext_sdp.declaration_plan import DatasetDeclaration, DatasetType
-
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures                                                               #
@@ -266,7 +265,12 @@ class TestChangeFeedStreamingSource:
     stream — AUTO CDC replaces foreachBatch+MERGE, and that only holds if
     the feed is incremental, not a full batch re-read per update."""
 
-    def _declare_with_session(self, tags, input_ids=("bronze.customers", "ref.regions")):
+    def _declare_with_session(
+        self,
+        tags,
+        input_ids=("bronze.customers", "ref.regions"),
+        driving_entity_ids=None,
+    ):
         captured = {}
 
         def execute(**dfs):
@@ -285,7 +289,11 @@ class TestChangeFeedStreamingSource:
         pipes = FakeRegistry(
             {
                 "scd.customers": make_pipe(
-                    "scd.customers", list(input_ids), "silver.customers", execute=execute
+                    "scd.customers",
+                    list(input_ids),
+                    "silver.customers",
+                    execute=execute,
+                    driving_entity_ids=driving_entity_ids,
                 )
             }
         )
@@ -357,6 +365,18 @@ class TestChangeFeedStreamingSource:
         assert session.batch_reads == ["catalog.ref.regions"]
         assert captured["bronze_customers"] == "stream:catalog.bronze.customers"
         assert captured["ref_regions"] == "df:catalog.ref.regions"
+
+    def test_non_default_driving_input_is_streamed(self):
+        session, captured = self._declare_with_session(
+            CHANGE_FEED_TAGS,
+            input_ids=("ref.regions", "bronze.customers"),
+            driving_entity_ids=["bronze.customers"],
+        )
+
+        assert session.stream_reads == ["bronze.customers"]
+        assert session.batch_reads == ["ref.regions"]
+        assert captured["bronze_customers"] == "stream:bronze.customers"
+        assert captured["ref_regions"] == "df:ref.regions"
 
     def test_snapshot_source_keeps_batch_reads(self):
         """The snapshot API diffs whole snapshots per update — a streaming
@@ -571,9 +591,8 @@ def test_temporal_generated_and_implicit_sibling_collisions(
     monkeypatch.syspath_prepend(
         str(Path(__file__).resolve().parents[2] / "packages/extensions/kindling_ext_temporal")
     )
-    from kindling_ext_temporal.chain import chain_episodes_pipe_id, chain_events_pipe_id
-
     from kindling.injection import GlobalInjector
+    from kindling_ext_temporal.chain import chain_episodes_pipe_id, chain_events_pipe_id
 
     monkeypatch.setattr(
         GlobalInjector, "get", lambda dep: SimpleNamespace(get=lambda key, default=None: 2)

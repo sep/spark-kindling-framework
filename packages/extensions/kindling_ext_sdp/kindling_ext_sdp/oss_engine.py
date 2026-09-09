@@ -22,6 +22,7 @@ fails fast here rather than being silently declared as something else.
 
 from typing import Any, Callable, Dict, Optional
 
+from kindling.entity_provider import DECLARATIVE_SOURCE_OPTION
 from kindling_ext_sdp.capabilities import OSS_SDP, CapabilitySet
 from kindling_ext_sdp.declaration_engine import DeclarationEngine
 from kindling_ext_sdp.declaration_plan import (
@@ -62,6 +63,22 @@ def _default_session_provider():
     return session
 
 
+def _default_provider_stream_resolver(_spark, entity_id: str):
+    """Resolve a provider-owned stream at dataset-function evaluation time."""
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.entity_provider_registry import EntityProviderRegistry
+    from kindling.injection import GlobalInjector
+
+    entity = GlobalInjector.get(DataEntityRegistry).get_entity_definition(entity_id)
+    if entity is None:
+        raise RuntimeError(
+            f"External streaming source entity '{entity_id}' is not registered "
+            "when evaluating the SDP dataset function."
+        )
+    provider = GlobalInjector.get(EntityProviderRegistry).get_provider_for_entity(entity)
+    return provider.read_entity_as_stream(entity, options={DECLARATIVE_SOURCE_OPTION: True})
+
+
 class OssSdpEngine(DeclarationEngine):
     """Declares the plan through the OSS ``pyspark.pipelines`` API.
 
@@ -80,6 +97,9 @@ class OssSdpEngine(DeclarationEngine):
         external_stream_read_resolver: ``(spark, entity_id) -> DataFrame``
             for streamed EXTERNAL inputs. Defaults to
             ``spark.readStream.table(entity_id)``.
+        provider_stream_resolver: ``(spark, entity_id) -> DataFrame`` for
+            EXTERNAL_STREAMING_SOURCE inputs. The default resolves the entity
+            provider at evaluation time and calls ``read_entity_as_stream``.
     """
 
     def __init__(
@@ -92,16 +112,26 @@ class OssSdpEngine(DeclarationEngine):
         session_provider: Optional[Callable[[], Any]] = None,
         external_read_resolver: Optional[Callable[[Any, str], Any]] = None,
         external_stream_read_resolver: Optional[Callable[[Any, str], Any]] = None,
+        provider_resolver: Optional[Callable[[Any], Any]] = None,
+        provider_stream_resolver: Optional[Callable[[Any, str], Any]] = None,
         dataset_naming: str = "normalized",
     ):
         super().__init__(
-            entity_registry, pipe_registry, capabilities, engine_config, dataset_naming
+            entity_registry,
+            pipe_registry,
+            capabilities,
+            engine_config,
+            dataset_naming,
+            provider_resolver=provider_resolver,
         )
         self._dp_module = dp_module
         self._session_provider = session_provider or _default_session_provider
         self._external_read_resolver = external_read_resolver
         self._external_stream_read_resolver = external_stream_read_resolver or (
             lambda spark, entity_id: spark.readStream.table(entity_id)
+        )
+        self._provider_stream_resolver = (
+            provider_stream_resolver or _default_provider_stream_resolver
         )
 
     def declare_pipeline(self, plan: DeclarationPlan) -> None:
@@ -142,7 +172,7 @@ class OssSdpEngine(DeclarationEngine):
         return kwargs
 
     def _build_dataset_function(
-        self, dataset: DatasetDeclaration, stream_first_input: bool = False
+        self, dataset: DatasetDeclaration, stream_driving_inputs: bool = False
     ) -> Callable[[], Any]:
         """The DataFrame-returning query body SDP evaluates.
 
@@ -156,28 +186,31 @@ class OssSdpEngine(DeclarationEngine):
         SDP infers the pipeline graph edge; EXTERNAL inputs go through the
         resolver (default: also a catalog-table read).
 
-        ``stream_first_input`` reads the FIRST input — the driving source,
-        per the runner engine's driving-source convention — with
-        ``spark.readStream.table()`` so a consuming flow processes it
-        incrementally (AUTO CDC change feeds); remaining inputs stay batch
-        reads (stream-static joins).
+        ``stream_driving_inputs`` reads inputs selected by
+        ``resolve_driving_entity_ids(pipe)`` incrementally so SDP lowering
+        honors the same driving-source contract as the runner. Provider-owned
+        streaming sources always use the provider stream resolver; remaining
+        inputs stay batch reads (stream-static joins).
         """
         session_provider = self._session_provider
         resolver = self._external_read_resolver
         stream_resolver = self._external_stream_read_resolver
+        provider_stream_resolver = self._provider_stream_resolver
         dataset_name = self.dataset_name
 
         def dataset_function():
             spark = session_provider()
             input_dfs = {}
-            for position, pipe_input in enumerate(dataset.inputs):
+            for pipe_input in dataset.inputs:
                 if pipe_input.classification is InputClassification.INTERNAL:
                     # In-pipeline references use the emitted (single-part)
                     # dataset name so SDP infers the graph edge.
                     table_name = dataset_name(pipe_input.entity_id)
                 else:
                     table_name = pipe_input.entity_id
-                if stream_first_input and position == 0:
+                if pipe_input.classification is InputClassification.EXTERNAL_STREAMING_SOURCE:
+                    df = provider_stream_resolver(spark, pipe_input.entity_id)
+                elif stream_driving_inputs and pipe_input.driving:
                     if pipe_input.classification is InputClassification.INTERNAL:
                         df = spark.readStream.table(table_name)
                     else:

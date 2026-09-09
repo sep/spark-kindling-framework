@@ -1,7 +1,7 @@
 """Azure Event Hub entity provider with Event Hubs and Kafka transports."""
 
 import struct as _struct
-from typing import Any, Callable, Dict, Optional
+from typing import Callable, Dict, Optional
 
 from injector import inject
 from pyspark import SparkContext
@@ -16,10 +16,32 @@ from pyspark.sql.functions import udf, when
 from pyspark.sql.types import ArrayType, BinaryType, MapType, StringType
 
 from .data_entities import EntityMetadata
-from .entity_provider import BaseEntityProvider, StreamableEntityProvider
+from .entity_provider import (
+    DECLARATIVE_SOURCE_OPTION,
+    BaseEntityProvider,
+    DeclarableStreamingSource,
+    StreamableEntityProvider,
+    StreamingSourceSpec,
+)
+from .entity_provider_eventhub_declaration import (
+    DECLARABLE_SUPPORTED_TAGS,
+)
+from .entity_provider_eventhub_declaration import TRANSPORT_AUTO as _TRANSPORT_AUTO
+from .entity_provider_eventhub_declaration import (
+    TRANSPORT_EVENTHUBS as _TRANSPORT_EVENTHUBS,
+)
+from .entity_provider_eventhub_declaration import TRANSPORT_KAFKA as _TRANSPORT_KAFKA
+from .entity_provider_eventhub_declaration import (
+    build_streaming_source_spec,
+    parse_connection_string,
+    resolve_transport,
+    with_entity_path,
+)
 from .injection import GlobalInjector
 from .spark_config import ConfigService, get_or_create_spark_session
 from .spark_log_provider import PythonLoggerProvider
+
+__all__ = ["DECLARABLE_SUPPORTED_TAGS", "EventHubEntityProvider"]
 
 # Avro single-object encoding (the Avro spec's standard, registry-free way to
 # prefix a binary Avro payload with a schema identifier -- see
@@ -424,7 +446,9 @@ _PREPROCESS_MODES: Dict[str, Callable[..., DataFrame]] = {
 
 
 @GlobalInjector.singleton_autobind()
-class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
+class EventHubEntityProvider(
+    BaseEntityProvider, StreamableEntityProvider, DeclarableStreamingSource
+):
     """
     Azure Event Hub entity provider (read-only batch and streaming operations).
 
@@ -483,7 +507,7 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
         merge_columns=["event_id"],
         tags={
             "provider_type": "eventhub",
-            "provider.eventhub.connectionString": "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=...",
+            "provider.eventhub.connectionString": "@secret:eventhub-user-events",
             "provider.eventhub.name": "user-events-hub",
             "provider.startingPosition": "latest",
             "provider.eventhub.consumerGroup": "$Default"
@@ -507,9 +531,9 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
     Use `.selectExpr("cast(body as string) as json")` to parse JSON payloads.
     """
 
-    TRANSPORT_AUTO = "auto"
-    TRANSPORT_EVENTHUBS = "eventhubs"
-    TRANSPORT_KAFKA = "kafka"
+    TRANSPORT_AUTO = _TRANSPORT_AUTO
+    TRANSPORT_EVENTHUBS = _TRANSPORT_EVENTHUBS
+    TRANSPORT_KAFKA = _TRANSPORT_KAFKA
 
     @inject
     def __init__(self, logger_provider: PythonLoggerProvider, config_service: ConfigService):
@@ -526,45 +550,18 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
         return self._resolve_transport(config)
 
     def _resolve_transport(self, provider_config: dict) -> str:
-        configured_transport = (
-            str(provider_config.get("transport", self.TRANSPORT_AUTO) or self.TRANSPORT_AUTO)
-            .strip()
-            .lower()
-        )
-
-        if configured_transport not in {
-            self.TRANSPORT_AUTO,
-            self.TRANSPORT_EVENTHUBS,
-            self.TRANSPORT_KAFKA,
-        }:
-            raise ValueError("Event Hub provider transport must be one of: auto, eventhubs, kafka")
-
-        if configured_transport != self.TRANSPORT_AUTO:
-            return configured_transport
-
-        if self.platform == "databricks":
-            return self.TRANSPORT_KAFKA
-
-        return self.TRANSPORT_EVENTHUBS
+        return resolve_transport(provider_config, self.platform)
 
     def _parse_connection_string(self, connection_string: str) -> dict:
-        parts: dict[str, str] = {}
-        for segment in connection_string.split(";"):
-            if not segment or "=" not in segment:
-                continue
-            key, value = segment.split("=", 1)
-            parts[key.strip()] = value.strip()
-
-        required = ("Endpoint=", "SharedAccessKeyName=", "SharedAccessKey=")
-        if not all(token in connection_string for token in required):
-            raise ValueError("Event Hub connection string missing required segments")
-
-        return parts
+        return parse_connection_string(connection_string)
 
     def _with_entity_path(self, connection_string: str, eventhub_name: str) -> str:
-        if "EntityPath=" in connection_string:
-            return connection_string
-        return f"{connection_string.rstrip(';')};EntityPath={eventhub_name}"
+        return with_entity_path(connection_string, eventhub_name)
+
+    def streaming_source_spec(self, entity_metadata: EntityMetadata) -> StreamingSourceSpec:
+        """Return an inert, secret-safe declaration spec for Lakeflow lowering."""
+        config = self._get_provider_config(entity_metadata)
+        return build_streaming_source_spec(entity_metadata, config, platform=self.platform)
 
     def _build_eventhub_config(self, provider_config: dict) -> dict:
         """
@@ -697,9 +694,25 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             return transport, self._build_kafka_config(provider_config, streaming=streaming)
         return transport, self._build_eventhub_config(provider_config)
 
-    def _normalize_dataframe(self, df: DataFrame, transport: str) -> DataFrame:
+    def _normalize_dataframe(
+        self, df: DataFrame, transport: str, *, retain_native: bool = False
+    ) -> DataFrame:
         if transport != self.TRANSPORT_KAFKA or SparkContext._active_spark_context is None:
             return df
+
+        if retain_native:
+            normalized = df
+            if "value" in normalized.columns:
+                normalized = normalized.withColumn("body", col("value"))
+            if "timestamp" in normalized.columns:
+                normalized = normalized.withColumn("enqueuedTime", col("timestamp"))
+            return (
+                normalized.withColumn("sequenceNumber", lit(None).cast("long"))
+                .withColumn("publisher", lit(None).cast("string"))
+                .withColumn("partitionKey", lit(None).cast("string"))
+                .withColumn("properties", lit(None).cast(MapType(StringType(), StringType())))
+                .withColumn("systemProperties", lit(None).cast(MapType(StringType(), StringType())))
+            )
 
         return (
             df.withColumnRenamed("value", "body")
@@ -772,7 +785,8 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             return str(encrypted)
         except Exception:
             self.logger.warning(
-                "Event Hubs connection string encryption helper unavailable; using raw connection string"
+                "Event Hubs connection string encryption helper unavailable; "
+                "using raw connection string"
             )
             return connection_string
 
@@ -816,7 +830,8 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
 
             self.logger.info(
                 "Successfully read Event Hub entity "
-                f"'{entity_metadata.entityid}' (batch, transport={transport}): {len(df.columns)} columns"
+                f"'{entity_metadata.entityid}' (batch, transport={transport}): "
+                f"{len(df.columns)} columns"
             )
 
             return df
@@ -871,7 +886,8 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             )
 
             stream_df = self.spark.readStream.format(transport).options(**source_config).load()
-            stream_df = self._normalize_dataframe(stream_df, transport)
+            retain_native = bool(config.get(DECLARATIVE_SOURCE_OPTION, False))
+            stream_df = self._normalize_dataframe(stream_df, transport, retain_native=retain_native)
             stream_df = self._apply_preprocessing(stream_df, entity_metadata, config)
 
             self.logger.info(
@@ -912,13 +928,15 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
 
             if not all(segment in connection_string for segment in required_segments):
                 self.logger.warning(
-                    f"Event Hub entity '{entity_metadata.entityid}' check failed: connection string missing required segments"
+                    f"Event Hub entity '{entity_metadata.entityid}' check failed: "
+                    "connection string missing required segments"
                 )
                 return False
 
             if not has_eventhub_name and not has_entity_path:
                 self.logger.warning(
-                    f"Event Hub entity '{entity_metadata.entityid}' check failed: missing event hub name and EntityPath"
+                    f"Event Hub entity '{entity_metadata.entityid}' check failed: "
+                    "missing event hub name and EntityPath"
                 )
                 return False
 

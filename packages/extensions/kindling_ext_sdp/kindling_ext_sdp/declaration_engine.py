@@ -30,12 +30,20 @@ What is deliberately NOT validated here (runtime / Phase-2 concerns):
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from kindling.data_pipes import resolve_driving_entity_ids
+from kindling.entity_provider import (
+    DeclarableStreamingSource,
+    StreamableEntityProvider,
+    StreamingSourceSpec,
+    is_declarable_streaming_source,
+)
 from kindling_ext_sdp.capabilities import (
     ADAPTER_TIER_CONFIG_KEYS,
     CapabilitySet,
     supports_auto_cdc,
+    supports_streaming_source_lowering,
 )
 from kindling_ext_sdp.declaration_plan import (
     ClassifiedInput,
@@ -69,6 +77,10 @@ DECLARABLE_OUTPUT_PROVIDER_TYPES = frozenset({"delta"})
 DECLARABLE_EXTERNAL_READ_PROVIDER_TYPES = frozenset({"delta"})
 
 
+class _DatasetTypeConflict(ValueError):
+    """Raised when metadata explicitly conflicts with inferred streaming type."""
+
+
 def _provider_type(entity) -> str:
     """Resolve an entity's provider type; absent tag means delta."""
     return str((entity.tags or {}).get("provider_type", "delta")).strip().lower()
@@ -77,6 +89,29 @@ def _provider_type(entity) -> str:
 def _is_scd_tagged(entity) -> bool:
     """True when the entity carries SCD intent tags (`scd.type`)."""
     return bool(str((entity.tags or {}).get("scd.type", "")).strip())
+
+
+def _default_provider_resolver(entity_metadata):
+    """Resolve an entity provider through Kindling DI when available."""
+    try:
+        import __main__
+
+        if not hasattr(__main__, "_global_injector_instance"):
+            return None
+        from kindling.entity_provider_registry import EntityProviderRegistry
+        from kindling.injection import GlobalInjector
+
+        registry = GlobalInjector.get(EntityProviderRegistry)
+        provider_type = _provider_type(entity_metadata)
+        provider_class = registry.get_provider_class(provider_type)
+        if provider_class is not None and not (
+            issubclass(provider_class, DeclarableStreamingSource)
+            and issubclass(provider_class, StreamableEntityProvider)
+        ):
+            return None
+        return registry.get_provider_for_entity(entity_metadata)
+    except Exception:  # noqa: BLE001 - bare declaration tests may not initialize DI
+        return None
 
 
 class DeclarationEngine(ABC):
@@ -113,11 +148,14 @@ class DeclarationEngine(ABC):
         capabilities: CapabilitySet,
         engine_config: Optional[Dict[str, Dict[str, Any]]] = None,
         dataset_naming: str = "normalized",
+        provider_resolver: Optional[Callable[[Any], Any]] = None,
     ):
         self.entity_registry = entity_registry
         self.pipe_registry = pipe_registry
         self.capabilities = capabilities
         self.engine_config = dict(engine_config or {})
+        self._provider_resolver = provider_resolver or _default_provider_resolver
+        self._streaming_source_specs: Dict[str, Optional[StreamingSourceSpec]] = {}
         self._dataset_naming_issue: Optional[DeclarationIssue] = None
         try:
             self.dataset_name = DatasetNameMapper(dataset_naming)
@@ -207,7 +245,7 @@ class DeclarationEngine(ABC):
             issues.extend(self._validate_output(pipe, producers))
             issues.extend(self._validate_inputs(pipe, producers))
             issues.extend(self._validate_capabilities(pipe))
-            issues.extend(self._validate_dataset_type(pipe))
+            issues.extend(self._validate_dataset_type(pipe, producers))
         return issues
 
     def _emitted_dataset_names(self, pipe) -> List[Tuple[str, str]]:
@@ -258,7 +296,9 @@ class DeclarationEngine(ABC):
 
     def _classify(self, pipe, producers: Dict[str, str]) -> Tuple[ClassifiedInput, ...]:
         classified = []
+        driving = set(resolve_driving_entity_ids(pipe))
         for entity_id in pipe.input_entity_ids:
+            is_driving = entity_id in driving
             producer = producers.get(entity_id)
             if producer is not None:
                 classified.append(
@@ -266,16 +306,41 @@ class DeclarationEngine(ABC):
                         entity_id=entity_id,
                         classification=InputClassification.INTERNAL,
                         produced_by=producer,
+                        driving=is_driving,
                     )
                 )
             else:
+                entity = self.entity_registry.get_entity_definition(entity_id)
+                spec = self._streaming_source_spec(entity) if entity is not None else None
+                if spec is not None:
+                    classified.append(
+                        ClassifiedInput(
+                            entity_id=entity_id,
+                            classification=InputClassification.EXTERNAL_STREAMING_SOURCE,
+                            driving=is_driving,
+                            streaming_source=spec,
+                        )
+                    )
+                    continue
                 classified.append(
                     ClassifiedInput(
                         entity_id=entity_id,
                         classification=InputClassification.EXTERNAL,
+                        driving=is_driving,
                     )
                 )
         return tuple(classified)
+
+    def _streaming_source_spec(self, entity) -> Optional[StreamingSourceSpec]:
+        """Return a provider-owned streaming-source spec for an entity, if any."""
+        entity_id = entity.entityid
+        if entity_id not in self._streaming_source_specs:
+            provider = self._provider_resolver(entity)
+            if is_declarable_streaming_source(provider):
+                self._streaming_source_specs[entity_id] = provider.streaming_source_spec(entity)
+            else:
+                self._streaming_source_specs[entity_id] = None
+        return self._streaming_source_specs[entity_id]
 
     # --- validation pieces --------------------------------------------- #
 
@@ -369,7 +434,15 @@ class DeclarationEngine(ABC):
 
     def _validate_inputs(self, pipe, producers: Dict[str, str]) -> List[DeclarationIssue]:
         issues: List[DeclarationIssue] = []
-        for classified in self._classify(pipe, producers):
+        classified_inputs = self._classify(pipe, producers)
+        streaming_inputs = [
+            classified
+            for classified in classified_inputs
+            if classified.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
+        ]
+        driving_inputs = [classified for classified in classified_inputs if classified.driving]
+
+        for classified in classified_inputs:
             entity_id = classified.entity_id
 
             if entity_id == pipe.output_entity_id:
@@ -388,6 +461,34 @@ class DeclarationEngine(ABC):
 
             if classified.classification is InputClassification.INTERNAL:
                 # The producing pipe's own output validation covers it.
+                continue
+
+            if classified.classification is InputClassification.EXTERNAL_STREAMING_SOURCE:
+                spec = classified.streaming_source
+                provider = spec.provider_type if spec is not None else "<unknown>"
+                if spec is not None:
+                    for source_issue in spec.validation_issues:
+                        issues.append(
+                            DeclarationIssue(
+                                pipe_id=pipe.pipeid,
+                                code="streaming_source_invalid",
+                                reason=(
+                                    f"external streaming input '{entity_id}' "
+                                    f"(provider '{provider}') violates {source_issue}"
+                                ),
+                            )
+                        )
+                if not classified.driving:
+                    issues.append(
+                        DeclarationIssue(
+                            pipe_id=pipe.pipeid,
+                            code="streaming_source_not_driving_input",
+                            reason=(
+                                f"external streaming input '{entity_id}' must be selected by "
+                                "driving_entity_ids for declarative streaming-source lowering"
+                            ),
+                        )
+                    )
                 continue
 
             entity = self.entity_registry.get_entity_definition(entity_id)
@@ -415,6 +516,50 @@ class DeclarationEngine(ABC):
                             f"'{'view' if entity.is_sql_entity else provider}', which "
                             "cannot be represented as an SDP storage read "
                             "(local-only/non-table providers are unsupported)"
+                        ),
+                    )
+                )
+        if streaming_inputs:
+            if len(streaming_inputs) > 1 or len(driving_inputs) > 1:
+                issues.append(
+                    DeclarationIssue(
+                        pipe_id=pipe.pipeid,
+                        code="multiple_streaming_sources_not_supported",
+                        reason=(
+                            "exactly one declarable streaming source may drive a pipe; "
+                            "additional driving inputs would require another streaming read"
+                        ),
+                    )
+                )
+
+            pipe_temporal_kind = str((pipe.tags or {}).get("temporal.kind", ""))
+            output_entity = (
+                self.entity_registry.get_entity_definition(pipe.output_entity_id)
+                if pipe.output_entity_id
+                else None
+            )
+            if pipe_temporal_kind.startswith("chain_") or (
+                output_entity is not None and _is_scd_tagged(output_entity)
+            ):
+                issues.append(
+                    DeclarationIssue(
+                        pipe_id=pipe.pipeid,
+                        code="streaming_source_lowering_not_supported",
+                        reason=(
+                            "declarable provider streams cannot yet compose with temporal "
+                            "chain or AUTO CDC lowering; split the pipeline or remove the "
+                            "specialized target tags"
+                        ),
+                    )
+                )
+            if not supports_streaming_source_lowering(self.capabilities):
+                issues.append(
+                    DeclarationIssue(
+                        pipe_id=pipe.pipeid,
+                        code="streaming_source_lowering_not_supported",
+                        reason=(
+                            f"target '{self.capabilities.engine_name}' does not support "
+                            "provider-owned streaming-source lowering"
                         ),
                     )
                 )
@@ -471,9 +616,22 @@ class DeclarationEngine(ABC):
             )
         return issues
 
-    def _validate_dataset_type(self, pipe) -> List[DeclarationIssue]:
+    def _validate_dataset_type(self, pipe, producers: Dict[str, str]) -> List[DeclarationIssue]:
+        streaming_driving = any(
+            classified.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
+            and classified.driving
+            for classified in self._classify(pipe, producers)
+        )
         try:
-            self._select_dataset_type(pipe)
+            self._select_dataset_type(pipe, streaming_driving=streaming_driving)
+        except _DatasetTypeConflict as error:
+            return [
+                DeclarationIssue(
+                    pipe_id=pipe.pipeid,
+                    code="streaming_dataset_type_conflict",
+                    reason=str(error),
+                )
+            ]
         except ValueError as error:
             return [
                 DeclarationIssue(
@@ -490,12 +648,18 @@ class DeclarationEngine(ABC):
         pipe = self.pipe_registry.get_pipe_definition(pipe_id)
         entity = self.entity_registry.get_entity_definition(pipe.output_entity_id)
         tags = dict(entity.tags or {})
+        inputs = self._classify(pipe, producers)
+        streaming_driving = any(
+            classified.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
+            and classified.driving
+            for classified in inputs
+        )
         return DatasetDeclaration(
             name=pipe.output_entity_id,
-            dataset_type=self._select_dataset_type(pipe),
+            dataset_type=self._select_dataset_type(pipe, streaming_driving=streaming_driving),
             execute=pipe.execute,
             pipe_id=pipe.pipeid,
-            inputs=self._classify(pipe, producers),
+            inputs=inputs,
             partition_columns=tuple(entity.partition_columns or ()),
             cluster_columns=tuple(entity.cluster_columns or ()),
             tags=tags,
@@ -525,7 +689,7 @@ class DeclarationEngine(ABC):
                 properties[tag_key[len(TABLE_PROPERTIES_TAG_PREFIX) :].strip()] = str(value).strip()
         return properties
 
-    def _select_dataset_type(self, pipe) -> DatasetType:
+    def _select_dataset_type(self, pipe, streaming_driving: bool = False) -> DatasetType:
         """Select the dataset type: entity tag, then engine config, default MV.
 
         Precedence (see also the placement note on ``DatasetType``):
@@ -551,6 +715,12 @@ class DeclarationEngine(ABC):
             # means on a declarative engine. An explicit conflicting
             # sdp.dataset_type is a contradiction, not an override.
             if str((entity.tags or {}).get("dataset.kind", "")).strip().lower() == "derived":
+                if streaming_driving:
+                    raise _DatasetTypeConflict(
+                        f"Entity '{entity.entityid}': dataset.kind='derived' conflicts "
+                        "with a provider-owned streaming driving input, which lowers "
+                        "to a streaming table"
+                    )
                 if tag_value and tag_value.lower() != DatasetType.MATERIALIZED_VIEW.value:
                     raise ValueError(
                         f"Entity '{entity.entityid}': dataset.kind='derived' "
@@ -569,16 +739,31 @@ class DeclarationEngine(ABC):
                     raw, source = config_value, f"engine config '{engine_name}'"
                     break
 
+        if streaming_driving:
+            if raw is None:
+                return DatasetType.STREAMING_TABLE
+            selected = self._parse_dataset_type(raw, source)
+            if selected is not DatasetType.STREAMING_TABLE:
+                raise _DatasetTypeConflict(
+                    f"provider-owned streaming driving input lowers to "
+                    f"'{DatasetType.STREAMING_TABLE.value}', but {source} requests "
+                    f"'{selected.value}'"
+                )
+            return selected
+
         if raw is None:
             return DatasetType.MATERIALIZED_VIEW
 
+        return self._parse_dataset_type(raw, source)
+
+    def _parse_dataset_type(self, raw: str, source: str) -> DatasetType:
         try:
             return DatasetType(raw.lower())
-        except ValueError:
+        except ValueError as exc:
             valid = ", ".join(dt.value for dt in DatasetType)
             raise ValueError(
                 f"invalid dataset_type '{raw}' from {source}; expected one of: {valid}"
-            )
+            ) from exc
 
     def _engine_block_precedence(self) -> List[str]:
         engine_name = self.capabilities.engine_name

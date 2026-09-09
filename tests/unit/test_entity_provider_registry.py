@@ -7,7 +7,6 @@ Tests provider registration, retrieval, and DI integration.
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider import BaseEntityProvider
 from kindling.entity_provider_registry import EntityProviderRegistry
@@ -72,7 +71,15 @@ class TestEntityProviderRegistry:
 
         assert "test" in registry.list_registered_providers()
         # Should have the second provider class
-        assert registry._provider_classes["test"] == Provider2
+        assert registry.get_provider_class("test") == Provider2
+
+    def test_get_provider_class_does_not_construct_runtime_provider(self, registry):
+        """Capability inspection must not activate DI or runtime dependencies."""
+        registry.register_provider("custom", MockProvider)
+        with patch.object(GlobalInjector, "get") as resolve:
+            assert registry.get_provider_class("custom") is MockProvider
+            assert registry.get_provider_class("nonexistent") is None
+        resolve.assert_not_called()
 
     def test_get_provider_unknown_type_raises(self, registry):
         """Test that getting an unknown provider type raises ValueError"""
