@@ -43,12 +43,13 @@ The selector performs this sequence during Lakeflow source evaluation:
 2. Discover the app entry points and authorize the selected app using the
    comma-separated `kindling.lakeflow.allowed_apps` value. An absent or empty
    allowlist authorizes every discovered app.
-3. Bridge `kindling.*` and `datapipes.*` pipeline settings into Kindling's
-   configuration service and initialize with `engine="databricks_sdp"`. The
-   bridge first enumerates `RuntimeConfig.getAll()`, falls back to
-   `SparkContext.getConf().getAll()` for PySpark 3.x, and finally reads only
-   the explicit app-selection keys with a warning if neither enumeration API
-   is available.
+3. Bridge `kindling.*`, `datapipes.*`, and `spark.kindling.*` pipeline
+   settings into Kindling's configuration service and initialize with
+   `app_name=<selected>`, `engine="databricks_sdp"`, and
+   `declaration_only=true`. The shared SparkConf reader first enumerates
+   `RuntimeConfig.getAll()`, falls back to `SparkContext.getConf().getAll()`,
+   then `SET`, and finally reads only explicit keys with a warning if no
+   enumeration API is available.
 4. Import the selected declaration module and call `register_all()`.
 5. Call `kindling.declare_pipeline()` last; Lakeflow then owns graph
    orchestration.
@@ -77,21 +78,26 @@ configuration values:
   app-selection keys automatically; name any further keys you need in
   `kindling.lakeflow.config_keys` (comma-separated) and the selector
   bridges each by point lookup.
-- `kindling.lakeflow.config_files` is also read by direct `spark.conf.get`
-  point lookup, so it works when only `RuntimeConfig.get` is available. Do not
-  list it in `kindling.lakeflow.config_keys`; that setting is only for
-  additional flat keys after enumeration fails. Use
+- `spark.kindling.bootstrap.config_files` is read by direct point lookup, so
+  the canonical explicit-file path works when only `RuntimeConfig.get` is
+  available. Use a JSON array string for several files. Do not list it in
+  `kindling.lakeflow.config_keys`; that setting is only for additional flat
+  keys after enumeration fails. Use
   [Databricks Asset Bundle config promotion](dab_config_promotion.md) to deploy
-  companion YAML and pass the resulting path. That guide documents
+  companion YAML and pass the resulting paths. That guide documents
   `/Workspace/...` reads for UC shared/standard access mode clusters and jobs;
   `/Workspace/...` readability from a Lakeflow serverless pipeline remains
   unverified, so use a Unity Catalog volume path when you need a confirmed
   pipeline-readable location.
-- The bridged config defaults `platform` to `standalone`: declaration-time
-  pipelines need no platform machinery, and the Databricks platform
-  service cannot construct inside a pipeline environment ("No
-  workspace_id provided"). Set `kindling.platform.environment` in the
-  pipeline configuration to override.
+- The selector sets `declaration_only=true` instead of defaulting the
+  platform to `standalone`. Platform identity remains real configuration:
+  `kindling.platform.environment` from explicit settings files or
+  `spark.kindling.bootstrap.artifacts_storage_path` discovery can still select
+  Databricks platform layers. Under `declaration_only`, dependency
+  installation, workspace package loading, watermark registration, and
+  `app_name` auto-run are suppressed; if a cloud platform service cannot be
+  constructed in the restricted declaration environment, bootstrap falls back
+  to the standalone service for declaration-time operations.
 - Serverless environments cache installed wheels by requirement set: a
   re-uploaded wheel with the same filename is silently ignored. Bump the
   wheel version on every change.

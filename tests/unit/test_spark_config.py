@@ -13,7 +13,6 @@ from typing import Any, Dict
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
-
 from kindling.injection import GlobalInjector
 from kindling.spark_config import (
     ConfigService,
@@ -552,6 +551,95 @@ class TestConfigTranslation:
 
         set_calls = [call[0] for call in mock_dynaconf.set.call_args_list]
         assert ("BOOTSTRAP", {"load_workspace_packages": True}) in set_calls
+
+    def test_merge_dotted_key_preserves_literal_mapping_keys(self):
+        target = {}
+
+        DynaconfConfig._merge_dotted_key(
+            target,
+            "dataentities",
+            {
+                "bronze.device_telemetry": {
+                    "tags": {
+                        "provider.path": "abfss://raw@example/devices",
+                    }
+                }
+            },
+        )
+
+        assert target == {
+            "dataentities": {
+                "bronze.device_telemetry": {
+                    "tags": {
+                        "provider.path": "abfss://raw@example/devices",
+                    }
+                }
+            }
+        }
+
+    def test_merge_dotted_key_still_splits_flat_top_level_paths(self):
+        target = {}
+
+        DynaconfConfig._merge_dotted_key(
+            target,
+            "kindling.secrets.service.api_token",
+            "token-ref",
+        )
+
+        assert target == {
+            "kindling": {
+                "secrets": {
+                    "service": {
+                        "api_token": "token-ref",
+                    }
+                }
+            }
+        }
+
+    def test_merge_dotted_key_deep_merges_literal_payload_siblings(self):
+        target = {
+            "dataentities": {
+                "bronze.device_telemetry": {
+                    "tags": {
+                        "existing": "yes",
+                    }
+                }
+            }
+        }
+
+        DynaconfConfig._merge_dotted_key(
+            target,
+            "dataentities",
+            {
+                "bronze.device_telemetry": {
+                    "tags": {
+                        "provider.path": "abfss://raw@example/devices",
+                    }
+                }
+            },
+        )
+
+        assert target["dataentities"]["bronze.device_telemetry"]["tags"] == {
+            "existing": "yes",
+            "provider.path": "abfss://raw@example/devices",
+        }
+
+    @patch("kindling.spark_config.Dynaconf")
+    def test_peek_settings_value_uses_main_loader_kwargs(self, mock_dynaconf_class, tmp_path):
+        from kindling.spark_config import peek_settings_value
+
+        settings = tmp_path / "settings.yaml"
+        mock_dynaconf = MagicMock()
+        mock_dynaconf.get.return_value = "databricks"
+        mock_dynaconf_class.return_value = mock_dynaconf
+
+        assert peek_settings_value([str(settings)], "kindling.platform.environment") == "databricks"
+        mock_dynaconf_class.assert_called_once_with(
+            settings_files=[str(settings)],
+            environments=False,
+            MERGE_ENABLED_FOR_DYNACONF=True,
+            envvar_prefix="KINDLING",
+        )
 
     @patch("kindling.spark_config.get_or_create_spark_session")
     @patch("kindling.spark_config.Dynaconf")

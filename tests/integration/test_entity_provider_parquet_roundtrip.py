@@ -8,7 +8,6 @@ import logging
 from unittest.mock import MagicMock
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_parquet import ParquetEntityProvider
 
@@ -19,6 +18,13 @@ def spark():
         from pyspark.sql import SparkSession
     except ImportError:
         pytest.skip("pyspark not available")
+
+    try:
+        existing = SparkSession.getActiveSession()
+        if existing:
+            existing.stop()
+    except Exception:
+        pass
 
     session = (
         SparkSession.builder.appName("kindling-parquet-roundtrip")
@@ -32,12 +38,11 @@ def spark():
     # clear it afterward so no stale/stopped session leaks to later tests.
     import __main__
 
-    previous = getattr(__main__, "spark", None)
     __main__.spark = session
 
     yield session
 
-    __main__.spark = previous
+    __main__.spark = None
     session.stop()
 
 

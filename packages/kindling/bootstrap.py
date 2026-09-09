@@ -11,7 +11,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from kindling.features import get_feature_bool
 from kindling.injection import *
@@ -39,6 +39,8 @@ level_hierarchy = {
 
 _BOOTSTRAP_STAGE_ID = uuid.uuid4().hex[:12]
 _BOOTSTRAP_LOGGER = logging.getLogger("kindling.bootstrap")
+_CONFIG_FILES_SOURCE_METADATA_KEY = "_kindling_config_files_source_key"
+_SPARK_CONFIG_FILES_KEY = "spark.kindling.bootstrap.config_files"
 _LOCAL_PACKAGE_MODULES_ENV = "KINDLING_LOCAL_PACKAGE_MODULES"
 _LOCAL_PACKAGE_REGISTRATION_NAMESPACES = ("entities", "pipes", "ingestion")
 
@@ -147,15 +149,87 @@ def _parse_spark_conf_value(value: Any) -> Any:
         return value
 
 
-def _get_spark_kindling_config() -> Dict[str, Any]:
-    """Read spark.kindling.* keys from SparkConf and map into bootstrap/config keys."""
-    try:
-        spark = get_or_create_spark_session()
-        conf_items = spark.conf.getAll()
-        iterator = conf_items.items() if isinstance(conf_items, dict) else conf_items
-    except Exception:
-        return {}
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    parsed = _parse_spark_conf_value(value)
+    if isinstance(parsed, bool):
+        return parsed
+    return bool(parsed)
 
+
+def spark_conf_get(spark: Any, key: str) -> Optional[str]:
+    """Read one Spark configuration key with restricted-runtime fallbacks."""
+    try:
+        value = spark.conf.get(key, None)
+    except TypeError as exc:
+        _BOOTSTRAP_LOGGER.debug(
+            "RuntimeConfig.get(key, default) is unavailable for %s: %s", key, exc
+        )
+        try:
+            value = spark.conf.get(key)
+        except Exception as fallback_exc:  # noqa: BLE001 - best-effort runtime access
+            _BOOTSTRAP_LOGGER.debug(
+                "Unable to read Spark configuration key %s: %s", key, fallback_exc
+            )
+            return None
+    except Exception as exc:  # noqa: BLE001 - best-effort runtime access
+        _BOOTSTRAP_LOGGER.debug("Unable to read Spark configuration key %s: %s", key, exc)
+        return None
+
+    if value is None:
+        return None
+    return str(value)
+
+
+def _normalize_spark_conf_items(values: Any) -> Tuple[Tuple[str, Any], ...]:
+    if isinstance(values, Mapping):
+        return tuple(values.items())
+    if isinstance(values, (list, tuple)):
+        return tuple(values)
+    raise TypeError(f"Unsupported Spark configuration enumeration result: {type(values).__name__}")
+
+
+def iter_spark_conf_items(spark: Any, extra_keys: Iterable[str] = ()) -> Iterable[Tuple[str, Any]]:
+    """Enumerate Spark configuration through all known best-effort tiers."""
+    try:
+        get_all = getattr(spark.conf, "getAll", None)
+        if callable(get_all):
+            return _normalize_spark_conf_items(get_all())
+    except Exception as exc:  # noqa: BLE001 - py4j-restricted runtimes
+        _BOOTSTRAP_LOGGER.debug("Unable to enumerate RuntimeConfig.getAll(): %s", exc)
+
+    try:
+        values = spark.sparkContext.getConf().getAll()
+        return _normalize_spark_conf_items(values)
+    except Exception as exc:  # noqa: BLE001 - py4j-restricted runtimes
+        _BOOTSTRAP_LOGGER.debug("Unable to enumerate SparkContext.getConf().getAll(): %s", exc)
+
+    try:
+        rows = spark.sql("SET").collect()
+        items = tuple((row[0], row[1]) for row in rows if row[0] is not None)
+        if items:
+            return items
+    except Exception as exc:  # noqa: BLE001 - py4j-restricted runtimes
+        _BOOTSTRAP_LOGGER.debug("Unable to enumerate configuration via SET: %s", exc)
+
+    explicit_keys = tuple(dict.fromkeys(key for key in extra_keys if key))
+    explicit_items = tuple(
+        (key, value) for key in explicit_keys if (value := spark_conf_get(spark, key)) is not None
+    )
+    if explicit_keys:
+        _BOOTSTRAP_LOGGER.warning(
+            "Unable to enumerate Spark configuration through RuntimeConfig.getAll(), "
+            "SparkContext.getConf().getAll(), or SET; read explicit keys %s "
+            "(available: %s)",
+            explicit_keys,
+            tuple(key for key, _ in explicit_items),
+        )
+    return explicit_items
+
+
+def map_spark_kindling_items(items: Iterable[Tuple[str, Any]]) -> Dict[str, Any]:
+    """Map spark.kindling.* configuration items to Kindling bootstrap/config keys."""
     mapped: Dict[str, Any] = {}
     prefix = "spark.kindling."
     bootstrap_prefix = "bootstrap."
@@ -164,7 +238,7 @@ def _get_spark_kindling_config() -> Dict[str, Any]:
         "load_local": "load_workspace_packages",  # deprecated; canonical is load_workspace_packages
     }
 
-    for item in iterator:
+    for item in items:
         try:
             key, raw_value = item
         except Exception:
@@ -183,11 +257,36 @@ def _get_spark_kindling_config() -> Dict[str, Any]:
             bootstrap_key = suffix[len(bootstrap_prefix) :]
             if not bootstrap_key:
                 continue
-            mapped[bootstrap_aliases.get(bootstrap_key, bootstrap_key)] = value
+            mapped_key = bootstrap_aliases.get(bootstrap_key, bootstrap_key)
+            if mapped_key == "config_files" and isinstance(value, str) and "," in value:
+                comma_paths = [part.strip() for part in value.split(",") if part.strip()]
+                if comma_paths:
+                    _BOOTSTRAP_LOGGER.warning(
+                        "SparkConf key '%s' should use a JSON array string for multiple "
+                        "config files; treating comma-separated value as %s.",
+                        key,
+                        comma_paths,
+                    )
+                    value = comma_paths
+            mapped[mapped_key] = value
         else:
             mapped[f"kindling.{suffix}"] = value
 
     return mapped
+
+
+def read_spark_kindling_config(spark: Any, extra_keys: Iterable[str] = ()) -> Dict[str, Any]:
+    """Read SparkConf-backed spark.kindling.* configuration for shared callers."""
+    return map_spark_kindling_items(iter_spark_conf_items(spark, extra_keys=extra_keys))
+
+
+def _get_spark_kindling_config() -> Dict[str, Any]:
+    """Read spark.kindling.* keys from SparkConf and map into bootstrap/config keys."""
+    try:
+        spark = get_or_create_spark_session()
+    except Exception:
+        return {}
+    return read_spark_kindling_config(spark)
 
 
 def _load_env_local_package_module_roots() -> List[str]:
@@ -320,11 +419,14 @@ def apply_config_overrides() -> None:
 def _merge_with_spark_kindling_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Merge SparkConf-derived config with explicit config (explicit wins)."""
     spark_kindling_config = _get_spark_kindling_config()
+    explicit_config = dict(config or {})
     if not spark_kindling_config:
-        return dict(config or {})
+        return explicit_config
 
     merged = dict(spark_kindling_config)
-    merged.update(config or {})
+    if "config_files" in spark_kindling_config and "config_files" not in explicit_config:
+        merged[_CONFIG_FILES_SOURCE_METADATA_KEY] = _SPARK_CONFIG_FILES_KEY
+    merged.update(explicit_config)
     _BOOTSTRAP_LOGGER.debug(
         "Merged %s SparkConf settings from spark.kindling.*", len(spark_kindling_config)
     )
@@ -1915,10 +2017,6 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
     # Extract bootstrap settings
     artifacts_storage_path = config.get("artifacts_storage_path")
-    explicit_platform = config.get("platform_environment") or config.get("platform")
-    is_standalone = str(explicit_platform or "").strip().lower() == "standalone"
-    use_lake_packages = config.get("use_lake_packages", False if is_standalone else True)
-    environment = config.get("environment", "development")
     explicit_config_files = config.get("config_files")
     if explicit_config_files is None:
         config_files = None
@@ -1927,9 +2025,48 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     else:
         config_files = [str(path) for path in explicit_config_files]
 
+    # Explicit config files can name kindling.platform.environment before the
+    # download hierarchy is selected. Discovered artifacts-storage files cannot:
+    # platform is one of the inputs needed to choose those files, so using them
+    # here would be circular.
+    settings_platform = peek_settings_value(config_files, "kindling.platform.environment")
+    settings_discover_config_files = peek_settings_value(
+        config_files, "kindling.bootstrap.discover_config_files"
+    )
+    explicit_platform = (
+        config.get("kindling.platform.environment")
+        or config.get("platform_environment")
+        or config.get("platform")
+        or settings_platform
+    )
+    is_standalone = str(explicit_platform or "").strip().lower() == "standalone"
+    use_lake_packages_value = config.get("use_lake_packages")
+    if use_lake_packages_value is None:
+        use_lake_packages = False if is_standalone else True
+    else:
+        use_lake_packages = _as_bool(use_lake_packages_value)
+    environment = config.get("environment", "development")
+    discover_config_files_value = (
+        config.get("discover_config_files")
+        if config.get("discover_config_files") is not None
+        else config.get("kindling.bootstrap.discover_config_files")
+    )
+    if discover_config_files_value is None:
+        discover_config_files_value = settings_discover_config_files
+    discover_config_files = _as_bool(
+        discover_config_files_value, default=artifacts_storage_path is not None
+    )
+    explicit_discover_config_files = discover_config_files_value is not None and _as_bool(
+        discover_config_files_value
+    )
+    # Loading packages from artifacts storage relies on the same storage utilities as
+    # config discovery. Keep packaged jobs strict so they do not silently start with
+    # only explicit config_files when artifact discovery is unavailable.
+    strict_config_discovery = explicit_discover_config_files or use_lake_packages
+
     # Early platform detection for config loading
     platform = None
-    workspace_id = None
+    workspace_id = config.get("workspace_id")
     if explicit_platform:
         try:
             platform = detect_platform({"platform_service": explicit_platform})
@@ -1937,30 +2074,43 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             _BOOTSTRAP_LOGGER.warning(
                 "Could not resolve explicit platform %r: %s", explicit_platform, e
             )
-    if use_lake_packages and artifacts_storage_path:
+    if discover_config_files and artifacts_storage_path:
         try:
             # Detect platform early to load platform-specific config
             platform = detect_platform(config={"platform_service": explicit_platform})
 
-            # Get workspace ID based on platform
-            workspace_id = _get_workspace_id_for_platform(platform)
+            # Get workspace ID based on platform unless supplied explicitly
+            # through bootstrap/SparkConf. The explicit value selects the
+            # workspace overlay for scheduled jobs where runtime discovery is
+            # unavailable or intentionally avoided.
+            if workspace_id is None:
+                workspace_id = _get_workspace_id_for_platform(platform)
         except Exception as e:
             _BOOTSTRAP_LOGGER.warning(
                 "Could not detect platform/workspace for config loading: %s", e
             )
             # Continue without platform/workspace-specific configs
 
-    if use_lake_packages and artifacts_storage_path:
+    if discover_config_files and artifacts_storage_path:
         with _bootstrap_phase("config_download"):
             initial_temp_path = _resolve_initial_download_temp_path(config, platform)
-            downloaded_config_files = download_config_files(
-                artifacts_storage_path=artifacts_storage_path,
-                environment=environment,
-                platform=platform,
-                workspace_id=workspace_id,
-                app_name=app_name,
-                temp_path=initial_temp_path,
-            )
+            if not strict_config_discovery and _get_storage_utils() is None:
+                _BOOTSTRAP_LOGGER.warning(
+                    "Configuration discovery was enabled by artifacts_storage_path, "
+                    "but storage utilities are unavailable; continuing with explicit "
+                    "config_files only. Set discover_config_files=true to require "
+                    "artifacts-storage discovery."
+                )
+                downloaded_config_files = []
+            else:
+                downloaded_config_files = download_config_files(
+                    artifacts_storage_path=artifacts_storage_path,
+                    environment=environment,
+                    platform=platform,
+                    workspace_id=workspace_id,
+                    app_name=app_name,
+                    temp_path=initial_temp_path,
+                )
             if config_files:
                 config_files = downloaded_config_files + config_files
             else:
@@ -2006,6 +2156,10 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
     logger = get_kindling_service(PythonLoggerProvider).get_logger("KindlingBootstrap")
     logger.info("Starting framework initialization")
+    declaration_only_value = config_service.get(
+        "kindling.bootstrap.declaration_only", config.get("declaration_only")
+    )
+    declaration_only = _as_bool(declaration_only_value)
 
     # Best-effort runtime feature discovery. These values are written into
     # kindling.runtime.features.* and can be overridden by kindling.features.*.
@@ -2116,7 +2270,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         logger.info(f"Platform: {platform}")
 
         install_bootstrap_dependencies_flag = config.get("install_bootstrap_dependencies")
-        if install_bootstrap_dependencies_flag is None:
+        if declaration_only:
+            install_bootstrap_dependencies_flag = False
+        elif install_bootstrap_dependencies_flag is None:
             install_bootstrap_dependencies_flag = platform != "standalone"
 
         with _bootstrap_phase("dependency_install"):
@@ -2130,7 +2286,19 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 logger.info("Skipping bootstrap dependency installation")
 
         with _bootstrap_phase("platform_init"):
-            platformservice = initialize_platform_services(platform, config_service, logger)
+            try:
+                platformservice = initialize_platform_services(platform, config_service, logger)
+            except Exception as exc:
+                if not declaration_only or platform == "standalone":
+                    raise
+                logger.warning(
+                    "Platform service '%s' could not be constructed during "
+                    "declaration-only initialization; falling back to standalone "
+                    "service for declaration-time operations: %s",
+                    platform,
+                    exc,
+                )
+                platformservice = initialize_platform_services("standalone", config_service, logger)
         logger.info("Platform services initialized")
 
         # Attach the watermark aspect: incremental reads and watermark
@@ -2143,7 +2311,11 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # initialize()) also runs without it — the aspect is simply never
         # registered.
         with _bootstrap_phase("aspect_registration"):
-            if platform != "standalone" and not config.get("engine_owns_incrementality"):
+            if (
+                not declaration_only
+                and platform != "standalone"
+                and not config.get("engine_owns_incrementality")
+            ):
                 from kindling.injection import GlobalInjector
                 from kindling.watermarking import WatermarkAspect
 
@@ -2214,18 +2386,21 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         logger.debug("Config overrides re-applied after @secret resolution")
 
         load_workspace_packages_default = False
-        load_workspace_packages_value = config_service.get(
-            "kindling.bootstrap.load_workspace_packages"
-        )
-        if load_workspace_packages_value is None:
-            load_workspace_packages_value = config_service.get("kindling.bootstrap.load_local")
-            if load_workspace_packages_value is not None:
-                logger.warning(
-                    "Config key 'kindling.bootstrap.load_local' is deprecated; use "
-                    "'kindling.bootstrap.load_workspace_packages' instead."
-                )
-        if load_workspace_packages_value is None:
-            load_workspace_packages_value = load_workspace_packages_default
+        if declaration_only:
+            load_workspace_packages_value = False
+        else:
+            load_workspace_packages_value = config_service.get(
+                "kindling.bootstrap.load_workspace_packages"
+            )
+            if load_workspace_packages_value is None:
+                load_workspace_packages_value = config_service.get("kindling.bootstrap.load_local")
+                if load_workspace_packages_value is not None:
+                    logger.warning(
+                        "Config key 'kindling.bootstrap.load_local' is deprecated; use "
+                        "'kindling.bootstrap.load_workspace_packages' instead."
+                    )
+            if load_workspace_packages_value is None:
+                load_workspace_packages_value = load_workspace_packages_default
         logger.debug(
             f"kindling.bootstrap.load_workspace_packages = {load_workspace_packages_value} "
             f"(type: {type(load_workspace_packages_value).__name__})"
@@ -2268,7 +2443,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
         logger.info("Framework initialization complete")
 
-        if app_name:
+        # `app_name` scopes app-specific config overlays. In declaration-only
+        # initialization it must not also imply "run this app".
+        if app_name and not declaration_only:
             logger.info(f"Auto-running app: {app_name}")
             with _bootstrap_phase("app_run"):
                 try:

@@ -1,0 +1,44 @@
+kindling:
+  sdp:
+    dataset_naming: leaf
+  storage:
+    table_schema: cwmdp
+  telemetry:
+    logging:
+      level: CRITICAL
+
+dataentities:
+  bronze.device_telemetry:
+    tags:
+      provider.table_name: dev_bronze.cwmdp.device_telemetry
+      placement.source: app
+  silver.device_telemetry:
+    tags:
+      provider.table_name: dev_silver.cwmdp.device_telemetry
+      placement.source: app
+  silver.events:
+    tags:
+      provider.table_name: dev_silver.cwmdp.events
+      placement.source: app
+  silver.episodes:
+    tags:
+      provider.table_name: dev_silver.cwmdp.episodes
+      placement.source: app
+
+datapipes:
+  bronze.ingest_telemetry:
+    tags:
+      placement.source: app
+    output_type: delta
+  silver.build_telemetry:
+    tags:
+      placement.source: app
+    output_type: delta
+  silver.derive_events:
+    tags:
+      placement.source: app
+    output_type: delta
+  silver.derive_episodes:
+    tags:
+      placement.source: app
+    output_type: delta

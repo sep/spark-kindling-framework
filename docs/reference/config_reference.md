@@ -20,7 +20,9 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 - `platform_environment`: Alias for `platform` used by platform runner internals.
 - `environment`: Environment name used for config layering (for example `development`, `prod`).
 - `workspace_id`: Workspace identifier used for workspace-specific config selection.
-- `use_lake_packages`: If true, load Kindling and extensions from artifacts storage (instead of local environment). Defaults to `false` when `platform` is `standalone`, `true` otherwise.
+- `use_lake_packages`: If true, load Kindling and extensions from artifacts storage (instead of local environment). Defaults to `false` when `platform` is `standalone`, `true` otherwise. This does not opt out of configuration discovery; use `discover_config_files` for that. Artifact-backed package loading also makes configuration discovery strict because both paths require storage utilities.
+- `discover_config_files`: Boolean; controls whether `artifacts_storage_path` is used to discover the canonical config hierarchy. Defaults to `true` when `artifacts_storage_path` is set. An explicit `true` requires storage utilities; the implicit default degrades to explicit `config_files` only when storage utilities are unavailable and `use_lake_packages` is not requiring artifact-backed loading.
+- `declaration_only`: Boolean; initialize enough framework state to resolve configuration and declarations without runtime side effects. Suppresses bootstrap dependency installation, watermark aspect registration, workspace package loading, and `app_name` auto-run. If real platform-service construction fails during declaration-only initialization, Kindling warns and falls back to the standalone service for declaration-time operations. Used by Databricks Lakeflow declaration.
 - `load_workspace_packages`: If true, load workspace packages (notebooks) after platform init.
   (`load_local_packages` still accepted as a deprecated alias.)
 - `temp_path`: Temporary file path root used during wheel/extension install; `kindling.temp_path` is the YAML equivalent.
@@ -57,6 +59,8 @@ Job-deployment (system-test / deployment API) keys:
 ### Bootstrap Behavior
 
 - `kindling.bootstrap.load_lake`: Same intent as bootstrap `use_lake_packages`.
+- `kindling.bootstrap.discover_config_files`: Same intent as bootstrap `discover_config_files`.
+- `kindling.bootstrap.declaration_only`: Same intent as bootstrap `declaration_only`.
 - `kindling.bootstrap.load_workspace_packages`: Same intent as bootstrap `load_workspace_packages`.
 - `kindling.bootstrap.ignored_folders`: Folder names ignored when loading workspace packages/notebooks.
 - `kindling.required_packages`: List of PyPI packages to `pip install` at startup.
@@ -372,28 +376,33 @@ Streaming writes:
   External `EntityNameMapper` resolution remains independent. See the
   [SDP extension documentation](../../packages/extensions/kindling_ext_sdp/README.md#output-dataset-naming)
   for consumer alignment, resource scoping, and generated-name reservations.
-- `kindling.lakeflow.config_files`: Databricks Lakeflow pipeline
-  `configuration:` key containing a comma-separated, order-preserving list
-  of deployed `.yaml` or `.yml` files. Restricted Lakeflow runtimes may not
-  expose enumerable Spark configuration, so the app selector reads this key
-  with `spark.conf.get(key, None)`, normalizes every path with
-  `os.path.abspath`, and passes the list through the bootstrap
-  `config_files` route as Dynaconf `settings_files`. Do not include this key
-  in `kindling.lakeflow.config_keys`.
-  Supported sections are `dataentities:`, `dataentities-bytag:`,
-  `datapipes:`, and `datapipes-bytag:`. Structured YAML files load first;
-  flat bridged pipeline configuration keys are then applied as bootstrap
-  config and win over those files. The selector's authoritative
-  `kindling.data_app`, `kindling.lakeflow.allowed_apps`, and platform
-  default win over both. A `kindling.platform.environment` value in one of
-  these YAML files is inert because platform defaulting only sees the
-  bridged dict.
-  Blank or comment-only YAML source files are accepted as no-op sources. A
-  missing source file, invalid YAML document, non-mapping document,
-  non-mapping supported section such as `dataentities:`, or
-  non-mapping per-entity override raises `LakeflowConfigSourceError` naming
-  `kindling.lakeflow.config_files` and the resolved source path. The error
-  subclasses `LakeflowAppSelectionError`.
+- `spark.kindling.bootstrap.config_files`: Canonical Databricks Lakeflow
+  pipeline `configuration:` key for explicit settings files. It maps through
+  the shared SparkConf ingestion path to bootstrap `config_files`; use a JSON
+  array string for several files or a bare string for one file. The files are
+  loaded by the same Dynaconf `settings_files` route as
+  `kindling.initialize(config={"config_files": [...]})`, so
+  `dataentities:`, `dataentities-bytag:`, `datapipes:`, and
+  `datapipes-bytag:` keep literal dotted IDs and follow the normal merge
+  rules. Flat bridged pipeline keys are bootstrap overrides and win over the
+  files.
+- `spark.kindling.bootstrap.artifacts_storage_path`,
+  `spark.kindling.bootstrap.environment`, and
+  `spark.kindling.bootstrap.workspace_id`: Preferred Lakeflow inputs when
+  config is published through Kindling's artifacts hierarchy. They use the
+  same discovery order documented in
+  [platform and workspace configuration](../contributing/platform_workspace_config.md):
+  base, platform, workspace, environment, app overlays, SparkConf, then
+  bootstrap overrides. A `kindling.platform.environment` in explicitly
+  supplied settings files is honored during early platform selection.
+- `kindling.lakeflow.config_files`: Deprecated compatibility alias for
+  `spark.kindling.bootstrap.config_files`; removal is eligible at 0.13.0.
+  The alias reads a comma-separated list, logs a warning, and appends those
+  paths unmodified to bootstrap `config_files`. It no longer validates paths,
+  suffixes, YAML, or structured sections, and it is not the recommended
+  configuration path. `LakeflowConfigSourceError` remains for one cycle as a
+  deprecated subclass of `LakeflowAppSelectionError`; it is no longer raised,
+  and source diagnostics now come from the shared loader.
 
 ## Testing-Only Settings
 

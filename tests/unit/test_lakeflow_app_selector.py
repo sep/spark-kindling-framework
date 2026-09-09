@@ -167,6 +167,7 @@ def test_two_app_names_select_their_declaration_graphs(monkeypatch):
 
     assert declared == ["orders-graph", "customers-graph"]
     assert [call["engine"] for call in initialized] == ["databricks_sdp", "databricks_sdp"]
+    assert [call["app_name"] for call in initialized] == ["orders", "customers"]
 
 
 @pytest.mark.parametrize(
@@ -240,6 +241,8 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
             "kindling.data_app": "orders",
             "kindling.lakeflow.allowed_apps": "orders",
             "datapipes.silver.orders.engine": '{"dataset_type": "materialized_view"}',
+            "spark.kindling.bootstrap.load_lake": "false",
+            "spark.kindling.bootstrap.config_files": '["/Workspace/Shared/settings.yaml"]',
             "spark.sql.shuffle.partitions": "10",
         }
     )
@@ -259,11 +262,14 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
 
     assert selector.declare_from_pipeline_config(spark) == "plan"
     assert captured["engine"] == "databricks_sdp"
+    assert captured["app_name"] == "orders"
     assert captured["config"]["kindling.data_app"] == "orders"
     assert captured["config"]["kindling.lakeflow.allowed_apps"] == "orders"
+    assert captured["config"]["use_lake_packages"] is False
+    assert captured["config"]["config_files"] == ["/Workspace/Shared/settings.yaml"]
+    assert captured["config"]["declaration_only"] is True
     assert "datapipes.silver.orders.engine" in captured["config"]
     assert "spark.sql.shuffle.partitions" not in captured["config"]
-    assert "config_files" not in captured["config"]
 
 
 def test_pipeline_configuration_falls_back_to_spark_context_conf(monkeypatch):
@@ -297,25 +303,13 @@ def test_pipeline_configuration_falls_back_to_spark_context_conf(monkeypatch):
     assert "spark.sql.shuffle.partitions" not in captured["config"]
 
 
-def test_pipeline_configuration_warns_when_only_explicit_keys_are_available(caplog):
-    class SparkWithoutConfigEnumeration:
-        def __init__(self):
-            self.conf = FakeSparkConfWithoutGetAll(
-                {
-                    "kindling.data_app": "orders",
-                    "kindling.lakeflow.allowed_apps": "orders",
-                }
-            )
+def test_pipeline_config_sets_declaration_only_without_defaulting_platform():
+    config = selector._pipeline_config_for_kindling(
+        FakeSpark({"kindling.data_app": "orders"}), "orders"
+    )
 
-    with caplog.at_level("WARNING", logger=selector.__name__):
-        items = dict(selector._spark_conf_items(SparkWithoutConfigEnumeration()))
-
-    assert items == {
-        "kindling.data_app": "orders",
-        "kindling.lakeflow.allowed_apps": "orders",
-    }
-    assert "RuntimeConfig.getAll()" in caplog.text
-    assert "kindling.data_app" in caplog.text
+    assert config["declaration_only"] is True
+    assert "platform" not in config
 
 
 def test_double_evaluation_is_idempotent(monkeypatch):
@@ -487,13 +481,12 @@ def test_data_app_manager_is_not_invoked(monkeypatch):
         run_app.assert_not_called()
 
 
-def test_pipeline_config_defaults_platform_to_standalone():
+def test_pipeline_config_does_not_use_standalone_as_declaration_lever():
     config = selector._pipeline_config_for_kindling(
         FakeSpark({"kindling.data_app": "orders"}), "orders"
     )
-    # Declaration-time pipelines get no platform machinery by default: the
-    # Databricks platform service cannot construct inside Lakeflow.
-    assert config["platform"] == "standalone"
+    assert config["declaration_only"] is True
+    assert "platform" not in config
 
 
 def test_pipeline_config_explicit_platform_wins():
@@ -508,6 +501,7 @@ def test_pipeline_config_explicit_platform_wins():
     )
     assert "platform" not in config
     assert config["kindling.platform.environment"] == "databricks"
+    assert config["declaration_only"] is True
 
 
 def test_restricted_runtime_bridges_named_config_keys():
@@ -532,25 +526,38 @@ def test_restricted_runtime_bridges_named_config_keys():
     assert "kindling.unrelated" not in config
 
 
-def test_config_files_key_is_point_looked_up_without_config_keys(tmp_path):
-    settings = tmp_path / "settings.yaml"
-    settings.write_text("dataentities: {}\n", encoding="utf-8")
-
+def test_deprecated_config_files_key_is_point_looked_up_without_config_keys(caplog):
     config_keys = "kindling.storage.table_catalog"
+    with caplog.at_level("WARNING", logger=selector.__name__):
+        config = selector._pipeline_config_for_kindling(
+            SparkPointLookupOnly(
+                {
+                    "kindling.data_app": "orders",
+                    "kindling.lakeflow.config_keys": config_keys,
+                    "kindling.storage.table_catalog": "main",
+                    selector.CONFIG_FILES_CONFIG_KEY: "dbfs:/settings.yaml",
+                }
+            ),
+            "orders",
+        )
+
+    assert config["config_files"] == ["dbfs:/settings.yaml"]
+    assert config["kindling.storage.table_catalog"] == "main"
+    assert "spark.kindling.bootstrap.config_files" in caplog.text
+
+
+def test_canonical_config_files_key_is_point_looked_up_without_config_keys():
     config = selector._pipeline_config_for_kindling(
         SparkPointLookupOnly(
             {
                 "kindling.data_app": "orders",
-                "kindling.lakeflow.config_keys": config_keys,
-                "kindling.storage.table_catalog": "main",
-                selector.CONFIG_FILES_CONFIG_KEY: str(settings),
+                selector.CANONICAL_CONFIG_FILES_CONFIG_KEY: '["/Workspace/settings.yaml"]',
             }
         ),
         "orders",
     )
 
-    assert config["config_files"] == [os.path.abspath(settings)]
-    assert config["kindling.storage.table_catalog"] == "main"
+    assert config["config_files"] == ["/Workspace/settings.yaml"]
 
 
 def test_config_files_key_empty_string_is_noop():
@@ -562,168 +569,41 @@ def test_config_files_key_empty_string_is_noop():
     assert "config_files" not in config
 
 
-def test_config_files_are_split_normalized_and_ordered(monkeypatch, tmp_path):
-    first = tmp_path / "first.yaml"
-    second = tmp_path / "nested" / "second.yml"
-    second.parent.mkdir()
-    first.write_text("dataentities: {}\n", encoding="utf-8")
-    second.write_text("datapipes: {}\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-
+def test_deprecated_config_files_are_split_without_validation_or_normalization():
     config = selector._pipeline_config_for_kindling(
         FakeSpark(
             {
                 "kindling.data_app": "orders",
-                selector.CONFIG_FILES_CONFIG_KEY: " first.yaml, , nested/second.yml ",
+                selector.CONFIG_FILES_CONFIG_KEY: " first.yaml, , dbfs:/nested/second.yml ",
             }
         ),
         "orders",
     )
 
-    assert config["config_files"] == [os.path.abspath(first), os.path.abspath(second)]
+    assert config["config_files"] == ["first.yaml", "dbfs:/nested/second.yml"]
 
 
-@pytest.mark.parametrize("content", ["", "   \n", "# Bundle placeholder\n"])
-def test_config_files_empty_yaml_sources_are_noop(tmp_path, content):
-    settings = tmp_path / "settings.yaml"
-    settings.write_text(content, encoding="utf-8")
-
+def test_deprecated_config_files_append_to_canonical_config_files(caplog):
     config = selector._pipeline_config_for_kindling(
-        FakeSpark({"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: str(settings)}),
+        FakeSpark(
+            {
+                "kindling.data_app": "orders",
+                "spark.kindling.bootstrap.config_files": '["/canonical/settings.yaml"]',
+                selector.CONFIG_FILES_CONFIG_KEY: "legacy.yaml",
+            }
+        ),
         "orders",
     )
 
-    assert config["config_files"] == [os.path.abspath(settings)]
-
-
-@pytest.mark.parametrize("raw_value", [",", " , "])
-def test_config_files_path_free_value_raises(raw_value):
-    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
-        selector._pipeline_config_for_kindling(
-            FakeSpark({"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: raw_value}),
-            "orders",
-        )
-
-    message = str(exc_info.value)
-    assert selector.CONFIG_FILES_CONFIG_KEY in message
-    assert raw_value in message
-
-
-def test_config_files_missing_path_raises_config_source_error(tmp_path):
-    missing = tmp_path / "missing.yaml"
-
-    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
-        selector._pipeline_config_for_kindling(
-            FakeSpark(
-                {"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: str(missing)}
-            ),
-            "orders",
-        )
-
-    message = str(exc_info.value)
-    assert selector.CONFIG_FILES_CONFIG_KEY in message
-    assert str(missing) in message
-
-
-def test_config_files_missing_relative_path_reports_resolved_source(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    missing = tmp_path / "missing.yaml"
-
-    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
-        selector._pipeline_config_for_kindling(
-            FakeSpark(
-                {"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: "missing.yaml"}
-            ),
-            "orders",
-        )
-
-    message = str(exc_info.value)
-    assert selector.CONFIG_FILES_CONFIG_KEY in message
-    assert str(missing) in message
-
-
-def test_config_files_unreadable_path_raises_config_source_error(tmp_path):
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        pytest.skip("root can read chmod 0 files")
-
-    settings = tmp_path / "settings.yaml"
-    settings.write_text("dataentities: {}\n", encoding="utf-8")
-    settings.chmod(0)
-
-    try:
-        with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
-            selector._pipeline_config_for_kindling(
-                FakeSpark(
-                    {
-                        "kindling.data_app": "orders",
-                        selector.CONFIG_FILES_CONFIG_KEY: str(settings),
-                    }
-                ),
-                "orders",
-            )
-    finally:
-        settings.chmod(0o600)
-
-    message = str(exc_info.value)
-    assert selector.CONFIG_FILES_CONFIG_KEY in message
-    assert str(settings) in message
-    assert "could not read YAML source" in message
-
-
-def test_config_files_unsupported_suffix_raises_config_source_error(tmp_path):
-    settings = tmp_path / "settings.json"
-    settings.write_text('{"dataentities": {}}\n', encoding="utf-8")
-
-    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
-        selector._pipeline_config_for_kindling(
-            FakeSpark(
-                {"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: str(settings)}
-            ),
-            "orders",
-        )
-
-    message = str(exc_info.value)
-    assert selector.CONFIG_FILES_CONFIG_KEY in message
-    assert str(settings) in message
-    assert ".yaml" in message
-    assert ".yml" in message
-
-
-@pytest.mark.parametrize(
-    ("content", "expected"),
-    [
-        ("dataentities:\n  bronze.device_telemetry: [\n", "could not parse YAML"),
-        ("- not-a-mapping\n", "must contain a mapping"),
-        ("dataentities: 42\n", "section 'dataentities' must be a mapping"),
-        (
-            "dataentities:\n  bronze.device_telemetry: scalar\n",
-            "section 'dataentities' entry 'bronze.device_telemetry' must be a mapping",
-        ),
-        ("datapipes-bytag: 42\n", "section 'datapipes-bytag' must be a mapping"),
-    ],
-)
-def test_config_files_invalid_yaml_shapes_raise_config_source_error(tmp_path, content, expected):
-    settings = tmp_path / "settings.yaml"
-    settings.write_text(content, encoding="utf-8")
-
-    with pytest.raises(selector.LakeflowConfigSourceError) as exc_info:
-        selector._pipeline_config_for_kindling(
-            FakeSpark(
-                {"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: str(settings)}
-            ),
-            "orders",
-        )
-
-    message = str(exc_info.value)
-    assert selector.CONFIG_FILES_CONFIG_KEY in message
-    assert str(settings) in message
-    assert expected in message
+    assert config["config_files"] == ["/canonical/settings.yaml", "legacy.yaml"]
 
 
 def test_config_source_error_is_exported():
     import kindling_ext_databricks as databricks_ext
 
     assert databricks_ext.LakeflowConfigSourceError is selector.LakeflowConfigSourceError
+    assert issubclass(selector.LakeflowConfigSourceError, selector.LakeflowAppSelectionError)
+    assert selector.LakeflowConfigSourceError is not selector.LakeflowAppSelectionError
 
 
 _REAL_SELECTOR_REPRO = textwrap.dedent("""
@@ -836,12 +716,13 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
     )
 
     spark = FakeSpark(
-        {
-            "kindling.data_app": "orders",
-            "kindling.lakeflow.allowed_apps": "orders",
-            selector.CONFIG_FILES_CONFIG_KEY: settings_path,
-            "kindling.sdp.dataset_naming": "normalized",
-            "datapipes.bronze.ingest_telemetry.engine.sdp.dataset_type": "streaming_table",
+            {
+                "kindling.data_app": "orders",
+                "kindling.lakeflow.allowed_apps": "orders",
+                "kindling.platform.environment": "standalone",
+                selector.CONFIG_FILES_CONFIG_KEY: settings_path,
+                "kindling.sdp.dataset_naming": "normalized",
+                "datapipes.bronze.ingest_telemetry.engine.sdp.dataset_type": "streaming_table",
         }
     )
     first_plan = selector.declare_from_pipeline_config(spark)

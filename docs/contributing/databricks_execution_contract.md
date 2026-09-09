@@ -209,9 +209,10 @@ catalog/schema still flattens its logical ID unless `provider.table_name`
 supplies the complete qualified leaf table. For example, set
 `provider.table_name: dev_silver.cwmdp.device_telemetry` when reading
 `silver.device_telemetry` produced with leaf naming. Catalog/schema tags do
-not alter an explicit `provider.table_name`. Bundle-backed structured
-configuration can now carry that override declaratively: point
-`kindling.lakeflow.config_files` at the deployed YAML and put the same
+not alter an explicit `provider.table_name`. Bundle-backed Kindling settings
+can carry that override declaratively: pass the deployed settings files through
+`spark.kindling.bootstrap.config_files` or publish them through
+`spark.kindling.bootstrap.artifacts_storage_path`, then put the same
 `provider.table_name` tag in the consumer app's `dataentities:` section. The
 SDP extension README has the companion example in
 [Reading leaf-named outputs from elsewhere](../../packages/extensions/kindling_ext_sdp/README.md#reading-leaf-named-outputs-from-elsewhere).
@@ -224,6 +225,13 @@ resource, align that external read with the same complete `provider.table_name`
 override; `provider.table_catalog` and `provider.table_schema` still only feed
 the external resolver. Events/episodes and generated helper references are
 local.
+
+Lakeflow declarations use the normal bootstrap lifecycle in
+`declaration_only` mode. The selector passes the selected app name to
+`kindling.initialize()`, bridges `spark.kindling.*` through the shared
+SparkConf reader, and leaves platform identity to configuration or detection.
+`declaration_only` suppresses dependency installation, watermark registration,
+workspace package loading, and app auto-run; it is not a second platform name.
 
 Adapters contribute generated dataset-name reservations to plan validation.
 Lakeflow reserves AUTO CDC source names, the configured temporal strata and

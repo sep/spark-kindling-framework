@@ -14,21 +14,22 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import logging
-import os
 from types import CodeType, ModuleType
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
-import yaml
-from py4j.protocol import Py4JError
-from pyspark.sql.utils import AnalysisException
+from kindling.bootstrap import (
+    iter_spark_conf_items,
+    map_spark_kindling_items,
+    spark_conf_get,
+)
 
 APP_ENTRY_POINT_GROUP = "spark_kindling.data_apps"
 DATA_APP_CONFIG_KEY = "kindling.data_app"
 ALLOWED_APPS_CONFIG_KEY = "kindling.lakeflow.allowed_apps"
-#: Comma-separated YAML settings files to pass through Kindling's structured
-#: config loader. This is read directly, not through CONFIG_KEYS_CONFIG_KEY,
-#: because restricted Lakeflow runtimes may allow only point lookups.
+#: Deprecated comma-separated compatibility alias for the canonical
+#: ``spark.kindling.bootstrap.config_files`` bootstrap configuration key.
 CONFIG_FILES_CONFIG_KEY = "kindling.lakeflow.config_files"
+CANONICAL_CONFIG_FILES_CONFIG_KEY = "spark.kindling.bootstrap.config_files"
 #: Comma-separated pipeline-configuration keys to bridge by point lookup.
 #: Restricted runtimes (serverless / shared-access clusters) allow
 #: ``spark.conf.get`` on pipeline configuration but block every enumeration
@@ -38,17 +39,6 @@ CONFIG_KEYS_CONFIG_KEY = "kindling.lakeflow.config_keys"
 PIPES_CONFIG_KEY = "kindling.lakeflow.pipes"
 
 _LOGGER = logging.getLogger(__name__)
-_CONF_READ_ERRORS = (AttributeError, KeyError, Py4JError, AnalysisException, RuntimeError)
-# RuntimeError covers restricted/serverless SparkContext access, where the
-# context exists conceptually but is not exposed to the Python evaluation.
-_STRUCTURED_CONFIG_SECTIONS = (
-    "dataentities",
-    "dataentities-bytag",
-    "datapipes",
-    "datapipes-bytag",
-)
-_ID_OVERRIDE_SECTIONS = ("dataentities", "datapipes")
-_ACCEPTED_CONFIG_SUFFIXES = (".yaml", ".yml")
 
 
 class LakeflowAppSelectionError(RuntimeError):
@@ -72,7 +62,7 @@ class LakeflowAppConflictError(LakeflowAppSelectionError):
 
 
 class LakeflowConfigSourceError(LakeflowAppSelectionError):
-    """A Lakeflow structured-configuration source is missing or invalid."""
+    """Deprecated compatibility error; no longer raised by this selector."""
 
 
 def _registered_data_app_entry_points() -> Dict[str, Any]:
@@ -94,155 +84,22 @@ def _active_spark(spark: Any = None) -> Any:
     return SparkSession.builder.getOrCreate()
 
 
-def _spark_conf_get(spark: Any, key: str) -> Optional[str]:
-    """Read a RuntimeConfig key while remaining compatible with test fakes."""
-    try:
-        value = spark.conf.get(key, None)
-    except TypeError as exc:
-        _LOGGER.debug("RuntimeConfig.get(key, default) is unavailable for %s: %s", key, exc)
-        try:
-            value = spark.conf.get(key)
-        except (TypeError, *_CONF_READ_ERRORS) as fallback_exc:
-            _LOGGER.debug("Unable to read Spark configuration key %s: %s", key, fallback_exc)
-            return None
-    except _CONF_READ_ERRORS as exc:
-        _LOGGER.debug("Unable to read Spark configuration key %s: %s", key, exc)
-        return None
-
-    if value is None:
-        return None
-    return str(value)
-
-
-def _spark_conf_items(spark: Any) -> Iterable[Tuple[str, Any]]:
-    """Enumerate Spark configuration with PySpark 3.x and Databricks fallbacks.
-
-    Every tier is best-effort: restricted runtimes (serverless / shared-access
-    clusters with py4j whitelisting) can fail these calls with exception types
-    outside any fixed tuple — enumeration must degrade, never crash
-    declaration.
-    """
-
-    try:
-        get_all = getattr(spark.conf, "getAll", None)
-        if callable(get_all):
-            values = get_all()
-            if isinstance(values, Mapping):
-                return tuple(values.items())
-            return tuple(values)
-    except Exception as exc:  # noqa: BLE001 - best-effort tier
-        _LOGGER.debug("Unable to enumerate RuntimeConfig.getAll(): %s", exc)
-
-    try:
-        values = spark.sparkContext.getConf().getAll()
-        if isinstance(values, Mapping):
-            return tuple(values.items())
-        return tuple(values)
-    except Exception as exc:  # noqa: BLE001 - py4j-restricted runtimes
-        _LOGGER.debug("Unable to enumerate SparkContext.getConf().getAll(): %s", exc)
-
-    # Restricted runtimes usually still allow SQL and point lookups even when
-    # the py4j conf objects are whitelisted away.
-    try:
-        rows = spark.sql("SET").collect()
-        items = tuple((row[0], row[1]) for row in rows if row[0] is not None)
-        if items:
-            return items
-    except Exception as exc:  # noqa: BLE001 - best-effort tier
-        _LOGGER.debug("Unable to enumerate configuration via SET: %s", exc)
-
-    explicit_keys = (DATA_APP_CONFIG_KEY, ALLOWED_APPS_CONFIG_KEY)
-    explicit_items = tuple(
-        (key, value) for key in explicit_keys if (value := _spark_conf_get(spark, key)) is not None
-    )
-    _LOGGER.warning(
-        "Unable to enumerate Spark configuration through RuntimeConfig.getAll(), "
-        "SparkContext.getConf().getAll(), or SET; bridged only explicit keys %s "
-        "(available: %s)",
-        explicit_keys,
-        tuple(key for key, _ in explicit_items),
-    )
-    return explicit_items
-
-
-def _validate_structured_config_file(path: str) -> None:
-    """Pre-check a structured config source for clearer Lakeflow diagnostics.
-
-    Dynaconf remains the authoritative parser during ``initialize()``; this
-    guard only catches common source mistakes early. Empty YAML documents are
-    accepted as no-op sources.
-    """
-    if not os.path.isfile(path):
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' points to "
-            f"'{path}', but it is not an existing file."
-        )
-    if not path.lower().endswith(_ACCEPTED_CONFIG_SUFFIXES):
-        accepted = ", ".join(_ACCEPTED_CONFIG_SUFFIXES)
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' points to "
-            f"'{path}', but only {accepted} files are accepted."
-        )
-
-    try:
-        with open(path, "r", encoding="utf-8") as config_file:
-            document = yaml.safe_load(config_file)
-    except yaml.YAMLError as exc:
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' could not parse "
-            f"YAML source '{path}': {exc}"
-        ) from exc
-    except OSError as exc:
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' could not read "
-            f"YAML source '{path}': {exc}"
-        ) from exc
-
-    if document is None:
-        return
-    if not isinstance(document, Mapping):
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' source '{path}' "
-            "must contain a mapping or be empty."
-        )
-
-    for section in _STRUCTURED_CONFIG_SECTIONS:
-        section_value = document.get(section)
-        if section_value is None:
-            continue
-        if not isinstance(section_value, Mapping):
-            raise LakeflowConfigSourceError(
-                f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' source '{path}' "
-                f"section '{section}' must be a mapping."
-            )
-        if section in _ID_OVERRIDE_SECTIONS:
-            for item_id, override in section_value.items():
-                if not isinstance(override, Mapping):
-                    raise LakeflowConfigSourceError(
-                        f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' source "
-                        f"'{path}' section '{section}' entry '{item_id}' must be a "
-                        "mapping."
-                    )
-
-
-def _structured_config_files(spark: Any) -> list[str]:
-    raw = _spark_conf_get(spark, CONFIG_FILES_CONFIG_KEY)
+def _comma_separated_values(raw: Optional[str]) -> list[str]:
     if raw is None or raw == "":
         return []
+    return [part.strip() for part in str(raw).split(",") if part.strip()]
 
-    paths = [part.strip() for part in raw.split(",") if part.strip()]
-    if not paths:
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' was set to "
-            f"{raw!r}, but it does not contain any configuration file paths."
+
+def _deprecated_config_files(spark: Any) -> list[str]:
+    raw = spark_conf_get(spark, CONFIG_FILES_CONFIG_KEY)
+    paths = _comma_separated_values(raw)
+    if paths:
+        _LOGGER.warning(
+            "Config key '%s' is deprecated and removal is eligible at 0.13.0; "
+            "use 'spark.kindling.bootstrap.config_files' instead.",
+            CONFIG_FILES_CONFIG_KEY,
         )
-
-    config_files = []
-    for path in paths:
-        absolute_path = os.path.abspath(path)
-        _validate_structured_config_file(absolute_path)
-        config_files.append(absolute_path)
-    return config_files
+    return paths
 
 
 def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
@@ -254,48 +111,43 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
     ``datapipes.*``.  Passing those values explicitly makes them available to
     Dynaconf and therefore to the declaration engine as well.
     """
-    config: Dict[str, Any] = {}
-    for key, value in _spark_conf_items(spark):
+    raw_keys = spark_conf_get(spark, CONFIG_KEYS_CONFIG_KEY)
+    configured_keys = _comma_separated_values(raw_keys)
+    lookup_keys = (
+        DATA_APP_CONFIG_KEY,
+        ALLOWED_APPS_CONFIG_KEY,
+        CONFIG_KEYS_CONFIG_KEY,
+        CANONICAL_CONFIG_FILES_CONFIG_KEY,
+        CONFIG_FILES_CONFIG_KEY,
+        PIPES_CONFIG_KEY,
+        *configured_keys,
+    )
+    spark_items = tuple(iter_spark_conf_items(spark, extra_keys=lookup_keys))
+    config: Dict[str, Any] = map_spark_kindling_items(spark_items)
+    for key, value in spark_items:
         if not isinstance(key, str):
             continue
-        if key.startswith("spark.kindling."):
-            config[f"kindling.{key[len('spark.kindling.') :]}"] = value
-        elif key.startswith(("kindling.", "datapipes.")):
+        if key.startswith(("kindling.", "datapipes.")):
             config[key] = value
 
     # These are read before initialization, so make the exact selected values
     # available to ConfigService even when a fake or runtime only exposes get().
     config[DATA_APP_CONFIG_KEY] = app_name
-    allowed = _spark_conf_get(spark, ALLOWED_APPS_CONFIG_KEY)
+    allowed = spark_conf_get(spark, ALLOWED_APPS_CONFIG_KEY)
     if allowed is not None:
         config[ALLOWED_APPS_CONFIG_KEY] = allowed
 
-    # Restricted runtimes cannot enumerate configuration at all; bridge any
-    # explicitly named keys by point lookup.
-    raw_keys = _spark_conf_get(spark, CONFIG_KEYS_CONFIG_KEY)
-    if raw_keys:
-        for key in (part.strip() for part in str(raw_keys).split(",")):
-            if key and key not in config:
-                value = _spark_conf_get(spark, key)
-                if value is not None:
-                    config[key] = value
+    config["declaration_only"] = True
 
-    # Declaration-time default: SDP owns execution and persistence, and
-    # platform services are runtime machinery (workspace scans, token
-    # acquisition) that pipeline environments cannot construct — the
-    # Databricks platform service fails with "No workspace_id provided" in
-    # Lakeflow. An explicit platform in the bridged config wins.
-    if "platform" not in config and "kindling.platform.environment" not in config:
-        config["platform"] = "standalone"
-
-    # Kindling loads settings_files before applying this bridged initial_config,
-    # so flat Lakeflow keys win on scalar paths. Structured sections such as
-    # dataentities: have no flat equivalent; datapipes: is the shared namespace
-    # exception, and Dynaconf keeps YAML keys and flat datapipes.* siblings
-    # additive rather than clobbering either side.
-    config_files = _structured_config_files(spark)
-    if config_files:
-        config["config_files"] = config_files
+    legacy_config_files = _deprecated_config_files(spark)
+    if legacy_config_files:
+        current_config_files = config.get("config_files")
+        if current_config_files is None:
+            config["config_files"] = legacy_config_files
+        elif isinstance(current_config_files, str):
+            config["config_files"] = [current_config_files, *legacy_config_files]
+        else:
+            config["config_files"] = [*current_config_files, *legacy_config_files]
     return config
 
 
@@ -457,7 +309,7 @@ def declare_from_pipeline_config(spark: Any = None) -> Any:
     declare the pipeline as the final operation.
     """
     spark = _active_spark(spark)
-    app_name = (_spark_conf_get(spark, DATA_APP_CONFIG_KEY) or "").strip()
+    app_name = (spark_conf_get(spark, DATA_APP_CONFIG_KEY) or "").strip()
     if not app_name:
         raise LakeflowAppSelectionError(
             f"Lakeflow requires a non-empty Spark configuration value for "
@@ -474,7 +326,7 @@ def declare_from_pipeline_config(spark: Any = None) -> Any:
             f"Check '{DATA_APP_CONFIG_KEY}' and install the app distribution."
         )
 
-    allowed = _parse_allowlist(_spark_conf_get(spark, ALLOWED_APPS_CONFIG_KEY))
+    allowed = _parse_allowlist(spark_conf_get(spark, ALLOWED_APPS_CONFIG_KEY))
     if allowed and app_name not in allowed:
         raise LakeflowAppNotAuthorizedError(
             f"Lakeflow data app '{app_name}' was discovered but is not authorized by "
@@ -485,6 +337,7 @@ def declare_from_pipeline_config(spark: Any = None) -> Any:
 
     kindling.initialize(
         config=_pipeline_config_for_kindling(spark, app_name),
+        app_name=app_name,
         engine="databricks_sdp",
     )
 
@@ -510,7 +363,7 @@ def declare_from_pipeline_config(spark: Any = None) -> Any:
     # design and rightly fail SDP validation). kindling.lakeflow.pipes
     # names the subset to declare; unset declares everything.
     pipe_ids = None
-    raw_pipes = _spark_conf_get(spark, PIPES_CONFIG_KEY)
+    raw_pipes = spark_conf_get(spark, PIPES_CONFIG_KEY)
     if raw_pipes:
         pipe_ids = [part.strip() for part in str(raw_pipes).split(",") if part.strip()]
 

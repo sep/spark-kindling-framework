@@ -7,11 +7,10 @@ These tests exercise that seam and kindling_ext_sdp's implementation of it;
 full ``initialize_framework`` runs are integration territory.
 """
 
+import kindling
 import pytest
 from kindling_ext_sdp.bootstrap import resolve_engine_config
 from kindling_ext_sdp.engine_extension import SdpEngineExtension
-
-import kindling
 
 
 class FakeConfigService:
@@ -127,14 +126,13 @@ def test_bootstrap_resolves_dataset_naming_from_config(
 ):
     from unittest.mock import MagicMock
 
-    from kindling_ext_databricks import DatabricksSdpEngine
-    from kindling_ext_sdp.bootstrap import declare_pipeline
-    from kindling_ext_sdp.oss_engine import OssSdpEngine
-
     from kindling.data_entities import DataEntityRegistry
     from kindling.data_pipes import DataPipesRegistry
     from kindling.injection import GlobalInjector
     from kindling.spark_config import ConfigService
+    from kindling_ext_databricks import DatabricksSdpEngine
+    from kindling_ext_sdp.bootstrap import declare_pipeline
+    from kindling_ext_sdp.oss_engine import OssSdpEngine
 
     values = {} if configured_mode == "absent" else {"kindling.sdp.dataset_naming": configured_mode}
     pipes = MagicMock()
@@ -157,3 +155,51 @@ def test_bootstrap_resolves_dataset_naming_from_config(
     assert engines[0].dataset_name.mode == expected_mode
     expected_name = "device_telemetry" if expected_mode == "leaf" else "silver_device_telemetry"
     assert engines[0].dataset_name("silver.device_telemetry") == expected_name
+
+
+def test_invalid_dataset_naming_reports_existing_declaration_issue(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
+    from kindling.injection import GlobalInjector
+    from kindling.spark_config import ConfigService
+    from kindling_ext_sdp.bootstrap import declare_pipeline
+    from kindling_ext_sdp.declaration_plan import DeclarationValidationError
+
+    pipes = MagicMock()
+    pipes.get_pipe_ids.return_value = []
+    services = {
+        DataEntityRegistry: MagicMock(),
+        DataPipesRegistry: pipes,
+        ConfigService: FakeConfigService({"kindling.sdp.dataset_naming": "catalog"}),
+    }
+    monkeypatch.setattr(GlobalInjector, "get", services.__getitem__)
+
+    with pytest.raises(DeclarationValidationError) as exc_info:
+        declare_pipeline(dp_module=MagicMock())
+
+    assert [(issue.pipe_id, issue.code) for issue in exc_info.value.issues] == [
+        ("<pipeline>", "invalid_dataset_naming")
+    ]
+
+
+def test_sdp_dataset_naming_is_independent_of_core_entity_name_mapper():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from kindling.entity_resolution import ConfigDrivenEntityNameMapper
+    from kindling_ext_sdp.declaration_plan import DatasetNameMapper
+
+    logger_provider = MagicMock()
+    logger_provider.get_logger.return_value = MagicMock()
+    core_mapper = ConfigDrivenEntityNameMapper(
+        FakeConfigService({"kindling.storage.table_schema": "published"}),
+        logger_provider,
+    )
+
+    assert DatasetNameMapper("leaf")("silver.device_telemetry") == "device_telemetry"
+    assert (
+        core_mapper.get_table_name(SimpleNamespace(entityid="silver.device_telemetry", tags={}))
+        == "published.silver_device_telemetry"
+    )

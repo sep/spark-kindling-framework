@@ -83,6 +83,33 @@ entirely; the paths are ordinary driver-local reads. Long-running jobs can
 pick up a promotion without restart via `ConfigService.reload()`, which
 emits `config.pre_reload` / `config.post_reload` with a change diff.
 
+## Lakeflow Pipelines
+
+Lakeflow uses the same files and the same bootstrap key. Put the selected app
+and pipe subset in the pipeline configuration, then pass the deployed settings
+files through `spark.kindling.bootstrap.config_files`:
+
+```yaml
+resources:
+  pipelines:
+    telemetry_silver:
+      name: telemetry-silver
+      catalog: dev_silver
+      target: cwmdp
+      configuration:
+        "kindling.data_app": telemetry
+        "kindling.lakeflow.allowed_apps": telemetry
+        "kindling.lakeflow.pipes": silver.build_telemetry,silver.derive_events,silver.derive_episodes
+        "spark.kindling.bootstrap.environment": dev
+        "spark.kindling.bootstrap.workspace_id": adb-dev
+        "spark.kindling.bootstrap.config_files": '["/Workspace/Shared/kindling/dev/config/settings.yaml", "/Workspace/Shared/kindling/dev/config/settings.databricks.yaml", "/Workspace/Shared/kindling/dev/data-apps/telemetry/settings.yaml"]'
+```
+
+The selector sets `declaration_only=true` and calls
+`kindling.initialize(..., app_name="telemetry", engine="databricks_sdp")`.
+Configuration files are still loaded by Kindling's shared Dynaconf path; the
+Lakeflow selector does not parse or validate YAML itself.
+
 ## CI/CD promotion
 
 ```yaml
