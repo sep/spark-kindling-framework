@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from injector import inject
-
 from kindling.data_entities import EntityNameMapper, EntityPathLocator
 from kindling.features import get_feature_bool
 from kindling.injection import GlobalInjector
@@ -85,6 +84,9 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
 
     Conventions:
     - Per-entity override via tag: `provider.table_name`
+        - Per-entity name strategy via tag: `provider.table_name_strategy`. The
+            supported `leaf` strategy resolves only the final entity-id segment
+            before applying catalog/schema configuration.
     - Per-entity catalog/schema override via tags: `provider.table_catalog`,
       `provider.table_schema` -- highest precedence after `provider.table_name`.
       These tags can be set directly on an entity, or assigned to a whole
@@ -206,6 +208,16 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
             return parts[1], parts[2]
         return None, None
 
+    def _table_name_strategy(self, entity_tags: dict) -> Optional[str]:
+        strategy = self._clean_config_value(entity_tags.get("provider.table_name_strategy"))
+        if strategy is None:
+            return None
+        if strategy.lower() == "leaf":
+            return "leaf"
+        raise ValueError(
+            "Unsupported provider.table_name_strategy " f"{strategy!r}; supported values: leaf"
+        )
+
     def get_table_name(self, entity):
         entity_tags = getattr(entity, "tags", {}) or {}
         explicit_table_name = entity_tags.get("provider.table_name")
@@ -213,6 +225,8 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
             return explicit_table_name
 
         entity_id = _get_entity_id(entity)
+        if self._table_name_strategy(entity_tags) == "leaf":
+            entity_id = str(entity_id).rsplit(".", maxsplit=1)[-1]
 
         # If no namespace config is provided, treat entity IDs as already-qualified names.
         # x.y.z -> catalog.schema.table; y.z -> schema.table (default catalog if available).

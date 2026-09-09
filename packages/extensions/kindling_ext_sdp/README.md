@@ -111,19 +111,24 @@ Enabling `leaf` does not change the consumer's `EntityNameMapper`. With
 catalog `dev_silver` and schema `cwmdp` configured, that mapper still resolves
 `silver.device_telemetry` to `dev_silver.cwmdp.silver_device_telemetry`,
 while the leaf-mode pipeline writes `dev_silver.cwmdp.device_telemetry`.
-Align the consumer's entity metadata explicitly:
+Align the consumer's entity metadata with the mapper's `leaf` name strategy:
 
 ```yaml
-dataentities:
-  silver.device_telemetry:
-    tags:
-      provider.table_name: dev_silver.cwmdp.device_telemetry
+dataentities-bytag:
+  ldp_output:
+    "true":
+      tags:
+        provider.table_name_strategy: leaf
 ```
 
-`provider.table_name` is a complete override: supply the fully qualified name;
-it takes precedence over `provider.table_catalog` and `provider.table_schema`.
-The pipeline continues to declare the single-part name `device_telemetry`.
-Use corresponding overrides for other entities and resource destinations.
+The strategy retains the entity's resolved catalog and schema, but uses only the
+logical entity ID's final segment for its table name. Apply the `ldp_output`
+tag to the matching entities; `dataentities-bytag` adds the mapper strategy to
+the whole family. The pipeline continues to declare the single-part name
+`device_telemetry`.
+
+`provider.table_name` remains a complete override and takes precedence over
+the name strategy, `provider.table_catalog`, and `provider.table_schema`.
 
 Temporal chain base-event sources currently always use external table
 resolution, even if a producing pipe is selected in the same pipeline.

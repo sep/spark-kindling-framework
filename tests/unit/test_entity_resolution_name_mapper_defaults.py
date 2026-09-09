@@ -303,3 +303,73 @@ class TestPerEntityTagOverride:
         )
 
         assert mapper.get_table_name(entity) == "explicit.table"
+
+
+class TestLeafTableNameStrategy:
+    def test_leaf_strategy_uses_only_final_entity_id_segment_with_catalog_and_schema(self):
+        mapper = _make_mapper_with_config(
+            {
+                "kindling.storage.table_catalog": "dev_silver",
+                "kindling.storage.table_schema": "cwmdp",
+            }
+        )
+
+        entity = _entity_with_tags(
+            "silver.device_telemetry", {"provider.table_name_strategy": "leaf"}
+        )
+
+        assert mapper.get_table_name(entity) == "dev_silver.cwmdp.device_telemetry"
+
+    def test_leaf_strategy_preserves_catalog_only_namespace(self):
+        mapper = _make_mapper_with_config({"kindling.storage.table_catalog": "dev"})
+
+        entity = _entity_with_tags(
+            "silver.device_telemetry", {"provider.table_name_strategy": "leaf"}
+        )
+
+        assert mapper.get_table_name(entity) == "dev.device_telemetry"
+
+    def test_leaf_strategy_preserves_schema_only_namespace(self):
+        mapper = _make_mapper_with_config({"kindling.storage.table_schema": "cwmdp"})
+
+        entity = _entity_with_tags(
+            "silver.device_telemetry", {"provider.table_name_strategy": "leaf"}
+        )
+
+        assert mapper.get_table_name(entity) == "cwmdp.device_telemetry"
+
+    def test_leaf_strategy_uses_final_segment_without_namespace_config(self):
+        mapper = _make_mapper_with_config({})
+
+        entity = _entity_with_tags(
+            "silver.device_telemetry", {"provider.table_name_strategy": "leaf"}
+        )
+
+        assert mapper.get_table_name(entity) == "device_telemetry"
+
+    def test_provider_table_name_wins_over_leaf_strategy(self):
+        mapper = _make_mapper_with_config({})
+
+        entity = _entity_with_tags(
+            "silver.device_telemetry",
+            {
+                "provider.table_name_strategy": "invalid",
+                "provider.table_name": "explicit.table",
+            },
+        )
+
+        assert mapper.get_table_name(entity) == "explicit.table"
+
+    def test_invalid_table_name_strategy_fails_clearly(self):
+        mapper = _make_mapper_with_config({})
+
+        entity = _entity_with_tags(
+            "silver.device_telemetry", {"provider.table_name_strategy": "normalized"}
+        )
+
+        try:
+            mapper.get_table_name(entity)
+        except ValueError as exc:
+            assert "provider.table_name_strategy" in str(exc)
+        else:
+            raise AssertionError("invalid table-name strategy must fail")
