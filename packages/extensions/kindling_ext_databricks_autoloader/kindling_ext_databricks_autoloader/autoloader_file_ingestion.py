@@ -4,7 +4,7 @@ Binds an ``AutoLoaderFileIngestionRunner`` implementation so
 ``ParallelizingFileIngestionProcessor`` can start a per-entry ``cloudFiles``
 stream for ``discovery="autoloader"`` ``FileIngestionEntry`` registrations,
 without core ``kindling`` importing anything Databricks-specific. See
-``plans/autoloader-file-ingestion/implementation-plan.md``.
+``docs/proposals/autoloader_file_ingestion.md``.
 """
 
 from typing import Any, Callable
