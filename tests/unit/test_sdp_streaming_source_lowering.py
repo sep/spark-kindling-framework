@@ -1,5 +1,7 @@
 """Databricks lowering tests for provider-owned streaming sources."""
 
+from pathlib import Path
+
 import pytest
 from kindling.data_entities import EntityMetadata
 from kindling.data_pipes import PipeMetadata
@@ -116,6 +118,7 @@ def streaming_graph(output_tags=None, execute=None, schema=None):
                 "landing.telemetry", tags={"provider_type": "fake_stream"}
             ),
             "ref.devices": make_entity("ref.devices"),
+            "bronze.devices": make_entity("bronze.devices"),
             "silver.telemetry": make_entity(
                 "silver.telemetry",
                 tags=output_tags or {},
@@ -127,12 +130,17 @@ def streaming_graph(output_tags=None, execute=None, schema=None):
     )
     pipes = FakeRegistry(
         {
+            "prepare.devices": make_pipe(
+                "prepare.devices",
+                ["ref.devices"],
+                "bronze.devices",
+            ),
             "ingest.telemetry": make_pipe(
                 "ingest.telemetry",
-                ["landing.telemetry", "ref.devices"],
+                ["landing.telemetry", "bronze.devices", "ref.devices"],
                 "silver.telemetry",
                 execute=execute,
-            )
+            ),
         }
     )
     return entities, pipes
@@ -148,10 +156,15 @@ def provider_resolver(provider):
 
 
 @pytest.mark.parametrize(
-    "mode, expected_target",
-    [("normalized", "silver_telemetry"), ("leaf", "telemetry")],
+    "mode, expected_target, expected_internal_input",
+    [
+        ("normalized", "silver_telemetry", "bronze_devices"),
+        ("leaf", "telemetry", "devices"),
+    ],
 )
-def test_streaming_source_dataset_emits_one_table_and_one_append_flow(mode, expected_target):
+def test_streaming_source_dataset_emits_one_table_and_one_append_flow(
+    mode, expected_target, expected_internal_input
+):
     provider = FakeStreamingProvider()
     captured = {}
     entities, pipes = streaming_graph(execute=lambda **dfs: captured.update(dfs) or "df:out")
@@ -175,7 +188,7 @@ def test_streaming_source_dataset_emits_one_table_and_one_append_flow(mode, expe
 
     plan = engine.build_plan()
     dataset = plan.get_dataset("silver.telemetry")
-    source_input, ref_input = dataset.inputs
+    source_input, internal_input, ref_input = dataset.inputs
     engine.declare_pipeline(plan)
     flow = dp.append_flows[0]
     result = flow["fn"]()
@@ -183,6 +196,7 @@ def test_streaming_source_dataset_emits_one_table_and_one_append_flow(mode, expe
     assert dataset.dataset_type is DatasetType.STREAMING_TABLE
     assert source_input.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
     assert source_input.streaming_source is provider.spec
+    assert internal_input.classification is InputClassification.INTERNAL
     assert ref_input.classification is InputClassification.EXTERNAL
     assert set(dp.streaming_tables) == {expected_target}
     assert len(dp.append_flows) == 1
@@ -190,9 +204,10 @@ def test_streaming_source_dataset_emits_one_table_and_one_append_flow(mode, expe
     assert flow["name"] == f"{expected_target}_flow"
     assert result == "df:out"
     assert provider_reads == ["landing.telemetry"]
-    assert session.reads == ["ref.devices"]
+    assert session.reads == [expected_internal_input, "ref.devices"]
     assert captured == {
         "landing_telemetry": "stream:landing.telemetry",
+        "bronze_devices": f"static:{expected_internal_input}",
         "ref_devices": "static:ref.devices",
     }
 
@@ -235,14 +250,17 @@ def test_streaming_source_lowering_composes_with_table_metadata_and_expectations
 
 
 def test_streaming_source_lowering_adds_no_imperative_streaming_lifecycle_calls():
-    from pathlib import Path
-
+    repo_root = Path(__file__).resolve().parents[2]
     roots = [
-        Path("packages/extensions/kindling_ext_sdp/kindling_ext_sdp"),
-        Path("packages/extensions/kindling_ext_databricks/kindling_ext_databricks"),
+        repo_root / "packages/extensions/kindling_ext_sdp/kindling_ext_sdp",
+        repo_root / "packages/extensions/kindling_ext_databricks/kindling_ext_databricks",
     ]
-    text = "\n".join(path.read_text() for root in roots for path in root.glob("*.py"))
+    files = [path for root in roots for path in root.rglob("*.py")]
+    text = "\n".join(path.read_text(encoding="utf-8") for path in files)
 
+    assert files
     assert "writeStream" not in text
     assert "checkpointLocation" not in text
     assert ".start(" not in text
+    assert "_jvm" not in text
+    assert "_jsc" not in text

@@ -446,6 +446,65 @@ class TestStreamingSourceClassification:
 
         assert "multiple_streaming_sources_not_supported" in issue_codes(issues)
 
+    def test_streaming_source_cannot_drive_temporal_chain_lowering(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events"),
+            ]
+        )
+        pipes = FakePipeRegistry(
+            [
+                make_pipe(
+                    "ingest.events",
+                    ["landing.events"],
+                    "bronze.events",
+                    tags={"temporal.kind": "chain_events"},
+                )
+            ]
+        )
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        unsupported = [
+            issue for issue in issues if issue.code == "streaming_source_lowering_not_supported"
+        ]
+        assert len(unsupported) == 1
+        assert "temporal chain" in unsupported[0].reason
+        assert "target 'databricks_sdp'" not in unsupported[0].reason
+
+    def test_streaming_source_cannot_drive_auto_cdc_lowering(self):
+        provider = FakeDeclarableStreamingProvider(streaming_spec())
+        entities = FakeEntityRegistry(
+            [
+                make_entity("landing.events", tags={"provider_type": "fake_stream"}),
+                make_entity("bronze.events", tags={"scd.type": "2"}),
+            ]
+        )
+        pipes = FakePipeRegistry([make_pipe("ingest.events", ["landing.events"], "bronze.events")])
+        engine = make_engine(
+            entities,
+            pipes,
+            capabilities=DATABRICKS_SDP,
+            provider_resolver=fake_stream_resolver(provider),
+        )
+
+        issues = engine.validate()
+
+        unsupported = [
+            issue for issue in issues if issue.code == "streaming_source_lowering_not_supported"
+        ]
+        assert len(unsupported) == 1
+        assert "AUTO CDC" in unsupported[0].reason
+        assert "target 'databricks_sdp'" not in unsupported[0].reason
+
     def test_later_delta_input_remains_external_storage_read(self):
         provider = FakeDeclarableStreamingProvider(streaming_spec())
         entities = FakeEntityRegistry(

@@ -202,7 +202,13 @@ class DatabricksSdpEngine(OssSdpEngine):
         dp.materialized_view(**self._declaration_kwargs(dataset))(query_function)
 
     def _declare_streaming_source_dataset(self, dp, dataset: DatasetDeclaration) -> None:
-        """Lower a provider-owned streaming source to a Lakeflow append flow."""
+        """Lower a provider-owned streaming source to a Lakeflow append flow.
+
+        The output entity's runner-shape ``schema`` is not forwarded to
+        ``create_streaming_table`` until Lakeflow platform evidence proves
+        the exact schema contract; the target schema is inferred from the
+        append-flow DataFrame.
+        """
         target_name = self.dataset_name(dataset.name)
         flow_name = f"{target_name}_flow"
         query_function = self._build_dataset_function(dataset, stream_driving_inputs=True)
@@ -213,7 +219,7 @@ class DatabricksSdpEngine(OssSdpEngine):
         query_function.__qualname__ = flow_name
 
         target_kwargs = self._declaration_kwargs(dataset)
-        target_kwargs.pop("schema", None)  # parity fallback pending platform evidence
+        target_kwargs.pop("schema", None)  # runner-shape schema; see docstring
         dp.create_streaming_table(**target_kwargs)
         dp.append_flow(target=target_name, name=flow_name)(query_function)
 

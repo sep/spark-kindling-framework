@@ -360,6 +360,8 @@ class TestEventHubDeclarableStreamingSourceSpec:
         spec = provider.streaming_source_spec(entity)
 
         assert spec.is_valid is True
+        provider.spark.read.format.assert_not_called()
+        provider.spark.readStream.format.assert_not_called()
         assert spec.provider_type == "eventhub"
         assert spec.source_format == "kafka"
         assert spec.source_identity == "my-hub@example.servicebus.windows.net"

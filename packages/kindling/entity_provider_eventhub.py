@@ -20,14 +20,28 @@ from .entity_provider import (
     DECLARATIVE_SOURCE_OPTION,
     BaseEntityProvider,
     DeclarableStreamingSource,
-    PreprocessingSpec,
-    SourceValidationIssue,
     StreamableEntityProvider,
     StreamingSourceSpec,
+)
+from .entity_provider_eventhub_declaration import (
+    DECLARABLE_SUPPORTED_TAGS,
+)
+from .entity_provider_eventhub_declaration import TRANSPORT_AUTO as _TRANSPORT_AUTO
+from .entity_provider_eventhub_declaration import (
+    TRANSPORT_EVENTHUBS as _TRANSPORT_EVENTHUBS,
+)
+from .entity_provider_eventhub_declaration import TRANSPORT_KAFKA as _TRANSPORT_KAFKA
+from .entity_provider_eventhub_declaration import (
+    build_streaming_source_spec,
+    parse_connection_string,
+    resolve_transport,
+    with_entity_path,
 )
 from .injection import GlobalInjector
 from .spark_config import ConfigService, get_or_create_spark_session
 from .spark_log_provider import PythonLoggerProvider
+
+__all__ = ["DECLARABLE_SUPPORTED_TAGS", "EventHubEntityProvider"]
 
 # Avro single-object encoding (the Avro spec's standard, registry-free way to
 # prefix a binary Avro payload with a schema identifier -- see
@@ -430,19 +444,6 @@ _PREPROCESS_MODES: Dict[str, Callable[..., DataFrame]] = {
     "avro": _preprocess_avro,
 }
 
-DECLARABLE_SUPPORTED_TAGS = (
-    "provider.eventhub.connectionString",
-    "provider.eventhub.name",
-    "provider.eventhub.consumerGroup",
-    "provider.transport",
-    "provider.startingPosition",
-    "provider.maxEventsPerTrigger",
-    "provider.operationTimeout",
-    "provider.kafka.*",
-    "provider.preprocess",
-    "provider.amqp_headers",
-)
-
 
 @GlobalInjector.singleton_autobind()
 class EventHubEntityProvider(
@@ -530,9 +531,9 @@ class EventHubEntityProvider(
     Use `.selectExpr("cast(body as string) as json")` to parse JSON payloads.
     """
 
-    TRANSPORT_AUTO = "auto"
-    TRANSPORT_EVENTHUBS = "eventhubs"
-    TRANSPORT_KAFKA = "kafka"
+    TRANSPORT_AUTO = _TRANSPORT_AUTO
+    TRANSPORT_EVENTHUBS = _TRANSPORT_EVENTHUBS
+    TRANSPORT_KAFKA = _TRANSPORT_KAFKA
 
     @inject
     def __init__(self, logger_provider: PythonLoggerProvider, config_service: ConfigService):
@@ -549,179 +550,18 @@ class EventHubEntityProvider(
         return self._resolve_transport(config)
 
     def _resolve_transport(self, provider_config: dict) -> str:
-        configured_transport = (
-            str(provider_config.get("transport", self.TRANSPORT_AUTO) or self.TRANSPORT_AUTO)
-            .strip()
-            .lower()
-        )
-
-        if configured_transport not in {
-            self.TRANSPORT_AUTO,
-            self.TRANSPORT_EVENTHUBS,
-            self.TRANSPORT_KAFKA,
-        }:
-            raise ValueError("Event Hub provider transport must be one of: auto, eventhubs, kafka")
-
-        if configured_transport != self.TRANSPORT_AUTO:
-            return configured_transport
-
-        if self.platform == "databricks":
-            return self.TRANSPORT_KAFKA
-
-        return self.TRANSPORT_EVENTHUBS
+        return resolve_transport(provider_config, self.platform)
 
     def _parse_connection_string(self, connection_string: str) -> dict:
-        parts: dict[str, str] = {}
-        for segment in connection_string.split(";"):
-            if not segment or "=" not in segment:
-                continue
-            key, value = segment.split("=", 1)
-            parts[key.strip()] = value.strip()
-
-        required = ("Endpoint=", "SharedAccessKeyName=", "SharedAccessKey=")
-        if not all(token in connection_string for token in required):
-            raise ValueError("Event Hub connection string missing required segments")
-
-        return parts
+        return parse_connection_string(connection_string)
 
     def _with_entity_path(self, connection_string: str, eventhub_name: str) -> str:
-        if "EntityPath=" in connection_string:
-            return connection_string
-        return f"{connection_string.rstrip(';')};EntityPath={eventhub_name}"
+        return with_entity_path(connection_string, eventhub_name)
 
     def streaming_source_spec(self, entity_metadata: EntityMetadata) -> StreamingSourceSpec:
         """Return an inert, secret-safe declaration spec for Lakeflow lowering."""
         config = self._get_provider_config(entity_metadata)
-        issues: list[SourceValidationIssue] = []
-
-        transport = ""
-        try:
-            transport = self._resolve_transport(config)
-        except ValueError:
-            issues.append(
-                SourceValidationIssue(
-                    tag="provider.transport",
-                    constraint="must be one of: auto, eventhubs, kafka",
-                    remediation="set provider.transport to kafka for Lakeflow declarations",
-                )
-            )
-        if transport == self.TRANSPORT_EVENTHUBS:
-            issues.append(
-                SourceValidationIssue(
-                    tag="provider.transport",
-                    constraint="the eventhubs transport cannot run in Lakeflow",
-                    remediation=(
-                        "set provider.transport to kafka or configure "
-                        "kindling.platform.name as databricks so auto resolves to kafka"
-                    ),
-                )
-            )
-
-        connection_string = str(config.get("eventhub.connectionString", "") or "")
-        connection_parts: dict[str, str] = {}
-        if not connection_string:
-            issues.append(
-                SourceValidationIssue(
-                    tag="provider.eventhub.connectionString",
-                    constraint="is required",
-                    remediation=(
-                        "provide the Event Hub connection string through a " "secret-backed tag"
-                    ),
-                )
-            )
-        else:
-            try:
-                connection_parts = self._parse_connection_string(connection_string)
-            except ValueError:
-                issues.append(
-                    SourceValidationIssue(
-                        tag="provider.eventhub.connectionString",
-                        constraint=(
-                            "must include endpoint, access key name, and access key segments"
-                        ),
-                        remediation="use a complete Event Hub connection string",
-                    )
-                )
-
-        eventhub_name = str(config.get("eventhub.name", "") or "").strip()
-        if not eventhub_name:
-            issues.append(
-                SourceValidationIssue(
-                    tag="provider.eventhub.name",
-                    constraint="is required for Kafka declarative reads",
-                    remediation="set the Event Hub name explicitly",
-                )
-            )
-
-        starting_position = str(config.get("startingPosition", "latest") or "latest")
-        if starting_position not in {"earliest", "latest"}:
-            issues.append(
-                SourceValidationIssue(
-                    tag="provider.startingPosition",
-                    constraint="Kafka transport supports only earliest and latest",
-                    remediation="set provider.startingPosition to earliest or latest",
-                )
-            )
-
-        preprocess = config.get("preprocess")
-        preprocess_mode = str(preprocess).strip() if preprocess else ""
-        if preprocess_mode and preprocess_mode not in _PREPROCESS_MODES:
-            issues.append(
-                SourceValidationIssue(
-                    tag="provider.preprocess",
-                    constraint="must be one of: avro, kafka",
-                    remediation="remove provider.preprocess or select a supported mode",
-                )
-            )
-
-        for tag_name, config_key in (
-            ("provider.maxEventsPerTrigger", "maxEventsPerTrigger"),
-            ("provider.operationTimeout", "operationTimeout"),
-        ):
-            value = config.get(config_key)
-            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
-                issues.append(
-                    SourceValidationIssue(
-                        tag=tag_name,
-                        constraint="must be an integer",
-                        remediation="set an integer millisecond/event count value",
-                    )
-                )
-
-        namespace_host = (
-            str(connection_parts.get("Endpoint", "")).replace("sb://", "", 1).rstrip("/")
-        )
-        source_identity = eventhub_name or "<missing event hub name>"
-        if namespace_host:
-            source_identity = f"{source_identity}@{namespace_host}"
-
-        applied = []
-        for tag_name in DECLARABLE_SUPPORTED_TAGS:
-            if tag_name.endswith(".*"):
-                prefix = tag_name[:-1]
-                applied.extend(
-                    sorted(key for key in entity_metadata.tags if key.startswith(prefix))
-                )
-            elif tag_name in entity_metadata.tags:
-                applied.append(tag_name)
-
-        preprocessing = None
-        if preprocess_mode:
-            preprocessing = PreprocessingSpec(
-                mode=preprocess_mode,
-                amqp_headers=bool(config.get("amqp_headers")),
-                kafka_headers_included=bool(config.get("kafka.includeHeaders")),
-            )
-
-        return StreamingSourceSpec(
-            provider_type=str((entity_metadata.tags or {}).get("provider_type", "eventhub")),
-            source_format=transport or "unknown",
-            source_identity=source_identity,
-            supported_option_names=DECLARABLE_SUPPORTED_TAGS,
-            applied_option_names=tuple(applied),
-            preprocessing=preprocessing,
-            validation_issues=tuple(issues),
-        )
+        return build_streaming_source_spec(entity_metadata, config, platform=self.platform)
 
     def _build_eventhub_config(self, provider_config: dict) -> dict:
         """

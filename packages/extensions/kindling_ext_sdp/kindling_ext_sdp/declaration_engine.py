@@ -742,13 +742,7 @@ class DeclarationEngine(ABC):
         if streaming_driving:
             if raw is None:
                 return DatasetType.STREAMING_TABLE
-            try:
-                selected = DatasetType(raw.lower())
-            except ValueError:
-                valid = ", ".join(dt.value for dt in DatasetType)
-                raise ValueError(
-                    f"invalid dataset_type '{raw}' from {source}; expected one of: {valid}"
-                )
+            selected = self._parse_dataset_type(raw, source)
             if selected is not DatasetType.STREAMING_TABLE:
                 raise _DatasetTypeConflict(
                     f"provider-owned streaming driving input lowers to "
@@ -760,13 +754,16 @@ class DeclarationEngine(ABC):
         if raw is None:
             return DatasetType.MATERIALIZED_VIEW
 
+        return self._parse_dataset_type(raw, source)
+
+    def _parse_dataset_type(self, raw: str, source: str) -> DatasetType:
         try:
             return DatasetType(raw.lower())
-        except ValueError:
+        except ValueError as exc:
             valid = ", ".join(dt.value for dt in DatasetType)
             raise ValueError(
                 f"invalid dataset_type '{raw}' from {source}; expected one of: {valid}"
-            )
+            ) from exc
 
     def _engine_block_precedence(self) -> List[str]:
         engine_name = self.capabilities.engine_name

@@ -128,6 +128,10 @@ calls `read_entity_as_stream()` with the declarative-source option, passes
 later inputs as static DataFrames, invokes the registered pipe transform, and
 returns the streaming DataFrame to Lakeflow.
 
+The output entity's declared `schema` is not forwarded to
+`create_streaming_table` pending Lakeflow platform evidence; the target schema
+is inferred from the append-flow DataFrame on this path.
+
 Lakeflow owns query startup, checkpoint placement, retries, update scheduling,
 and target persistence for this path. Kindling does not call `writeStream`,
 does not pass `checkpointLocation`, and does not start a streaming query.
