@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "spark-kindling-ext-sdp"
-version = "0.3.1"
+version = "0.3.2"
 description = "Spark Declarative Pipelines (SDP) declaration engine for Kindling"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -20,7 +20,7 @@ python = "^3.10"
 # validated DeclarationPlan. It deliberately has NO dependency on
 # pyspark.pipelines — the Spark 4.1+ `pyspark[pipelines]` extra becomes a
 # dependency only in Phase 2, when a concrete engine emits declarations.
-spark-kindling = ">=0.10.0"
+spark-kindling = ">=0.12.39"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"

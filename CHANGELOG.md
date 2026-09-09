@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.39] - 2026-09-09
+
 ### Added
 
 - Databricks Lakeflow SDP declarations can lower a normal Kindling pipe with
