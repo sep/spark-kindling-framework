@@ -11,6 +11,11 @@ import sys
 import pytest
 from kindling.data_entities import EntityMetadata
 from kindling.data_pipes import PipeMetadata
+from kindling.entity_naming import (
+    Collision,
+    TableNamingPolicy,
+    find_external_collisions,
+)
 
 # The extension package root is added to sys.path by tests/conftest.py,
 # matching the other extension packages (kindling_ext_visualization, ...).
@@ -132,17 +137,33 @@ def pipe_registry(pipes):
     return FakePipeRegistry(pipes)
 
 
-def make_engine(entity_registry, pipe_registry, capabilities=OSS_SDP, engine_config=None):
+def make_engine(entity_registry, pipe_registry, capabilities=OSS_SDP, engine_config=None, **kwargs):
     return PlanOnlyEngine(
         entity_registry=entity_registry,
         pipe_registry=pipe_registry,
         capabilities=capabilities,
         engine_config=engine_config,
+        **kwargs,
     )
 
 
 def issue_codes(issues):
     return [issue.code for issue in issues]
+
+
+class MappingNameResolver:
+    def __init__(self, names):
+        self.names = dict(names)
+        self.calls = []
+
+    def get_table_name(self, entity):
+        self.calls.append(entity.entityid)
+        return self.names.get(entity.entityid, f"default.{entity.entityid}")
+
+
+class FailingNameResolver:
+    def get_table_name(self, entity):
+        raise AssertionError(f"resolver should not be called for {entity.entityid}")
 
 
 # --------------------------------------------------------------------- #
@@ -433,7 +454,13 @@ class TestValidation:
                 make_pipe("ingest.orders.b", ["ref.customers"], "bronze.orders"),
             ]
         )
-        engine = make_engine(entity_registry, pipes)
+        resolver = MappingNameResolver({"bronze.orders": "dev_bronze.cwmdp.orders"})
+        engine = make_engine(
+            entity_registry,
+            pipes,
+            collision_check="pipeline",
+            name_resolver=resolver,
+        )
 
         issues = engine.validate()
 
@@ -441,6 +468,8 @@ class TestValidation:
         assert len(duplicates) == 1
         assert duplicates[0].pipe_id == "ingest.orders.b"
         assert "ingest.orders.a" in duplicates[0].reason
+        assert "duplicate_external_address" not in issue_codes(issues)
+        assert resolver.calls == ["bronze.orders"]
 
     def test_unknown_pipe_id_in_selection(self, entity_registry, pipe_registry):
         engine = make_engine(entity_registry, pipe_registry)
@@ -485,6 +514,323 @@ class TestValidation:
         engine = make_engine(entity_registry, FakePipeRegistry(watermarked))
 
         assert engine.validate() == []
+
+
+class TestSharedEntityNaming:
+    def test_find_external_collisions_groups_case_insensitively(self):
+        collisions = find_external_collisions(
+            [
+                ("bronze.orders", "Dev_Bronze.CWMDP.Orders"),
+                ("silver.orders", "dev_bronze.cwmdp.orders"),
+                ("gold.orders", "dev_gold.cwmdp.orders"),
+            ]
+        )
+
+        assert collisions == (
+            Collision("Dev_Bronze.CWMDP.Orders", ("bronze.orders", "silver.orders")),
+        )
+
+    def test_find_external_collisions_ignores_intentional_aliases(self):
+        collisions = find_external_collisions(
+            [
+                ("bronze.orders", "dev_bronze.cwmdp.orders"),
+                ("silver.orders", "dev_bronze.cwmdp.orders"),
+            ],
+            {"silver.orders": {"provider.table_alias_of": "bronze.orders"}},
+        )
+
+        assert collisions == ()
+
+    def test_provider_table_naming_tag_selects_effective_dataset_mode(
+        self, entities, pipe_registry
+    ):
+        tagged = [
+            (
+                make_entity("silver.orders", tags={"provider.table_naming": "leaf"})
+                if entity.entityid == "silver.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value(None),
+        )
+
+        assert engine.dataset_name.mode == "normalized"
+        assert engine.dataset_name("silver.orders") == "orders"
+        assert engine.validate() == []
+
+    def test_legacy_provider_table_naming_tag_is_normalized_alias(self, entities, pipe_registry):
+        tagged = [
+            (
+                make_entity("silver.orders", tags={"provider.table_naming": "legacy"})
+                if entity.entityid == "silver.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            dataset_naming="leaf",
+            shared_naming=TableNamingPolicy.from_config_value(None),
+        )
+
+        assert engine.dataset_name("silver.orders") == "silver_orders"
+        assert engine.validate() == []
+
+    def test_invalid_provider_table_naming_is_accumulated_with_other_issues(self, entities):
+        tagged = [
+            (
+                make_entity("bronze.orders", tags={"provider.table_naming": "lief"})
+                if entity.entityid == "bronze.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        pipes = FakePipeRegistry([make_pipe("broken.pipe", ["missing.input"], "bronze.orders")])
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipes,
+            shared_naming=TableNamingPolicy.from_config_value(None),
+        )
+
+        issues = engine.validate()
+
+        codes = issue_codes(issues)
+        assert "invalid_table_naming" in codes
+        assert "input_entity_not_registered" in codes
+        reason = next(issue.reason for issue in issues if issue.code == "invalid_table_naming")
+        assert "provider.table_naming" in reason
+        assert "lief" in reason
+        assert "bronze.orders" in reason
+        assert "legacy" in reason and "normalized" in reason and "leaf" in reason
+
+    def test_explicit_sdp_global_shared_policy_conflict_is_a_declaration_issue(
+        self, entity_registry, pipe_registry
+    ):
+        engine = make_engine(
+            entity_registry,
+            pipe_registry,
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value("leaf"),
+            dataset_naming_explicit=True,
+        )
+
+        issues = engine.validate()
+
+        conflict = next(issue for issue in issues if issue.code == "naming_policy_conflict")
+        assert conflict.pipe_id == "<pipeline>"
+        assert "kindling.storage.table_naming='leaf'" in conflict.reason
+        assert "kindling.sdp.dataset_naming='normalized'" in conflict.reason
+
+    def test_explicit_sdp_per_entity_conflict_reports_entity_and_tag_wins(
+        self, entities, pipe_registry
+    ):
+        tagged = [
+            (
+                make_entity("silver.orders", tags={"provider.table_naming": "leaf"})
+                if entity.entityid == "silver.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value(None),
+            dataset_naming_explicit=True,
+        )
+
+        issues = engine.validate()
+
+        conflict = next(issue for issue in issues if issue.code == "naming_policy_conflict")
+        assert conflict.pipe_id == "bronze_to_silver.orders"
+        assert "silver.orders" in conflict.reason
+        assert "provider.table_naming='leaf'" in conflict.reason
+        assert "per-entity tag wins" in conflict.reason
+        assert engine.dataset_name("silver.orders") == "orders"
+
+    def test_intentional_divergence_downgrades_conflicts(self, entities, pipe_registry):
+        tagged = [
+            (
+                make_entity("gold.orders_summary", tags={"provider.table_naming": "leaf"})
+                if entity.entityid == "gold.orders_summary"
+                else entity
+            )
+            for entity in entities
+        ]
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value(None),
+            dataset_naming_explicit=True,
+            dataset_naming_divergence="intentional",
+        )
+
+        assert engine.validate() == []
+
+    def test_intentional_global_divergence_keeps_explicit_dataset_naming(self):
+        engine = make_engine(
+            FakeEntityRegistry(
+                [
+                    make_entity("bronze.device_telemetry", tags={"read_only": "true"}),
+                    make_entity("silver.device_telemetry"),
+                ]
+            ),
+            FakePipeRegistry(
+                [
+                    make_pipe(
+                        "bronze_to_silver.device_telemetry",
+                        ["bronze.device_telemetry"],
+                        "silver.device_telemetry",
+                    )
+                ]
+            ),
+            dataset_naming="normalized",
+            shared_naming=TableNamingPolicy.from_config_value("leaf"),
+            dataset_naming_explicit=True,
+            dataset_naming_divergence="intentional",
+        )
+
+        assert engine.validate() == []
+        assert engine.dataset_name("silver.device_telemetry") == "silver_device_telemetry"
+
+    def test_collision_check_off_does_not_resolve_external_addresses(
+        self, entity_registry, pipe_registry
+    ):
+        engine = make_engine(
+            entity_registry,
+            pipe_registry,
+            name_resolver=FailingNameResolver(),
+        )
+
+        assert engine.validate() == []
+
+    def test_pipeline_collision_check_reports_same_external_address(
+        self, entity_registry, pipe_registry
+    ):
+        resolver = MappingNameResolver(
+            {
+                "bronze.orders": "dev_shared.cwmdp.orders",
+                "silver.orders": "DEV_SHARED.CWMDP.ORDERS",
+            }
+        )
+        engine = make_engine(
+            entity_registry,
+            pipe_registry,
+            collision_check="pipeline",
+            name_resolver=resolver,
+        )
+
+        issues = engine.validate(["ingest.orders", "bronze_to_silver.orders"])
+
+        collision = next(issue for issue in issues if issue.code == "duplicate_external_address")
+        assert collision.pipe_id == "<pipeline>"
+        assert "bronze.orders" in collision.reason
+        assert "silver.orders" in collision.reason
+        assert "dev_shared.cwmdp.orders" in collision.reason
+        assert resolver.calls == ["bronze.orders", "silver.orders"]
+
+    def test_pipeline_collision_check_allows_duplicate_leaves_in_different_catalogs(
+        self, entity_registry, pipe_registry
+    ):
+        resolver = MappingNameResolver(
+            {
+                "bronze.orders": "dev_bronze.cwmdp.orders",
+                "silver.orders": "dev_silver.cwmdp.orders",
+            }
+        )
+        engine = make_engine(
+            entity_registry,
+            pipe_registry,
+            collision_check="pipeline",
+            name_resolver=resolver,
+        )
+
+        issues = engine.validate(["ingest.orders", "bronze_to_silver.orders"])
+
+        assert "duplicate_external_address" not in issue_codes(issues)
+        assert resolver.calls == ["bronze.orders", "silver.orders"]
+
+    def test_pipeline_collision_check_honors_provider_table_alias_of(self, entities, pipe_registry):
+        tagged = [
+            (
+                make_entity(
+                    "silver.orders",
+                    tags={"provider.table_alias_of": "bronze.orders"},
+                )
+                if entity.entityid == "silver.orders"
+                else entity
+            )
+            for entity in entities
+        ]
+        resolver = MappingNameResolver(
+            {
+                "bronze.orders": "dev_shared.cwmdp.orders",
+                "silver.orders": "dev_shared.cwmdp.orders",
+            }
+        )
+        engine = make_engine(
+            FakeEntityRegistry(tagged),
+            pipe_registry,
+            collision_check="pipeline",
+            name_resolver=resolver,
+        )
+
+        issues = engine.validate(["ingest.orders", "bronze_to_silver.orders"])
+
+        assert "duplicate_external_address" not in issue_codes(issues)
+
+    def test_registry_collision_check_uses_all_registered_entities(
+        self, entity_registry, pipe_registry
+    ):
+        resolver = MappingNameResolver(
+            {
+                "landing.orders": "dev_shared.cwmdp.reference",
+                "ref.customers": "DEV_SHARED.CWMDP.REFERENCE",
+            }
+        )
+        engine = make_engine(
+            entity_registry,
+            pipe_registry,
+            collision_check="registry",
+            name_resolver=resolver,
+        )
+
+        issues = engine.validate(["ingest.orders"])
+
+        collision = next(issue for issue in issues if issue.code == "duplicate_external_address")
+        assert "landing.orders" in collision.reason
+        assert "ref.customers" in collision.reason
+        assert "dev_shared.cwmdp.reference" in collision.reason
+
+    def test_collision_check_enabled_without_resolver_reports_unavailable(
+        self, entity_registry, pipe_registry
+    ):
+        engine = make_engine(entity_registry, pipe_registry, collision_check="pipeline")
+
+        issues = engine.validate()
+
+        issue = next(issue for issue in issues if issue.code == "collision_check_unavailable")
+        assert issue.pipe_id == "<pipeline>"
+        assert "kindling.storage.collision_check='pipeline'" in issue.reason
+        assert "name_resolver" in issue.reason
+
+    def test_invalid_collision_check_value_is_accumulated_with_other_issues(self, entity_registry):
+        pipes = FakePipeRegistry([make_pipe("broken.pipe", ["missing.input"], "bronze.orders")])
+        engine = make_engine(entity_registry, pipes, collision_check="bundle")
+
+        issues = engine.validate()
+
+        codes = issue_codes(issues)
+        assert "invalid_collision_check" in codes
+        assert "input_entity_not_registered" in codes
 
 
 # --------------------------------------------------------------------- #

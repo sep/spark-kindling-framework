@@ -4,21 +4,3 @@ kindling:
   telemetry:
     logging:
       level: WARNING
-
-dataentities:
-  bronze.device_telemetry:
-    tags:
-      provider.table_name: dev_bronze.platform_schema.device_telemetry
-      placement.source: platform
-  silver.device_telemetry:
-    tags:
-      provider.table_name: dev_silver.platform_schema.device_telemetry
-      placement.source: platform
-  silver.events:
-    tags:
-      provider.table_name: dev_silver.platform_schema.events
-      placement.source: platform
-  silver.episodes:
-    tags:
-      provider.table_name: dev_silver.platform_schema.episodes
-      placement.source: platform

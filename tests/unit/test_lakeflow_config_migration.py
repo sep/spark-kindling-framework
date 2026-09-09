@@ -94,8 +94,9 @@ def test_example_bundle_uses_canonical_config_files_and_loads_as_written():
     config_service = _load_shared_config(lakeflow_config)
 
     assert config_service.get("kindling.platform.environment") == "databricks"
-    assert config_service.get("kindling.sdp.dataset_naming") == "leaf"
+    assert config_service.get("kindling.sdp.dataset_naming") is None
+    assert config_service.get("kindling.storage.table_naming") == "leaf"
     assert config_service.get("kindling.telemetry.logging.level") == "CRITICAL"
-    assert config_service.get("dataentities")["silver.events"]["tags"]["provider.table_name"] == (
-        "dev_silver.cwmdp.events"
+    assert config_service.get("dataentities")["silver.**"]["tags"]["provider.table_catalog"] == (
+        "dev_silver"
     )

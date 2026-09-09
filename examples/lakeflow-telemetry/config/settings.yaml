@@ -1,8 +1,6 @@
 kindling:
   platform:
     environment: databricks
-  sdp:
-    dataset_naming: normalized
   storage:
     table_schema: base_schema
   telemetry:
@@ -21,21 +19,13 @@ dataentities-bytag:
         retention.days: "7"
 
 dataentities:
-  bronze.device_telemetry:
+  "bronze.**":
     tags:
-      provider.table_name: base_bronze.base_schema.device_telemetry
+      provider.table_catalog: base_bronze
       placement.source: base
-  silver.device_telemetry:
+  "silver.**":
     tags:
-      provider.table_name: base_silver.base_schema.device_telemetry
-      placement.source: base
-  silver.events:
-    tags:
-      provider.table_name: base_silver.base_schema.events
-      placement.source: base
-  silver.episodes:
-    tags:
-      provider.table_name: base_silver.base_schema.episodes
+      provider.table_catalog: base_silver
       placement.source: base
 
 datapipes:

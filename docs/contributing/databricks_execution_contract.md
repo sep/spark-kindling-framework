@@ -186,45 +186,44 @@ resolution is untouched for every job config that doesn't opt into
 
 ## SDP/Lakeflow dataset naming boundary
 
-Logical entity IDs remain registry keys. SDP output declarations use a
-separate `DatasetNameMapper`, configured once per engine from
-`kindling.sdp.dataset_naming` after overlays: `normalized` preserves the
-historical dot/hyphen-to-underscore convention; `leaf` selects the final
-dot-separated segment and normalizes hyphens.
+Logical entity IDs remain registry keys. SDP output declarations use
+`DatasetNameMapper`, configured after overlays. When
+`kindling.sdp.dataset_naming` is absent, the mapper projects the shared
+`kindling.storage.table_naming` policy: `leaf` selects the final dot segment,
+while absent policy, `legacy`, and `normalized` preserve the historical
+dot/hyphen-to-underscore convention. An explicit
+`kindling.sdp.dataset_naming` keeps its compatibility contract.
 
-All pipeline-local declarations and references use this mapper, including
-Lakeflow AUTO CDC and temporal generated datasets. Pipeline destinations
-supply catalog/schema. External reads retain their existing resolution
-path, including `EntityNameMapper` catalog overrides; applying output
-naming to an external entity would lose its cross-pipeline destination.
+All pipeline-local declarations and references use this single-part mapper,
+including Lakeflow AUTO CDC and temporal generated datasets. Pipeline
+destinations supply catalog/schema. `kindling.storage.table_name_prefix` is
+external-only: the resolver applies it when composing table names, and the
+pipeline-local mapper deliberately ignores it so existing Lakeflow datasets are
+not renamed.
+
+With an explicit shared table-naming policy configured, external reads are
+resolved through the injected `EntityNameMapper`, including catalog/schema and
+per-entity placement tags. With no shared policy configured, external reads keep
+the historical bare logical-ID behavior. The trigger is policy, not consumer
+engine identity, so a `databricks_sdp` consumer does not globally change how an
+external entity produced elsewhere is addressed.
+
+If an explicit `kindling.sdp.dataset_naming` disagrees with the shared policy or
+a more-specific `provider.table_naming` tag, validation emits
+`naming_policy_conflict` unless
+`kindling.sdp.dataset_naming_divergence: intentional` is set. A full
+`provider.table_name` remains an external override and never becomes a
+multipart pipeline-local dataset name.
 
 Validation compares emitted output names case-insensitively within the
 selected declaration plan. Registry entries outside that selection do
 not reserve names. This permits one leaf name in several medallion
 resources while rejecting ambiguous local graph references before emission.
 
-
-Leaf output naming requires consumer alignment: an external entity with explicit
-catalog/schema still flattens its logical ID unless `provider.table_name`
-supplies the complete qualified leaf table. For example, set
-`provider.table_name: dev_silver.cwmdp.device_telemetry` when reading
-`silver.device_telemetry` produced with leaf naming. Catalog/schema tags do
-not alter an explicit `provider.table_name`. Bundle-backed Kindling settings
-can carry that override declaratively: pass the deployed settings files through
-`spark.kindling.bootstrap.config_files` or publish them through
-`spark.kindling.bootstrap.artifacts_storage_path`, then put the same
-`provider.table_name` tag in the consumer app's `dataentities:` section. The
-SDP extension README has the companion example in
-[Reading leaf-named outputs from elsewhere](../../packages/extensions/kindling_ext_sdp/README.md#reading-leaf-named-outputs-from-elsewhere).
-
 Temporal chain driving sources currently always use external table resolution.
 They should be produced in an upstream resource, not as leaf-named outputs in
 the same pipeline: the lowering does not create a pipeline-local dependency for
-those sources. If the base event source is produced by another leaf-named
-resource, align that external read with the same complete `provider.table_name`
-override; `provider.table_catalog` and `provider.table_schema` still only feed
-the external resolver. Events/episodes and generated helper references are
-local.
+those sources. Events/episodes and generated helper references are local.
 
 Lakeflow declarations use the normal bootstrap lifecycle in
 `declaration_only` mode. The selector passes the selected app name to

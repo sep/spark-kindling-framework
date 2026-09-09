@@ -3,8 +3,14 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from injector import inject
-
 from kindling.data_entities import EntityNameMapper, EntityPathLocator
+from kindling.entity_naming import (
+    GLOBAL_NAMING_KEY,
+    TableNamingMode,
+    TableNamingPolicy,
+    derive_table_component,
+    normalize_table_leaf,
+)
 from kindling.features import get_feature_bool
 from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
@@ -13,8 +19,7 @@ from kindling.spark_session import get_or_create_spark_session
 
 
 def _normalize_table_leaf(name: str) -> str:
-    # Keep this simple and predictable across platforms.
-    return str(name).replace(".", "_").replace("-", "_")
+    return normalize_table_leaf(name)
 
 
 def _get_entity_id(entity) -> str:
@@ -85,6 +90,10 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
 
     Conventions:
     - Per-entity override via tag: `provider.table_name`
+    - Declarative table component naming via `provider.table_naming` or
+      `kindling.storage.table_naming`: `leaf` keeps only the final entity-id
+      segment, `normalized` flattens the full entity id, and `legacy` preserves
+      the historical branch cascade below.
     - Per-entity catalog/schema override via tags: `provider.table_catalog`,
       `provider.table_schema` -- highest precedence after `provider.table_name`.
       These tags can be set directly on an entity, or assigned to a whole
@@ -179,6 +188,50 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
         # we should interpret entity IDs as already-qualified names.
         return catalog, schema
 
+    def _table_naming_policy(self) -> TableNamingPolicy:
+        return TableNamingPolicy.from_config_value(self.config.get(GLOBAL_NAMING_KEY))
+
+    def _requires_uc_catalog(self) -> bool:
+        return get_feature_bool(self.config, "databricks.uc_enabled", default=False) is True
+
+    def _validate_table_naming_namespace(
+        self,
+        entity_id: str,
+        mode: TableNamingMode,
+        catalog: Optional[str],
+        schema: Optional[str],
+    ) -> None:
+        if schema is None:
+            raise ValueError(
+                "insufficient_namespace: explicit table naming mode "
+                f"'{mode.value}' for entity '{entity_id}' requires "
+                "kindling.storage.table_schema (or provider.table_schema)."
+            )
+        if self._requires_uc_catalog() and catalog is None:
+            raise ValueError(
+                "insufficient_namespace: explicit table naming mode "
+                f"'{mode.value}' for entity '{entity_id}' requires "
+                "kindling.storage.table_catalog (or provider.table_catalog) "
+                "when Databricks Unity Catalog is enabled; "
+                "kindling.storage.table_schema must also be configured."
+            )
+
+    def _get_policy_table_name(
+        self, entity_id: str, entity_tags: dict, mode: TableNamingMode
+    ) -> str:
+        catalog, schema = self._config_namespace(entity_tags)
+        self._validate_table_naming_namespace(entity_id, mode, catalog, schema)
+
+        component = derive_table_component(entity_id, mode)
+        prefix = (
+            self._clean_config_value(self.config.get("kindling.storage.table_name_prefix")) or ""
+        )
+        if prefix:
+            component = f"{prefix}{component}"
+        if catalog:
+            return f"{catalog}.{schema}.{component}"
+        return f"{schema}.{component}"
+
     def _infer_namespace_from_volume_path(self) -> Tuple[Optional[str], Optional[str]]:
         """Infer catalog and schema from a /Volumes/{catalog}/{schema}/... table_root.
 
@@ -206,6 +259,32 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
             return parts[1], parts[2]
         return None, None
 
+    def _get_table_name_without_namespace_config(self, entity_id: str) -> str:
+        raw = str(entity_id).strip()
+        parts = [p.strip() for p in raw.split(".") if p.strip()]
+        if len(parts) == 3:
+            return ".".join(parts)
+        if len(parts) == 2:
+            catalog, _schema = _get_current_namespace()
+            # spark_catalog is the built-in Hive catalog, not a real UC catalog.
+            # Treat it as absent so entity IDs stay as schema.table (matches
+            # features.py which also excludes spark_catalog from UC detection).
+            if catalog and catalog.lower() != "spark_catalog":
+                return f"{catalog}.{parts[0]}.{parts[1]}"
+            return ".".join(parts)
+        # One-part name: qualify with catalog.schema inferred from the Volume
+        # path when table_root is a /Volumes/{catalog}/{schema}/... path.
+        # Databricks UC resolves unqualified names against the session's current
+        # catalog, which can differ between write (saveAsTable) and read
+        # (spark.read.table), causing TABLE_OR_VIEW_NOT_FOUND on reads even
+        # when the write succeeded.  A fully-qualified 3-part name is always
+        # deterministic regardless of the session's active catalog.
+        vol_catalog, vol_schema = self._infer_namespace_from_volume_path()
+        if vol_catalog and vol_schema:
+            leaf = _normalize_table_leaf(raw)
+            return f"{vol_catalog}.{vol_schema}.{leaf}"
+        return raw
+
     def get_table_name(self, entity):
         entity_tags = getattr(entity, "tags", {}) or {}
         explicit_table_name = entity_tags.get("provider.table_name")
@@ -213,34 +292,14 @@ class ConfigDrivenEntityNameMapper(EntityNameMapper):
             return explicit_table_name
 
         entity_id = _get_entity_id(entity)
+        table_naming_mode = self._table_naming_policy().mode_for(entity_id, entity_tags)
+        if table_naming_mode not in (None, TableNamingMode.LEGACY):
+            return self._get_policy_table_name(entity_id, entity_tags, table_naming_mode)
 
         # If no namespace config is provided, treat entity IDs as already-qualified names.
         # x.y.z -> catalog.schema.table; y.z -> schema.table (default catalog if available).
         if not self._has_storage_namespace_config(entity_tags):
-            raw = str(entity_id).strip()
-            parts = [p.strip() for p in raw.split(".") if p.strip()]
-            if len(parts) == 3:
-                return ".".join(parts)
-            if len(parts) == 2:
-                catalog, _schema = _get_current_namespace()
-                # spark_catalog is the built-in Hive catalog, not a real UC catalog.
-                # Treat it as absent so entity IDs stay as schema.table (matches
-                # features.py which also excludes spark_catalog from UC detection).
-                if catalog and catalog.lower() != "spark_catalog":
-                    return f"{catalog}.{parts[0]}.{parts[1]}"
-                return ".".join(parts)
-            # One-part name: qualify with catalog.schema inferred from the Volume
-            # path when table_root is a /Volumes/{catalog}/{schema}/... path.
-            # Databricks UC resolves unqualified names against the session's current
-            # catalog, which can differ between write (saveAsTable) and read
-            # (spark.read.table), causing TABLE_OR_VIEW_NOT_FOUND on reads even
-            # when the write succeeded.  A fully-qualified 3-part name is always
-            # deterministic regardless of the session's active catalog.
-            vol_catalog, vol_schema = self._infer_namespace_from_volume_path()
-            if vol_catalog and vol_schema:
-                leaf = _normalize_table_leaf(raw)
-                return f"{vol_catalog}.{vol_schema}.{leaf}"
-            return raw
+            return self._get_table_name_without_namespace_config(entity_id)
 
         prefix = (
             self._clean_config_value(self.config.get("kindling.storage.table_name_prefix")) or ""

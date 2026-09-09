@@ -12,6 +12,23 @@ All notable changes to spark-kindling are documented here.
 - Bootstrap config now supports `discover_config_files` to control
   `artifacts_storage_path` configuration discovery independently from
   `use_lake_packages`.
+- Declarative external table-component naming via
+  `kindling.storage.table_naming` and per-entity `provider.table_naming`,
+  sharing the `legacy` / `normalized` / `leaf` vocabulary with SDP/Lakeflow
+  dataset names.
+- Opt-in external-address collision validation with
+  `kindling.storage.collision_check` and intentional aliases via
+  `provider.table_alias_of`.
+
+### Changed
+
+- SDP and Databricks Lakeflow output names project the shared table-naming
+  policy when `kindling.sdp.dataset_naming` is absent; explicit divergent
+  policies are validated unless
+  `kindling.sdp.dataset_naming_divergence: intentional` is set.
+- SDP external reads resolve through `EntityNameMapper` when an explicit shared
+  table-naming policy is configured, keeping producer and consumer external
+  addresses aligned while preserving legacy reads when the policy is unset.
 
 ### Fixed
 

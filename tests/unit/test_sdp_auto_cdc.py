@@ -9,6 +9,8 @@ Databricks CDC reference.
 """
 
 import pytest
+from kindling.data_entities import EntityMetadata
+from kindling.data_pipes import PipeMetadata
 from kindling_ext_databricks import (
     DatabricksSdpEngine,
     scd_spec_from_tags,
@@ -16,9 +18,6 @@ from kindling_ext_databricks import (
 )
 from kindling_ext_sdp import DeclarationValidationError
 from kindling_ext_sdp.declaration_plan import DatasetDeclaration, DatasetType
-
-from kindling.data_entities import EntityMetadata
-from kindling.data_pipes import PipeMetadata
 
 # --------------------------------------------------------------------- #
 # Fixtures                                                               #
@@ -544,6 +543,7 @@ def test_generated_auto_cdc_source_collisions_fail_before_emission():
     engine = DatabricksSdpEngine(entities, pipes, dp_module=dp, dataset_naming="leaf")
     with pytest.raises(DeclarationValidationError, match="customers__scd_source") as exc:
         engine.build_plan()
+    assert sum(issue.code == "duplicate_dataset_name" for issue in exc.value.issues) == 1
     assert "AUTO CDC source" in str(exc.value)
     assert not dp.views
     # A different resource can use that leaf if it does not emit the SCD target.
@@ -553,6 +553,7 @@ def test_generated_auto_cdc_source_collisions_fail_before_emission():
 @pytest.mark.parametrize(
     "other_leaf",
     [
+        "Events__G0",
         "events__g0",
         "events__g2",
         "events__ghi",
@@ -571,9 +572,8 @@ def test_temporal_generated_and_implicit_sibling_collisions(
     monkeypatch.syspath_prepend(
         str(Path(__file__).resolve().parents[2] / "packages/extensions/kindling_ext_temporal")
     )
-    from kindling_ext_temporal.chain import chain_episodes_pipe_id, chain_events_pipe_id
-
     from kindling.injection import GlobalInjector
+    from kindling_ext_temporal.chain import chain_episodes_pipe_id, chain_events_pipe_id
 
     monkeypatch.setattr(
         GlobalInjector, "get", lambda dep: SimpleNamespace(get=lambda key, default=None: 2)
@@ -605,5 +605,6 @@ def test_temporal_generated_and_implicit_sibling_collisions(
     with pytest.raises(DeclarationValidationError, match="duplicate_dataset_name") as exc:
         engine.build_plan(selected)
     assert other_leaf in str(exc.value)
+    assert any(issue.code == "duplicate_dataset_name" for issue in exc.value.issues)
     # Implicit siblings and helper names belong only to their resource.
     assert engine.build_plan(["other"]).datasets[0].name == f"gold.{other_leaf}"

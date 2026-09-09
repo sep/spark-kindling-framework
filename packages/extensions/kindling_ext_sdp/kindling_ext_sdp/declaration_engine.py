@@ -29,9 +29,22 @@ What is deliberately NOT validated here (runtime / Phase-2 concerns):
   in the pipe knows the difference.
 """
 
+import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from kindling.entity_naming import (
+    ENTITY_NAMING_TAG,
+    GLOBAL_NAMING_KEY,
+    STORAGE_COLLISION_CHECK_KEY,
+    TableNamingMode,
+    TableNamingPolicy,
+    find_external_collisions,
+    parse_collision_check_mode,
+    parse_table_naming_mode,
+    sdp_mode_for,
+)
 from kindling_ext_sdp.capabilities import (
     ADAPTER_TIER_CONFIG_KEYS,
     CapabilitySet,
@@ -67,6 +80,20 @@ DECLARABLE_OUTPUT_PROVIDER_TYPES = frozenset({"delta"})
 #: cannot be represented as an SDP read — fail fast per the proposal's
 #: Unsupported list.
 DECLARABLE_EXTERNAL_READ_PROVIDER_TYPES = frozenset({"delta"})
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _NamingContext:  # pylint: disable=too-many-instance-attributes
+    dataset_naming: str
+    shared_naming: Optional[TableNamingPolicy]
+    dataset_naming_explicit: bool
+    dataset_naming_divergence: str
+    name_resolver: Any
+    collision_check: str
+    dataset_naming_valid: bool = True
+    divergence_logged: bool = False
 
 
 def _provider_type(entity) -> str:
@@ -104,30 +131,81 @@ class DeclarationEngine(ABC):
             from config **after** the post-registration overlay.
         dataset_naming: Pipeline-local output naming mode: "normalized"
             (default) or "leaf". Independent of external EntityNameMapper.
+        shared_naming: Optional shared table-naming policy from Kindling core.
+            When supplied, per-entity ``provider.table_naming`` tags select the
+            effective pipeline-local mode for that entity.
+        dataset_naming_explicit: True only when ``kindling.sdp.dataset_naming``
+            was explicitly configured. Explicit disagreement with
+            ``shared_naming`` is a declaration issue unless divergence is
+            intentional.
+        dataset_naming_divergence: ``intentional`` suppresses explicit
+            shared-vs-SDP conflict issues after logging the divergence.
+        name_resolver: Optional EntityNameMapper supplied by bootstrap for the
+            later external-address collision check. The engine never reaches
+            into DI to obtain it.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         entity_registry,
         pipe_registry,
         capabilities: CapabilitySet,
         engine_config: Optional[Dict[str, Dict[str, Any]]] = None,
         dataset_naming: str = "normalized",
+        *,
+        shared_naming: Optional[TableNamingPolicy] = None,
+        dataset_naming_explicit: bool = False,
+        dataset_naming_divergence: str = "error",
+        name_resolver: Any = None,
+        collision_check: object = "off",
     ):
         self.entity_registry = entity_registry
         self.pipe_registry = pipe_registry
         self.capabilities = capabilities
         self.engine_config = dict(engine_config or {})
-        self._dataset_naming_issue: Optional[DeclarationIssue] = None
+        self._naming = _NamingContext(
+            dataset_naming=dataset_naming,
+            shared_naming=shared_naming,
+            dataset_naming_explicit=dataset_naming_explicit,
+            dataset_naming_divergence=str(dataset_naming_divergence or "error").strip().lower(),
+            name_resolver=name_resolver,
+            collision_check="off",
+        )
+        self._initial_issues: List[DeclarationIssue] = []
         try:
-            self.dataset_name = DatasetNameMapper(dataset_naming)
+            self._naming.collision_check = parse_collision_check_mode(collision_check)
         except ValueError as exc:
-            self._dataset_naming_issue = DeclarationIssue(
-                pipe_id="<pipeline>", code="invalid_dataset_naming", reason=str(exc)
+            self._initial_issues.append(
+                DeclarationIssue(
+                    pipe_id="<pipeline>", code="invalid_collision_check", reason=str(exc)
+                )
+            )
+        if self._naming.shared_naming is not None:
+            try:
+                self._naming.shared_naming.global_mode
+            except ValueError as exc:
+                self._initial_issues.append(
+                    DeclarationIssue(
+                        pipe_id="<pipeline>", code="invalid_table_naming", reason=str(exc)
+                    )
+                )
+        try:
+            self.dataset_name = DatasetNameMapper(
+                self._naming.dataset_naming,
+                entity_mode_lookup=self._lookup_entity_table_naming_mode,
+            )
+        except ValueError as exc:
+            self._naming.dataset_naming_valid = False
+            self._initial_issues.append(
+                DeclarationIssue(
+                    pipe_id="<pipeline>", code="invalid_dataset_naming", reason=str(exc)
+                )
             )
             # Continue collecting unrelated validation issues; an invalid
             # configuration can never reach emission through build_plan().
-            self.dataset_name = DatasetNameMapper()
+            self.dataset_name = DatasetNameMapper(
+                entity_mode_lookup=self._lookup_entity_table_naming_mode
+            )
 
     # ------------------------------------------------------------------ #
     # Phase 2 surface                                                     #
@@ -172,10 +250,9 @@ class DeclarationEngine(ABC):
         selected = self._select_pipe_ids(pipe_ids)
         producers = self._producers_by_entity(selected)
 
-        issues: List[DeclarationIssue] = []
-        if self._dataset_naming_issue is not None:
-            issues.append(self._dataset_naming_issue)
-        emitted_outputs: Dict[str, Tuple[str, str]] = {}
+        issues = list(self._initial_issues)
+        issues.extend(self._validate_global_naming_policy_conflict())
+        emitted_outputs: Dict[str, Tuple[str, str, str]] = {}
         for pipe_id in selected:
             pipe = self.pipe_registry.get_pipe_definition(pipe_id)
             if pipe is None:
@@ -187,9 +264,16 @@ class DeclarationEngine(ABC):
                     )
                 )
                 continue
+            issues.extend(self._validate_entity_table_naming(pipe))
+            issues.extend(self._validate_entity_naming_policy_conflicts(pipe))
             for owner, emitted in self._emitted_dataset_names(pipe):
                 # Spark/Lakeflow dataset identifiers are case-insensitive.
-                previous = emitted_outputs.setdefault(emitted.casefold(), (pipe_id, owner))
+                effective_mode = self._effective_dataset_mode(
+                    self._owner_entity_id(owner, pipe.output_entity_id)
+                )
+                previous = emitted_outputs.setdefault(
+                    emitted.casefold(), (pipe_id, owner, effective_mode)
+                )
                 if previous[1] != owner:
                     issues.append(
                         DeclarationIssue(
@@ -198,8 +282,9 @@ class DeclarationEngine(ABC):
                             reason=(
                                 f"outputs '{previous[1]}' (pipe '{previous[0]}') and "
                                 f"'{owner}' resolve to the same emitted "
-                                f"dataset name '{emitted}' with kindling.sdp.dataset_naming="
-                                f"'{self.dataset_name.mode}'. Select these outputs in separate "
+                                f"dataset name '{emitted}' with effective dataset naming modes "
+                                f"'{previous[2]}' and '{effective_mode}'. "
+                                "Select these outputs in separate "
                                 "pipelines or choose distinct dataset names."
                             ),
                         )
@@ -208,6 +293,7 @@ class DeclarationEngine(ABC):
             issues.extend(self._validate_inputs(pipe, producers))
             issues.extend(self._validate_capabilities(pipe))
             issues.extend(self._validate_dataset_type(pipe))
+        issues.extend(self._validate_external_address_collisions(selected))
         return issues
 
     def _emitted_dataset_names(self, pipe) -> List[Tuple[str, str]]:
@@ -218,6 +304,222 @@ class DeclarationEngine(ABC):
         if not pipe.output_entity_id:
             return []
         return [(pipe.output_entity_id, self.dataset_name(pipe.output_entity_id))]
+
+    def _lookup_entity_table_naming_mode(self, entity_id: str) -> Optional[TableNamingMode]:
+        try:
+            mode = self._entity_table_naming_mode(entity_id)
+        except ValueError:
+            return None
+        if mode == TableNamingMode.LEGACY:
+            return TableNamingMode.NORMALIZED
+        return mode
+
+    def _entity_table_naming_mode(self, entity_id: str) -> Optional[TableNamingMode]:
+        if self._naming.shared_naming is None:
+            return None
+        entity = self.entity_registry.get_entity_definition(entity_id)
+        tags = (entity.tags if entity is not None else None) or {}
+        return parse_table_naming_mode(
+            tags.get(ENTITY_NAMING_TAG), key=ENTITY_NAMING_TAG, entity_id=entity_id
+        )
+
+    def _effective_dataset_mode(self, entity_id: str) -> str:
+        mode = self._lookup_entity_table_naming_mode(entity_id)
+        if mode is None:
+            return self.dataset_name.mode
+        return sdp_mode_for(mode)
+
+    def _owner_entity_id(self, owner: str, fallback: Optional[str]) -> str:
+        if owner:
+            return owner.split(" (", 1)[0]
+        return fallback or ""
+
+    def _configured_entity_ids(self, pipe) -> Iterable[str]:
+        ids = []
+        if pipe.output_entity_id:
+            ids.append(pipe.output_entity_id)
+        ids.extend(pipe.input_entity_ids or ())
+        seen = set()
+        for entity_id in ids:
+            if entity_id and entity_id not in seen:
+                seen.add(entity_id)
+                yield entity_id
+
+    def _validate_entity_table_naming(self, pipe) -> List[DeclarationIssue]:
+        if self._naming.shared_naming is None:
+            return []
+        issues: List[DeclarationIssue] = []
+        for entity_id in self._configured_entity_ids(pipe):
+            entity = self.entity_registry.get_entity_definition(entity_id)
+            if entity is None:
+                continue
+            tags = entity.tags or {}
+            try:
+                parse_table_naming_mode(
+                    tags.get(ENTITY_NAMING_TAG), key=ENTITY_NAMING_TAG, entity_id=entity_id
+                )
+            except ValueError as exc:
+                issues.append(
+                    DeclarationIssue(
+                        pipe_id=pipe.pipeid, code="invalid_table_naming", reason=str(exc)
+                    )
+                )
+        return issues
+
+    def _validate_global_naming_policy_conflict(self) -> List[DeclarationIssue]:
+        if not self._should_report_naming_policy_conflicts():
+            return []
+        try:
+            shared_naming = self._naming.shared_naming
+            mode = shared_naming.global_mode if shared_naming is not None else None
+        except ValueError:
+            return []
+        if mode is None:
+            return []
+        projected = sdp_mode_for(mode)
+        if projected == self.dataset_name.mode:
+            return []
+        reason = (
+            f"naming_policy_conflict: {GLOBAL_NAMING_KEY}='{mode.value}' projects to "
+            f"kindling.sdp.dataset_naming='{projected}', but explicit "
+            f"kindling.sdp.dataset_naming='{self.dataset_name.mode}'. "
+            "Set kindling.sdp.dataset_naming_divergence='intentional' to allow "
+            "documented divergence."
+        )
+        return [
+            DeclarationIssue(pipe_id="<pipeline>", code="naming_policy_conflict", reason=reason)
+        ]
+
+    def _validate_entity_naming_policy_conflicts(self, pipe) -> List[DeclarationIssue]:
+        if not self._should_report_naming_policy_conflicts() or self._naming.shared_naming is None:
+            return []
+        issues: List[DeclarationIssue] = []
+        for entity_id in self._configured_entity_ids(pipe):
+            entity = self.entity_registry.get_entity_definition(entity_id)
+            if entity is None:
+                continue
+            tags = entity.tags or {}
+            if not str(tags.get(ENTITY_NAMING_TAG, "") or "").strip():
+                continue
+            try:
+                mode = parse_table_naming_mode(
+                    tags.get(ENTITY_NAMING_TAG), key=ENTITY_NAMING_TAG, entity_id=entity_id
+                )
+            except ValueError:
+                continue
+            if mode is None:
+                continue
+            projected = sdp_mode_for(mode)
+            if projected == self.dataset_name.mode:
+                continue
+            reason = (
+                f"naming_policy_conflict: entity '{entity_id}' has "
+                f"{ENTITY_NAMING_TAG}='{mode.value}' which projects to "
+                f"kindling.sdp.dataset_naming='{projected}', but explicit "
+                f"kindling.sdp.dataset_naming='{self.dataset_name.mode}'. "
+                "The per-entity tag wins for this entity; set "
+                "kindling.sdp.dataset_naming_divergence='intentional' to allow "
+                "documented divergence."
+            )
+            issues.append(
+                DeclarationIssue(pipe_id=pipe.pipeid, code="naming_policy_conflict", reason=reason)
+            )
+        return issues
+
+    def _should_report_naming_policy_conflicts(self) -> bool:
+        if (
+            not self._naming.dataset_naming_explicit
+            or not self._naming.dataset_naming_valid
+            or self._naming.dataset_naming_divergence == "intentional"
+        ):
+            if (
+                self._naming.dataset_naming_explicit
+                and self._naming.dataset_naming_divergence == "intentional"
+                and not self._naming.divergence_logged
+            ):
+                _LOGGER.warning(
+                    "kindling.sdp.dataset_naming divergence marked intentional; "
+                    "shared table naming conflicts will not fail declaration"
+                )
+                self._naming.divergence_logged = True
+            return False
+        return True
+
+    def _collision_scope_entity_ids(self, selected: List[str]) -> List[str]:
+        if self._naming.collision_check == "registry":
+            candidates = self.entity_registry.get_entity_ids()
+        else:
+            candidates = []
+            for pipe_id in selected:
+                pipe = self.pipe_registry.get_pipe_definition(pipe_id)
+                if pipe is not None and pipe.output_entity_id:
+                    candidates.append(pipe.output_entity_id)
+
+        entity_ids = []
+        seen = set()
+        for entity_id in candidates:
+            if not entity_id or entity_id in seen:
+                continue
+            seen.add(entity_id)
+            entity_ids.append(entity_id)
+        return entity_ids
+
+    def _validate_external_address_collisions(self, selected: List[str]) -> List[DeclarationIssue]:
+        if self._naming.collision_check == "off":
+            return []
+
+        if self._naming.name_resolver is None:
+            return [
+                DeclarationIssue(
+                    pipe_id="<pipeline>",
+                    code="collision_check_unavailable",
+                    reason=(
+                        f"{STORAGE_COLLISION_CHECK_KEY}='{self._naming.collision_check}' "
+                        "requires an EntityNameMapper-backed name_resolver; bootstrap "
+                        "must supply one so explicit collision validation is not "
+                        "silently skipped."
+                    ),
+                )
+            ]
+
+        resolved = []
+        tags_by_entity = {}
+        issues: List[DeclarationIssue] = []
+        for entity_id in self._collision_scope_entity_ids(selected):
+            entity = self.entity_registry.get_entity_definition(entity_id)
+            if entity is None:
+                continue
+            tags_by_entity[entity_id] = entity.tags or {}
+            try:
+                resolved.append((entity_id, self._naming.name_resolver.get_table_name(entity)))
+            except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+                issues.append(
+                    DeclarationIssue(
+                        pipe_id="<pipeline>",
+                        code="external_address_resolution_failed",
+                        reason=(
+                            f"{STORAGE_COLLISION_CHECK_KEY}='{self._naming.collision_check}' "
+                            f"could not resolve entity '{entity_id}': {exc}"
+                        ),
+                    )
+                )
+
+        for collision in find_external_collisions(resolved, tags_by_entity):
+            entity_list = "', '".join(collision.entity_ids)
+            issues.append(
+                DeclarationIssue(
+                    pipe_id="<pipeline>",
+                    code="duplicate_external_address",
+                    reason=(
+                        f"entities '{entity_list}' resolve to the same external "
+                        f"address '{collision.address}' under "
+                        f"{STORAGE_COLLISION_CHECK_KEY}='{self._naming.collision_check}'. "
+                        "Use distinct catalog/schema/table placement or declare an "
+                        "intentional alias with provider.table_alias_of."
+                    ),
+                )
+            )
+        return issues
 
     def classify_inputs(
         self, pipe_id: str, pipe_ids: Optional[List[str]] = None
@@ -574,11 +876,11 @@ class DeclarationEngine(ABC):
 
         try:
             return DatasetType(raw.lower())
-        except ValueError:
+        except ValueError as exc:
             valid = ", ".join(dt.value for dt in DatasetType)
             raise ValueError(
                 f"invalid dataset_type '{raw}' from {source}; expected one of: {valid}"
-            )
+            ) from exc
 
     def _engine_block_precedence(self) -> List[str]:
         engine_name = self.capabilities.engine_name
