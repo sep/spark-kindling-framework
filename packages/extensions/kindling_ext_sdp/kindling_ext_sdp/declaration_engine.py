@@ -103,7 +103,7 @@ def _default_provider_resolver(entity_metadata):
 
         registry = GlobalInjector.get(EntityProviderRegistry)
         provider_type = _provider_type(entity_metadata)
-        provider_class = getattr(registry, "_provider_classes", {}).get(provider_type)
+        provider_class = registry.get_provider_class(provider_type)
         if provider_class is not None and not (
             issubclass(provider_class, DeclarableStreamingSource)
             and issubclass(provider_class, StreamableEntityProvider)

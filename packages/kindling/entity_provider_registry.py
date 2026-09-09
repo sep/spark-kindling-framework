@@ -4,7 +4,7 @@ Entity Provider Registry
 Central registry for managing entity provider types using dependency injection.
 """
 
-from typing import Dict, Type
+from typing import Dict, Optional, Type
 
 from injector import inject
 
@@ -96,6 +96,14 @@ class EntityProviderRegistry:
 
         self._provider_classes[provider_type] = provider_class
         self.logger.info(f"Registered provider type: {provider_type} -> {provider_class.__name__}")
+
+    def get_provider_class(self, provider_type: str) -> Optional[Type[BaseEntityProvider]]:
+        """Return the registered class without constructing a provider.
+
+        Allows declaration engines to inspect capabilities without activating
+        runtime dependencies. Returns ``None`` for an unregistered type.
+        """
+        return self._provider_classes.get(provider_type)
 
     def get_provider(self, provider_type: str) -> BaseEntityProvider:
         """

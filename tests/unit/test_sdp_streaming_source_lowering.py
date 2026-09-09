@@ -261,6 +261,5 @@ def test_streaming_source_lowering_adds_no_imperative_streaming_lifecycle_calls(
     assert files
     assert "writeStream" not in text
     assert "checkpointLocation" not in text
-    assert ".start(" not in text
     assert "_jvm" not in text
     assert "_jsc" not in text

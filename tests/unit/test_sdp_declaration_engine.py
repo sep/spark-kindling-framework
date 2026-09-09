@@ -193,6 +193,36 @@ def fake_stream_resolver(provider):
     return resolver
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_default_resolver_inspects_public_capabilities_before_construction(monkeypatch, streaming):
+    import __main__
+    from kindling.entity_provider_registry import EntityProviderRegistry
+    from kindling.injection import GlobalInjector
+    from kindling_ext_sdp.declaration_engine import _default_provider_resolver
+
+    entity = make_entity("landing.stream", tags={"provider_type": "custom"})
+    resolved = object()
+    calls = []
+
+    class Registry:
+        def get_provider_class(self, provider_type):
+            assert provider_type == "custom"
+            return FakeDeclarableStreamingProvider if streaming else object
+
+        def get_provider_for_entity(self, metadata):
+            calls.append(metadata)
+            return resolved
+
+    def get_registry(cls):
+        assert cls is EntityProviderRegistry
+        return Registry()
+
+    monkeypatch.setattr(__main__, "_global_injector_instance", object(), raising=False)
+    monkeypatch.setattr(GlobalInjector, "get", get_registry)
+    assert _default_provider_resolver(entity) is (resolved if streaming else None)
+    assert calls == ([entity] if streaming else [])
+
+
 # --------------------------------------------------------------------- #
 # Phase-1 invariant: no pyspark.pipelines dependency                     #
 # --------------------------------------------------------------------- #
