@@ -18,7 +18,9 @@ Phase 1 contains:
 Phase 2 adds:
 
 - `OssSdpEngine` — emits the plan through the OSS `pyspark.pipelines`
-  decorator API (materialized views; streaming tables are Phase 4). The
+  decorator API (materialized views only). Provider-owned streaming sources
+  are recognized in the shared plan but capability-gated off for OSS SDP
+  until Spark pipeline parity is accepted separately. The
   `dp` module is an injected dependency resolved lazily at declaration
   time, so importing this package still never imports `pyspark.pipelines`
   and Kindling keeps supporting Spark runtimes older than 4.1.
@@ -48,6 +50,24 @@ Phase 3 adds:
   reuse the whole bootstrap path.
 - The `kindling_ext_databricks` adapter package (separate README):
   Lakeflow expectations, selected via `engine="databricks_sdp"`.
+
+Provider-owned streaming sources:
+
+- The shared planner can classify an external input as
+  `EXTERNAL_STREAMING_SOURCE` when its provider implements
+  `DeclarableStreamingSource` and `StreamableEntityProvider`.
+- The provider returns an inert, secret-safe `StreamingSourceSpec`; plans and
+  diagnostics include tag/option names and validation constraints, never
+  connection strings, SAS keys, passwords, JAAS values, or resolved secrets.
+- A streaming source must be a driving input selected by
+  `driving_entity_ids`; only one declarable streaming source is supported in
+  a pipe, and temporal/AUTO CDC compositions reject the ambiguous shape.
+- The output dataset type is inferred as `streaming_table`. Explicit
+  materialized-view requests fail with `streaming_dataset_type_conflict`
+  instead of being silently overridden.
+- `engine="sdp"` reports `streaming_source_lowering_not_supported` for this
+  shape today. `engine="databricks_sdp"` lowers it through Lakeflow; see the
+  Databricks extension README.
 
 Entry point shape (fixed bootstrap surface — never generated code):
 

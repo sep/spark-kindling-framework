@@ -81,18 +81,60 @@ the SDP-native replacement, tracked separately). Expectations, when
 configured, attach to the source view — quality is checked on the
 incoming feed.
 
-Change-feed sources are consumed as a **stream**: the driving input (the
-pipe's first input, per the runner's driving-source convention) is read
-with `spark.readStream.table()` so the AUTO CDC flow processes it
-incrementally — the declarative replacement for hand-rolled
-foreachBatch+MERGE. Remaining inputs stay batch reads (stream-static
-joins). Snapshot sources keep batch reads: the snapshot API diffs whole
-snapshots per update.
+Change-feed sources are consumed as a **stream**: every input selected by
+`driving_entity_ids` is read with `spark.readStream.table()` so the AUTO CDC
+flow processes it incrementally — the declarative replacement for
+hand-rolled foreachBatch+MERGE. Remaining inputs stay batch reads
+(stream-static joins). Snapshot sources keep batch reads: the snapshot API
+diffs whole snapshots per update.
+
+## Provider-owned streaming sources
+
+An external provider stream, initially Event Hubs over Kafka, can drive a
+normal Kindling ingestion pipe when targeting `engine="databricks_sdp"`:
+
+```python
+DataEntities.entity(
+    entityid="stream.telemetry",
+    name="Telemetry Event Hub",
+    tags={
+        "provider_type": "eventhub",
+        "provider.eventhub.connectionString": "@secret:lakeflow:eh-conn",
+        "provider.eventhub.name": "telemetry",
+        "provider.transport": "kafka",
+        "provider.kafka.includeHeaders": "true",
+        "provider.preprocess": "kafka",
+    },
+    schema=None,
+)
+
+@DataPipes.pipe(
+    pipeid="bronze.telemetry.ingest",
+    input_entity_ids=["stream.telemetry", "ref.devices"],
+    output_entity_id="bronze.telemetry",
+    driving_entity_ids=["stream.telemetry"],
+)
+def ingest_telemetry(stream_telemetry, ref_devices):
+    ...
+```
+
+The shared declaration planner asks the provider for a secret-safe
+`StreamingSourceSpec`. Invalid source configuration is reported before
+emission without printing connection strings, SAS keys, JAAS values, or
+resolved `@secret` values. The Databricks adapter then emits exactly one
+`dp.create_streaming_table(...)` target and one `dp.append_flow(...)`. When
+Lakeflow evaluates the append-flow function, Kindling resolves the provider,
+calls `read_entity_as_stream()` with the declarative-source option, passes
+later inputs as static DataFrames, invokes the registered pipe transform, and
+returns the streaming DataFrame to Lakeflow.
+
+Lakeflow owns query startup, checkpoint placement, retries, update scheduling,
+and target persistence for this path. Kindling does not call `writeStream`,
+does not pass `checkpointLocation`, and does not start a streaming query.
 
 ## Deferred
 
-- Streaming tables and append flows for non-SCD datasets — Phase 4 (core
-  first).
+- Multiple provider-owned streaming inputs and stream-stream joins.
 - Bitemporal AUTO CDC (`stored_as_scd_type="bitemporal"`) — Beta;
   tracked, not adopted (proposal decision).
 - Current-view companion as a declared view.

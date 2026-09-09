@@ -231,10 +231,36 @@ class DestinationEnsuringProvider(ABC):
 
 **Purpose**: Pre-creation of write destinations. Intentionally separated so providers that do not need DDL (e.g., most event-streaming sinks) are not forced to implement it.
 
+#### 6f. DeclarableStreamingSource (optional)
+
+```python
+class DeclarableStreamingSource(ABC):
+    @abstractmethod
+    def streaming_source_spec(self, entity_metadata: EntityMetadata) -> StreamingSourceSpec:
+        """Return secret-safe declaration metadata and validation issues."""
+        pass
+```
+
+**Purpose**: Declaration-only capability for provider-owned streaming
+sources. A provider that implements this must also implement
+`StreamableEntityProvider`; the declaration engine uses
+`streaming_source_spec()` while planning, and the provider's existing
+`read_entity_as_stream()` when the declarative runtime evaluates the flow.
+The spec must contain structural metadata, supported/applied option names,
+and validation issues only. It must not contain connection strings, SAS keys,
+passwords, JAAS values, resolved `@secret` values, or other secret-bearing
+connector option values.
+
 #### Capability check helpers
 
 ```python
-from kindling.entity_provider import is_streamable, is_writable, is_stream_writable, can_ensure_destination
+from kindling.entity_provider import (
+    can_ensure_destination,
+    is_declarable_streaming_source,
+    is_stream_writable,
+    is_streamable,
+    is_writable,
+)
 
 if is_writable(provider):
     provider.write_to_entity(df, entity)
@@ -242,12 +268,12 @@ if is_writable(provider):
 
 #### Interface composition by provider type
 
-| Provider | BaseEntityProvider | WritableEntityProvider | StreamableEntityProvider | StreamWritableEntityProvider | DestinationEnsuringProvider |
-|----------|:-----------------:|:---------------------:|:------------------------:|:---------------------------:|:---------------------------:|
-| Delta (full) | yes | yes | yes | yes | yes |
-| CSV (read-only) | yes | | | | |
-| EventHub | yes | | yes | | |
-| Memory (testing) | yes | yes | yes | yes | yes |
+| Provider | BaseEntityProvider | WritableEntityProvider | StreamableEntityProvider | StreamWritableEntityProvider | DestinationEnsuringProvider | DeclarableStreamingSource |
+|----------|:-----------------:|:---------------------:|:------------------------:|:---------------------------:|:---------------------------:|:-------------------------:|
+| Delta (full) | yes | yes | yes | yes | yes | |
+| CSV (read-only) | yes | | | | | |
+| EventHub | yes | | yes | | | yes |
+| Memory (testing) | yes | yes | yes | yes | yes | |
 
 #### Legacy EntityProvider ABC
 
@@ -424,9 +450,10 @@ To use this framework, you must implement:
 3. **`StreamableEntityProvider`** (if streaming reads needed): streaming read operations
 4. **`StreamWritableEntityProvider`** (if streaming writes needed): streaming append operations
 5. **`DestinationEnsuringProvider`** (if DDL needed): pre-creation of write destinations
-6. **EntityPathLocator**: Path resolution for your storage system
-7. **EntityNameMapper**: Table naming conventions
-8. **Schema Definitions**: Spark StructType schemas for all entities
+6. **`DeclarableStreamingSource`** (if a declarative engine may own the provider's stream): secret-safe source specs
+7. **EntityPathLocator**: Path resolution for your storage system
+8. **EntityNameMapper**: Table naming conventions
+9. **Schema Definitions**: Spark StructType schemas for all entities
 
 ## Common Implementation Patterns
 
@@ -536,6 +563,51 @@ def clean_sales_data(bronze_raw_sales):
     return bronze_raw_sales.filter(col("amount") > 0) \
                           .dropDuplicates(["id"])
 ```
+
+### Event Hub Ingestion for Databricks Lakeflow
+
+Event Hub entities use `provider_type: "eventhub"` and are read-only. With
+`engine="databricks_sdp"`, an Event Hub entity can be the pipe's single
+driving input; Kindling declares a Lakeflow streaming table and append flow,
+and Lakeflow owns checkpoints and query lifecycle.
+
+```python
+DataEntities.entity(
+    entityid="stream.telemetry",
+    name="Telemetry Event Hub",
+    tags={
+        "provider_type": "eventhub",
+        "provider.eventhub.connectionString": "@secret:lakeflow:eh-conn",
+        "provider.eventhub.name": "telemetry",
+        "provider.transport": "kafka",
+        "provider.kafka.includeHeaders": "true",
+        "provider.preprocess": "kafka",
+    },
+    schema=None,
+)
+
+DataEntities.entity(
+    entityid="bronze.telemetry",
+    name="Bronze Telemetry",
+    merge_columns=[],
+    tags={"provider_type": "delta"},
+    schema=bronze_telemetry_schema,
+)
+
+@DataPipes.pipe(
+    pipeid="bronze.telemetry.ingest",
+    input_entity_ids=["stream.telemetry"],
+    output_entity_id="bronze.telemetry",
+    driving_entity_ids=["stream.telemetry"],
+)
+def ingest_telemetry(stream_telemetry):
+    return stream_telemetry.selectExpr("cast(body as string) as payload")
+```
+
+The Event Hub provider validates declarable-source configuration during
+planning without rendering secret-bearing tag values. Use Kafka transport for
+Lakeflow; the legacy `eventhubs` transport is rejected by declaration
+validation because Lakeflow cannot run that connector.
 
 ## SCD Type 2 Entities
 

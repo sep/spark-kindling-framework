@@ -1,15 +1,20 @@
+from dataclasses import asdict
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pyspark import SparkContext
-
 from kindling.data_entities import EntityMetadata
+from kindling.entity_provider import (
+    DECLARATIVE_SOURCE_OPTION,
+    is_declarable_streaming_source,
+)
 from kindling.entity_provider_eventhub import (
     _AVRO_SINGLE_OBJECT_MARKER,
     _PREPROCESS_MODES,
+    DECLARABLE_SUPPORTED_TAGS,
     EventHubEntityProvider,
     _decode_amqp_primitive,
 )
+from pyspark import SparkContext
 
 
 @pytest.fixture
@@ -328,6 +333,204 @@ def _connection_string(secret="abc123"):
         "SharedAccessKeyName=test;"
         f"SharedAccessKey={secret};"
     )
+
+
+class TestEventHubDeclarableStreamingSourceSpec:
+    def test_provider_implements_declarable_streaming_source_capability(self, provider):
+        assert is_declarable_streaming_source(provider) is True
+
+    def test_valid_kafka_config_produces_secret_safe_spec(self, provider):
+        secret = "super-secret-shared-access-key"
+        entity = _entity(
+            {
+                "provider_type": "eventhub",
+                "provider.transport": "kafka",
+                "provider.eventhub.connectionString": _connection_string(secret),
+                "provider.eventhub.name": "my-hub",
+                "provider.eventhub.consumerGroup": "$Default",
+                "provider.startingPosition": "earliest",
+                "provider.maxEventsPerTrigger": "500",
+                "provider.operationTimeout": "45000",
+                "provider.kafka.includeHeaders": "true",
+                "provider.preprocess": "kafka",
+                "provider.amqp_headers": "true",
+            }
+        )
+
+        spec = provider.streaming_source_spec(entity)
+
+        assert spec.is_valid is True
+        assert spec.provider_type == "eventhub"
+        assert spec.source_format == "kafka"
+        assert spec.source_identity == "my-hub@example.servicebus.windows.net"
+        assert spec.supported_option_names == DECLARABLE_SUPPORTED_TAGS
+        assert "provider.eventhub.connectionString" in spec.applied_option_names
+        assert "provider.kafka.includeHeaders" in spec.applied_option_names
+        assert spec.preprocessing.mode == "kafka"
+        assert spec.preprocessing.amqp_headers is True
+        assert spec.preprocessing.kafka_headers_included is True
+        rendered = f"{spec!r} {spec} {asdict(spec)}"
+        assert secret not in rendered
+        assert "SharedAccessKey" not in rendered
+
+    @pytest.mark.parametrize(
+        "tag, tags",
+        [
+            (
+                "provider.eventhub.connectionString",
+                {"provider.eventhub.name": "my-hub", "provider.transport": "kafka"},
+            ),
+            (
+                "provider.eventhub.connectionString",
+                {
+                    "provider.eventhub.connectionString": "Endpoint=sb://example.servicebus.windows.net/;",
+                    "provider.eventhub.name": "my-hub",
+                    "provider.transport": "kafka",
+                },
+            ),
+            (
+                "provider.eventhub.name",
+                {
+                    "provider.eventhub.connectionString": _connection_string(),
+                    "provider.transport": "kafka",
+                },
+            ),
+            (
+                "provider.transport",
+                {
+                    "provider.eventhub.connectionString": _connection_string(),
+                    "provider.eventhub.name": "my-hub",
+                    "provider.transport": "nats",
+                },
+            ),
+            (
+                "provider.transport",
+                {
+                    "provider.eventhub.connectionString": _connection_string(),
+                    "provider.eventhub.name": "my-hub",
+                    "provider.transport": "eventhubs",
+                },
+            ),
+            (
+                "provider.startingPosition",
+                {
+                    "provider.eventhub.connectionString": _connection_string(),
+                    "provider.eventhub.name": "my-hub",
+                    "provider.transport": "kafka",
+                    "provider.startingPosition": '{"offset":"@123"}',
+                },
+            ),
+            (
+                "provider.preprocess",
+                {
+                    "provider.eventhub.connectionString": _connection_string(),
+                    "provider.eventhub.name": "my-hub",
+                    "provider.transport": "kafka",
+                    "provider.preprocess": "protobuf",
+                },
+            ),
+            (
+                "provider.maxEventsPerTrigger",
+                {
+                    "provider.eventhub.connectionString": _connection_string(),
+                    "provider.eventhub.name": "my-hub",
+                    "provider.transport": "kafka",
+                    "provider.maxEventsPerTrigger": "many",
+                },
+            ),
+            (
+                "provider.operationTimeout",
+                {
+                    "provider.eventhub.connectionString": _connection_string(),
+                    "provider.eventhub.name": "my-hub",
+                    "provider.transport": "kafka",
+                    "provider.operationTimeout": "slow",
+                },
+            ),
+        ],
+    )
+    def test_invalid_config_produces_secret_safe_issues(self, provider, tag, tags):
+        entity = _entity({"provider_type": "eventhub", **tags})
+
+        spec = provider.streaming_source_spec(entity)
+
+        assert spec.is_valid is False
+        assert tag in {issue.tag for issue in spec.validation_issues}
+        rendered = f"{spec!r} {' '.join(str(issue) for issue in spec.validation_issues)}"
+        assert "abc123" not in rendered
+        assert "SharedAccessKey" not in rendered
+
+    def test_fabric_auto_transport_is_invalid_for_lakeflow_spec(self, provider):
+        entity = _entity(
+            {
+                "provider_type": "eventhub",
+                "provider.eventhub.connectionString": _connection_string(),
+                "provider.eventhub.name": "my-hub",
+            }
+        )
+
+        spec = provider.streaming_source_spec(entity)
+
+        assert spec.source_format == "eventhubs"
+        assert any(issue.tag == "provider.transport" for issue in spec.validation_issues)
+        assert "kafka" in str(spec.validation_issues[0])
+
+    def test_declarative_source_option_is_not_forwarded_to_kafka_options(self, provider):
+        config = {
+            "eventhub.connectionString": _connection_string(),
+            "eventhub.name": "my-hub",
+            DECLARATIVE_SOURCE_OPTION: True,
+        }
+
+        kafka_config = provider._build_kafka_config(config, streaming=True)
+
+        assert DECLARATIVE_SOURCE_OPTION not in kafka_config
+
+    def test_declarable_stream_read_retains_native_kafka_fields(self, provider, spark_session):
+        provider.platform = "databricks"
+        entity = _entity(
+            {
+                "provider_type": "eventhub",
+                "provider.transport": "kafka",
+                "provider.eventhub.connectionString": _connection_string(),
+                "provider.eventhub.name": "my-hub",
+            }
+        )
+        provider.spark.readStream.format.return_value.options.return_value.load.return_value = (
+            spark_session.readStream.format("rate").load()
+        )
+
+        result = provider.read_entity_as_stream(entity, options={DECLARATIVE_SOURCE_OPTION: True})
+
+        assert result.isStreaming is True
+        columns = set(result.columns)
+        assert {"value", "timestamp", "body", "enqueuedTime"}.issubset(columns)
+
+    def test_batch_kafka_schema_still_renames_value_and_timestamp(self, provider, spark_session):
+        from pyspark.sql.functions import current_timestamp
+
+        provider.platform = "databricks"
+        entity = _entity(
+            {
+                "provider_type": "eventhub",
+                "provider.transport": "kafka",
+                "provider.eventhub.connectionString": _connection_string(),
+                "provider.eventhub.name": "my-hub",
+            }
+        )
+        provider.spark.read.format.return_value.options.return_value.load.return_value = (
+            spark_session.createDataFrame([(b"payload",)], ["value"]).withColumn(
+                "timestamp", current_timestamp()
+            )
+        )
+
+        result = provider.read_entity(entity)
+
+        columns = set(result.columns)
+        assert "body" in columns
+        assert "enqueuedTime" in columns
+        assert "value" not in columns
+        assert "timestamp" not in columns
 
 
 class TestEventHubPreprocessing:
@@ -744,6 +947,7 @@ class TestAmqpPrimitiveDecodeParity:
         ],
     )
     def test_udf_matches_reference_implementation(self, spark_session, value_bytes):
+        from kindling.entity_provider_eventhub import _decode_amqp_headers_udf
         from pyspark.sql import Row
         from pyspark.sql.functions import col
         from pyspark.sql.types import (
@@ -753,8 +957,6 @@ class TestAmqpPrimitiveDecodeParity:
             StructField,
             StructType,
         )
-
-        from kindling.entity_provider_eventhub import _decode_amqp_headers_udf
 
         schema = StructType(
             [
@@ -796,7 +998,6 @@ class TestAmqpHeadersUdfWorkerSafety:
         import sys
 
         import pyspark.cloudpickle as cloudpickle
-
         from kindling.entity_provider_eventhub import _decode_amqp_headers_udf
 
         pickled = cloudpickle.dumps(_decode_amqp_headers_udf.func)

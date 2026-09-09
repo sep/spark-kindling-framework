@@ -1,6 +1,7 @@
 # Declarable Streaming Sources for Lakeflow
 
-**Status:** Proposed
+**Status:** Implemented for Databricks Lakeflow (2026-09-09); OSS SDP remains
+capability-gated off
 **Created:** 2026-08-19
 **Initial source:** Azure Event Hubs over Kafka
 **Initial target:** Databricks Lakeflow Spark Declarative Pipelines
@@ -50,8 +51,8 @@ The declarative engine cannot currently use that capability:
 - An Event Hub input is therefore rejected as
   `external_input_not_declarable`.
 - Ordinary Databricks pipes are lowered as materialized views.
-- Generic streaming-table and append-flow lowering is deliberately left as
-  the unimplemented Phase 4 of the SDP engine.
+- Generic streaming-table and append-flow lowering was deliberately left as a
+  later SDP phase before this Lakeflow implementation.
 
 The result is an artificial split: the runner can read Event Hubs as a stream,
 and Lakeflow can natively manage a Kafka stream, but a Kindling declaration
@@ -91,8 +92,9 @@ neither one; treating it as another external table would have hidden its
 streaming lifecycle semantics.
 
 Generic streaming-table and append-flow support was also explicitly deferred
-as SDP Phase 4. Consequently the existing Event Hub runtime capability was not
-promoted into a declaration capability when the initial SDP plan was built.
+as SDP Phase 4. This implementation closes that Lakeflow-owned source portion:
+the Event Hub runtime capability is now promoted into a declaration capability
+without broadening OSS SDP or arbitrary streaming-table semantics.
 
 The architectural lesson is broader than Event Hubs:
 
@@ -164,7 +166,7 @@ engine decides when and how operations execute.
   writes to application or pipe code.
 - Making Event Hub a table-backed external input.
 - Implementing arbitrary multi-stream joins. The first implementation permits
-  one declarable streaming source in the driving-input position.
+  one declarable streaming source selected by `driving_entity_ids`.
 - Changing the cross-platform `provider.transport: auto` policy. That decision
   remains in `event_hub_kafka_transport.md`.
 - Adding Event Hub write support.
@@ -205,10 +207,10 @@ The Databricks extension already emits `create_streaming_table` and
 `append_flow` for temporal lowering and emits streaming tables for AUTO CDC.
 The generic dataset path nevertheless accepts only materialized views.
 
-The shared SDP query-function builder also already implements the useful
-driving-input convention for AUTO CDC: stream the first input and read later
-inputs as static DataFrames. Declarable source lowering should generalize this
-behavior rather than duplicate pipe argument binding.
+The shared SDP query-function builder also implements the useful
+driving-input convention for AUTO CDC: stream declared driving inputs and read
+later reference inputs as static DataFrames. Declarable source lowering
+generalizes this behavior rather than duplicate pipe argument binding.
 
 ### Persistence guard
 
@@ -320,7 +322,8 @@ can remain hermetic and avoid constructing Spark-backed providers.
 For the initial capability:
 
 - exactly one declarable streaming source is allowed per pipe;
-- it must be the first input;
+- it must be selected by `driving_entity_ids` (omitting that field preserves
+  the default first-input driving convention);
 - later inputs remain normal internal or external static reads;
 - the output must be a Delta/table-backed declarable output; and
 - the output dataset type is `streaming_table`.
@@ -646,18 +649,42 @@ The proposal is implemented when:
 - all source specs, plan output, logs, and errors are demonstrably free of
   secret values.
 
-## Open Questions
+## Resolved Questions
 
-1. Should generic declarable streaming sources be enabled on OSS SDP in the
-   same change, or capability-gated to Databricks until parity tests exist?
-2. Should native Kafka fields be retained only for declarative streams or
-   introduced consistently across Event Hub Kafka batch and runner streaming
-   reads through a compatibility release?
-3. Should the plan hold only a provider type and entity ID, resolving the
-   provider at flow evaluation, or hold a narrow provider resolver callable?
-   The plan must remain serializable and secret-safe either way.
-4. Should an explicit `sdp.dataset_type: streaming_table` be required for
-   migration visibility, or should a streaming driving source infer it? This
-   proposal recommends inference with explicit conflicts rejected.
-5. Which Event Hub/Kafka options are safe and meaningful for Lakeflow-managed
-   queries, particularly explicit consumer group IDs and trigger-rate limits?
+1. **D1 — OSS refusal shape.** Generic declarable streaming sources are
+   capability-gated to Databricks for this implementation. `OSS_SDP` reports
+   `streaming_source_lowering_not_supported` during validation; emission-time
+   refusal remains a backstop for hand-built plans.
+2. **D2 — native Kafka field scope.** Native Kafka field retention is limited
+   to declarative streaming reads through the provider-neutral
+   `DECLARATIVE_SOURCE_OPTION`. Batch and runner-streaming schemas remain
+   unchanged.
+3. **D3 — provider handle in the plan.** The plan stores the entity id,
+   provider type, and inert `StreamingSourceSpec`. The Databricks flow resolves
+   the provider at evaluation time through an injected resolver.
+4. **D4 — dataset type.** A streaming driving source infers
+   `streaming_table`. Explicit materialized-view requests from entity tags,
+   engine config, or `dataset.kind: derived` are rejected as
+   `streaming_dataset_type_conflict`.
+5. **D5 — Lakeflow option safety.** The existing Event Hub tag surface is
+   accepted, with shape-only validation. `provider.eventhub.consumerGroup`
+   drives Kafka group configuration and `provider.kafka.includeHeaders: true`
+   controls whether Kafka headers exist for preprocessing; no warning channel
+   was added.
+6. **D6 — driving input remedy.** SDP and Databricks lowering now honor
+   `driving_entity_ids` instead of positional `position == 0` checks. This
+   resolves bead `kind-9xfq` while leaving the separate collector
+   flows-versus-fused design question open.
+7. **D7 — append-flow naming.** Databricks append flows use
+   `f"{target_dataset_name}_flow"` and pass that name explicitly to
+   `dp.append_flow(name=...)`, matching both normalized and leaf dataset
+   naming modes.
+
+## Remaining Open Questions
+
+1. Should provider-owned streaming sources be enabled on OSS SDP after Spark
+   pipeline parity tests exist?
+2. Should native Kafka fields eventually become the default for all Event Hub
+   Kafka batch and runner-streaming reads through a compatibility release?
+3. What future lowering should represent multiple independent streaming
+   inputs: one fused query or multiple append flows?

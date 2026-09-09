@@ -34,6 +34,8 @@ class SdpFeature(str, Enum):
     # Incremental materialized-view refresh (Enzyme). `refresh_policy:
     # incremental` is a Databricks hint, not a portable declaration.
     INCREMENTAL_MV_REFRESH = "incremental_mv_refresh"
+    # Provider-owned streaming source lowering to streaming table + append flow.
+    STREAMING_SOURCE_LOWERING = "streaming_source_lowering"
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,7 @@ DATABRICKS_SDP = CapabilitySet(
             SdpFeature.EXPECTATIONS,
             SdpFeature.AUTO_CDC,
             SdpFeature.INCREMENTAL_MV_REFRESH,
+            SdpFeature.STREAMING_SOURCE_LOWERING,
         }
     ),
 )
@@ -81,6 +84,11 @@ def supports_auto_cdc(capabilities: CapabilitySet) -> bool:
 def supports_incremental_mv_refresh(capabilities: CapabilitySet) -> bool:
     """Check if the target supports incremental MV refresh hints."""
     return capabilities.supports(SdpFeature.INCREMENTAL_MV_REFRESH)
+
+
+def supports_streaming_source_lowering(capabilities: CapabilitySet) -> bool:
+    """Check if the target supports provider-owned streaming-source lowering."""
+    return capabilities.supports(SdpFeature.STREAMING_SOURCE_LOWERING)
 
 
 #: Adapter-tier keys that may appear in a pipe's engine config block, mapped

@@ -17,12 +17,59 @@ Examples:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Union
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple, Union
 
 from pyspark.sql import DataFrame
 from pyspark.sql.streaming import DataStreamWriter, StreamingQuery
 
 from .data_entities import EntityMetadata
+
+#: Provider-neutral read option used by declarative engines when evaluating
+#: provider-owned streaming sources. Providers may ignore it.
+DECLARATIVE_SOURCE_OPTION = "declarativeSource"
+
+
+@dataclass(frozen=True)
+class SourceValidationIssue:
+    """Secret-safe validation issue returned by a declarable source provider."""
+
+    tag: str
+    constraint: str
+    remediation: str = ""
+
+    def __str__(self) -> str:
+        detail = f"tag '{self.tag}': {self.constraint}"
+        if self.remediation:
+            detail = f"{detail} ({self.remediation})"
+        return detail
+
+
+@dataclass(frozen=True)
+class PreprocessingSpec:
+    """Secret-safe description of provider-owned source preprocessing."""
+
+    mode: str
+    amqp_headers: bool = False
+    kafka_headers_included: bool = False
+
+
+@dataclass(frozen=True)
+class StreamingSourceSpec:
+    """Inert, secret-safe declaration metadata for a provider-owned stream."""
+
+    provider_type: str
+    source_format: str
+    source_identity: str
+    supported_option_names: Tuple[str, ...] = ()
+    applied_option_names: Tuple[str, ...] = ()
+    preprocessing: Optional[PreprocessingSpec] = None
+    validation_issues: Tuple[SourceValidationIssue, ...] = ()
+
+    @property
+    def is_valid(self) -> bool:
+        """Whether provider-side declaration validation found no issues."""
+        return not self.validation_issues
 
 
 class BaseEntityProvider(ABC):
@@ -178,6 +225,21 @@ class StreamableEntityProvider(ABC):
         Returns:
             Streaming DataFrame containing the entity data
         """
+        pass
+
+
+class DeclarableStreamingSource(ABC):
+    """Declaration-only capability for provider-owned streaming sources.
+
+    Implementations must also implement :class:`StreamableEntityProvider`.
+    Building a spec must be inert: no Spark read, network call, JVM call,
+    DataFrame creation, or secret lookup. The returned spec carries option
+    names and structural metadata only, never connector option values.
+    """
+
+    @abstractmethod
+    def streaming_source_spec(self, entity_metadata: EntityMetadata) -> StreamingSourceSpec:
+        """Return secret-safe declaration metadata and validation issues."""
         pass
 
 
@@ -407,3 +469,27 @@ def can_ensure_destination(provider: BaseEntityProvider) -> bool:
 def is_incremental_readable(provider: BaseEntityProvider) -> bool:
     """Check if provider supports cursor-based incremental reads."""
     return isinstance(provider, IncrementalReadableEntityProvider)
+
+
+def unwrap_provider(provider: Any, max_depth: int = 8) -> Any:
+    """Return the inner provider behind decorator wrappers such as SDP's guard."""
+    current = provider
+    seen = set()
+    for _ in range(max_depth):
+        marker = id(current)
+        if marker in seen:
+            break
+        seen.add(marker)
+        inner = getattr(current, "_inner", None)
+        if inner is None:
+            break
+        current = inner
+    return current
+
+
+def is_declarable_streaming_source(provider: Any) -> bool:
+    """Check if provider can declare and evaluate a streaming source."""
+    unwrapped = unwrap_provider(provider)
+    return isinstance(unwrapped, DeclarableStreamingSource) and isinstance(
+        unwrapped, StreamableEntityProvider
+    )

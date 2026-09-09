@@ -92,6 +92,20 @@ class TestSdpEngineExtension:
         assert SdpEngineExtension().declare_pipeline(["p1"]) == "plan"
         assert received == {"pipe_ids": ["p1"]}
 
+    def test_activate_sdp_mode_installs_write_guard(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from kindling.injection import GlobalInjector
+        from kindling_ext_sdp.bootstrap import activate_sdp_mode
+        from kindling_ext_sdp.guard_provider import SdpWriteGuardProvider
+
+        registry = MagicMock()
+        monkeypatch.setattr(GlobalInjector, "get", lambda _iface: registry)
+
+        activate_sdp_mode()
+
+        registry.set_provider_decorator.assert_called_once_with(SdpWriteGuardProvider)
+
 
 class TestEngineConfigResolution:
     def test_resolves_only_pipes_with_engine_blocks(self):

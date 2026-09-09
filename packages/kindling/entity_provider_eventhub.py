@@ -1,7 +1,7 @@
 """Azure Event Hub entity provider with Event Hubs and Kafka transports."""
 
 import struct as _struct
-from typing import Any, Callable, Dict, Optional
+from typing import Callable, Dict, Optional
 
 from injector import inject
 from pyspark import SparkContext
@@ -16,7 +16,15 @@ from pyspark.sql.functions import udf, when
 from pyspark.sql.types import ArrayType, BinaryType, MapType, StringType
 
 from .data_entities import EntityMetadata
-from .entity_provider import BaseEntityProvider, StreamableEntityProvider
+from .entity_provider import (
+    DECLARATIVE_SOURCE_OPTION,
+    BaseEntityProvider,
+    DeclarableStreamingSource,
+    PreprocessingSpec,
+    SourceValidationIssue,
+    StreamableEntityProvider,
+    StreamingSourceSpec,
+)
 from .injection import GlobalInjector
 from .spark_config import ConfigService, get_or_create_spark_session
 from .spark_log_provider import PythonLoggerProvider
@@ -422,9 +430,24 @@ _PREPROCESS_MODES: Dict[str, Callable[..., DataFrame]] = {
     "avro": _preprocess_avro,
 }
 
+DECLARABLE_SUPPORTED_TAGS = (
+    "provider.eventhub.connectionString",
+    "provider.eventhub.name",
+    "provider.eventhub.consumerGroup",
+    "provider.transport",
+    "provider.startingPosition",
+    "provider.maxEventsPerTrigger",
+    "provider.operationTimeout",
+    "provider.kafka.*",
+    "provider.preprocess",
+    "provider.amqp_headers",
+)
+
 
 @GlobalInjector.singleton_autobind()
-class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
+class EventHubEntityProvider(
+    BaseEntityProvider, StreamableEntityProvider, DeclarableStreamingSource
+):
     """
     Azure Event Hub entity provider (read-only batch and streaming operations).
 
@@ -483,7 +506,7 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
         merge_columns=["event_id"],
         tags={
             "provider_type": "eventhub",
-            "provider.eventhub.connectionString": "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=...",
+            "provider.eventhub.connectionString": "@secret:eventhub-user-events",
             "provider.eventhub.name": "user-events-hub",
             "provider.startingPosition": "latest",
             "provider.eventhub.consumerGroup": "$Default"
@@ -565,6 +588,140 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
         if "EntityPath=" in connection_string:
             return connection_string
         return f"{connection_string.rstrip(';')};EntityPath={eventhub_name}"
+
+    def streaming_source_spec(self, entity_metadata: EntityMetadata) -> StreamingSourceSpec:
+        """Return an inert, secret-safe declaration spec for Lakeflow lowering."""
+        config = self._get_provider_config(entity_metadata)
+        issues: list[SourceValidationIssue] = []
+
+        transport = ""
+        try:
+            transport = self._resolve_transport(config)
+        except ValueError:
+            issues.append(
+                SourceValidationIssue(
+                    tag="provider.transport",
+                    constraint="must be one of: auto, eventhubs, kafka",
+                    remediation="set provider.transport to kafka for Lakeflow declarations",
+                )
+            )
+        if transport == self.TRANSPORT_EVENTHUBS:
+            issues.append(
+                SourceValidationIssue(
+                    tag="provider.transport",
+                    constraint="the eventhubs transport cannot run in Lakeflow",
+                    remediation=(
+                        "set provider.transport to kafka or configure "
+                        "kindling.platform.name as databricks so auto resolves to kafka"
+                    ),
+                )
+            )
+
+        connection_string = str(config.get("eventhub.connectionString", "") or "")
+        connection_parts: dict[str, str] = {}
+        if not connection_string:
+            issues.append(
+                SourceValidationIssue(
+                    tag="provider.eventhub.connectionString",
+                    constraint="is required",
+                    remediation=(
+                        "provide the Event Hub connection string through a " "secret-backed tag"
+                    ),
+                )
+            )
+        else:
+            try:
+                connection_parts = self._parse_connection_string(connection_string)
+            except ValueError:
+                issues.append(
+                    SourceValidationIssue(
+                        tag="provider.eventhub.connectionString",
+                        constraint=(
+                            "must include endpoint, access key name, and access key segments"
+                        ),
+                        remediation="use a complete Event Hub connection string",
+                    )
+                )
+
+        eventhub_name = str(config.get("eventhub.name", "") or "").strip()
+        if not eventhub_name:
+            issues.append(
+                SourceValidationIssue(
+                    tag="provider.eventhub.name",
+                    constraint="is required for Kafka declarative reads",
+                    remediation="set the Event Hub name explicitly",
+                )
+            )
+
+        starting_position = str(config.get("startingPosition", "latest") or "latest")
+        if starting_position not in {"earliest", "latest"}:
+            issues.append(
+                SourceValidationIssue(
+                    tag="provider.startingPosition",
+                    constraint="Kafka transport supports only earliest and latest",
+                    remediation="set provider.startingPosition to earliest or latest",
+                )
+            )
+
+        preprocess = config.get("preprocess")
+        preprocess_mode = str(preprocess).strip() if preprocess else ""
+        if preprocess_mode and preprocess_mode not in _PREPROCESS_MODES:
+            issues.append(
+                SourceValidationIssue(
+                    tag="provider.preprocess",
+                    constraint="must be one of: avro, kafka",
+                    remediation="remove provider.preprocess or select a supported mode",
+                )
+            )
+
+        for tag_name, config_key in (
+            ("provider.maxEventsPerTrigger", "maxEventsPerTrigger"),
+            ("provider.operationTimeout", "operationTimeout"),
+        ):
+            value = config.get(config_key)
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+                issues.append(
+                    SourceValidationIssue(
+                        tag=tag_name,
+                        constraint="must be an integer",
+                        remediation="set an integer millisecond/event count value",
+                    )
+                )
+
+        namespace_host = (
+            str(connection_parts.get("Endpoint", "")).replace("sb://", "", 1).rstrip("/")
+        )
+        source_identity = eventhub_name or "<missing event hub name>"
+        if namespace_host:
+            source_identity = f"{source_identity}@{namespace_host}"
+
+        applied = []
+        for tag_name in DECLARABLE_SUPPORTED_TAGS:
+            if tag_name.endswith(".*"):
+                prefix = tag_name[:-1]
+                applied.extend(
+                    sorted(key for key in entity_metadata.tags if key.startswith(prefix))
+                )
+            elif tag_name in entity_metadata.tags:
+                applied.append(tag_name)
+
+        preprocessing = None
+        if preprocess_mode:
+            preprocessing = PreprocessingSpec(
+                mode=preprocess_mode,
+                amqp_headers=bool(config.get("amqp_headers")),
+                kafka_headers_included=bool(config.get("kafka.includeHeaders")),
+            )
+
+        return StreamingSourceSpec(
+            provider_type=str((entity_metadata.tags or {}).get("provider_type", "eventhub")),
+            source_format=transport or "unknown",
+            source_identity=source_identity,
+            supported_option_names=DECLARABLE_SUPPORTED_TAGS,
+            applied_option_names=tuple(applied),
+            preprocessing=preprocessing,
+            validation_issues=tuple(issues),
+        )
 
     def _build_eventhub_config(self, provider_config: dict) -> dict:
         """
@@ -697,9 +854,25 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             return transport, self._build_kafka_config(provider_config, streaming=streaming)
         return transport, self._build_eventhub_config(provider_config)
 
-    def _normalize_dataframe(self, df: DataFrame, transport: str) -> DataFrame:
+    def _normalize_dataframe(
+        self, df: DataFrame, transport: str, *, retain_native: bool = False
+    ) -> DataFrame:
         if transport != self.TRANSPORT_KAFKA or SparkContext._active_spark_context is None:
             return df
+
+        if retain_native:
+            normalized = df
+            if "value" in normalized.columns:
+                normalized = normalized.withColumn("body", col("value"))
+            if "timestamp" in normalized.columns:
+                normalized = normalized.withColumn("enqueuedTime", col("timestamp"))
+            return (
+                normalized.withColumn("sequenceNumber", lit(None).cast("long"))
+                .withColumn("publisher", lit(None).cast("string"))
+                .withColumn("partitionKey", lit(None).cast("string"))
+                .withColumn("properties", lit(None).cast(MapType(StringType(), StringType())))
+                .withColumn("systemProperties", lit(None).cast(MapType(StringType(), StringType())))
+            )
 
         return (
             df.withColumnRenamed("value", "body")
@@ -772,7 +945,8 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             return str(encrypted)
         except Exception:
             self.logger.warning(
-                "Event Hubs connection string encryption helper unavailable; using raw connection string"
+                "Event Hubs connection string encryption helper unavailable; "
+                "using raw connection string"
             )
             return connection_string
 
@@ -816,7 +990,8 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
 
             self.logger.info(
                 "Successfully read Event Hub entity "
-                f"'{entity_metadata.entityid}' (batch, transport={transport}): {len(df.columns)} columns"
+                f"'{entity_metadata.entityid}' (batch, transport={transport}): "
+                f"{len(df.columns)} columns"
             )
 
             return df
@@ -871,7 +1046,8 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
             )
 
             stream_df = self.spark.readStream.format(transport).options(**source_config).load()
-            stream_df = self._normalize_dataframe(stream_df, transport)
+            retain_native = bool(config.get(DECLARATIVE_SOURCE_OPTION, False))
+            stream_df = self._normalize_dataframe(stream_df, transport, retain_native=retain_native)
             stream_df = self._apply_preprocessing(stream_df, entity_metadata, config)
 
             self.logger.info(
@@ -912,13 +1088,15 @@ class EventHubEntityProvider(BaseEntityProvider, StreamableEntityProvider):
 
             if not all(segment in connection_string for segment in required_segments):
                 self.logger.warning(
-                    f"Event Hub entity '{entity_metadata.entityid}' check failed: connection string missing required segments"
+                    f"Event Hub entity '{entity_metadata.entityid}' check failed: "
+                    "connection string missing required segments"
                 )
                 return False
 
             if not has_eventhub_name and not has_entity_path:
                 self.logger.warning(
-                    f"Event Hub entity '{entity_metadata.entityid}' check failed: missing event hub name and EntityPath"
+                    f"Event Hub entity '{entity_metadata.entityid}' check failed: "
+                    "missing event hub name and EntityPath"
                 )
                 return False
 

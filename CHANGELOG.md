@@ -6,6 +6,16 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- Databricks Lakeflow SDP declarations can lower a normal Kindling pipe with
+  an Event Hub driving input to a provider-owned streaming source: the shared
+  planner validates a secret-safe `StreamingSourceSpec`, infers a streaming
+  table output, and the Databricks adapter emits one `create_streaming_table`
+  plus one `append_flow` while Lakeflow owns checkpoints and query lifecycle.
+- Entity providers can implement the new `DeclarableStreamingSource`
+  declaration-only capability. Event Hub is the first implementation, with
+  secret-safe source-spec validation and declarative Kafka schema aliases that
+  preserve native Kafka fields only on the Lakeflow path.
+
 - Bootstrap config now supports `declaration_only` to initialize declaration
   state without dependency installation, watermark registration, workspace
   package loading, or `app_name` auto-run.
@@ -14,6 +24,10 @@ All notable changes to spark-kindling are documented here.
   `use_lake_packages`.
 
 ### Fixed
+
+- SDP and Databricks declarative query-function lowering now stream inputs
+  selected by `driving_entity_ids` instead of assuming input position zero,
+  aligning non-default driving declarations with runner streaming behavior.
 
 - Databricks Lakeflow app selection now feeds the selected app name and
   canonical `spark.kindling.*` settings into shared bootstrap configuration,

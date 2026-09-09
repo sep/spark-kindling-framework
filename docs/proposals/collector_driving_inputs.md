@@ -273,12 +273,17 @@ cleanly. Where per-source independence matters more than a single query,
 the `flows` shape (N contributor pipes, engine-native) is the better
 lowering — see "Open questions".
 
-Known gap: `kindling_ext_sdp` `_build_dataset_function` still streams
-`position == 0` when `stream_first_input` is set (`oss_engine.py:177-181`),
-so a non-default driving declaration is honored by the runner and not by the
-SDP lowering. Fixing that requires deciding open question 4 (`flows` vs
-`fused`), and phase 2 leaves it unchanged. Follow-up bead `kind-9xfq`
-tracks the deferred SDP lowering decision.
+Resolved gap: `kindling_ext_sdp` `_build_dataset_function` now streams inputs
+whose `ClassifiedInput.driving` flag is set from `resolve_driving_entity_ids`
+rather than checking `position == 0`. Non-default driving declarations are
+therefore honored by runner streaming, OSS SDP query-function construction,
+Databricks AUTO CDC change-feed lowering, and Databricks provider-owned
+streaming-source lowering. Bead `kind-9xfq` is resolved by that correction.
+
+This does not settle open question 4 (`flows` vs `fused`). If collector sugar
+later lowers to multiple append flows, that design may remove the fused
+query-function site entirely; until then the fused site must honor
+`driving_entity_ids`.
 
 ### Collector sugar
 
