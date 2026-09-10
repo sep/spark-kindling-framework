@@ -117,11 +117,25 @@ a chain are introduced. This setting does not select Lakeflow triggered versus
 continuous scheduling, change general SDP pipe execution, or change the runner
 engine's watermark/incremental behavior.
 
-Resolve the mode once for a declaration invocation through
-`GlobalInjector.get(ConfigService).get("kindling.lakeflow.temporal_mode", "streaming")`,
-in the engine's shared `_temporal_chain_settings` path so declaration
-validation and emission see the same value. Do not read configuration inside a
-dataset query function.
+Resolve the mode once per declaration invocation through
+`GlobalInjector.get(ConfigService).get("kindling.lakeflow.temporal_mode", "streaming")`
+in a dedicated helper called from `_declare_temporal_chain`, and pass the
+result explicitly into the lowerer. Do not read configuration inside a dataset
+query function.
+
+Do **not** put the resolution inside `_temporal_chain_settings`. That helper is
+also called by `_emitted_dataset_names`, which runs inside
+`SdpDeclarationEngine.validate()`'s per-pipe loop — a method whose documented
+contract is to "validate the selected pipes, returning ALL issues at once" and
+never stop at the first error. A `ValueError` raised from there would replace an
+actionable `DeclarationIssue` with a traceback and suppress every remaining
+issue. Nothing is lost by keeping it out: generated names are mode-independent
+(see Implementation scope item 4), so validation does not need the value.
+`_declare_temporal_chain` still runs before any Lakeflow decorator or
+target-creation call, which is where the fail-fast guarantee is actually
+needed. If validation should also report a bad mode, add it as a
+`DeclarationIssue` (for example `invalid_temporal_mode`) alongside the existing
+codes rather than by raising.
 
 - An absent key defaults to `streaming`.
 - Accept strings after trimming whitespace and converting to lowercase.
@@ -132,9 +146,20 @@ dataset query function.
 - Do not copy the broad `except Exception` currently used for generation-ceiling
   lookup: it could hide configuration failures and silently select streaming.
   Missing or broken ConfigService in initialized engine use must surface as a
-  configuration/initialization error. Bare engine tests should bind a minimal
-  config service. The low-level lowering helper can retain an explicit default
-  `mode="streaming"` for existing direct callers, with the same validation.
+  configuration/initialization error. Leave the existing generation-ceiling
+  `except Exception` as it is; making it strict is a separate behavior change,
+  not part of this option. The low-level lowering helper can retain an explicit
+  default `mode="streaming"` for existing direct callers, with the same
+  validation.
+- Confining the strict lookup to the emission path keeps the blast radius to
+  tests that actually declare a chain. Of the current suites touching this code,
+  only `tests/unit/test_temporal_sdp_lowering.py` binds a ConfigService;
+  `tests/unit/test_sdp_declaration_engine.py` (a `chain_events` pipe validated
+  with no injector binding), `tests/unit/test_sdp_auto_cdc.py`,
+  `tests/unit/test_temporal_chain.py`, and
+  `tests/integration/test_temporal_chain_integration.py` bind none. Those must
+  keep passing untouched; any that gain a chain *emission* case needs a minimal
+  key-aware config service.
 - With no temporal chain-events pipe selected, the mode is inert. It does not
   affect the per-declaration temporal lowering,
   `kindling.temporal.autocollapse`, or any non-temporal pipe. Setting it in
@@ -151,10 +176,33 @@ configuration:
   spark.kindling.lakeflow.temporal_mode: "batch"
 ```
 
-Bare `kindling.*` pipeline-configuration keys are still bridged by the
-selector when Spark configuration can be enumerated. Restricted runtimes
-(serverless, shared access) block every enumeration surface and allow only
-point lookups, so a bare key there must be named explicitly:
+That spelling only works everywhere once the selector probes for it. Bare
+`kindling.*` pipeline-configuration keys are bridged too, but both forms are
+subject to the same limit: they are picked up only while Spark configuration
+can be enumerated.
+
+Restricted runtimes (serverless, shared access) block every enumeration
+surface. `iter_spark_conf_items` then falls through to its last tier, which
+point-looks-up **only the keys it was handed in `extra_keys`** — and the
+selector's `lookup_keys` today is a fixed tuple (`kindling.data_app`,
+`kindling.lakeflow.allowed_apps`, `kindling.lakeflow.config_keys`,
+`spark.kindling.bootstrap.config_files`, `kindling.lakeflow.config_files`,
+`kindling.lakeflow.pipes`) plus whatever `kindling.lakeflow.config_keys` names.
+Neither `spark.kindling.lakeflow.temporal_mode` nor the bare
+`kindling.lakeflow.temporal_mode` is in that tuple, so on those runtimes
+**neither spelling is read at all** and the mode silently falls back to
+`streaming`. The canonical `spark.kindling.*` route is not self-sufficient
+here; that is a property of the selector's probe list, not of the transport.
+
+The implementation must therefore add both spellings to the selector's default
+`lookup_keys`. There is direct precedent:
+`spark.kindling.bootstrap.config_files` sits in that tuple as
+`CANONICAL_CONFIG_FILES_CONFIG_KEY` for exactly this reason. With that change
+the canonical key above needs no extra declaration on any runtime.
+
+`kindling.lakeflow.config_keys` remains the general escape hatch for any key
+not in the default probe list, and a deployment may still name the mode key
+through it explicitly:
 
 ```yaml
 configuration:
@@ -291,23 +339,42 @@ window support are not addressed.
 
 The implementation belongs entirely in `kindling_ext_databricks`:
 
-1. Add a mode constant/parser and resolve it through the engine's shared
-   `_temporal_chain_settings` path before declaration. Pass it explicitly into
-   the lowerer.
-2. Preserve the default streaming branch's emitted objects, flow names, and
+1. Add a mode constant/parser and resolve it in `_declare_temporal_chain`,
+   before any Lakeflow decorator or target-creation call, then pass it
+   explicitly into the lowerer. Keep it out of `_temporal_chain_settings` so
+   `validate()` still returns issues instead of raising (see Configuration
+   contract).
+2. Add `spark.kindling.lakeflow.temporal_mode` and
+   `kindling.lakeflow.temporal_mode` to the selector's default `lookup_keys` in
+   `lakeflow_app_selector.py`, alongside the existing
+   `CANONICAL_CONFIG_FILES_CONFIG_KEY` entry, so the canonical key survives
+   get-only runtimes. This is the one change outside the temporal lowering
+   itself; it is still inside `kindling_ext_databricks`.
+3. Preserve the default streaming branch's emitted objects, flow names, and
    read behavior exactly. Add the MV branch for `__g0..gK`, reusing the
    existing transformations, rules, and name resolution.
-3. Reuse collision validation without introducing helper datasets merely to
+4. Reuse collision validation without introducing helper datasets merely to
    implement fan-in. Generated-name reservations in `_emitted_dataset_names`
    are mode-independent and stay as they are.
-4. Documentation: add the key to `docs/reference/config_reference.md` under
+5. Documentation: add the key to `docs/reference/config_reference.md` under
    "SDP and Databricks Lakeflow" beside `kindling.sdp.dataset_naming`; document
    configuration, topology, retained-input semantics, and transition
-   constraints in `packages/extensions/kindling_ext_databricks/README.md` and
-   `docs/guide/temporal_streaming_contract.md`; note the per-mode strata
-   dataset kinds where `packages/extensions/kindling_ext_sdp/README.md`
-   documents the temporal topology and generated names. Add an Unreleased
-   changelog entry when the feature ships.
+   constraints in `packages/extensions/kindling_ext_databricks/README.md`, which
+   is the substantive home; note the per-mode strata dataset kinds where
+   `packages/extensions/kindling_ext_sdp/README.md` documents the temporal
+   topology and generated names. Add an Unreleased changelog entry when the
+   feature ships.
+
+   `docs/guide/temporal_streaming_contract.md` gets a short cross-reference
+   only, not the substance. That guide is the engine-agnostic temporal
+   execution contract — "one engine, two drivers", where "streaming" means the
+   planned Structured Streaming `foreachBatch` driver around the same bounded
+   engine. Documenting a Lakeflow lowering option there would contradict the
+   namespace argument above and put two unrelated streaming/batch axes under
+   one word, right next to this proposal's own statement that the mode does not
+   change the runner engine's watermark or incremental behavior. The
+   cross-reference should say exactly that: the Lakeflow `temporal_mode` is a
+   different axis, and point at the Databricks extension README.
 
 Version the Databricks extension per `docs/contributing/release_process.md`
 (new features are a minor bump; the repository's pre-1.0 practice has been to
@@ -329,7 +396,10 @@ Focused acceptance coverage:
 - Test configuration through the actual ingestion path in enumeration-capable
   and get-only Spark configurations, covering both the canonical
   `spark.kindling.lakeflow.temporal_mode` key and the bare key named through
-  `kindling.lakeflow.config_keys`. Existing permissive test stubs that return
+  `kindling.lakeflow.config_keys`. The get-only case is the one that fails
+  against today's selector: assert that a fake exposing only `conf.get` still
+  yields `batch` from the canonical key, which is what pins the new default
+  `lookup_keys` entries in place. Existing permissive test stubs that return
   `2` for every config key (`tests/unit/test_temporal_sdp_lowering.py`) must
   become key-aware.
 - Verify an external logical input still resolves to a different physical
