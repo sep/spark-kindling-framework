@@ -203,6 +203,125 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch, mode):
     spark.table.assert_called_once_with(episodes_name)
 
 
+def test_batch_chain_under_a_custom_chain_id_still_declares_the_episode_branch(monkeypatch):
+    """Regression: the episode half of a chain vanished unless its id was
+    ``default``.
+
+    ``collapse_temporal_chain("cwmdp")`` stamps ``temporal.chain_id`` onto the
+    two composite chain PIPES, but the engine resolved it from the output
+    ENTITY's tags — which never carry it. The sibling lookup therefore asked
+    for ``temporal.chain.episodes.default``, missed, and handed
+    ``episodes_name=None`` to the lowering: event strata were declared, the
+    episode snapshot / Auto CDC target / determinations view silently were
+    not. Batch mode here because that is where it was first observed; the
+    defect is mode-independent.
+    """
+    from kindling.data_entities import (
+        DataEntityManager,
+        DataEntityRegistry,
+        EntityMetadata,
+        EntityNameMapper,
+    )
+    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
+    from kindling.spark_config import ConfigService
+    from kindling_ext_databricks import DatabricksSdpEngine, temporal_lowering
+    from kindling_ext_temporal import (
+        DataEpisodes,
+        DataEvents,
+        SimpleTemporalEntityResolver,
+        TemporalEntityResolver,
+        TemporalEpisodeRegistry,
+        TemporalEpisodeRegistryManager,
+        TemporalEventRegistry,
+        TemporalEventRegistryManager,
+        collapse_temporal_chain,
+    )
+
+    DataEvents.reset()
+    DataEpisodes.reset()
+    event_registry = TemporalEventRegistryManager(_logger_provider())
+    episode_registry = TemporalEpisodeRegistryManager(_logger_provider())
+    entity_registry = DataEntityManager()
+    entity_registry.registry["bronze.telemetry"] = EntityMetadata(
+        entityid="bronze.telemetry", name="telemetry", schema=None, merge_columns=[], tags={}
+    )
+    pipe_registry = DataPipesManager(_logger_provider())
+
+    services = {
+        TemporalEntityResolver: SimpleTemporalEntityResolver(),
+        TemporalEventRegistry: event_registry,
+        TemporalEpisodeRegistry: episode_registry,
+        DataEntityRegistry: entity_registry,
+        DataPipesRegistry: pipe_registry,
+        EntityNameMapper: SimpleNamespace(
+            get_table_name=lambda entity: f"cat.sch.{entity.entityid}"
+        ),
+        ConfigService: _config_service(**{"kindling.lakeflow.temporal_mode": "batch"}),
+    }
+
+    def service_get(dep):
+        try:
+            return services[dep]
+        except KeyError as exc:
+            raise AssertionError(f"Unexpected service request: {dep}") from exc
+
+    with patch("kindling.injection.GlobalInjector.get", side_effect=service_get):
+
+        @DataEvents.base_event(
+            eventid="telemetry.base",
+            input_entity_id="bronze.telemetry",
+            subject_type="machine",
+            subject_keys=["machine_id"],
+            time_column="reading_ts",
+            event_type="telemetry.observed",
+            payload_columns=["temperature"],
+            use_watermark=True,
+        )
+        def normalize(df):
+            return df
+
+        DataEvents.condition_engine(engineid="default")
+        DataEpisodes.episode(
+            episodeid="episode.temperature_high_active",
+            start_event="condition.temperature_high.entered",
+            end_event="condition.temperature_high.exited",
+            subject_type="machine",
+            expires_after_seconds=300,
+        )
+        selected = collapse_temporal_chain("cwmdp")
+
+        # The chain pipes really are registered under the custom id: this
+        # test would otherwise pass vacuously if the id were ignored.
+        assert "temporal.chain.events.cwmdp" in selected
+        assert "temporal.chain.episodes.cwmdp" in selected
+
+        monkeypatch.setattr(temporal_lowering, "_spark", lambda: MagicMock())
+
+        dp = FakeDp()
+        engine = DatabricksSdpEngine(
+            entity_registry, pipe_registry, dp_module=dp, dataset_naming="leaf"
+        )
+        engine.declare_pipeline(engine.build_plan(selected))
+
+    # Batch mode: strata are materialized views, and the episodes target is
+    # the only streaming table.
+    assert dp.streaming_tables == ["episodes"]
+    assert "episodes__episode_snapshot" in dp.views
+    assert set(dp.materialized_views) == {
+        "events__g0",
+        "events__g1",
+        "events__g2",
+        "events__determinations",
+        "events",
+    }
+
+    assert len(dp.auto_cdc_snapshot_flows) == 1
+    flow = dp.auto_cdc_snapshot_flows[0]
+    assert flow["target"] == "episodes"
+    assert flow["source"] == "episodes__episode_snapshot"
+    assert flow["stored_as_scd_type"] == 2
+
+
 def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
     """The Databricks lowering lands every base event declaration as its
     own independent append_flow into one shared stratum-0 streaming table,
