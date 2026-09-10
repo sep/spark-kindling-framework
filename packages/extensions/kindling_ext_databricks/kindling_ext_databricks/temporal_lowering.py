@@ -41,14 +41,23 @@ time (an EXTERNAL table — ingestion happens outside the pipeline by the
 write-guard's design), so the wiring is exact per update while rules remain
 data. Physical topology is fixed by ``kindling.temporal.max_generations``
 so rule changes alter contents, never shape.
+
+``kindling.lakeflow.temporal_mode: batch`` lowers the event strata
+(``__g0..gK``) as materialized views reading with ``spark.table`` instead of
+streaming tables fed by append flows, so a base-event transform may use
+ordered analytic windows — ``row_number``, ``lag``, unbounded forward fill —
+that Structured Streaming rejects. Everything from the episode snapshot
+downstream is identical in both modes: the snapshot already reads the strata
+in batch. Batch strata carry batch-query semantics, not an append-only
+archive — a refresh can revise or remove previously produced events, so
+retain the source history the computation needs.
 """
 
 from functools import reduce
 from typing import Any, Dict, List, Optional
 
-from kindling_ext_temporal.translation import TemporalPipeTranslator
-
 from kindling.injection import GlobalInjector
+from kindling_ext_temporal.translation import TemporalPipeTranslator
 
 STRATUM_SUFFIX = "__g"
 DETERMINATIONS_SUFFIX = "__determinations"
@@ -57,6 +66,23 @@ SNAPSHOT_SUFFIX = "__episode_snapshot"
 
 def _union(frames):
     return reduce(lambda left, right: left.unionByName(right), frames)
+
+
+def _execution_mode(mode) -> str:
+    """Normalize and validate the temporal-chain execution mode.
+
+    ``streaming`` keeps the streaming-table + append-flow lowering;
+    ``batch`` lowers the event strata as materialized views. Values ignore
+    surrounding whitespace and case, mirroring the other declarative
+    execution settings.
+    """
+    normalized = str(mode).strip().lower()
+    if normalized not in ("streaming", "batch"):
+        raise ValueError(
+            "Invalid kindling.lakeflow.temporal_mode value "
+            f"{mode!r}; expected 'streaming' or 'batch'."
+        )
+    return normalized
 
 
 def _spark():
@@ -109,12 +135,11 @@ def _read_rules(spark, conditions_entity):
     and filter to current rows. Returns (rules_by_generation,
     max_rule_generation).
     """
+    from kindling.data_entities import scd_config_from_tags
     from kindling_ext_temporal.validation import (
         ActiveSparkSqlExpressionParser,
         TemporalConditionValidator,
     )
-
-    from kindling.data_entities import scd_config_from_tags
 
     try:
         table_name = _physical_table_name(conditions_entity)
@@ -207,18 +232,31 @@ def _fail_on_higher_order_episodes(episode_defs, higher_ids):
 
 
 def declare_stratified_temporal(
-    dp, events_name: str, episodes_name: Optional[str], max_generations: int
+    dp,
+    events_name: str,
+    episodes_name: Optional[str],
+    max_generations: int,
+    mode: str = "streaming",
 ):
     """Emit the stratified dataset graph for one temporal chain.
 
     ``events_name`` / ``episodes_name`` are the already-normalized
     single-part dataset names of the chain pipes' outputs (episodes may be
     None when no episodes are declared).
+
+    ``mode`` selects how the pre-determination strata ``__g0..gK`` are
+    lowered — ``streaming`` (default: streaming tables + append flows) or
+    ``batch`` (one materialized view per stratum, batch reads) — so a
+    base-event transform may use ordered analytic windows that Structured
+    Streaming rejects. Everything from the episode snapshot downstream is
+    identical in both modes. See
+    ``docs/proposals/temporal_lakeflow_execution_mode.md``.
     """
     from kindling_ext_temporal.engine import ConditionEngineRunner, EpisodeRunner
     from kindling_ext_temporal.entities import TemporalEntityResolver
     from pyspark.sql import functions as F
 
+    mode = _execution_mode(mode)
     spark = _spark()
     base_defs, episode_defs = _temporal_registries()
     if not base_defs:
@@ -245,44 +283,87 @@ def declare_stratified_temporal(
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     stratum_names = [f"{events_name}{STRATUM_SUFFIX}0"]
-    dp.create_streaming_table(name=stratum_names[0])
-    for metadata in base_defs:
+
+    def _base_source_table(metadata):
+        """External physical name for one base-event declaration's input.
+
+        Unchanged in both modes: a producer selected in the same pipeline
+        still resolves externally and establishes no local dependency edge
+        (see the SDP extension README). Making internal producers resolve to
+        their pipeline-local dataset names is a separate change.
+        """
         source_entity = entity_registry.get_entity_definition(metadata.input_entity_id)
-        source_table = (
-            _physical_table_name(source_entity)
-            if source_entity is not None
-            else metadata.input_entity_id
-        )
+        if source_entity is None:
+            return metadata.input_entity_id
+        return _physical_table_name(source_entity)
 
-        def base_flow(metadata=metadata, source_table=source_table):
-            df = spark.readStream.table(source_table)
-            transformed = metadata.transform(df) if metadata.transform else df
-            return TemporalPipeTranslator.select_event_envelope(transformed, metadata)
+    if mode == "batch":
+        # One MV per stratum: every read is a batch read, so base transforms
+        # are ordinary batch Spark queries. Multi-source fan-in happens
+        # inside the single query function — each input keeps its own
+        # transform, and only the resulting envelopes are unioned.
+        base_sources = [(metadata, _base_source_table(metadata)) for metadata in base_defs]
 
-        base_flow.__name__ = f"{stratum_names[0]}_{metadata.eventid}".replace(".", "_")
-        dp.append_flow(target=stratum_names[0], name=base_flow.__name__)(base_flow)
+        @dp.materialized_view(name=stratum_names[0])
+        def base_stratum(base_sources=base_sources):
+            frames = []
+            for metadata, source_table in base_sources:
+                df = spark.table(source_table)
+                transformed = metadata.transform(df) if metadata.transform else df
+                frames.append(TemporalPipeTranslator.select_event_envelope(transformed, metadata))
+            return _union(frames)
 
-    # --- pre-determination boundary strata: fixed physical topology -------
-    for generation in range(1, max_generations + 1):
-        stratum_name = f"{events_name}{STRATUM_SUFFIX}{generation}"
-        rules = pre_rules.get(generation, [])
-        lower = list(stratum_names)
-        dp.create_streaming_table(name=stratum_name)
+        for generation in range(1, max_generations + 1):
+            stratum_name = f"{events_name}{STRATUM_SUFFIX}{generation}"
+            rules = pre_rules.get(generation, [])
+            lower = list(stratum_names)
 
-        def stratum_flow(rules=rules, lower=lower):
-            if not rules:
-                # Append flows require a streaming source even when a
-                # stratum has no rules (fixed-K topology): stream the base
-                # stratum, keep nothing.
-                from pyspark.sql import functions as F
+            def stratum_view(rules=rules, lower=lower):
+                if not rules:
+                    # Fixed-K topology: an empty generation still declares a
+                    # dataset, preserving the envelope schema and the
+                    # dependency edge on the base stratum.
+                    return spark.table(lower[0]).where(F.lit(False))
+                inputs = _union([spark.table(name) for name in lower])
+                return engine.execute_rules(inputs, rules)
 
-                return spark.readStream.table(lower[0]).where(F.lit(False))
-            inputs = _union([spark.readStream.table(name) for name in lower])
-            return engine.execute_rules(inputs, rules)
+            stratum_view.__name__ = f"{stratum_name}_view".replace(".", "_")
+            dp.materialized_view(name=stratum_name)(stratum_view)
+            stratum_names.append(stratum_name)
+    else:
+        dp.create_streaming_table(name=stratum_names[0])
+        for metadata in base_defs:
+            source_table = _base_source_table(metadata)
 
-        stratum_flow.__name__ = f"{stratum_name}_flow".replace(".", "_")
-        dp.append_flow(target=stratum_name, name=stratum_flow.__name__)(stratum_flow)
-        stratum_names.append(stratum_name)
+            def base_flow(metadata=metadata, source_table=source_table):
+                df = spark.readStream.table(source_table)
+                transformed = metadata.transform(df) if metadata.transform else df
+                return TemporalPipeTranslator.select_event_envelope(transformed, metadata)
+
+            base_flow.__name__ = f"{stratum_names[0]}_{metadata.eventid}".replace(".", "_")
+            dp.append_flow(target=stratum_names[0], name=base_flow.__name__)(base_flow)
+
+        # --- pre-determination boundary strata: fixed physical topology ---
+        for generation in range(1, max_generations + 1):
+            stratum_name = f"{events_name}{STRATUM_SUFFIX}{generation}"
+            rules = pre_rules.get(generation, [])
+            lower = list(stratum_names)
+            dp.create_streaming_table(name=stratum_name)
+
+            def stratum_flow(rules=rules, lower=lower):
+                if not rules:
+                    # Append flows require a streaming source even when a
+                    # stratum has no rules (fixed-K topology): stream the base
+                    # stratum, keep nothing.
+                    from pyspark.sql import functions as F
+
+                    return spark.readStream.table(lower[0]).where(F.lit(False))
+                inputs = _union([spark.readStream.table(name) for name in lower])
+                return engine.execute_rules(inputs, rules)
+
+            stratum_flow.__name__ = f"{stratum_name}_flow".replace(".", "_")
+            dp.append_flow(target=stratum_name, name=stratum_flow.__name__)(stratum_flow)
+            stratum_names.append(stratum_name)
 
     union_members = list(stratum_names)
 

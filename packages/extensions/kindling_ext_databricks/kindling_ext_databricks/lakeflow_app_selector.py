@@ -120,6 +120,11 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
         CANONICAL_CONFIG_FILES_CONFIG_KEY,
         CONFIG_FILES_CONFIG_KEY,
         PIPES_CONFIG_KEY,
+        # Restricted runtimes point-look-up only these defaults, so a key the
+        # declaration path reads must be named here or it is simply absent —
+        # a silently wrong default rather than an error.
+        "spark.kindling.lakeflow.temporal_mode",
+        "kindling.lakeflow.temporal_mode",
         *configured_keys,
     )
     spark_items = tuple(iter_spark_conf_items(spark, extra_keys=lookup_keys))

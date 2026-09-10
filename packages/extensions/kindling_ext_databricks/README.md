@@ -136,6 +136,76 @@ Lakeflow owns query startup, checkpoint placement, retries, update scheduling,
 and target persistence for this path. Kindling does not call `writeStream`,
 does not pass `checkpointLocation`, and does not start a streaming query.
 
+## Temporal chain execution mode
+
+A temporal chain lowers its event strata `<events>__g0..gK` as streaming
+tables fed by append flows, so each base-event transform runs over a
+Structured Streaming DataFrame. That rejects ordered analytic windows —
+`row_number`, `lag`, unbounded forward fill — even though the same transform
+runs correctly under the runner engine. Set the mode to `batch` to lower
+those strata as materialized views with batch reads instead:
+
+```yaml
+kindling:
+  lakeflow:
+    temporal_mode: batch
+```
+
+From a Databricks Asset Bundle, use the canonical SparkConf spelling in the
+pipeline's `configuration:` mapping — it is point-looked-up by the selector,
+so it also works on serverless and shared-access runtimes that cannot
+enumerate Spark configuration:
+
+```yaml
+configuration:
+  spark.kindling.lakeflow.temporal_mode: "batch"
+```
+
+| Component | `streaming` (default, omitted) | `batch` |
+| --- | --- | --- |
+| `<events>__g0` | Streaming table, one append flow per base declaration | One materialized view, union of the transformed base inputs |
+| Base reads | `spark.readStream.table(...)` | `spark.table(...)` |
+| `<events>__g1..gK` | Streaming tables and append flows | Materialized view per generation, batch reads of lower strata |
+| Empty generation | Empty streaming projection of `__g0` | Empty batch projection of `__g0`, same schema and dependency |
+| Episode snapshot, episodes, determinations, higher-order strata, public events | unchanged | unchanged |
+
+Multi-source fan-in is unchanged: every base declaration lands in the one
+stratum-0 dataset, each input keeping its own transform. Base sources still
+resolve to external physical names through `EntityNameMapper` in both modes,
+so a producer selected in the same pipeline establishes no local dependency
+edge — keep those sources in an upstream resource. A batch chain declares no
+`readStream` and no append flow at all; a chain *with* episodes still calls
+`create_streaming_table` for the snapshot-CDC target only, because that is
+what the AUTO CDC FROM SNAPSHOT API requires.
+
+Semantics to plan for:
+
+- Batch strata carry batch-query semantics over the rows available at each
+  refresh. A refresh can revise or remove previously produced events, and
+  late arrivals can change window results across a whole subject partition.
+  They are not append-only event archives and they do not use runner
+  watermarks.
+- Retain the source history the computation needs. Removing input rows can
+  remove derived events and change the episode snapshot; snapshot CDC keeps
+  its SCD2 version history but cannot reconstruct source history that was
+  never retained.
+- Use stable event identity and deterministic window ordering, including a
+  tie breaker for equal timestamps. Never use a mutable row rank as event
+  identity.
+- Changing the mode changes `__g0..gK` dataset types. It is not a hot toggle
+  with portable checkpoint state: select the mode for newly provisioned
+  pipeline outputs, and treat conversion of an existing pipeline as a
+  deployment operation. Nothing is dropped or reset automatically.
+- The value ignores surrounding whitespace and case. Anything other than
+  `streaming` or `batch` fails the declaration before any Lakeflow object is
+  created. The setting is inert when no temporal chain-events pipe is
+  selected, and never changes general SDP pipe execution, Lakeflow triggered
+  versus continuous scheduling, or the runner engine's watermark behavior.
+
+Batch mode enables batch analysis; it does not guarantee that arbitrary user
+code is declarable, or that a query refreshes incrementally.
+
+
 ## Deferred
 
 - Multiple provider-owned streaming inputs and stream-stream joins.
