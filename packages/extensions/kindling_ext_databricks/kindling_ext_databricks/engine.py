@@ -232,7 +232,7 @@ class DatabricksSdpEngine(OssSdpEngine):
         dp.create_streaming_table(**target_kwargs)
         dp.append_flow(target=target_name, name=flow_name)(query_function)
 
-    def _declare_temporal_chain(self, dp, dataset: DatasetDeclaration, pipe) -> None:
+    def _declare_temporal_chain(self, dp, dataset: DatasetDeclaration, pipe: PipeMetadata) -> None:
         """Lower a temporal chain-events pipe as the stratified dataset graph.
 
         Requires kindling-ext-temporal (soft dependency: only apps that
@@ -240,7 +240,9 @@ class DatabricksSdpEngine(OssSdpEngine):
         sibling — found by chain id through the pipe registry — is emitted
         here too, so both halves share one wiring computation. ``pipe`` is
         the chain_events pipe itself: the chain id is a pipe tag, absent
-        from ``dataset.tags`` (the output entity's).
+        from ``dataset.tags`` (the output entity's). It is never None here —
+        the caller reaches this branch only by reading ``temporal.kind`` off
+        that same pipe.
         """
         try:
             from kindling_ext_databricks.temporal_lowering import (
@@ -253,7 +255,7 @@ class DatabricksSdpEngine(OssSdpEngine):
                 "environment."
             ) from exc
 
-        episodes_pipe, max_generations = self._temporal_chain_settings(pipe.tags if pipe else {})
+        episodes_pipe, max_generations = self._temporal_chain_settings(pipe.tags or {})
         episodes_name = self.dataset_name(episodes_pipe.output_entity_id) if episodes_pipe else None
 
         declare_stratified_temporal(
