@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.42] - 2026-09-10
+
 ### Fixed
 
 - Databricks Lakeflow temporal chains registered under a non-default chain id
