@@ -2,7 +2,7 @@
 
 **Status:** Proposed — not implemented.
 **Created:** 2026-09-10
-**Reviewed against:** release v0.12.39 (`dfea418`)
+**Reviewed against:** release v0.12.40 (`6111d74`)
 **Related:** `temporal_event_segmentation.md`,
 `declarable_streaming_sources.md`,
 `lakeflow_structured_config.md`,
@@ -102,6 +102,15 @@ queries, subject to Lakeflow's normal query restrictions.
 `lakeflow_structured_config.md` is implemented (shipped 0.12.35, with the
 transport since moved to the shared bootstrap layer); the current selector and
 bootstrap ingestion code are authoritative for supported keys.
+
+Release 0.12.40's external Delta resolution fix does not affect anything here.
+It changed only the OSS SDP engine's default `external_read_resolver`
+(`kindling_ext_sdp/oss_engine.py`), which now resolves external batch inputs
+through `EntityNameMapper` — the behavior the Databricks temporal lowering
+already had. The Databricks engine, the temporal lowering, the Lakeflow
+selector, and the shared bootstrap ingestion path are byte-identical between
+v0.12.39 and v0.12.40, as is the SDP README's statement on temporal base-source
+resolution cited below.
 
 ## Configuration contract
 
