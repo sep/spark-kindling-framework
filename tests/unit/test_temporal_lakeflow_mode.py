@@ -71,10 +71,12 @@ def _logger_provider():
 
 
 def _declare_chain(mode, *, with_episodes, max_generations=2, transform=None):
-    """Declare one chain through the lowering and return (dp, spark, names).
+    """Declare one chain through the lowering and return ``(dp, spark)``.
 
-    ``mode`` is passed to the lowerer exactly as the engine would pass it, so
-    the tests exercise the same normalization path as a configured value.
+    ``dp`` holds the recorded declarations and ``spark`` is the mock session
+    the query functions read through. ``mode`` is passed to the lowerer
+    exactly as the engine would pass it, so the tests exercise the same
+    normalization path as a configured value.
     """
     from kindling.data_entities import (
         DataEntityManager,
