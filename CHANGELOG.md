@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.41] - 2026-09-10
+
 ### Added
 
 - `kindling.lakeflow.temporal_mode` (`streaming` default, `batch` opt-in)
