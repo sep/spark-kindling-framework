@@ -127,7 +127,7 @@ class DatabricksSdpEngine(OssSdpEngine):
                 STRATUM_SUFFIX,
             )
 
-            episodes_pipe, max_generations = self._temporal_chain_settings(tags)
+            episodes_pipe, max_generations = self._temporal_chain_settings(pipe.tags or {})
             names.extend(
                 (
                     f"{owner} (temporal stratum {generation})",
@@ -151,15 +151,24 @@ class DatabricksSdpEngine(OssSdpEngine):
             names.append((f"{owner} (AUTO CDC source)", f"{target}{SCD_SOURCE_SUFFIX}"))
         return names
 
-    def _temporal_chain_settings(self, tags: Dict[str, str]) -> Tuple[Optional[PipeMetadata], int]:
-        """Resolve the sibling and topology shared by validation and emission."""
+    def _temporal_chain_settings(
+        self, pipe_tags: Dict[str, str]
+    ) -> Tuple[Optional[PipeMetadata], int]:
+        """Resolve the sibling and topology shared by validation and emission.
+
+        Takes the chain pipe's OWN tags, not its output entity's:
+        ``collapse_temporal_chain`` stamps ``temporal.chain_id`` onto the two
+        composite chain pipes only. Passing entity tags here silently reads
+        the ``"default"`` fallback, which finds no sibling for any other
+        chain id and drops the whole episode branch from the graph.
+        """
         from kindling_ext_temporal.chain import (
             DEFAULT_MAX_GENERATIONS,
             MAX_GENERATIONS_CONFIG_KEY,
             chain_episodes_pipe_id,
         )
 
-        chain_id = (tags or {}).get("temporal.chain_id", "default")
+        chain_id = (pipe_tags or {}).get("temporal.chain_id", "default")
         episodes_pipe = self.pipe_registry.get_pipe_definition(chain_episodes_pipe_id(chain_id))
         if episodes_pipe is not None and not episodes_pipe.output_entity_id:
             episodes_pipe = None
@@ -179,7 +188,7 @@ class DatabricksSdpEngine(OssSdpEngine):
         pipe = self.pipe_registry.get_pipe_definition(dataset.pipe_id)
         temporal_kind = str(((pipe.tags if pipe else None) or {}).get("temporal.kind", ""))
         if temporal_kind == "chain_events":
-            self._declare_temporal_chain(dp, dataset)
+            self._declare_temporal_chain(dp, dataset, pipe)
             return
         if temporal_kind == "chain_episodes":
             # Emitted together with its chain_events sibling.
@@ -223,13 +232,17 @@ class DatabricksSdpEngine(OssSdpEngine):
         dp.create_streaming_table(**target_kwargs)
         dp.append_flow(target=target_name, name=flow_name)(query_function)
 
-    def _declare_temporal_chain(self, dp, dataset: DatasetDeclaration) -> None:
+    def _declare_temporal_chain(self, dp, dataset: DatasetDeclaration, pipe: PipeMetadata) -> None:
         """Lower a temporal chain-events pipe as the stratified dataset graph.
 
         Requires kindling-ext-temporal (soft dependency: only apps that
         registered chain pipes reach this branch). The chain_episodes
         sibling — found by chain id through the pipe registry — is emitted
-        here too, so both halves share one wiring computation.
+        here too, so both halves share one wiring computation. ``pipe`` is
+        the chain_events pipe itself: the chain id is a pipe tag, absent
+        from ``dataset.tags`` (the output entity's). It is never None here —
+        the caller reaches this branch only by reading ``temporal.kind`` off
+        that same pipe.
         """
         try:
             from kindling_ext_databricks.temporal_lowering import (
@@ -242,7 +255,7 @@ class DatabricksSdpEngine(OssSdpEngine):
                 "environment."
             ) from exc
 
-        episodes_pipe, max_generations = self._temporal_chain_settings(dataset.tags)
+        episodes_pipe, max_generations = self._temporal_chain_settings(pipe.tags or {})
         episodes_name = self.dataset_name(episodes_pipe.output_entity_id) if episodes_pipe else None
 
         declare_stratified_temporal(
@@ -251,6 +264,24 @@ class DatabricksSdpEngine(OssSdpEngine):
             episodes_name=episodes_name,
             max_generations=max_generations,
             mode=self._temporal_execution_mode(),
+            strata_materialization=self._temporal_strata_materialization(),
+        )
+
+    def _temporal_strata_materialization(self) -> str:
+        """Resolve how the numbered event strata are persisted.
+
+        Same read-here-not-in-validation reasoning as
+        ``_temporal_execution_mode``; the dataset NAMES are identical either
+        way, so validation is unaffected by this setting — only whether a
+        table is created behind each name.
+        """
+        from kindling.injection import GlobalInjector
+        from kindling.spark_config import ConfigService
+
+        return str(
+            GlobalInjector.get(ConfigService).get(
+                "kindling.lakeflow.temporal_strata_materialization", "table"
+            )
         )
 
     def _temporal_execution_mode(self) -> str:

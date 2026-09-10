@@ -4,6 +4,38 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- Databricks Lakeflow temporal chains registered under a non-default chain id
+  now declare their episode branch. `DatabricksSdpEngine` resolved
+  `temporal.chain_id` from the output entity's tags, but
+  `collapse_temporal_chain` records it only on the two composite chain pipes,
+  so any chain other than `default` looked up
+  `temporal.chain.episodes.default`, found no sibling, and silently omitted
+  the episode snapshot view, the episodes Auto CDC target, and the
+  determinations view while still declaring the event strata. Both the
+  emission path and the `validate()` name-reservation path now read the chain
+  pipe's own tags.
+
+### Added
+
+- `kindling.lakeflow.temporal_strata_materialization` (`table` default,
+  `view` opt-in) chooses whether the numbered event strata
+  `<events>__g0..gK` are persisted. `view` declares them as pipeline-scoped
+  temporary views, so no `__g*` tables are created and nothing intermediate
+  is written. Only the numbered strata are affected — the determinations
+  view, higher-order boundaries, the episodes Auto CDC target, and the public
+  events union are declared identically, so results are unchanged. Requires
+  `kindling.lakeflow.temporal_mode: batch` and fails the declaration
+  otherwise, since a streaming stratum is an append-flow target that a
+  temporary view cannot be. Each generation reads every lower one, so a view
+  is re-expanded per reference and the plan behind `events` grows
+  exponentially in `kindling.temporal.max_generations`; prefer `table` at any
+  meaningful generation ceiling. The canonical
+  `spark.kindling.lakeflow.temporal_strata_materialization` bundle key is
+  point-looked-up by the Lakeflow selector so it resolves on restricted
+  runtimes. Behavior is unchanged when the key is unset.
+
 ## [0.12.41] - 2026-09-10
 
 ### Added

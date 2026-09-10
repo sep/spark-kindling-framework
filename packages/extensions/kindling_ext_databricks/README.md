@@ -169,6 +169,36 @@ configuration:
 | Empty generation | Empty streaming projection of `__g0` | Empty batch projection of `__g0`, same schema and dependency |
 | Episode snapshot, episodes, determinations, higher-order strata, public events | unchanged | unchanged |
 
+### Unpersisted generations
+
+In `batch` mode the numbered strata can be declared as pipeline-scoped
+temporary views instead of materialized views, so no `__g*` tables are
+created and nothing intermediate is written:
+
+```yaml
+kindling:
+  lakeflow:
+    temporal_mode: batch
+    temporal_strata_materialization: view    # default: table
+```
+
+Only the numbered strata change. The determinations view, higher-order
+boundaries, the episodes Auto CDC target and the public `events` union are
+declared identically, so query results are unchanged.
+
+The cost is recomputation. Generation `k` reads every stratum below it, so a
+temporary view is re-expanded once per reference rather than read back from
+storage: the plan behind `events` grows exponentially in
+`kindling.temporal.max_generations`, on the order of `2^K` rescans of the
+base stratum at ceiling `K`. That is fine at a ceiling of 1–3 and a serious
+problem at the default of 10. You also give up per-generation observability —
+there is no `__g*` table to query when working out which generation produced
+an event, and no per-stratum metrics in the event log.
+
+`view` requires `temporal_mode: batch`. A streaming stratum is an append-flow
+target and a temporary view cannot be one, so the combination fails the
+declaration instead of quietly downgrading to batch reads.
+
 Multi-source fan-in is unchanged: every base declaration lands in the one
 stratum-0 dataset, each input keeping its own transform. Base sources still
 resolve to external physical names through `EntityNameMapper` in both modes,
