@@ -119,10 +119,14 @@ the pipes belonging to each resource. Separate bronze and silver resources
 can each emit `device_telemetry`; selecting both same-leaf outputs in one
 resource fails before emission with the conflicting entity and pipe IDs.
 
-Internal batch/stream reads use these single-part names. External reads
-retain their existing resolver behavior; this setting does not change
-`EntityNameMapper`, `provider.table_catalog`, logical IDs, or pipe function
-argument names. It does not choose the pipeline's catalog/schema.
+Internal batch/stream reads use these single-part names. External Delta batch
+reads resolve the registered entity metadata through the runtime's
+`EntityNameMapper` before calling `spark.table`. This honors
+`provider.table_catalog`, `provider.table_schema`, `provider.table_name`, and
+`provider.table_name_strategy`, independently of the pipeline's current catalog
+and its output naming mode. Logical IDs and pipe function argument names stay
+unchanged; an explicit `external_read_resolver` still receives the logical ID.
+Provider-owned streaming sources retain their provider streaming read path.
 
 
 ### Reading leaf-named outputs from elsewhere

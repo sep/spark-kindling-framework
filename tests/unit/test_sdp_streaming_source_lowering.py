@@ -163,11 +163,33 @@ def provider_resolver(provider):
     ],
 )
 def test_streaming_source_dataset_emits_one_table_and_one_append_flow(
-    mode, expected_target, expected_internal_input
+    mode, expected_target, expected_internal_input, monkeypatch
 ):
+    from unittest.mock import MagicMock
+
+    from kindling.data_entities import EntityNameMapper
+    from kindling.entity_resolution import ConfigDrivenEntityNameMapper
+    from kindling.injection import GlobalInjector
+
     provider = FakeStreamingProvider()
     captured = {}
     entities, pipes = streaming_graph(execute=lambda **dfs: captured.update(dfs) or "df:out")
+    entities.get_entity_definition("ref.devices").tags.update(
+        {
+            "provider.table_catalog": "raw_catalog",
+            "provider.table_schema": "reference",
+            "provider.table_name_strategy": "leaf",
+        }
+    )
+    config = MagicMock()
+    config.get.side_effect = {"kindling.storage.table_catalog": "pipeline_catalog"}.get
+    mapper = ConfigDrivenEntityNameMapper(config, MagicMock())
+
+    def get_service(cls):
+        assert cls is EntityNameMapper
+        return mapper
+
+    monkeypatch.setattr(GlobalInjector, "get", get_service)
     dp = FakeLakeflowDp()
     session = FakeSession()
     provider_reads = []
@@ -204,11 +226,11 @@ def test_streaming_source_dataset_emits_one_table_and_one_append_flow(
     assert flow["name"] == f"{expected_target}_flow"
     assert result == "df:out"
     assert provider_reads == ["landing.telemetry"]
-    assert session.reads == [expected_internal_input, "ref.devices"]
+    assert session.reads == [expected_internal_input, "raw_catalog.reference.devices"]
     assert captured == {
         "landing_telemetry": "stream:landing.telemetry",
         "bronze_devices": f"static:{expected_internal_input}",
-        "ref_devices": "static:ref.devices",
+        "ref_devices": "static:raw_catalog.reference.devices",
     }
 
 

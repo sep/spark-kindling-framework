@@ -4,6 +4,15 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.40] - 2026-09-10
+
+### Fixed
+
+- SDP and Databricks Lakeflow external Delta batch inputs now resolve physical
+  table names through the registered `EntityNameMapper`, honoring entity catalog,
+  schema, explicit table name, and leaf-name metadata. Internal pipeline graph
+  references and streaming read paths retain their existing behavior.
+
 ## [0.12.39] - 2026-09-09
 
 ### Added

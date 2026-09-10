@@ -300,7 +300,11 @@ class TestChangeFeedStreamingSource:
         dp = FakeLakeflowDp()
         session = FakeStreamingSession()
         engine = DatabricksSdpEngine(
-            entities, pipes, dp_module=dp, session_provider=lambda: session
+            entities,
+            pipes,
+            dp_module=dp,
+            session_provider=lambda: session,
+            external_read_resolver=lambda spark, entity_id: spark.table(entity_id),
         )
         engine.declare_pipeline(engine.build_plan())
         dp.views["silver_customers__scd_source"]()
