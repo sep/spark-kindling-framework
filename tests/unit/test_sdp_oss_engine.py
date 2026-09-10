@@ -148,6 +148,8 @@ def graph():
 def make_engine(graph, **kwargs):
     kwargs.setdefault("dp_module", FakeDpModule())
     kwargs.setdefault("session_provider", FakeSession)
+    # Emission-only tests do not initialize the runtime name-mapper service.
+    kwargs.setdefault("external_read_resolver", lambda spark, entity_id: spark.table(entity_id))
     return OssSdpEngine(graph.entity_registry, graph.pipe_registry, **kwargs)
 
 
@@ -181,7 +183,7 @@ class TestEmission:
 
     def test_internal_and_external_inputs_read_by_table_name(self, graph):
         """spark.table(<name>) for both: internal so SDP infers the edge,
-        external as the default catalog-table read."""
+        external through the fixture's catalog-table resolver."""
         dp = FakeDpModule()
         session = FakeSession()
         engine = make_engine(graph, dp_module=dp, session_provider=lambda: session)
@@ -662,10 +664,14 @@ def test_default_normalization_collisions_are_rejected():
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("explicit_name", [None, "dev_bronze.cwmdp.device_telemetry"])
-def test_leaf_naming_preserves_external_entity_name_mapper_catalog(streaming, explicit_name):
+def test_leaf_naming_preserves_external_entity_name_mapper_catalog(
+    streaming, explicit_name, monkeypatch
+):
     from unittest.mock import MagicMock
 
+    from kindling.data_entities import EntityNameMapper
     from kindling.entity_resolution import ConfigDrivenEntityNameMapper
+    from kindling.injection import GlobalInjector
 
     tags = {"provider.table_catalog": "dev_bronze"}
     if explicit_name:
@@ -680,8 +686,11 @@ def test_leaf_naming_preserves_external_entity_name_mapper_catalog(streaming, ex
     mapper = ConfigDrivenEntityNameMapper(config, MagicMock())
     spark = MagicMock()
 
-    def external_read(session, entity_id):
-        return session.table(mapper.get_table_name(entities.get_entity_definition(entity_id)))
+    def get_service(cls):
+        assert cls is EntityNameMapper
+        return mapper
+
+    monkeypatch.setattr(GlobalInjector, "get", get_service)
 
     def external_stream_read(session, entity_id):
         return session.readStream.table(
@@ -693,7 +702,6 @@ def test_leaf_naming_preserves_external_entity_name_mapper_catalog(streaming, ex
         pipes,
         dataset_naming="leaf",
         session_provider=lambda: spark,
-        external_read_resolver=external_read,
         external_stream_read_resolver=external_stream_read,
     )
     dataset = engine.build_plan().datasets[0]

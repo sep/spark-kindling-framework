@@ -91,9 +91,9 @@ class OssSdpEngine(DeclarationEngine):
             session, called inside each dataset function at evaluation
             time. Defaults to ``SparkSession.getActiveSession()``.
         external_read_resolver: ``(spark, entity_id) -> DataFrame`` for
-            EXTERNAL inputs. Defaults to ``spark.table(entity_id)`` — the
-            entity id as a catalog table name, pending the proposal's open
-            "Catalog naming" question.
+            EXTERNAL batch inputs. By default, resolves the registered entity
+            metadata through Kindling's ``EntityNameMapper`` and reads the
+            resulting physical table with ``spark.table``.
         external_stream_read_resolver: ``(spark, entity_id) -> DataFrame``
             for streamed EXTERNAL inputs. Defaults to
             ``spark.readStream.table(entity_id)``.
@@ -126,7 +126,7 @@ class OssSdpEngine(DeclarationEngine):
         )
         self._dp_module = dp_module
         self._session_provider = session_provider or _default_session_provider
-        self._external_read_resolver = external_read_resolver
+        self._external_read_resolver = external_read_resolver or self._read_external_entity
         self._external_stream_read_resolver = external_stream_read_resolver or (
             lambda spark, entity_id: spark.readStream.table(entity_id)
         )
@@ -143,6 +143,20 @@ class OssSdpEngine(DeclarationEngine):
     # ------------------------------------------------------------------ #
     # Internals                                                           #
     # ------------------------------------------------------------------ #
+
+    def _read_external_entity(self, spark, entity_id: str):
+        """Read an external table using the runtime's configured name mapper."""
+        from kindling.data_entities import EntityNameMapper
+        from kindling.injection import GlobalInjector
+
+        entity = self.entity_registry.get_entity_definition(entity_id)
+        if entity is None:
+            raise RuntimeError(
+                f"External entity '{entity_id}' is not registered "
+                "when evaluating the SDP dataset function."
+            )
+        table_name = GlobalInjector.get(EntityNameMapper).get_table_name(entity)
+        return spark.table(table_name)
 
     def _declare_dataset(self, dp, dataset: DatasetDeclaration) -> None:
         if dataset.dataset_type is not DatasetType.MATERIALIZED_VIEW:
@@ -184,7 +198,7 @@ class OssSdpEngine(DeclarationEngine):
 
         INTERNAL inputs are read with ``spark.table(<dataset name>)`` so
         SDP infers the pipeline graph edge; EXTERNAL inputs go through the
-        resolver (default: also a catalog-table read).
+        resolver (default: a physical table read through EntityNameMapper).
 
         ``stream_driving_inputs`` reads inputs selected by
         ``resolve_driving_entity_ids(pipe)`` incrementally so SDP lowering
@@ -215,7 +229,7 @@ class OssSdpEngine(DeclarationEngine):
                         df = spark.readStream.table(table_name)
                     else:
                         df = stream_resolver(spark, pipe_input.entity_id)
-                elif pipe_input.classification is InputClassification.INTERNAL or resolver is None:
+                elif pipe_input.classification is InputClassification.INTERNAL:
                     df = spark.table(table_name)
                 else:
                     df = resolver(spark, pipe_input.entity_id)
