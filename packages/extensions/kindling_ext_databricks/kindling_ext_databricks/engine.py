@@ -250,6 +250,25 @@ class DatabricksSdpEngine(OssSdpEngine):
             events_name=self.dataset_name(dataset.name),
             episodes_name=episodes_name,
             max_generations=max_generations,
+            mode=self._temporal_execution_mode(),
+        )
+
+    def _temporal_execution_mode(self) -> str:
+        """Resolve the temporal-chain execution mode for this declaration.
+
+        Read here rather than in ``_temporal_chain_settings`` because that
+        helper is also reached from ``_emitted_dataset_names`` inside
+        ``validate()``, which must return every issue instead of raising.
+        This runs before any Lakeflow decorator or target-creation call, so
+        an invalid value still fails fast without a partial graph. The
+        generated dataset names are mode-independent, so validation does not
+        need the value.
+        """
+        from kindling.injection import GlobalInjector
+        from kindling.spark_config import ConfigService
+
+        return str(
+            GlobalInjector.get(ConfigService).get("kindling.lakeflow.temporal_mode", "streaming")
         )
 
     # ------------------------------------------------------------------ #

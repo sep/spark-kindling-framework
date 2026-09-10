@@ -4,6 +4,22 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- `kindling.lakeflow.temporal_mode` (`streaming` default, `batch` opt-in)
+  selects how `engine="databricks_sdp"` lowers a temporal chain's event
+  strata `<events>__g0..gK`. `batch` emits one materialized view per stratum
+  with batch reads, so a base-event transform may use ordered analytic
+  windows (`row_number`, `lag`, unbounded forward fill) that Structured
+  Streaming rejects. Episodes, determinations, higher-order boundaries, and
+  the public events union are unchanged, as is multi-source fan-in and
+  external base-source resolution. Batch strata carry batch-query semantics
+  rather than append-only history, and the value is validated before any
+  Lakeflow object is created. Behavior is unchanged when the key is unset.
+  The canonical `spark.kindling.lakeflow.temporal_mode` bundle key is
+  point-looked-up by the Lakeflow selector, so it also resolves on
+  restricted runtimes that cannot enumerate Spark configuration.
+
 ## [0.12.40] - 2026-09-10
 
 ### Fixed

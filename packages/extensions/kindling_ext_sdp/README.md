@@ -160,6 +160,12 @@ Keep those sources in an upstream resource and align their external names as
 above; producing a source in the same resource does not establish a local
 temporal dependency.
 
+On `engine="databricks_sdp"`, `kindling.lakeflow.temporal_mode: batch` lowers
+`<events>__g0..gN` as materialized views with batch reads instead of streaming
+tables with append flows; the reserved names below are unchanged in both
+modes. See the
+[Databricks extension documentation](../kindling_ext_databricks/README.md#temporal-chain-execution-mode).
+
 ### Generated dataset names
 
 Lakeflow reserves helper names as well as selected outputs. Validation rejects

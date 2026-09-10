@@ -392,6 +392,22 @@ Streaming writes:
   External `EntityNameMapper` resolution remains independent. See the
   [SDP extension documentation](../../packages/extensions/kindling_ext_sdp/README.md#output-dataset-naming)
   for consumer alignment, resource scoping, and generated-name reservations.
+- `kindling.lakeflow.temporal_mode`: `streaming` (default) or `batch`.
+  Selects how `engine="databricks_sdp"` lowers a temporal chain's event
+  strata `<events>__g0..gK`. `streaming` emits streaming tables fed by append
+  flows, reading each source with `spark.readStream.table`. `batch` emits one
+  materialized view per stratum, reading with `spark.table`, so a base-event
+  transform may use ordered analytic windows (`row_number`, `lag`, unbounded
+  forward fill) that Structured Streaming rejects. Values ignore surrounding
+  whitespace and case; anything else fails the declaration before any
+  Lakeflow object is created. The setting is inert when no temporal
+  chain-events pipe is selected, and never changes episodes, determinations,
+  higher-order boundaries, the public events union, or the runner engine's
+  watermark/incremental behavior. Batch strata carry batch-query semantics:
+  a refresh can revise or remove previously produced events, so retain the
+  source history the computation needs. Changing the value changes dataset
+  types, so select it for newly provisioned pipeline outputs. See the
+  [Databricks extension documentation](../../packages/extensions/kindling_ext_databricks/README.md#temporal-chain-execution-mode).
 - `spark.kindling.bootstrap.config_files`: Canonical Databricks Lakeflow
   pipeline `configuration:` key for explicit settings files. It maps through
   the shared SparkConf ingestion path to bootstrap `config_files`; use a JSON

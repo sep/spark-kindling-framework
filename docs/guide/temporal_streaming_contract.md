@@ -18,6 +18,12 @@ proposal drives the identical engine from a Structured Streaming
 `foreachBatch` trigger body; nothing in this contract changes between the
 two drivers except who supplies the slice.
 
+`kindling.lakeflow.temporal_mode` is a different axis and does not belong to
+this contract: it selects how the Databricks Lakeflow adapter lowers the
+event strata (streaming tables and append flows, or materialized views with
+batch reads) and changes no runner watermark or incremental behavior. See the
+[Databricks extension documentation](../../packages/extensions/kindling_ext_databricks/README.md#temporal-chain-execution-mode).
+
 ## Two lowerings, one contract
 
 The declarations lower two ways; both are executed by the ordinary Kindling

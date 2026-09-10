@@ -63,8 +63,33 @@ def _logger_provider():
     return provider
 
 
+def _config_service(**overrides):
+    """Key-aware ConfigService stub.
+
+    A stub that answered every key with one value used to be harmless, but
+    the declaration path now reads more than one key: returning the
+    generation ceiling for ``kindling.lakeflow.temporal_mode`` would raise on
+    an unrecognized mode. Unknown keys fall back to the caller's default.
+    """
+    values = {"kindling.temporal.max_generations": 2}
+    values.update(overrides)
+
+    def get(key, default=None):
+        return values.get(key, default)
+
+    return SimpleNamespace(get=get)
+
+
 @pytest.mark.parametrize("mode", ["normalized", "leaf"])
 def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch, mode):
+    from kindling.data_entities import (
+        DataEntityManager,
+        DataEntityRegistry,
+        EntityMetadata,
+        EntityNameMapper,
+    )
+    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
+    from kindling.spark_config import ConfigService
     from kindling_ext_databricks import DatabricksSdpEngine, temporal_lowering
     from kindling_ext_temporal import (
         DataEpisodes,
@@ -77,15 +102,6 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch, mode):
         TemporalEventRegistryManager,
         declare_temporal_chain,
     )
-
-    from kindling.data_entities import (
-        DataEntityManager,
-        DataEntityRegistry,
-        EntityMetadata,
-        EntityNameMapper,
-    )
-    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
-    from kindling.spark_config import ConfigService
 
     DataEvents.reset()
     DataEpisodes.reset()
@@ -106,7 +122,7 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch, mode):
         DataEntityRegistry: entity_registry,
         DataPipesRegistry: pipe_registry,
         EntityNameMapper: name_mapper,
-        ConfigService: SimpleNamespace(get=lambda key, default=None: 2),
+        ConfigService: _config_service(),
     }
 
     def service_get(dep):
@@ -193,6 +209,12 @@ def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
     each reading its own source entity, exactly like the single-entity case
     above but with N sources instead of one.
     """
+    from kindling.data_entities import (
+        DataEntityManager,
+        DataEntityRegistry,
+        EntityNameMapper,
+    )
+    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
     from kindling_ext_databricks import temporal_lowering
     from kindling_ext_temporal import (
         DataEvents,
@@ -204,13 +226,6 @@ def test_stratified_lowering_fans_in_multiple_driving_entities_natively():
         TemporalEventRegistryManager,
         declare_temporal_chain,
     )
-
-    from kindling.data_entities import (
-        DataEntityManager,
-        DataEntityRegistry,
-        EntityNameMapper,
-    )
-    from kindling.data_pipes import DataPipesManager, DataPipesRegistry
 
     DataEvents.reset()
     event_registry = TemporalEventRegistryManager(_logger_provider())
