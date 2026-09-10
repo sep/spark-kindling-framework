@@ -51,6 +51,14 @@ downstream is identical in both modes: the snapshot already reads the strata
 in batch. Batch strata carry batch-query semantics, not an append-only
 archive — a refresh can revise or remove previously produced events, so
 retain the source history the computation needs.
+
+``kindling.lakeflow.temporal_strata_materialization: view`` (batch mode only)
+declares those same strata as pipeline-scoped temporary views instead, so no
+``__g0..gK`` tables exist at all. Each generation reads every lower one, so a
+view is re-expanded once per reference: the plan behind ``events`` grows
+exponentially in the generation ceiling, and the source is rescanned for each
+expansion. Sound for a small ceiling, and a way to stop persisting
+intermediate events; a foot-gun at the default ceiling of 10.
 """
 
 from functools import reduce
@@ -81,6 +89,33 @@ def _execution_mode(mode) -> str:
         raise ValueError(
             "Invalid kindling.lakeflow.temporal_mode value "
             f"{mode!r}; expected 'streaming' or 'batch'."
+        )
+    return normalized
+
+
+def _strata_materialization(value, mode: str) -> str:
+    """Normalize and validate how the numbered event strata are persisted.
+
+    ``table`` (default) keeps one materialized view per generation;
+    ``view`` declares them as pipeline-scoped temporary views, so no
+    ``__g0..gK`` tables are created and each generation is recomputed inline
+    wherever it is referenced.
+
+    Only meaningful in batch mode: a streaming stratum is an append-flow
+    target, and a temporary view cannot be one. Combining them is a config
+    error rather than a silent downgrade to batch reads.
+    """
+    normalized = str(value).strip().lower()
+    if normalized not in ("table", "view"):
+        raise ValueError(
+            "Invalid kindling.lakeflow.temporal_strata_materialization value "
+            f"{value!r}; expected 'table' or 'view'."
+        )
+    if normalized == "view" and mode != "batch":
+        raise ValueError(
+            "kindling.lakeflow.temporal_strata_materialization='view' requires "
+            f"kindling.lakeflow.temporal_mode='batch' (got {mode!r}): streaming "
+            "strata are append-flow targets, which temporary views cannot be."
         )
     return normalized
 
@@ -237,6 +272,7 @@ def declare_stratified_temporal(
     episodes_name: Optional[str],
     max_generations: int,
     mode: str = "streaming",
+    strata_materialization: str = "table",
 ):
     """Emit the stratified dataset graph for one temporal chain.
 
@@ -251,12 +287,19 @@ def declare_stratified_temporal(
     Streaming rejects. Everything from the episode snapshot downstream is
     identical in both modes. See
     ``docs/proposals/temporal_lakeflow_execution_mode.md``.
+
+    ``strata_materialization`` (batch only) chooses whether those numbered
+    strata are materialized views (``table``, default) or pipeline-scoped
+    temporary views (``view``). Only ``__g0..gK`` are affected — the
+    determination view, higher stratum, episodes target and the canonical
+    ``events`` surface are declared identically either way.
     """
     from kindling_ext_temporal.engine import ConditionEngineRunner, EpisodeRunner
     from kindling_ext_temporal.entities import TemporalEntityResolver
     from pyspark.sql import functions as F
 
     mode = _execution_mode(mode)
+    strata_materialization = _strata_materialization(strata_materialization, mode)
     spark = _spark()
     base_defs, episode_defs = _temporal_registries()
     if not base_defs:
@@ -303,8 +346,12 @@ def declare_stratified_temporal(
         # inside the single query function — each input keeps its own
         # transform, and only the resulting envelopes are unioned.
         base_sources = [(metadata, _base_source_table(metadata)) for metadata in base_defs]
+        # Temporary views are recomputed at every reference; materialized
+        # views are persisted once per update. See _strata_materialization.
+        stratum_dataset = (
+            dp.temporary_view if strata_materialization == "view" else dp.materialized_view
+        )
 
-        @dp.materialized_view(name=stratum_names[0])
         def base_stratum(base_sources=base_sources):
             frames = []
             for metadata, source_table in base_sources:
@@ -312,6 +359,9 @@ def declare_stratified_temporal(
                 transformed = metadata.transform(df) if metadata.transform else df
                 frames.append(TemporalPipeTranslator.select_event_envelope(transformed, metadata))
             return _union(frames)
+
+        base_stratum.__name__ = f"{stratum_names[0]}_view".replace(".", "_")
+        stratum_dataset(name=stratum_names[0])(base_stratum)
 
         for generation in range(1, max_generations + 1):
             stratum_name = f"{events_name}{STRATUM_SUFFIX}{generation}"
@@ -328,7 +378,7 @@ def declare_stratified_temporal(
                 return engine.execute_rules(inputs, rules)
 
             stratum_view.__name__ = f"{stratum_name}_view".replace(".", "_")
-            dp.materialized_view(name=stratum_name)(stratum_view)
+            stratum_dataset(name=stratum_name)(stratum_view)
             stratum_names.append(stratum_name)
     else:
         dp.create_streaming_table(name=stratum_names[0])

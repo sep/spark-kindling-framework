@@ -203,18 +203,12 @@ def test_stratified_lowering_emits_the_full_dataset_graph(monkeypatch, mode):
     spark.table.assert_called_once_with(episodes_name)
 
 
-def test_batch_chain_under_a_custom_chain_id_still_declares_the_episode_branch(monkeypatch):
-    """Regression: the episode half of a chain vanished unless its id was
-    ``default``.
+def _declare_chain_through_engine(monkeypatch, chainid, **config_overrides):
+    """Build one telemetry-and-episodes chain under ``chainid`` and declare it
+    through ``DatabricksSdpEngine``, returning ``(FakeDp, selected_pipe_ids)``.
 
-    ``collapse_temporal_chain("cwmdp")`` stamps ``temporal.chain_id`` onto the
-    two composite chain PIPES, but the engine resolved it from the output
-    ENTITY's tags — which never carry it. The sibling lookup therefore asked
-    for ``temporal.chain.episodes.default``, missed, and handed
-    ``episodes_name=None`` to the lowering: event strata were declared, the
-    episode snapshot / Auto CDC target / determinations view silently were
-    not. Batch mode here because that is where it was first observed; the
-    defect is mode-independent.
+    Goes through the engine rather than calling ``declare_stratified_temporal``
+    directly so the config-key wiring is covered too.
     """
     from kindling.data_entities import (
         DataEntityManager,
@@ -256,7 +250,7 @@ def test_batch_chain_under_a_custom_chain_id_still_declares_the_episode_branch(m
         EntityNameMapper: SimpleNamespace(
             get_table_name=lambda entity: f"cat.sch.{entity.entityid}"
         ),
-        ConfigService: _config_service(**{"kindling.lakeflow.temporal_mode": "batch"}),
+        ConfigService: _config_service(**config_overrides),
     }
 
     def service_get(dep):
@@ -288,12 +282,7 @@ def test_batch_chain_under_a_custom_chain_id_still_declares_the_episode_branch(m
             subject_type="machine",
             expires_after_seconds=300,
         )
-        selected = collapse_temporal_chain("cwmdp")
-
-        # The chain pipes really are registered under the custom id: this
-        # test would otherwise pass vacuously if the id were ignored.
-        assert "temporal.chain.events.cwmdp" in selected
-        assert "temporal.chain.episodes.cwmdp" in selected
+        selected = collapse_temporal_chain(chainid)
 
         monkeypatch.setattr(temporal_lowering, "_spark", lambda: MagicMock())
 
@@ -302,6 +291,31 @@ def test_batch_chain_under_a_custom_chain_id_still_declares_the_episode_branch(m
             entity_registry, pipe_registry, dp_module=dp, dataset_naming="leaf"
         )
         engine.declare_pipeline(engine.build_plan(selected))
+
+    return dp, selected
+
+
+def test_batch_chain_under_a_custom_chain_id_still_declares_the_episode_branch(monkeypatch):
+    """Regression: the episode half of a chain vanished unless its id was
+    ``default``.
+
+    ``collapse_temporal_chain("cwmdp")`` stamps ``temporal.chain_id`` onto the
+    two composite chain PIPES, but the engine resolved it from the output
+    ENTITY's tags — which never carry it. The sibling lookup therefore asked
+    for ``temporal.chain.episodes.default``, missed, and handed
+    ``episodes_name=None`` to the lowering: event strata were declared, the
+    episode snapshot / Auto CDC target / determinations view silently were
+    not. Batch mode here because that is where it was first observed; the
+    defect is mode-independent.
+    """
+    dp, selected = _declare_chain_through_engine(
+        monkeypatch, "cwmdp", **{"kindling.lakeflow.temporal_mode": "batch"}
+    )
+
+    # The chain pipes really are registered under the custom id: this test
+    # would otherwise pass vacuously if the id were ignored.
+    assert "temporal.chain.events.cwmdp" in selected
+    assert "temporal.chain.episodes.cwmdp" in selected
 
     # Batch mode: strata are materialized views, and the episodes target is
     # the only streaming table.
@@ -320,6 +334,64 @@ def test_batch_chain_under_a_custom_chain_id_still_declares_the_episode_branch(m
     assert flow["target"] == "episodes"
     assert flow["source"] == "episodes__episode_snapshot"
     assert flow["stored_as_scd_type"] == 2
+
+
+def test_strata_materialization_view_declares_generations_as_temporary_views(monkeypatch):
+    """``temporal_strata_materialization: view`` moves only the numbered
+    generations off the catalog; everything downstream is byte-identical to
+    the materialized-view lowering."""
+    dp, _ = _declare_chain_through_engine(
+        monkeypatch,
+        "cwmdp",
+        **{
+            "kindling.lakeflow.temporal_mode": "batch",
+            "kindling.lakeflow.temporal_strata_materialization": "view",
+        },
+    )
+
+    # The generations are views now -- no __g* tables are created at all.
+    assert {"events__g0", "events__g1", "events__g2"} <= set(dp.views)
+    assert not any(name.startswith("events__g") for name in dp.materialized_views)
+
+    # Everything from the determinations view downstream is unchanged.
+    assert dp.streaming_tables == ["episodes"]
+    assert "episodes__episode_snapshot" in dp.views
+    assert set(dp.materialized_views) == {"events__determinations", "events"}
+    assert len(dp.auto_cdc_snapshot_flows) == 1
+
+
+def test_strata_materialization_defaults_to_materialized_views(monkeypatch):
+    """Omitting the key keeps the pre-existing batch lowering."""
+    dp, _ = _declare_chain_through_engine(
+        monkeypatch, "cwmdp", **{"kindling.lakeflow.temporal_mode": "batch"}
+    )
+
+    assert {"events__g0", "events__g1", "events__g2"} <= set(dp.materialized_views)
+    assert not any(name.startswith("events__g") for name in dp.views)
+
+
+def test_strata_materialization_view_is_rejected_in_streaming_mode(monkeypatch):
+    """A streaming stratum is an append-flow target, which a temporary view
+    cannot be — so the combination is a config error, not a silent downgrade
+    to batch reads."""
+    with pytest.raises(ValueError, match="requires .*temporal_mode='batch'"):
+        _declare_chain_through_engine(
+            monkeypatch,
+            "cwmdp",
+            **{"kindling.lakeflow.temporal_strata_materialization": "view"},
+        )
+
+
+def test_strata_materialization_rejects_an_unknown_value(monkeypatch):
+    with pytest.raises(ValueError, match="expected 'table' or 'view'"):
+        _declare_chain_through_engine(
+            monkeypatch,
+            "cwmdp",
+            **{
+                "kindling.lakeflow.temporal_mode": "batch",
+                "kindling.lakeflow.temporal_strata_materialization": "temporary",
+            },
+        )
 
 
 def test_stratified_lowering_fans_in_multiple_driving_entities_natively():

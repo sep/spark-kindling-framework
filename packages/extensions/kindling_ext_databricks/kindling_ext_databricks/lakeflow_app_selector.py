@@ -125,6 +125,8 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
         # a silently wrong default rather than an error.
         "spark.kindling.lakeflow.temporal_mode",
         "kindling.lakeflow.temporal_mode",
+        "spark.kindling.lakeflow.temporal_strata_materialization",
+        "kindling.lakeflow.temporal_strata_materialization",
         *configured_keys,
     )
     spark_items = tuple(iter_spark_conf_items(spark, extra_keys=lookup_keys))

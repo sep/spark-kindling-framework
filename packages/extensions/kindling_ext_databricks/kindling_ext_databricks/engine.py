@@ -262,6 +262,24 @@ class DatabricksSdpEngine(OssSdpEngine):
             episodes_name=episodes_name,
             max_generations=max_generations,
             mode=self._temporal_execution_mode(),
+            strata_materialization=self._temporal_strata_materialization(),
+        )
+
+    def _temporal_strata_materialization(self) -> str:
+        """Resolve how the numbered event strata are persisted.
+
+        Same read-here-not-in-validation reasoning as
+        ``_temporal_execution_mode``; the dataset NAMES are identical either
+        way, so validation is unaffected by this setting — only whether a
+        table is created behind each name.
+        """
+        from kindling.injection import GlobalInjector
+        from kindling.spark_config import ConfigService
+
+        return str(
+            GlobalInjector.get(ConfigService).get(
+                "kindling.lakeflow.temporal_strata_materialization", "table"
+            )
         )
 
     def _temporal_execution_mode(self) -> str:

@@ -408,6 +408,27 @@ Streaming writes:
   source history the computation needs. Changing the value changes dataset
   types, so select it for newly provisioned pipeline outputs. See the
   [Databricks extension documentation](../../packages/extensions/kindling_ext_databricks/README.md#temporal-chain-execution-mode).
+- `kindling.lakeflow.temporal_strata_materialization`: `table` (default) or
+  `view`. Chooses whether the numbered event strata `<events>__g0..gK` are
+  persisted. `table` keeps one materialized view per generation. `view`
+  declares them as pipeline-scoped temporary views instead, so no `__g*`
+  tables are created and nothing intermediate is written. Requires
+  `kindling.lakeflow.temporal_mode: batch` — a streaming stratum is an
+  append-flow target, which a temporary view cannot be, so the combination
+  fails the declaration rather than silently downgrading to batch reads.
+  Values ignore surrounding whitespace and case. Only the numbered strata are
+  affected: the determinations view, higher-order boundaries, the episodes
+  Auto CDC target, and the public events union are declared identically
+  either way, so query results are unchanged.
+
+  **Cost:** each generation reads every lower one, so a temporary view is
+  re-expanded once per reference and the plan behind `events` grows
+  exponentially in `kindling.temporal.max_generations` — roughly `2^K` scans
+  of the base stratum at ceiling `K`. Sound at a small ceiling (1–3);
+  a foot-gun at the default of 10. You also lose per-generation
+  observability: no `__g*` table to query when debugging which generation
+  produced an event, and no per-stratum metrics in the event log. Prefer
+  `table` unless storage or write amplification is the binding constraint.
 - `spark.kindling.bootstrap.config_files`: Canonical Databricks Lakeflow
   pipeline `configuration:` key for explicit settings files. It maps through
   the shared SparkConf ingestion path to bootstrap `config_files`; use a JSON
