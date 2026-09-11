@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.43] - 2026-09-11
+
 ### Fixed
 
 - Databricks Lakeflow temporal chains now run registry-declared conditions.
@@ -23,8 +25,16 @@ All notable changes to spark-kindling are documented here.
   collisions, cross-source cycles) and the layering moved to shared helpers
   in `kindling-ext-temporal` called by both lowerings, so the two cannot
   diverge on which rules run again. A conditions read now re-raises anything
-  that is not a genuinely absent table, and the resolved rule counts per
-  source and per stratum are logged at declaration.
+  that is not catalog-level absence — a registered table whose storage path
+  is missing or unreadable is corruption, not a first run — and the resolved
+  rule counts per source and per stratum are logged at declaration.
+- Temporal conditions declared `enabled=False` through
+  `DataConditions.register` no longer run. `validate()` already excluded
+  disabled rows from a table-sourced set, but `get_all_conditions()` returns
+  every registration and `execute_rules` runs whatever it is handed, so a
+  disabled registry rule emitted boundary events and occupied a generation
+  on both the chain and Lakeflow paths. The shared merge point now filters
+  them.
 
 ## [0.12.42] - 2026-09-10
 
