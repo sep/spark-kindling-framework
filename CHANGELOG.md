@@ -4,6 +4,28 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- Databricks Lakeflow temporal chains now run registry-declared conditions.
+  The stratified lowering resolved rules from the conditions table only, so
+  an app declaring rules through `DataConditions.register` lowered a
+  pipeline that never emitted their boundary events — an episode opened by a
+  base event and closed by a registry-backed condition had no end boundary
+  and ran to its synthetic expiry. The omission was silent: the conditions
+  read swallowed every failure into an empty rule set, and an absent
+  condition is indistinguishable from one not yet ingested. Both sources are
+  now resolved, exactly as `declare_temporal_chain` always has, and each
+  engine's declared `condition_source` gates them the same way (a
+  registry-only chain reads no conditions table at all). Generation layering
+  is computed over the combined rule set rather than per source: the stratum
+  count is fixed at declaration time, so a rule layered against a partial
+  graph lands in the wrong stratum. The cross-source checks (`condition_id`
+  collisions, cross-source cycles) and the layering moved to shared helpers
+  in `kindling-ext-temporal` called by both lowerings, so the two cannot
+  diverge on which rules run again. A conditions read now re-raises anything
+  that is not a genuinely absent table, and the resolved rule counts per
+  source and per stratum are logged at declaration.
+
 ## [0.12.42] - 2026-09-10
 
 ### Fixed
