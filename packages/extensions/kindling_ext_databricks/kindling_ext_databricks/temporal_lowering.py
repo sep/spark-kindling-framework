@@ -36,9 +36,12 @@ own ``generation`` column is the semantic truth, so a rule whose generation
 shifts (an upstream rule re-ingested one level deeper moves its consumers
 transitively) changes future routing only — history never migrates.
 
-The rule set is read from the conditions current view at source-evaluation
-time (an EXTERNAL table — ingestion happens outside the pipeline by the
-write-guard's design), so the wiring is exact per update while rules remain
+The rule set comes from both condition sources, exactly as the chain
+lowering resolves them: rows read from the conditions current view at
+source-evaluation time (an EXTERNAL table — ingestion happens outside the
+pipeline by the write-guard's design), plus any rules declared in-process
+through ``DataConditions.register``. Generation layering is computed over
+the combined set, so the wiring is exact per update while rules remain
 data. Physical topology is fixed by ``kindling.temporal.max_generations``
 so rule changes alter contents, never shape.
 
@@ -61,6 +64,7 @@ expansion. Sound for a small ceiling, and a way to stop persisting
 intermediate events; a foot-gun at the default ceiling of 10.
 """
 
+import logging
 from functools import reduce
 from typing import Any, Dict, List, Optional
 
@@ -74,6 +78,13 @@ SNAPSHOT_SUFFIX = "__episode_snapshot"
 
 def _union(frames):
     return reduce(lambda left, right: left.unionByName(right), frames)
+
+
+def _logger():
+    # Stdlib logging rather than the injected provider: this runs at
+    # declaration time inside a Lakeflow pipeline, and a diagnostic must
+    # never be the thing that fails a pipeline's declaration pass.
+    return logging.getLogger("TemporalSdpLowering")
 
 
 def _execution_mode(mode) -> str:
@@ -161,14 +172,57 @@ def _physical_table_name(entity) -> str:
     return GlobalInjector.get(EntityNameMapper).get_table_name(entity)
 
 
-def _read_rules(spark, conditions_entity):
-    """Read + validate the current rule set at source-evaluation time.
+_MISSING_TABLE_MARKERS = (
+    "TABLE_OR_VIEW_NOT_FOUND",
+    "NoSuchTableException",
+    "SCHEMA_NOT_FOUND",
+    "NoSuchNamespaceException",
+    "NoSuchDatabaseException",
+    "DATABASE_NOT_FOUND",
+    "PATH_NOT_FOUND",
+)
+
+
+def _is_missing_table_error(error: Exception) -> bool:
+    """Whether a conditions read failed because nothing has been ingested yet.
+
+    Only a genuinely absent table/namespace is the benign first-run case.
+    Every other failure (permissions, a malformed table, a bad catalog
+    binding) used to be swallowed into an empty rule set, which silently
+    lowered a pipeline that emits no boundary events at all — see the
+    rule-count logging in ``_resolve_rules`` for the other half of that fix.
+    """
+    text = f"{type(error).__name__}: {error}"
+    return any(marker.lower() in text.lower() for marker in _MISSING_TABLE_MARKERS)
+
+
+def _condition_engine_sources():
+    """Which condition sources this app's declared engines actually use.
+
+    Mirrors ``declare_temporal_chain``: an engine declares exactly one
+    source, and a chain with no declared engines keeps the pre-existing
+    behavior of reading the conditions table unconditionally.
+    """
+    from kindling_ext_temporal.registry import TemporalEventRegistry
+
+    event_registry = GlobalInjector.get(TemporalEventRegistry)
+    engine_defs = [
+        event_registry.get_condition_engine_definition(engineid)
+        for engineid in event_registry.get_condition_engine_ids()
+    ]
+    has_table_engine = any(metadata.condition_source == "table" for metadata in engine_defs)
+    has_registry_engine = any(metadata.condition_source == "registry" for metadata in engine_defs)
+    read_conditions_table = not engine_defs or has_table_engine
+    return has_table_engine, has_registry_engine, read_conditions_table
+
+
+def _read_table_rules(spark, conditions_entity) -> List[Any]:
+    """Read + validate the current table-sourced rule set.
 
     The conditions table is external (ingested outside the pipeline), so
     this read is legal during evaluation. The 'current view' is a Kindling
     provider construct, not a physical table — read the base SCD2 table
-    and filter to current rows. Returns (rules_by_generation,
-    max_rule_generation).
+    and filter to current rows.
     """
     from kindling.data_entities import scd_config_from_tags
     from kindling_ext_temporal.validation import (
@@ -183,24 +237,64 @@ def _read_rules(spark, conditions_entity):
         if scd.enabled and scd.is_current_column in df.columns:
             df = df.filter(df[scd.is_current_column])
         rows = df.collect()
-    except Exception:  # first run: conditions not ingested yet
-        return {}, 0
+    except Exception as error:
+        if _is_missing_table_error(error):  # first run: conditions not ingested yet
+            _logger().info(
+                "Temporal SDP lowering: conditions table not found yet; "
+                "no table-sourced rules for this update."
+            )
+            return []
+        raise
 
     validator = TemporalConditionValidator(expression_parser=ActiveSparkSqlExpressionParser(spark))
-    report = validator.validate_or_raise(rows)
-    layer_by_type = {
-        event_type: layer_index
-        for layer_index, layer in enumerate(report.generations)
-        for event_type in layer
-    }
-    by_generation: Dict[int, List[Any]] = {}
-    for rule in report.valid_rules:
-        generation = max(
-            (layer_by_type.get(produced, 1) for produced in rule.produced_event_types),
-            default=1,
-        )
-        by_generation.setdefault(generation, []).append(rule)
-    max_generation = max(by_generation, default=0)
+    return validator.validate_or_raise(rows).valid_rules
+
+
+def _resolve_rules(spark, conditions_entity):
+    """Resolve every rule this chain runs, from both condition sources.
+
+    Registry-declared rules (``DataConditions.register``) are as much a
+    part of the chain as ingested rows, and the chain lowering has always
+    run both. Omitting them here lowered a pipeline whose boundary events
+    were never emitted at all: episodes opened by a base event and closed
+    by a registry-backed condition simply ran to their synthetic expiry.
+
+    Generation layering is computed over the *combined* set, not per
+    source: the stratum count is fixed at declaration time, so a rule
+    layered against a partial graph lands in the wrong stratum.
+
+    Returns ``(rules_by_generation, max_rule_generation)``.
+    """
+    from kindling_ext_temporal.registry import TemporalConditionRegistry
+    from kindling_ext_temporal.validation import (
+        combine_condition_rules,
+        layer_rules_by_generation,
+    )
+
+    has_table_engine, has_registry_engine, read_conditions_table = _condition_engine_sources()
+
+    table_rules = _read_table_rules(spark, conditions_entity) if read_conditions_table else []
+    registry_rules = (
+        GlobalInjector.get(TemporalConditionRegistry).get_all_conditions()
+        if has_registry_engine
+        else []
+    )
+    combined_rules = combine_condition_rules(
+        table_rules,
+        registry_rules,
+        has_table_engine=has_table_engine,
+        has_registry_engine=has_registry_engine,
+    )
+
+    by_generation, max_generation = layer_rules_by_generation(combined_rules)
+    _logger().info(
+        "Temporal SDP lowering: %s condition rule(s) resolved "
+        "(%s table-sourced, %s registry-declared) across generations %s.",
+        len(combined_rules),
+        len(table_rules),
+        len(registry_rules),
+        sorted(by_generation) or "(none)",
+    )
     return by_generation, max_generation
 
 
@@ -308,7 +402,7 @@ def declare_stratified_temporal(
     resolver = GlobalInjector.get(TemporalEntityResolver)
     conditions_entity = resolver.get_conditions_entity()
 
-    rules_by_generation, max_rule_generation = _read_rules(spark, conditions_entity)
+    rules_by_generation, max_rule_generation = _resolve_rules(spark, conditions_entity)
     pre_rules, post_rules, higher_ids = _split_rules(rules_by_generation, episode_defs)
     _fail_on_higher_order_episodes(episode_defs, higher_ids)
     if max_rule_generation > max_generations:

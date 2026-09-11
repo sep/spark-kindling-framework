@@ -54,7 +54,6 @@ watermarked independently, and the chain body projects each base event's
 envelope from its own source frame before unioning the base stratum.
 """
 
-from collections import Counter
 from functools import reduce
 from typing import Any, Dict, List, Optional
 
@@ -189,8 +188,8 @@ def _chain_events_execute(
         from .engine import ConditionEngineRunner, EpisodeRunner
         from .validation import (
             ActiveSparkSqlExpressionParser,
-            ConditionValidationError,
             TemporalConditionValidator,
+            combine_condition_rules,
         )
 
         evaluation_time = TemporalPipeTranslator.resolve_evaluation_time(entity_dfs)
@@ -238,35 +237,15 @@ def _chain_events_execute(
             if has_registry_engine
             else []
         )
-        combined_rules = table_rules + registry_rules
-
-        # Each source validates its own rules in isolation -- table rows via
-        # validate_or_raise above, registry rules at condition_engine()
-        # declaration time (registry.py). Neither ever checks a rule from
-        # ONE source consuming a produced event type from the OTHER, nor a
-        # condition_id collision between the two sources: the genuinely new
-        # cross-source interactions this feature introduces, so both are
-        # checked here, once, whenever both kinds of engine are declared on
-        # this chain.
-        if has_table_engine and has_registry_engine and combined_rules:
-            id_counts = Counter(rule.condition_id for rule in combined_rules)
-            duplicate_ids = sorted(
-                condition_id for condition_id, count in id_counts.items() if count > 1
-            )
-            if duplicate_ids:
-                raise ConditionValidationError(
-                    "Conditions set is not ingestible: condition_id(s) "
-                    f"{', '.join(duplicate_ids)} are declared in both the table and "
-                    "registry sources -- condition_id drives the "
-                    "{condition_id}.entered/.exited boundary event types, so a "
-                    "collision would produce ambiguous, duplicated events"
-                )
-
-            cross_validator = TemporalConditionValidator()
-            graph = cross_validator.build_event_type_graph(combined_rules)
-            cycles = cross_validator.graph_builder.detect_cycles(graph)
-            if cycles:
-                raise ConditionValidationError(f"Conditions set is not ingestible:\n{cycles[0]}")
+        # Shared with the Lakeflow stratified lowering: cross-source
+        # condition_id collisions and cross-source cycles are checked in one
+        # place so the two lowerings cannot diverge on which rules run.
+        combined_rules = combine_condition_rules(
+            table_rules,
+            registry_rules,
+            has_table_engine=has_table_engine,
+            has_registry_engine=has_registry_engine,
+        )
 
         # Prior episode state is resolved ONCE, before anything persists —
         # both this pipe's determination events and (later) the episodes
