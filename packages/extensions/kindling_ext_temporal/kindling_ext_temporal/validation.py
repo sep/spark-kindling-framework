@@ -1,8 +1,19 @@
 """Validation for rules-as-data temporal Conditions."""
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+)
 
 from kindling.data_pipes import DataPipesRegistry
 from kindling.pipe_graph import (
@@ -232,6 +243,93 @@ class TemporalConditionValidator:
                 errors.append(f"parameters.{key} is invalid: {exc}")
 
         return errors
+
+
+def combine_condition_rules(
+    table_rules: Iterable[ConditionRule],
+    registry_rules: Iterable[ConditionRule],
+    *,
+    has_table_engine: bool,
+    has_registry_engine: bool,
+) -> List[ConditionRule]:
+    """Merge the table- and registry-sourced rule sets for one chain.
+
+    Each source validates its own rules in isolation -- table rows through
+    ``validate_or_raise``, registry rules at ``condition_engine()``
+    declaration time (``registry.py``). Neither ever checks a rule from ONE
+    source consuming a produced event type from the OTHER, nor a
+    ``condition_id`` collision between the two sources: those are the
+    cross-source interactions, and they are checked here so that every
+    lowering merging the two sources checks them identically. A lowering
+    that merged the sources on its own would silently diverge -- which is
+    exactly how the Lakeflow lowering came to drop registry rules entirely.
+
+    Disabled rules are dropped here too. ``validate()`` already excludes
+    them from a table-sourced set, but ``get_all_conditions()`` returns
+    every registration regardless, and ``execute_rules`` runs whatever it
+    is handed -- so without this filter a registry rule declared
+    ``enabled=False`` would still emit boundary events and still occupy a
+    generation.
+    """
+    combined = [rule for rule in (list(table_rules) + list(registry_rules)) if rule.enabled]
+    if not (has_table_engine and has_registry_engine and combined):
+        return combined
+
+    id_counts = Counter(rule.condition_id for rule in combined)
+    duplicate_ids = sorted(condition_id for condition_id, count in id_counts.items() if count > 1)
+    if duplicate_ids:
+        raise ConditionValidationError(
+            "Conditions set is not ingestible: condition_id(s) "
+            f"{', '.join(duplicate_ids)} are declared in both the table and "
+            "registry sources -- a condition_id drives its own "
+            "'<condition_id>.entered'/'.exited' boundary event types, so a "
+            "collision would produce ambiguous, duplicated events"
+        )
+
+    cross_validator = TemporalConditionValidator()
+    graph = cross_validator.build_event_type_graph(combined)
+    cycles = cross_validator.graph_builder.detect_cycles(graph)
+    if cycles:
+        raise ConditionValidationError(f"Conditions set is not ingestible:\n{cycles[0]}")
+
+    return combined
+
+
+def layer_rules_by_generation(
+    rules: Iterable[ConditionRule],
+) -> Tuple[Dict[int, List[ConditionRule]], int]:
+    """Bucket rules by the generation of the boundary events they produce.
+
+    The event-type graph is built over the rules *as given*, so a caller
+    holding rules from more than one source must pass the combined set:
+    layering a subset assigns any rule consuming an omitted rule's output
+    the default generation 1, which in a statically stratified lowering
+    misplaces it into the wrong stratum.
+
+    Returns ``(rules_by_generation, max_generation)``; an empty rule set
+    yields ``({}, 0)``.
+    """
+    rules = list(rules)
+    if not rules:
+        return {}, 0
+
+    validator = TemporalConditionValidator()
+    graph = validator.build_event_type_graph(rules)
+    layer_by_type = {
+        event_type: layer_index
+        for layer_index, layer in enumerate(validator.graph_builder.get_generations(graph))
+        for event_type in layer
+    }
+
+    by_generation: Dict[int, List[ConditionRule]] = {}
+    for rule in rules:
+        generation = max(
+            (layer_by_type.get(produced, 1) for produced in rule.produced_event_types),
+            default=1,
+        )
+        by_generation.setdefault(generation, []).append(rule)
+
+    return by_generation, max(by_generation, default=0)
 
 
 class _LoggerProvider:
