@@ -172,6 +172,10 @@ def _physical_table_name(entity) -> str:
     return GlobalInjector.get(EntityNameMapper).get_table_name(entity)
 
 
+# Catalog-level absence only. A storage-path failure (PATH_NOT_FOUND and
+# friends) means the table is registered but its data is missing or
+# unreadable -- corruption, not a first run -- and must fail loudly rather
+# than lower a pipeline with no rules.
 _MISSING_TABLE_MARKERS = (
     "TABLE_OR_VIEW_NOT_FOUND",
     "NoSuchTableException",
@@ -179,7 +183,6 @@ _MISSING_TABLE_MARKERS = (
     "NoSuchNamespaceException",
     "NoSuchDatabaseException",
     "DATABASE_NOT_FOUND",
-    "PATH_NOT_FOUND",
 )
 
 
@@ -289,11 +292,12 @@ def _resolve_rules(spark, conditions_entity):
     by_generation, max_generation = layer_rules_by_generation(combined_rules)
     _logger().info(
         "Temporal SDP lowering: %s condition rule(s) resolved "
-        "(%s table-sourced, %s registry-declared) across generations %s.",
+        "(%s table-sourced, %s registry-declared); rules per stratum: %s.",
         len(combined_rules),
         len(table_rules),
         len(registry_rules),
-        sorted(by_generation) or "(none)",
+        {generation: len(by_generation[generation]) for generation in sorted(by_generation)}
+        or "(none)",
     )
     return by_generation, max_generation
 

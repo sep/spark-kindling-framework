@@ -263,8 +263,15 @@ def combine_condition_rules(
     lowering merging the two sources checks them identically. A lowering
     that merged the sources on its own would silently diverge -- which is
     exactly how the Lakeflow lowering came to drop registry rules entirely.
+
+    Disabled rules are dropped here too. ``validate()`` already excludes
+    them from a table-sourced set, but ``get_all_conditions()`` returns
+    every registration regardless, and ``execute_rules`` runs whatever it
+    is handed -- so without this filter a registry rule declared
+    ``enabled=False`` would still emit boundary events and still occupy a
+    generation.
     """
-    combined = list(table_rules) + list(registry_rules)
+    combined = [rule for rule in (list(table_rules) + list(registry_rules)) if rule.enabled]
     if not (has_table_engine and has_registry_engine and combined):
         return combined
 
@@ -274,8 +281,8 @@ def combine_condition_rules(
         raise ConditionValidationError(
             "Conditions set is not ingestible: condition_id(s) "
             f"{', '.join(duplicate_ids)} are declared in both the table and "
-            "registry sources -- condition_id drives the "
-            "{condition_id}.entered/.exited boundary event types, so a "
+            "registry sources -- a condition_id drives its own "
+            "'<condition_id>.entered'/'.exited' boundary event types, so a "
             "collision would produce ambiguous, duplicated events"
         )
 

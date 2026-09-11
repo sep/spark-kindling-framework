@@ -275,6 +275,48 @@ def test_layering_of_an_empty_rule_set_is_generation_zero():
     assert layer_rules_by_generation([]) == ({}, 0)
 
 
+def test_combine_drops_disabled_rules():
+    """``enabled=False`` must mean the rule does not run.
+
+    ``validate()`` already excludes disabled table rows, but
+    ``get_all_conditions()`` returns every registration and
+    ``execute_rules`` runs whatever it is handed — so the filter has to
+    live where the two sources meet.
+    """
+    from dataclasses import replace
+
+    from kindling_ext_temporal.validation import combine_condition_rules
+
+    enabled = _rule("cond.on", ["shower.remote_warmup_started"])
+    disabled = replace(_rule("cond.off", ["shower.remote_warmup_started"]), enabled=False)
+
+    combined = combine_condition_rules(
+        [],
+        [enabled, disabled],
+        has_table_engine=False,
+        has_registry_engine=True,
+    )
+
+    assert [rule.condition_id for rule in combined] == ["cond.on"]
+
+
+def test_a_storage_path_failure_is_not_treated_as_a_first_run():
+    """A registered table whose data is unreadable is corruption, not absence."""
+    from kindling_ext_databricks import temporal_lowering
+
+    spark = MagicMock()
+    spark.read.table.side_effect = Exception(
+        "[PATH_NOT_FOUND] Path does not exist: abfss://lake/silver/conditions"
+    )
+    entity = SimpleNamespace(entityid="silver.conditions", tags={})
+
+    with patch.object(
+        temporal_lowering, "_physical_table_name", lambda _entity: "silver.conditions"
+    ):
+        with pytest.raises(Exception, match="PATH_NOT_FOUND"):
+            temporal_lowering._read_table_rules(spark, entity)
+
+
 def test_combine_rejects_a_condition_id_declared_in_both_sources():
     from kindling_ext_temporal.validation import (
         ConditionValidationError,
