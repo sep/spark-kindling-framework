@@ -8,6 +8,12 @@ services:
       # Optional persistent store for local agent tooling state (task
       # ledgers, orchestration config). Harmless if unused.
 
+    # PID 1 must reap orphaned children. `sleep infinity` never calls
+    # wait(), so every orphaned process became a permanently unreapable
+    # zombie holding a cgroup PID (kind-zdwk: 19.7k zombies in 24h).
+    # init: true makes the Docker daemon run docker-init (tini) as PID 1,
+    # which reaps them. Served by the daemon; no image change needed.
+    init: true
     command: sleep infinity
     environment:
       - PYTHONPATH=/workspaces/kindling
