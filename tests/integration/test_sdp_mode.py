@@ -195,9 +195,17 @@ class TestEmittedDatasetFunctionOnRealSpark:
         config.get.return_value = None
         mapper = ConfigDrivenEntityNameMapper(config, MagicMock())
 
+        # The mapper resolves a two-part id's catalog via
+        # _get_current_namespace(), which looks up ConfigService through the
+        # injector inside a try/except -- serve the same fake config there so
+        # the production path completes instead of an assertion being
+        # swallowed. Anything else is still an unexpected lookup.
         def get_service(cls):
-            assert cls is EntityNameMapper, f"unexpected service request: {cls}"
-            return mapper
+            if cls is EntityNameMapper:
+                return mapper
+            if cls is ConfigService:
+                return config
+            raise AssertionError(f"unexpected service request: {cls}")
 
         monkeypatch.setattr(GlobalInjector, "get", get_service)
 
