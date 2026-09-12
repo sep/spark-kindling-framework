@@ -8,6 +8,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
+from kindling.config_patterns import ConfigPatternMatcher, TagRuleMatcher
+from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import *
+from kindling.spark_log_provider import *
 from pyspark.sql import DataFrame
 from pyspark.sql.types import (
     BooleanType,
@@ -16,12 +21,6 @@ from pyspark.sql.types import (
     StructType,
     TimestampType,
 )
-
-from kindling.config_patterns import ConfigPatternMatcher, TagRuleMatcher
-from kindling.injection import *
-from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_config import *
-from kindling.spark_log_provider import *
 
 _ENTITY_LOGGER = logging.getLogger("kindling.data_entities")
 
@@ -984,6 +983,25 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         for key in self._NON_OVERRIDABLE_FIELDS:
             if key in raw_params:
                 params[key] = raw_params[key]
+
+        declared_merge_columns = raw_params.get("merge_columns")
+        if declared_merge_columns and not params.get("merge_columns"):
+            # merge_columns is a plain overridable field (see
+            # _NON_OVERRIDABLE_FIELDS) and list values REPLACE rather than
+            # merge (ConfigPatternMatcher/TagRuleMatcher semantics), so a
+            # dataentities:/dataentities-bytag: rule that happens to carry a
+            # merge_columns key -- even incidentally -- silently drops a
+            # validly-declared merge key with no other signal. `kindling app
+            # validate`'s resulting "delta entity missing merge_columns"
+            # failure otherwise looks like the framework ignoring code that
+            # is correct, so surface the actual cause here.
+            _ENTITY_LOGGER.warning(
+                "Entity %s: dataentities:/dataentities-bytag: config overrides "
+                "replaced declared merge_columns %s with %r",
+                entityid,
+                declared_merge_columns,
+                params.get("merge_columns"),
+            )
         return EntityMetadata(entityid, **params)
 
     def _validate_entity(self, entity: EntityMetadata) -> None:
