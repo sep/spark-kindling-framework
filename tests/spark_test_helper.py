@@ -225,9 +225,16 @@ def _teardown_existing_spark_jvm() -> None:
     Spark's JVM is a process-wide singleton and ``spark.jars.packages`` (what
     ``configure_spark_with_delta_pip`` adds) is honoured only at gateway
     launch; this is the only way to get Delta onto the classpath once some
-    earlier module has launched a plain JVM. Shared by every Delta-backed test
-    module -- previously test_sdp_mode.py and
-    test_watermark_incremental_correctness.py each carried a private copy.
+    earlier module has launched a plain JVM. The single implementation for the
+    Delta-backed integration modules that relaunch per module (six of them
+    previously carried private copies).
+
+    ``gateway.shutdown()`` alone does NOT end the JVM: PySpark launches it with
+    a stdin pipe and the Java side exits on EOF of that pipe, which only
+    happens when the Python process dies. Without closing it every relaunch
+    leaves a ~1 GB orphan behind, and with four xdist workers each relaunching
+    several times the CI runner is OOM-killed (exit 137). So the launcher
+    process is reaped here: stdin closed, then waited on, killed if it lingers.
     """
     import __main__
     from pyspark import SparkContext
@@ -246,13 +253,35 @@ def _teardown_existing_spark_jvm() -> None:
             delattr(__main__, "spark")
         except Exception:  # noqa: BLE001
             pass
-    if SparkContext._gateway is not None:
+    gateway = SparkContext._gateway
+    if gateway is not None:
+        proc = getattr(gateway, "proc", None)
         try:
-            SparkContext._gateway.shutdown()
+            gateway.shutdown()
         except Exception:  # noqa: BLE001
             pass
         SparkContext._gateway = None
         SparkContext._jvm = None
+        _reap_gateway_process(proc)
+
+
+def _reap_gateway_process(proc, timeout: float = 30.0) -> None:
+    """End the JVM launched by ``launch_gateway`` (see teardown docstring)."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if proc.stdin is not None:
+            proc.stdin.close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        proc.wait(timeout=timeout)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+            proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _jvm_can_load_delta(spark) -> bool:
@@ -263,13 +292,14 @@ def _jvm_can_load_delta(spark) -> bool:
     without the jars and fail at first use exactly like a plain session. And a
     py4j ``Class.forName`` probe is a false negative: it resolves through the
     gateway's classloader, not Spark's, where ``--packages`` jars live. What
-    reflects the launch truthfully is the SparkContext itself -- the
-    ``spark.jars.packages`` it was created with (what
-    ``configure_spark_with_delta_pip`` sets) and the jars it lists.
+    reflects the launch truthfully is the SparkContext's jar list: the
+    ``--packages`` jars resolved when the gateway was launched are added to it
+    and nothing can add them later. The session-level ``spark.jars.packages``
+    value is deliberately NOT consulted: ``getOrCreate()`` copies builder
+    options onto an existing session, so a jar-less session can carry a
+    ``delta-spark`` value after a reused Delta builder.
     """
     try:
-        if "delta-spark" in (spark.conf.get("spark.jars.packages", "") or ""):
-            return True
         return "delta-spark" in spark.sparkContext._jsc.sc().listJars().mkString(",")
     except Exception:  # noqa: BLE001 - a half-dead session counts as unusable
         return False

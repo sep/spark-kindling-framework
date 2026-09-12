@@ -375,15 +375,27 @@ class TestLakeWheelBFS:
             # lane's teardown deleted them, or the artifacts path is wrong),
             # which is not a transitive-resolution failure.
             missing = [line for line in log.splitlines() if "[BFS] Not found in lake" in line]
-            assert "App execution failed" not in log, "Bootstrap reported app failure. " + (
-                f"BFS could not find {missing} in the lake packages dir -- if test-lake-dep-a "
-                "itself is listed, the wheels were absent from the listed directory rather than "
-                "BFS failing to follow Requires-Dist"
-                if missing
-                else "No '[BFS] Not found in lake' lines were CAPTURED -- cluster log capture is racy "
-                "and may be incomplete, so this does not rule out a missing wheel; read the "
-                "full job log in the workspace for the [BFS] walk and the app traceback"
+            top_level_missing = any(
+                "test-lake-dep-a" in line or "test_lake_dep_a" in line for line in missing
             )
+            if top_level_missing:
+                diagnosis = (
+                    f"BFS could not find the TOP-LEVEL wheel: {missing}. The wheels were absent from "
+                    "the listed lake packages dir (sibling-lane teardown, wrong artifacts path) -- "
+                    "not a Requires-Dist traversal failure"
+                )
+            elif missing:
+                diagnosis = (
+                    f"BFS found test-lake-dep-a but not its Requires-Dist dependency: {missing} -- "
+                    "a transitive-resolution failure"
+                )
+            else:
+                diagnosis = (
+                    "No '[BFS] Not found in lake' lines were CAPTURED -- cluster log capture is racy "
+                    "and may be incomplete, so this does not rule out a missing wheel; read the "
+                    "full job log in the workspace for the [BFS] walk and the app traceback"
+                )
+            assert "App execution failed" not in log, "Bootstrap reported app failure. " + diagnosis
 
             # Prefer log-based completion marker; fall back to job result_state when
             # log capture is incomplete (shared cluster log race, run_output truncation).
