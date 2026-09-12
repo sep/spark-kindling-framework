@@ -480,7 +480,7 @@ jobs:
       - name: Install project in editable mode
         run: pip install -e .
 
-      - name: Run every local suite in one process
+      - name: Run the unit, integration and KDA suites in one process
         env:
           PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
           AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}

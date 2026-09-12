@@ -169,6 +169,12 @@ def pytest_collection_modifyitems(config, items):
                     )
                 )
 
+        # Everything under tests/system IS a system test, marker or not: the
+        # --skip-system gate below (and `poe test` / `test-all-ci`, which rely
+        # on it to stay cloud-free) must not depend on each module remembering
+        # `pytestmark = pytest.mark.system`.
+        if "system" in Path(str(item.fspath)).relative_to(Path(__file__).parent).parts[:1]:
+            item.add_marker(pytest.mark.system)
         # Skip system tests if --skip-system is specified
         if skip_system and "system" in item.keywords:
             item.add_marker(pytest.mark.skip(reason="--skip-system option specified"))

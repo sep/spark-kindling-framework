@@ -226,6 +226,16 @@ def test_preflight_relaunches_a_dead_gateway_we_launched(state):
     assert state.teardowns == [True]
 
 
+def test_preflight_relaunches_when_our_jvm_exited_without_raising(state):
+    """After the last session was stopped, an exited JVM makes getActiveSession()
+    return None rather than raise; the stale gateway must still be cleared."""
+    state.set_gateway(FakeGateway(FakeProc(DELTA_ARGS, alive=False)))
+    state.set_active(None)
+    state.spy_teardown()
+    assert helper._teardown_non_delta_jvm() is True
+    assert state.teardowns == [True]
+
+
 def test_preflight_reports_a_dead_external_gateway_instead_of_shutting_it_down(state):
     gateway = FakeGateway(proc=None)
     state.set_gateway(gateway)

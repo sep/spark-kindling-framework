@@ -437,8 +437,9 @@ def _teardown_non_delta_jvm() -> bool:
       session -- which is exactly what happened when this preflight first tore
       down on "no active session". At most the active *session* is rebuilt
       when it lacks the Delta static confs.
-    - Gateway this process launched WITHOUT Delta, or dead: tear down and
-      reap via :func:`_teardown_existing_spark_jvm`.
+    - Gateway this process launched WITHOUT Delta, or dead (its launcher
+      process has exited, or the session lookup fails): tear down and reap
+      via :func:`_teardown_existing_spark_jvm`.
     - Externally started gateway (launch not visible): never torn down. If an
       active session proves it jar-less, or it is dead, raise
       :class:`ExternalGatewayUnusable` rather than hand back a session that
@@ -446,9 +447,17 @@ def _teardown_non_delta_jvm() -> bool:
     """
     from pyspark import SparkContext
 
-    if SparkContext._gateway is None:
+    gateway = SparkContext._gateway
+    if gateway is None:
         return False
     launched = _gateway_launched_with_delta()
+    proc = getattr(gateway, "proc", None)
+    if proc is not None and proc.poll() is not None:
+        # The JVM we launched has exited. With the last session already
+        # stopped, getActiveSession() returns None rather than raising, and
+        # the stale gateway would be reused by the next getOrCreate().
+        _teardown_existing_spark_jvm()
+        return True
     try:
         active = SparkSession.getActiveSession()
     except Exception as exc:  # noqa: BLE001 - dead gateway
