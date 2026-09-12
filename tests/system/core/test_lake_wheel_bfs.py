@@ -368,9 +368,20 @@ class TestLakeWheelBFS:
             # calls sys.exit(non-zero).  app.py does sys.exit(1) if test_lake_dep_b is
             # not in sys.modules, so this catches BFS-not-working failures regardless
             # of whether the full job result_state is available.
-            assert "App execution failed" not in log, (
-                "Bootstrap reported app failure — BFS likely did not load test_lake_dep_b "
-                "(lake-reqs.txt only lists test_lake_dep_a; transitive dep must be fetched via BFS)"
+            # Distinguish the two ways this fails. The BFS walk prints
+            # "[BFS] Not found in lake: <pkg>" for each package it could not
+            # find, so quote those lines: a missing TOP-LEVEL dep means the
+            # wheels were not in the listed directory at all (e.g. a sibling
+            # lane's teardown deleted them, or the artifacts path is wrong),
+            # which is not a transitive-resolution failure.
+            missing = [line for line in log.splitlines() if "[BFS] Not found in lake" in line]
+            assert "App execution failed" not in log, "Bootstrap reported app failure. " + (
+                f"BFS could not find {missing} in the lake packages dir -- if test-lake-dep-a "
+                "itself is listed, the wheels were absent from the listed directory rather than "
+                "BFS failing to follow Requires-Dist"
+                if missing
+                else "No '[BFS] Not found in lake' lines: BFS found the wheels, so the app "
+                "failed after loading them; see the job log for the traceback"
             )
 
             # Prefer log-based completion marker; fall back to job result_state when
