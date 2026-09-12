@@ -1,5 +1,9 @@
 """
-Unit tests for MemoryEntityProvider.merge_to_entity (SCD1, insert-only, SCD2).
+Integration tests for MemoryEntityProvider.merge_to_entity (SCD1, insert-only, SCD2).
+
+Fine-grained Memory-provider companion to test_scd2_provider_parity.py, which
+covers the same close_on_missing / sequence_by / delete_when semantics across
+both the Delta and Memory providers.
 
 Uses a real SparkSession — not a MagicMock — because this exercises genuine
 DataFrame join/filter/union logic that a mock cannot meaningfully stand in
@@ -18,6 +22,8 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from kindling.data_entities import EntityMetadata
+from kindling.entity_provider_memory import MemoryEntityProvider
 from pyspark.sql.functions import lit
 from pyspark.sql.types import (
     IntegerType,
@@ -27,8 +33,6 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from kindling.data_entities import EntityMetadata
-from kindling.entity_provider_memory import MemoryEntityProvider
 from tests.conftest import _sockets_permitted
 
 TS = lambda day, hour=0: datetime(2026, 7, day, hour, 0, 0)  # noqa: E731

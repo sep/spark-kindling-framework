@@ -25,7 +25,8 @@ def spark_session():
     TestWatermarkSpans only needs an active SparkContext for
     pyspark.sql.functions.col(...) to build a Column against a mocked
     DataFrame. Built via get_standalone_spark_session (see
-    test_entity_provider_memory_scd2.py's module docstring) so it's always
+    tests/integration/test_entity_provider_memory_scd2.py's module docstring)
+    so it's always
     Delta-configured regardless of xdist worker test order.
     """
     if not _sockets_permitted():

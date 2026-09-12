@@ -1,4 +1,8 @@
-"""Unit tests for kindling.common_transforms.remove_duplicates.
+"""Integration tests for kindling.common_transforms.remove_duplicates.
+
+Integration rather than unit: the transform under test is a Spark DataFrame
+window operation, so verifying it requires a real SparkSession -- there is no
+meaningful mocked form of the assertion (see docs/contributing/testing.md).
 
 Regression coverage: an append-only/keyless entity (keycolumns=[]) passed
 into remove_duplicates -- from WatermarkManager._legacy_version_read's and
@@ -13,7 +17,24 @@ test_delta_feed_to_changes.py).
 
 from datetime import datetime
 
+import pytest
 from kindling.common_transforms import remove_duplicates
+
+from tests.conftest import _sockets_permitted
+
+
+@pytest.fixture(scope="module")
+def spark_session():
+    """Own module-scoped session rather than conftest.py's session-scoped one
+    -- same JVM-teardown reasoning as test_delta_feed_to_changes.py."""
+    if not _sockets_permitted():
+        pytest.skip(
+            "Sockets are not permitted in this environment; cannot start a real SparkSession."
+        )
+    from tests.spark_test_helper import get_standalone_spark_session
+
+    yield get_standalone_spark_session("RemoveDuplicatesTests")
+    # Not spark.stop(): shared JVM-singleton session.
 
 
 def _df(spark_session, rows, extra_cols=("id", "value")):
