@@ -909,6 +909,7 @@ jobs:
         unit-tests,
         lint-and-format,
         integration-tests,
+        full-suite-single-process,
         security-scan,
         system-tests,
       ]
@@ -921,6 +922,7 @@ jobs:
           needs.unit-tests.result == 'success' &&
           needs.lint-and-format.result == 'success' &&
           needs.integration-tests.result == 'success' &&
+          needs.full-suite-single-process.result == 'success' &&
           needs.security-scan.result == 'success'
         )
       ) &&

@@ -218,48 +218,88 @@ def get_local_spark_session(
 _DELTA_CATALOG = "org.apache.spark.sql.delta.catalog.DeltaCatalog"
 
 
-def _teardown_non_delta_jvm() -> bool:
-    """Relaunch the JVM if the one that exists cannot serve Delta.
+def _teardown_existing_spark_jvm() -> None:
+    """Stop the active session (if any) and shut down the py4j gateway so the
+    next ``getOrCreate()`` launches a NEW JVM.
 
     Spark's JVM is a process-wide singleton and ``spark.jars.packages`` (what
-    ``configure_spark_with_delta_pip`` adds) is honoured only at py4j gateway
-    launch. If some earlier test module built a plain session first -- e.g.
-    the autoloader integration modules' ``SparkSession.builder...getOrCreate()``
-    -- then every later ``getOrCreate()`` silently reuses that jar-less JVM and
-    Delta fails with "Cannot find catalog plugin class ... DeltaCatalog". That
-    is masked on machines whose Spark install ships Delta on the default
-    classpath (the devcontainer) and bites in the CI image, so it surfaced as
-    an order-dependent Integration Tests failure once Delta-backed modules were
-    moved from tests/unit into tests/integration.
-
-    A session whose JVM already has the Delta catalog configured is reused
-    untouched. Otherwise the active session is stopped and the gateway shut
-    down so the caller's ``getOrCreate()`` launches a fresh JVM. Returns True
-    when a relaunch was forced. Consolidates the ``_teardown_existing_spark_jvm``
-    pattern that test_sdp_mode.py and test_watermark_incremental_correctness.py
-    each carried privately.
+    ``configure_spark_with_delta_pip`` adds) is honoured only at gateway
+    launch; this is the only way to get Delta onto the classpath once some
+    earlier module has launched a plain JVM. Shared by every Delta-backed test
+    module -- previously test_sdp_mode.py and
+    test_watermark_incremental_correctness.py each carried a private copy.
     """
+    import __main__
     from pyspark import SparkContext
 
     active = SparkSession.getActiveSession()
     if active is not None:
         try:
-            if active.conf.get("spark.sql.catalog.spark_catalog", None) == _DELTA_CATALOG:
-                return False
-        except Exception:  # noqa: BLE001 - a half-dead session counts as unusable
-            pass
-        try:
             active.stop()
         except Exception:  # noqa: BLE001
             pass
-    if SparkContext._gateway is None:
-        return active is not None
+    # kindling.spark_session.get_or_create_spark_session() returns
+    # __main__.spark before creating anything, so a stale reference here would
+    # hand framework and provider code the stopped, jar-less session.
+    if getattr(__main__, "spark", None) is not None:
+        try:
+            delattr(__main__, "spark")
+        except Exception:  # noqa: BLE001
+            pass
+    if SparkContext._gateway is not None:
+        try:
+            SparkContext._gateway.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+        SparkContext._gateway = None
+        SparkContext._jvm = None
+
+
+def _jvm_can_load_delta(spark) -> bool:
+    """Whether the running JVM was launched with the Delta jars.
+
+    A SQL configuration value is not evidence: a session can carry
+    ``spark.sql.catalog.spark_catalog=...DeltaCatalog`` on a gateway launched
+    without the jars and fail at first use exactly like a plain session. And a
+    py4j ``Class.forName`` probe is a false negative: it resolves through the
+    gateway's classloader, not Spark's, where ``--packages`` jars live. What
+    reflects the launch truthfully is the SparkContext itself -- the
+    ``spark.jars.packages`` it was created with (what
+    ``configure_spark_with_delta_pip`` sets) and the jars it lists.
+    """
     try:
-        SparkContext._gateway.shutdown()
-    except Exception:  # noqa: BLE001
-        pass
-    SparkContext._gateway = None
-    SparkContext._jvm = None
+        if "delta-spark" in (spark.conf.get("spark.jars.packages", "") or ""):
+            return True
+        return "delta-spark" in spark.sparkContext._jsc.sc().listJars().mkString(",")
+    except Exception:  # noqa: BLE001 - a half-dead session counts as unusable
+        return False
+
+
+def _teardown_non_delta_jvm() -> bool:
+    """Relaunch the JVM unless the existing one can serve Delta.
+
+    Why this exists: if an earlier test module built a plain session first --
+    e.g. the autoloader integration modules' ``SparkSession.builder...
+    getOrCreate()`` -- every later ``getOrCreate()`` silently reuses that
+    jar-less JVM and Delta fails with "Cannot find catalog plugin class ...
+    DeltaCatalog". That is masked on machines whose Spark install ships Delta
+    on the default classpath (the devcontainer) and bites in the CI image, so
+    it surfaced as an order-dependent Integration Tests failure once
+    Delta-backed modules were moved from tests/unit into tests/integration.
+
+    A JVM that can load the Delta catalog class is reused untouched; anything
+    else (no session but a live gateway, a session whose JVM cannot load
+    Delta) is torn down via ``_teardown_existing_spark_jvm``. Returns True when
+    a relaunch was forced.
+    """
+    from pyspark import SparkContext
+
+    active = SparkSession.getActiveSession()
+    if active is not None and _jvm_can_load_delta(active):
+        return False
+    if active is None and SparkContext._gateway is None:
+        return False
+    _teardown_existing_spark_jvm()
     return True
 
 

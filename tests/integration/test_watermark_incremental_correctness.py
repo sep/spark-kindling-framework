@@ -52,28 +52,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-
-def _teardown_existing_spark_jvm():
-    """Stop any session created by earlier test modules and shut down the
-    py4j gateway so a NEW JVM launches with the Delta jars on its classpath.
-
-    Spark's JVM is a process-wide singleton: ``spark.jars.packages`` is only
-    honored at gateway launch, so a plain session created by another module
-    would leave this module without the Delta data source no matter what
-    configs we pass to ``getOrCreate``.
-    """
-    from pyspark import SparkContext
-
-    active = SparkSession.getActiveSession()
-    if active is not None:
-        active.stop()
-    if SparkContext._gateway is not None:
-        try:
-            SparkContext._gateway.shutdown()
-        except Exception:
-            pass
-        SparkContext._gateway = None
-        SparkContext._jvm = None
+from tests.spark_test_helper import _teardown_existing_spark_jvm
 
 
 @pytest.fixture(scope="module")
