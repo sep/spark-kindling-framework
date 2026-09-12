@@ -127,6 +127,12 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
         "kindling.lakeflow.temporal_mode",
         "spark.kindling.lakeflow.temporal_strata_materialization",
         "kindling.lakeflow.temporal_strata_materialization",
+        # Read by the temporal chain's declaration path (the stratum count
+        # and the ceiling check). Absent from this list it was unsettable as
+        # pipeline configuration on a restricted runtime -- silently pinned
+        # to DEFAULT_MAX_GENERATIONS rather than erroring.
+        "spark.kindling.temporal.max_generations",
+        "kindling.temporal.max_generations",
         *configured_keys,
     )
     spark_items = tuple(iter_spark_conf_items(spark, extra_keys=lookup_keys))

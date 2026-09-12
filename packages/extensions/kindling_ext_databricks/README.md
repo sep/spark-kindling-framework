@@ -136,6 +136,50 @@ Lakeflow owns query startup, checkpoint placement, retries, update scheduling,
 and target persistence for this path. Kindling does not call `writeStream`,
 does not pass `checkpointLocation`, and does not start a streaming query.
 
+## Incremental reads of external Delta inputs
+
+A normal pipe whose driving input is an ordinary Delta table — one produced
+by a separate ingestion pipeline, not by a streaming provider — can be read
+incrementally by opting in per pipe:
+
+```yaml
+datapipes:
+  silver.device_telemetry:
+    engine:
+      databricks_sdp:
+        streaming_inputs: ["bronze.device_telemetry"]
+```
+
+The output is then declared as a streaming table plus one append flow, the
+named input is read with `spark.readStream.table(...)`, and every other
+input stays a batch read — so reference-table joins remain stream-static.
+Everything else on this path (expectations, table properties, partitioning,
+clustering, the deferred `schema` forwarding) behaves exactly as it does for
+a provider-owned streaming source; both shapes reach the same emission.
+
+**The opt-in is never inferred.** An incremental read changes what a pipe
+means — append-only, with no reprocessing of revised rows — so eligibility
+is the app's decision, not the adapter's. Nothing changes for a Delta input
+that is not named here.
+
+It is adapter-tier: `engine="sdp"` reports `capability_not_supported`.
+Rejected shapes, all at declaration time:
+
+| Code | Shape |
+| --- | --- |
+| `streaming_input_not_an_input` | names an entity the pipe does not read |
+| `streaming_input_not_driving` | names a non-driving input |
+| `streaming_inputs_partial` | does not name every driving input |
+| `multiple_streaming_inputs` | names more than one input |
+| `streaming_input_not_delta` | names a non-Delta entity |
+| `streaming_input_internal` | names a dataset produced in this pipeline |
+| `streaming_input_provider_owned` | names a provider-owned stream (already streamed) |
+| `streaming_dataset_type_conflict` | output explicitly requests a materialized view |
+
+`streaming_inputs_partial` exists because the append flow streams whatever
+`driving_entity_ids` selects: a partial opt-in would silently stream an
+input the app never opted in, so the sets must match.
+
 ## Temporal chain execution mode
 
 A temporal chain lowers its event strata `<events>__g0..gK` as streaming
@@ -198,6 +242,28 @@ an event, and no per-stratum metrics in the event log.
 `view` requires `temporal_mode: batch`. A streaming stratum is an append-flow
 target and a temporary view cannot be one, so the combination fails the
 declaration instead of quietly downgrading to batch reads.
+
+### How many strata get declared
+
+`kindling.temporal.max_generations` is a ceiling, not a target. A chain whose
+conditions are all registry-declared (`DataConditions.register`) declares
+exactly as many numbered strata as those rules reach — a single-generation
+app gets `__g0` and `__g1`, nothing else — because both emission and
+`validate()`'s name reservation can compute that depth in-process from the
+condition registry. The ceiling still applies: a rule set reaching past it
+fails the declaration rather than being truncated.
+
+A chain with any table-sourced condition engine keeps the ceiling as its
+topology, declaring `__g0..__gK` whether or not each generation holds rules.
+Rule rows are data that changes between updates, and the reservation path
+runs with no Spark session to read their depth with, so a fixed shape is the
+only way emission and reservation can agree. Empty strata there are real
+datasets with a flow that filters everything out, so set the ceiling to the
+depth you actually use.
+
+Shrinking the depth of a registry chain leaves the highest `__g*` dataset
+behind, no longer updated. That is a deploy-time event; drop the stale table
+once.
 
 Multi-source fan-in is unchanged: every base declaration lands in the one
 stratum-0 dataset, each input keeping its own transform. Base sources still

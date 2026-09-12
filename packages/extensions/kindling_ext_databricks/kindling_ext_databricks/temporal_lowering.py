@@ -42,8 +42,16 @@ source-evaluation time (an EXTERNAL table — ingestion happens outside the
 pipeline by the write-guard's design), plus any rules declared in-process
 through ``DataConditions.register``. Generation layering is computed over
 the combined set, so the wiring is exact per update while rules remain
-data. Physical topology is fixed by ``kindling.temporal.max_generations``
-so rule changes alter contents, never shape.
+data.
+
+``kindling.temporal.max_generations`` is a ceiling. A chain whose rules are
+all registry-declared (code, fixed at deploy time) declares exactly as many
+numbered strata as those rules reach, because both emission and
+``validate()``'s reservation can compute that depth in-process. A chain
+with any table-sourced engine keeps the ceiling as its topology — rule rows
+change between updates and reservation has no Spark session to read their
+depth with — so there, rule changes alter contents, never shape. See
+``declared_stratum_count``.
 
 ``kindling.lakeflow.temporal_mode: batch`` lowers the event strata
 (``__g0..gK``) as materialized views reading with ``spark.table`` instead of
@@ -217,6 +225,51 @@ def _condition_engine_sources():
     has_registry_engine = any(metadata.condition_source == "registry" for metadata in engine_defs)
     read_conditions_table = not engine_defs or has_table_engine
     return has_table_engine, has_registry_engine, read_conditions_table
+
+
+def declared_stratum_count(max_generations: int) -> int:
+    """How many numbered boundary strata this chain declares.
+
+    ``kindling.temporal.max_generations`` is a ceiling, not a target: the
+    ceiling check rejects a rule set that reaches past it. The emitted
+    topology should therefore follow the rule set's actual depth wherever
+    that depth can be known -- but emission and ``validate()``'s
+    name-reservation path must agree exactly, and reservation runs with no
+    Spark session, so the count may only be derived from in-process state.
+
+    Registry-declared rules qualify: they are code, fixed at deploy time,
+    and readable from the condition registry without Spark. Table-sourced
+    rules do not -- their depth needs a catalog read reservation cannot
+    make -- so a chain with any table-sourced engine keeps the ceiling as
+    its topology, as every chain did before.
+
+    Any failure to resolve the rule depth falls back to the ceiling — the
+    behavior every chain had before this collapse existed. Emission and
+    reservation call this in the same process against the same injector, so
+    they fall back together and cannot disagree.
+    """
+    from kindling_ext_temporal.registry import TemporalConditionRegistry
+    from kindling_ext_temporal.validation import layer_rules_by_generation
+
+    try:
+        has_table_engine, has_registry_engine, _ = _condition_engine_sources()
+    except Exception:  # noqa: BLE001 - registries unavailable; keep the ceiling
+        return max_generations
+    if has_table_engine or not has_registry_engine:
+        return max_generations
+
+    rules = [rule for rule in _registry_rules(TemporalConditionRegistry) if rule.enabled]
+    if not rules:
+        return max_generations
+    _, depth = layer_rules_by_generation(rules)
+    return max(1, min(depth, max_generations))
+
+
+def _registry_rules(registry_type) -> List[Any]:
+    try:
+        return list(GlobalInjector.get(registry_type).get_all_conditions())
+    except Exception:  # noqa: BLE001 - registry unavailable in bare tests
+        return []
 
 
 def _read_table_rules(spark, conditions_entity) -> List[Any]:
@@ -407,6 +460,7 @@ def declare_stratified_temporal(
     conditions_entity = resolver.get_conditions_entity()
 
     rules_by_generation, max_rule_generation = _resolve_rules(spark, conditions_entity)
+    stratum_count = declared_stratum_count(max_generations)
     pre_rules, post_rules, higher_ids = _split_rules(rules_by_generation, episode_defs)
     _fail_on_higher_order_episodes(episode_defs, higher_ids)
     if max_rule_generation > max_generations:
@@ -461,7 +515,7 @@ def declare_stratified_temporal(
         base_stratum.__name__ = f"{stratum_names[0]}_view".replace(".", "_")
         stratum_dataset(name=stratum_names[0])(base_stratum)
 
-        for generation in range(1, max_generations + 1):
+        for generation in range(1, stratum_count + 1):
             stratum_name = f"{events_name}{STRATUM_SUFFIX}{generation}"
             rules = pre_rules.get(generation, [])
             lower = list(stratum_names)
@@ -492,7 +546,7 @@ def declare_stratified_temporal(
             dp.append_flow(target=stratum_names[0], name=base_flow.__name__)(base_flow)
 
         # --- pre-determination boundary strata: fixed physical topology ---
-        for generation in range(1, max_generations + 1):
+        for generation in range(1, stratum_count + 1):
             stratum_name = f"{events_name}{STRATUM_SUFFIX}{generation}"
             rules = pre_rules.get(generation, [])
             lower = list(stratum_names)
