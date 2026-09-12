@@ -1197,6 +1197,7 @@ def _condition_row(**overrides):
         "enabled": True,
     }
     row.update(overrides)
+    return row
 
 
 @pytest.fixture(scope="module")
