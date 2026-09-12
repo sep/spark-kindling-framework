@@ -245,6 +245,7 @@ class DeclarationEngine(ABC):
             issues.extend(self._validate_output(pipe, producers))
             issues.extend(self._validate_inputs(pipe, producers))
             issues.extend(self._validate_capabilities(pipe))
+            issues.extend(self._validate_streaming_inputs(pipe, producers))
             issues.extend(self._validate_dataset_type(pipe, producers))
         return issues
 
@@ -330,6 +331,35 @@ class DeclarationEngine(ABC):
                     )
                 )
         return tuple(classified)
+
+    def _streamed_external_input_ids(self, pipe) -> List[str]:
+        """Entity ids this pipe opted into reading incrementally.
+
+        Read from the pipe's engine block, active engine over the common
+        ``sdp`` block (the same precedence as ``dataset_type`` and
+        ``table_properties``)::
+
+            datapipes:
+              silver.device_telemetry:
+                engine:
+                  databricks_sdp:
+                    streaming_inputs: ["bronze.device_telemetry"]
+
+        Opting in is never inferred: an external Delta input is a batch read
+        unless an app names it here, because incremental reads change a
+        pipe's semantics (append-only, no reprocessing of revised rows) and
+        that is the app's decision, not the adapter's.
+        """
+        for engine_name in self._engine_block_precedence():
+            declared = self._pipe_engine_block(pipe.pipeid, engine_name).get("streaming_inputs")
+            if declared is None:
+                continue
+            if isinstance(declared, str):
+                declared = [declared]
+            if not isinstance(declared, (list, tuple)):
+                return []
+            return [str(entity_id).strip() for entity_id in declared if str(entity_id).strip()]
+        return []
 
     def _streaming_source_spec(self, entity) -> Optional[StreamingSourceSpec]:
         """Return a provider-owned streaming-source spec for an entity, if any."""
@@ -616,12 +646,93 @@ class DeclarationEngine(ABC):
             )
         return issues
 
+    def _validate_streaming_inputs(self, pipe, producers: Dict[str, str]) -> List[DeclarationIssue]:
+        """Validate an explicit ``streaming_inputs`` opt-in.
+
+        The opt-in must name the pipe's driving inputs exactly. The append
+        flow streams whatever ``resolve_driving_entity_ids`` selects, so a
+        partial opt-in would silently stream an input the app did not ask to
+        stream; requiring the sets to match keeps the declaration honest
+        instead of quietly widening it.
+        """
+        declared = self._streamed_external_input_ids(pipe)
+        if not declared:
+            return []
+
+        issues: List[DeclarationIssue] = []
+
+        def issue(code: str, reason: str) -> None:
+            issues.append(DeclarationIssue(pipe_id=pipe.pipeid, code=code, reason=reason))
+
+        classified_inputs = self._classify(pipe, producers)
+        by_id = {classified.entity_id: classified for classified in classified_inputs}
+        driving_ids = {
+            classified.entity_id for classified in classified_inputs if classified.driving
+        }
+
+        if len(declared) > 1:
+            issue(
+                "multiple_streaming_inputs",
+                f"streaming_inputs names {len(declared)} inputs "
+                f"({', '.join(sorted(declared))}); a flow may stream only one "
+                "input — the remaining inputs stay batch reads (stream-static joins)",
+            )
+
+        for entity_id in declared:
+            classified = by_id.get(entity_id)
+            if classified is None:
+                issue(
+                    "streaming_input_not_an_input",
+                    f"streaming_inputs names '{entity_id}', which is not one of this "
+                    f"pipe's input_entity_ids ({', '.join(pipe.input_entity_ids or []) or 'none'})",
+                )
+                continue
+            if classified.classification is InputClassification.INTERNAL:
+                issue(
+                    "streaming_input_internal",
+                    f"streaming_inputs names '{entity_id}', which is produced inside this "
+                    "pipeline; in-pipeline inputs are already streamed when driving — "
+                    "the opt-in is for external tables only",
+                )
+                continue
+            if classified.classification is InputClassification.EXTERNAL_STREAMING_SOURCE:
+                issue(
+                    "streaming_input_provider_owned",
+                    f"streaming_inputs names '{entity_id}', whose provider already declares "
+                    "a streaming source; it is streamed without the opt-in",
+                )
+                continue
+            entity = self.entity_registry.get_entity_definition(entity_id)
+            provider_type = str(((entity.tags if entity else None) or {}).get("provider_type", ""))
+            if provider_type.strip().lower() != "delta":
+                issue(
+                    "streaming_input_not_delta",
+                    f"streaming_inputs names '{entity_id}' with provider_type "
+                    f"'{provider_type or 'unset'}'; only Delta entities can be read with "
+                    "spark.readStream.table — a non-Delta source needs a provider that "
+                    "declares a streaming source",
+                )
+                continue
+            if entity_id not in driving_ids:
+                issue(
+                    "streaming_input_not_driving",
+                    f"streaming_inputs names '{entity_id}', which is not a driving input of "
+                    "this pipe; only driving inputs are read incrementally (declare it in "
+                    "driving_entity_ids, or drop it from streaming_inputs)",
+                )
+
+        unnamed_driving = sorted(driving_ids - set(declared))
+        if not issues and unnamed_driving:
+            issue(
+                "streaming_inputs_partial",
+                f"streaming_inputs must name every driving input; "
+                f"{', '.join(unnamed_driving)} would be streamed by the append flow "
+                "without being opted in",
+            )
+        return issues
+
     def _validate_dataset_type(self, pipe, producers: Dict[str, str]) -> List[DeclarationIssue]:
-        streaming_driving = any(
-            classified.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
-            and classified.driving
-            for classified in self._classify(pipe, producers)
-        )
+        streaming_driving = self._streams_a_driving_input(pipe, producers)
         try:
             self._select_dataset_type(pipe, streaming_driving=streaming_driving)
         except _DatasetTypeConflict as error:
@@ -642,6 +753,21 @@ class DeclarationEngine(ABC):
             ]
         return []
 
+    def _streams_a_driving_input(self, pipe, producers: Dict[str, str]) -> bool:
+        """Whether this pipe's output lowers to a streaming table + flow.
+
+        True for a provider-owned streaming source on a driving input, and
+        for an explicit ``streaming_inputs`` opt-in. Both reach the same
+        emission path, so both must reach the same dataset-type decision.
+        """
+        if self._streamed_external_input_ids(pipe):
+            return True
+        return any(
+            classified.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
+            and classified.driving
+            for classified in self._classify(pipe, producers)
+        )
+
     # --- dataset assembly ----------------------------------------------- #
 
     def _build_dataset(self, pipe_id: str, producers: Dict[str, str]) -> DatasetDeclaration:
@@ -649,11 +775,8 @@ class DeclarationEngine(ABC):
         entity = self.entity_registry.get_entity_definition(pipe.output_entity_id)
         tags = dict(entity.tags or {})
         inputs = self._classify(pipe, producers)
-        streaming_driving = any(
-            classified.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
-            and classified.driving
-            for classified in inputs
-        )
+        streamed_external = tuple(self._streamed_external_input_ids(pipe))
+        streaming_driving = self._streams_a_driving_input(pipe, producers)
         return DatasetDeclaration(
             name=pipe.output_entity_id,
             dataset_type=self._select_dataset_type(pipe, streaming_driving=streaming_driving),
@@ -666,6 +789,7 @@ class DeclarationEngine(ABC):
             comment=tags.get("comment"),
             schema=getattr(entity, "schema", None),
             table_properties=self._resolve_table_properties(pipe, tags),
+            streamed_external_inputs=streamed_external,
         )
 
     def _resolve_table_properties(self, pipe, tags: Dict[str, str]) -> Dict[str, str]:

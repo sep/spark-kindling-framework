@@ -96,4 +96,5 @@ def supports_streaming_source_lowering(capabilities: CapabilitySet) -> bool:
 ADAPTER_TIER_CONFIG_KEYS = {
     "expectations": SdpFeature.EXPECTATIONS,
     "refresh_policy": SdpFeature.INCREMENTAL_MV_REFRESH,
+    "streaming_inputs": SdpFeature.STREAMING_SOURCE_LOWERING,
 }

@@ -125,15 +125,20 @@ class DatabricksSdpEngine(OssSdpEngine):
                 DETERMINATIONS_SUFFIX,
                 SNAPSHOT_SUFFIX,
                 STRATUM_SUFFIX,
+                declared_stratum_count,
             )
 
             episodes_pipe, max_generations = self._temporal_chain_settings(pipe.tags or {})
+            # Must match emission exactly — the same helper decides both, so
+            # reservation cannot reserve a stratum the lowering never emits
+            # (or miss one it does).
+            stratum_count = declared_stratum_count(max_generations)
             names.extend(
                 (
                     f"{owner} (temporal stratum {generation})",
                     f"{target}{STRATUM_SUFFIX}{generation}",
                 )
-                for generation in range(max_generations + 1)
+                for generation in range(stratum_count + 1)
             )
             if episodes_pipe:
                 episodes_id = episodes_pipe.output_entity_id
@@ -197,7 +202,7 @@ class DatabricksSdpEngine(OssSdpEngine):
         if scd_spec is not None:
             self._declare_scd_dataset(dp, dataset, scd_spec)
             return
-        if dataset.streaming_source_inputs:
+        if dataset.has_streaming_driving_input:
             self._declare_streaming_source_dataset(dp, dataset)
             return
         if dataset.dataset_type is not DatasetType.MATERIALIZED_VIEW:
@@ -211,7 +216,14 @@ class DatabricksSdpEngine(OssSdpEngine):
         dp.materialized_view(**self._declaration_kwargs(dataset))(query_function)
 
     def _declare_streaming_source_dataset(self, dp, dataset: DatasetDeclaration) -> None:
-        """Lower a provider-owned streaming source to a Lakeflow append flow.
+        """Lower a streaming driving input to a Lakeflow append flow.
+
+        Two shapes reach here and emit identically: a provider-owned
+        streaming source (the provider builds the source DataFrame), and an
+        external Delta input an app opted into with
+        ``engine.<engine>.streaming_inputs`` (read with
+        ``spark.readStream.table``). Non-driving inputs stay batch reads in
+        both, so reference-table joins remain stream-static.
 
         The output entity's runner-shape ``schema`` is not forwarded to
         ``create_streaming_table`` until Lakeflow platform evidence proves

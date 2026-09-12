@@ -68,6 +68,12 @@ Provider-owned streaming sources:
 - `engine="sdp"` reports `streaming_source_lowering_not_supported` for this
   shape today. `engine="databricks_sdp"` lowers it through Lakeflow; see the
   Databricks extension README.
+- An ordinary external **Delta** input has no provider-owned stream, so it is
+  a batch read unless a pipe opts in with the adapter-tier engine-config key
+  `streaming_inputs: [<entity id>]`. The opt-in reaches the same emission
+  (streaming table + one append flow, non-driving inputs staying batch), is
+  never inferred, and must name every driving input. See the Databricks
+  extension README for the full rejection list.
 
 Entry point shape (fixed bootstrap surface — never generated code):
 

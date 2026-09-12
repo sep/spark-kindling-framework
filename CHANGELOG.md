@@ -4,6 +4,46 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- Normal Kindling pipes can read an external Delta driving input
+  incrementally on Databricks Lakeflow, opting in per pipe with the
+  adapter-tier engine-config key `streaming_inputs`. The output is then
+  declared as a streaming table plus one append flow, the named input is
+  read with `spark.readStream.table(...)`, and every other input stays a
+  batch read so reference joins remain stream-static — the same emission
+  path provider-owned streaming sources already used. The opt-in is never
+  inferred: an incremental read makes a pipe append-only with no
+  reprocessing of revised rows, which is the app's decision. Unsupported
+  shapes are rejected at declaration time (`streaming_input_not_an_input`,
+  `streaming_input_not_driving`, `streaming_inputs_partial`,
+  `multiple_streaming_inputs`, `streaming_input_not_delta`,
+  `streaming_input_internal`, `streaming_input_provider_owned`, and the
+  existing `streaming_dataset_type_conflict`). `engine="sdp"` reports
+  `capability_not_supported`. Behavior is unchanged for any pipe that does
+  not declare the key.
+
+### Fixed
+
+- Databricks Lakeflow temporal chains no longer declare empty event strata.
+  `kindling.temporal.max_generations` is a ceiling, but the topology was
+  built from it directly, so a single-condition app declared eleven strata
+  at the default of 10 — nine of them permanently empty, each a real
+  dataset with a flow that discards everything. A chain whose conditions are
+  all registry-declared now declares exactly the depth its rules reach,
+  since both emission and `validate()`'s name reservation can compute that
+  in-process. Chains with any table-sourced engine keep the ceiling as their
+  topology: rule rows change between updates and the reservation path has no
+  Spark session to read their depth with. Any failure to resolve the depth
+  falls back to the ceiling, so a degraded lookup can never fail a
+  declaration.
+- `kindling.temporal.max_generations` is now bridged into the restricted
+  runtime point-lookup list. The declaration path reads it, but it was
+  absent from that list, so on serverless and shared-access clusters —
+  where every config enumeration surface is blocked — setting it as
+  pipeline configuration was silently ignored and the ceiling stayed at its
+  default.
+
 ## [0.12.43] - 2026-09-11
 
 ### Fixed

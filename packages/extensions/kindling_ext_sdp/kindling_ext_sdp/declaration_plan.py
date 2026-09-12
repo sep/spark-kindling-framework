@@ -143,6 +143,14 @@ class DatasetDeclaration:
     #: tag explicitly if CDF is wanted for external consumers.
     table_properties: Dict[str, str] = field(default_factory=dict)
 
+    #: Entity ids of EXTERNAL inputs an app explicitly opted into being read
+    #: incrementally (``engine.<engine>.streaming_inputs``). Distinct from
+    #: ``streaming_source_inputs``: those are provider-owned streams whose
+    #: provider builds the source itself, while these are ordinary Delta
+    #: tables read with ``spark.readStream.table``. Either one lowers the
+    #: output to a streaming table plus an append flow.
+    streamed_external_inputs: Tuple[str, ...] = ()
+
     @property
     def streaming_source_inputs(self) -> Tuple[ClassifiedInput, ...]:
         """Inputs declared as provider-owned streaming sources."""
@@ -151,6 +159,11 @@ class DatasetDeclaration:
             for pipe_input in self.inputs
             if pipe_input.classification is InputClassification.EXTERNAL_STREAMING_SOURCE
         )
+
+    @property
+    def has_streaming_driving_input(self) -> bool:
+        """Whether this dataset lowers to a streaming table + append flow."""
+        return bool(self.streaming_source_inputs or self.streamed_external_inputs)
 
 
 @dataclass(frozen=True)
