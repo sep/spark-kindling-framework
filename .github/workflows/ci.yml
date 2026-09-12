@@ -450,6 +450,51 @@ jobs:
           name: integration-test-results
           path: test-results/integration-test-results.xml
 
+  full-suite-single-process:
+    name: Full Suite (single process)
+    runs-on: ubuntu-latest
+    needs: [classify-changes, build-ci-image, unit-tests, lint-and-format]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    # The unit and integration jobs each run their suite in a fresh process,
+    # so state that leaks from one suite into another (a module reload that
+    # splits a class identity, an environment variable a fixture never
+    # restores, an injector binding left behind) never shows up there. This
+    # job runs every local suite in ONE process, integration before unit in
+    # collection order -- the arrangement that exposed 18 such failures in
+    # 2026-09. Cloud system tests are skipped: they need workspace
+    # credentials and have their own lane.
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.classify-changes.outputs.fast_track != 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install project in editable mode
+        run: pip install -e .
+
+      - name: Run every local suite in one process
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages:$PYTHONPATH
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_CONTAINER: ${{ vars.AZURE_CONTAINER }}
+          AZURE_BASE_PATH: ci-tests/${{ github.run_id }}
+        run: |
+          poe test-all-ci
+
+      - name: Upload single-process suite results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-suite-single-process-results
+          path: test-results/all-test-results.xml
+
   kda-packaging-tests:
     name: KDA Packaging Tests
     runs-on: ubuntu-latest
@@ -1050,6 +1095,7 @@ jobs:
       [
         unit-tests,
         integration-tests,
+        full-suite-single-process,
         kda-packaging-tests,
         system-tests,
         security-scan,
@@ -1084,6 +1130,23 @@ jobs:
           else
             echo "| Integration Tests | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
+
+          # Check the single-process full suite
+
+          if [ "${{ needs.full-suite-single-process.result }}" == "success" ]; then
+
+            echo "| Full Suite (single process) | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+
+          elif [ "${{ needs.full-suite-single-process.result }}" == "skipped" ]; then
+
+            echo "| Full Suite (single process) | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+
+          else
+
+            echo "| Full Suite (single process) | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+
+          fi
+
 
           # Check KDA tests
           if [ "${{ needs.kda-packaging-tests.result }}" == "success" ]; then
