@@ -367,6 +367,53 @@ class TestEntityConfigOverlay:
         assert entity.cluster_columns == ["region"]
         assert entity.name == "orders_renamed"
 
+    def test_populated_merge_columns_survive_unrelated_overrides(self, caplog):
+        """Regression guard: a delta entity declared with a populated,
+        schema-valid merge_columns must keep it (and so pass `kindling app
+        validate`'s delta-merge-key check) when the matching config
+        overrides never mention merge_columns -- only an override that
+        explicitly sets merge_columns may replace it (see
+        test_patterns_merge_tags_and_replace_lists)."""
+        manager = make_entity_manager()
+        register_sample_entity(manager, merge_columns=["order_id"])
+        config_service = make_config_service(
+            {
+                "dataentities": {"bronze.*": {"tags": {"team": "core"}}},
+                "dataentities-bytag": {"layer": {"bronze": {"tags": {"sla": "4h"}}}},
+            }
+        )
+
+        with caplog.at_level("WARNING", logger="kindling.data_entities"):
+            manager.apply_config_overrides(config_service)
+
+        entity = manager.get_entity_definition("bronze.orders")
+        assert entity.merge_columns == ["order_id"]
+        # The non-trigger path must stay silent: an implementation that warned on
+        # every overlay would keep merge_columns intact and still be wrong.
+        assert not [record for record in caplog.records if "merge_columns" in record.getMessage()]
+
+    def test_override_clearing_declared_merge_columns_is_logged(self, caplog):
+        """When a config override *does* replace a populated merge_columns
+        with an empty list, the framework logs why -- so a subsequent
+        `kindling app validate` "delta entity missing merge_columns" failure
+        is traceable to config instead of looking like the check is
+        ignoring valid, declared code."""
+        manager = make_entity_manager()
+        register_sample_entity(manager, merge_columns=["order_id"])
+        config_service = make_config_service(
+            {"dataentities": {"bronze.orders": {"merge_columns": []}}}
+        )
+
+        with caplog.at_level("WARNING", logger="kindling.data_entities"):
+            manager.apply_config_overrides(config_service)
+
+        entity = manager.get_entity_definition("bronze.orders")
+        assert entity.merge_columns == []
+        assert any(
+            "bronze.orders" in record.message and "merge_columns" in record.message
+            for record in caplog.records
+        )
+
     def test_schema_and_sql_never_overridable(self):
         manager = make_entity_manager()
         schema_sentinel = object()
