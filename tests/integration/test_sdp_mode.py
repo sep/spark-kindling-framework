@@ -185,6 +185,10 @@ def configured_name_mapper(monkeypatch):
     mapper = ConfigDrivenEntityNameMapper(config, logger_provider)
     injector = Injector(auto_bind=False)
     injector.binder.bind(EntityNameMapper, to=mapper)
+    # get_table_name() -> _get_current_namespace() looks ConfigService up through
+    # the injector inside a try/except; bind the same fake so that path runs for
+    # real instead of being silently swallowed. Anything else still fails loudly.
+    injector.binder.bind(ConfigService, to=config)
     monkeypatch.setattr(GlobalInjector, "get_injector", classmethod(lambda cls: injector))
     return mapper
 
