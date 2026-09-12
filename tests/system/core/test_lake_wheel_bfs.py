@@ -207,7 +207,10 @@ def blob_client():
 
 @pytest.fixture(scope="module")
 def lake_test_wheels(blob_client):
-    """Upload test wheels to packages/ and clean up after the module."""
+    """Upload the test wheels to the shared packages/ path and leave them there.
+
+    Deliberately no teardown deletion -- see the comment after ``yield``.
+    """
     container = os.getenv("AZURE_CONTAINER", "artifacts")
     base_path = os.getenv("AZURE_BASE_PATH", "").rstrip("/")
     packages_path = f"{base_path}/packages" if base_path else "packages"
@@ -241,13 +244,21 @@ def lake_test_wheels(blob_client):
                 time.sleep(5)
 
     yield wheel_a, wheel_b
-
-    for name in (wheel_a, wheel_b):
-        try:
-            container_client.delete_blob(f"{packages_path}/{name}")
-            print(f"Cleaned up test wheel: {packages_path}/{name}")
-        except Exception as exc:
-            print(f"Warning: could not clean up {name}: {exc}")
+    # Do NOT delete the wheels here. All platform lanes (fabric, synapse,
+    # databricks) run this module in parallel against the SAME
+    # ``AZURE_BASE_PATH/packages`` path, and a Databricks job can spend
+    # several minutes acquiring a cluster between this fixture confirming the
+    # blobs and the app's BFS listing the directory. A sibling lane finishing
+    # first and deleting the shared wheels in that window made the Databricks
+    # app see only the Kindling RC wheels -- ``[BFS] Not found in lake:
+    # test-lake-dep-a`` -- and fail with ModuleNotFoundError (v0.12.45 release
+    # run: synapse teardown at 14:56:42 fell inside databricks' 14:53:40 ->
+    # 15:01:26 window; same signature on v0.12.36). The base path is already
+    # per-run (release-candidates/<tag>, workflow-dispatch/<run_id>,
+    # ci-tests/<run_id>), so two tiny wheels left behind cannot accumulate or
+    # leak across runs; the run's artifact folder lifecycle owns their cleanup.
+    # Re-uploads by sibling lanes use overwrite=True with identical bytes and
+    # are harmless.
 
 
 @pytest.fixture
