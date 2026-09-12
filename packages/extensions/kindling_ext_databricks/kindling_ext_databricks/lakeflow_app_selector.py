@@ -14,21 +14,15 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import logging
-import os
 from types import CodeType, ModuleType
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple
 
-import yaml
 from py4j.protocol import Py4JError
 from pyspark.sql.utils import AnalysisException
 
 APP_ENTRY_POINT_GROUP = "spark_kindling.data_apps"
 DATA_APP_CONFIG_KEY = "kindling.data_app"
 ALLOWED_APPS_CONFIG_KEY = "kindling.lakeflow.allowed_apps"
-#: Comma-separated YAML settings files to pass through Kindling's structured
-#: config loader. This is read directly, not through CONFIG_KEYS_CONFIG_KEY,
-#: because restricted Lakeflow runtimes may allow only point lookups.
-CONFIG_FILES_CONFIG_KEY = "kindling.lakeflow.config_files"
 #: Comma-separated pipeline-configuration keys to bridge by point lookup.
 #: Restricted runtimes (serverless / shared-access clusters) allow
 #: ``spark.conf.get`` on pipeline configuration but block every enumeration
@@ -41,14 +35,6 @@ _LOGGER = logging.getLogger(__name__)
 _CONF_READ_ERRORS = (AttributeError, KeyError, Py4JError, AnalysisException, RuntimeError)
 # RuntimeError covers restricted/serverless SparkContext access, where the
 # context exists conceptually but is not exposed to the Python evaluation.
-_STRUCTURED_CONFIG_SECTIONS = (
-    "dataentities",
-    "dataentities-bytag",
-    "datapipes",
-    "datapipes-bytag",
-)
-_ID_OVERRIDE_SECTIONS = ("dataentities", "datapipes")
-_ACCEPTED_CONFIG_SUFFIXES = (".yaml", ".yml")
 
 
 class LakeflowAppSelectionError(RuntimeError):
@@ -69,10 +55,6 @@ class LakeflowAppDeclarationError(LakeflowAppSelectionError):
 
 class LakeflowAppConflictError(LakeflowAppSelectionError):
     """An app changed an already-registered entity or pipe definition."""
-
-
-class LakeflowConfigSourceError(LakeflowAppSelectionError):
-    """A Lakeflow structured-configuration source is missing or invalid."""
 
 
 def _registered_data_app_entry_points() -> Dict[str, Any]:
@@ -165,86 +147,6 @@ def _spark_conf_items(spark: Any) -> Iterable[Tuple[str, Any]]:
     return explicit_items
 
 
-def _validate_structured_config_file(path: str) -> None:
-    """Pre-check a structured config source for clearer Lakeflow diagnostics.
-
-    Dynaconf remains the authoritative parser during ``initialize()``; this
-    guard only catches common source mistakes early. Empty YAML documents are
-    accepted as no-op sources.
-    """
-    if not os.path.isfile(path):
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' points to "
-            f"'{path}', but it is not an existing file."
-        )
-    if not path.lower().endswith(_ACCEPTED_CONFIG_SUFFIXES):
-        accepted = ", ".join(_ACCEPTED_CONFIG_SUFFIXES)
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' points to "
-            f"'{path}', but only {accepted} files are accepted."
-        )
-
-    try:
-        with open(path, "r", encoding="utf-8") as config_file:
-            document = yaml.safe_load(config_file)
-    except yaml.YAMLError as exc:
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' could not parse "
-            f"YAML source '{path}': {exc}"
-        ) from exc
-    except OSError as exc:
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' could not read "
-            f"YAML source '{path}': {exc}"
-        ) from exc
-
-    if document is None:
-        return
-    if not isinstance(document, Mapping):
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' source '{path}' "
-            "must contain a mapping or be empty."
-        )
-
-    for section in _STRUCTURED_CONFIG_SECTIONS:
-        section_value = document.get(section)
-        if section_value is None:
-            continue
-        if not isinstance(section_value, Mapping):
-            raise LakeflowConfigSourceError(
-                f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' source '{path}' "
-                f"section '{section}' must be a mapping."
-            )
-        if section in _ID_OVERRIDE_SECTIONS:
-            for item_id, override in section_value.items():
-                if not isinstance(override, Mapping):
-                    raise LakeflowConfigSourceError(
-                        f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' source "
-                        f"'{path}' section '{section}' entry '{item_id}' must be a "
-                        "mapping."
-                    )
-
-
-def _structured_config_files(spark: Any) -> list[str]:
-    raw = _spark_conf_get(spark, CONFIG_FILES_CONFIG_KEY)
-    if raw is None or raw == "":
-        return []
-
-    paths = [part.strip() for part in raw.split(",") if part.strip()]
-    if not paths:
-        raise LakeflowConfigSourceError(
-            f"Spark configuration key '{CONFIG_FILES_CONFIG_KEY}' was set to "
-            f"{raw!r}, but it does not contain any configuration file paths."
-        )
-
-    config_files = []
-    for path in paths:
-        absolute_path = os.path.abspath(path)
-        _validate_structured_config_file(absolute_path)
-        config_files.append(absolute_path)
-    return config_files
-
-
 def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
     """Bridge application Spark configuration into Kindling's ConfigService.
 
@@ -287,15 +189,6 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
     # Lakeflow. An explicit platform in the bridged config wins.
     if "platform" not in config and "kindling.platform.environment" not in config:
         config["platform"] = "standalone"
-
-    # Kindling loads settings_files before applying this bridged initial_config,
-    # so flat Lakeflow keys win on scalar paths. Structured sections such as
-    # dataentities: have no flat equivalent; datapipes: is the shared namespace
-    # exception, and Dynaconf keeps YAML keys and flat datapipes.* siblings
-    # additive rather than clobbering either side.
-    config_files = _structured_config_files(spark)
-    if config_files:
-        config["config_files"] = config_files
     return config
 
 

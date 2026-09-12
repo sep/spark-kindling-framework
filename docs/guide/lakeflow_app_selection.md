@@ -67,8 +67,7 @@ target-table identity, and concurrent updates.
 
 ## Restricted runtimes (serverless / shared-access clusters)
 
-Validated against a real serverless pipeline (2026-07-20) for point-looked-up
-configuration values:
+Validated against a real serverless pipeline (2026-07-20):
 
 - Pipeline `configuration` values are readable with point lookups
   (`spark.conf.get`) but **not enumerable** — `RuntimeConfig.getAll` does
@@ -77,16 +76,6 @@ configuration values:
   app-selection keys automatically; name any further keys you need in
   `kindling.lakeflow.config_keys` (comma-separated) and the selector
   bridges each by point lookup.
-- `kindling.lakeflow.config_files` is also read by direct `spark.conf.get`
-  point lookup, so it works when only `RuntimeConfig.get` is available. Do not
-  list it in `kindling.lakeflow.config_keys`; that setting is only for
-  additional flat keys after enumeration fails. Use
-  [Databricks Asset Bundle config promotion](dab_config_promotion.md) to deploy
-  companion YAML and pass the resulting path. That guide documents
-  `/Workspace/...` reads for UC shared/standard access mode clusters and jobs;
-  `/Workspace/...` readability from a Lakeflow serverless pipeline remains
-  unverified, so use a Unity Catalog volume path when you need a confirmed
-  pipeline-readable location.
 - The bridged config defaults `platform` to `standalone`: declaration-time
   pipelines need no platform machinery, and the Databricks platform
   service cannot construct inside a pipeline environment ("No
