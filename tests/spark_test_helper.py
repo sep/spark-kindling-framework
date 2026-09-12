@@ -388,13 +388,49 @@ def _teardown_non_delta_jvm() -> bool:
     if SparkContext._gateway is None:
         return False
     try:
-        SparkSession.getActiveSession()
+        active = SparkSession.getActiveSession()
     except Exception:  # noqa: BLE001 - dead gateway: unusable, relaunch
         _teardown_existing_spark_jvm()
         return True
-    if _gateway_launched_with_delta():
+    launched = _gateway_launched_with_delta()
+    if launched is None:
+        # Externally started gateway (PYSPARK_GATEWAY_PORT): we cannot see its
+        # launch and do not own it, so never tear it down. Fall back to the
+        # session's jar list when there is one; otherwise leave it alone.
+        if active is None or _jvm_can_load_delta(active):
+            _rebuild_plain_active_session(active)
+            return False
+        return False
+    if launched:
+        _rebuild_plain_active_session(active)
         return False
     _teardown_existing_spark_jvm()
+    return True
+
+
+def _rebuild_plain_active_session(active) -> bool:
+    """Stop an active session that was built WITHOUT the Delta static confs so
+    the caller's ``getOrCreate()`` creates one with them -- on the same JVM.
+
+    ``spark.sql.extensions`` is static: ``getOrCreate()`` hands back the
+    active session and does not install it retroactively. So a Delta-capable
+    JVM hosting a plain session (e.g. a module's non-Delta class running before
+    its Delta class) would otherwise yield a session whose ``MERGE``/DDL paths
+    lack the Delta extension. Only the session is stopped; the JVM, and with
+    it everything bound to the JVM, survives. Returns True when it rebuilt.
+    """
+    if active is None:
+        return False
+    try:
+        extensions = active.conf.get("spark.sql.extensions", "") or ""
+    except Exception:  # noqa: BLE001 - unusable session: rebuild
+        extensions = ""
+    if "DeltaSparkSessionExtension" in extensions:
+        return False
+    try:
+        active.stop()
+    except Exception:  # noqa: BLE001
+        pass
     return True
 
 
@@ -614,6 +650,9 @@ def get_local_spark_session_with_azure(
                 .config(f"spark.hadoop.fs.azure.sas.fixed.token.{dfs_endpoint}", sas_token)
             )
 
+    # Delta-configured builder: same preflight as the other constructors, or a
+    # plain JVM launched earlier stays jar-less for the Azure path too.
+    _teardown_non_delta_jvm()
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
 
