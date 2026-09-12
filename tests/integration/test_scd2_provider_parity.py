@@ -39,12 +39,12 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from tests.spark_test_helper import _teardown_existing_spark_jvm
+from tests.spark_test_helper import _teardown_non_delta_jvm
 
 
 @pytest.fixture(scope="module")
 def spark():
-    _teardown_existing_spark_jvm()
+    _teardown_non_delta_jvm()
     builder = (
         SparkSession.builder.appName("SCD2ProviderParity")
         .master("local[2]")

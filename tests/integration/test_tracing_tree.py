@@ -32,7 +32,7 @@ from kindling.trace_ops import wrap_provider_ops
 from pyspark.sql import SparkSession
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
-from tests.spark_test_helper import _teardown_existing_spark_jvm
+from tests.spark_test_helper import _teardown_non_delta_jvm
 
 SOURCE_SCHEMA = StructType(
     [
@@ -175,7 +175,7 @@ class TestDeltaWatermarkedSpanTree:
     def spark(self):
         from delta import configure_spark_with_delta_pip
 
-        _teardown_existing_spark_jvm()
+        _teardown_non_delta_jvm()
         builder = (
             SparkSession.builder.appName("TracingTreeDeltaTest")
             .master("local[2]")
