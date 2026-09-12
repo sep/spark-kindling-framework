@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from pyspark.sql import SparkSession
@@ -1173,3 +1174,226 @@ def test_ingest_conditions_explicit_none_disables_configured_quarantine(spark, m
     )
     assert disabled.quarantine_entity_id is None
     assert disabled_provider.appended == []
+
+
+def _logger_provider():
+    provider = MagicMock()
+    provider.get_logger.return_value = MagicMock()
+    return provider
+
+
+# --- gh#222: ingest_conditions against a real provider, and callable predicates ---
+
+
+def _condition_row(**overrides):
+    row = {
+        "condition_id": "condition.temperature_high",
+        "consumes_event_type": ["telemetry.observed"],
+        "subject_type": "machine",
+        "parameters": {
+            "enter_when": "cast(payload['temperature'] as double) > 90",
+            "exit_when": "cast(payload['temperature'] as double) <= 90",
+        },
+        "enabled": True,
+    }
+    row.update(overrides)
+    return row
+
+
+@pytest.mark.requires_spark
+def test_ingest_conditions_end_to_end_against_memory_provider(spark, monkeypatch):
+    """Acceptance criterion #2: ingest_conditions() against a real MemoryEntityProvider
+    — validation/quarantine on first ingest, then an SCD2 re-ingest that changes a
+    tracked field (enabled) closes the old version and opens exactly one new one."""
+    from kindling.entity_provider_memory import MemoryEntityProvider
+    from kindling_ext_temporal import (
+        SimpleTemporalEntityResolver,
+        conditions_schema,
+        ingest_conditions,
+    )
+
+    monkeypatch.setattr(
+        "kindling.entity_provider_memory.get_or_create_spark_session", lambda: MagicMock()
+    )
+    memory_provider = MemoryEntityProvider(_logger_provider())
+    memory_provider.spark = spark
+
+    resolver = SimpleTemporalEntityResolver()
+    valid_from = datetime(2026, 1, 1)
+
+    df = spark.createDataFrame(
+        [
+            _condition_row(condition_id="condition.temperature_high", valid_from=valid_from),
+            _condition_row(
+                condition_id="condition.bad",
+                valid_from=valid_from,
+                parameters={
+                    "enter_when": "",
+                    "exit_when": "cast(payload['temperature'] as double) <= 90",
+                },
+            ),
+        ],
+        conditions_schema(),
+    )
+
+    result = ingest_conditions(
+        df,
+        resolver=resolver,
+        provider_factory=lambda entity: memory_provider,
+        quarantine_entity_id=None,
+    )
+
+    assert result.ingested_count == 1
+    assert [invalid.condition_id for invalid in result.quarantined] == ["condition.bad"]
+
+    stored = memory_provider.read_entity(resolver.get_conditions_entity()).collect()
+    current = [row for row in stored if row["__is_current"]]
+    assert len(current) == 1
+    assert current[0]["condition_id"] == "condition.temperature_high"
+    assert current[0]["enabled"] is True
+
+    # Re-ingest the same condition with a tracked field (enabled) flipped.
+    changed_df = spark.createDataFrame(
+        [
+            _condition_row(
+                condition_id="condition.temperature_high", enabled=False, valid_from=valid_from
+            )
+        ],
+        conditions_schema(),
+    )
+    ingest_conditions(
+        changed_df,
+        resolver=resolver,
+        provider_factory=lambda entity: memory_provider,
+        quarantine_entity_id=None,
+    )
+
+    all_rows = memory_provider.read_entity(resolver.get_conditions_entity()).collect()
+    current_rows = [row for row in all_rows if row["__is_current"]]
+    closed_rows = [row for row in all_rows if not row["__is_current"]]
+    assert len(current_rows) == 1
+    assert current_rows[0]["enabled"] is False
+    assert len(closed_rows) == 1, "exactly one prior version must be closed, not duplicated"
+    assert closed_rows[0]["enabled"] is True
+
+
+def _predicate_events_df(spark):
+    from kindling_ext_temporal import events_schema
+
+    now = datetime(2026, 7, 14, 12, 0, 0)
+    rows = [
+        (
+            "evt-hot",
+            "telemetry.observed",
+            0,
+            "base",
+            "machine",
+            "machine-1",
+            now,
+            "test",
+            None,
+            {"temperature": "95.0"},
+            None,
+            now,
+        ),
+        (
+            "evt-cold",
+            "telemetry.observed",
+            0,
+            "base",
+            "machine",
+            "machine-1",
+            now,
+            "test",
+            None,
+            {"temperature": "50.0"},
+            None,
+            now,
+        ),
+    ]
+    return spark.createDataFrame(rows, events_schema())
+
+
+@pytest.mark.requires_spark
+def test_execute_rules_invokes_callable_predicate_and_filters_on_returned_column(spark):
+    from kindling_ext_temporal import ConditionEngineRunner, ConditionRule
+
+    events_df = _predicate_events_df(spark)
+    enter_calls = []
+    exit_calls = []
+
+    def enter_when(events):
+        enter_calls.append(events)
+        return events["payload"]["temperature"].cast("double") > 90
+
+    def exit_when(events):
+        exit_calls.append(events)
+        return events["payload"]["temperature"].cast("double") <= 90
+
+    rule = ConditionRule(
+        condition_id="condition.registry_overheat",
+        consumes_event_type=["telemetry.observed"],
+        subject_type="machine",
+        parameters={"enter_when": enter_when, "exit_when": exit_when},
+    )
+
+    result = ConditionEngineRunner().execute_rules(events_df, [rule])
+    event_types = {row.event_type for row in result.collect()}
+
+    assert len(enter_calls) == 1
+    assert len(exit_calls) == 1
+    assert "payload" in enter_calls[0].columns
+    assert "condition.registry_overheat.entered" in event_types
+    assert "condition.registry_overheat.exited" in event_types
+
+
+@pytest.mark.requires_spark
+def test_execute_rules_raises_clearly_when_predicate_builder_returns_non_column(spark):
+    from kindling_ext_temporal import ConditionEngineRunner, ConditionRule
+
+    events_df = _predicate_events_df(spark)
+    rule = ConditionRule(
+        condition_id="condition.bad_builder",
+        consumes_event_type=["telemetry.observed"],
+        subject_type="machine",
+        parameters={
+            "enter_when": lambda events: True,  # not a Column
+            "exit_when": lambda events: events["payload"]["temperature"].cast("double") <= 90,
+        },
+    )
+
+    with pytest.raises(TypeError, match="expected a Column"):
+        ConditionEngineRunner().execute_rules(events_df, [rule])
+
+
+@pytest.mark.requires_spark
+def test_execute_rules_runs_table_and_registry_rules_side_by_side(spark):
+    from kindling_ext_temporal import ConditionEngineRunner, ConditionRule
+
+    events_df = _predicate_events_df(spark)
+    table_rule = ConditionRule(
+        condition_id="condition.table_overheat",
+        consumes_event_type=["telemetry.observed"],
+        subject_type="machine",
+        parameters={
+            "enter_when": "cast(payload['temperature'] as double) > 90",
+            "exit_when": "cast(payload['temperature'] as double) <= 90",
+        },
+    )
+    registry_rule = ConditionRule(
+        condition_id="condition.registry_overheat",
+        consumes_event_type=["telemetry.observed"],
+        subject_type="machine",
+        parameters={
+            "enter_when": lambda events: events["payload"]["temperature"].cast("double") > 90,
+            "exit_when": lambda events: events["payload"]["temperature"].cast("double") <= 90,
+        },
+    )
+
+    result = ConditionEngineRunner().execute_rules(events_df, [table_rule, registry_rule])
+    event_types = {row.event_type for row in result.collect()}
+
+    assert "condition.table_overheat.entered" in event_types
+    assert "condition.table_overheat.exited" in event_types
+    assert "condition.registry_overheat.entered" in event_types
+    assert "condition.registry_overheat.exited" in event_types

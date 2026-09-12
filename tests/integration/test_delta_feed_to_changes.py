@@ -1,4 +1,8 @@
-"""Unit tests for DeltaEntityProvider._transform_delta_feed_to_changes.
+"""Integration tests for DeltaEntityProvider._transform_delta_feed_to_changes.
+
+Integration rather than unit: the transform under test is a Spark DataFrame
+window operation, so verifying it requires a real SparkSession -- there is no
+meaningful mocked form of the assertion (see docs/contributing/testing.md).
 
 Regression coverage for the keyless-watermarking defect: an entity with
 merge_columns=[] (append-only) consumed by a watermarked pipe used to lose
@@ -11,8 +15,31 @@ Spark's "No Partition Defined for Window operation" warning.
 from datetime import datetime
 
 import pytest
-
 from kindling.entity_provider_delta import DeltaEntityProvider
+
+from tests.conftest import _sockets_permitted
+
+
+@pytest.fixture(scope="module")
+def spark_session():
+    """Own module-scoped session rather than conftest.py's session-scoped one.
+
+    Sibling integration modules (test_scd2_provider_parity.py,
+    test_scd2_declared_flow.py) shut down the JVM gateway outright at module
+    setup so their own session puts the Delta jars on the classpath. A
+    session-scoped fixture cached earlier in the same worker process would
+    still be handed out afterwards as a dead session. Module scope means the
+    next module needing Spark calls getOrCreate() fresh instead.
+    """
+    if not _sockets_permitted():
+        pytest.skip(
+            "Sockets are not permitted in this environment; cannot start a real SparkSession."
+        )
+    from tests.spark_test_helper import get_standalone_spark_session
+
+    yield get_standalone_spark_session("DeltaFeedToChangesTests")
+    # Not spark.stop(): this may be the same JVM-singleton session other
+    # modules in this worker are still relying on.
 
 
 @pytest.fixture
