@@ -4,6 +4,25 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.45] - 2026-09-12
+
+### Fixed
+
+- The test suite is green under `--suite all` (one process, integration
+  before unit in collection order): 3136 passed, 0 failed, 0 errors, up from
+  3120 / 18 failed / 1 error. Test-only; no package code changed. Three
+  cross-test state leaks were removed at their source: `test_sdp_mode`
+  depended on ambient injector state for `EntityNameMapper` (the test red on
+  `main` since 2026-09-10); `test_config_integration` reloaded
+  `kindling.spark_config`, minting new `ConfigService` class objects that no
+  longer matched the ones `kindling.bootstrap` holds and failing seventeen
+  later tests with `KeyError`; and `register_kindling_loaders()` left
+  `LOADERS_FOR_DYNACONF` in `os.environ` for the whole process, so later
+  `Dynaconf` instances resolved `@secret:` references at load time — now
+  restored around every test by an autouse fixture. `tests/local`, a
+  standalone script pytest was collecting as a test, joins
+  `tests/local-project` in `norecursedirs`.
+
 ## [0.12.44] - 2026-09-12
 
 ### Added
