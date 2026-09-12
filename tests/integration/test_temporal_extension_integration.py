@@ -1199,11 +1199,34 @@ def _condition_row(**overrides):
     row.update(overrides)
 
 
+@pytest.fixture(scope="module")
+def _memory_spark_session():
+    """Delta-configured session for the memory-provider ingest test.
+
+    Built via get_standalone_spark_session rather than this module's bare
+    ``spark`` fixture: ingest_conditions() upserts through the memory
+    provider's SCD2 merge, and collecting the result on a session without the
+    Delta/serialization configuration that helper applies fails deep in Py4J
+    (NullPointerException in SerDeUtil.toJavaArray during collectToPython).
+    Carried over from the test's original unit-suite fixture. Not stopped here:
+    it may be the same JVM-singleton session other tests in this worker use.
+    """
+    from tests.conftest import _sockets_permitted
+    from tests.spark_test_helper import get_standalone_spark_session
+
+    if not _sockets_permitted():
+        pytest.skip(
+            "Sockets are not permitted in this environment; cannot start a real SparkSession."
+        )
+    yield get_standalone_spark_session("TemporalConditionsIngestTests")
+
+
 @pytest.mark.requires_spark
-def test_ingest_conditions_end_to_end_against_memory_provider(spark, monkeypatch):
+def test_ingest_conditions_end_to_end_against_memory_provider(_memory_spark_session, monkeypatch):
     """Acceptance criterion #2: ingest_conditions() against a real MemoryEntityProvider
     — validation/quarantine on first ingest, then an SCD2 re-ingest that changes a
     tracked field (enabled) closes the old version and opens exactly one new one."""
+    spark = _memory_spark_session
     from kindling.entity_provider_memory import MemoryEntityProvider
     from kindling_ext_temporal import (
         SimpleTemporalEntityResolver,

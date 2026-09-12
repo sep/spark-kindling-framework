@@ -11,6 +11,7 @@ which needs no JVM.
 from unittest.mock import MagicMock, patch
 
 import pytest
+from kindling.entity_provider import DECLARATIVE_SOURCE_OPTION
 from kindling.entity_provider_eventhub import (
     _AVRO_SINGLE_OBJECT_MARKER,
     _PREPROCESS_MODES,
@@ -675,3 +676,67 @@ class TestAmqpHeaderDecodingIntegration:
         assert row["device_id"] == self.DEVICE_ID
         assert row["enqueued_time_ms"] == self.ENQUEUED_TIME_MS
         assert row["body"] == self.BODY_TEXT
+
+
+@pytest.fixture
+def provider():
+    logger_provider = MagicMock()
+    logger_provider.get_logger.return_value = MagicMock()
+    config_service = MagicMock()
+    config_service.get.return_value = "fabric"
+
+    with patch(
+        "kindling.entity_provider_eventhub.get_or_create_spark_session", return_value=MagicMock()
+    ):
+        return EventHubEntityProvider(logger_provider, config_service)
+
+
+class TestEventHubDeclarableStreamingSourceOnSpark:
+    """Declarable-source reads that need a real session; the JVM-free
+    spec/validation cases stay in tests/unit/test_entity_provider_eventhub.py."""
+
+    def test_declarable_stream_read_retains_native_kafka_fields(self, provider, spark_session):
+        provider.platform = "databricks"
+        entity = _entity(
+            {
+                "provider_type": "eventhub",
+                "provider.transport": "kafka",
+                "provider.eventhub.connectionString": _connection_string(),
+                "provider.eventhub.name": "my-hub",
+            }
+        )
+        provider.spark.readStream.format.return_value.options.return_value.load.return_value = (
+            spark_session.readStream.format("rate").load()
+        )
+
+        result = provider.read_entity_as_stream(entity, options={DECLARATIVE_SOURCE_OPTION: True})
+
+        assert result.isStreaming is True
+        columns = set(result.columns)
+        assert {"value", "timestamp", "body", "enqueuedTime"}.issubset(columns)
+
+    def test_batch_kafka_schema_still_renames_value_and_timestamp(self, provider, spark_session):
+        from pyspark.sql.functions import current_timestamp
+
+        provider.platform = "databricks"
+        entity = _entity(
+            {
+                "provider_type": "eventhub",
+                "provider.transport": "kafka",
+                "provider.eventhub.connectionString": _connection_string(),
+                "provider.eventhub.name": "my-hub",
+            }
+        )
+        provider.spark.read.format.return_value.options.return_value.load.return_value = (
+            spark_session.createDataFrame([(b"payload",)], ["value"]).withColumn(
+                "timestamp", current_timestamp()
+            )
+        )
+
+        result = provider.read_entity(entity)
+
+        columns = set(result.columns)
+        assert "body" in columns
+        assert "enqueuedTime" in columns
+        assert "value" not in columns
+        assert "timestamp" not in columns

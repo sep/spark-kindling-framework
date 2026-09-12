@@ -6,11 +6,19 @@ tests/integration/test_entity_provider_eventhub_preprocessing.py. Everything
 here runs against a mocked session and needs no JVM.
 """
 
+from dataclasses import asdict
 from unittest.mock import MagicMock, patch
 
 import pytest
-from kindling.entity_provider_eventhub import (EventHubEntityProvider,
-                                               _decode_amqp_primitive)
+from kindling.entity_provider import (
+    DECLARATIVE_SOURCE_OPTION,
+    is_declarable_streaming_source,
+)
+from kindling.entity_provider_eventhub import (
+    EventHubEntityProvider,
+    _decode_amqp_primitive,
+)
+from kindling.entity_provider_eventhub_declaration import DECLARABLE_SUPPORTED_TAGS
 from pyspark import SparkContext
 
 from tests.eventhub_test_helpers import _connection_string, _entity
@@ -473,8 +481,7 @@ class TestEventHubPreprocessing:
         Regression coverage tying this feature to the ordering bug fixed
         in kindling.bootstrap (see test_config_override_overlay.py)."""
         import kindling.bootstrap as bootstrap
-        from kindling.data_entities import (DataEntityManager,
-                                            DataEntityRegistry)
+        from kindling.data_entities import DataEntityManager, DataEntityRegistry
         from kindling.data_pipes import DataPipesRegistry
         from kindling.injection import GlobalInjector
         from kindling.platform_provider import SecretProvider
@@ -665,11 +672,6 @@ data = sys.stdin.buffer.read()
 fn = cloudpickle.loads(data)
 assert "kindling" not in sys.modules, (
     "unpickling imported kindling -- the function is not self-contained"
-)
-from dataclasses import asdict
-from kindling.entity_provider import (
-    DECLARATIVE_SOURCE_OPTION,
-    is_declarable_streaming_source,
 )
 
 headers = [{"key": "x-opt-seq", "value": bytes([0x70, 0, 0, 0, 42])}]
@@ -867,49 +869,3 @@ class TestEventHubDeclarableStreamingSourceSpec:
         kafka_config = provider._build_kafka_config(config, streaming=True)
 
         assert DECLARATIVE_SOURCE_OPTION not in kafka_config
-
-    def test_declarable_stream_read_retains_native_kafka_fields(self, provider, spark_session):
-        provider.platform = "databricks"
-        entity = _entity(
-            {
-                "provider_type": "eventhub",
-                "provider.transport": "kafka",
-                "provider.eventhub.connectionString": _connection_string(),
-                "provider.eventhub.name": "my-hub",
-            }
-        )
-        provider.spark.readStream.format.return_value.options.return_value.load.return_value = (
-            spark_session.readStream.format("rate").load()
-        )
-
-        result = provider.read_entity_as_stream(entity, options={DECLARATIVE_SOURCE_OPTION: True})
-
-        assert result.isStreaming is True
-        columns = set(result.columns)
-        assert {"value", "timestamp", "body", "enqueuedTime"}.issubset(columns)
-
-    def test_batch_kafka_schema_still_renames_value_and_timestamp(self, provider, spark_session):
-        from pyspark.sql.functions import current_timestamp
-
-        provider.platform = "databricks"
-        entity = _entity(
-            {
-                "provider_type": "eventhub",
-                "provider.transport": "kafka",
-                "provider.eventhub.connectionString": _connection_string(),
-                "provider.eventhub.name": "my-hub",
-            }
-        )
-        provider.spark.read.format.return_value.options.return_value.load.return_value = (
-            spark_session.createDataFrame([(b"payload",)], ["value"]).withColumn(
-                "timestamp", current_timestamp()
-            )
-        )
-
-        result = provider.read_entity(entity)
-
-        columns = set(result.columns)
-        assert "body" in columns
-        assert "enqueuedTime" in columns
-        assert "value" not in columns
-        assert "timestamp" not in columns
