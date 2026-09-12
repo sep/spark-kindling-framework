@@ -493,7 +493,7 @@ jobs:
         if: always()
         with:
           name: full-suite-single-process-results
-          path: test-results/all-test-results.xml
+          path: test-results/all-test-*
 
   kda-packaging-tests:
     name: KDA Packaging Tests
