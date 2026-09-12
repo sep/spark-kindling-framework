@@ -4,6 +4,8 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.44] - 2026-09-12
+
 ### Added
 
 - Normal Kindling pipes can read an external Delta driving input
@@ -43,6 +45,15 @@ All notable changes to spark-kindling are documented here.
   where every config enumeration surface is blocked — setting it as
   pipeline configuration was silently ignored and the ceiling stayed at its
   default.
+- Streamed external reads in the SDP engines now resolve the physical table
+  name through `EntityNameMapper`, exactly as batch reads always have. The
+  default streamed resolver called `spark.readStream.table(<logical entity
+  id>)`, so any entity using `provider.table_catalog`/`table_schema`/
+  `table_name` or a non-default naming strategy streamed from the wrong name
+  or failed to resolve. This was already live on the AUTO CDC change-feed
+  path, which uses the same route; its tests overrode the batch resolver but
+  not the streaming one, so both sides agreed on raw ids and the divergence
+  stayed invisible.
 
 ## [0.12.43] - 2026-09-11
 
