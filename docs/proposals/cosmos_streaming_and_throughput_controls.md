@@ -15,7 +15,8 @@ point:
 
 1. **Change-feed streaming reads** — implement `StreamableEntityProvider` on
    `CosmosEntityProvider`, backed by the connector's `spark.cosmos.changeFeed.*`
-   options, so Cosmos becomes a third streaming source alongside Delta (CDF)
+   options, so Cosmos joins Delta (CDF), Parquet (explicit schema required) and Event Hubs as a
+   streaming source
    and EventHub.
 2. **Config-first throughput controls** — a `kindling.cosmos.*` hierarchical
    config layer that sets safe run-level defaults for the connector's
@@ -39,9 +40,9 @@ named gap. Neither exists today:
 
 - `CosmosEntityProvider` implements `BaseEntityProvider`,
   `WritableEntityProvider`, and `StreamWritableEntityProvider` — not
-  `StreamableEntityProvider`. Today only Delta and EventHub can be the
-  driving input of a streaming pipe (`pipe_streaming.py`'s
-  `is_streamable()` gate).
+  `StreamableEntityProvider`. Today Delta, Parquet (which requires an
+  explicit schema) and EventHub can be the driving input of a streaming pipe
+  (`pipe_streaming.py`'s `is_streamable()` gate).
 - Every Cosmos throughput/partitioning knob is reachable only through the
   generic `provider.option.` passthrough in `_extra_connector_options()` —
   undocumented, opt-in per entity, and with no safe defaults. A batch read
@@ -182,9 +183,15 @@ named gap. Neither exists today:
 ## Implementation sketch
 
 ```python
+COSMOS_FORMAT = "cosmos.oltp"                    # existing: batch reads/writes
+COSMOS_CHANGEFEED_FORMAT = "cosmos.oltp.changeFeed"  # new: the change-feed source
+```
+
+```python
 class CosmosEntityProvider(
     BaseEntityProvider, WritableEntityProvider,
     StreamWritableEntityProvider, StreamableEntityProvider,
+    DeclarableStreamingSource,
 ):
     @inject
     def __init__(self, logger_provider: PythonLoggerProvider, config_service: ConfigService):
@@ -195,13 +202,34 @@ class CosmosEntityProvider(
         config = self._get_provider_config(entity_metadata)
         if options:
             config = {**config, **options}
-        opts = self._build_read_options(entity_metadata, config)
-        opts.update(self._changefeed_options(config))
+        # Change-feed defaults first, then the ordinary read options -- which
+        # already end with the generic provider.option.* passthrough -- so an
+        # explicit provider.option.spark.cosmos.changeFeed.* still wins, per
+        # the precedence stated above.
+        opts = self._changefeed_options(config)
+        opts.update(self._build_read_options(entity_metadata, config))
         spark = get_or_create_spark_session()
-        reader = spark.readStream.format(format or COSMOS_FORMAT)
+        # Change feed is a distinct data source from the OLTP one used by
+        # read_entity(); an explicit format override must stay on it.
+        if format and format != COSMOS_CHANGEFEED_FORMAT:
+            raise ValueError(f"Cosmos streaming reads use {COSMOS_CHANGEFEED_FORMAT!r}, got {format!r}")
+        reader = spark.readStream.format(COSMOS_CHANGEFEED_FORMAT)
         for key, value in opts.items():
             reader = reader.option(key, value)
         return reader.load()
+
+    def streaming_source_spec(self, entity_metadata) -> StreamingSourceSpec:
+        """Inert, secret-safe declaration for SDP/Lakeflow lowering.
+
+        Required alongside StreamableEntityProvider: the declarative engine's
+        is_declarable_streaming_source() demands BOTH interfaces, so without
+        this a Cosmos driving input is classified as a batch EXTERNAL read and
+        read_entity_as_stream() is never reached. Validates changefeed.mode /
+        start_from / items_per_trigger and reports option NAMES only -- never
+        the account key or connection values (see the Event Hubs
+        implementation in entity_provider_eventhub_declaration.py).
+        """
+        ...
 
     def _changefeed_options(self, config):
         mode = str(config.get("changefeed.mode", "latest_version")).lower()
@@ -237,9 +265,18 @@ class CosmosEntityProvider(
             )
             threshold = cs.get("kindling.cosmos.throughput_control.target_threshold")
             target = cs.get("kindling.cosmos.throughput_control.target_throughput")
-            if threshold:
+            # Alternatives, not companions: the connector cannot honour both.
+            # Presence via `is not None` so a configured 0/false is not dropped.
+            if threshold is not None and target is not None:
+                raise ValueError(
+                    "Set only one of kindling.cosmos.throughput_control.target_threshold "
+                    "and .target_throughput"
+                )
+            if threshold is not None:
+                if not 0 < float(threshold) <= 1:
+                    raise ValueError("target_threshold must be in (0, 1]")
                 defaults["spark.cosmos.throughputControl.targetThroughputThreshold"] = threshold
-            if target:
+            if target is not None:
                 defaults["spark.cosmos.throughputControl.targetThroughput"] = target
             db = cs.get("kindling.cosmos.throughput_control.global_control.database")
             container = cs.get("kindling.cosmos.throughput_control.global_control.container")
