@@ -25,9 +25,12 @@ from unittest.mock import MagicMock
 
 import pytest
 from delta import configure_spark_with_delta_pip
+from injector import Injector
 from kindling.data_entities import EntityMetadata, EntityNameMapper, EntityPathLocator
 from kindling.data_pipes import PipeMetadata
 from kindling.entity_provider_delta import DeltaEntityProvider
+from kindling.entity_resolution import ConfigDrivenEntityNameMapper
+from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
 from kindling_ext_sdp import OssSdpEngine, SdpModeWriteError, SdpWriteGuardProvider
@@ -173,53 +176,60 @@ class FakeRegistry(dict):
     get_pipe_definition = dict.get
 
 
+@pytest.fixture
+def configured_name_mapper(monkeypatch):
+    """Supply the real mapper without depending on process-global bootstrap state."""
+    config = MagicMock(spec=ConfigService)
+    config.get.side_effect = lambda key, default=None: default
+    logger_provider = MagicMock(spec=PythonLoggerProvider)
+    mapper = ConfigDrivenEntityNameMapper(config, logger_provider)
+    injector = Injector(auto_bind=False)
+    injector.binder.bind(EntityNameMapper, to=mapper)
+    monkeypatch.setattr(GlobalInjector, "get_injector", classmethod(lambda cls: injector))
+    return mapper
+
+
 class TestEmittedDatasetFunctionOnRealSpark:
-    def test_dataset_function_reads_real_table_and_transforms(self, spark, monkeypatch):
+    @pytest.mark.parametrize(
+        "source_tags, physical_table",
+        [
+            ({}, "src.orders"),
+            (
+                {
+                    "provider.table_catalog": "spark_catalog",
+                    "provider.table_schema": "sdp_sources",
+                    "provider.table_name_strategy": "leaf",
+                },
+                "spark_catalog.sdp_sources.orders",
+            ),
+            (
+                {"provider.table_name": "spark_catalog.sdp_sources.physical_orders"},
+                "spark_catalog.sdp_sources.physical_orders",
+            ),
+        ],
+        ids=["qualified-id", "mapped-leaf", "explicit-table"],
+    )
+    def test_dataset_function_reads_real_table_and_transforms(
+        self, spark, configured_name_mapper, source_tags, physical_table
+    ):
         """The emitted dataset function end-to-end on a real session: a
         real spark.table() read of the external input, the pipe's execute
         receiving a real DataFrame under the runner kwarg contract, and a
         real transformed DataFrame out — what SDP evaluates at run time."""
-        from kindling.entity_resolution import ConfigDrivenEntityNameMapper
-        from kindling.injection import GlobalInjector
-
-        # The engine's default external reader resolves the physical table
-        # name through GlobalInjector.get(EntityNameMapper). Bind the REAL
-        # mapper here explicitly rather than relying on ambient injector
-        # state: whether ConfigDrivenEntityNameMapper is bound depends on
-        # which other tests already ran in this worker (its autobind fires
-        # on import, and several tests reset the injector), which made this
-        # test fail under xdist with a different error each run. A config
-        # with no storage namespace makes the mapper treat entity ids as
-        # already-qualified names, so "src.orders" reads src.orders.
-        config = MagicMock()
-        config.get.return_value = None
-        mapper = ConfigDrivenEntityNameMapper(config, MagicMock())
-
-        # The mapper resolves a two-part id's catalog via
-        # _get_current_namespace(), which looks up ConfigService through the
-        # injector inside a try/except -- serve the same fake config there so
-        # the production path completes instead of an assertion being
-        # swallowed. Anything else is still an unexpected lookup.
-        def get_service(cls):
-            if cls is EntityNameMapper:
-                return mapper
-            if cls is ConfigService:
-                return config
-            raise AssertionError(f"unexpected service request: {cls}")
-
-        monkeypatch.setattr(GlobalInjector, "get", get_service)
-
         spark.sql("CREATE DATABASE IF NOT EXISTS src")
-        spark.sql("DROP TABLE IF EXISTS src.orders")
+        spark.sql("CREATE DATABASE IF NOT EXISTS sdp_sources")
+        spark.sql(f"DROP TABLE IF EXISTS {physical_table}")
         spark.createDataFrame(
             [(1, "open"), (2, "closed"), (3, "open")], ORDERS_SCHEMA
-        ).write.format("delta").saveAsTable("src.orders")
+        ).write.format("delta").saveAsTable(physical_table)
 
         def silver_execute(**dfs):
             return dfs["src_orders"].filter("status = 'open'").select("order_id")
 
+        source_entity = make_entity("src.orders", tags=source_tags)
+        assert configured_name_mapper.get_table_name(source_entity) == physical_table
         entities = FakeRegistry(
-            {e.entityid: e for e in [make_entity("src.orders"), make_entity("silver.orders")]}
+            {e.entityid: e for e in [source_entity, make_entity("silver.orders")]}
         )
         pipes = FakeRegistry(
             {
@@ -237,8 +247,9 @@ class TestEmittedDatasetFunctionOnRealSpark:
 
         dp = FakeDpModule()
         engine = OssSdpEngine(entities, pipes, dp_module=dp, session_provider=lambda: spark)
-        engine.declare_pipeline(engine.build_plan())
-
-        result = dp.declared["silver_orders"]()
-
-        assert sorted(r["order_id"] for r in result.collect()) == [1, 3]
+        try:
+            engine.declare_pipeline(engine.build_plan())
+            result = dp.declared["silver_orders"]()
+            assert sorted(r["order_id"] for r in result.collect()) == [1, 3]
+        finally:
+            spark.sql(f"DROP TABLE IF EXISTS {physical_table}")
