@@ -367,7 +367,7 @@ class TestEntityConfigOverlay:
         assert entity.cluster_columns == ["region"]
         assert entity.name == "orders_renamed"
 
-    def test_populated_merge_columns_survive_unrelated_overrides(self):
+    def test_populated_merge_columns_survive_unrelated_overrides(self, caplog):
         """Regression guard: a delta entity declared with a populated,
         schema-valid merge_columns must keep it (and so pass `kindling app
         validate`'s delta-merge-key check) when the matching config
@@ -383,10 +383,14 @@ class TestEntityConfigOverlay:
             }
         )
 
-        manager.apply_config_overrides(config_service)
+        with caplog.at_level("WARNING", logger="kindling.data_entities"):
+            manager.apply_config_overrides(config_service)
 
         entity = manager.get_entity_definition("bronze.orders")
         assert entity.merge_columns == ["order_id"]
+        # The non-trigger path must stay silent: an implementation that warned on
+        # every overlay would keep merge_columns intact and still be wrong.
+        assert not [record for record in caplog.records if "merge_columns" in record.getMessage()]
 
     def test_override_clearing_declared_merge_columns_is_logged(self, caplog):
         """When a config override *does* replace a populated merge_columns
