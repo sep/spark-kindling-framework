@@ -4,6 +4,39 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- CI job **Full Suite (single process)** (`poe test-all-ci`): runs the unit,
+  integration and KDA suites in one interpreter, integration before unit in
+  collection order, so state that leaks across suites -- invisible to the
+  per-suite jobs -- fails the PR that introduces it. It gates `publish-release`
+  alongside the other suite jobs (#297).
+
+### Changed
+
+- `poe test` passes `--skip-system`: it runs the unit, integration and KDA
+  suites and no longer fails cloud system tests as environment noise on a
+  machine without workspace credentials; use `poe test-system` for those (#297).
+- `docs/contributing/release_process.md` documents that Copilot reviews only
+  the first head it sees and must be asked to re-review fix-up commits before a
+  fast-track merge (#297).
+
+### Fixed
+
+- Delta-backed test sessions are order-independent: if an earlier module
+  launched the process-wide JVM without the Delta jars (`spark.jars.packages`
+  is honoured only at py4j gateway launch), `get_standalone_spark_session` and
+  `get_local_spark_session` tear that JVM down -- reaping the launcher process,
+  which `gateway.shutdown()` alone leaves alive -- and relaunch with Delta; a
+  JVM that already carries Delta is reused. The six private
+  `_teardown_existing_spark_jvm` copies in integration modules import the one
+  shared primitive. Fixes `main`'s Integration Tests job, red since #296 with
+  `Cannot find catalog plugin class ... DeltaCatalog` (#297).
+- `test_lake_wheel_bfs` reports a missing top-level wheel (wheels absent from
+  the listed directory) separately from a missing `Requires-Dist` dependency
+  (a transitive-resolution failure), quoting the `[BFS] Not found in lake`
+  lines from the job log (#297).
+
 ## [0.12.45] - 2026-09-12
 
 ### Fixed

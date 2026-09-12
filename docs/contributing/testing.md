@@ -7,7 +7,7 @@ A comprehensive guide to testing the Spark Kindling Framework.
 ### Run Tests
 
 ```bash
-# All tests
+# Unit, integration and KDA suites in one process (cloud system tests skipped)
 poe test
 
 # Unit tests only
@@ -308,7 +308,7 @@ class TestEntityReadPersistStrategy:
 
 ```bash
 # Poe task runner commands (recommended)
-poe test              # Run all tests (unit + integration + system)
+poe test              # Unit + integration + KDA in one process; system tests skipped (use poe test-system)
 poe test-unit         # Run unit tests only
 poe test-integration  # Run integration tests only
 poe test-quick        # Run unit + integration (skip system tests)

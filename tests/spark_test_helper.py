@@ -207,6 +207,10 @@ def get_local_spark_session(
             print(f"⚠ Azure CLI auth setup failed: {e}")
             print("  Make sure you're logged in with: az login")
 
+    # Same preflight as get_standalone_spark_session: this is the path behind
+    # the shared conftest ``spark_session`` fixture, so a plain JVM launched by
+    # an earlier module must be relaunched here too or Delta fails at first use.
+    _teardown_non_delta_jvm()
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
 
     # Set log level to reduce noise in tests
@@ -216,6 +220,17 @@ def get_local_spark_session(
 
 
 _DELTA_CATALOG = "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+
+
+def _active_session_or_none():
+    """``SparkSession.getActiveSession()`` that treats a failing lookup as
+    "no usable session". The lookup itself is a JVM call and raises a Py4J
+    error when ``_active_spark_context`` still points at a dead gateway; that
+    state must flow into teardown, not abort before it."""
+    try:
+        return SparkSession.getActiveSession()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _teardown_existing_spark_jvm() -> None:
@@ -239,10 +254,25 @@ def _teardown_existing_spark_jvm() -> None:
     import __main__
     from pyspark import SparkContext
 
-    active = SparkSession.getActiveSession()
+    active = _active_session_or_none()
     if active is not None:
         try:
             active.stop()
+        except Exception:  # noqa: BLE001
+            pass
+    # A dead gateway leaves the class-level caches behind when stop() could not
+    # run: SparkContext._active_spark_context, and SparkSession's
+    # _instantiatedSession / _activeSession, which getOrCreate() would hand
+    # back (its liveness check is only ``_sc._jsc is not None``). Clear them so
+    # the next builder starts clean.
+    try:
+        with SparkContext._lock:
+            SparkContext._active_spark_context = None
+    except Exception:  # noqa: BLE001
+        pass
+    for attr in ("_instantiatedSession", "_activeSession"):
+        try:
+            setattr(SparkSession, attr, None)
         except Exception:  # noqa: BLE001
             pass
     # kindling.spark_session.get_or_create_spark_session() returns
@@ -324,10 +354,16 @@ def _teardown_non_delta_jvm() -> bool:
     """
     from pyspark import SparkContext
 
-    active = SparkSession.getActiveSession()
+    try:
+        active = SparkSession.getActiveSession()
+    except Exception:  # noqa: BLE001 - dead gateway: unusable, fall through to teardown
+        active = None
+        stale = True
+    else:
+        stale = False
     if active is not None and _jvm_can_load_delta(active):
         return False
-    if active is None and SparkContext._gateway is None:
+    if active is None and SparkContext._gateway is None and not stale:
         return False
     _teardown_existing_spark_jvm()
     return True
