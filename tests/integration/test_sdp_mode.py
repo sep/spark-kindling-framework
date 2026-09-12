@@ -174,11 +174,41 @@ class FakeRegistry(dict):
 
 
 class TestEmittedDatasetFunctionOnRealSpark:
-    def test_dataset_function_reads_real_table_and_transforms(self, spark):
+    def test_dataset_function_reads_real_table_and_transforms(self, spark, monkeypatch):
         """The emitted dataset function end-to-end on a real session: a
         real spark.table() read of the external input, the pipe's execute
         receiving a real DataFrame under the runner kwarg contract, and a
         real transformed DataFrame out — what SDP evaluates at run time."""
+        from kindling.entity_resolution import ConfigDrivenEntityNameMapper
+        from kindling.injection import GlobalInjector
+
+        # The engine's default external reader resolves the physical table
+        # name through GlobalInjector.get(EntityNameMapper). Bind the REAL
+        # mapper here explicitly rather than relying on ambient injector
+        # state: whether ConfigDrivenEntityNameMapper is bound depends on
+        # which other tests already ran in this worker (its autobind fires
+        # on import, and several tests reset the injector), which made this
+        # test fail under xdist with a different error each run. A config
+        # with no storage namespace makes the mapper treat entity ids as
+        # already-qualified names, so "src.orders" reads src.orders.
+        config = MagicMock()
+        config.get.return_value = None
+        mapper = ConfigDrivenEntityNameMapper(config, MagicMock())
+
+        # The mapper resolves a two-part id's catalog via
+        # _get_current_namespace(), which looks up ConfigService through the
+        # injector inside a try/except -- serve the same fake config there so
+        # the production path completes instead of an assertion being
+        # swallowed. Anything else is still an unexpected lookup.
+        def get_service(cls):
+            if cls is EntityNameMapper:
+                return mapper
+            if cls is ConfigService:
+                return config
+            raise AssertionError(f"unexpected service request: {cls}")
+
+        monkeypatch.setattr(GlobalInjector, "get", get_service)
+
         spark.sql("CREATE DATABASE IF NOT EXISTS src")
         spark.sql("DROP TABLE IF EXISTS src.orders")
         spark.createDataFrame(

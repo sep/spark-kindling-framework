@@ -499,3 +499,29 @@ def mock_spark_for_trace():
     spark.sparkContext._jsc.sc().listenerBus = Mock(return_value=listener_bus)
 
     return spark
+
+
+@pytest.fixture(autouse=True)
+def _restore_dynaconf_loader_chain():
+    """Keep ``LOADERS_FOR_DYNACONF`` from leaking between tests.
+
+    ``kindling.config_loaders.register_kindling_loaders()`` -- reached by
+    the real ``configure_injector_with_config`` / bootstrap path -- writes
+    the Dynaconf loader chain into ``os.environ`` for the whole process and
+    nothing restores it. Every ``Dynaconf(...)`` constructed afterwards then
+    runs Kindling's ``@secret`` loader at load time, so a later test that
+    builds its own settings with a SecretProvider bound sees references
+    resolved before its code under test ever runs. That turned
+    ``test_config_override_overlay``'s structural-control test red whenever
+    ``tests/integration/test_config_integration.py`` ran earlier in the same
+    process. Snapshot the variable per test and put it back exactly.
+    """
+    sentinel = object()
+    before = os.environ.get("LOADERS_FOR_DYNACONF", sentinel)
+    try:
+        yield
+    finally:
+        if before is sentinel:
+            os.environ.pop("LOADERS_FOR_DYNACONF", None)
+        else:
+            os.environ["LOADERS_FOR_DYNACONF"] = before

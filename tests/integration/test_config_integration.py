@@ -6,7 +6,6 @@ configuration lifecycle with actual Spark initialization.
 """
 
 import pytest
-
 from kindling.injection import GlobalInjector, get_kindling_service
 from kindling.spark_config import (
     ConfigService,
@@ -31,17 +30,16 @@ class TestConfigureInjectorFunction:
 
     def test_configure_injector_creates_singleton(self):
         """Test that configure_injector_with_config sets up singleton with real Spark"""
-        # Re-import to re-register decorators after clearing injector
-        import importlib
-
-        import kindling.spark_config
-
-        importlib.reload(kindling.spark_config)
-        from kindling.spark_config import (
-            ConfigService,
-            DynaconfConfig,
-            configure_injector_with_config,
-        )
+        # setup_method's GlobalInjector.reset() dropped the binding that
+        # singleton_autobind made at kindling.spark_config's original import,
+        # so re-apply the decorator to re-register DynaconfConfig against the
+        # fresh injector. Do NOT importlib.reload(kindling.spark_config) for
+        # this: a reload replaces ConfigService/DynaconfConfig with brand-new
+        # class objects for the rest of the process, while kindling.bootstrap
+        # keeps the originals it imported at module level -- so every later
+        # test in the same process whose fakes are keyed on ConfigService
+        # fails with KeyError on a dict that visibly contains it.
+        GlobalInjector.singleton_autobind()(DynaconfConfig)
 
         configure_injector_with_config(
             config_files=None,
@@ -58,17 +56,16 @@ class TestConfigureInjectorFunction:
 
     def test_configure_injector_with_all_parameters(self):
         """Test configure_injector_with_config with all parameters and real Spark"""
-        # Re-import to re-register decorators after clearing injector
-        import importlib
-
-        import kindling.spark_config
-
-        importlib.reload(kindling.spark_config)
-        from kindling.spark_config import (
-            ConfigService,
-            DynaconfConfig,
-            configure_injector_with_config,
-        )
+        # setup_method's GlobalInjector.reset() dropped the binding that
+        # singleton_autobind made at kindling.spark_config's original import,
+        # so re-apply the decorator to re-register DynaconfConfig against the
+        # fresh injector. Do NOT importlib.reload(kindling.spark_config) for
+        # this: a reload replaces ConfigService/DynaconfConfig with brand-new
+        # class objects for the rest of the process, while kindling.bootstrap
+        # keeps the originals it imported at module level -- so every later
+        # test in the same process whose fakes are keyed on ConfigService
+        # fails with KeyError on a dict that visibly contains it.
+        GlobalInjector.singleton_autobind()(DynaconfConfig)
 
         initial_config = {"log_level": "DEBUG", "print_logging": True}
 
@@ -100,17 +97,16 @@ class TestConfigIntegration:
 
     def test_config_lifecycle(self):
         """Test complete config initialization and usage lifecycle with real Spark"""
-        # Re-import to re-register decorators after clearing injector
-        import importlib
-
-        import kindling.spark_config
-
-        importlib.reload(kindling.spark_config)
-        from kindling.spark_config import (
-            ConfigService,
-            DynaconfConfig,
-            configure_injector_with_config,
-        )
+        # setup_method's GlobalInjector.reset() dropped the binding that
+        # singleton_autobind made at kindling.spark_config's original import,
+        # so re-apply the decorator to re-register DynaconfConfig against the
+        # fresh injector. Do NOT importlib.reload(kindling.spark_config) for
+        # this: a reload replaces ConfigService/DynaconfConfig with brand-new
+        # class objects for the rest of the process, while kindling.bootstrap
+        # keeps the originals it imported at module level -- so every later
+        # test in the same process whose fakes are keyed on ConfigService
+        # fails with KeyError on a dict that visibly contains it.
+        GlobalInjector.singleton_autobind()(DynaconfConfig)
 
         # Initialize config with real Spark
         configure_injector_with_config(initial_config={"log_level": "INFO"})
@@ -138,13 +134,16 @@ class TestConfigIntegration:
 
     def test_config_service_injection_pattern(self):
         """Test that ConfigService follows proper injection pattern with real Spark"""
-        # Re-import to re-register decorators after clearing injector
-        import importlib
-
-        import kindling.spark_config
-
-        importlib.reload(kindling.spark_config)
-        from kindling.spark_config import ConfigService, DynaconfConfig
+        # setup_method's GlobalInjector.reset() dropped the binding that
+        # singleton_autobind made at kindling.spark_config's original import,
+        # so re-apply the decorator to re-register DynaconfConfig against the
+        # fresh injector. Do NOT importlib.reload(kindling.spark_config) for
+        # this: a reload replaces ConfigService/DynaconfConfig with brand-new
+        # class objects for the rest of the process, while kindling.bootstrap
+        # keeps the originals it imported at module level -- so every later
+        # test in the same process whose fakes are keyed on ConfigService
+        # fails with KeyError on a dict that visibly contains it.
+        GlobalInjector.singleton_autobind()(DynaconfConfig)
 
         # Initialize once to trigger singleton creation
         configure_injector_with_config(initial_config={})
