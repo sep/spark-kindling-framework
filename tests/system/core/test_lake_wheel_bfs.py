@@ -380,8 +380,9 @@ class TestLakeWheelBFS:
                 "itself is listed, the wheels were absent from the listed directory rather than "
                 "BFS failing to follow Requires-Dist"
                 if missing
-                else "No '[BFS] Not found in lake' lines: BFS found the wheels, so the app "
-                "failed after loading them; see the job log for the traceback"
+                else "No '[BFS] Not found in lake' lines were CAPTURED -- cluster log capture is racy "
+                "and may be incomplete, so this does not rule out a missing wheel; read the "
+                "full job log in the workspace for the [BFS] walk and the app traceback"
             )
 
             # Prefer log-based completion marker; fall back to job result_state when

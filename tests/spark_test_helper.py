@@ -215,11 +215,65 @@ def get_local_spark_session(
     return spark
 
 
+_DELTA_CATALOG = "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+
+
+def _teardown_non_delta_jvm() -> bool:
+    """Relaunch the JVM if the one that exists cannot serve Delta.
+
+    Spark's JVM is a process-wide singleton and ``spark.jars.packages`` (what
+    ``configure_spark_with_delta_pip`` adds) is honoured only at py4j gateway
+    launch. If some earlier test module built a plain session first -- e.g.
+    the autoloader integration modules' ``SparkSession.builder...getOrCreate()``
+    -- then every later ``getOrCreate()`` silently reuses that jar-less JVM and
+    Delta fails with "Cannot find catalog plugin class ... DeltaCatalog". That
+    is masked on machines whose Spark install ships Delta on the default
+    classpath (the devcontainer) and bites in the CI image, so it surfaced as
+    an order-dependent Integration Tests failure once Delta-backed modules were
+    moved from tests/unit into tests/integration.
+
+    A session whose JVM already has the Delta catalog configured is reused
+    untouched. Otherwise the active session is stopped and the gateway shut
+    down so the caller's ``getOrCreate()`` launches a fresh JVM. Returns True
+    when a relaunch was forced. Consolidates the ``_teardown_existing_spark_jvm``
+    pattern that test_sdp_mode.py and test_watermark_incremental_correctness.py
+    each carried privately.
+    """
+    from pyspark import SparkContext
+
+    active = SparkSession.getActiveSession()
+    if active is not None:
+        try:
+            if active.conf.get("spark.sql.catalog.spark_catalog", None) == _DELTA_CATALOG:
+                return False
+        except Exception:  # noqa: BLE001 - a half-dead session counts as unusable
+            pass
+        try:
+            active.stop()
+        except Exception:  # noqa: BLE001
+            pass
+    if SparkContext._gateway is None:
+        return active is not None
+    try:
+        SparkContext._gateway.shutdown()
+    except Exception:  # noqa: BLE001
+        pass
+    SparkContext._gateway = None
+    SparkContext._jvm = None
+    return True
+
+
 def get_standalone_spark_session(app_name="KindlingTest"):
     """
-    Create a standalone Spark session (no cluster) for unit tests.
-    Useful for testing logic without cluster dependencies.
+    Create a standalone, Delta-configured Spark session (no cluster) for tests.
+
+    Order-independent by construction: if an earlier module left a JVM
+    without the Delta catalog, it is torn down first (see
+    ``_teardown_non_delta_jvm``) so the session returned here really does have
+    Delta, regardless of which test module launched Spark first in this
+    worker/process.
     """
+    _teardown_non_delta_jvm()
     builder = (
         SparkSession.builder.appName(app_name)
         .master("local[2]")

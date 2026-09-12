@@ -463,10 +463,11 @@ jobs:
     # so state that leaks from one suite into another (a module reload that
     # splits a class identity, an environment variable a fixture never
     # restores, an injector binding left behind) never shows up there. This
-    # job runs every local suite in ONE process, integration before unit in
-    # collection order -- the arrangement that exposed 18 such failures in
-    # 2026-09. Cloud system tests are skipped: they need workspace
-    # credentials and have their own lane.
+    # job runs the unit, integration and KDA suites in ONE process,
+    # integration before unit in collection order -- the arrangement that
+    # exposed 18 such failures in 2026-09. Cloud system tests are skipped
+    # (own lane, own credentials) and tests/local-project is excluded by
+    # norecursedirs (it is a separate fixture project run by poe test-local).
     if: |
       always() &&
       !cancelled() &&
