@@ -211,7 +211,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-norecursedirs = ["tests/local-project", ".worktrees", ".git", "__pycache__", "*.egg-info"]
+norecursedirs = ["tests/local-project", "tests/local", ".worktrees", ".git", "__pycache__", "*.egg-info"]
 cache_dir = ".cache/pytest"
 addopts = [
     "--verbose",
