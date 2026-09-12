@@ -9,6 +9,9 @@ reads — but nothing ever set the field that selects that emission path. The
 never inferred, because an incremental read changes a pipe's semantics.
 """
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 from kindling.data_entities import EntityMetadata
 from kindling.data_pipes import PipeMetadata
@@ -135,7 +138,11 @@ def build_engine(
         pipes,
         dp_module=dp,
         session_provider=(lambda: session) if session is not None else None,
+        # Both resolvers stubbed symmetrically on entity ids: these tests
+        # assert which inputs stream, not how names resolve. Physical-name
+        # resolution has its own test below, against the real defaults.
         external_read_resolver=lambda _spark, entity_id: f"static:{entity_id}",
+        external_stream_read_resolver=lambda spark, entity_id: spark.readStream.table(entity_id),
         provider_resolver=lambda _entity: None,
         engine_config=engine_config,
     )
@@ -225,6 +232,59 @@ def test_a_non_delta_opted_in_input_is_rejected():
 
     with pytest.raises(DeclarationValidationError, match="streaming_input_not_delta"):
         engine.build_plan()
+
+
+def test_an_entity_with_no_provider_type_tag_is_treated_as_delta():
+    """Absent provider_type means delta everywhere else in SDP validation."""
+    entities, pipes = telemetry_graph()
+    entities["bronze.device_telemetry"].tags.pop("provider_type")
+    engine = build_engine(entities, pipes, streaming_inputs=["bronze.device_telemetry"])
+
+    dataset = engine.build_plan().get_dataset("silver.device_telemetry")
+    assert dataset.streamed_external_inputs == ("bronze.device_telemetry",)
+
+
+def test_the_streamed_input_resolves_its_physical_table_name():
+    """A streamed external read must resolve names exactly as the batch read.
+
+    ``provider.table_*`` tags and non-default naming strategies mean the
+    logical entity id is often not the physical table; streaming the id
+    directly would read the wrong table or fail to resolve.
+    """
+    from unittest.mock import MagicMock
+
+    from kindling.data_entities import EntityNameMapper
+    from kindling.injection import GlobalInjector
+
+    entities, pipes = telemetry_graph()
+    dp = FakeLakeflowDp()
+    session = FakeSession()
+    mapper = SimpleNamespace(
+        get_table_name=lambda entity: f"raw_catalog.landing.{entity.entityid.split('.')[-1]}"
+    )
+
+    engine = DatabricksSdpEngine(
+        entities,
+        pipes,
+        dp_module=dp,
+        session_provider=lambda: session,
+        provider_resolver=lambda _entity: None,
+        engine_config={
+            "curate.telemetry": {
+                "databricks_sdp": {"streaming_inputs": ["bronze.device_telemetry"]}
+            }
+        },
+    )
+    plan = engine.build_plan()
+    engine.declare_pipeline(plan)
+
+    with patch.object(
+        GlobalInjector, "get", lambda cls: mapper if cls is EntityNameMapper else MagicMock()
+    ):
+        dp.append_flows[0]["fn"]()
+
+    assert session.stream_reads == ["raw_catalog.landing.device_telemetry"]
+    assert session.batch_reads == ["raw_catalog.landing.devices"]
 
 
 def test_an_internal_input_cannot_be_opted_in():

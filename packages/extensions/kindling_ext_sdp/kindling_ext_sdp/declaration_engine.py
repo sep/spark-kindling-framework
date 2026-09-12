@@ -703,8 +703,11 @@ class DeclarationEngine(ABC):
                 )
                 continue
             entity = self.entity_registry.get_entity_definition(entity_id)
-            provider_type = str(((entity.tags if entity else None) or {}).get("provider_type", ""))
-            if provider_type.strip().lower() != "delta":
+            # _provider_type defines an absent tag as delta, the same default
+            # every other SDP validation applies; a raw lookup here would
+            # reject an ordinary Delta entity that relies on it.
+            provider_type = _provider_type(entity) if entity is not None else ""
+            if provider_type != "delta":
                 issue(
                     "streaming_input_not_delta",
                     f"streaming_inputs names '{entity_id}' with provider_type "

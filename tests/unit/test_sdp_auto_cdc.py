@@ -305,6 +305,12 @@ class TestChangeFeedStreamingSource:
             dp_module=dp,
             session_provider=lambda: session,
             external_read_resolver=lambda spark, entity_id: spark.table(entity_id),
+            # Symmetric with the batch override: this class asserts WHICH
+            # inputs stream, not how their physical names resolve (the
+            # default resolvers go through EntityNameMapper, which needs DI).
+            external_stream_read_resolver=lambda spark, entity_id: spark.readStream.table(
+                entity_id
+            ),
         )
         engine.declare_pipeline(engine.build_plan())
         dp.views["silver_customers__scd_source"]()

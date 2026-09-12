@@ -95,8 +95,9 @@ class OssSdpEngine(DeclarationEngine):
             metadata through Kindling's ``EntityNameMapper`` and reads the
             resulting physical table with ``spark.table``.
         external_stream_read_resolver: ``(spark, entity_id) -> DataFrame``
-            for streamed EXTERNAL inputs. Defaults to
-            ``spark.readStream.table(entity_id)``.
+            for streamed EXTERNAL inputs. By default, resolves the physical
+            table name exactly as the batch resolver does and reads it with
+            ``spark.readStream.table``.
         provider_stream_resolver: ``(spark, entity_id) -> DataFrame`` for
             EXTERNAL_STREAMING_SOURCE inputs. The default resolves the entity
             provider at evaluation time and calls ``read_entity_as_stream``.
@@ -127,8 +128,8 @@ class OssSdpEngine(DeclarationEngine):
         self._dp_module = dp_module
         self._session_provider = session_provider or _default_session_provider
         self._external_read_resolver = external_read_resolver or self._read_external_entity
-        self._external_stream_read_resolver = external_stream_read_resolver or (
-            lambda spark, entity_id: spark.readStream.table(entity_id)
+        self._external_stream_read_resolver = (
+            external_stream_read_resolver or self._stream_external_entity
         )
         self._provider_stream_resolver = (
             provider_stream_resolver or _default_provider_stream_resolver
@@ -144,8 +145,15 @@ class OssSdpEngine(DeclarationEngine):
     # Internals                                                           #
     # ------------------------------------------------------------------ #
 
-    def _read_external_entity(self, spark, entity_id: str):
-        """Read an external table using the runtime's configured name mapper."""
+    def _external_table_name(self, entity_id: str) -> str:
+        """The physical catalog name an external entity id resolves to.
+
+        Shared by the batch and streaming external readers: a physical name
+        may come from ``provider.table_catalog``/``table_schema``/
+        ``table_name`` or a non-default naming strategy, so reading the
+        logical entity id directly would hit the wrong table or fail to
+        resolve at all.
+        """
         from kindling.data_entities import EntityNameMapper
         from kindling.injection import GlobalInjector
 
@@ -155,8 +163,15 @@ class OssSdpEngine(DeclarationEngine):
                 f"External entity '{entity_id}' is not registered "
                 "when evaluating the SDP dataset function."
             )
-        table_name = GlobalInjector.get(EntityNameMapper).get_table_name(entity)
-        return spark.table(table_name)
+        return GlobalInjector.get(EntityNameMapper).get_table_name(entity)
+
+    def _read_external_entity(self, spark, entity_id: str):
+        """Read an external table using the runtime's configured name mapper."""
+        return spark.table(self._external_table_name(entity_id))
+
+    def _stream_external_entity(self, spark, entity_id: str):
+        """Stream an external table, resolved exactly as the batch read is."""
+        return spark.readStream.table(self._external_table_name(entity_id))
 
     def _declare_dataset(self, dp, dataset: DatasetDeclaration) -> None:
         if dataset.dataset_type is not DatasetType.MATERIALIZED_VIEW:
