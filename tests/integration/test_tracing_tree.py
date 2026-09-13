@@ -32,6 +32,8 @@ from kindling.trace_ops import wrap_provider_ops
 from pyspark.sql import SparkSession
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
+from tests.spark_test_helper import _teardown_non_delta_jvm
+
 SOURCE_SCHEMA = StructType(
     [
         StructField("id", IntegerType(), False),
@@ -166,23 +168,6 @@ class TestPipeRunSpanTree:
         assert all(span.closed for span in tp.spans), "Every span must be closed"
 
 
-def _teardown_existing_spark_jvm():
-    """See test_watermark_incremental_correctness: the Delta jars are only
-    honored at JVM launch, so any prior plain session must be torn down."""
-    from pyspark import SparkContext
-
-    active = SparkSession.getActiveSession()
-    if active is not None:
-        active.stop()
-    if SparkContext._gateway is not None:
-        try:
-            SparkContext._gateway.shutdown()
-        except Exception:
-            pass
-        SparkContext._gateway = None
-        SparkContext._jvm = None
-
-
 class TestDeltaWatermarkedSpanTree:
     """Delta variant: provider-op child spans plus the watermark save span."""
 
@@ -190,7 +175,7 @@ class TestDeltaWatermarkedSpanTree:
     def spark(self):
         from delta import configure_spark_with_delta_pip
 
-        _teardown_existing_spark_jvm()
+        _teardown_non_delta_jvm()
         builder = (
             SparkSession.builder.appName("TracingTreeDeltaTest")
             .master("local[2]")

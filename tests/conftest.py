@@ -169,6 +169,12 @@ def pytest_collection_modifyitems(config, items):
                     )
                 )
 
+        # Everything under tests/system IS a system test, marker or not: the
+        # --skip-system gate below (and `poe test` / `test-all-ci`, which rely
+        # on it to stay cloud-free) must not depend on each module remembering
+        # `pytestmark = pytest.mark.system`.
+        if "system" in Path(str(item.fspath)).relative_to(Path(__file__).parent).parts[:1]:
+            item.add_marker(pytest.mark.system)
         # Skip system tests if --skip-system is specified
         if skip_system and "system" in item.keywords:
             item.add_marker(pytest.mark.skip(reason="--skip-system option specified"))
@@ -257,11 +263,18 @@ def _clear_config_env_overrides(request, monkeypatch):
             monkeypatch.delenv(key, raising=False)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def spark_session():
     """
-    Provide a Spark session for all tests in the session.
-    This uses local mode Spark suitable for testing.
+    Provide a local-mode, Delta-capable Spark session for a test module.
+
+    Module-scoped rather than session-scoped on purpose: other modules build
+    their own sessions with ``getOrCreate()`` -- which hands back this very
+    session while it is active -- and ``stop()`` it in their teardown. A
+    session-scoped instance would then be served stale ("Cannot call methods
+    on a stopped SparkContext") to every later consumer in the worker. Per
+    module, ``get_local_spark_session`` reuses the live JVM and just creates a
+    fresh SparkContext in it when the previous one was stopped.
     """
     if not _sockets_permitted():
         pytest.skip(

@@ -38,27 +38,12 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-
-def _teardown_existing_spark_jvm():
-    """See test_watermark_incremental_correctness — Delta jars are only on
-    the classpath if this module's session launches the JVM."""
-    from pyspark import SparkContext
-
-    active = SparkSession.getActiveSession()
-    if active is not None:
-        active.stop()
-    if SparkContext._gateway is not None:
-        try:
-            SparkContext._gateway.shutdown()
-        except Exception:
-            pass
-        SparkContext._gateway = None
-        SparkContext._jvm = None
+from tests.spark_test_helper import _teardown_non_delta_jvm
 
 
 @pytest.fixture(scope="module")
 def spark():
-    _teardown_existing_spark_jvm()
+    _teardown_non_delta_jvm()
     builder = (
         SparkSession.builder.appName("SCD2DeclaredFlow")
         .master("local[2]")

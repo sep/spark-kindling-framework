@@ -16,8 +16,10 @@ from kindling.data_apps import DataAppConstants, DataAppManager
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
-def test_kda_packaging():
-    """Test packaging and deployment of KDA files"""
+def _kda_packaging_check() -> bool:
+    """Package and deploy the KDA test apps; True on success, False (after
+    printing why) on any failure. Shared by the pytest entry point and the
+    standalone ``python tests/test_kda_packaging.py`` run."""
 
     print("🧪 Testing KDA packaging functionality...")
 
@@ -188,6 +190,13 @@ def test_kda_packaging():
             return False
 
 
+def test_kda_packaging():
+    """Under pytest a returned False is a PASS (only PytestReturnNotNoneWarning),
+    so the check's verdict must be asserted for the KDA suite -- and the
+    single-process suite that collects it -- to actually fail."""
+    assert _kda_packaging_check(), "KDA packaging check failed; see the printed steps above"
+
+
 if __name__ == "__main__":
-    success = test_kda_packaging()
+    success = _kda_packaging_check()
     sys.exit(0 if success else 1)

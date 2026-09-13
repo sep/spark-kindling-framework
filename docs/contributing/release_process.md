@@ -62,6 +62,20 @@ poe release <version>
 Use this only for time-sensitive releases; the normal validated release path
 remains the default.
 
+### Copilot review and fix-up commits
+
+Copilot reviews a pull request once, at the head it first sees. Commits pushed
+afterwards -- the fix-ups that address its findings -- are **not** re-reviewed
+automatically, so in a fast-track flow the code that actually merges can be
+unreviewed. After pushing fix-ups, request a re-review explicitly:
+
+```bash
+gh api -X POST repos/<org>/<repo>/pulls/<n>/requested_reviewers \
+  -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
+```
+
+Wait for the review that names the new head commit before merging.
+
 ### Step 3: Verify Release Assets
 
 After the workflow completes:

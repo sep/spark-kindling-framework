@@ -41,36 +41,15 @@ from kindling.file_ingestion import (
     ParallelizingFileIngestionProcessor,
 )
 from kindling.trace_ops import TracingGates
-from pyspark.sql import SparkSession
-
-from tests.conftest import _sockets_permitted
 
 pytestmark = [pytest.mark.integration]
 
 
-@pytest.fixture(scope="module")
-def spark_session():
-    """Plain (non-Delta) SparkSession, module-scoped and self-contained.
-
-    Shadows conftest.py's shared, session-scoped ``spark_session`` fixture
-    rather than requesting it -- see test_autoloader_schema_evolution.py's
-    identical fixture for why: these tests only need genuine Spark
-    DataFrames for a CSV read path, and the shared fixture stays alive for
-    the rest of the pytest process once instantiated, which corrupts later
-    plain-session fixtures elsewhere in the suite.
-    """
-    if not _sockets_permitted():
-        pytest.skip(
-            "Sockets are not permitted in this environment; cannot start a real SparkSession."
-        )
-    spark = (
-        SparkSession.builder.appName("AutoloaderIncrementalDiscoveryTests")
-        .master("local[2]")
-        .getOrCreate()
-    )
-    spark.sparkContext.setLogLevel("ERROR")
-    yield spark
-    spark.stop()
+# Spark comes from conftest's module-scoped, Delta-capable ``spark_session``
+# fixture. This module used to shadow it with a plain builder because the
+# shared fixture was session-scoped and Delta modules relaunched the JVM
+# under it; neither is true any more, and a plain JVM launched here would
+# only force that relaunch for the next Delta module on this worker.
 
 
 def _make_entry(patterns=None):

@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+from typing import Optional
 
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
@@ -207,6 +208,10 @@ def get_local_spark_session(
             print(f"⚠ Azure CLI auth setup failed: {e}")
             print("  Make sure you're logged in with: az login")
 
+    # Same preflight as get_standalone_spark_session: this is the path behind
+    # the shared conftest ``spark_session`` fixture, so a plain JVM launched by
+    # an earlier module must be relaunched here too or Delta fails at first use.
+    _teardown_non_delta_jvm()
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
 
     # Set log level to reduce noise in tests
@@ -215,11 +220,282 @@ def get_local_spark_session(
     return spark
 
 
+_DELTA_EXTENSION = "io.delta.sql.DeltaSparkSessionExtension"
+_DELTA_CATALOG = "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+
+
+class ExternalGatewayUnusable(RuntimeError):
+    """Raised when the py4j gateway was started outside this process
+    (``PYSPARK_GATEWAY_PORT``) and is proven unable to serve Delta, or is dead.
+    We do not own such a gateway, so the helper can neither relaunch it nor
+    hand back a session that would fail at first Delta use."""
+
+
+def _active_session_or_none():
+    """``SparkSession.getActiveSession()`` that treats a failing lookup as
+    "no usable session". The lookup itself is a JVM call and raises a Py4J
+    error when ``_active_spark_context`` still points at a dead gateway; that
+    state must flow into teardown, not abort before it."""
+    try:
+        return SparkSession.getActiveSession()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _clear_stale_session_globals() -> None:
+    """Drop every process-level reference that would hand back a stopped or
+    dead session.
+
+    - ``SparkContext._active_spark_context`` and ``SparkSession``'s
+      ``_instantiatedSession`` / ``_activeSession``: ``getOrCreate()`` returns
+      the cached session while ``_sc._jsc is not None``, which a dead gateway
+      never clears because ``stop()`` could not run.
+    - ``__main__.spark``: ``kindling.spark_session.get_or_create_spark_session``
+      returns that global before consulting Spark at all.
+    """
+    import __main__
+    from pyspark import SparkContext
+
+    try:
+        with SparkContext._lock:
+            SparkContext._active_spark_context = None
+    except Exception:  # noqa: BLE001
+        pass
+    for attr in ("_instantiatedSession", "_activeSession"):
+        try:
+            setattr(SparkSession, attr, None)
+        except Exception:  # noqa: BLE001
+            pass
+    if getattr(__main__, "spark", None) is not None:
+        try:
+            delattr(__main__, "spark")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _teardown_existing_spark_jvm() -> None:
+    """Stop the active session (if any), shut down the py4j gateway and END the
+    JVM, so the next ``getOrCreate()`` launches a NEW one.
+
+    Spark's JVM is a process-wide singleton and ``spark.jars.packages`` (what
+    ``configure_spark_with_delta_pip`` adds) is honoured only at gateway
+    launch; this is the only way to get Delta onto the classpath once some
+    earlier module has launched a plain JVM. Callers go through
+    :func:`_teardown_non_delta_jvm`, which only invokes this for a jar-less or
+    dead gateway that this process launched.
+
+    ``gateway.shutdown()`` alone does NOT end the JVM: PySpark launches it with
+    a stdin pipe and the Java side exits on EOF of that pipe, which only
+    happens when the Python process dies. Without closing it every relaunch
+    leaves a ~1 GB orphan behind, and with four xdist workers each relaunching
+    several times the CI runner is OOM-killed (exit 137). So the launcher
+    process is reaped here: stdin closed, then waited on, killed if it lingers.
+    """
+    from pyspark import SparkContext
+
+    active = _active_session_or_none()
+    if active is not None:
+        try:
+            active.stop()
+        except Exception:  # noqa: BLE001
+            pass
+    _clear_stale_session_globals()
+    gateway = SparkContext._gateway
+    if gateway is not None:
+        proc = getattr(gateway, "proc", None)
+        try:
+            gateway.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+        SparkContext._gateway = None
+        SparkContext._jvm = None
+        _reap_gateway_process(proc)
+
+
+def _reap_gateway_process(proc, timeout: float = 30.0) -> None:
+    """End the JVM launched by ``launch_gateway`` (see teardown docstring)."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if proc.stdin is not None:
+            proc.stdin.close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        proc.wait(timeout=timeout)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+            proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _gateway_launched_with_delta() -> Optional[bool]:
+    """Whether the live py4j gateway's JVM was launched with the Delta jars.
+
+    Session-independent and launch-truthful: PySpark starts the JVM through
+    ``spark-submit`` with ``spark.jars.packages`` on the command line, and
+    ``--packages`` jars are on that JVM's classpath for its whole life -- a
+    SparkContext created later in the same JVM (after a ``stop()``) still has
+    them, even though its own ``listJars()`` may not say so. Returns None when
+    there is no gateway, or an externally started one whose command line is
+    not visible (``PYSPARK_GATEWAY_PORT``).
+    """
+    from pyspark import SparkContext
+
+    gateway = SparkContext._gateway
+    if gateway is None:
+        return None
+    proc = getattr(gateway, "proc", None)
+    args = getattr(proc, "args", None)
+    if not args:
+        return None
+    return any("delta-spark" in str(a) for a in args)
+
+
+def _session_can_load_delta(spark) -> bool:
+    """Fallback evidence for a gateway whose launch we cannot see: the Delta
+    jars in the SparkContext's jar list. Not a SQL conf value -- a session can
+    carry ``spark.sql.catalog.spark_catalog=...DeltaCatalog`` on a jar-less
+    gateway, and ``getOrCreate()`` copies ``spark.jars.packages`` onto an
+    existing session too -- and not a py4j ``Class.forName`` probe, which
+    resolves through the gateway's classloader rather than Spark's."""
+    try:
+        return "delta-spark" in spark.sparkContext._jsc.sc().listJars().mkString(",")
+    except Exception:  # noqa: BLE001 - a half-dead session counts as unusable
+        return False
+
+
+def _jvm_can_load_delta(spark) -> bool:
+    """Whether the JVM behind ``spark`` can serve Delta: how it was launched
+    when that is visible, else :func:`_session_can_load_delta`."""
+    launched = _gateway_launched_with_delta()
+    if launched is not None:
+        return launched
+    return _session_can_load_delta(spark)
+
+
+def _session_has_delta_confs(active) -> bool:
+    """Both static Delta settings are present on the session: the SQL
+    extension (MERGE/DDL) and the session catalog (``DeltaCatalog``). They are
+    separate settings and ``getOrCreate()`` retrofits neither."""
+    try:
+        extensions = active.conf.get("spark.sql.extensions", "") or ""
+        catalog = active.conf.get("spark.sql.catalog.spark_catalog", "") or ""
+    except Exception:  # noqa: BLE001 - unusable session
+        return False
+    return _DELTA_EXTENSION in extensions and _DELTA_CATALOG in catalog
+
+
+def _rebuild_plain_active_session(active) -> bool:
+    """Stop an active session built WITHOUT both Delta static confs so the
+    caller's ``getOrCreate()`` creates one with them -- on the same JVM.
+
+    ``getOrCreate()`` hands back the active session and cannot install
+    ``spark.sql.extensions`` or the session catalog retroactively. Only the
+    session is stopped; the JVM, and everything bound to the JVM, survives.
+    The process-level references to the stopped session are cleared as well,
+    or ``kindling.spark_session.get_or_create_spark_session()`` would keep
+    returning it. Returns True when it rebuilt.
+
+    A JVM launched with the Delta confs carries them as system properties, so
+    new sessions in it normally already have both; this is the safety net for
+    a session created some other way.
+    """
+    if active is None or _session_has_delta_confs(active):
+        return False
+    try:
+        active.stop()
+    except Exception:  # noqa: BLE001
+        pass
+    _clear_stale_session_globals()
+    return True
+
+
+def _teardown_non_delta_jvm() -> bool:
+    """Make the next Delta-configured ``getOrCreate()`` succeed, touching as
+    little as possible. Returns True when a JVM relaunch was forced.
+
+    Why this exists: if an earlier test module built a plain session first --
+    ``SparkSession.builder...getOrCreate()`` with no Delta packages -- every
+    later ``getOrCreate()`` silently reuses that jar-less JVM and Delta fails
+    with "Cannot find catalog plugin class ... DeltaCatalog". Neither the CI
+    image nor the devcontainer ships Delta on Spark's default classpath (a
+    plain session cannot write Delta in either), so this is purely a matter
+    of which module launched the JVM; it surfaced as an order-dependent
+    Integration Tests failure once Delta-backed modules were moved from
+    tests/unit into tests/integration.
+
+    The decision is about the JVM, not the session:
+
+    - No gateway: nothing to do.
+    - Gateway this process launched WITH Delta: reuse it, active session or
+      not (a module's ``spark.stop()`` leaves the gateway alive and the next
+      ``getOrCreate()`` makes a new SparkContext in it). Killing such a JVM
+      would invalidate everything else bound to it -- wider-scoped fixtures,
+      PySpark UDF objects that cache their Java counterpart, kindling's global
+      session -- which is exactly what happened when this preflight first tore
+      down on "no active session". At most the active *session* is rebuilt
+      when it lacks the Delta static confs.
+    - Gateway this process launched WITHOUT Delta, or dead (its launcher
+      process has exited, or the session lookup fails): tear down and reap
+      via :func:`_teardown_existing_spark_jvm`.
+    - Externally started gateway (launch not visible): never torn down. If an
+      active session proves it jar-less, or it is dead, raise
+      :class:`ExternalGatewayUnusable` rather than hand back a session that
+      fails at first Delta use; with no session to inspect, proceed.
+    """
+    from pyspark import SparkContext
+
+    gateway = SparkContext._gateway
+    if gateway is None:
+        return False
+    launched = _gateway_launched_with_delta()
+    proc = getattr(gateway, "proc", None)
+    if proc is not None and proc.poll() is not None:
+        # The JVM we launched has exited. With the last session already
+        # stopped, getActiveSession() returns None rather than raising, and
+        # the stale gateway would be reused by the next getOrCreate().
+        _teardown_existing_spark_jvm()
+        return True
+    try:
+        active = SparkSession.getActiveSession()
+    except Exception as exc:  # noqa: BLE001 - dead gateway
+        if launched is None:
+            raise ExternalGatewayUnusable(
+                "the externally started py4j gateway (PYSPARK_GATEWAY_PORT) is not "
+                "responding and cannot be relaunched from here"
+            ) from exc
+        _teardown_existing_spark_jvm()
+        return True
+    if launched is None:
+        if active is not None and not _session_can_load_delta(active):
+            raise ExternalGatewayUnusable(
+                "the externally started py4j gateway (PYSPARK_GATEWAY_PORT) was "
+                "launched without the Delta jars; spark.jars.packages cannot add them "
+                "after launch and the gateway is not ours to relaunch"
+            )
+        _rebuild_plain_active_session(active)
+        return False
+    if launched:
+        _rebuild_plain_active_session(active)
+        return False
+    _teardown_existing_spark_jvm()
+    return True
+
+
 def get_standalone_spark_session(app_name="KindlingTest"):
     """
-    Create a standalone Spark session (no cluster) for unit tests.
-    Useful for testing logic without cluster dependencies.
+    Create a standalone, Delta-configured Spark session (no cluster) for tests.
+
+    Order-independent by construction: if an earlier module left a JVM
+    without the Delta catalog, it is torn down first (see
+    ``_teardown_non_delta_jvm``) so the session returned here really does have
+    Delta, regardless of which test module launched Spark first in this
+    worker/process.
     """
+    _teardown_non_delta_jvm()
     builder = (
         SparkSession.builder.appName(app_name)
         .master("local[2]")
@@ -425,6 +701,9 @@ def get_local_spark_session_with_azure(
                 .config(f"spark.hadoop.fs.azure.sas.fixed.token.{dfs_endpoint}", sas_token)
             )
 
+    # Delta-configured builder: same preflight as the other constructors, or a
+    # plain JVM launched earlier stays jar-less for the Azure path too.
+    _teardown_non_delta_jvm()
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
 
