@@ -30,7 +30,6 @@ from kindling.file_ingestion import (
     ParallelizingFileIngestionProcessor,
 )
 from kindling.trace_ops import TracingGates
-from pyspark.sql import SparkSession
 
 pytestmark = [pytest.mark.integration]
 

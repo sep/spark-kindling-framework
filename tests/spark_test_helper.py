@@ -420,11 +420,12 @@ def _teardown_non_delta_jvm() -> bool:
     Why this exists: if an earlier test module built a plain session first --
     ``SparkSession.builder...getOrCreate()`` with no Delta packages -- every
     later ``getOrCreate()`` silently reuses that jar-less JVM and Delta fails
-    with "Cannot find catalog plugin class ... DeltaCatalog". That is masked on
-    machines whose Spark install ships Delta on the default classpath (the
-    devcontainer) and bites in the CI image, so it surfaced as an
-    order-dependent Integration Tests failure once Delta-backed modules were
-    moved from tests/unit into tests/integration.
+    with "Cannot find catalog plugin class ... DeltaCatalog". Neither the CI
+    image nor the devcontainer ships Delta on Spark's default classpath (a
+    plain session cannot write Delta in either), so this is purely a matter
+    of which module launched the JVM; it surfaced as an order-dependent
+    Integration Tests failure once Delta-backed modules were moved from
+    tests/unit into tests/integration.
 
     The decision is about the JVM, not the session:
 
