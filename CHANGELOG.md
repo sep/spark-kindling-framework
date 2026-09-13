@@ -4,38 +4,69 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+## [0.12.46] - 2026-09-13
+
 ### Added
 
 - CI job **Full Suite (single process)** (`poe test-all-ci`): runs the unit,
   integration and KDA suites in one interpreter, integration before unit in
-  collection order, so state that leaks across suites -- invisible to the
-  per-suite jobs -- fails the PR that introduces it. It gates `publish-release`
-  alongside the other suite jobs (#297).
-
-### Changed
-
-- `poe test` passes `--skip-system`: it runs the unit, integration and KDA
-  suites and no longer fails cloud system tests as environment noise on a
-  machine without workspace credentials; use `poe test-system` for those (#297).
-- `docs/contributing/release_process.md` documents that Copilot reviews only
-  the first head it sees and must be asked to re-review fix-up commits before a
-  fast-track merge (#297).
+  collection order, so state that leaks across suites — invisible to the
+  per-suite jobs — fails the PR that introduces it. It gates `publish-release`
+  alongside the other suite jobs; fast-track runs bypass it as they do the
+  rest (#297).
 
 ### Fixed
 
-- Delta-backed test sessions are order-independent: if an earlier module
-  launched the process-wide JVM without the Delta jars (`spark.jars.packages`
-  is honoured only at py4j gateway launch), `get_standalone_spark_session` and
-  `get_local_spark_session` tear that JVM down -- reaping the launcher process,
-  which `gateway.shutdown()` alone leaves alive -- and relaunch with Delta; a
-  JVM that already carries Delta is reused. The six private
-  `_teardown_existing_spark_jvm` copies in integration modules import the one
-  shared primitive. Fixes `main`'s Integration Tests job, red since #296 with
-  `Cannot find catalog plugin class ... DeltaCatalog` (#297).
-- `test_lake_wheel_bfs` reports a missing top-level wheel (wheels absent from
-  the listed directory) separately from a missing `Requires-Dist` dependency
-  (a transitive-resolution failure), quoting the `[BFS] Not found in lake`
-  lines from the job log (#297).
+- Delta-backed test sessions are order-independent: whether Delta is
+  available is decided by how the JVM was launched (the gateway's spark-submit
+  command line), not by session state. A jar-less JVM launched by an earlier
+  module is torn down -- reaping the launcher process, which
+  `gateway.shutdown()` alone leaves alive and which had been OOM-killing the
+  4-worker CI job -- and relaunched with Delta; a Delta-launched JVM is never
+  killed, active session or not. `get_standalone_spark_session`,
+  `get_local_spark_session` (the conftest fixture's path) and the Azure helper
+  share one preflight; the six private teardown copies in integration modules
+  are gone; conftest's `spark_session` is module-scoped so a session another
+  module `stop()`s is recreated rather than served stale. Fixes `main`'s
+  Integration Tests job, red since #296 with `Cannot find catalog plugin
+  class ... DeltaCatalog` (#297).
+- `tests/test_kda_packaging.py` asserts its verdict. Under pytest a returned
+  `False` was a PASS (only `PytestReturnNotNoneWarning`), so neither the KDA
+  suite nor the single-process suite that collects it could fail on a
+  packaging failure (#297).
+- The JVM lifecycle in `tests/spark_test_helper.py` has focused unit tests
+  (`tests/unit/test_spark_test_helper_jvm_lifecycle.py`, fakes only, no JVM)
+  so jar-less reuse, orphaned launcher processes or an external gateway being
+  shut down cannot come back silently (#297).
+- The `dataentities:` / `dataentities-bytag:` overlay logs a warning when a
+  configuration rule replaces a declared `merge_columns` list, naming the
+  entity, the declared columns and the replacement, instead of silently
+  clearing the merge key and surfacing later as "delta entity missing
+  merge_columns" (#294).
+- `test_lake_wheel_bfs` no longer deletes the shared lake test wheels on
+  fixture teardown when a base path is set, ending the cross-lane race that
+  intermittently failed one platform's system tests during releases (#292);
+  its failure message now quotes the `[BFS] Not found in lake` lines from the
+  job log so a missing top-level wheel is reported as such (#297).
+
+### Changed
+
+- Spark-dependent tests moved from `tests/unit` to `tests/integration` (four
+  modules plus the Event Hubs preprocessing, temporal engine and watermark-span
+  tests, with shared Event Hubs helpers extracted); `poe test-unit` starts no
+  JVM (#296). The real-Spark SDP dataset test uses an isolated injector and
+  covers physical-name resolution across all three tag shapes (#295).
+- Every test under `tests/system` carries the `system` marker automatically,
+  so the `--skip-system` gate (and the cloud-free `poe test` / `test-all-ci`
+  runs that rely on it) no longer depends on each module remembering
+  `pytestmark`; one live ADX round-trip had none (#297).
+- `poe test` passes `--skip-system` so a bare developer run no longer fails
+  cloud system tests as environment noise (#297).
+- `docs/contributing/release_process.md` documents that Copilot reviews only
+  the first head it sees and must be asked to re-review fix-up commits before a
+  fast-track merge (#297).
+- Proposal: Cosmos DB change-feed streaming reads and config-first throughput
+  controls, `docs/proposals/cosmos_streaming_and_throughput_controls.md` (#293).
 
 ## [0.12.45] - 2026-09-12
 
