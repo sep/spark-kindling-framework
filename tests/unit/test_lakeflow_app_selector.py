@@ -526,26 +526,6 @@ def test_restricted_runtime_bridges_named_config_keys():
     assert "kindling.unrelated" not in config
 
 
-def test_deprecated_config_files_key_is_point_looked_up_without_config_keys(caplog):
-    config_keys = "kindling.storage.table_catalog"
-    with caplog.at_level("WARNING", logger=selector.__name__):
-        config = selector._pipeline_config_for_kindling(
-            SparkPointLookupOnly(
-                {
-                    "kindling.data_app": "orders",
-                    "kindling.lakeflow.config_keys": config_keys,
-                    "kindling.storage.table_catalog": "main",
-                    selector.CONFIG_FILES_CONFIG_KEY: "dbfs:/settings.yaml",
-                }
-            ),
-            "orders",
-        )
-
-    assert config["config_files"] == ["dbfs:/settings.yaml"]
-    assert config["kindling.storage.table_catalog"] == "main"
-    assert "spark.kindling.bootstrap.config_files" in caplog.text
-
-
 def test_canonical_config_files_key_is_point_looked_up_without_config_keys():
     config = selector._pipeline_config_for_kindling(
         SparkPointLookupOnly(
@@ -560,50 +540,23 @@ def test_canonical_config_files_key_is_point_looked_up_without_config_keys():
     assert config["config_files"] == ["/Workspace/settings.yaml"]
 
 
-def test_config_files_key_empty_string_is_noop():
-    config = selector._pipeline_config_for_kindling(
-        FakeSpark({"kindling.data_app": "orders", selector.CONFIG_FILES_CONFIG_KEY: ""}),
-        "orders",
-    )
+def test_removed_lakeflow_config_files_alias_is_ignored(caplog):
+    """`kindling.lakeflow.config_files` (deprecated by #281, removed by #298) is
+    neither bridged nor warned about: a pipeline still setting it loads no
+    files from it and must move to `spark.kindling.bootstrap.config_files`."""
+    with caplog.at_level("WARNING", logger=selector.__name__):
+        config = selector._pipeline_config_for_kindling(
+            FakeSpark(
+                {
+                    "kindling.data_app": "orders",
+                    "kindling.lakeflow.config_files": "legacy.yaml,dbfs:/other.yaml",
+                }
+            ),
+            "orders",
+        )
 
     assert "config_files" not in config
-
-
-def test_deprecated_config_files_are_split_without_validation_or_normalization():
-    config = selector._pipeline_config_for_kindling(
-        FakeSpark(
-            {
-                "kindling.data_app": "orders",
-                selector.CONFIG_FILES_CONFIG_KEY: " first.yaml, , dbfs:/nested/second.yml ",
-            }
-        ),
-        "orders",
-    )
-
-    assert config["config_files"] == ["first.yaml", "dbfs:/nested/second.yml"]
-
-
-def test_deprecated_config_files_append_to_canonical_config_files(caplog):
-    config = selector._pipeline_config_for_kindling(
-        FakeSpark(
-            {
-                "kindling.data_app": "orders",
-                "spark.kindling.bootstrap.config_files": '["/canonical/settings.yaml"]',
-                selector.CONFIG_FILES_CONFIG_KEY: "legacy.yaml",
-            }
-        ),
-        "orders",
-    )
-
-    assert config["config_files"] == ["/canonical/settings.yaml", "legacy.yaml"]
-
-
-def test_config_source_error_is_exported():
-    import kindling_ext_databricks as databricks_ext
-
-    assert databricks_ext.LakeflowConfigSourceError is selector.LakeflowConfigSourceError
-    assert issubclass(selector.LakeflowConfigSourceError, selector.LakeflowAppSelectionError)
-    assert selector.LakeflowConfigSourceError is not selector.LakeflowAppSelectionError
+    assert "kindling.lakeflow.config_files" not in caplog.text
 
 
 _REAL_SELECTOR_REPRO = textwrap.dedent("""
@@ -720,7 +673,7 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
                 "kindling.data_app": "orders",
                 "kindling.lakeflow.allowed_apps": "orders",
                 "kindling.platform.environment": "standalone",
-                selector.CONFIG_FILES_CONFIG_KEY: settings_path,
+                selector.CANONICAL_CONFIG_FILES_CONFIG_KEY: json.dumps([settings_path]),
                 "kindling.sdp.dataset_naming": "normalized",
                 "datapipes.bronze.ingest_telemetry.engine.sdp.dataset_type": "streaming_table",
         }
@@ -810,7 +763,7 @@ def test_structured_config_cannot_authorize_non_allowlisted_app(monkeypatch, tmp
                 {
                     "kindling.data_app": "orders",
                     "kindling.lakeflow.allowed_apps": "customers",
-                    selector.CONFIG_FILES_CONFIG_KEY: str(settings),
+                    selector.CANONICAL_CONFIG_FILES_CONFIG_KEY: str(settings),
                 }
             )
         )

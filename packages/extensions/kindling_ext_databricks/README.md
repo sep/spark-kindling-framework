@@ -446,7 +446,8 @@ been confirmed; if that is required, deploy the same YAML to a Unity Catalog
 volume path and reference that path in
 `spark.kindling.bootstrap.config_files`.
 
-`kindling.lakeflow.config_files` remains as a deprecated comma-separated alias
-for one release cycle. It logs a warning, appends its paths to bootstrap
-`config_files`, and is eligible for removal at 0.13.0. New Bundle
-configuration should use `spark.kindling.bootstrap.config_files`.
+`kindling.lakeflow.config_files`, the comma-separated alias that 0.12.35
+deprecated, was removed in 0.12.47 and is now ignored. Bundle configuration
+that still sets it loads no files from it: move the paths to
+`spark.kindling.bootstrap.config_files` as a JSON array string (or a bare
+string for one file).

@@ -26,9 +26,9 @@ from kindling.bootstrap import (
 APP_ENTRY_POINT_GROUP = "spark_kindling.data_apps"
 DATA_APP_CONFIG_KEY = "kindling.data_app"
 ALLOWED_APPS_CONFIG_KEY = "kindling.lakeflow.allowed_apps"
-#: Deprecated comma-separated compatibility alias for the canonical
-#: ``spark.kindling.bootstrap.config_files`` bootstrap configuration key.
-CONFIG_FILES_CONFIG_KEY = "kindling.lakeflow.config_files"
+#: Canonical Lakeflow pipeline-configuration key for explicit settings files.
+#: (``kindling.lakeflow.config_files``, the comma-separated alias #281
+#: deprecated, was removed in 0.12.47 -- see #298; it is now simply ignored.)
 CANONICAL_CONFIG_FILES_CONFIG_KEY = "spark.kindling.bootstrap.config_files"
 #: Comma-separated pipeline-configuration keys to bridge by point lookup.
 #: Restricted runtimes (serverless / shared-access clusters) allow
@@ -61,10 +61,6 @@ class LakeflowAppConflictError(LakeflowAppSelectionError):
     """An app changed an already-registered entity or pipe definition."""
 
 
-class LakeflowConfigSourceError(LakeflowAppSelectionError):
-    """Deprecated compatibility error; no longer raised by this selector."""
-
-
 def _registered_data_app_entry_points() -> Dict[str, Any]:
     """Return data-app entry points without importing their target modules."""
     from importlib.metadata import entry_points
@@ -90,18 +86,6 @@ def _comma_separated_values(raw: Optional[str]) -> list[str]:
     return [part.strip() for part in str(raw).split(",") if part.strip()]
 
 
-def _deprecated_config_files(spark: Any) -> list[str]:
-    raw = spark_conf_get(spark, CONFIG_FILES_CONFIG_KEY)
-    paths = _comma_separated_values(raw)
-    if paths:
-        _LOGGER.warning(
-            "Config key '%s' is deprecated and removal is eligible at 0.13.0; "
-            "use 'spark.kindling.bootstrap.config_files' instead.",
-            CONFIG_FILES_CONFIG_KEY,
-        )
-    return paths
-
-
 def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
     """Bridge application Spark configuration into Kindling's ConfigService.
 
@@ -118,7 +102,6 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
         ALLOWED_APPS_CONFIG_KEY,
         CONFIG_KEYS_CONFIG_KEY,
         CANONICAL_CONFIG_FILES_CONFIG_KEY,
-        CONFIG_FILES_CONFIG_KEY,
         PIPES_CONFIG_KEY,
         # Restricted runtimes point-look-up only these defaults, so a key the
         # declaration path reads must be named here or it is simply absent —
@@ -151,16 +134,6 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
         config[ALLOWED_APPS_CONFIG_KEY] = allowed
 
     config["declaration_only"] = True
-
-    legacy_config_files = _deprecated_config_files(spark)
-    if legacy_config_files:
-        current_config_files = config.get("config_files")
-        if current_config_files is None:
-            config["config_files"] = legacy_config_files
-        elif isinstance(current_config_files, str):
-            config["config_files"] = [current_config_files, *legacy_config_files]
-        else:
-            config["config_files"] = [*current_config_files, *legacy_config_files]
     return config
 
 

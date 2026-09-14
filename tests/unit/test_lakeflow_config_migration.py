@@ -63,29 +63,11 @@ def _load_shared_config(initial_config: dict):
     return config_service
 
 
-def test_deprecated_lakeflow_config_files_alias_warns_and_delegates(caplog):
-    with caplog.at_level("WARNING", logger=selector.__name__):
-        config = selector._pipeline_config_for_kindling(
-            FakeSpark(
-                {
-                    "kindling.data_app": "telemetry",
-                    "spark.kindling.bootstrap.config_files": '["canonical.yaml"]',
-                    selector.CONFIG_FILES_CONFIG_KEY: "legacy.yaml",
-                }
-            ),
-            "telemetry",
-        )
-
-    assert config["config_files"] == ["canonical.yaml", "legacy.yaml"]
-    assert selector.CONFIG_FILES_CONFIG_KEY in caplog.text
-    assert selector.CANONICAL_CONFIG_FILES_CONFIG_KEY in caplog.text
-
-
 def test_example_bundle_uses_canonical_config_files_and_loads_as_written():
     bundle_config = _load_example_pipeline_config()
 
     assert selector.CANONICAL_CONFIG_FILES_CONFIG_KEY in bundle_config
-    assert selector.CONFIG_FILES_CONFIG_KEY not in bundle_config
+    assert "kindling.lakeflow.config_files" not in bundle_config
 
     lakeflow_config = selector._pipeline_config_for_kindling(
         FakeSpark(_localize_workspace_config_files(bundle_config)),
