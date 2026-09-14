@@ -1,5 +1,10 @@
 # Lakeflow Structured Configuration
 
+> **Obsolete.** Implemented in 0.12.35 with the transport moved to the shared
+> bootstrap layer (#281); the `kindling.lakeflow.config_files` alias it
+> describes was removed in 0.12.47 (#298). Kept as design history; see
+> `docs/reference/config_reference.md` for the supported keys.
+
 **Status:** Superseded.
 **Created:** 2026-09-08
 **Superseded:** 2026-09-08 by the Lakeflow canonical-configuration

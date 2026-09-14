@@ -448,14 +448,12 @@ Streaming writes:
   base, platform, workspace, environment, app overlays, SparkConf, then
   bootstrap overrides. A `kindling.platform.environment` in explicitly
   supplied settings files is honored during early platform selection.
-- `kindling.lakeflow.config_files`: Deprecated compatibility alias for
-  `spark.kindling.bootstrap.config_files`; removal is eligible at 0.13.0.
-  The alias reads a comma-separated list, logs a warning, and appends those
-  paths unmodified to bootstrap `config_files`. It no longer validates paths,
-  suffixes, YAML, or structured sections, and it is not the recommended
-  configuration path. `LakeflowConfigSourceError` remains for one cycle as a
-  deprecated subclass of `LakeflowAppSelectionError`; it is no longer raised,
-  and source diagnostics now come from the shared loader.
+- `kindling.lakeflow.config_files`: **Removed in 0.12.47** (deprecated since
+  0.12.35). The key is ignored -- not bridged, not warned about -- so a
+  pipeline still setting it loads no files from it. Migrate the
+  comma-separated paths to `spark.kindling.bootstrap.config_files` as a JSON
+  array string. `LakeflowConfigSourceError` was removed with it; source
+  diagnostics come from the shared loader.
 
 ## Testing-Only Settings
 

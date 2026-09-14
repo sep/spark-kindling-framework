@@ -5,7 +5,7 @@
 **Reviewed against:** release v0.12.40 (`6111d74`)
 **Related:** `temporal_event_segmentation.md`,
 `declarable_streaming_sources.md`,
-`lakeflow_structured_config.md`,
+`obsolete/lakeflow_structured_config.md`,
 `docs/guide/temporal_streaming_contract.md`,
 `docs/reference/config_reference.md`.
 
@@ -99,9 +99,10 @@ conditions are existing constraints, and remain unchanged.
 Batch lowering makes base and boundary transforms ordinary batch Spark
 queries, subject to Lakeflow's normal query restrictions.
 
-`lakeflow_structured_config.md` is implemented (shipped 0.12.35, with the
-transport since moved to the shared bootstrap layer); the current selector and
-bootstrap ingestion code are authoritative for supported keys.
+`obsolete/lakeflow_structured_config.md` is implemented (shipped 0.12.35, with
+the transport since moved to the shared bootstrap layer and its
+`kindling.lakeflow.config_files` alias removed in 0.12.47); the current selector
+and bootstrap ingestion code are authoritative for supported keys.
 
 Release 0.12.40's external Delta resolution fix does not affect anything here.
 It changed only the OSS SDP engine's default `external_read_resolver`
@@ -195,8 +196,8 @@ surface. `iter_spark_conf_items` then falls through to its last tier, which
 point-looks-up **only the keys it was handed in `extra_keys`** — and the
 selector's `lookup_keys` today is a fixed tuple (`kindling.data_app`,
 `kindling.lakeflow.allowed_apps`, `kindling.lakeflow.config_keys`,
-`spark.kindling.bootstrap.config_files`, `kindling.lakeflow.config_files`,
-`kindling.lakeflow.pipes`) plus whatever `kindling.lakeflow.config_keys` names.
+`spark.kindling.bootstrap.config_files`, `kindling.lakeflow.pipes`) plus
+whatever `kindling.lakeflow.config_keys` names.
 Neither `spark.kindling.lakeflow.temporal_mode` nor the bare
 `kindling.lakeflow.temporal_mode` is in that tuple, so on those runtimes
 **neither spelling is read at all** and the mode silently falls back to
@@ -220,10 +221,9 @@ configuration:
 ```
 
 Append the mode key to any existing `config_keys` list instead of replacing
-it. Note that `kindling.lakeflow.config_files` is deprecated in favor of
-`spark.kindling.bootstrap.config_files` (removal eligible at 0.13.0) and is
-unrelated to this key. Test the current ingestion path rather than inventing a
-mode-specific bridge.
+it. (`kindling.lakeflow.config_files`, an unrelated and since-removed alias for
+`spark.kindling.bootstrap.config_files`, used to sit in the tuple as well.)
+Test the current ingestion path rather than inventing a mode-specific bridge.
 
 ## Proposed topology
 

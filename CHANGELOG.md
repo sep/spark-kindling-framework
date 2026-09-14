@@ -4,6 +4,19 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Removed
+
+- **`kindling.lakeflow.config_files`**, the comma-separated Lakeflow
+  compatibility alias that 0.12.35 (#281) deprecated in favour of
+  `spark.kindling.bootstrap.config_files`, is gone (#298). The key is now
+  ignored: not bridged into bootstrap `config_files`, not warned about. A
+  pipeline that still sets it loads no settings files from it and must move
+  the paths to `spark.kindling.bootstrap.config_files` as a JSON array string
+  (or a bare string for one file). `LakeflowConfigSourceError`, the
+  never-raised stub kept for the same cycle, is removed from
+  `kindling_ext_databricks` with it. Removed ahead of the 0.13.0 eligibility
+  the deprecation notice named, by decision on #298.
+
 ## [0.12.46] - 2026-09-13
 
 ### Added
