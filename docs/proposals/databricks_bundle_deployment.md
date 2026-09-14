@@ -32,9 +32,11 @@ See [bundle configuration](https://docs.databricks.com/aws/en/dev-tools/bundles/
   installed wheel entry point in `spark_kindling.data_apps`, pointing to a
   module with declaration-only `register_all()`. A generic source calls
   `declare_from_pipeline_config()`; one pipeline selects one app.
-- [Structured configuration](lakeflow_structured_config.md) specifies
-  `kindling.lakeflow.config_files`. The selector implementation now reads and
-  validates these paths and passes them into initialization. Its proposal's
+- [Structured configuration](obsolete/lakeflow_structured_config.md) is the
+  design history behind `spark.kindling.bootstrap.config_files`, the canonical
+  key for explicit settings files (its `kindling.lakeflow.config_files` alias
+  was removed in 0.12.47). The selector bridges the key to the shared bootstrap
+  loader, which loads the files by the normal Dynaconf route. The proposal's
   historical problem statement should not be read as current behavior.
 - [CLI conventions](../../packages/kindling_cli/README.md) separate buildable
   packages under `packages/` from apps under `apps/`. `kindling app package`
@@ -142,7 +144,7 @@ existing Lakeflow guide records caching of unchanged wheel requirements.
 ## Configuration contract
 
 Ship the complete non-secret config directory. Each target selects an ordered
-file list through `kindling.lakeflow.config_files`: base, applicable platform
+file list through `spark.kindling.bootstrap.config_files`: base, applicable platform
 and workspace layers, environment, then app overrides. Preserve Kindling's
 existing ordering; do not flatten structured entity IDs into Spark keys.
 The starter can use base plus environment, expanding only when layers exist.
@@ -153,8 +155,9 @@ Conceptual fragment within the pipeline resource:
 configuration:
   kindling.data_app: orders
   kindling.lakeflow.allowed_apps: orders
-  kindling.lakeflow.config_files: >-
-    ${workspace.file_path}/config/settings.yaml,${workspace.file_path}/config/settings.${bundle.target}.yaml
+  spark.kindling.bootstrap.config_files: >-
+    ["${workspace.file_path}/config/settings.yaml",
+     "${workspace.file_path}/config/settings.${bundle.target}.yaml"]
 ```
 
 This illustrates the default target-name-to-environment mapping. Permit an
@@ -165,9 +168,11 @@ Do not assume the bundle target automatically sets Kindling's environment.
 Use pipeline catalog/schema for managed outputs. Preserve external table
 overrides and the [dataset naming contract](../contributing/databricks_execution_contract.md).
 Do not inject platform initialization settings merely because the bundle runs
-on Databricks: the selector intentionally defaults declaration-time platform
-services to `standalone`. Additional scalar settings needed on restricted
-runtimes must be named in `kindling.lakeflow.config_keys`.
+on Databricks: `initialize_framework()` detects the runtime platform, and an
+explicit `kindling.platform.environment` in the settings files is honoured
+during early platform selection, so the generator has nothing to add there.
+Additional scalar settings needed on restricted runtimes must be named in
+`kindling.lakeflow.config_keys`.
 
 Workspace-file config reads in Lakeflow serverless remain unverified in the
 existing guide. Make an end-to-end readability test a release gate for this
