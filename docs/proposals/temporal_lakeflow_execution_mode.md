@@ -191,10 +191,17 @@ That spelling only works everywhere once the selector probes for it. Bare
 subject to the same limit: they are picked up only while Spark configuration
 can be enumerated.
 
+> **Historical snapshot (0.12.40).** The analysis below describes the
+> selector as it was when this proposal was written. #287 implemented what it
+> asks for: both temporal-mode spellings, the strata-materialization keys and
+> `kindling.temporal.max_generations` are in the selector's default
+> `lookup_keys` today; `lakeflow_app_selector.py` is the authority for the
+> current tuple.
+
 Restricted runtimes (serverless, shared access) block every enumeration
 surface. `iter_spark_conf_items` then falls through to its last tier, which
 point-looks-up **only the keys it was handed in `extra_keys`** — and the
-selector's `lookup_keys` today is a fixed tuple (`kindling.data_app`,
+selector's `lookup_keys` at 0.12.40 was a fixed tuple (`kindling.data_app`,
 `kindling.lakeflow.allowed_apps`, `kindling.lakeflow.config_keys`,
 `spark.kindling.bootstrap.config_files`, `kindling.lakeflow.pipes`) plus
 whatever `kindling.lakeflow.config_keys` names.
