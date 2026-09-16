@@ -227,8 +227,8 @@ class TestDeltaEntityProviderConfig:
         # Should have logged a warning
         provider.logger.warning.assert_called_once()
 
-    def test_accesses_non_provider_tags(self, mock_dependencies):
-        """Test that provider can access non-provider.* tags via _get_provider_config."""
+    def test_excludes_non_provider_tags(self, mock_dependencies):
+        """_get_provider_config returns provider.* tags only; generic tags stay out."""
         provider = DeltaEntityProvider(
             config=mock_dependencies["config"],
             entity_name_mapper=mock_dependencies["entity_name_mapper"],
@@ -251,16 +251,16 @@ class TestDeltaEntityProviderConfig:
             schema=None,
         )
 
-        # Get config to verify all tags are accessible
         config = provider._get_provider_config(entity)
 
-        # Should have provider.* tags with prefix stripped
-        assert config["path"] == "Tables/sales"
+        # provider.* tags: prefix stripped
+        assert config == {"path": "Tables/sales"}
 
-        # Should have non-provider tags included
-        assert config["region"] == "us-west"
-        assert config["pii"] is True  # Type converted
-        assert config["retention_days"] == 90  # Type converted
+        # Generic metadata is not provider config; it stays on the entity
+        assert "region" not in config
+        assert "pii" not in config
+        assert "retention_days" not in config
+        assert entity.tags["region"] == "us-west"
 
     def test_for_name_mode_allows_missing_path_during_reference_resolution(self, mock_dependencies):
         """catalog mode should not fail if path locator cannot resolve before table exists."""

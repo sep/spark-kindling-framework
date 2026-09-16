@@ -4,6 +4,22 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Changed
+
+- **`BaseEntityProvider._get_provider_config()` returns `provider.*` tags
+  only** (prefix stripped, values type-converted as before). Previously every
+  unprefixed entity tag was copied into the provider configuration too, so
+  generic metadata leaked into connectors that forward their config
+  verbatim: a Unity Catalog `comment` tag on a CSV entity became Spark's
+  single-character CSV `comment` option and reads failed with `comment
+  cannot be more than one character`. Tags such as `provider_type`, `layer`,
+  `stage`, `comment` and `sdp.*` are framework/catalog/application metadata
+  and are no longer visible through provider config. A provider (including a
+  third-party subclass) that read a bare tag through `_get_provider_config`
+  must read it from `entity_metadata.tags` instead, or the application must
+  declare it as `provider.<key>`. No `provider.comment` workaround is needed
+  for UC comments.
+
 ### Removed
 
 - **`kindling.lakeflow.config_files`**, the comma-separated Lakeflow

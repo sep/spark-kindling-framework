@@ -246,6 +246,15 @@ entity_tags:
 ## Provider Configuration via Entity Tags (`EntityMetadata.tags`)
 
 Provider configuration is driven by entity tags. Tags with the `provider.` prefix are treated as provider config.
+Only those tags make up a provider's configuration mapping: the prefix is
+stripped, and `true`/`false` and integer strings are type-converted. Everything
+else on the entity (`provider_type`, `layer`, `comment`, `sdp.*`, application
+tags) is generic metadata that stays out of that mapping and therefore out of
+any connector options a provider builds from it. Providers still receive the
+full `EntityMetadata`, and `provider_type` still selects the provider. A Unity
+Catalog `comment` tag therefore cannot collide with a connector option of the
+same name (Spark's CSV `comment`, for instance); to set a connector option,
+declare it as `provider.<option>`.
 
 Common tags:
 

@@ -7,7 +7,6 @@ Tests CSV reading, configuration handling, and error cases.
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_csv import CSVEntityProvider
 
@@ -285,6 +284,111 @@ class TestCSVProviderConfiguration:
         # Verify multiLine option was set
         calls = [str(call) for call in mock_reader.option.call_args_list]
         assert any("multiLine" in call for call in calls)
+
+
+class TestCSVProviderConfigScope:
+    """Generic entity metadata must never reach Spark's CSV reader options.
+
+    Regression for a Unity Catalog ``comment`` tag being forwarded as the CSV
+    ``comment`` option (which Spark requires to be a single character).
+    """
+
+    @pytest.fixture
+    def provider(self):
+        logger_provider = MagicMock()
+        logger_provider.get_logger.return_value = MagicMock()
+        provider = CSVEntityProvider(logger_provider)
+        provider.spark = MagicMock()
+        return provider
+
+    @pytest.fixture(autouse=True)
+    def mock_spark_session(self, provider):
+        with patch(
+            "kindling.entity_provider_csv.get_or_create_spark_session", return_value=provider.spark
+        ):
+            yield
+
+    @staticmethod
+    def _reader(provider):
+        mock_reader = MagicMock()
+        mock_reader.load.return_value = MagicMock()
+        mock_reader.option.return_value = mock_reader
+        mock_reader.options.return_value = mock_reader
+        provider.spark.read.format.return_value = mock_reader
+        return mock_reader
+
+    @staticmethod
+    def _entity(tags):
+        return EntityMetadata(
+            entityid="bronze.device_telemetry",
+            name="device_telemetry",
+            partition_columns=[],
+            merge_columns=[],
+            tags=tags,
+            schema=None,
+        )
+
+    def test_provider_config_contains_only_provider_tags(self, provider):
+        entity = self._entity(
+            {
+                "provider_type": "csv",
+                "provider.path": "Files/telemetry.csv",
+                "provider.header": "true",
+                "provider.maxColumns": "512",
+                "comment": "Source stream of raw device telemetry Kafka records.",
+                "layer": "bronze",
+                "stage": "landing",
+                "sdp.dataset_type": "streaming_table",
+                "sdp.table_properties.quality": "bronze",
+            }
+        )
+
+        config = provider._get_provider_config(entity)
+
+        assert config == {"path": "Files/telemetry.csv", "header": True, "maxColumns": 512}
+
+    def test_generic_tags_are_not_forwarded_as_reader_options(self, provider):
+        entity = self._entity(
+            {
+                "provider_type": "csv",
+                "provider.path": "Files/telemetry.csv",
+                "comment": "Source stream of raw device telemetry Kafka records.",
+                "layer": "bronze",
+                "stage": "landing",
+                "sdp.dataset_type": "streaming_table",
+            }
+        )
+        mock_reader = self._reader(provider)
+
+        provider.read_entity(entity)
+
+        # Nothing beyond the named CSV options remained, so no passthrough call
+        mock_reader.options.assert_not_called()
+        forwarded = {call.args[0] for call in mock_reader.option.call_args_list}
+        assert "comment" not in forwarded
+        assert "provider_type" not in forwarded
+        assert forwarded.isdisjoint({"layer", "stage", "sdp.dataset_type"})
+        # The tag is untouched for downstream catalog / declaration use
+        assert entity.tags["comment"] == "Source stream of raw device telemetry Kafka records."
+
+    def test_provider_prefixed_extras_still_forwarded_with_type_conversion(self, provider):
+        entity = self._entity(
+            {
+                "provider_type": "csv",
+                "provider.path": "Files/telemetry.csv",
+                "provider.comment": "#",
+                "provider.maxColumns": "512",
+                "provider.enforceSchema": "false",
+                "comment": "Source stream of raw device telemetry Kafka records.",
+            }
+        )
+        mock_reader = self._reader(provider)
+
+        provider.read_entity(entity)
+
+        mock_reader.options.assert_called_once_with(
+            comment="#", maxColumns=512, enforceSchema=False
+        )
 
 
 class TestCSVEntityProviderWrites:

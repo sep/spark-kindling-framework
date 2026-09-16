@@ -109,45 +109,45 @@ class BaseEntityProvider(ABC):
 
     def _get_provider_config(self, entity_metadata: EntityMetadata) -> Dict[str, Any]:
         """
-        Extract configuration from entity tags with type conversion.
+        Extract provider configuration from the entity's ``provider.*`` tags.
 
-        Returns ALL entity tags (not just provider.*), with provider.* tags
-        having their prefix stripped for convenience.
+        Only tags carrying the ``provider.`` prefix are provider configuration.
+        The prefix is stripped and values are type-converted. Every other tag
+        (``provider_type``, ``layer``, ``comment``, ``sdp.*``, ...) is generic
+        entity metadata owned by the framework, the catalog or the application
+        and is excluded from this mapping, so a provider that forwards its
+        config to a connector (``spark.read.options(**config)``) cannot leak a
+        Unity Catalog ``comment`` into, say, Spark's single-character CSV
+        ``comment`` option. The exclusion is from provider config only:
+        providers still receive the full ``EntityMetadata`` and the registry
+        still selects a provider by ``provider_type``. A provider that needs a
+        generic tag reads it from ``entity_metadata.tags`` directly.
 
         Example:
             Input tags: {
+                "provider_type": "csv",
                 "provider.path": "/data/sales.csv",
                 "provider.header": "true",
-                "region": "us-west",
-                "pii": "true"
+                "comment": "Raw sales extract",
+                "layer": "bronze"
             }
             Returns: {
                 "path": "/data/sales.csv",    # provider.* prefix stripped
-                "header": True,                # type converted
-                "region": "us-west",           # non-provider tags included
-                "pii": True                    # type converted
+                "header": True                 # type converted
             }
 
         Args:
             entity_metadata: Entity metadata with tags
 
         Returns:
-            Dictionary with all tags, type-converted, provider.* prefix stripped
+            Dictionary of ``provider.*`` tags, prefix stripped, type-converted
         """
-        config = {}
-
-        # Add all non-provider tags as-is (with type conversion)
-        for key, value in entity_metadata.tags.items():
-            if not key.startswith("provider."):
-                config[key] = self._convert_tag_type(value)
-
-        # Add provider tags with prefix stripped (with type conversion)
-        for key, value in entity_metadata.tags.items():
-            if key.startswith("provider."):
-                config_key = key[9:]  # Remove 'provider.' prefix
-                config[config_key] = self._convert_tag_type(value)
-
-        return config
+        prefix = "provider."
+        return {
+            key[len(prefix) :]: self._convert_tag_type(value)
+            for key, value in entity_metadata.tags.items()
+            if key.startswith(prefix)
+        }
 
     def _convert_tag_type(self, value: str) -> Any:
         """
