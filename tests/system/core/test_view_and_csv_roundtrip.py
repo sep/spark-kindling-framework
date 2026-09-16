@@ -4,8 +4,13 @@ System test: DataPipes.view() execution and CSV write/read roundtrip on cloud pl
 Verifies that:
   1. DataPipes.view() can be registered with inline SQL and executed against a
      Spark DataFrame on the target cloud platform.
-  2. The view output can be written to CSV via CSVEntityProvider and read back correctly.
+  2. The view output can be written to CSV via CSVEntityProvider and read back
+     through CSVEntityProvider.read_entity().
   3. append_to_entity adds rows to the existing CSV.
+  4. Generic entity metadata (a multi-character Unity Catalog ``comment``,
+     ``layer``, ``sdp.*``) on the CSV entity is not forwarded to Spark's CSV
+     reader. Regression: ``comment`` used to become the single-character CSV
+     ``comment`` option and the read failed on the platform.
 
 Writes to ABFS (cloud object storage) so the path is accessible by all Spark executors
 in a multi-node cluster.  Pass an abfss:// base path via AZURE_STORAGE_ACCOUNT,
@@ -128,18 +133,29 @@ try:
     csv_path = _CSV_PATH
 
     csv_provider = CSVEntityProvider(logger_provider)
+    # Generic catalog / declaration metadata alongside the provider.* tags.
+    # None of these may reach Spark's CSV reader: `comment` in particular is
+    # a CSV option Spark requires to be one character.
+    _UC_COMMENT = "Positive-amount rows of the view/CSV roundtrip system test."
     entity_meta = EntityMetadata(
         entityid="view.positive",
         name="View Output",
         merge_columns=[],
-        tags={"provider.path": csv_path, "provider.header": "true"},
+        tags={
+            "provider_type": "csv",
+            "provider.path": csv_path,
+            "provider.header": "true",
+            "comment": _UC_COMMENT,
+            "layer": "gold",
+            "sdp.dataset_type": "materialized_view",
+        },
         schema=None,
     )
     csv_provider.write_to_entity(result_df, entity_meta)
     print("VIEW_CSV_TEST: CSV written", flush=True)
 
-    # ── Step 5: read CSV back and validate ────────────────────────────────────
-    read_back = spark.read.option("header", "true").csv(csv_path)
+    # ── Step 5: read CSV back through the provider and validate ───────────────
+    read_back = csv_provider.read_entity(entity_meta)
     read_rows = read_back.collect()
     print(f"VIEW_CSV_TEST: CSV has {len(read_rows)} rows", flush=True)
 
@@ -156,13 +172,19 @@ try:
         print(msg, flush=True)
         sys.exit(1)
 
-    print("VIEW_CSV_TEST: CSV round-trip validated", flush=True)
+    if entity_meta.tags.get("comment") != _UC_COMMENT:
+        msg = f"VIEW_CSV_TEST: FAILED — comment tag altered by read: {entity_meta.tags.get('comment')!r}"
+        _log.warning(msg)
+        print(msg, flush=True)
+        sys.exit(1)
+
+    print("VIEW_CSV_TEST: CSV round-trip validated (generic tags not forwarded)", flush=True)
 
     # ── Step 6: verify append_to_entity adds rows ─────────────────────────────
     extra_df = spark.createDataFrame([(4, "delta")], ["id", "label"])
     csv_provider.append_to_entity(extra_df, entity_meta)
 
-    appended = spark.read.option("header", "true").csv(csv_path)
+    appended = csv_provider.read_entity(entity_meta)
     appended_count = appended.count()
     if appended_count != 3:
         msg = f"VIEW_CSV_TEST: FAILED — after append, CSV has {appended_count} rows, expected 3"
@@ -228,8 +250,10 @@ class TestViewAndCsvRoundtrip:
           1. Creates a Spark DataFrame with 3 rows.
           2. Registers a DataPipes.view() filtering to rows with amount > 0.
           3. Executes the view and validates the 2-row result.
-          4. Writes to local CSV via CSVEntityProvider.write_to_entity().
-          5. Reads back and validates the CSV.
+          4. Writes to CSV via CSVEntityProvider.write_to_entity(); the entity
+             also carries a multi-character UC `comment`, `layer` and `sdp.*`
+             tags that must not reach Spark's CSV reader.
+          5. Reads back via CSVEntityProvider.read_entity() and validates the CSV.
           6. Appends 1 row and verifies the count reaches 3.
 
         Confirms that both view() and CSV write/append work in the platform's Spark
