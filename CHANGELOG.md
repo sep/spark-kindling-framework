@@ -2,7 +2,15 @@
 
 All notable changes to spark-kindling are documented here.
 
-## Unreleased
+## [0.12.47] - 2026-09-16
+
+### Fixed
+
+- **Devcontainer: docker-init runs as PID 1.** `sleep infinity` as PID 1
+  never calls `wait()`, so every orphaned process became a permanently
+  unreapable zombie holding a cgroup PID (19.7k in 24 hours under agent
+  load). The compose service sets `init: true`, so the daemon runs tini as
+  PID 1; no image change (#300).
 
 ### Changed
 
@@ -18,7 +26,7 @@ All notable changes to spark-kindling are documented here.
   third-party subclass) that read a bare tag through `_get_provider_config`
   must read it from `entity_metadata.tags` instead, or the application must
   declare it as `provider.<key>`. No `provider.comment` workaround is needed
-  for UC comments.
+  for UC comments (#301).
 
 ### Removed
 
