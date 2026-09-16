@@ -115,11 +115,13 @@ class BaseEntityProvider(ABC):
         The prefix is stripped and values are type-converted. Every other tag
         (``provider_type``, ``layer``, ``comment``, ``sdp.*``, ...) is generic
         entity metadata owned by the framework, the catalog or the application
-        -- it is never handed to a provider, so a provider that forwards its
+        and is excluded from this mapping, so a provider that forwards its
         config to a connector (``spark.read.options(**config)``) cannot leak a
         Unity Catalog ``comment`` into, say, Spark's single-character CSV
-        ``comment`` option. Providers that need a generic tag read it from
-        ``entity_metadata.tags`` directly.
+        ``comment`` option. The exclusion is from provider config only:
+        providers still receive the full ``EntityMetadata`` and the registry
+        still selects a provider by ``provider_type``. A provider that needs a
+        generic tag reads it from ``entity_metadata.tags`` directly.
 
         Example:
             Input tags: {
