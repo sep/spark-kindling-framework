@@ -12,12 +12,11 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from pyspark.sql import SparkSession
-
 from kindling.data_entities import DataEntityManager, EntityMetadata
 from kindling.entity_provider_csv import CSVEntityProvider
 from kindling.injection import GlobalInjector
 from kindling.spark_config import DynaconfConfig
+from pyspark.sql import SparkSession
 
 
 class TestCSVEntityProviderIntegration:
@@ -291,6 +290,79 @@ class TestCSVEntityProviderIntegration:
         assert "amount" in df.columns
         assert "active" in df.columns
         assert "timestamp" in df.columns
+
+
+class TestCSVEntityProviderGenericTagsIntegration:
+    """Generic catalog metadata on a CSV entity must not become reader options."""
+
+    @pytest.fixture(autouse=True)
+    def setup_and_cleanup(self):
+        GlobalInjector.reset()
+        yield
+        GlobalInjector.reset()
+
+    @pytest.fixture
+    def spark(self):
+        try:
+            existing = SparkSession.getActiveSession()
+            if existing:
+                existing.stop()
+        except Exception:
+            pass
+
+        spark = (
+            SparkSession.builder.master("local[1]")
+            .appName("csv-generic-tags-integration-test")
+            .getOrCreate()
+        )
+
+        import __main__
+
+        __main__.spark = spark
+        yield spark
+        __main__.spark = None
+        spark.stop()
+
+    def test_multi_character_uc_comment_tag_does_not_break_read(self, tmp_path, spark):
+        """Regression: a UC ``comment`` tag was forwarded as Spark's CSV ``comment``
+        option and failed with "comment cannot be more than one character"."""
+        from unittest.mock import MagicMock
+
+        from kindling.spark_log_provider import PythonLoggerProvider
+
+        csv_path = tmp_path / "telemetry.csv"
+        csv_path.write_text("device_id,reading\n" "dev-1,10\n" "dev-2,20\n" "dev-3,30\n")
+
+        comment = "Source stream of raw device telemetry Kafka records."
+        entity = EntityMetadata(
+            entityid="bronze.device_telemetry",
+            name="device_telemetry",
+            partition_columns=[],
+            merge_columns=[],
+            tags={
+                "provider_type": "csv",
+                "provider.path": str(csv_path),
+                "provider.header": "true",
+                "provider.inferSchema": "true",
+                "comment": comment,
+                "layer": "bronze",
+                "stage": "landing",
+                "sdp.dataset_type": "streaming_table",
+            },
+            schema=None,
+        )
+
+        mock_logger_provider = MagicMock(spec=PythonLoggerProvider)
+        mock_logger_provider.get_logger.return_value = MagicMock()
+        provider = CSVEntityProvider(mock_logger_provider)
+
+        df = provider.read_entity(entity)
+
+        assert df.count() == 3
+        assert sorted(r["device_id"] for r in df.collect()) == ["dev-1", "dev-2", "dev-3"]
+        # Generic metadata is preserved on the entity for declaration / catalog use
+        assert entity.tags["comment"] == comment
+        assert entity.tags["layer"] == "bronze"
 
 
 class TestCSVEntityProviderWriteIntegration:
