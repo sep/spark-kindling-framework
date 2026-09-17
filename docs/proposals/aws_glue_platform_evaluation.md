@@ -1,7 +1,7 @@
-# AWS Glue as a Kindling Execution Target: Feasibility Evaluation
+# AWS Glue as a Kindling Execution Target
 
-**Status:** Evaluation only. No extension code exists; nothing in this document is
-implemented.
+**Status:** Proposed (feasibility evaluation). No extension code exists; nothing
+in this document is implemented.
 **Created:** 2026-09-17
 **Baseline:** `main` @ `c917ac3` (release 0.12.47). Every claim about Kindling
 below cites a `file:line` in that tree. Glue facts were checked against the AWS
@@ -12,55 +12,17 @@ implemented), `declarative_pipelines_engine.md`, `kindling_core_runner_split.md`
 `iceberg_entity_provider.md`, `great_expectations_validation.md`,
 `contributing/platform_api_architecture.md`.
 
-## 0. Corrections to the task's premises
+## Motivation
 
-The evaluation brief was written with an imperfect picture of Kindling and of
-Glue. Four premises need correcting before the rest of the analysis makes sense.
+Kindling targets Synapse, Fabric and Databricks. A recurring client pattern on
+AWS is Airflow (MWAA) orchestrating Glue PySpark jobs. Supporting Glue as a
+fourth target would let Kindling (a) enforce project structure and keep
+transformation code portable on AWS, and (b) provide a credible later migration
+path to Databricks with minimal rewrite. This document evaluates whether that is
+feasible, what it would take, and where the portability claim is weaker than it
+sounds.
 
-1. **The Databricks extension does not emit DAB bundles or Lakeflow job
-   definitions.** `kindling_ext_databricks` is a declaration-time adapter that
-   emits *in-process* `dp.*` calls inside a Lakeflow pipeline's source evaluation
-   (`packages/extensions/kindling_ext_databricks/kindling_ext_databricks/engine.py:190-412`).
-   Its only dependencies are `spark-kindling` and `spark-kindling-ext-sdp`
-   (`packages/extensions/kindling_ext_databricks/pyproject.toml:17-23`); it makes
-   no API calls and writes no files. Bundle emission is a proposal marked
-   "Proposed; commands below are not implemented"
-   (`docs/proposals/databricks_bundle_deployment.md:3`); no `kindling bundle` CLI
-   group exists (`packages/kindling_cli/kindling_cli/cli.py` groups at `:1381-8423`).
-   Pipeline objects are provisioned by Terraform
-   (`iac/databricks/workspace/pipelines.tf:5-49`) or hand-written YAML.
-   The "DABs + Lakeflow jobs" precedent the brief wants to mirror therefore does
-   not exist yet; a Glue emitter would be the *first* orchestration emitter in the
-   repo, not the second.
-2. **"Not Livy" is trivially true.** Livy is Synapse-only
-   (`packages/kindling_sdk/kindling_sdk/platform_synapse.py:464-498`); Fabric uses
-   ephemeral SparkJobDefinitions (`platform_fabric.py:326-363`); Databricks uses
-   the Jobs API (`platform_databricks.py:623-709`). All three implement the same
-   job-shaped `PlatformAPI` (`packages/kindling_sdk/kindling_sdk/platform_provider.py:80-213`).
-   Databricks has **two** unrelated execution paths: the imperative runner
-   submitted as a Job, and the Lakeflow lowering. The brief conflates them.
-3. **Glue 4.0 is not a viable target and Glue 6.0 exists.** Core declares
-   `pyspark >=3.4.0,<4.0.0` and `delta-spark >=2.4.0,<4.0.0`
-   (`pyproject.toml:74-75`). Glue 4.0 ships Spark 3.3.0, Java 8, Delta 2.1.0: below
-   both floors. Glue 5.0/5.1 (Spark 3.5.4/3.5.6, Python 3.11, Java 17, Delta
-   3.3.0/3.3.2) sit inside the declared ranges, and 5.1 is the default version for
-   new jobs. Glue 6.0 (GA 2026-08-21: Spark 4.1.1, Python 3.13, Delta 4.2.0,
-   Iceberg 1.11.0) ships **Spark Declarative Pipelines (SDP)**, the OSS API that
-   `kindling_ext_sdp` already targets. The Spark version matrix row in the brief is
-   therefore inverted: 4.0 is out, 5.1 is the runner target, 6.0 is the
-   declarative target.
-4. **On Glue 5.x there is nothing to "lower" onto.** Glue 5.x has no declarative
-   pipeline engine. Kindling's imperative runner (generation executor, watermark
-   aspect, SCD merge strategies, streaming stack) would run *inside* the Glue job
-   unchanged, exactly as it does inside a Databricks Job or Synapse batch. The
-   artifacts a Glue target emits are deployment and orchestration definitions
-   (Glue job JSON, Airflow DAGs, S3 layout). That is the analog of the *proposed*
-   `kindling bundle build`, not of `kindling_ext_databricks`. The correct mental
-   model is "a fourth `PlatformService` + `PlatformAPI` pair, plus the first
-   orchestration emitter," which is what `dataproc_platform_evaluation.md`
-   already sketched for GCP.
-
-## 1. Verdict
+## 1. Recommendation
 
 **Feasible with caveats.** Glue 5.1 is a credible fourth *runner* target: the
 platform seams Kindling already has (`PlatformService`, `PlatformAPI`,
@@ -80,16 +42,79 @@ and for Kindling-owned incremental state when Delta table history is preserved;
 it does **not** hold for bookmark state, any Glue Data Quality rules, catalog
 identity, or orchestration, and retargeting onto Lakeflow (rather than Databricks
 runner Jobs) inherits every runner-to-LDP divergence Kindling already documents.
-Glue 6.0 SDP is the true LDP analog and the better long-term migration story, but
-it is four weeks old, has no local Docker image, lacks expectations and AUTO CDC,
-and requires Spark 4.x support core does not declare; treat it as a second,
-later track.
+Glue 6.0 SDP is the true Lakeflow analog and the better long-term migration
+story, but it is four weeks old, has no local Docker image, lacks expectations
+and AUTO CDC, and requires Spark 4.x support core does not declare; treat it as
+a second, later track.
 
-## 2. Phase 1: ground truth on Kindling's extension contract
+## 2. Where Glue fits in Kindling's architecture
 
-### 2.1 The interface surface a target implements
+### 2.1 Kindling has two execution paradigms and two platform layers
 
-There are two platform layers (`docs/contributing/platform_api_architecture.md:5-16`).
+Kindling is one package with two execution paradigms
+(`docs/proposals/kindling_core_runner_split.md:12-57`): an **imperative runner**
+(generation executor, watermark aspect, SCD merge strategies, streaming stack)
+that is ambient in core and runs when `initialize()` is called with no
+`engine=`, and **declarative engine extensions** that translate the same
+declarations into a platform's pipeline vocabulary.
+
+Every target also has two platform layers (`docs/contributing/platform_api_architecture.md:5-16`):
+a runtime `PlatformService` that runs on the cluster and a design-time
+`PlatformAPI` in `kindling_sdk` that deploys and submits from a dev machine or
+CI. Submission transport differs per platform and is not part of the runtime:
+Synapse uses Livy batches (`packages/kindling_sdk/kindling_sdk/platform_synapse.py:464-498`),
+Fabric creates ephemeral SparkJobDefinitions (`platform_fabric.py:326-363`),
+Databricks uses the Jobs API (`platform_databricks.py:623-709`). All three
+implement the same job-shaped contract
+(`packages/kindling_sdk/kindling_sdk/platform_provider.py:80-213`).
+
+Databricks is served by **both** paradigms, through unrelated code paths:
+
+- The runner, submitted as a Databricks Job whose Python entry point is the
+  bootstrap shim (`runtime/scripts/kindling_bootstrap.py`).
+- The Lakeflow lowering: `kindling_ext_databricks` is a declaration-time adapter
+  that emits *in-process* `dp.*` calls inside a Lakeflow pipeline's source
+  evaluation (`packages/extensions/kindling_ext_databricks/kindling_ext_databricks/engine.py:190-412`).
+  Its only dependencies are `spark-kindling` and `spark-kindling-ext-sdp`
+  (`packages/extensions/kindling_ext_databricks/pyproject.toml:17-23`); it makes
+  no API calls and writes no files. Pipeline objects are provisioned by
+  Terraform (`iac/databricks/workspace/pipelines.tf:5-49`) or hand-written YAML.
+  Bundle emission is a proposal marked "Proposed; commands below are not
+  implemented" (`docs/proposals/databricks_bundle_deployment.md:3`); no
+  `kindling bundle` CLI group exists (`packages/kindling_cli/kindling_cli/cli.py`
+  groups at `:1381-8423`).
+
+### 2.2 What a Glue target is, structurally
+
+Glue 5.x has no declarative pipeline engine, so there is nothing to lower
+Kindling's vocabulary onto. Kindling's runner runs *inside* the Glue job
+unchanged, exactly as it does inside a Databricks Job or a Synapse batch. What a
+Glue target adds is:
+
+1. a fourth `PlatformService` + `PlatformAPI` pair (the shape
+   `dataproc_platform_evaluation.md` sketched for GCP), and
+2. a design-time **orchestration emitter** producing Glue job definitions,
+   Airflow DAGs and an S3 layout. Because DAB emission is unimplemented, this
+   would be the first orchestration emitter in the repo, and should be designed
+   to be shared with the bundle proposal.
+
+Glue 6.0 changes the picture: it ships OSS Spark Declarative Pipelines (SDP),
+the API `kindling_ext_sdp` already emits. That makes a genuine declarative
+lowering possible on Glue, as a second track (§10, Track B).
+
+### 2.3 Glue version matrix against Kindling's floors
+
+Core declares `pyspark >=3.4.0,<4.0.0` and `delta-spark >=2.4.0,<4.0.0`
+(`pyproject.toml:74-75`), Python `^3.10` (`:18`).
+
+| Glue | Spark | Python | Java | Delta | Iceberg | Fit |
+|---|---|---|---|---|---|---|
+| 4.0 | 3.3.0 | 3.10 | 8 | 2.1.0 | 1.0.0 | **Not viable**: below both floors; `current_catalog()` absent; Delta lacks `withSchemaEvolution` and `whenNotMatchedBySourceUpdate` |
+| 5.0 | 3.5.4 | 3.11 | 17 | 3.3.0 | 1.7.1 | Inside declared ranges |
+| 5.1 (default for new jobs) | 3.5.6 | 3.11 | 17 | 3.3.2 | 1.10.0 | **Runner target.** Equals the devcontainer pins apart from Java 21 vs 17 |
+| 6.0 (GA 2026-08-21) | 4.1.1 | 3.13 | 17 | 4.2.0 | 1.11.0 | **Declarative target, later.** Exceeds `pyspark <4.0.0`; SDP, Spark Connect for interactive sessions, S3A only, ANSI on by default; no Docker image yet |
+
+## 3. The extension contract a target implements
 
 **Runtime `PlatformService`** (`packages/kindling/notebook_framework.py:630-766`).
 It is a plain class, not an ABC, so the `@abstractmethod` markers are inert and
@@ -138,7 +163,7 @@ those are runner internals with zero references under `packages/extensions/`.
 (`data_entities.py:134,140`); `WatermarkEntityFinder` (`watermarking.py:37`);
 telemetry provider rebind at import time (`kindling_ext_otel_azure/__init__.py:14-50`).
 
-### 2.2 How the Databricks Lakeflow lowering works
+## 4. The Lakeflow lowering as precedent
 
 Two modules do the translation: `kindling_ext_sdp/declaration_engine.py`
 (registries → validated, Spark-free `DeclarationPlan`) and
@@ -163,11 +188,10 @@ Entry point in the pipeline source: `declare_from_pipeline_config()`
 (`lakeflow_app_selector.py:290-361`) → `kindling.initialize(engine="databricks_sdp",
 declaration_only=True)` → `register_all()` → `kindling.declare_pipeline()`. Config
 reaches the pipeline via `spark.kindling.bootstrap.config_files` point lookups
-(`lakeflow_app_selector.py:89-137`). What this precedent teaches for Glue is
-narrower than the brief assumes: it is a template for a **Glue 6.0 SDP** track,
-and for nothing on Glue 5.x.
+(`lakeflow_app_selector.py:89-137`). This precedent is the template for a Glue
+6.0 SDP engine (§10, Track B); it has no counterpart on Glue 5.x.
 
-### 2.3 Contracts that carry semantics vs plumbing
+## 5. Contracts that carry semantics vs plumbing
 
 | Area | Semantics a target must reproduce | Plumbing that can be swapped |
 |---|---|---|
@@ -181,9 +205,10 @@ and for nothing on Glue 5.x.
 | Catalog identity | precedence chain in `entity_resolution.py:221-309`: `provider.table_name` > `leaf` strategy > no-namespace-config means the entity id *is* the qualified name (3 parts kept, 2 parts promoted via `current_catalog()` unless `spark_catalog`, `:233-246`) > configured catalog/schema flatten | UC detection heuristics (`features.py:73-98`) |
 | Migration | additive DDL in place; destructive = blue/green with `ALTER TABLE RENAME TO` (`migration.py:755-807`) in catalog mode, in-place overwrite in storage mode; typed to `DeltaEntityProvider` (`:563`) | SQL text |
 
-### 2.4 Livy, interactive-session and persistent-cluster assumptions (porting hazards)
+## 6. Batch-job porting hazards in core
 
-Verified with a throwaway script against this tree (not committed):
+Core was designed around long-lived notebook sessions on managed clusters. The
+assumptions below were verified with a throwaway script against this tree:
 `detect_platform({"platform": "glue"})` raises `RuntimeError: Unable to detect
 platform`, `_get_storage_utils()` returns `None` outside a notebook, and
 `download_config_files(...)` then raises `Storage utilities not available for
@@ -211,7 +236,7 @@ Formation FGAC mode and on Spark Connect alike; the `.kda` format is text-only
 and storage-agnostic (`app_files.py:6-60`); the `@secret` two-pass loader is
 backend-agnostic (`config_loaders.py:26-254`, `bootstrap.py:1823-1919`).
 
-## 3. Phase 2: Kindling concepts mapped onto Glue
+## 7. Kindling concepts mapped onto Glue
 
 Fidelity: **clean** (same semantics), **lossy** (works with documented
 differences), **absent** (no Glue equivalent or no Kindling equivalent).
@@ -220,17 +245,17 @@ differences), **absent** (no Glue equivalent or no Kindling equivalent).
 |---|---|---|---|
 | Job submission | `CreateJob`/`UpdateJob` (`glueetl`, `GlueVersion 5.1`, `WorkerType`/`NumberOfWorkers`, `DefaultArguments`, `ExecutionProperty.MaxConcurrentRuns`) + `StartJobRun(Arguments)`; `GetJobRun`; `BatchStopJobRun` | clean | Maps onto `PlatformAPI`: `register_app_job` → `CreateJob`, `submit_app_run` → `StartJobRun` (Glue collapses create+run like Dataproc did, `dataproc_platform_evaluation.md:63-82`); `get_job_logs`/`stream_stdout_logs` → CloudWatch `GetLogEvents` on `/aws-glue/jobs/output`. Script args stay `config:k=v` (`platform_databricks.py:548-556`) plus `--conf spark.kindling.*`. Run-level `Arguments` override `DefaultArguments`; `NonOverridableArguments` win. 260 KB argument cap |
 | Deployment / packaging | S3 artifacts prefix; `--additional-python-modules` (S3 wheels, `*.gluewheels.zip` + `--python-modules-installer-option --no-index`, `-r requirements.txt`, or `--index-url` for private PyPI); `--python-virtual-env` (Glue ≥5.0, replaces the env entirely); `--extra-py-files` (driver path); `--extra-files` (copied to driver cwd: the natural transport for config YAML) | lossy | Kindling's runtime pip-at-init model (H7) is redundant and should be disabled; framework + extensions + `lake-reqs.txt` wheels become a zip-of-wheels built in CI, which is stricter and more deterministic than today. Private PyPI is a Glue job parameter, and also the first place Kindling would need `--index-url` support it lacks. Pre-installed Glue 5.x modules (boto3 1.34, pandas 2.2.2, pyarrow 17; no PyYAML on 5.0/5.1) must be respected; a `[glue]` extra with no Spark deps matches the existing packaging rationale (`pyproject.toml:67-71`) |
-| Orchestration lowering | Generated Airflow DAG using `GlueJobOperator` (creates/updates job, uploads script, returns run id; `update_config`, `wait_for_completion`/`deferrable`, `verbose`, `stop_job_run_on_kill`) + `GlueJobSensor`. Glue Workflows (triggers/jobs/crawlers, EventBridge start) as a lesser alternative | lossy | Nothing to mirror: Kindling emits no DAB today. Recommended granularity: **one Glue job per Kindling app**, Kindling's generation executor runs the pipe DAG in-process; Airflow provides schedule, retries, sensors, cross-app edges. Per-pipe Glue jobs would pay a cold start per pipe, lose `CacheOptimizer` sharing and multiply `system.watermarks` writers; keep as an opt-in for large apps. Glue Workflows lack parameters beyond run properties, have no cross-workflow dependencies and no first-class retry policy; not recommended as primary |
+| Orchestration | Generated Airflow DAG using `GlueJobOperator` (creates/updates job, uploads script, returns run id; `update_config`, `wait_for_completion`/`deferrable`, `verbose`, `stop_job_run_on_kill`) + `GlueJobSensor`. Glue Workflows (triggers/jobs/crawlers, EventBridge start) as a lesser alternative | lossy | Recommended granularity: **one Glue job per Kindling app**; Kindling's generation executor runs the pipe DAG in-process, Airflow provides schedule, retries, sensors and cross-app edges. Per-pipe Glue jobs would pay a cold start per pipe, lose `CacheOptimizer` sharing and multiply `system.watermarks` writers; keep as an opt-in for large apps. Glue Workflows lack parameters beyond run properties, cross-workflow dependencies and first-class retry policy; not recommended as primary |
 | Catalog | Glue Data Catalog as Hive metastore (`--enable-glue-datacatalog`), two-level `database.table`; three-part only via a configured Iceberg `spark.sql.catalog.glue_catalog`; Lake Formation for permissions | lossy | `ConfigDrivenEntityNameMapper` produces three-part names by default (`entity_resolution.py:233-246`, `:277`). Glue target must set `kindling.storage.table_schema` (flatten to `schema.leaf`) and leave `table_catalog` unset, or bind a `GlueEntityNameMapper`. `current_catalog()` returns `spark_catalog` on Glue, which Kindling already treats as "absent" (`:239-245`). Delta tables register via `saveAsTable`/`CREATE TABLE ... USING DELTA LOCATION` (`entity_provider_delta.py:1396-1400`); Glue crawlers are not needed. `spark.catalog.tableExists` becomes an AWS API call; permission errors read as "missing" (`:1286-1289`) |
-| Incremental reads | Glue job bookmarks: DynamicFrame-only (`create_dynamic_frame.from_catalog/from_options` with `transformation_ctx`), sources S3 (JSON/CSV/Avro/XML/Parquet/ORC by object mtime), JDBC (monotonic keys), Relationalize; state keyed by job name + `transformation_ctx`, opaque, committed atomically at `job.commit()`, deleted with the job; reset is job-wide; rewind via `job-bookmark-pause` + `from`/`to` run ids; **not** for Delta/Iceberg sources, not in streaming jobs, not in the local Docker image | lossy (see §3.1) | Kindling's own mechanism (per-pipe cursor in `system.watermarks`, Delta CDF, persist-then-advance) works on Glue unchanged and is portable. Bookmarks add value only for raw S3 file and JDBC *sources* Kindling reads via `spark.read` today |
+| Incremental reads | Glue job bookmarks: DynamicFrame-only (`create_dynamic_frame.from_catalog/from_options` with `transformation_ctx`), sources S3 (JSON/CSV/Avro/XML/Parquet/ORC by object mtime), JDBC (monotonic keys), Relationalize; state keyed by job name + `transformation_ctx`, opaque, committed atomically at `job.commit()`, deleted with the job; reset is job-wide; rewind via `job-bookmark-pause` + `from`/`to` run ids; **not** for Delta/Iceberg sources, not in streaming jobs, not in the local Docker image | lossy (see §7.1) | Kindling's own mechanism (per-pipe cursor in `system.watermarks`, Delta CDF, persist-then-advance) works on Glue unchanged and is portable. Bookmarks add value only for raw S3 file and JDBC *sources* Kindling reads via `spark.read` today |
 | Data quality | `awsgluedq.transforms.EvaluateDataQuality.apply(frame=DynamicFrame, ruleset=DQDL, publishing_options)` → results DynamicFrame + CloudWatch metrics; standalone rulesets on catalog tables (Airflow `GlueDataQualityRuleSetEvaluationRunOperator`); not in the local image | absent on both sides today | Core has no DQ vocabulary; Lakeflow expectations are engine-scoped config. A `engine.glue.*` block lowering to DQDL is the symmetric design, but the portable form is the proposed validation runner (#245) firing at `persist.before_persist` |
 | Table formats | `--datalake-formats delta,iceberg,hudi`; Delta 3.3.x with `DeltaSparkSessionExtension` + `DeltaCatalog` + `S3SingleDriverLogStore` via `--conf`; `spark.read.format("delta")`, `DeltaTable.forPath`, `saveAsTable` all supported; Iceberg via `GlueCatalog` | clean for Delta on 5.x | Delta 3.3 has `withSchemaEvolution` and `whenNotMatchedBySourceUpdate`, so SCD1/SCD2 paths match the devcontainer. `S3SingleDriverLogStore` means one writer per Delta table (multi-job writes need `S3DynamoDBLogStore`), reinforcing `MaxConcurrentRuns = 1`. Liquid clustering / `CLUSTER BY` unsupported: already self-disabling (`entity_provider_delta.py:816-826`). Iceberg would be a new provider **and** a core change (watermark store tag, cursor encoding, `replaceWhere`, migration typing) |
-| Spark version matrix | Glue 4.0: Spark 3.3.0 / Py 3.10 / Java 8 / Delta 2.1.0. Glue 5.0: 3.5.4 / 3.11 / 17 / 3.3.0. Glue 5.1 (default): 3.5.6 / 3.11 / 17 / 3.3.2. Glue 6.0: 4.1.1 / 3.13 / 17 / 4.2.0 + SDP + Spark Connect | 5.x clean; 4.0 absent; 6.0 lossy | 4.0 is below both declared floors (`pyproject.toml:74-75`). 5.1 equals the devcontainer pins (`.devcontainer/Dockerfile:37-38`) apart from Java 21 vs 17. 6.0 exceeds `pyspark <4.0.0`; only `kindling_ext_sdp` is exercised on 4.1 today, in an isolated venv (`scripts/ensure_sdp_runtime.py`) with **no kindling-core import** (`tests/integration/test_sdp_dry_run_real.py:14-17`) |
+| Spark version matrix | see §2.3 | 5.x clean; 4.0 absent; 6.0 lossy | Only `kindling_ext_sdp` is exercised on Spark 4.1 today, in an isolated venv (`scripts/ensure_sdp_runtime.py`) with **no kindling-core import** (`tests/integration/test_sdp_dry_run_real.py:14-17`) |
 | Dev loop | Official image `public.ecr.aws/glue/aws-glue-libs:5` (Spark 3.5.4, Delta/Iceberg/Hudi preloaded, x86_64+arm64; no bookmarks, no DQ, no LF vending locally); Interactive Sessions (same runtime, `%additional_python_modules` etc., Spark Connect in 6.0); no 6.0 image yet | clean | Today's local story is `platform: standalone` + local Spark/Delta via `kindling app run` (`cli.py:5274-5388`); nothing Glue-specific is needed for transformation development. The Glue image becomes the *pre-deploy* check (catalog + S3 + pip parity), analogous to how Databricks system tests are used. Standalone needs `hadoop-aws` jars and AWS credential wiring analogous to `_configure_abfss_local_auth` (`platform_standalone.py:15-73`) |
 | Secrets / config | Secrets Manager `GetSecretValue`, SSM `GetParameter` via boto3 under the job IAM role; config via `--extra-files` (driver cwd) or S3 reads; env vars only through `--customer-driver-env-vars` with a mandatory `CUSTOMER_` prefix | clean | `GlueService.get_secret` is the only seam needed (`platform_provider.py:138-177`); add `kindling.secrets.aws.*` keys beside `secret_scope`/`key_vault_url`. `KINDLING_*` Dynaconf env overrides cannot be set directly on Glue (prefix restriction), so overrides go through `spark.kindling.*` `--conf` or `config:k=v` args |
 | Logging / metrics | CloudWatch Logs (`--enable-continuous-cloudwatch-log`), Glue job metrics, observability metrics, Spark UI event logs to S3 | clean for logs, absent for metrics | Plain-python telemetry providers (`plain_telemetry.py`) bind when the JVM bridge probe says so (`bootstrap.py:2178-2184`); stdlib logging lands in CloudWatch. Core has no metrics abstraction (`unified_otlp_telemetry_provider.md:137-150`) |
 
-### 3.1 The bookmark vs watermark mismatch, in detail
+### 7.1 Job bookmarks vs Kindling watermarks vs Lakeflow
 
 | Dimension | Kindling watermark (`watermarking.py`) | Glue job bookmark | Lakeflow / Auto Loader |
 |---|---|---|---|
@@ -250,33 +275,32 @@ S3 landing zones and JDBC extracts, where today Kindling has no incremental
 source at all (`file_ingestion.py` lists the whole directory per run in `batch`
 discovery, `:414`, and `spark_jdbc.py` is a full read).
 
-## 4. Phase 3: boundary design
+## 8. Boundary design: DynamicFrame confined to the edges
 
-**Candidate pattern under review:** DynamicFrame confined to extension-owned
-source/sink adapters, immediate `.toDF()`, user code in vanilla DataFrame API, no
-`GlueContext`/`awsglue` imports in user code, lint-enforced.
-
-**Confirmed, with three amendments.**
+**Proposed boundary.** DynamicFrame is used only inside extension-owned
+*source* adapters (to obtain job bookmarks and catalog integration), converted
+with an immediate `.toDF()`; all user transformation code is vanilla PySpark
+DataFrame API; `GlueContext` and `awsglue` imports are forbidden in user code
+and enforced by lint. Three refinements:
 
 1. **Sinks do not need DynamicFrame at all.** Kindling writes through the Delta
    provider's DataFrame API (`saveAsTable`, `DeltaTable.merge`), which registers
    tables in Glue Data Catalog directly. `write_dynamic_frame`/`write_data_frame.from_catalog`
-   adds nothing except bookmark "sink" contexts Kindling does not need. Confine
-   DynamicFrame to **sources only**.
-2. **Bookmark sources are a narrower adapter than the pattern implies.** Two
-   concrete adapters cover the useful cases: (a) a `provider_type: "glue-bookmark"`
-   read-only provider implementing `BaseEntityProvider` +
-   `IncrementalReadableEntityProvider` whose `read_entity_changes` calls
+   adds nothing except bookmark "sink" contexts Kindling does not need.
+2. **Bookmark sources are a narrow adapter.** Two adapters cover the useful
+   cases: (a) a `provider_type: "glue-bookmark"` read-only provider implementing
+   `BaseEntityProvider` + `IncrementalReadableEntityProvider` whose
+   `read_entity_changes` calls
    `create_dynamic_frame.from_catalog/from_options(transformation_ctx=<entity id>)`
    and returns `(dyf.toDF(), "<glue-managed>")`, and (b) a `FileIngestionProcessor`
    variant (or a `discovery="glue-bookmark"` mode) for landing zones. The opaque
    cursor contract explicitly permits provider-owned state
    (`entity_provider.py:404-412`), but the *at-least-once* clause is only honoured
    if the extension-owned entry script calls `job.init` before the runner and
-   `job.commit` after the whole app succeeds (`programming-etl-connect-bookmarks`).
-   Because commit is job-wide, a failure in pipe B replays pipe A's bookmarked
-   input; that is safe under Kindling's idempotent-merge rule but coarser than the
-   per-pipe cursor, and must be documented.
+   `job.commit` after the whole app succeeds. Because commit is job-wide, a
+   failure in pipe B replays pipe A's bookmarked input; that is safe under
+   Kindling's idempotent-merge rule but coarser than the per-pipe cursor, and
+   must be documented.
 3. **The lint rule must be broader than `awsglue`.** Portability also requires:
    no `spark.conf.set` for session-immutable keys (H3), no `dbutils`/`mssparkutils`
    /`notebookutils`, no `spark._jvm` (already enforced for core by
@@ -288,7 +312,7 @@ source/sink adapters, immediate `.toDF()`, user code in vanilla DataFrame API, n
    tests (`docs/guide/local_python_first.md`); add a banned-imports test to the
    scaffold and a `--strict-portability` check to `app validate`.
 
-**Can the existing reader/writer abstractions absorb this?** Yes for sources
+**Do the existing reader/writer abstractions absorb this?** Yes for sources
 and sinks: the `provider_type` registry plus the split capability interfaces are
 exactly the seam, and `EntityNameMapper`/`EntityPathLocator` DI bindings absorb
 catalog naming. **Two new extension points are needed:** (a) a streaming trigger
@@ -298,37 +322,36 @@ extension can run `job.init`/`job.commit` around the app without users writing
 Glue code (the `app_run` phase at `bootstrap.py:2448-2458` is the natural place;
 today the `.kda` entry point is `exec`'d source text, `data_apps.py:1350-1403`).
 
-## 5. Phase 4: where "write once on Glue, retarget Databricks later" is weaker than it sounds
+## 9. Migration path to Databricks: where the claim weakens
 
-Being adversarial, and separating the two Databricks destinations because they
-differ:
+The two Databricks destinations differ and are listed separately.
 
 | # | Weakness | Retarget to Databricks **runner** Jobs | Retarget to **Lakeflow** SDP |
 |---|---|---|---|
 | M1 | Kindling watermark cursors are Delta table versions. Copying tables (deep clone, `COPY INTO`, Athena CTAS) resets version history; cursors become invalid. Recovery is "delete the watermark rows ⇒ initial full load + `remove_duplicates`" (`entity_provider_delta.py:2101-2121`): correct, but a full reload of every source | Holds only if tables move with their `_delta_log` intact (same S3/ADLS objects, or external tables pointing at the original bucket) | Irrelevant: `owns_incrementality=True` drops watermarks; every streaming table starts from a full refresh |
 | M2 | Bookmark state (if any adapter uses it) is Glue-owned and deleted with the job | Lost; the source adapter has no Databricks counterpart, so JDBC/S3 landing-zone pipes need re-declaration onto Auto Loader (`kindling_ext_databricks_autoloader`) or Kindling batch discovery | Lost; same |
 | M3 | Auto Loader vs bookmarks: different discovery semantics (file notification / directory listing with `schemaLocation` vs object mtime) and different schema-evolution behaviour (`autoloader_file_ingestion.py:43-44`) | Reprocess or manual cutover marker required | Same |
-| M4 | Expectations: Glue has none in Kindling today; if the client adopts Glue Data Quality DQDL, it does not lower to `dp.expect*` and vice versa. Only a core validation contract (#245) would be portable | Runner has no expectations either, so DQDL rules are simply lost | `engine.databricks_sdp.expectations` must be authored fresh |
+| M4 | Expectations: Glue has none in Kindling today; if Glue Data Quality DQDL is adopted, it does not lower to `dp.expect*` and vice versa. Only a core validation contract (#245) would be portable | Runner has no expectations either, so DQDL rules are simply lost | `engine.databricks_sdp.expectations` must be authored fresh |
 | M5 | Catalog identity: Glue two-level `db.table` (Kindling configured to flatten) vs UC three-level. Table names, `provider.table_name` overrides, and every downstream consumer (Athena/Redshift views vs UC grants) change | Config overlay change (`settings.databricks.yaml`), plus consumer re-pointing | Same, plus `DatasetNameMapper` single-part naming rules (`declaration_plan.py:19-52`) |
-| M6 | Orchestration: Airflow DAG (external scheduler, per-run job, Airflow retries/SLAs, sensors) vs Databricks Jobs (workflow tasks) vs Lakeflow (engine-managed graph, triggered/continuous). Airflow-side logic (branching, backfills, cross-DAG sensors) is not Kindling vocabulary and does not migrate | DAG must be rewritten as Jobs workflow or kept in Airflow with `DatabricksRunNowOperator` | Pipeline update replaces the DAG entirely; MVs recompute fully (`declaration_pipelines_engine.md`), so cost profile changes |
+| M6 | Orchestration: Airflow DAG (external scheduler, per-run job, Airflow retries/SLAs, sensors) vs Databricks Jobs (workflow tasks) vs Lakeflow (engine-managed graph, triggered/continuous). Airflow-side logic (branching, backfills, cross-DAG sensors) is not Kindling vocabulary and does not migrate | DAG must be rewritten as Jobs workflow or kept in Airflow with `DatabricksRunNowOperator` | Pipeline update replaces the DAG entirely; MVs recompute fully (`declarative_pipelines_engine.md`), so cost profile changes |
 | M7 | Runner-to-LDP semantic divergences Kindling already documents: SCD2 columns `__START_AT`/`__END_AT` instead of Kindling effective columns, schema withheld from streaming tables, no CDF forced on outputs (`auto_cdc.py:12-30`, `engine.py:243,364`, `declaration_plan.py:139-143`), watermark-driven incremental MVs become full recompute unless `streaming_inputs` is declared | Not applicable | Every SCD2 consumer and every `use_watermark` pipe changes behaviour |
 | M8 | Physical layout: `cluster_columns` are no-ops on Glue (self-disabled) and activate on Databricks; `partition_columns` are skipped when clustering is preferred (`entity_provider_delta.py:731-740`) | Benign but surprising: tables get re-laid-out on first Databricks write | Same |
 | M9 | Session-immutable Spark config moves from Glue `--conf` back to runtime `spark_configs`; secrets move from Secrets Manager ARNs to secret scopes; storage roots from `s3://` to `abfss://`/Volumes | Pure config-overlay work if the app kept everything in `settings.*.yaml`; a real rewrite if users hard-coded paths | Same |
-| M10 | Glue 5.x is classic py4j; Databricks UC shared clusters are Spark Connect. Anything in user code that slipped past the portability lint (RDDs, `_jvm`, `toPandas` on huge frames) breaks only after migration (`docs/contributing/databricks_execution_contract.md`) | Real risk; mitigated by the lint rule in §4 and by running system tests on a Shared-mode cluster | Same |
+| M10 | Glue 5.x is classic py4j; Databricks UC shared clusters are Spark Connect. Anything in user code that slipped past the portability lint (RDDs, `_jvm`, `toPandas` on huge frames) breaks only after migration (`docs/contributing/databricks_execution_contract.md`) | Real risk; mitigated by the lint rule in §8 and by running system tests on a Shared-mode cluster | Same |
 | M11 | Version skew: Glue 5.1 Delta 3.3.2 vs DBR Delta; Python 3.11 on both today, but Glue 6.0 moves to 3.13 and ANSI-on-by-default | Low | Low |
 
-Honest summary for a client: **declaration code and DataFrame transformations
-migrate; Kindling-owned incremental state migrates when table history moves
-intact; platform-owned state, data-quality rules, catalog names and
-orchestration do not.** The strong version of the claim is "retarget to
+Summary suitable for a client conversation: **declaration code and DataFrame
+transformations migrate; Kindling-owned incremental state migrates when table
+history moves intact; platform-owned state, data-quality rules, catalog names
+and orchestration do not.** The strong version of the claim is "retarget to
 Databricks runner Jobs with the same Kindling app"; the Lakeflow version adds
-the runner-to-LDP divergences Kindling already lists, and should be sold as a
-re-declaration exercise with tooling support, not a no-op.
+the runner-to-LDP divergences Kindling already lists, and should be presented as
+a re-declaration exercise with tooling support, not a no-op.
 
-## 6. Extension architecture sketch
+## 10. Extension architecture
 
-Two tracks. Track A is the recommendation for the client use case; Track B is
-the true "lowering" analog and should follow once Glue 6.0 matures.
+Two tracks. Track A is the recommendation for the Airflow-plus-Glue use case;
+Track B is the true declarative analog and should follow once Glue 6.0 matures.
 
 ### Track A: `spark-kindling-ext-glue` (runner on Glue 5.1, Airflow-orchestrated)
 
@@ -371,7 +394,7 @@ packages/kindling_cli/kindling_cli/orchestration/   # NEW design-time emitter, s
   cli: kindling orchestration build --platform glue --target dev  (name to be agreed with the bundle proposal)
 ```
 
-**Lowering pipeline (Track A).** Inputs: `apps/<app>/app.yaml`, `settings*.yaml`,
+**Emission pipeline (Track A).** Inputs: `apps/<app>/app.yaml`, `settings*.yaml`,
 `lake-reqs.txt`, built wheels, deployment inputs from CLI/env
 (`KINDLING_ORCH_*`, same contract shape as `databricks_bundle_deployment.md:283-303`:
 never read from runtime settings). Steps: inventory → resolve wheel closure →
@@ -410,7 +433,7 @@ at `--extra-files` copies bypasses the storage-utils download (H2) until that
 path is refactored; `settings.glue.yaml` is selected purely by the platform name
 (`bootstrap.py:667-669`) once H1 is fixed.
 
-### Track B: Glue 6.0 SDP (declarative, the real LDP analog)
+### Track B: Glue 6.0 SDP (declarative)
 
 Glue 6.0 runs OSS SDP: a `spark-pipeline.yml` (name, catalog, database, S3
 `storage`, `libraries` globs, `configuration`) plus Python/SQL transformation
@@ -429,7 +452,7 @@ the recommended format for cross-run streaming-table state, core does not
 declare pyspark 4.x, Python 3.13 compatibility of `dynaconf <3.3.2` and friends
 is unverified, and there is no local Docker image. Revisit in one to two quarters.
 
-## 7. Gap register
+## 11. Gap register
 
 Severity: **High** blocks the MVP or silently corrupts data; **Medium** blocks a
 later phase or degrades semantics; **Low** cosmetic or documented limitation.
@@ -452,7 +475,7 @@ later phase or degrades semantics; **Low** cosmetic or documented limitation.
 | G14 | Blue/green migration uses `ALTER TABLE ... RENAME TO`; `CREATE OR REPLACE VIEW` for SQL entities | `migration.py:755-807`, `:292` | Medium | Spike; likely restrict Glue to storage-mode in-place rewrite and validate Glue view support for `sql_entity` |
 | G15 | `DESCRIBE DETAIL`/`spark.catalog.tableExists` semantics against Glue Data Catalog | `entity_provider_delta.py:526-536,1171,1285-1289`; `migration.py:447,476` | Medium | Spike; permission errors must not read as "table missing" |
 | G16 | No DQ vocabulary; expectations are Databricks-only | `engine.py:404-410`; `capabilities.py:65` | Medium (later phase) | Implement #245 validation runner in core; Glue DQDL as one adapter |
-| G17 | Bookmark semantics differ from watermark contract (job-wide commit/reset) | see §3.1 | Medium | Adapter confined to raw S3/JDBC sources; documented at-least-once behaviour |
+| G17 | Bookmark semantics differ from watermark contract (job-wide commit/reset) | see §7.1 | Medium | Adapter confined to raw S3/JDBC sources; documented at-least-once behaviour |
 | G18 | File ingestion `autoloader` discovery has no Glue runner; `batch` discovery lists S3 per run | `file_ingestion.py:566-631,414` | Medium | Bind a Glue `AutoLoaderFileIngestionRunner` on Spark file source + `availableNow` (needs explicit schema), or bookmark discovery |
 | G19 | `KINDLING_*` env overrides impossible (Glue requires `CUSTOMER_` prefix) | `spark_config.py:211`; Glue `--customer-driver-env-vars` | Low | Document `--conf spark.kindling.*` as the override channel |
 | G20 | `workspace_id` config layer has no Glue analogue | `bootstrap.py:849-933` | Low | Pass explicitly (account/region) or leave unused |
@@ -461,29 +484,29 @@ later phase or degrades semantics; **Low** cosmetic or documented limitation.
 | G23 | Metrics have no core abstraction | `unified_otlp_telemetry_provider.md:137-150` | Low | Out of scope; Glue job metrics via console/CloudWatch |
 | G24 | Extensions absent from CI release classification; system tests know only Azure clouds + Databricks | `.github/workflows/ci.yml`; `tests/system/conftest.py:18-19` | Medium (delivery) | Add `glue` to `ALL_PLATFORMS`, AWS credentials to CI, `tests/system/extensions/glue/` |
 
-## 8. Effort estimate
+## 12. Effort estimate
 
 Assumptions: one senior engineer familiar with Kindling internals; an AWS account
 with Glue, S3, Secrets Manager, CloudWatch, MWAA (or the MWAA local runner) and
-IAM already provisioned by the client; Delta as the lake format; Glue 5.1; Track A
-only. Numbers are engineer-weeks of focused work, excluding review latency. For
-scale, the Dataproc evaluation estimated 5 to 7 weeks for a platform *without*
+IAM already provisioned; Delta as the lake format; Glue 5.1; Track A only.
+Numbers are engineer-weeks of focused work, excluding review latency. For scale,
+the Dataproc evaluation estimated 5 to 7 weeks for a platform *without*
 orchestration emission (`dataproc_platform_evaluation.md:527`).
 
 | Phase | Scope | Estimate | Key assumptions |
 |---|---|---|---|
 | MVP-1 Runtime | `GlueService` (S3, secrets, session), G1/G2/G4 core changes, Glue overlay defaults, `[glue]` extra, unit tests, JVM-boundary allowlist entry | 2.5 wk | Config transport refactor through `PlatformService` is done properly, not patched with a third `if is_databricks` branch |
 | MVP-2 Design-time | `GlueAPI`, `S3ArtifactStore`, registry/CLI widening (G9/G10), `kindling app deploy/run/status/logs` on Glue, CloudWatch log streaming, extension entry script | 2 wk | Reuse `_build_job_spec` shape; no in-cluster `DataAppDeployer` work |
-| MVP-3 Orchestration emitter | inventory + wheel-closure resolver + Glue job JSON + Airflow DAG renderer + manifest; one job per app; CLI command; deterministic-output tests | 2.5 to 3 wk | This is greenfield: the DAB proposal's inventory/config/artifact resolvers do not exist yet, and building them here should be designed to be shared with the bundle proposal. Airflow rendering itself is small |
-| MVP-4 Delivery | AWS system-test infra (IaC under `iac/aws/`), CI job, `tests/system/extensions/glue/`, Glue Docker pre-deploy check, docs (`docs/guide/glue_*.md`, config reference) | 2 wk | Client account usable for CI, or a separate SEP account |
-| **MVP total** | batch jobs + Airflow DAG emission + deploy | **9 to 10 wk** (5 to 6 calendar weeks with two engineers) | Spikes in §9 resolved first |
+| MVP-3 Orchestration emitter | inventory + wheel-closure resolver + Glue job JSON + Airflow DAG renderer + manifest; one job per app; CLI command; deterministic-output tests | 2.5 to 3 wk | Greenfield: the DAB proposal's inventory/config/artifact resolvers do not exist yet, and building them here should be designed to be shared with the bundle proposal. Airflow rendering itself is small |
+| MVP-4 Delivery | AWS system-test infra (IaC under `iac/aws/`), CI job, `tests/system/extensions/glue/`, Glue Docker pre-deploy check, docs (`docs/guide/glue_*.md`, config reference) | 2 wk | An AWS account usable for CI |
+| **MVP total** | batch jobs + Airflow DAG emission + deploy | **9 to 10 wk** (5 to 6 calendar weeks with two engineers) | Spikes in §13 resolved first |
 | Later-1 Incremental sources | `glue-bookmark` source provider (DynamicFrame at the edge), job.init/commit lifecycle hook, bookmark-based file discovery, documentation of at-least-once | 2.5 wk | Watermark/CDF path needs **no** work; this is only for raw S3/JDBC |
-| Later-2 Streaming | G3 trigger policy in core (1 wk), Glue streaming job type in emitter, Kinesis/MSK `DeclarableStreamingSource` provider (EventHub provider is the template, `entity_provider_eventhub.py`), checkpoint layout on S3, recovery via job retry | 4 wk | Continuous jobs are billed hourly; most client pipelines will use `availableNow` batch drains instead |
+| Later-2 Streaming | G3 trigger policy in core (1 wk), Glue streaming job type in emitter, Kinesis/MSK `DeclarableStreamingSource` provider (EventHub provider is the template, `entity_provider_eventhub.py`), checkpoint layout on S3, recovery via job retry | 4 wk | Continuous jobs are billed hourly; most pipelines will use `availableNow` batch drains instead |
 | Later-3 Data quality | core validation runner per #245 (3 wk, benefits all targets) + Glue DQDL adapter (1 wk) | 4 wk | Portable form first; DQDL is an adapter, never the contract |
-| Later-4 Iceberg | proposed `IcebergEntityProvider` with a Glue strategy, watermark-store provider config, snapshot cursor, migration typing | 5 to 6 wk | Only if the client mandates Iceberg; Delta on Glue is the low-risk path |
-| Later-5 Track B (Glue 6.0 SDP) | `GlueSdpEngine`, SDP zip emitter, pyspark 4.x support in core, Python 3.13 verification, system tests | 4 to 5 wk | After AWS publishes a Glue 6.0 image and SDP gains expectations/CDC or the client accepts their absence |
+| Later-4 Iceberg | proposed `IcebergEntityProvider` with a Glue strategy, watermark-store provider config, snapshot cursor, migration typing | 5 to 6 wk | Only if Iceberg is mandated; Delta on Glue is the low-risk path |
+| Later-5 Track B (Glue 6.0 SDP) | `GlueSdpEngine`, SDP zip emitter, pyspark 4.x support in core, Python 3.13 verification, system tests | 4 to 5 wk | After AWS publishes a Glue 6.0 image and SDP gains expectations/CDC, or their absence is accepted |
 
-## 9. Spike plan
+## 13. Spike plan
 
 The three riskiest unknowns, each with a minimal experiment and pass criteria.
 All can run in the official `public.ecr.aws/glue/aws-glue-libs:5` image against a
@@ -503,7 +526,7 @@ real Glue Data Catalog and S3 bucket, except where noted.
    produce correct SCD2 rows with one cursor row per `(source, pipe)`; every
    DDL either works or degrades along an existing Kindling fallback. Two days.
 2. **Real Glue job bootstrap (G1, G2, G3, G6, G7).** Create one Glue 5.1 job
-   with a hand-written entry script implementing the §6 sequence (`GlueContext`
+   with a hand-written entry script implementing the §10 sequence (`GlueContext`
    → `__main__.spark` → `kindling.initialize` with `config_files` from
    `--extra-files` and `--conf spark.kindling.*` → run app → `job.commit`),
    dependencies via a `*.gluewheels.zip` with `--no-index`. Observe cold-start
@@ -513,7 +536,7 @@ real Glue Data Catalog and S3 bucket, except where noted.
    and without a hand-injected `availableNow` trigger, and what happens on a
    second concurrent `StartJobRun`. **Pass:** the app runs end to end with no
    Kindling code changes beyond a monkey-patched platform whitelist; the list of
-   unavoidable core changes matches §10. Two to three days.
+   unavoidable core changes matches §14. Two to three days.
 3. **Airflow DAG emission shape (MVP-3 design risk).** Hand-write the DAG the
    emitter would produce for a two-app solution and run it in the MWAA local
    runner (or `airflow standalone`) against the job from spike 2: `GlueJobOperator`
@@ -527,12 +550,12 @@ real Glue Data Catalog and S3 bucket, except where noted.
    correctly on a forced pipe failure, and reruns without watermark corruption.
    Two days.
 
-Optional fourth spike if Track B is of interest: run
-`spark-pipelines dry-run` on a `kindling_ext_sdp`-declared graph inside a Glue
-6.0 job with `spark.glue.sdp.jobMode VALIDATE`, and separately `pip install
-spark-kindling` on Python 3.13 to surface dependency breakage. One day each.
+Optional fourth spike for Track B: run `spark-pipelines dry-run` on a
+`kindling_ext_sdp`-declared graph inside a Glue 6.0 job with
+`spark.glue.sdp.jobMode VALIDATE`, and separately `pip install spark-kindling`
+on Python 3.13 to surface dependency breakage. One day each.
 
-## 10. Core changes required (affect all targets)
+## 14. Core changes required (affect all targets)
 
 Ordered by necessity for the Track A MVP.
 
