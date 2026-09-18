@@ -100,16 +100,19 @@ out of the box, arguably safer than the Delta append path.
   connector resolves account metadata through ARM and crashes opaquely
   without them; the provider validates up front.
 
-**Remaining (future work)**:
+**Follow-ups — SHIPPED (2026-09, `cosmos_streaming_and_throughput_controls.md`)**:
 
-- **Change-feed stream read** (`StreamableEntityProvider`) — a genuine new
-  streaming *source* (today only Delta and EventHub); highest-value Cosmos
-  follow-up.
-- Formal `merge_to_entity` (essentially the default write) so the persist
-  path treats Cosmos as merge-capable.
-- Config-first throughput controls (`kindling.cosmos.*`) before pointing
-  bulk writes at provisioned-throughput accounts; the serverless dev
-  account sidesteps this today.
+- **Change-feed stream read** (`StreamableEntityProvider` +
+  `DeclarableStreamingSource`) via the `cosmos.oltp.changeFeed` source;
+  `provider.changefeed.mode` (`latest_version` default / `full_fidelity`),
+  `start_from`, `items_per_trigger`.
+- Formal `merge_to_entity` (the default upsert, declared so the persist path
+  treats Cosmos as merge-capable).
+- Config-first throughput controls under `kindling.cosmos.*` (read
+  partitioning strategy, page size, connector Throughput Control), applied
+  below `provider.option.*`.
+- Connector coordinates per Spark line (3.4/3.5 on Scala 2.12, 4.0/4.1 on
+  Scala 2.13) with `spark_3_x` / `spark_4_x` install profiles.
 
 ---
 

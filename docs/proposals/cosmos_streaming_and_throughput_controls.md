@@ -1,6 +1,6 @@
 # Cosmos DB Change-Feed Streaming Reads and Config-First Throughput Controls
 
-**Status:** Proposed
+**Status:** Implemented (2026-09-18) — see `packages/extensions/kindling_ext_cosmos/README.md`. Deviations from the sketch: connector mode values are `LatestVersion`/`AllVersionsAndDeletes`; `read.max_item_count` defaults to the connector's real default (1000, not 100); throughput control requires exactly one target when enabled; connector coordinates are published per Spark line (3.4/3.5 Scala 2.12, 4.0/4.1 Scala 2.13).
 **Created:** 2026-08-27
 **Scope:** `packages/extensions/kindling_ext_cosmos`
 **Related:** `docs/proposals/obsolete/entity_provider_roadmap.md` (Cosmos DB

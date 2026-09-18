@@ -83,6 +83,19 @@ Legacy/compat keys (still accepted by config translation, logged as deprecated):
 - `kindling.delta.tablerefmode`: Legacy compatibility key. Prefer `kindling.delta.access_mode`.
 - `kindling.features.delta.auto_clustering`: Static feature flag override to allow `cluster_columns: auto` (Databricks only; Kindling also computes a default under `kindling.runtime.features.delta.auto_clustering` during startup).
 
+### Cosmos DB (extension `spark-kindling-ext-cosmos`)
+
+Run-level defaults applied to every Cosmos connector read and write, below
+per-entity `provider.option.*` overrides (config dictates, tags override).
+
+- `kindling.cosmos.read.partitioning_strategy`: `Default` (default) | `Custom` | `Restrictive` | `Aggressive`. `Aggressive` maximizes Spark-side parallelism and therefore concurrent RU draw.
+- `kindling.cosmos.read.max_item_count`: Page size per query/change-feed request (default `1000`, the connector default made explicit).
+- `kindling.cosmos.throughput_control.enabled`: Enable the connector's Throughput Control feature (default `false`). When enabled exactly one of the two targets below is required.
+- `kindling.cosmos.throughput_control.target_threshold`: Fraction in `(0, 1]` of the container's provisioned/autoscale RU/s the job may consume.
+- `kindling.cosmos.throughput_control.target_throughput`: Absolute RU/s budget. Alternative to `target_threshold`; setting both is an error.
+- `kindling.cosmos.throughput_control.group_name`: Throughput control group name.
+- `kindling.cosmos.throughput_control.global_control.database` / `.container`: Shared control container for cross-job coordination; both or neither.
+
 ### Runtime Feature Flags
 
 These are primarily runtime-discovered keys under `kindling.runtime.features.*`. Static overrides may be supplied under `kindling.features.*` where appropriate.
@@ -371,6 +384,25 @@ Lakeflow streaming table plus one append flow. Later pipe inputs remain
 static reads. Lakeflow owns checkpoints, query startup, retries, and
 persistence; application code and Kindling providers do not set
 `checkpointLocation`, call `writeStream`, or start the query.
+
+### Cosmos DB Provider (`provider_type: cosmos`, extension)
+
+Connection and auth tags (`provider.account_endpoint`, `provider.database`,
+`provider.container`, `provider.auth` with the matching credential tags) are
+documented in the extension README. Read/write tags:
+
+- `provider.query`: Cosmos SQL for batch reads (default: whole container).
+- `provider.infer_schema`: boolean (default true).
+- `provider.write_strategy`: `ItemOverwrite` (default, upsert by id) | `ItemAppend` | `ItemDelete`.
+- `provider.changefeed.mode`: `latest_version` (default) | `full_fidelity` (all versions and deletes; container must be provisioned for it). Streaming reads only.
+- `provider.changefeed.start_from`: `Beginning` (default) | `Now` | ISO-8601 UTC timestamp.
+- `provider.changefeed.items_per_trigger`: Approximate items per micro-batch.
+- `provider.assume_exists`: boolean (default true) returned by `check_entity_exists`.
+- `provider.option.<connector option>`: Verbatim passthrough; wins over `kindling.cosmos.*` and change-feed defaults.
+
+The provider is a declarable streaming source: a Cosmos driving input lowers
+to an external streaming source in Lakeflow declarations, using the
+`cosmos.oltp.changeFeed` data source.
 
 ### Memory Provider (`provider_type: memory`)
 

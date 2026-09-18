@@ -3,7 +3,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 
 EXTENSION_PACKAGE_ROOT = (
@@ -111,17 +110,43 @@ class _Reader:
         return self.loaded_df
 
 
-def _provider():
+class _StreamReader(_Reader):
+    def __init__(self):
+        super().__init__()
+        self.loaded_df = MagicMock(name="stream_df")
+
+
+class _ConfigService:
+    """Dict-backed stand-in for ConfigService.get(key, default)."""
+
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+
+def _provider(config=None):
     from kindling_ext_cosmos import CosmosEntityProvider
 
     logger_provider = MagicMock()
     logger_provider.get_logger.return_value = MagicMock()
-    return CosmosEntityProvider(logger_provider)
+    config_service = None if config is None else _ConfigService(config)
+    return CosmosEntityProvider(logger_provider, config_service)
 
 
 def _patched_spark_read(reader):
     spark = MagicMock()
     spark.read = reader
+    return patch(
+        "kindling_ext_cosmos.entity_provider_cosmos.get_or_create_spark_session",
+        return_value=spark,
+    )
+
+
+def _patched_spark_read_stream(reader):
+    spark = MagicMock()
+    spark.readStream = reader
     return patch(
         "kindling_ext_cosmos.entity_provider_cosmos.get_or_create_spark_session",
         return_value=spark,
@@ -303,3 +328,552 @@ def test_unsupported_auth_mode_raises():
 
     with pytest.raises(ValueError, match="Unsupported Cosmos auth mode"):
         provider.write_to_entity(df, _entity({**BASE_TAGS, "provider.auth": "magic"}))
+
+
+# ---------------------------------------------------------------------------
+# Capability surface
+# ---------------------------------------------------------------------------
+
+
+def test_provider_declares_streaming_source_capabilities():
+    from kindling.entity_provider import (
+        is_declarable_streaming_source,
+        is_stream_writable,
+        is_streamable,
+        is_writable,
+    )
+
+    provider = _provider()
+
+    assert is_streamable(provider)
+    assert is_declarable_streaming_source(provider)
+    assert is_writable(provider)
+    assert is_stream_writable(provider)
+    # The persist path selects merge via hasattr(provider, "merge_to_entity").
+    assert hasattr(provider, "merge_to_entity")
+
+
+# ---------------------------------------------------------------------------
+# merge_to_entity
+# ---------------------------------------------------------------------------
+
+
+def _df_with_columns(*columns):
+    df = MagicMock()
+    df.columns = list(columns)
+    df.write = _Writer()
+    return df
+
+
+def test_merge_to_entity_upserts_by_id():
+    provider = _provider()
+    df = _df_with_columns("id", "name")
+
+    provider.merge_to_entity(df, _entity(BASE_TAGS))
+
+    assert df.write.format_name == "cosmos.oltp"
+    assert df.write.options["spark.cosmos.write.strategy"] == "ItemOverwrite"
+    assert df.write.mode_name == "Append"
+    assert df.write.saved is True
+
+
+def test_merge_to_entity_requires_id_column():
+    provider = _provider()
+    df = _df_with_columns("order_key", "name")
+
+    with pytest.raises(ValueError, match="'id' column"):
+        provider.merge_to_entity(df, _entity(BASE_TAGS))
+
+    assert df.write.saved is False
+
+
+@pytest.mark.parametrize("strategy", ["ItemAppend", "ItemDelete"])
+def test_merge_to_entity_rejects_non_merge_write_strategy(strategy):
+    provider = _provider()
+    df = _df_with_columns("id")
+
+    with pytest.raises(ValueError, match="cannot merge"):
+        provider.merge_to_entity(df, _entity({**BASE_TAGS, "provider.write_strategy": strategy}))
+
+    assert df.write.saved is False
+
+
+# ---------------------------------------------------------------------------
+# read_entity_as_stream (change feed)
+# ---------------------------------------------------------------------------
+
+
+def test_stream_read_uses_change_feed_source_with_defaults():
+    provider = _provider()
+    reader = _StreamReader()
+
+    with _patched_spark_read_stream(reader):
+        df = provider.read_entity_as_stream(_entity(BASE_TAGS))
+
+    assert df is reader.loaded_df
+    assert reader.format_name == "cosmos.oltp.changeFeed"
+    assert reader.options["spark.cosmos.changeFeed.mode"] == "LatestVersion"
+    assert reader.options["spark.cosmos.changeFeed.startFrom"] == "Beginning"
+    assert "spark.cosmos.changeFeed.itemCountPerTriggerHint" not in reader.options
+    assert reader.options["spark.cosmos.container"] == "Orders"
+    assert reader.options["spark.cosmos.auth.type"] == "ServicePrincipal"
+    assert reader.options["spark.cosmos.read.inferSchema.enabled"] == "true"
+    # Write-only and batch-only options must not leak into the stream read
+    assert "spark.cosmos.write.strategy" not in reader.options
+    assert "spark.cosmos.read.customQuery" not in reader.options
+    # Nothing checkpoint-like on the read side: Spark owns continuation tokens
+    assert not any("checkpoint" in key.lower() for key in reader.options)
+
+
+def test_stream_read_full_fidelity_with_start_from_and_items_per_trigger():
+    provider = _provider()
+    reader = _StreamReader()
+
+    with _patched_spark_read_stream(reader):
+        provider.read_entity_as_stream(
+            _entity(
+                {
+                    **BASE_TAGS,
+                    "provider.changefeed.mode": "full_fidelity",
+                    "provider.changefeed.start_from": "2026-01-31T00:00:00Z",
+                    "provider.changefeed.items_per_trigger": "5000",
+                }
+            )
+        )
+
+    assert reader.options["spark.cosmos.changeFeed.mode"] == "AllVersionsAndDeletes"
+    assert reader.options["spark.cosmos.changeFeed.startFrom"] == "2026-01-31T00:00:00Z"
+    assert reader.options["spark.cosmos.changeFeed.itemCountPerTriggerHint"] == "5000"
+
+
+def test_stream_read_start_from_now():
+    provider = _provider()
+    reader = _StreamReader()
+
+    with _patched_spark_read_stream(reader):
+        provider.read_entity_as_stream(
+            _entity({**BASE_TAGS, "provider.changefeed.start_from": "Now"})
+        )
+
+    assert reader.options["spark.cosmos.changeFeed.startFrom"] == "Now"
+
+
+def test_stream_read_options_override_tags_and_declarative_marker_is_dropped():
+    from kindling.entity_provider import DECLARATIVE_SOURCE_OPTION
+
+    provider = _provider()
+    reader = _StreamReader()
+
+    with _patched_spark_read_stream(reader):
+        provider.read_entity_as_stream(
+            _entity({**BASE_TAGS, "provider.changefeed.start_from": "Beginning"}),
+            options={"changefeed.start_from": "Now", DECLARATIVE_SOURCE_OPTION: True},
+        )
+
+    assert reader.options["spark.cosmos.changeFeed.startFrom"] == "Now"
+    assert DECLARATIVE_SOURCE_OPTION not in reader.options
+
+
+def test_stream_read_provider_option_passthrough_wins_over_changefeed_defaults():
+    provider = _provider()
+    reader = _StreamReader()
+
+    with _patched_spark_read_stream(reader):
+        provider.read_entity_as_stream(
+            _entity(
+                {
+                    **BASE_TAGS,
+                    "provider.option.spark.cosmos.changeFeed.startFrom": "Now",
+                    "provider.option.spark.cosmos.changeFeed.mode": "Incremental",
+                }
+            )
+        )
+
+    assert reader.options["spark.cosmos.changeFeed.startFrom"] == "Now"
+    assert reader.options["spark.cosmos.changeFeed.mode"] == "Incremental"
+
+
+def test_stream_read_rejects_unknown_mode():
+    provider = _provider()
+
+    with pytest.raises(ValueError, match="provider.changefeed.mode"):
+        provider.read_entity_as_stream(
+            _entity({**BASE_TAGS, "provider.changefeed.mode": "everything"})
+        )
+
+
+def test_stream_read_rejects_bad_start_from():
+    provider = _provider()
+
+    with pytest.raises(ValueError, match="provider.changefeed.start_from"):
+        provider.read_entity_as_stream(
+            _entity({**BASE_TAGS, "provider.changefeed.start_from": "yesterday"})
+        )
+
+
+def test_stream_read_rejects_non_positive_items_per_trigger():
+    provider = _provider()
+
+    with pytest.raises(ValueError, match="provider.changefeed.items_per_trigger"):
+        provider.read_entity_as_stream(
+            _entity({**BASE_TAGS, "provider.changefeed.items_per_trigger": "0"})
+        )
+
+
+def test_stream_read_rejects_foreign_format():
+    provider = _provider()
+
+    with pytest.raises(ValueError, match="cosmos.oltp.changeFeed"):
+        provider.read_entity_as_stream(_entity(BASE_TAGS), format="cosmos.oltp")
+
+
+def test_stream_read_accepts_explicit_change_feed_format():
+    provider = _provider()
+    reader = _StreamReader()
+
+    with _patched_spark_read_stream(reader):
+        provider.read_entity_as_stream(_entity(BASE_TAGS), format="cosmos.oltp.changeFeed")
+
+    assert reader.format_name == "cosmos.oltp.changeFeed"
+
+
+# ---------------------------------------------------------------------------
+# streaming_source_spec (declarative, inert, secret-safe)
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_source_spec_is_valid_and_secret_safe():
+    provider = _provider()
+
+    with patch(
+        "kindling_ext_cosmos.entity_provider_cosmos.get_or_create_spark_session"
+    ) as spark_factory:
+        spec = provider.streaming_source_spec(
+            _entity({**BASE_TAGS, "provider.changefeed.mode": "full_fidelity"})
+        )
+
+    spark_factory.assert_not_called()
+    assert spec.is_valid
+    assert spec.provider_type == "cosmos"
+    assert spec.source_format == "cosmos.oltp.changeFeed"
+    assert spec.source_identity == "Kindling/Orders"
+    assert "provider.changefeed.mode" in spec.supported_option_names
+    assert "provider.client_secret" in spec.applied_option_names
+    rendered = repr(spec)
+    assert "client-secret" not in rendered
+    assert "fawkes.documents.azure.com" not in rendered
+
+
+def test_streaming_source_spec_reports_missing_and_invalid_tags():
+    provider = _provider()
+    tags = {key: value for key, value in BASE_TAGS.items() if key != "provider.client_secret"}
+    tags.pop("provider.container")
+    tags["provider.changefeed.mode"] = "everything"
+
+    spec = provider.streaming_source_spec(_entity(tags))
+
+    assert not spec.is_valid
+    issue_tags = {issue.tag for issue in spec.validation_issues}
+    assert issue_tags == {
+        "provider.container",
+        "provider.client_secret",
+        "provider.changefeed.mode",
+    }
+
+
+def test_streaming_source_spec_master_key_requires_account_key():
+    provider = _provider()
+    tags = {
+        "provider.auth": "master_key",
+        "provider.account_endpoint": "https://fawkes.documents.azure.com:443/",
+        "provider.database": "Kindling",
+        "provider.container": "Orders",
+    }
+
+    spec = provider.streaming_source_spec(_entity(tags))
+
+    assert [issue.tag for issue in spec.validation_issues] == ["provider.account_key"]
+
+
+# ---------------------------------------------------------------------------
+# kindling.cosmos.* throughput defaults
+# ---------------------------------------------------------------------------
+
+
+def test_read_pins_connector_defaults_without_config_service():
+    provider = _provider()
+    reader = _Reader()
+
+    with _patched_spark_read(reader):
+        provider.read_entity(_entity(BASE_TAGS))
+
+    assert reader.options["spark.cosmos.read.partitioning.strategy"] == "Default"
+    assert reader.options["spark.cosmos.read.maxItemCount"] == "1000"
+    assert "spark.cosmos.throughputControl.enabled" not in reader.options
+
+
+def test_read_pins_connector_defaults_with_empty_config():
+    provider = _provider(config={})
+    reader = _Reader()
+
+    with _patched_spark_read(reader):
+        provider.read_entity(_entity(BASE_TAGS))
+
+    assert reader.options["spark.cosmos.read.partitioning.strategy"] == "Default"
+    assert reader.options["spark.cosmos.read.maxItemCount"] == "1000"
+    assert "spark.cosmos.throughputControl.enabled" not in reader.options
+
+
+def test_config_read_tuning_is_applied_to_reads_writes_and_streams():
+    provider = _provider(
+        config={
+            "kindling.cosmos.read.partitioning_strategy": "restrictive",
+            "kindling.cosmos.read.max_item_count": "250",
+        }
+    )
+
+    reader = _Reader()
+    with _patched_spark_read(reader):
+        provider.read_entity(_entity(BASE_TAGS))
+    assert reader.options["spark.cosmos.read.partitioning.strategy"] == "Restrictive"
+    assert reader.options["spark.cosmos.read.maxItemCount"] == "250"
+
+    stream_reader = _StreamReader()
+    with _patched_spark_read_stream(stream_reader):
+        provider.read_entity_as_stream(_entity(BASE_TAGS))
+    assert stream_reader.options["spark.cosmos.read.maxItemCount"] == "250"
+
+    df = MagicMock()
+    df.write = _Writer()
+    provider.write_to_entity(df, _entity(BASE_TAGS))
+    assert df.write.options["spark.cosmos.read.maxItemCount"] == "250"
+
+
+def test_config_invalid_partitioning_strategy_raises():
+    provider = _provider(config={"kindling.cosmos.read.partitioning_strategy": "Turbo"})
+
+    with pytest.raises(ValueError, match="partitioning_strategy"):
+        with _patched_spark_read(_Reader()):
+            provider.read_entity(_entity(BASE_TAGS))
+
+
+def test_config_invalid_max_item_count_raises():
+    provider = _provider(config={"kindling.cosmos.read.max_item_count": "lots"})
+
+    with pytest.raises(ValueError, match="max_item_count"):
+        with _patched_spark_read(_Reader()):
+            provider.read_entity(_entity(BASE_TAGS))
+
+
+def test_throughput_control_with_threshold():
+    provider = _provider(
+        config={
+            "kindling.cosmos.throughput_control.enabled": "true",
+            "kindling.cosmos.throughput_control.group_name": "kindling-etl",
+            "kindling.cosmos.throughput_control.target_threshold": "0.9",
+            "kindling.cosmos.throughput_control.global_control.database": "ThroughputDb",
+            "kindling.cosmos.throughput_control.global_control.container": "ThroughputCtl",
+        }
+    )
+    reader = _Reader()
+
+    with _patched_spark_read(reader):
+        provider.read_entity(_entity(BASE_TAGS))
+
+    assert reader.options["spark.cosmos.throughputControl.enabled"] == "true"
+    assert reader.options["spark.cosmos.throughputControl.name"] == "kindling-etl"
+    assert reader.options["spark.cosmos.throughputControl.targetThroughputThreshold"] == "0.9"
+    assert "spark.cosmos.throughputControl.targetThroughput" not in reader.options
+    assert reader.options["spark.cosmos.throughputControl.globalControl.database"] == (
+        "ThroughputDb"
+    )
+    assert reader.options["spark.cosmos.throughputControl.globalControl.container"] == (
+        "ThroughputCtl"
+    )
+
+
+def test_throughput_control_with_absolute_target():
+    provider = _provider(
+        config={
+            "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.target_throughput": 4000,
+        }
+    )
+    df = MagicMock()
+    df.write = _Writer()
+
+    provider.write_to_entity(df, _entity(BASE_TAGS))
+
+    assert df.write.options["spark.cosmos.throughputControl.enabled"] == "true"
+    assert df.write.options["spark.cosmos.throughputControl.targetThroughput"] == "4000"
+    assert "spark.cosmos.throughputControl.targetThroughputThreshold" not in df.write.options
+    assert "spark.cosmos.throughputControl.name" not in df.write.options
+
+
+def test_throughput_control_rejects_threshold_and_target_together():
+    provider = _provider(
+        config={
+            "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.target_threshold": 0.5,
+            "kindling.cosmos.throughput_control.target_throughput": 4000,
+        }
+    )
+
+    with pytest.raises(ValueError, match="only one of"):
+        with _patched_spark_read(_Reader()):
+            provider.read_entity(_entity(BASE_TAGS))
+
+
+def test_throughput_control_requires_a_target_when_enabled():
+    provider = _provider(config={"kindling.cosmos.throughput_control.enabled": True})
+
+    with pytest.raises(ValueError, match="requires"):
+        with _patched_spark_read(_Reader()):
+            provider.read_entity(_entity(BASE_TAGS))
+
+
+@pytest.mark.parametrize("threshold", ["0", "1.5", "-0.2", "most"])
+def test_throughput_control_threshold_must_be_a_fraction(threshold):
+    provider = _provider(
+        config={
+            "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.target_threshold": threshold,
+        }
+    )
+
+    with pytest.raises(ValueError, match="target_threshold"):
+        with _patched_spark_read(_Reader()):
+            provider.read_entity(_entity(BASE_TAGS))
+
+
+def test_throughput_control_global_control_needs_both_names():
+    provider = _provider(
+        config={
+            "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.target_throughput": 4000,
+            "kindling.cosmos.throughput_control.global_control.database": "ThroughputDb",
+        }
+    )
+
+    with pytest.raises(ValueError, match="global_control"):
+        with _patched_spark_read(_Reader()):
+            provider.read_entity(_entity(BASE_TAGS))
+
+
+def test_throughput_control_disabled_emits_nothing():
+    provider = _provider(
+        config={
+            "kindling.cosmos.throughput_control.enabled": "false",
+            "kindling.cosmos.throughput_control.target_throughput": 4000,
+        }
+    )
+    reader = _Reader()
+
+    with _patched_spark_read(reader):
+        provider.read_entity(_entity(BASE_TAGS))
+
+    assert not any(key.startswith("spark.cosmos.throughputControl") for key in reader.options)
+
+
+def test_provider_option_tags_override_config_defaults():
+    provider = _provider(
+        config={
+            "kindling.cosmos.read.max_item_count": 250,
+            "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.target_throughput": 4000,
+        }
+    )
+    reader = _Reader()
+
+    with _patched_spark_read(reader):
+        provider.read_entity(
+            _entity(
+                {
+                    **BASE_TAGS,
+                    "provider.option.spark.cosmos.read.maxItemCount": "50",
+                    "provider.option.spark.cosmos.throughputControl.enabled": "false",
+                }
+            )
+        )
+
+    assert reader.options["spark.cosmos.read.maxItemCount"] == "50"
+    assert reader.options["spark.cosmos.throughputControl.enabled"] == "false"
+
+
+# ---------------------------------------------------------------------------
+# Spark-line connector coordinate resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spark_version, expected_artifact",
+    [
+        ("3.4.3", "azure-cosmos-spark_3-4_2-12"),
+        ("3.5.5", "azure-cosmos-spark_3-5_2-12"),
+        ("3.5.0-fabric", "azure-cosmos-spark_3-5_2-12"),
+        ("4.0.0", "azure-cosmos-spark_4-0_2-13"),
+        ("4.0.1-databricks", "azure-cosmos-spark_4-0_2-13"),
+        ("4.1.0", "azure-cosmos-spark_4-1_2-13"),
+    ],
+)
+def test_connector_coordinate_follows_spark_line(spark_version, expected_artifact):
+    from kindling_ext_cosmos import (
+        COSMOS_SPARK_CONNECTOR_VERSION,
+        resolve_cosmos_spark_connector_coordinate,
+    )
+
+    coordinate = resolve_cosmos_spark_connector_coordinate(spark_version)
+
+    assert coordinate == (
+        f"com.azure.cosmos.spark:{expected_artifact}:{COSMOS_SPARK_CONNECTOR_VERSION}"
+    )
+
+
+def test_connector_coordinate_scala_binary_matches_spark_major():
+    from kindling_ext_cosmos import COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATES
+
+    for family, coordinate in COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATES.items():
+        scala = "2-13" if family.startswith("4.") else "2-12"
+        assert coordinate.endswith(f"_{scala}:" + coordinate.rsplit(":", 1)[1]), coordinate
+
+
+def test_connector_coordinate_rejects_unpublished_spark_line():
+    from kindling_ext_cosmos import resolve_cosmos_spark_connector_coordinate
+
+    with pytest.raises(ValueError, match="supported Spark lines"):
+        resolve_cosmos_spark_connector_coordinate("3.2.1")
+
+
+def test_connector_coordinate_rejects_garbage_version():
+    from kindling_ext_cosmos import resolve_cosmos_spark_connector_coordinate
+
+    with pytest.raises(ValueError, match="Unrecognised Spark version"):
+        resolve_cosmos_spark_connector_coordinate("latest")
+
+
+def test_connector_coordinate_defaults_to_installed_pyspark_version():
+    import pyspark
+    from kindling_ext_cosmos import resolve_cosmos_spark_connector_coordinate
+
+    with patch.object(pyspark, "__version__", "4.0.0"):
+        coordinate = resolve_cosmos_spark_connector_coordinate()
+
+    assert "azure-cosmos-spark_4-0_2-13" in coordinate
+
+
+def test_legacy_coordinate_constant_is_the_spark_35_artifact():
+    from kindling_ext_cosmos import (
+        COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATE,
+        COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATES,
+    )
+
+    assert (
+        COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATE == COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATES["3.5"]
+    )
+
+
+def test_provider_reports_connector_coordinate_for_runtime():
+    provider = _provider()
+
+    assert "azure-cosmos-spark_3-5_2-12" in provider.connector_maven_coordinate("3.5.1")
+    assert "azure-cosmos-spark_4-1_2-13" in provider.connector_maven_coordinate("4.1.0")

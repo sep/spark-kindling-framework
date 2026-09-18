@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "spark-kindling-ext-cosmos"
-version = "0.1.0"
+version = "0.2.0"
 description = "Azure Cosmos DB entity provider extension for Kindling"
 authors = ["SEP Engineering <engineering@sep.com>"]
 license = "MIT"
@@ -17,7 +17,30 @@ packages = [
 python = "^3.10"
 # Kindling and Spark are provided by the target runtime. The Cosmos Spark
 # connector is a JVM/Spark package and must be installed as a Maven coordinate
-# on the pool.
+# on the pool -- one artifact per Spark line, see
+# kindling_ext_cosmos.COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATES.
+#
+# Spark-family install profiles, keyed by the Spark line you run rather than
+# by platform (a Databricks cluster on Spark 4.0 and a standalone Spark 4.0
+# use the same connector artifact):
+#
+#   spark-kindling-ext-cosmos[spark_3_x]  -> Spark 3.5 (Fabric, Synapse, standalone)
+#   spark-kindling-ext-cosmos[spark_4_x]  -> Spark 4.0 / 4.1 (Databricks, standalone-4x)
+#
+# Each extra pins pyspark to its family for local/standalone environments,
+# which is also what selects the connector coordinate reported by
+# resolve_cosmos_spark_connector_coordinate(). Managed runtimes already
+# provide pyspark, and Kindling's extension bootstrap installs the wheel
+# without extras, so nothing here is required at import time: a bare install
+# works on every platform. Never request both extras in one environment.
+pyspark = [
+    {version = ">=3.4.0,<4.0.0", optional = true, markers = "extra == 'spark_3_x'"},
+    {version = ">=4.0.0,<4.2.0", optional = true, markers = "extra == 'spark_4_x'"},
+]
+
+[tool.poetry.extras]
+spark_3_x = ["pyspark"]
+spark_4_x = ["pyspark"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0.0"
