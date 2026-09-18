@@ -377,9 +377,10 @@ def test_merge_to_entity_upserts_by_id():
     assert df.write.saved is True
 
 
-def test_merge_to_entity_requires_id_column():
+@pytest.mark.parametrize("columns", [("order_key", "name"), ("Id", "name"), ("ID",)])
+def test_merge_to_entity_requires_exact_id_column(columns):
     provider = _provider()
-    df = _df_with_columns("order_key", "name")
+    df = _df_with_columns(*columns)
 
     with pytest.raises(ValueError, match="'id' column"):
         provider.merge_to_entity(df, _entity(BASE_TAGS))
@@ -396,6 +397,77 @@ def test_merge_to_entity_rejects_non_merge_write_strategy(strategy):
         provider.merge_to_entity(df, _entity({**BASE_TAGS, "provider.write_strategy": strategy}))
 
     assert df.write.saved is False
+
+
+@pytest.mark.parametrize("strategy", ["ItemOverwriteIfNotModified", "ItemPatch"])
+def test_merge_to_entity_accepts_other_upsert_strategies(strategy):
+    provider = _provider()
+    df = _df_with_columns("id")
+
+    provider.merge_to_entity(df, _entity({**BASE_TAGS, "provider.write_strategy": strategy}))
+
+    assert df.write.options["spark.cosmos.write.strategy"] == strategy
+
+
+def test_merge_to_entity_insert_mode_uses_item_append():
+    # The persist path routes write.mode=insert to merge_to_entity; Delta and
+    # memory only add new keys in that mode, so Cosmos must insert-if-absent
+    # rather than silently upsert.
+    provider = _provider()
+    df = _df_with_columns("id", "name")
+
+    provider.merge_to_entity(df, _entity({**BASE_TAGS, "write.mode": "insert"}))
+
+    assert df.write.options["spark.cosmos.write.strategy"] == "ItemAppend"
+    assert df.write.saved is True
+
+
+def test_merge_to_entity_insert_mode_accepts_explicit_item_append():
+    provider = _provider()
+    df = _df_with_columns("id")
+
+    provider.merge_to_entity(
+        df,
+        _entity({**BASE_TAGS, "write.mode": "insert", "provider.write_strategy": "ItemAppend"}),
+    )
+
+    assert df.write.options["spark.cosmos.write.strategy"] == "ItemAppend"
+
+
+def test_merge_to_entity_insert_mode_rejects_conflicting_strategy():
+    provider = _provider()
+    df = _df_with_columns("id")
+
+    with pytest.raises(ValueError, match="write.mode 'insert'"):
+        provider.merge_to_entity(
+            df,
+            _entity(
+                {**BASE_TAGS, "write.mode": "insert", "provider.write_strategy": "ItemOverwrite"}
+            ),
+        )
+
+    assert df.write.saved is False
+
+
+def test_merge_to_entity_merge_mode_upserts():
+    provider = _provider()
+    df = _df_with_columns("id")
+
+    provider.merge_to_entity(df, _entity({**BASE_TAGS, "write.mode": "merge"}))
+
+    assert df.write.options["spark.cosmos.write.strategy"] == "ItemOverwrite"
+
+
+def test_append_to_entity_ignores_write_mode():
+    # Only the merge path interprets write.mode; append keeps the explicit or
+    # default strategy exactly as before.
+    provider = _provider()
+    df = MagicMock()
+    df.write = _Writer()
+
+    provider.append_to_entity(df, _entity({**BASE_TAGS, "write.mode": "insert"}))
+
+    assert df.write.options["spark.cosmos.write.strategy"] == "ItemOverwrite"
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +565,39 @@ def test_stream_read_provider_option_passthrough_wins_over_changefeed_defaults()
     assert reader.options["spark.cosmos.changeFeed.mode"] == "Incremental"
 
 
+def test_provider_option_passthrough_wins_over_named_read_tags():
+    provider = _provider()
+
+    reader = _Reader()
+    with _patched_spark_read(reader):
+        provider.read_entity(
+            _entity(
+                {
+                    **BASE_TAGS,
+                    "provider.query": "SELECT c.id FROM c",
+                    "provider.option.spark.cosmos.read.inferSchema.enabled": "false",
+                    "provider.option.spark.cosmos.read.customQuery": "SELECT * FROM c",
+                }
+            )
+        )
+    assert reader.options["spark.cosmos.read.inferSchema.enabled"] == "false"
+    assert reader.options["spark.cosmos.read.customQuery"] == "SELECT * FROM c"
+
+    stream_reader = _StreamReader()
+    with _patched_spark_read_stream(stream_reader):
+        provider.read_entity_as_stream(
+            _entity({**BASE_TAGS, "provider.option.spark.cosmos.read.inferSchema.enabled": "false"})
+        )
+    assert stream_reader.options["spark.cosmos.read.inferSchema.enabled"] == "false"
+
+    df = MagicMock()
+    df.write = _Writer()
+    provider.write_to_entity(
+        df, _entity({**BASE_TAGS, "provider.option.spark.cosmos.write.strategy": "ItemPatch"})
+    )
+    assert df.write.options["spark.cosmos.write.strategy"] == "ItemPatch"
+
+
 def test_stream_read_rejects_unknown_mode():
     provider = _provider()
 
@@ -502,13 +607,41 @@ def test_stream_read_rejects_unknown_mode():
         )
 
 
-def test_stream_read_rejects_bad_start_from():
+@pytest.mark.parametrize(
+    "start_from",
+    [
+        "yesterday",
+        "2026-01-31",  # date only
+        "2026-01-31T00:00:00",  # zone-naive
+        "2026-01-31T00:00:00+02:00",  # non-UTC offset
+        "2026-01-31T00:00:00+00:00",  # UTC offset spelled out; connector wants Z
+        "2026-01-31 00:00:00Z",  # space separator
+    ],
+)
+def test_stream_read_rejects_start_from_the_connector_cannot_parse(start_from):
+    # The connector parses non-keyword values with DateTimeFormatter.ISO_INSTANT,
+    # so only the Z-suffixed instant form must pass validation.
     provider = _provider()
 
     with pytest.raises(ValueError, match="provider.changefeed.start_from"):
         provider.read_entity_as_stream(
-            _entity({**BASE_TAGS, "provider.changefeed.start_from": "yesterday"})
+            _entity({**BASE_TAGS, "provider.changefeed.start_from": start_from})
         )
+
+
+@pytest.mark.parametrize(
+    "start_from", ["2026-01-31T00:00:00Z", "2026-01-31T00:00:00.123Z", "beginning", "NOW"]
+)
+def test_stream_read_accepts_iso_instant_and_keywords(start_from):
+    provider = _provider()
+    reader = _StreamReader()
+
+    with _patched_spark_read_stream(reader):
+        provider.read_entity_as_stream(
+            _entity({**BASE_TAGS, "provider.changefeed.start_from": start_from})
+        )
+
+    assert reader.options["spark.cosmos.changeFeed.startFrom"] == start_from
 
 
 def test_stream_read_rejects_non_positive_items_per_trigger():
@@ -692,10 +825,11 @@ def test_throughput_control_with_threshold():
     )
 
 
-def test_throughput_control_with_absolute_target():
+def test_throughput_control_with_absolute_target_and_no_control_container():
     provider = _provider(
         config={
             "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.group_name": "kindling-etl",
             "kindling.cosmos.throughput_control.target_throughput": 4000,
         }
     )
@@ -705,15 +839,84 @@ def test_throughput_control_with_absolute_target():
     provider.write_to_entity(df, _entity(BASE_TAGS))
 
     assert df.write.options["spark.cosmos.throughputControl.enabled"] == "true"
+    assert df.write.options["spark.cosmos.throughputControl.name"] == "kindling-etl"
     assert df.write.options["spark.cosmos.throughputControl.targetThroughput"] == "4000"
     assert "spark.cosmos.throughputControl.targetThroughputThreshold" not in df.write.options
-    assert "spark.cosmos.throughputControl.name" not in df.write.options
+    # The connector defaults to a dedicated global-control container and
+    # rejects the config when none is named; without one we switch that off.
+    assert (
+        df.write.options["spark.cosmos.throughputControl.globalControl.useDedicatedContainer"]
+        == "false"
+    )
+    assert "spark.cosmos.throughputControl.globalControl.database" not in df.write.options
+
+
+def test_throughput_control_with_control_container_keeps_dedicated_mode():
+    provider = _provider(
+        config={
+            "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.group_name": "kindling-etl",
+            "kindling.cosmos.throughput_control.target_throughput": 4000,
+            "kindling.cosmos.throughput_control.global_control.database": "ThroughputDb",
+            "kindling.cosmos.throughput_control.global_control.container": "ThroughputCtl",
+        }
+    )
+    reader = _Reader()
+
+    with _patched_spark_read(reader):
+        provider.read_entity(_entity(BASE_TAGS))
+
+    assert "spark.cosmos.throughputControl.globalControl.useDedicatedContainer" not in (
+        reader.options
+    )
+    assert reader.options["spark.cosmos.throughputControl.globalControl.database"] == (
+        "ThroughputDb"
+    )
+
+
+def test_throughput_control_requires_group_name():
+    # The connector asserts the group name whenever throughput control is on.
+    provider = _provider(
+        config={
+            "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.target_throughput": 4000,
+        }
+    )
+
+    with pytest.raises(ValueError, match="group_name"):
+        with _patched_spark_read(_Reader()):
+            provider.read_entity(_entity(BASE_TAGS))
+
+
+def test_throughput_control_enabled_must_be_boolean():
+    provider = _provider(config={"kindling.cosmos.throughput_control.enabled": "maybe"})
+
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        with _patched_spark_read(_Reader()):
+            provider.read_entity(_entity(BASE_TAGS))
+
+
+def test_config_service_errors_propagate():
+    class _BrokenConfigService:
+        def get(self, key, default=None):
+            raise RuntimeError("config store unavailable")
+
+    from kindling_ext_cosmos import CosmosEntityProvider
+
+    logger_provider = MagicMock()
+    logger_provider.get_logger.return_value = MagicMock()
+    provider = CosmosEntityProvider(logger_provider, _BrokenConfigService())
+
+    with pytest.raises(RuntimeError, match="config store unavailable"):
+        with _patched_spark_read(_Reader()):
+            provider.read_entity(_entity(BASE_TAGS))
 
 
 def test_throughput_control_rejects_threshold_and_target_together():
     provider = _provider(
         config={
             "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.group_name": "kindling-etl",
             "kindling.cosmos.throughput_control.target_threshold": 0.5,
             "kindling.cosmos.throughput_control.target_throughput": 4000,
         }
@@ -725,7 +928,12 @@ def test_throughput_control_rejects_threshold_and_target_together():
 
 
 def test_throughput_control_requires_a_target_when_enabled():
-    provider = _provider(config={"kindling.cosmos.throughput_control.enabled": True})
+    provider = _provider(
+        config={
+            "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.group_name": "kindling-etl",
+        }
+    )
 
     with pytest.raises(ValueError, match="requires"):
         with _patched_spark_read(_Reader()):
@@ -737,6 +945,7 @@ def test_throughput_control_threshold_must_be_a_fraction(threshold):
     provider = _provider(
         config={
             "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.group_name": "kindling-etl",
             "kindling.cosmos.throughput_control.target_threshold": threshold,
         }
     )
@@ -750,6 +959,7 @@ def test_throughput_control_global_control_needs_both_names():
     provider = _provider(
         config={
             "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.group_name": "kindling-etl",
             "kindling.cosmos.throughput_control.target_throughput": 4000,
             "kindling.cosmos.throughput_control.global_control.database": "ThroughputDb",
         }
@@ -780,6 +990,7 @@ def test_provider_option_tags_override_config_defaults():
         config={
             "kindling.cosmos.read.max_item_count": 250,
             "kindling.cosmos.throughput_control.enabled": True,
+            "kindling.cosmos.throughput_control.group_name": "kindling-etl",
             "kindling.cosmos.throughput_control.target_throughput": 4000,
         }
     )

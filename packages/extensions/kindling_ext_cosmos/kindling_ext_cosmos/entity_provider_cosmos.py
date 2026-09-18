@@ -24,7 +24,8 @@ extras only pin ``pyspark`` for local and CI environments.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional, Tuple
+import re
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from injector import inject
 from kindling.data_entities import EntityMetadata
@@ -39,6 +40,7 @@ from kindling.entity_provider import (
     WritableEntityProvider,
 )
 from kindling.entity_provider_registry import EntityProviderRegistry
+from kindling.features import _coerce_bool
 from kindling.injection import GlobalInjector
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
@@ -109,6 +111,36 @@ DECLARABLE_SUPPORTED_TAGS: Tuple[str, ...] = (
     "provider.option.*",
 )
 
+# One table drives both the runtime auth options and the declaration-time
+# completeness check, so an alias or a new required credential is added in
+# exactly one place: (connector option, provider tag, accepted alias tags).
+SERVICE_PRINCIPAL_CREDENTIALS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    ("spark.cosmos.auth.aad.clientId", "client_id", ("app_id",)),
+    ("spark.cosmos.auth.aad.clientSecret", "client_secret", ("app_secret",)),
+    ("spark.cosmos.account.tenantId", "tenant_id", ("authority_id",)),
+    # The connector resolves account metadata through ARM for ServicePrincipal
+    # auth, so subscription and resource group are hard requirements.
+    ("spark.cosmos.account.subscriptionId", "subscription_id", ()),
+    ("spark.cosmos.account.resourceGroupName", "resource_group", ()),
+)
+MASTER_KEY_CREDENTIAL: Tuple[str, str, Tuple[str, ...]] = (
+    "spark.cosmos.accountKey",
+    "account_key",
+    ("key",),
+)
+SERVICE_PRINCIPAL_AUTH_MODES = ("service_principal", "spn")
+MASTER_KEY_AUTH_MODES = ("master_key", "key", "account_key")
+
+# The connector parses a non-keyword startFrom with DateTimeFormatter.ISO_INSTANT:
+# a UTC instant such as 2026-01-31T00:00:00Z (optional fractional seconds).
+# Date-only, zone-naive and non-UTC-offset values are rejected by the
+# connector at stream start, so they are rejected here at validation time.
+CHANGEFEED_START_FROM_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$")
+
+# Write strategies that upsert (merge semantics) vs. insert-only.
+MERGE_WRITE_STRATEGIES = ("ItemOverwrite", "ItemOverwriteIfNotModified", "ItemPatch")
+INSERT_WRITE_STRATEGY = "ItemAppend"
+
 
 class CosmosEntityProvider(
     BaseEntityProvider,
@@ -131,7 +163,7 @@ class CosmosEntityProvider(
       ``full_fidelity`` (all versions and deletes; the container must be
       provisioned for it)
     - ``provider.changefeed.start_from``: ``Beginning`` (default), ``Now`` or
-      an ISO-8601 UTC timestamp
+      a UTC instant such as ``2026-01-31T00:00:00Z``
     - ``provider.changefeed.items_per_trigger``: approximate items per micro-batch
     - ``provider.option.<connector option>``: verbatim passthrough, highest
       precedence
@@ -141,9 +173,10 @@ class CosmosEntityProvider(
 
     - ``kindling.cosmos.read.partitioning_strategy`` (default ``Default``)
     - ``kindling.cosmos.read.max_item_count`` (default ``1000``)
-    - ``kindling.cosmos.throughput_control.enabled`` (default ``false``) with
-      ``group_name``, exactly one of ``target_threshold`` / ``target_throughput``,
-      and optional ``global_control.database`` / ``global_control.container``
+    - ``kindling.cosmos.throughput_control.enabled`` (default ``false``); when
+      enabled, ``group_name`` and exactly one of ``target_threshold`` /
+      ``target_throughput`` are required, and ``global_control.database`` /
+      ``global_control.container`` are optional (both or neither)
     """
 
     @inject
@@ -289,7 +322,7 @@ class CosmosEntityProvider(
         self._save(df, entity_metadata)
 
     def merge_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
-        """Merge DataFrame documents into the Cosmos container (upsert by id).
+        """Merge DataFrame documents into the Cosmos container.
 
         Cosmos has no server-side MERGE; the connector's ``ItemOverwrite``
         strategy already upserts by ``(id, partition key)``, so merge *is* the
@@ -297,24 +330,49 @@ class CosmosEntityProvider(
         Cosmos entity with ``merge_columns`` as merge-capable instead of
         falling back to append. The entity's ``merge_columns`` are not applied
         as a match condition — the document ``id`` is the key — so the merge
-        key must be mapped onto ``id``. An explicit ``provider.write_strategy``
-        of ``ItemAppend`` or ``ItemDelete`` is rejected here because neither
-        is a merge.
+        key must be mapped onto ``id`` (exact, lower-case column name).
+
+        ``write.mode`` on the entity selects the strategy the same way it does
+        for Delta and memory entities: ``insert`` writes with ``ItemAppend``
+        (insert-if-absent, existing documents untouched); ``merge`` or unset
+        writes with ``ItemOverwrite`` (full-document upsert). An explicit
+        ``provider.write_strategy`` must agree with that mode; ``ItemDelete``
+        is never a merge.
         """
         config = self._get_provider_config(entity_metadata)
-        strategy = str(config.get("write_strategy", "ItemOverwrite"))
-        if strategy.lower() not in ("itemoverwrite", "itemoverwriteifnotmodified", "itempatch"):
-            raise ValueError(
-                f"Cosmos entity '{entity_metadata.entityid}' cannot merge with "
-                f"provider.write_strategy '{strategy}'; use ItemOverwrite (default), "
-                "ItemOverwriteIfNotModified or ItemPatch, or call append_to_entity"
-            )
-        if "id" not in {name.lower() for name in df.columns}:
+        strategy = self._merge_write_strategy(entity_metadata, config)
+        if "id" not in df.columns:
             raise ValueError(
                 f"Cosmos entity '{entity_metadata.entityid}' merge requires an 'id' "
-                "column: documents are upserted by (id, partition key)"
+                "column (exact name): documents are upserted by (id, partition key)"
             )
-        self._save(df, entity_metadata)
+        self._save(df, entity_metadata, write_strategy=strategy)
+
+    def _merge_write_strategy(self, entity_metadata: EntityMetadata, config: Dict[str, Any]) -> str:
+        write_mode = str((entity_metadata.tags or {}).get("write.mode") or "").strip().lower()
+        explicit = config.get("write_strategy")
+        explicit_name = str(explicit).strip() if explicit else ""
+
+        if write_mode == "insert":
+            if explicit_name and explicit_name.lower() != INSERT_WRITE_STRATEGY.lower():
+                raise ValueError(
+                    f"Cosmos entity '{entity_metadata.entityid}' has write.mode 'insert' "
+                    f"but provider.write_strategy '{explicit_name}'; insert-only merges "
+                    f"use {INSERT_WRITE_STRATEGY} (drop the tag or set it to that)"
+                )
+            return INSERT_WRITE_STRATEGY
+
+        allowed = {name.lower(): name for name in MERGE_WRITE_STRATEGIES}
+        if not explicit_name:
+            return MERGE_WRITE_STRATEGIES[0]
+        if explicit_name.lower() not in allowed:
+            raise ValueError(
+                f"Cosmos entity '{entity_metadata.entityid}' cannot merge with "
+                f"provider.write_strategy '{explicit_name}'; use one of "
+                f"{', '.join(MERGE_WRITE_STRATEGIES)}, tag the entity write.mode: insert "
+                f"for {INSERT_WRITE_STRATEGY}, or call append_to_entity"
+            )
+        return allowed[explicit_name.lower()]
 
     def append_as_stream(
         self,
@@ -347,9 +405,14 @@ class CosmosEntityProvider(
             writer = writer.option(key, value)
         return writer.start()
 
-    def _save(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
+    def _save(
+        self,
+        df: DataFrame,
+        entity_metadata: EntityMetadata,
+        write_strategy: Optional[str] = None,
+    ) -> None:
         config = self._get_provider_config(entity_metadata)
-        options = self._build_write_options(entity_metadata, config)
+        options = self._build_write_options(entity_metadata, config, write_strategy)
         # The Cosmos Spark sink requires mode Append; write semantics are
         # controlled by spark.cosmos.write.strategy, not the save mode.
         writer = df.write.format(COSMOS_FORMAT)
@@ -367,15 +430,15 @@ class CosmosEntityProvider(
     def _build_read_options(
         self, entity_metadata: EntityMetadata, config: Dict[str, Any]
     ) -> Dict[str, str]:
-        options = self._connection_options(entity_metadata, config)
-
-        infer_schema = config.get("infer_schema", True)
-        options["spark.cosmos.read.inferSchema.enabled"] = infer_schema
-
+        # Named read tags first, connection options (which end with the
+        # provider.option.* passthrough) last, so the passthrough always wins.
+        options: Dict[str, Any] = {
+            "spark.cosmos.read.inferSchema.enabled": config.get("infer_schema", True),
+        }
         query = config.get("query") or config.get("custom_query")
         if query:
             options["spark.cosmos.read.customQuery"] = query
-
+        options.update(self._connection_options(entity_metadata, config))
         return self._stringify_options(options)
 
     def _build_changefeed_options(
@@ -386,8 +449,8 @@ class CosmosEntityProvider(
         # -- keep precedence: an explicit
         # provider.option.spark.cosmos.changeFeed.startFrom still wins.
         options: Dict[str, Any] = self._changefeed_options(entity_metadata, config)
-        options.update(self._connection_options(entity_metadata, config))
         options["spark.cosmos.read.inferSchema.enabled"] = config.get("infer_schema", True)
+        options.update(self._connection_options(entity_metadata, config))
         return self._stringify_options(options)
 
     def _changefeed_options(
@@ -431,11 +494,14 @@ class CosmosEntityProvider(
         start_from = str(config.get("changefeed.start_from", "Beginning")).strip()
         if start_from.lower() not in {
             keyword.lower() for keyword in CHANGEFEED_START_FROM_KEYWORDS
-        } and not self._looks_like_iso_timestamp(start_from):
+        } and not CHANGEFEED_START_FROM_INSTANT.match(start_from):
             issues.append(
                 SourceValidationIssue(
                     tag="provider.changefeed.start_from",
-                    constraint="must be Beginning, Now, or an ISO-8601 UTC timestamp",
+                    constraint=(
+                        "must be Beginning, Now, or a UTC instant with a time component "
+                        "and Z suffix (the connector parses it with ISO_INSTANT)"
+                    ),
                     remediation="e.g. Beginning, Now, 2026-01-31T00:00:00Z",
                 )
             )
@@ -455,32 +521,26 @@ class CosmosEntityProvider(
                 )
         return issues
 
-    def _auth_issues(self, config: Mapping[str, Any]) -> list:
-        """Secret-safe auth completeness check (names only, never values)."""
-        auth_mode = str(config.get("auth", config.get("auth_mode", "service_principal"))).lower()
-        if auth_mode in ("service_principal", "spn"):
-            required = {
-                "provider.client_id": config.get("client_id") or config.get("app_id"),
-                "provider.client_secret": config.get("client_secret") or config.get("app_secret"),
-                "provider.tenant_id": config.get("tenant_id") or config.get("authority_id"),
-                "provider.subscription_id": config.get("subscription_id"),
-                "provider.resource_group": config.get("resource_group"),
-            }
+    def _auth_issues(self, config: Mapping[str, Any]) -> List[SourceValidationIssue]:
+        """Secret-safe auth completeness check (tag names only, never values)."""
+        auth_mode = self._auth_mode(config)
+        if auth_mode in SERVICE_PRINCIPAL_AUTH_MODES:
             return [
                 SourceValidationIssue(
-                    tag=tag,
+                    tag=f"provider.{tag}",
                     constraint="is required for service_principal auth",
                     remediation="set it, via a secret-backed tag where sensitive",
                 )
-                for tag, value in required.items()
-                if not value
+                for _, tag, aliases in SERVICE_PRINCIPAL_CREDENTIALS
+                if not self._credential(config, tag, aliases)
             ]
-        if auth_mode in ("master_key", "key", "account_key"):
-            if config.get("account_key") or config.get("key"):
+        if auth_mode in MASTER_KEY_AUTH_MODES:
+            _, tag, aliases = MASTER_KEY_CREDENTIAL
+            if self._credential(config, tag, aliases):
                 return []
             return [
                 SourceValidationIssue(
-                    tag="provider.account_key",
+                    tag=f"provider.{tag}",
                     constraint="is required for master_key auth",
                     remediation="provide the account key through a secret-backed tag",
                 )
@@ -493,21 +553,28 @@ class CosmosEntityProvider(
         ]
 
     @staticmethod
-    def _looks_like_iso_timestamp(value: str) -> bool:
-        from datetime import datetime
+    def _auth_mode(config: Mapping[str, Any]) -> str:
+        return str(config.get("auth", config.get("auth_mode", "service_principal"))).lower()
 
-        candidate = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
-        try:
-            datetime.fromisoformat(candidate)
-        except ValueError:
-            return False
-        return True
+    @staticmethod
+    def _credential(config: Mapping[str, Any], tag: str, aliases: Tuple[str, ...]) -> Any:
+        for name in (tag, *aliases):
+            value = config.get(name)
+            if value:
+                return value
+        return None
 
     def _build_write_options(
-        self, entity_metadata: EntityMetadata, config: Dict[str, Any]
+        self,
+        entity_metadata: EntityMetadata,
+        config: Dict[str, Any],
+        write_strategy: Optional[str] = None,
     ) -> Dict[str, str]:
-        options = self._connection_options(entity_metadata, config)
-        options["spark.cosmos.write.strategy"] = config.get("write_strategy", "ItemOverwrite")
+        options: Dict[str, Any] = {
+            "spark.cosmos.write.strategy": write_strategy
+            or config.get("write_strategy", MERGE_WRITE_STRATEGIES[0]),
+        }
+        options.update(self._connection_options(entity_metadata, config))
         return self._stringify_options(options)
 
     def _connection_options(
@@ -543,9 +610,9 @@ class CosmosEntityProvider(
     def connector_maven_coordinate(self, spark_version: Optional[str] = None) -> str:
         """Maven coordinate of the connector artifact this runtime needs.
 
-        Resolves from the given Spark version, else the active session's.
-        Useful for deployment tooling and diagnostics — the wheel does not
-        install the JVM artifact. See
+        Resolves from the given Spark version, else the installed ``pyspark``
+        (no Spark session is consulted). Useful for deployment tooling and
+        diagnostics — the wheel does not install the JVM artifact. See
         :func:`resolve_cosmos_spark_connector_coordinate`.
         """
         return resolve_cosmos_spark_connector_coordinate(spark_version)
@@ -553,12 +620,12 @@ class CosmosEntityProvider(
     # ---- kindling.cosmos.* run-level defaults ----
 
     def _config(self, key: str, default: Any = None) -> Any:
+        # A missing key returns ``default`` from ConfigService.get itself; any
+        # exception here is a real configuration failure and must surface
+        # rather than silently disable, say, throughput control.
         if self.config_service is None:
             return default
-        try:
-            value = self.config_service.get(f"{CONFIG_PREFIX}.{key}", default)
-        except Exception:  # noqa: BLE001 - a missing key must never break a read
-            return default
+        value = self.config_service.get(f"{CONFIG_PREFIX}.{key}", default)
         return default if value is None else value
 
     def _throughput_defaults(self) -> Dict[str, Any]:
@@ -567,11 +634,13 @@ class CosmosEntityProvider(
         Read partitioning strategy and page size always get an explicit value
         (the connector's own defaults unless configured). Throughput control
         is off unless ``kindling.cosmos.throughput_control.enabled`` is set;
-        when it is, exactly one of ``target_threshold`` (fraction of
-        provisioned/autoscale RU/s, in (0, 1]) or ``target_throughput``
-        (absolute RU/s) must be supplied. A ``global_control`` database and
-        container pair enables cross-job coordination through a shared
-        control container.
+        when it is, ``group_name`` and exactly one of ``target_threshold``
+        (fraction of provisioned/autoscale RU/s, in (0, 1]) or
+        ``target_throughput`` (absolute RU/s) must be supplied. A
+        ``global_control`` database and container pair coordinates the budget
+        across jobs through a shared control container; without one the
+        connector's dedicated-container mode is switched off and the budget
+        is split evenly across executors.
         """
         strategy = str(
             self._config("read.partitioning_strategy", DEFAULT_READ_PARTITIONING_STRATEGY)
@@ -598,13 +667,27 @@ class CosmosEntityProvider(
             "spark.cosmos.read.maxItemCount": max_item_count,
         }
 
-        if not self._truthy(self._config("throughput_control.enabled", False)):
+        enabled_raw = self._config("throughput_control.enabled", False)
+        enabled = _coerce_bool(enabled_raw)
+        if enabled is None:
+            raise ValueError(
+                f"{CONFIG_PREFIX}.throughput_control.enabled must be a boolean; "
+                f"got '{enabled_raw}'"
+            )
+        if not enabled:
             return defaults
 
         defaults["spark.cosmos.throughputControl.enabled"] = True
+        # The connector asserts the group name is present whenever throughput
+        # control is enabled; fail here with the Kindling key rather than in
+        # the JVM at query start.
         group_name = self._config("throughput_control.group_name")
-        if group_name:
-            defaults["spark.cosmos.throughputControl.name"] = str(group_name)
+        if not group_name or not str(group_name).strip():
+            raise ValueError(
+                f"{CONFIG_PREFIX}.throughput_control.enabled requires "
+                f"{CONFIG_PREFIX}.throughput_control.group_name"
+            )
+        defaults["spark.cosmos.throughputControl.name"] = str(group_name).strip()
 
         threshold = self._config("throughput_control.target_threshold")
         target = self._config("throughput_control.target_throughput")
@@ -655,50 +738,42 @@ class CosmosEntityProvider(
         if db and container:
             defaults["spark.cosmos.throughputControl.globalControl.database"] = str(db)
             defaults["spark.cosmos.throughputControl.globalControl.container"] = str(container)
+        else:
+            # The connector defaults to a dedicated global-control container
+            # and rejects the config when none is named. Without one, fall
+            # back to the connector's local mode: the budget is split evenly
+            # across executors instead of coordinated through a container.
+            defaults["spark.cosmos.throughputControl.globalControl.useDedicatedContainer"] = False
         return defaults
-
-    @staticmethod
-    def _truthy(value: Any) -> bool:
-        if isinstance(value, str):
-            return value.strip().lower() in ("true", "1", "yes", "on")
-        return bool(value)
 
     def _auth_options(
         self, entity_metadata: EntityMetadata, config: Dict[str, Any]
     ) -> Dict[str, Any]:
-        auth_mode = str(config.get("auth", config.get("auth_mode", "service_principal"))).lower()
+        auth_mode = self._auth_mode(config)
 
-        if auth_mode in ("service_principal", "spn"):
-            # The connector requires subscription id and resource group for
-            # ServicePrincipal auth (it resolves account metadata through ARM).
-            required = {
-                "spark.cosmos.auth.aad.clientId": config.get("client_id") or config.get("app_id"),
-                "spark.cosmos.auth.aad.clientSecret": (
-                    config.get("client_secret") or config.get("app_secret")
-                ),
-                "spark.cosmos.account.tenantId": (
-                    config.get("tenant_id") or config.get("authority_id")
-                ),
-                "spark.cosmos.account.subscriptionId": config.get("subscription_id"),
-                "spark.cosmos.account.resourceGroupName": config.get("resource_group"),
+        if auth_mode in SERVICE_PRINCIPAL_AUTH_MODES:
+            options: Dict[str, Any] = {
+                option: self._credential(config, tag, aliases)
+                for option, tag, aliases in SERVICE_PRINCIPAL_CREDENTIALS
             }
-            missing = [key for key, value in required.items() if not value]
+            missing = [option for option, value in options.items() if not value]
             if missing:
                 raise ValueError(
                     f"Cosmos entity '{entity_metadata.entityid}' service principal auth "
                     f"is missing options: {', '.join(missing)}"
                 )
-            required["spark.cosmos.auth.type"] = "ServicePrincipal"
-            return required
+            options["spark.cosmos.auth.type"] = "ServicePrincipal"
+            return options
 
-        if auth_mode in ("master_key", "key", "account_key"):
-            account_key = config.get("account_key") or config.get("key")
+        if auth_mode in MASTER_KEY_AUTH_MODES:
+            option, tag, aliases = MASTER_KEY_CREDENTIAL
+            account_key = self._credential(config, tag, aliases)
             if not account_key:
                 raise ValueError(
                     f"Cosmos entity '{entity_metadata.entityid}' uses master_key auth "
-                    "but provider.account_key is not set"
+                    f"but provider.{tag} is not set"
                 )
-            return {"spark.cosmos.accountKey": account_key}
+            return {option: account_key}
 
         raise ValueError(
             f"Unsupported Cosmos auth mode '{auth_mode}'. Supported modes: "

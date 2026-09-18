@@ -24,7 +24,7 @@ install it; put the coordinate for your pool's Spark version on the cluster
 | 4.1 (Scala 2.13) | Spark 4.1 standalone / `standalone-4x`, newer Databricks runtimes | `com.azure.cosmos.spark:azure-cosmos-spark_4-1_2-13:4.49.2` |
 
 `kindling_ext_cosmos.resolve_cosmos_spark_connector_coordinate()` returns the
-row for the active session (or a given Spark version string), and
+row for the installed `pyspark`'s Spark line (or a given Spark version string), and
 `COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATES` is the whole table. The old
 `COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATE` constant still names the Spark 3.5
 artifact.
@@ -53,12 +53,15 @@ logical key onto the document `id` column (Cosmos ids are strings) to get
 merge-like behavior. Set `provider.write_strategy: ItemAppend` for
 insert-only, or `ItemDelete` to delete by id.
 
-`merge_to_entity()` is the same upsert, declared formally so the persist
-path treats a Cosmos entity with `merge_columns` as merge-capable instead of
+`merge_to_entity()` is that upsert declared formally, so the persist path
+treats a Cosmos entity with `merge_columns` as merge-capable instead of
 falling back to append. The entity's `merge_columns` are not used as a match
 condition — the document `id` is the key, so the DataFrame must carry an `id`
-column — and the call is rejected when `provider.write_strategy` is
-`ItemAppend` or `ItemDelete`, since neither is a merge.
+column (exact name). The entity's `write.mode` tag selects the strategy the
+same way it does for Delta: `insert` writes with `ItemAppend` (insert if
+absent, existing documents untouched); `merge` or unset writes with
+`ItemOverwrite`. An explicit `provider.write_strategy` must agree with that
+mode, and `ItemDelete` is never a merge.
 
 ## Configuration
 
@@ -114,7 +117,7 @@ Spark Structured Streaming's responsibility and live in the sink's checkpoint.
 tags={
     ...,
     "provider.changefeed.mode": "latest_version",      # default; or full_fidelity
-    "provider.changefeed.start_from": "Beginning",     # default; Now | ISO-8601 UTC timestamp
+    "provider.changefeed.start_from": "Beginning",     # default; Now | UTC instant e.g. 2026-01-31T00:00:00Z
     "provider.changefeed.items_per_trigger": "5000",   # optional micro-batch size hint
 }
 ```
@@ -155,11 +158,11 @@ kindling:
       max_item_count: 1000             # page size per request; connector default, now explicit
     throughput_control:
       enabled: false                   # off by default
-      group_name: kindling-etl         # spark.cosmos.throughputControl.name
+      group_name: kindling-etl         # required when enabled (spark.cosmos.throughputControl.name)
       target_threshold: 0.9            # fraction (0, 1] of provisioned/autoscale RU/s ...
       # target_throughput: 4000        # ... OR an absolute RU/s; never both
       global_control:                  # optional: coordinate across jobs through a
-        database: ThroughputControl    # shared control container
+        database: ThroughputControl    # shared control container (both names or neither)
         container: groups
 ```
 
@@ -167,9 +170,13 @@ kindling:
 (the connector's own defaults unless configured). Throughput control stays
 **off** unless enabled — Kindling makes no ARM call to learn a container's
 RU/s, so it cannot guess a safe default; when you enable it you must supply
-exactly one of `target_threshold` or `target_throughput`. Setting both, a
-threshold outside `(0, 1]`, or only one half of `global_control` is a
-configuration error.
+`group_name` and exactly one of `target_threshold` or `target_throughput`.
+Setting both targets, a threshold outside `(0, 1]`, or only one half of
+`global_control` is a configuration error. Without `global_control` the
+connector's dedicated control container is switched off
+(`globalControl.useDedicatedContainer=false`) and the budget is split evenly
+across executors; with it, jobs sharing the group coordinate through that
+container.
 
 ## Existence checks
 

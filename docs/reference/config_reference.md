@@ -90,11 +90,11 @@ per-entity `provider.option.*` overrides (config dictates, tags override).
 
 - `kindling.cosmos.read.partitioning_strategy`: `Default` (default) | `Custom` | `Restrictive` | `Aggressive`. `Aggressive` maximizes Spark-side parallelism and therefore concurrent RU draw.
 - `kindling.cosmos.read.max_item_count`: Page size per query/change-feed request (default `1000`, the connector default made explicit).
-- `kindling.cosmos.throughput_control.enabled`: Enable the connector's Throughput Control feature (default `false`). When enabled exactly one of the two targets below is required.
+- `kindling.cosmos.throughput_control.enabled`: Enable the connector's Throughput Control feature (default `false`). When enabled, `group_name` and exactly one of the two targets below are required.
 - `kindling.cosmos.throughput_control.target_threshold`: Fraction in `(0, 1]` of the container's provisioned/autoscale RU/s the job may consume.
 - `kindling.cosmos.throughput_control.target_throughput`: Absolute RU/s budget. Alternative to `target_threshold`; setting both is an error.
-- `kindling.cosmos.throughput_control.group_name`: Throughput control group name.
-- `kindling.cosmos.throughput_control.global_control.database` / `.container`: Shared control container for cross-job coordination; both or neither.
+- `kindling.cosmos.throughput_control.group_name`: Throughput control group name (required when enabled; the connector asserts it).
+- `kindling.cosmos.throughput_control.global_control.database` / `.container`: Shared control container for cross-job coordination; both or neither. When neither is set, Kindling emits `globalControl.useDedicatedContainer=false` so the connector splits the budget across executors instead of requiring a control container.
 
 ### Runtime Feature Flags
 
@@ -393,16 +393,19 @@ documented in the extension README. Read/write tags:
 
 - `provider.query`: Cosmos SQL for batch reads (default: whole container).
 - `provider.infer_schema`: boolean (default true).
-- `provider.write_strategy`: `ItemOverwrite` (default, upsert by id) | `ItemAppend` | `ItemDelete`.
+- `provider.write_strategy`: `ItemOverwrite` (default, upsert by id) | `ItemAppend` | `ItemDelete`. `merge_to_entity` maps the entity's `write.mode` tag onto this: `insert` → `ItemAppend`, `merge`/unset → `ItemOverwrite`; an explicit strategy must agree.
 - `provider.changefeed.mode`: `latest_version` (default) | `full_fidelity` (all versions and deletes; container must be provisioned for it). Streaming reads only.
-- `provider.changefeed.start_from`: `Beginning` (default) | `Now` | ISO-8601 UTC timestamp.
+- `provider.changefeed.start_from`: `Beginning` (default) | `Now` | UTC instant with a `Z` suffix (e.g. `2026-01-31T00:00:00Z`, the connector's `ISO_INSTANT` form).
 - `provider.changefeed.items_per_trigger`: Approximate items per micro-batch.
 - `provider.assume_exists`: boolean (default true) returned by `check_entity_exists`.
 - `provider.option.<connector option>`: Verbatim passthrough; wins over `kindling.cosmos.*` and change-feed defaults.
 
-The provider is a declarable streaming source: a Cosmos driving input lowers
+The provider is a declarable streaming source: a Cosmos *driving* input lowers
 to an external streaming source in Lakeflow declarations, using the
-`cosmos.oltp.changeFeed` data source.
+`cosmos.oltp.changeFeed` data source. A non-driving Cosmos input (a container
+lookup) is not declarable in an SDP pipe: the declaration engine reads only
+Delta externals in batch, as for every non-Delta provider. Use the runner for
+such pipes, or stage the lookup into a Delta table first.
 
 ### Memory Provider (`provider_type: memory`)
 

@@ -17,12 +17,24 @@ All notable changes to spark-kindling are documented here.
   so a Cosmos entity can drive a streaming pipe and lower as an external
   streaming source in Lakeflow declarations. `merge_to_entity()` declares the
   existing upsert-by-id write formally so the persist path treats Cosmos
-  entities with `merge_columns` as merge-capable (requires an `id` column;
-  rejects `ItemAppend`/`ItemDelete`). New `kindling.cosmos.*` run-level
-  config sets the connector's read partitioning strategy and page size
-  explicitly and exposes Throughput Control (off by default; exactly one of
-  `target_threshold`/`target_throughput` when enabled), applied below
-  per-entity `provider.option.*`. The provider takes an optional
+  entities with `merge_columns` as merge-capable (requires an exact `id`
+  column). It honours the entity's `write.mode` like Delta does: `insert`
+  writes with `ItemAppend` (insert if absent), `merge`/unset with
+  `ItemOverwrite`; `ItemDelete` is never a merge. New `kindling.cosmos.*`
+  run-level config sets the connector's read partitioning strategy and page
+  size explicitly and exposes Throughput Control (off by default; when
+  enabled `group_name` and exactly one of `target_threshold`/
+  `target_throughput` are required, and without a `global_control`
+  container the connector's dedicated-container mode is switched off),
+  applied below per-entity `provider.option.*`. Named read/write tags
+  (`infer_schema`, `query`, `write_strategy`) are now laid down before the
+  `provider.option.*` passthrough, so the passthrough wins for those too.
+  `changefeed.start_from` accepts only the connector's `ISO_INSTANT` form
+  (`2026-01-31T00:00:00Z`) besides `Beginning`/`Now`. In SDP/Lakeflow
+  declarations only a *driving* Cosmos input can be lowered (as a
+  change-feed streaming source); a non-driving Cosmos lookup is not
+  declarable, because the declaration engine reads only Delta externals in
+  batch — the same limitation every non-Delta provider has there. The provider takes an optional
   `ConfigService`; direct construction with only a logger provider still
   works.
 - **Cosmos connector coordinate per Spark line.** The connector is a JVM
