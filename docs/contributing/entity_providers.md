@@ -26,7 +26,10 @@ merge — plain-parquet interchange at solution boundaries; see
 `memory`, `eventhub`, `sql` (views), `current_view`, and `adx-api`
 (Azure Data Explorer via the azure-kusto Python SDKs, `[adx]` extra —
 runs where the JVM Kusto connector cannot). Extensions add `adx`
-(Kusto Spark connector) and `cosmos`.
+(Kusto Spark connector) and `cosmos` (Cosmos DB Spark connector: batch
+read/write, `merge_to_entity` upsert, streaming write, and change-feed
+streaming read with a `DeclarableStreamingSource` spec — see
+`packages/extensions/kindling_ext_cosmos/README.md`).
 
 Capability helpers are provided for runtime checks:
 

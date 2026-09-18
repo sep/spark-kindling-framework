@@ -2,6 +2,65 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Cosmos DB extension 0.2.0: change-feed streaming reads, config-first
+  throughput controls, formal merge, Spark 3/4 connector matrix** (#201,
+  proposal `docs/proposals/cosmos_streaming_and_throughput_controls.md`).
+  `CosmosEntityProvider` now implements `StreamableEntityProvider` and
+  `DeclarableStreamingSource`: `read_entity_as_stream()` reads the
+  container's change feed (`cosmos.oltp.changeFeed`) with
+  `provider.changefeed.mode` (`latest_version` default / `full_fidelity`),
+  `provider.changefeed.start_from` and `provider.changefeed.items_per_trigger`,
+  so a Cosmos entity can drive a streaming pipe and lower as an external
+  streaming source in Lakeflow declarations. `merge_to_entity()` declares the
+  existing upsert-by-id write formally so the persist path treats Cosmos
+  entities with `merge_columns` as merge-capable (requires an exact `id`
+  column). It honours the entity's `write.mode` like Delta does: `insert`
+  writes with `ItemAppend` (insert if absent), `merge`/unset with
+  `ItemOverwrite`; `ItemDelete` is never a merge. New `kindling.cosmos.*`
+  run-level config sets the connector's read partitioning strategy and page
+  size explicitly and exposes Throughput Control (off by default; when
+  enabled `group_name` and exactly one of `target_threshold`/
+  `target_throughput` are required, and without a `global_control`
+  container the connector's dedicated-container mode is switched off),
+  applied below per-entity `provider.option.*`. Named read/write tags
+  (`infer_schema`, `query`, `write_strategy`) are now laid down before the
+  `provider.option.*` passthrough, so the passthrough wins for those too.
+  `changefeed.start_from` accepts only the connector's `ISO_INSTANT` form
+  (`2026-01-31T00:00:00Z`) besides `Beginning`/`Now`. In SDP/Lakeflow
+  declarations only a *driving* Cosmos input can be lowered (as a
+  change-feed streaming source); a non-driving Cosmos lookup is not
+  declarable, because the declaration engine reads only Delta externals in
+  batch — the same limitation every non-Delta provider has there. The provider takes an optional
+  `ConfigService`; direct construction with only a logger provider still
+  works.
+- **Cosmos connector coordinate per Spark line.** The connector is a JVM
+  artifact built per Spark minor and Scala binary. The extension now
+  publishes `COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATES` (3.4/3.5 on Scala
+  2.12 for Fabric, Synapse and Databricks 13-16; 4.0/4.1 on Scala 2.13 for
+  Databricks 17+ and Spark 4 standalone) at connector 4.49.2, and
+  `resolve_cosmos_spark_connector_coordinate()` picks the row for the active
+  session. The wheel gains `spark_3_x` / `spark_4_x` extras that pin `pyspark` to a
+  Spark family for local and CI environments, named by Spark line rather than
+  platform; managed runtimes install the bare wheel as before.
+  `COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATE` still names the Spark 3.5
+  artifact.
+
+### Fixed
+
+- **Cosmos extension system test could not run locally.** `tests/conftest.py`
+  enables Kindling's Delta session config, so the provider's
+  `get_or_create_spark_session()` applied the Delta catalog to the test's
+  session while only the Cosmos connector jar was on the classpath, and every
+  action failed with `Cannot find catalog plugin class ... DeltaCatalog`. The
+  fixture now builds the session through `configure_spark_with_delta_pip`
+  with the Cosmos connector as an extra package, resolving the connector
+  coordinate for the installed pyspark's Spark line. A live change-feed
+  streaming round trip joins the existing upsert round trip.
+
 ## [0.12.47] - 2026-09-16
 
 ### Fixed
