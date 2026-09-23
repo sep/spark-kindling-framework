@@ -13,9 +13,10 @@ via ``COSMOS_TEST_CLIENT_ID`` etc.); the SP needs a Cosmos **data-plane**
 RBAC role (e.g. Cosmos DB Built-in Data Contributor). The test skips — never
 fails — when configuration or credentials are unavailable.
 
-Requirements: Spark 3.5 / Scala 2.12, outbound HTTPS to the public Cosmos
-endpoint, and the Cosmos Spark connector (downloaded via
-``spark.jars.packages`` on first run).
+Requirements: a Spark line the connector is published for (3.4/3.5 on Scala
+2.12, 4.0/4.1 on Scala 2.13 -- resolved from the installed pyspark), outbound
+HTTPS to the public Cosmos endpoint, and the Cosmos Spark connector
+(downloaded via ``spark.jars.packages`` on first run).
 """
 
 import logging
@@ -27,7 +28,6 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 
 EXTENSION_PACKAGE_ROOT = (
@@ -51,7 +51,26 @@ COSMOS_CLIENT_ID = _env("COSMOS_TEST_CLIENT_ID", "AZURE_CLIENT_ID")
 COSMOS_TENANT_ID = _env("COSMOS_TEST_TENANT_ID", "AZURE_TENANT_ID")
 COSMOS_SUBSCRIPTION_ID = _env("COSMOS_TEST_SUBSCRIPTION_ID", "AZURE_SUBSCRIPTION_ID")
 COSMOS_RESOURCE_GROUP = _env("COSMOS_TEST_RESOURCE_GROUP", "AZURE_RESOURCE_GROUP")
-COSMOS_SPARK_PACKAGE = "com.azure.cosmos.spark:azure-cosmos-spark_3-5_2-12:4.37.2"
+
+
+def _cosmos_spark_package() -> str:
+    """Connector coordinate for the locally installed pyspark's Spark line."""
+    import pyspark
+
+    # Called from the module-scoped spark fixture, which runs before the
+    # function-scoped autouse sys.path fixture below.
+    if str(EXTENSION_PACKAGE_ROOT) not in sys.path:
+        sys.path.insert(0, str(EXTENSION_PACKAGE_ROOT))
+
+    # Import under the stubbed injector: the package registers its provider
+    # at import time, which needs an initialized framework otherwise.
+    _import_provider_class()
+    from kindling_ext_cosmos.entity_provider_cosmos import (
+        resolve_cosmos_spark_connector_coordinate,
+    )
+
+    return resolve_cosmos_spark_connector_coordinate(pyspark.__version__)
+
 
 # Single-region account with eventual consistency: reads usually see writes
 # within seconds; poll defensively.
@@ -131,13 +150,26 @@ def spark():
     except ImportError:
         pytest.skip("pyspark not available")
 
-    session = (
+    builder = (
         SparkSession.builder.appName("kindling-cosmos-system-test")
         .master("local[2]")
-        .config("spark.jars.packages", COSMOS_SPARK_PACKAGE)
         .config("spark.sql.shuffle.partitions", "2")
-        .getOrCreate()
     )
+    # tests/conftest.py sets KINDLING_SPARK_ENABLE_DELTA=true, so the
+    # provider's get_or_create_spark_session() applies the Delta catalog
+    # confs to this (already running) session. The Delta jars must therefore
+    # be on the JVM classpath alongside the Cosmos connector, or every
+    # DataFrame action fails with "Cannot find catalog plugin class ...
+    # DeltaCatalog". configure_spark_with_delta_pip pins the Delta artifact
+    # matching the installed delta-spark (and its Scala binary).
+    try:
+        from delta import configure_spark_with_delta_pip
+
+        builder = configure_spark_with_delta_pip(builder, extra_packages=[_cosmos_spark_package()])
+    except ImportError:
+        builder = builder.config("spark.jars.packages", _cosmos_spark_package())
+
+    session = builder.getOrCreate()
     yield session
     session.stop()
 
@@ -252,4 +284,105 @@ def test_cosmos_write_read_upsert_roundtrip(cosmos_client_secret, spark):
         except Exception:  # noqa: BLE001
             logging.getLogger(__name__).warning(
                 "Failed to delete Cosmos test documents for run %s — clean up manually", run_id
+            )
+
+
+def _streaming_entity(client_secret: str, run_id: str) -> EntityMetadata:
+    # Start the change feed at "Now" so the stream only carries this run's
+    # writes and does not replay the whole container on first trigger.
+    return _entity(
+        client_secret,
+        {
+            "provider.changefeed.mode": "latest_version",
+            "provider.changefeed.start_from": "Now",
+            "provider.query_name": f"cosmos-changefeed-{run_id}",
+        },
+    )
+
+
+@pytest.mark.system
+@pytest.mark.azure
+@pytest.mark.slow
+def test_cosmos_change_feed_streaming_read(cosmos_client_secret, spark, tmp_path):
+    """Write documents, then observe them arrive through the change-feed stream.
+
+    Exercises ``read_entity_as_stream`` end to end: the change-feed source
+    (``cosmos.oltp.changeFeed``) is started from ``Now``, a batch is upserted
+    through the provider, and the streamed micro-batches must contain every
+    document of this run. Uses ``latest_version`` mode, which any container
+    supports; ``full_fidelity`` needs a container provisioned for
+    all-versions-and-deletes and is covered at the option level in the unit
+    tests only.
+    """
+    CosmosEntityProvider = _import_provider_class()
+    from kindling_ext_cosmos.entity_provider_cosmos import COSMOS_CHANGEFEED_FORMAT
+
+    run_id = f"kindling-cfsystest-{uuid.uuid4().hex[:8]}"
+    provider = CosmosEntityProvider(_LoggerProvider())
+
+    columns = ["id", "name", "amount", "run_id"]
+    rows = [
+        (f"{run_id}-1", "delta", 1.5, run_id),
+        (f"{run_id}-2", "echo", 2.5, run_id),
+        (f"{run_id}-3", "foxtrot", 3.5, run_id),
+    ]
+    expected_ids = {row[0] for row in rows}
+
+    stream_df = provider.read_entity_as_stream(_streaming_entity(cosmos_client_secret, run_id))
+    assert stream_df.isStreaming
+
+    # The change-feed schema is inferred from the container; only rows of
+    # this run matter, and the run_id column is present on every test document.
+    filtered = stream_df.filter(stream_df["run_id"] == run_id).select("id", "name", "amount")
+    memory_table = f"cosmos_cf_{run_id.replace('-', '_')}"
+    query = (
+        filtered.writeStream.format("memory")
+        .queryName(memory_table)
+        .outputMode("append")
+        .option("checkpointLocation", str(tmp_path / "checkpoint"))
+        .start()
+    )
+
+    try:
+        # Let the source resolve its starting continuation before writing, so
+        # "Now" is strictly before the upsert.
+        query.processAllAvailable()
+
+        provider.write_to_entity(
+            spark.createDataFrame(rows, columns), _entity(cosmos_client_secret)
+        )
+
+        deadline = time.time() + READ_TIMEOUT_SECONDS
+        seen = {}
+        while time.time() < deadline:
+            query.processAllAvailable()
+            seen = {
+                row["id"]: row
+                for row in spark.sql(f"SELECT * FROM {memory_table}").collect()
+                if row["id"] in expected_ids
+            }
+            if set(seen) == expected_ids:
+                break
+            time.sleep(5)
+        else:
+            pytest.fail(
+                f"Change feed ({COSMOS_CHANGEFEED_FORMAT}) did not deliver "
+                f"{sorted(expected_ids - set(seen))} within {READ_TIMEOUT_SECONDS}s"
+            )
+
+        assert seen[f"{run_id}-2"]["name"] == "echo"
+        assert float(seen[f"{run_id}-3"]["amount"]) == pytest.approx(3.5)
+    finally:
+        try:
+            query.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            provider.write_to_entity(
+                spark.createDataFrame(rows, columns),
+                _entity(cosmos_client_secret, {"provider.write_strategy": "ItemDelete"}),
+            )
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "Failed to delete Cosmos change-feed test documents for run %s", run_id
             )
