@@ -25,6 +25,7 @@ extras only pin ``pyspark`` for local and CI environments.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from injector import inject
@@ -309,17 +310,30 @@ class CosmosEntityProvider(
         return bool(config.get("assume_exists", True))
 
     def write_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
-        """Write (upsert) DataFrame documents into the Cosmos container."""
-        self._save(df, entity_metadata)
+        """Write (upsert) DataFrame documents into the Cosmos container.
+
+        The persist path calls this when the destination is not known to
+        exist (``provider.assume_exists: false``), so the entity's
+        ``write.mode`` is honoured here exactly as in :meth:`merge_to_entity`:
+        ``insert`` writes with ``ItemAppend``, ``merge`` with an upsert
+        strategy. Without ``write.mode`` the configured
+        ``provider.write_strategy`` (default ``ItemOverwrite``) is used as-is,
+        including ``ItemDelete`` for explicit delete-by-id writes.
+        """
+        config = self._get_provider_config(entity_metadata)
+        strategy, authoritative = self._resolve_write_strategy(entity_metadata, config)
+        self._save(df, entity_metadata, strategy, authoritative)
 
     def append_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
         """Append DataFrame documents into the Cosmos container.
 
         Uses the configured write strategy (default ``ItemOverwrite`` = upsert,
-        idempotent under retry). Set ``provider.write_strategy: ItemAppend``
-        for insert-only semantics.
+        idempotent under retry); ``write.mode: insert`` on the entity selects
+        ``ItemAppend`` (insert-only) on every write path, this one included.
         """
-        self._save(df, entity_metadata)
+        config = self._get_provider_config(entity_metadata)
+        strategy, authoritative = self._resolve_write_strategy(entity_metadata, config)
+        self._save(df, entity_metadata, strategy, authoritative)
 
     def merge_to_entity(self, df: DataFrame, entity_metadata: EntityMetadata) -> None:
         """Merge DataFrame documents into the Cosmos container.
@@ -337,18 +351,35 @@ class CosmosEntityProvider(
         (insert-if-absent, existing documents untouched); ``merge`` or unset
         writes with ``ItemOverwrite`` (full-document upsert). An explicit
         ``provider.write_strategy`` must agree with that mode; ``ItemDelete``
-        is never a merge.
+        is never a merge. The resolved strategy is authoritative: a
+        conflicting ``provider.option.spark.cosmos.write.strategy`` passthrough
+        is rejected rather than allowed to turn a merge into a delete.
         """
         config = self._get_provider_config(entity_metadata)
-        strategy = self._merge_write_strategy(entity_metadata, config)
+        strategy, _ = self._resolve_write_strategy(entity_metadata, config, merging=True)
         if "id" not in df.columns:
             raise ValueError(
                 f"Cosmos entity '{entity_metadata.entityid}' merge requires an 'id' "
                 "column (exact name): documents are upserted by (id, partition key)"
             )
-        self._save(df, entity_metadata, write_strategy=strategy)
+        self._save(df, entity_metadata, strategy, authoritative=True)
 
-    def _merge_write_strategy(self, entity_metadata: EntityMetadata, config: Dict[str, Any]) -> str:
+    def _resolve_write_strategy(
+        self,
+        entity_metadata: EntityMetadata,
+        config: Dict[str, Any],
+        *,
+        merging: bool = False,
+    ) -> Tuple[str, bool]:
+        """Return ``(connector write strategy, authoritative)``.
+
+        ``authoritative`` is True when the entity's ``write.mode`` tag or a
+        merge call decided the strategy; a conflicting
+        ``provider.option.spark.cosmos.write.strategy`` passthrough is then an
+        error instead of winning. Without either, the configured
+        ``provider.write_strategy`` (default ``ItemOverwrite``) is used and the
+        passthrough keeps its documented precedence.
+        """
         write_mode = str((entity_metadata.tags or {}).get("write.mode") or "").strip().lower()
         explicit = config.get("write_strategy")
         explicit_name = str(explicit).strip() if explicit else ""
@@ -357,22 +388,25 @@ class CosmosEntityProvider(
             if explicit_name and explicit_name.lower() != INSERT_WRITE_STRATEGY.lower():
                 raise ValueError(
                     f"Cosmos entity '{entity_metadata.entityid}' has write.mode 'insert' "
-                    f"but provider.write_strategy '{explicit_name}'; insert-only merges "
+                    f"but provider.write_strategy '{explicit_name}'; insert-only writes "
                     f"use {INSERT_WRITE_STRATEGY} (drop the tag or set it to that)"
                 )
-            return INSERT_WRITE_STRATEGY
+            return INSERT_WRITE_STRATEGY, True
 
-        allowed = {name.lower(): name for name in MERGE_WRITE_STRATEGIES}
-        if not explicit_name:
-            return MERGE_WRITE_STRATEGIES[0]
-        if explicit_name.lower() not in allowed:
-            raise ValueError(
-                f"Cosmos entity '{entity_metadata.entityid}' cannot merge with "
-                f"provider.write_strategy '{explicit_name}'; use one of "
-                f"{', '.join(MERGE_WRITE_STRATEGIES)}, tag the entity write.mode: insert "
-                f"for {INSERT_WRITE_STRATEGY}, or call append_to_entity"
-            )
-        return allowed[explicit_name.lower()]
+        if write_mode == "merge" or merging:
+            allowed = {name.lower(): name for name in MERGE_WRITE_STRATEGIES}
+            if not explicit_name:
+                return MERGE_WRITE_STRATEGIES[0], True
+            if explicit_name.lower() not in allowed:
+                raise ValueError(
+                    f"Cosmos entity '{entity_metadata.entityid}' cannot merge with "
+                    f"provider.write_strategy '{explicit_name}'; use one of "
+                    f"{', '.join(MERGE_WRITE_STRATEGIES)}, tag the entity write.mode: insert "
+                    f"for {INSERT_WRITE_STRATEGY}, or call append_to_entity"
+                )
+            return allowed[explicit_name.lower()], True
+
+        return explicit_name or MERGE_WRITE_STRATEGIES[0], False
 
     def append_as_stream(
         self,
@@ -387,7 +421,10 @@ class CosmosEntityProvider(
         if options:
             config = {**config, **options}
 
-        connector_options = self._build_write_options(entity_metadata, config)
+        strategy, authoritative = self._resolve_write_strategy(entity_metadata, config)
+        connector_options = self._build_write_options(
+            entity_metadata, config, strategy, authoritative
+        )
         output_mode = str(config.get("output_mode", "append"))
         query_name = config.get("query_name")
 
@@ -410,9 +447,10 @@ class CosmosEntityProvider(
         df: DataFrame,
         entity_metadata: EntityMetadata,
         write_strategy: Optional[str] = None,
+        authoritative: bool = False,
     ) -> None:
         config = self._get_provider_config(entity_metadata)
-        options = self._build_write_options(entity_metadata, config, write_strategy)
+        options = self._build_write_options(entity_metadata, config, write_strategy, authoritative)
         # The Cosmos Spark sink requires mode Append; write semantics are
         # controlled by spark.cosmos.write.strategy, not the save mode.
         writer = df.write.format(COSMOS_FORMAT)
@@ -497,13 +535,13 @@ class CosmosEntityProvider(
         start_from = str(config.get("changefeed.start_from", "Beginning")).strip()
         if start_from.lower() not in {
             keyword.lower() for keyword in CHANGEFEED_START_FROM_KEYWORDS
-        } and not CHANGEFEED_START_FROM_INSTANT.match(start_from):
+        } and not self._is_utc_instant(start_from):
             issues.append(
                 SourceValidationIssue(
                     tag="provider.changefeed.start_from",
                     constraint=(
-                        "must be Beginning, Now, or a UTC instant with a time component "
-                        "and Z suffix (the connector parses it with ISO_INSTANT)"
+                        "must be Beginning, Now, or a valid UTC instant with a time "
+                        "component and Z suffix (the connector parses it with ISO_INSTANT)"
                     ),
                     remediation="e.g. Beginning, Now, 2026-01-31T00:00:00Z",
                 )
@@ -523,6 +561,24 @@ class CosmosEntityProvider(
                     )
                 )
         return issues
+
+    @staticmethod
+    def _is_utc_instant(value: str) -> bool:
+        """True when ``value`` is a real instant in the connector's ISO_INSTANT form.
+
+        The shape check alone would pass ``2026-02-31T00:00:00Z``; parse the
+        matched value so declaration-time validation rejects what the
+        connector's ``Instant.parse`` would reject at stream start.
+        """
+        if not CHANGEFEED_START_FROM_INSTANT.match(value):
+            return False
+        try:
+            # The regex already constrained the optional fraction and the Z;
+            # parse the calendar part so impossible dates/hours are rejected.
+            datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return False
+        return True
 
     def _auth_issues(self, config: Mapping[str, Any]) -> List[SourceValidationIssue]:
         """Secret-safe auth completeness check (tag names only, never values)."""
@@ -572,12 +628,24 @@ class CosmosEntityProvider(
         entity_metadata: EntityMetadata,
         config: Dict[str, Any],
         write_strategy: Optional[str] = None,
+        authoritative: bool = False,
     ) -> Dict[str, str]:
-        options: Dict[str, Any] = {
-            "spark.cosmos.write.strategy": write_strategy
-            or config.get("write_strategy", MERGE_WRITE_STRATEGIES[0]),
-        }
+        strategy = write_strategy or config.get("write_strategy", MERGE_WRITE_STRATEGIES[0])
+        options: Dict[str, Any] = {"spark.cosmos.write.strategy": strategy}
         options.update(self._connection_options(entity_metadata, config))
+        if authoritative:
+            # write.mode / merge_to_entity decided the strategy; a passthrough
+            # tag naming a different one would silently turn a merge or an
+            # insert into, say, a delete -- refuse rather than let it win.
+            passthrough = options["spark.cosmos.write.strategy"]
+            if str(passthrough).lower() != str(strategy).lower():
+                raise ValueError(
+                    f"Cosmos entity '{entity_metadata.entityid}': "
+                    f"provider.option.spark.cosmos.write.strategy '{passthrough}' conflicts "
+                    f"with the '{strategy}' strategy selected by write.mode/merge; remove "
+                    "the passthrough or make them agree"
+                )
+            options["spark.cosmos.write.strategy"] = strategy
         return self._stringify_options(options)
 
     def _connection_options(

@@ -393,7 +393,7 @@ documented in the extension README. Read/write tags:
 
 - `provider.query`: Cosmos SQL for batch reads (default: whole container).
 - `provider.infer_schema`: boolean (default true).
-- `provider.write_strategy`: `ItemOverwrite` (default, upsert by id) | `ItemAppend` | `ItemDelete`. `merge_to_entity` maps the entity's `write.mode` tag onto this: `insert` → `ItemAppend`, `merge`/unset → `ItemOverwrite`; an explicit strategy must agree.
+- `provider.write_strategy`: `ItemOverwrite` (default, upsert by id) | `ItemAppend` | `ItemDelete`. Every write path maps the entity's `write.mode` tag onto this: `insert` → `ItemAppend`, `merge` → `ItemOverwrite`; an explicit strategy or `provider.option.spark.cosmos.write.strategy` must agree.
 - `provider.changefeed.mode`: `latest_version` (default) | `full_fidelity` (all versions and deletes; container must be provisioned for it). Streaming reads only.
 - `provider.changefeed.start_from`: `Beginning` (default) | `Now` | UTC instant with a `Z` suffix (e.g. `2026-01-31T00:00:00Z`, the connector's `ISO_INSTANT` form).
 - `provider.changefeed.items_per_trigger`: Approximate items per micro-batch.

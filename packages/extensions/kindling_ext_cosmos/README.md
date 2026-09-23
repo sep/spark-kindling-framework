@@ -57,11 +57,16 @@ insert-only, or `ItemDelete` to delete by id.
 treats a Cosmos entity with `merge_columns` as merge-capable instead of
 falling back to append. The entity's `merge_columns` are not used as a match
 condition — the document `id` is the key, so the DataFrame must carry an `id`
-column (exact name). The entity's `write.mode` tag selects the strategy the
-same way it does for Delta: `insert` writes with `ItemAppend` (insert if
-absent, existing documents untouched); `merge` or unset writes with
-`ItemOverwrite`. An explicit `provider.write_strategy` must agree with that
-mode, and `ItemDelete` is never a merge.
+column (exact name). The entity's `write.mode` tag selects the strategy on
+**every** write path (`write_to_entity`, `append_to_entity`,
+`merge_to_entity`, `append_as_stream`), the same way it does for Delta:
+`insert` writes with `ItemAppend` (insert if absent, existing documents
+untouched); `merge` writes with `ItemOverwrite`. An explicit
+`provider.write_strategy` must agree with that mode, `ItemDelete` is never a
+merge, and a `provider.option.spark.cosmos.write.strategy` passthrough that
+conflicts with a mode- or merge-selected strategy is rejected rather than
+allowed to win. Without `write.mode`, the configured strategy (or the
+passthrough) is used as-is.
 
 ## Configuration
 
@@ -117,7 +122,7 @@ Spark Structured Streaming's responsibility and live in the sink's checkpoint.
 tags={
     ...,
     "provider.changefeed.mode": "latest_version",      # default; or full_fidelity
-    "provider.changefeed.start_from": "Beginning",     # default; Now | UTC instant e.g. 2026-01-31T00:00:00Z
+    "provider.changefeed.start_from": "Beginning",     # default; Now | valid UTC instant e.g. 2026-01-31T00:00:00Z
     "provider.changefeed.items_per_trigger": "5000",   # optional micro-batch size hint
 }
 ```

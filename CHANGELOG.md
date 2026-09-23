@@ -18,9 +18,12 @@ All notable changes to spark-kindling are documented here.
   streaming source in Lakeflow declarations. `merge_to_entity()` declares the
   existing upsert-by-id write formally so the persist path treats Cosmos
   entities with `merge_columns` as merge-capable (requires an exact `id`
-  column). It honours the entity's `write.mode` like Delta does: `insert`
-  writes with `ItemAppend` (insert if absent), `merge`/unset with
-  `ItemOverwrite`; `ItemDelete` is never a merge. New `kindling.cosmos.*`
+  column). Every write path (`write_to_entity`, `append_to_entity`,
+  `merge_to_entity`, `append_as_stream`) honours the entity's `write.mode`
+  like Delta does: `insert` writes with `ItemAppend` (insert if absent),
+  `merge` with `ItemOverwrite`; `ItemDelete` is never a merge, and a
+  `provider.option.spark.cosmos.write.strategy` passthrough that conflicts
+  with a mode- or merge-selected strategy is rejected. New `kindling.cosmos.*`
   run-level config sets the connector's read partitioning strategy and page
   size explicitly and exposes Throughput Control (off by default; when
   enabled `group_name` and exactly one of `target_threshold`/
@@ -30,7 +33,7 @@ All notable changes to spark-kindling are documented here.
   (`infer_schema`, `query`, `write_strategy`) are now laid down before the
   `provider.option.*` passthrough, so the passthrough wins for those too.
   `changefeed.start_from` accepts only the connector's `ISO_INSTANT` form
-  (`2026-01-31T00:00:00Z`) besides `Beginning`/`Now`. In SDP/Lakeflow
+  (`2026-01-31T00:00:00Z`, parsed as a real instant) besides `Beginning`/`Now`. In SDP/Lakeflow
   declarations only a *driving* Cosmos input can be lowered (as a
   change-feed streaming source); a non-driving Cosmos lookup is not
   declarable, because the declaration engine reads only Delta externals in
@@ -42,8 +45,8 @@ All notable changes to spark-kindling are documented here.
   publishes `COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATES` (3.4/3.5 on Scala
   2.12 for Fabric, Synapse and Databricks 13-16; 4.0/4.1 on Scala 2.13 for
   Databricks 17+ and Spark 4 standalone) at connector 4.49.2, and
-  `resolve_cosmos_spark_connector_coordinate()` picks the row for the active
-  session. The wheel gains `spark_3_x` / `spark_4_x` extras that pin `pyspark` to a
+  `resolve_cosmos_spark_connector_coordinate()` picks the row for the
+  installed `pyspark` (or a given version string). The wheel gains `spark_3_x` / `spark_4_x` extras that pin `pyspark` to a
   Spark family for local and CI environments, named by Spark line rather than
   platform; managed runtimes install the bare wheel as before.
   `COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATE` still names the Spark 3.5

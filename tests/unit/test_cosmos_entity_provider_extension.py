@@ -458,16 +458,116 @@ def test_merge_to_entity_merge_mode_upserts():
     assert df.write.options["spark.cosmos.write.strategy"] == "ItemOverwrite"
 
 
-def test_append_to_entity_ignores_write_mode():
-    # Only the merge path interprets write.mode; append keeps the explicit or
-    # default strategy exactly as before.
+def test_write_and_append_honor_insert_mode():
+    # The persist path calls write_to_entity when the destination is not
+    # known to exist (provider.assume_exists: false), so write.mode must be
+    # honoured on every write path, not only inside merge_to_entity.
+    provider = _provider()
+    for method in ("write_to_entity", "append_to_entity"):
+        df = MagicMock()
+        df.write = _Writer()
+        getattr(provider, method)(
+            df, _entity({**BASE_TAGS, "write.mode": "insert", "provider.assume_exists": "false"})
+        )
+        assert df.write.options["spark.cosmos.write.strategy"] == "ItemAppend", method
+
+
+def test_write_to_entity_merge_mode_rejects_delete_strategy():
     provider = _provider()
     df = MagicMock()
     df.write = _Writer()
 
-    provider.append_to_entity(df, _entity({**BASE_TAGS, "write.mode": "insert"}))
+    with pytest.raises(ValueError, match="cannot merge"):
+        provider.write_to_entity(
+            df,
+            _entity({**BASE_TAGS, "write.mode": "merge", "provider.write_strategy": "ItemDelete"}),
+        )
 
+
+def test_write_to_entity_without_write_mode_keeps_explicit_strategy():
+    # No write.mode: the configured strategy is used as-is, including the
+    # explicit delete-by-id write the system test's cleanup relies on.
+    provider = _provider()
+    df = MagicMock()
+    df.write = _Writer()
+
+    provider.write_to_entity(df, _entity({**BASE_TAGS, "provider.write_strategy": "ItemDelete"}))
+
+    assert df.write.options["spark.cosmos.write.strategy"] == "ItemDelete"
+
+
+def test_stream_append_honors_insert_mode():
+    provider = _provider()
+    writer = _StreamWriter()
+    df = MagicMock()
+    df.writeStream = writer
+
+    provider.append_as_stream(df, _entity({**BASE_TAGS, "write.mode": "insert"}), "/chk")
+
+    assert writer.options["spark.cosmos.write.strategy"] == "ItemAppend"
+
+
+def test_merge_strategy_is_authoritative_over_passthrough():
+    provider = _provider()
+    df = _df_with_columns("id")
+
+    with pytest.raises(ValueError, match="conflicts"):
+        provider.merge_to_entity(
+            df,
+            _entity({**BASE_TAGS, "provider.option.spark.cosmos.write.strategy": "ItemDelete"}),
+        )
+    assert df.write.saved is False
+
+    # An agreeing passthrough (any case) is fine.
+    df = _df_with_columns("id")
+    provider.merge_to_entity(
+        df, _entity({**BASE_TAGS, "provider.option.spark.cosmos.write.strategy": "itemoverwrite"})
+    )
     assert df.write.options["spark.cosmos.write.strategy"] == "ItemOverwrite"
+
+
+def test_insert_mode_is_authoritative_over_passthrough_on_write():
+    provider = _provider()
+    df = MagicMock()
+    df.write = _Writer()
+
+    with pytest.raises(ValueError, match="conflicts"):
+        provider.write_to_entity(
+            df,
+            _entity(
+                {
+                    **BASE_TAGS,
+                    "write.mode": "insert",
+                    "provider.option.spark.cosmos.write.strategy": "ItemOverwrite",
+                }
+            ),
+        )
+
+
+def test_provider_resolves_through_injector_with_bound_config_service():
+    # EntityProviderRegistry instantiates providers via GlobalInjector.get();
+    # the framework binds ConfigService at initialization, and injector must
+    # supply it through the Optional[ConfigService] annotation.
+    from injector import Injector
+    from kindling.spark_config import ConfigService
+    from kindling.spark_log_provider import PythonLoggerProvider
+    from kindling_ext_cosmos import CosmosEntityProvider
+
+    config_service = _ConfigService({"kindling.cosmos.read.max_item_count": 42})
+    logger_provider = MagicMock(spec=PythonLoggerProvider)
+    logger_provider.get_logger.return_value = MagicMock()
+
+    def configure(binder):
+        binder.bind(ConfigService, to=config_service)
+        binder.bind(PythonLoggerProvider, to=logger_provider)
+
+    provider = Injector([configure], auto_bind=True).get(CosmosEntityProvider)
+
+    assert provider.config_service is config_service
+    reader = _Reader()
+    with _patched_spark_read(reader):
+        provider.read_entity(_entity(BASE_TAGS))
+    assert reader.options["spark.cosmos.read.maxItemCount"] == "42"
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +716,8 @@ def test_stream_read_rejects_unknown_mode():
         "2026-01-31T00:00:00+02:00",  # non-UTC offset
         "2026-01-31T00:00:00+00:00",  # UTC offset spelled out; connector wants Z
         "2026-01-31 00:00:00Z",  # space separator
+        "2026-02-31T00:00:00Z",  # right shape, impossible date
+        "2026-01-01T25:00:00Z",  # right shape, impossible hour
     ],
 )
 def test_stream_read_rejects_start_from_the_connector_cannot_parse(start_from):
