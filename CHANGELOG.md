@@ -2,7 +2,7 @@
 
 All notable changes to spark-kindling are documented here.
 
-## [Unreleased]
+## [0.12.48] - 2026-09-23
 
 ### Added
 
@@ -39,7 +39,7 @@ All notable changes to spark-kindling are documented here.
   declarable, because the declaration engine reads only Delta externals in
   batch — the same limitation every non-Delta provider has there. The provider takes an optional
   `ConfigService`; direct construction with only a logger provider still
-  works.
+  works (#302, closes #201).
 - **Cosmos connector coordinate per Spark line.** The connector is a JVM
   artifact built per Spark minor and Scala binary. The extension now
   publishes `COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATES` (3.4/3.5 on Scala
@@ -50,7 +50,7 @@ All notable changes to spark-kindling are documented here.
   Spark family for local and CI environments, named by Spark line rather than
   platform; managed runtimes install the bare wheel as before.
   `COSMOS_SPARK_CONNECTOR_MAVEN_COORDINATE` still names the Spark 3.5
-  artifact.
+  artifact (#302).
 
 ### Fixed
 
@@ -62,7 +62,7 @@ All notable changes to spark-kindling are documented here.
   fixture now builds the session through `configure_spark_with_delta_pip`
   with the Cosmos connector as an extra package, resolving the connector
   coordinate for the installed pyspark's Spark line. A live change-feed
-  streaming round trip joins the existing upsert round trip.
+  streaming round trip joins the existing upsert round trip (#302).
 
 ## [0.12.47] - 2026-09-16
 
