@@ -464,11 +464,14 @@ class CosmosEntityProvider(
             )
 
         mode = str(config.get("changefeed.mode", "latest_version")).strip().lower()
+        start_from = str(config.get("changefeed.start_from", "Beginning")).strip()
+        # Keywords are accepted case-insensitively but emitted in the
+        # connector's documented spelling (Beginning / Now), like the mode.
+        canonical_keywords = {k.lower(): k for k in CHANGEFEED_START_FROM_KEYWORDS}
+        start_from = canonical_keywords.get(start_from.lower(), start_from)
         options: Dict[str, Any] = {
             "spark.cosmos.changeFeed.mode": CHANGEFEED_MODES[mode],
-            "spark.cosmos.changeFeed.startFrom": str(
-                config.get("changefeed.start_from", "Beginning")
-            ).strip(),
+            "spark.cosmos.changeFeed.startFrom": start_from,
         }
         items_per_trigger = config.get("changefeed.items_per_trigger")
         if items_per_trigger is not None and str(items_per_trigger).strip() != "":

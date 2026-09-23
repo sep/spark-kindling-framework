@@ -630,9 +630,20 @@ def test_stream_read_rejects_start_from_the_connector_cannot_parse(start_from):
 
 
 @pytest.mark.parametrize(
-    "start_from", ["2026-01-31T00:00:00Z", "2026-01-31T00:00:00.123Z", "beginning", "NOW"]
+    ("start_from", "emitted"),
+    [
+        ("2026-01-31T00:00:00Z", "2026-01-31T00:00:00Z"),
+        ("2026-01-31T00:00:00.123Z", "2026-01-31T00:00:00.123Z"),
+        ("Beginning", "Beginning"),
+        ("Now", "Now"),
+        # Keywords are accepted case-insensitively but emitted in the
+        # connector's documented spelling.
+        ("beginning", "Beginning"),
+        ("NOW", "Now"),
+        (" now ", "Now"),
+    ],
 )
-def test_stream_read_accepts_iso_instant_and_keywords(start_from):
+def test_stream_read_accepts_iso_instant_and_canonicalizes_keywords(start_from, emitted):
     provider = _provider()
     reader = _StreamReader()
 
@@ -641,7 +652,7 @@ def test_stream_read_accepts_iso_instant_and_keywords(start_from):
             _entity({**BASE_TAGS, "provider.changefeed.start_from": start_from})
         )
 
-    assert reader.options["spark.cosmos.changeFeed.startFrom"] == start_from
+    assert reader.options["spark.cosmos.changeFeed.startFrom"] == emitted
 
 
 def test_stream_read_rejects_non_positive_items_per_trigger():
