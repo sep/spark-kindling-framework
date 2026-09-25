@@ -55,7 +55,7 @@ envelope from its own source frame before unioning the base stratum.
 """
 
 from functools import reduce
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import DataPipesRegistry
@@ -67,20 +67,11 @@ from .registry import (
     TemporalEpisodeRegistry,
     TemporalEventRegistry,
 )
-from .translation import (
-    TEMPORAL_LOWERING_CHAIN,
-    TEMPORAL_LOWERING_DECLARED,
-    TEMPORAL_LOWERING_TAG,
-    TemporalPipeTranslator,
-    parse_bool_config,
-)
+from .translation import TemporalPipeTranslator, parse_bool_config
 
 CHAIN_EVENTS_PIPE_PREFIX = "temporal.chain.events."
 CHAIN_EPISODES_PIPE_PREFIX = "temporal.chain.episodes."
-MAX_GENERATIONS_CONFIG_KEY = "kindling.temporal.max_generations"
 DEFAULT_MAX_GENERATIONS = 10
-
-AUTOCOLLAPSE_CONFIG_KEY = "kindling.temporal.autocollapse"
 DEFAULT_AUTOCOLLAPSE = True
 
 
@@ -114,7 +105,7 @@ def _resolve_max_generations(entity_dfs: Dict[str, Any]) -> int:
     try:
         from kindling.spark_config import ConfigService
 
-        value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
+        value = GlobalInjector.get(ConfigService).get("kindling.temporal.max_generations", None)
     except Exception:  # noqa: BLE001 - config service unavailable in bare tests
         return DEFAULT_MAX_GENERATIONS
     if value is None:
@@ -404,7 +395,7 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
         tags={
             "pipe_type": "temporal.chain_events",
             "temporal.kind": "chain_events",
-            TEMPORAL_LOWERING_TAG: TEMPORAL_LOWERING_CHAIN,
+            "temporal.lowering": "chain",
             "temporal.chain_id": chainid,
             "temporal.reads_prior_state": "true",
         },
@@ -427,7 +418,7 @@ def declare_temporal_chain(chainid: str = "default") -> List[str]:
             tags={
                 "pipe_type": "temporal.chain_episodes",
                 "temporal.kind": "chain_episodes",
-                TEMPORAL_LOWERING_TAG: TEMPORAL_LOWERING_CHAIN,
+                "temporal.lowering": "chain",
                 "temporal.chain_id": chainid,
                 "temporal.reads_prior_state": "true",
             },
@@ -459,7 +450,7 @@ def _pipe_ids_tagged(pipe_registry: DataPipesRegistry, lowering: str) -> List[st
     return [
         pipeid
         for pipeid in pipe_registry.get_pipe_ids()
-        if _pipe_tags(pipe_registry, pipeid).get(TEMPORAL_LOWERING_TAG) == lowering
+        if _pipe_tags(pipe_registry, pipeid).get("temporal.lowering") == lowering
     ]
 
 
@@ -484,7 +475,7 @@ def collapse_temporal_chain(chainid: str = "default") -> List[str]:
     just re-confirms the chain pipes.
     """
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
-    superseded = _pipe_ids_tagged(pipe_registry, TEMPORAL_LOWERING_DECLARED)
+    superseded = _pipe_ids_tagged(pipe_registry, "declared")
 
     declare_temporal_chain(chainid)
 
@@ -498,7 +489,7 @@ def _autocollapse_enabled() -> bool:
     try:
         from kindling.spark_config import ConfigService
 
-        value = GlobalInjector.get(ConfigService).get(AUTOCOLLAPSE_CONFIG_KEY, None)
+        value = GlobalInjector.get(ConfigService).get("kindling.temporal.autocollapse", None)
     except Exception:  # noqa: BLE001 - config service unavailable in bare tests
         return DEFAULT_AUTOCOLLAPSE
     return parse_bool_config(value, default=DEFAULT_AUTOCOLLAPSE)
@@ -543,8 +534,7 @@ def _autocollapse_before_run(sender, *, pipe_ids=None, **kwargs) -> None:
     declared_requested = {
         pipeid
         for pipeid in requested
-        if _pipe_tags(pipe_registry, pipeid).get(TEMPORAL_LOWERING_TAG)
-        == TEMPORAL_LOWERING_DECLARED
+        if _pipe_tags(pipe_registry, pipeid).get("temporal.lowering") == "declared"
     }
     if not declared_requested:
         return
@@ -562,7 +552,7 @@ def _autocollapse_before_run(sender, *, pipe_ids=None, **kwargs) -> None:
         pipeid
         for pipeid in remaining_ordered
         if pipeid not in requested
-        and _pipe_tags(pipe_registry, pipeid).get(TEMPORAL_LOWERING_TAG) == TEMPORAL_LOWERING_CHAIN
+        and _pipe_tags(pipe_registry, pipeid).get("temporal.lowering") == "chain"
     ]
     pipe_ids[:] = survivors + chain_additions
 

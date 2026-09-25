@@ -131,13 +131,13 @@ def _rule_generations(report) -> dict:
 
 
 def _resolve_max_generations_ceiling() -> int:
-    from .chain import DEFAULT_MAX_GENERATIONS, MAX_GENERATIONS_CONFIG_KEY
+    from .chain import DEFAULT_MAX_GENERATIONS
 
     try:
         from kindling.injection import GlobalInjector
         from kindling.spark_config import ConfigService
 
-        value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
+        value = GlobalInjector.get(ConfigService).get("kindling.temporal.max_generations", None)
     except Exception:  # noqa: BLE001 - config service unavailable in bare tests
         return DEFAULT_MAX_GENERATIONS
     if value is None:
