@@ -25,11 +25,6 @@ from kindling.bootstrap import (
 
 APP_ENTRY_POINT_GROUP = "spark_kindling.data_apps"
 DATA_APP_CONFIG_KEY = "kindling.data_app"
-ALLOWED_APPS_CONFIG_KEY = "kindling.lakeflow.allowed_apps"
-#: Canonical Lakeflow pipeline-configuration key for explicit settings files.
-#: (``kindling.lakeflow.config_files``, the comma-separated alias #281
-#: deprecated, was removed in 0.12.47 -- see #298; it is now simply ignored.)
-CANONICAL_CONFIG_FILES_CONFIG_KEY = "spark.kindling.bootstrap.config_files"
 #: Comma-separated pipeline-configuration keys to bridge by point lookup.
 #: Restricted runtimes (serverless / shared-access clusters) allow
 #: ``spark.conf.get`` on pipeline configuration but block every enumeration
@@ -47,10 +42,6 @@ class LakeflowAppSelectionError(RuntimeError):
 
 class LakeflowAppNotFoundError(LakeflowAppSelectionError):
     """The configured app is not advertised by an installed distribution."""
-
-
-class LakeflowAppNotAuthorizedError(LakeflowAppSelectionError):
-    """The configured app is discovered but not allowlisted."""
 
 
 class LakeflowAppDeclarationError(LakeflowAppSelectionError):
@@ -99,9 +90,10 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
     configured_keys = _comma_separated_values(raw_keys)
     lookup_keys = (
         DATA_APP_CONFIG_KEY,
-        ALLOWED_APPS_CONFIG_KEY,
         CONFIG_KEYS_CONFIG_KEY,
-        CANONICAL_CONFIG_FILES_CONFIG_KEY,
+        # Canonical settings-files key, owned by kindling.bootstrap. (The
+        # ``kindling.lakeflow.config_files`` alias was removed in 0.12.47, #298.)
+        "spark.kindling.bootstrap.config_files",
         PIPES_CONFIG_KEY,
         # Restricted runtimes point-look-up only these defaults, so a key the
         # declaration path reads must be named here or it is simply absent —
@@ -126,21 +118,12 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
         if key.startswith(("kindling.", "datapipes.")):
             config[key] = value
 
-    # These are read before initialization, so make the exact selected values
-    # available to ConfigService even when a fake or runtime only exposes get().
+    # Read before initialization, so make the exact selected value available
+    # to ConfigService even when a fake or runtime only exposes get().
     config[DATA_APP_CONFIG_KEY] = app_name
-    allowed = spark_conf_get(spark, ALLOWED_APPS_CONFIG_KEY)
-    if allowed is not None:
-        config[ALLOWED_APPS_CONFIG_KEY] = allowed
 
     config["declaration_only"] = True
     return config
-
-
-def _parse_allowlist(raw: Optional[str]) -> set[str]:
-    if raw is None or not raw.strip():
-        return set()
-    return {item.strip() for item in raw.split(",") if item.strip()}
 
 
 def _entry_point_module_name(entry_point: Any, app_name: str) -> str:
@@ -290,7 +273,7 @@ def _raise_on_conflicts(
 def declare_from_pipeline_config(spark: Any = None) -> Any:
     """Resolve, register, and declare the configured Lakeflow data app.
 
-    The lifecycle is deliberately fixed: read and authorize metadata, bridge
+    The lifecycle is deliberately fixed: read the selected app, bridge
     Spark configuration, initialize Kindling, import/register the app, then
     declare the pipeline as the final operation.
     """
@@ -310,13 +293,6 @@ def declare_from_pipeline_config(spark: Any = None) -> Any:
         raise LakeflowAppNotFoundError(
             f"Unknown Lakeflow data app '{app_name}'. Discovered apps: {discovered_text}. "
             f"Check '{DATA_APP_CONFIG_KEY}' and install the app distribution."
-        )
-
-    allowed = _parse_allowlist(spark_conf_get(spark, ALLOWED_APPS_CONFIG_KEY))
-    if allowed and app_name not in allowed:
-        raise LakeflowAppNotAuthorizedError(
-            f"Lakeflow data app '{app_name}' was discovered but is not authorized by "
-            f"'{ALLOWED_APPS_CONFIG_KEY}'. Allowed apps: {', '.join(sorted(allowed))}."
         )
 
     import kindling

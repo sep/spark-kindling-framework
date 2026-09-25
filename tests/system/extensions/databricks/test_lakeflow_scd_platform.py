@@ -131,7 +131,6 @@ class TestLakeflowSdpPlatform:
         def _configuration(snapshot: str) -> dict:
             return {
                 "kindling.data_app": "lakeflow_scd",
-                "kindling.lakeflow.allowed_apps": "lakeflow_scd",
                 "lakeflow_scd.snapshot": snapshot,
             }
 

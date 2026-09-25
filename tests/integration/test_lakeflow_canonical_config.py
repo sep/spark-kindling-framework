@@ -39,16 +39,15 @@ def _load_pipeline_configuration(name: str = "telemetry_silver") -> dict:
 
 
 def _localize_config_files(configuration: dict) -> dict:
-    from kindling_ext_databricks import lakeflow_app_selector as selector
 
     workspace_prefix = "/Workspace/Shared/kindling/lakeflow-telemetry/dev/"
     localized = dict(configuration)
-    configured_files = json.loads(localized[selector.CANONICAL_CONFIG_FILES_CONFIG_KEY])
+    configured_files = json.loads(localized["spark.kindling.bootstrap.config_files"])
     localized_files = []
     for configured_file in configured_files:
         assert configured_file.startswith(workspace_prefix)
         localized_files.append(str(_example_root() / configured_file[len(workspace_prefix) :]))
-    localized[selector.CANONICAL_CONFIG_FILES_CONFIG_KEY] = json.dumps(localized_files)
+    localized["spark.kindling.bootstrap.config_files"] = json.dumps(localized_files)
     return localized
 
 

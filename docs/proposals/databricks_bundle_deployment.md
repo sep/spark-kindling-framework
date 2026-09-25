@@ -154,7 +154,6 @@ Conceptual fragment within the pipeline resource:
 ```yaml
 configuration:
   kindling.data_app: orders
-  kindling.lakeflow.allowed_apps: orders
   spark.kindling.bootstrap.config_files: >-
     ["${workspace.file_path}/config/settings.yaml",
      "${workspace.file_path}/config/settings.${bundle.target}.yaml"]

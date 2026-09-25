@@ -13,8 +13,7 @@ dlt_pipelines = [
     development   = true
     continuous    = false
     configuration = {
-      "kindling.data_app"              = "orders"
-      "kindling.lakeflow.allowed_apps" = "orders,customers"
+      "kindling.data_app" = "orders"
     }
   }
 ]
@@ -40,9 +39,7 @@ orders = "orders_kindling_app"
 The selector performs this sequence during Lakeflow source evaluation:
 
 1. Read `kindling.data_app` from Spark configuration.
-2. Discover the app entry points and authorize the selected app using the
-   comma-separated `kindling.lakeflow.allowed_apps` value. An absent or empty
-   allowlist authorizes every discovered app.
+2. Discover the app entry points and resolve the selected app.
 3. Bridge `kindling.*`, `datapipes.*`, and `spark.kindling.*` pipeline
    settings into Kindling's configuration service and initialize with
    `app_name=<selected>`, `engine="databricks_sdp"`, and

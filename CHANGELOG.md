@@ -2,6 +2,25 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [Unreleased]
+
+### Removed
+
+- **`kindling.lakeflow.allowed_apps` and `LakeflowAppNotAuthorizedError`.**
+  The allowlist was set in the same pipeline-configuration block as
+  `kindling.data_app`, so it could never authorize anything the selecting
+  party did not already control. The selector no longer reads the key; a
+  pipeline that still sets it is unaffected. Remove the key from bundle and
+  Terraform pipeline configuration when convenient.
+- Config-key name constants are no longer re-exported from extension package
+  roots (`kindling_ext_databricks`: `ALLOWED_APPS_CONFIG_KEY`,
+  `APP_ENTRY_POINT_GROUP`, `DATA_APP_CONFIG_KEY`; `kindling_ext_sdp`:
+  `DATASET_TYPE_CONFIG_KEY`; `kindling_ext_temporal`:
+  `AUTOCOLLAPSE_CONFIG_KEY`, `MAX_GENERATIONS_CONFIG_KEY`,
+  `QUARANTINE_ENTITY_CONFIG_KEY`). Core kindling never exports key names and
+  nothing in-tree imported these; the surviving constants remain importable
+  from their defining modules.
+
 ## [0.12.48] - 2026-09-23
 
 ### Added

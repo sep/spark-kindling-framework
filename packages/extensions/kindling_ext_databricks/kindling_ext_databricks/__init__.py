@@ -18,12 +18,8 @@ from kindling_ext_databricks.engine_extension import (
     engine_extension,
 )
 from kindling_ext_databricks.lakeflow_app_selector import (
-    ALLOWED_APPS_CONFIG_KEY,
-    APP_ENTRY_POINT_GROUP,
-    DATA_APP_CONFIG_KEY,
     LakeflowAppConflictError,
     LakeflowAppDeclarationError,
-    LakeflowAppNotAuthorizedError,
     LakeflowAppNotFoundError,
     LakeflowAppSelectionError,
     declare_from_pipeline_config,
@@ -34,13 +30,9 @@ __version__ = "0.2.0"
 __all__ = [
     "DatabricksSdpEngine",
     "DatabricksSdpEngineExtension",
-    "ALLOWED_APPS_CONFIG_KEY",
-    "APP_ENTRY_POINT_GROUP",
-    "DATA_APP_CONFIG_KEY",
     "EXPECTATION_DECORATORS",
     "LakeflowAppConflictError",
     "LakeflowAppDeclarationError",
-    "LakeflowAppNotAuthorizedError",
     "LakeflowAppNotFoundError",
     "LakeflowAppSelectionError",
     "SCD_SOURCE_SUFFIX",

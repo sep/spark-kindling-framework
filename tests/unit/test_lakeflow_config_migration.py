@@ -40,12 +40,12 @@ def _load_example_pipeline_config(pipeline_name: str = "telemetry_bronze") -> di
 def _localize_workspace_config_files(configuration: dict) -> dict:
     localized = dict(configuration)
     workspace_prefix = "/Workspace/Shared/kindling/lakeflow-telemetry/dev/"
-    configured_files = json.loads(localized[selector.CANONICAL_CONFIG_FILES_CONFIG_KEY])
+    configured_files = json.loads(localized["spark.kindling.bootstrap.config_files"])
     localized_files = []
     for configured_file in configured_files:
         assert configured_file.startswith(workspace_prefix)
         localized_files.append(str(_example_root() / configured_file[len(workspace_prefix) :]))
-    localized[selector.CANONICAL_CONFIG_FILES_CONFIG_KEY] = json.dumps(localized_files)
+    localized["spark.kindling.bootstrap.config_files"] = json.dumps(localized_files)
     return localized
 
 
@@ -66,7 +66,7 @@ def _load_shared_config(initial_config: dict):
 def test_example_bundle_uses_canonical_config_files_and_loads_as_written():
     bundle_config = _load_example_pipeline_config()
 
-    assert selector.CANONICAL_CONFIG_FILES_CONFIG_KEY in bundle_config
+    assert "spark.kindling.bootstrap.config_files" in bundle_config
     assert "kindling.lakeflow.config_files" not in bundle_config
 
     lakeflow_config = selector._pipeline_config_for_kindling(
