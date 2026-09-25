@@ -98,7 +98,6 @@ resources:
       target: cwmdp
       configuration:
         "kindling.data_app": telemetry
-        "kindling.lakeflow.allowed_apps": telemetry
         "kindling.lakeflow.pipes": silver.build_telemetry,silver.derive_events,silver.derive_episodes
         "spark.kindling.bootstrap.environment": dev
         "spark.kindling.bootstrap.workspace_id": adb-dev

@@ -40,8 +40,8 @@ from kindling.entity_provider import (
     is_declarable_streaming_source,
 )
 from kindling_ext_sdp.capabilities import (
-    ADAPTER_TIER_CONFIG_KEYS,
     CapabilitySet,
+    SdpFeature,
     supports_auto_cdc,
     supports_streaming_source_lowering,
 )
@@ -605,7 +605,14 @@ class DeclarationEngine(ABC):
         issues: List[DeclarationIssue] = []
 
         engine_block = self._pipe_engine_block(pipe.pipeid, self.capabilities.engine_name)
-        for key, feature in ADAPTER_TIER_CONFIG_KEYS.items():
+        # Adapter-tier keys a pipe's engine block may carry, each gated on the
+        # feature the target must support for the key to be declarable.
+        adapter_tier_keys = {
+            "expectations": SdpFeature.EXPECTATIONS,
+            "refresh_policy": SdpFeature.INCREMENTAL_MV_REFRESH,
+            "streaming_inputs": SdpFeature.STREAMING_SOURCE_LOWERING,
+        }
+        for key, feature in adapter_tier_keys.items():
             if key in engine_block and not self.capabilities.supports(feature):
                 issues.append(
                     DeclarationIssue(

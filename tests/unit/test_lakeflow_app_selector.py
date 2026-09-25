@@ -179,14 +179,6 @@ def test_two_app_names_select_their_declaration_graphs(monkeypatch):
             selector.LakeflowAppNotFoundError,
             "Discovered apps: orders",
         ),
-        (
-            {
-                "kindling.data_app": "orders",
-                "kindling.lakeflow.allowed_apps": "customers",
-            },
-            selector.LakeflowAppNotAuthorizedError,
-            "kindling.lakeflow.allowed_apps",
-        ),
     ],
 )
 def test_selection_errors_are_distinct_and_actionable(monkeypatch, values, error, message):
@@ -239,7 +231,6 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
     spark = FakeSpark(
         {
             "kindling.data_app": "orders",
-            "kindling.lakeflow.allowed_apps": "orders",
             "datapipes.silver.orders.engine": '{"dataset_type": "materialized_view"}',
             "spark.kindling.bootstrap.load_lake": "false",
             "spark.kindling.bootstrap.config_files": '["/Workspace/Shared/settings.yaml"]',
@@ -264,7 +255,6 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
     assert captured["engine"] == "databricks_sdp"
     assert captured["app_name"] == "orders"
     assert captured["config"]["kindling.data_app"] == "orders"
-    assert captured["config"]["kindling.lakeflow.allowed_apps"] == "orders"
     assert captured["config"]["use_lake_packages"] is False
     assert captured["config"]["config_files"] == ["/Workspace/Shared/settings.yaml"]
     assert captured["config"]["declaration_only"] is True
@@ -277,7 +267,6 @@ def test_pipeline_configuration_falls_back_to_spark_context_conf(monkeypatch):
     spark = FakeSpark3(
         {
             "kindling.data_app": "orders",
-            "kindling.lakeflow.allowed_apps": "orders",
             "datapipes.silver.orders.engine": '{"dataset_type": "materialized_view"}',
             "spark.sql.shuffle.partitions": "10",
         }
@@ -298,7 +287,6 @@ def test_pipeline_configuration_falls_back_to_spark_context_conf(monkeypatch):
 
     assert selector.declare_from_pipeline_config(spark) == "plan"
     assert captured["config"]["kindling.data_app"] == "orders"
-    assert captured["config"]["kindling.lakeflow.allowed_apps"] == "orders"
     assert "datapipes.silver.orders.engine" in captured["config"]
     assert "spark.sql.shuffle.partitions" not in captured["config"]
 
@@ -531,7 +519,7 @@ def test_canonical_config_files_key_is_point_looked_up_without_config_keys():
         SparkPointLookupOnly(
             {
                 "kindling.data_app": "orders",
-                selector.CANONICAL_CONFIG_FILES_CONFIG_KEY: '["/Workspace/settings.yaml"]',
+                "spark.kindling.bootstrap.config_files": '["/Workspace/settings.yaml"]',
             }
         ),
         "orders",
@@ -578,8 +566,6 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
         config_file.write(
             "kindling:\\n"
             "  data_app: yaml_app\\n"
-            "  lakeflow:\\n"
-            "    allowed_apps: yaml_app\\n"
             "  sdp:\\n"
             "    dataset_naming: leaf\\n"
             "dataentities-bytag:\\n"
@@ -671,9 +657,8 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
     spark = FakeSpark(
             {
                 "kindling.data_app": "orders",
-                "kindling.lakeflow.allowed_apps": "orders",
-                "kindling.platform.environment": "standalone",
-                selector.CANONICAL_CONFIG_FILES_CONFIG_KEY: json.dumps([settings_path]),
+                    "kindling.platform.environment": "standalone",
+                "spark.kindling.bootstrap.config_files": json.dumps([settings_path]),
                 "kindling.sdp.dataset_naming": "normalized",
                 "datapipes.bronze.ingest_telemetry.engine.sdp.dataset_type": "streaming_table",
         }
@@ -699,7 +684,6 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
                 "same_config_service": first_config_service is second_config_service,
                 "config_files": config_service.initial_config.get("config_files"),
                 "data_app": config_service.get("kindling.data_app"),
-                "allowlist": config_service.get("kindling.lakeflow.allowed_apps"),
                 "dataset_naming": config_service.get("kindling.sdp.dataset_naming"),
                 "engine_dataset_type": config_service.get(
                     "datapipes.bronze.ingest_telemetry.engine.sdp.dataset_type"
@@ -724,7 +708,6 @@ def test_config_files_reach_real_initialize_registry_overlays_and_reentry(tmp_pa
     assert result["same_config_service"] is True
     assert result["config_files"] == [str(tmp_path / "settings.yaml")]
     assert result["data_app"] == "orders"
-    assert result["allowlist"] == "orders"
     assert result["dataset_naming"] == "normalized"
     assert result["engine_dataset_type"] == "streaming_table"
     assert result["import_time_tags"] == {
@@ -743,30 +726,6 @@ def test_config_files_reach_real_initialize_registry_overlays_and_reentry(tmp_pa
     assert result["pipe_tags"] == {"source": "app", "from_datapipes": "yaml"}
     assert result["pipe_output_type"] == "memory"
     assert result["physical_name"] == "dev_bronze.cwmdp.device_telemetry"
-
-
-def test_structured_config_cannot_authorize_non_allowlisted_app(monkeypatch, tmp_path):
-    settings = tmp_path / "settings.yaml"
-    settings.write_text(
-        "kindling:\n" "  data_app: customers\n" "  lakeflow:\n" "    allowed_apps: orders\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        selector,
-        "_registered_data_app_entry_points",
-        lambda: {"orders": FakeEntryPoint("orders", "orders_app")},
-    )
-
-    with pytest.raises(selector.LakeflowAppNotAuthorizedError, match="allowed_apps"):
-        selector.declare_from_pipeline_config(
-            FakeSpark(
-                {
-                    "kindling.data_app": "orders",
-                    "kindling.lakeflow.allowed_apps": "customers",
-                    selector.CANONICAL_CONFIG_FILES_CONFIG_KEY: str(settings),
-                }
-            )
-        )
 
 
 def test_enumeration_falls_back_to_sql_set():

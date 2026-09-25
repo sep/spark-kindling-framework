@@ -169,7 +169,6 @@ class DatabricksSdpEngine(OssSdpEngine):
         """
         from kindling_ext_temporal.chain import (
             DEFAULT_MAX_GENERATIONS,
-            MAX_GENERATIONS_CONFIG_KEY,
             chain_episodes_pipe_id,
         )
 
@@ -181,7 +180,7 @@ class DatabricksSdpEngine(OssSdpEngine):
             from kindling.injection import GlobalInjector
             from kindling.spark_config import ConfigService
 
-            value = GlobalInjector.get(ConfigService).get(MAX_GENERATIONS_CONFIG_KEY, None)
+            value = GlobalInjector.get(ConfigService).get("kindling.temporal.max_generations", None)
         except Exception:  # noqa: BLE001 - config service unavailable in bare tests
             value = None
         max_generations = DEFAULT_MAX_GENERATIONS if value is None else int(value)
