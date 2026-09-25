@@ -27,7 +27,6 @@ from kindling_ext_sdp.capabilities import (
     supports_streaming_source_lowering,
 )
 from kindling_ext_sdp.declaration_engine import (
-    DATASET_TYPE_CONFIG_KEY,
     DATASET_TYPE_TAG,
     DeclarationEngine,
 )
@@ -58,7 +57,6 @@ __all__ = [
     "CapabilitySet",
     "ClassifiedInput",
     "DATABRICKS_SDP",
-    "DATASET_TYPE_CONFIG_KEY",
     "DATASET_TYPE_TAG",
     "DatasetDeclaration",
     "DatasetNameMapper",

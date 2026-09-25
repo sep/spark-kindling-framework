@@ -156,7 +156,6 @@ class TestTemporalLakeflowPlatform:
             libraries=[PipelineLibrary(notebook=NotebookLibrary(path=notebook_path))],
             configuration={
                 "kindling.data_app": "lakeflow_temporal",
-                "kindling.lakeflow.allowed_apps": "lakeflow_temporal",
                 "kindling.lakeflow.pipes": (
                     "temporal.chain.events.default,temporal.chain.episodes.default"
                 ),

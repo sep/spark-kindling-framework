@@ -740,10 +740,8 @@ def test_condition_validator_rejects_event_type_cycles():
 
 
 def test_conditions_ingestion_result_and_config_key():
-    from kindling_ext_temporal import (
-        QUARANTINE_ENTITY_CONFIG_KEY,
-        ConditionsIngestionResult,
-    )
+    from kindling_ext_temporal import ConditionsIngestionResult
+    from kindling_ext_temporal.conditions import QUARANTINE_ENTITY_CONFIG_KEY
 
     assert QUARANTINE_ENTITY_CONFIG_KEY == "kindling.temporal.conditions.quarantine_entity_id"
     assert ConditionsIngestionResult(ingested_count=3).is_clean is True

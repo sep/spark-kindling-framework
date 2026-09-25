@@ -64,8 +64,7 @@ in domain settings.
 ### Why `kindling.lakeflow.temporal_mode`
 
 The key names a Lakeflow lowering choice, not a temporal-domain behavior, so
-it belongs in the engine namespace alongside `kindling.lakeflow.allowed_apps`,
-`kindling.lakeflow.pipes`, and `kindling.sdp.dataset_naming`, with its
+it belongs in the engine namespace alongside `kindling.lakeflow.pipes` and `kindling.sdp.dataset_naming`, with its
 constant defined in `kindling_ext_databricks`. The alternative —
 `kindling.temporal.lakeflow.mode` — would put an engine-specific key inside
 the engine-agnostic temporal namespace, where every existing constant
