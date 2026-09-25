@@ -89,12 +89,3 @@ def supports_incremental_mv_refresh(capabilities: CapabilitySet) -> bool:
 def supports_streaming_source_lowering(capabilities: CapabilitySet) -> bool:
     """Check if the target supports provider-owned streaming-source lowering."""
     return capabilities.supports(SdpFeature.STREAMING_SOURCE_LOWERING)
-
-
-#: Adapter-tier keys that may appear in a pipe's engine config block, mapped
-#: to the feature the target must support for the key to be declarable.
-ADAPTER_TIER_CONFIG_KEYS = {
-    "expectations": SdpFeature.EXPECTATIONS,
-    "refresh_policy": SdpFeature.INCREMENTAL_MV_REFRESH,
-    "streaming_inputs": SdpFeature.STREAMING_SOURCE_LOWERING,
-}

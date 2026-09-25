@@ -16,7 +16,6 @@ See ``docs/proposals/declarative_pipelines_engine.md`` and
 """
 
 from kindling_ext_sdp.capabilities import (
-    ADAPTER_TIER_CONFIG_KEYS,
     DATABRICKS_SDP,
     OSS_SDP,
     CapabilitySet,
@@ -26,10 +25,7 @@ from kindling_ext_sdp.capabilities import (
     supports_incremental_mv_refresh,
     supports_streaming_source_lowering,
 )
-from kindling_ext_sdp.declaration_engine import (
-    DATASET_TYPE_TAG,
-    DeclarationEngine,
-)
+from kindling_ext_sdp.declaration_engine import DeclarationEngine
 from kindling_ext_sdp.declaration_plan import (
     ClassifiedInput,
     DatasetDeclaration,
@@ -53,11 +49,9 @@ from kindling_ext_sdp.oss_engine import OssSdpEngine, SdpRuntimeUnavailableError
 __version__ = "0.3.0"
 
 __all__ = [
-    "ADAPTER_TIER_CONFIG_KEYS",
     "CapabilitySet",
     "ClassifiedInput",
     "DATABRICKS_SDP",
-    "DATASET_TYPE_TAG",
     "DatasetDeclaration",
     "DatasetNameMapper",
     "DatasetType",

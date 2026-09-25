@@ -12,14 +12,20 @@ All notable changes to spark-kindling are documented here.
   party did not already control. The selector no longer reads the key; a
   pipeline that still sets it is unaffected. Remove the key from bundle and
   Terraform pipeline configuration when convenient.
-- Config-key name constants are no longer re-exported from extension package
-  roots (`kindling_ext_databricks`: `ALLOWED_APPS_CONFIG_KEY`,
-  `APP_ENTRY_POINT_GROUP`, `DATA_APP_CONFIG_KEY`; `kindling_ext_sdp`:
-  `DATASET_TYPE_CONFIG_KEY`; `kindling_ext_temporal`:
-  `AUTOCOLLAPSE_CONFIG_KEY`, `MAX_GENERATIONS_CONFIG_KEY`,
-  `QUARANTINE_ENTITY_CONFIG_KEY`). Core kindling never exports key names and
-  nothing in-tree imported these; the surviving constants remain importable
-  from their defining modules.
+- Config-key and tag-name constants are no longer part of the extension
+  package APIs. Core kindling spells these keys as literals or module-local
+  names and never exports them; the extensions now do the same. Removed from
+  package roots: `kindling_ext_databricks` (`ALLOWED_APPS_CONFIG_KEY`,
+  `APP_ENTRY_POINT_GROUP`, `DATA_APP_CONFIG_KEY`), `kindling_ext_sdp`
+  (`ADAPTER_TIER_CONFIG_KEYS`, `DATASET_TYPE_CONFIG_KEY`, `DATASET_TYPE_TAG`),
+  `kindling_ext_temporal` (`AUTOCOLLAPSE_CONFIG_KEY`,
+  `MAX_GENERATIONS_CONFIG_KEY`, `QUARANTINE_ENTITY_CONFIG_KEY`,
+  `TEMPORAL_LOWERING_TAG`, `TEMPORAL_LOWERING_DECLARED`,
+  `TEMPORAL_LOWERING_CHAIN`). Constants that were imported across modules
+  (`MAX_GENERATIONS_CONFIG_KEY`, `AUTOCOLLAPSE_CONFIG_KEY`,
+  `TEMPORAL_LOWERING_*`, `ADAPTER_TIER_CONFIG_KEYS`) are deleted outright and
+  spelled inline where used. Nothing in-tree imported any of these from a
+  package root.
 
 ## [0.12.48] - 2026-09-23
 
