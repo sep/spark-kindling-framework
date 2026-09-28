@@ -2,6 +2,34 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Added
+
+- **`kindling bundle build`: precompile a Kindling project into a Databricks
+  bundle** (proposal `docs/proposals/databricks_bundle_deployment.md`). Reads
+  the project's settings overlays (`config/settings.yaml`,
+  `settings.databricks.yaml`, `workspace_<id>.yaml`, `settings.<env>.yaml`,
+  then the app's `settings*.yaml`) and typed deployment inputs from options or
+  `KINDLING_BUNDLE_*` variables, and writes a disposable bundle directory
+  (default `dist/bundles/databricks`): `databricks.yml`, one
+  `resources/<key>.pipeline.yml` per pipeline (serverless Lakeflow pipeline
+  running the generic `declare_from_pipeline_config()` source), the source
+  file, staged wheels, and a provenance `manifest.json` with input hashes.
+  Per-app catalog/schema/continuous/pipe subsets and multiple pipelines per
+  app come from `--app-options-json`. The Databricks CLI still owns
+  validate/deploy/run; the command prints the next steps.
+- **Inline configuration transport for Lakeflow:
+  `kindling.lakeflow.settings_json`** (`spark-kindling-ext-databricks`
+  0.1.15). The selector accepts a JSON object holding an already-merged
+  settings tree and injects its top-level sections literally, so dotted
+  entity ids and tag keys are never split into paths, and a flat pipeline key
+  naming the same leaf still wins. `kindling bundle build` emits it by default
+  (`--config-transport inline`), so the deployed pipeline reads no workspace
+  files or volumes at declaration time; `--config-transport files` keeps the
+  `spark.kindling.bootstrap.config_files` path with staged, synced settings
+  files.
+
 ## [0.12.48] - 2026-09-23
 
 ### Added

@@ -110,6 +110,18 @@ The selector sets `declaration_only=true` and calls
 Configuration files are still loaded by Kindling's shared Dynaconf path; the
 Lakeflow selector does not parse or validate YAML itself.
 
+### Generating the bundle
+
+`kindling bundle build` produces a bundle like the one above from a project's
+`config/` and `data-apps/` directories, including one pipeline resource per
+app (or per configured split). Its default `inline` transport merges the
+overlays at build time and writes the result into the pipeline configuration
+as `kindling.lakeflow.settings_json`, so nothing is read from workspace files
+at declaration time; `--config-transport files` reproduces the
+`spark.kindling.bootstrap.config_files` layout shown here with staged files
+referenced through `${workspace.file_path}`. See the
+[CLI README](../../packages/kindling_cli/README.md#databricks-bundles).
+
 ## CI/CD promotion
 
 ```yaml

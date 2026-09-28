@@ -1,7 +1,60 @@
 # Databricks Bundle Build and Deployment
 
-**Status:** Proposed; commands below are not implemented.
+**Status:** Partially implemented (2026-09-28): `kindling bundle build` and the
+inline configuration transport exist; see *Implementation status* below.
 **Created:** 2026-09-09
+
+## Implementation status
+
+Implemented in `packages/kindling_cli/kindling_cli/bundle.py` (thin Click
+handler `kindling bundle build` in `cli.py`) and, on the runtime side, the
+`kindling.lakeflow.settings_json` key in the Databricks extension's Lakeflow
+selector:
+
+- Project/app inventory over `config/` plus `data-apps/` or `apps/`; every
+  managed app must have an app directory; kebab names resolve to snake
+  directories; `settings.local.*` is never deployed.
+- Design-time configuration resolver mirroring the runtime overlay order
+  (base, platform, `workspace_<id>`, environment, app base/platform/env),
+  returning ordered sources with SHA-256 hashes for the manifest.
+- Typed deployment-input resolver: options, then `KINDLING_BUNDLE_*`, then
+  defaults; strict booleans; JSON shape validation; no runtime settings.
+- Bundle renderer: `databricks.yml`, `resources/<key>.pipeline.yml`
+  (serverless, `catalog`/`target`, `continuous`, `libraries`,
+  `environment.dependencies`, optional `permissions`), the generic source,
+  staged wheels, and `manifest.json`. Output is deterministic and the output
+  directory is only replaced when it is empty, previously generated, or
+  `--force` is passed.
+- Convenience wrappers, adapter-wheel generation, dependency closure
+  resolution, and app-set deletion protection against remote state remain
+  follow-up scope. `--wheel`/`--dependency` pass already-built artifacts
+  through; nothing is rebuilt or resolved.
+
+### Inline configuration transport (decision)
+
+The default transport departs from the staged-files design below. Instead of
+syncing settings files and pointing `spark.kindling.bootstrap.config_files`
+at `${workspace.file_path}` paths, the generator merges the effective settings
+tree at build time and writes it into the pipeline resource as the
+`kindling.lakeflow.settings_json` configuration value. Reasons:
+
+- The pipeline resource becomes the complete, reviewable description of what
+  the pipeline runs with; promotion diffs show configuration changes directly.
+- Point lookups of pipeline configuration are verified on serverless, while
+  `/Workspace/...` reads from a serverless pipeline are not (see
+  [Lakeflow app selection](../guide/lakeflow_app_selection.md)); the inline
+  transport removes the volume/workspace-file dependency entirely.
+- Structured sections keep their shape: the selector injects each top-level
+  section literally, so dotted entity ids and tag keys are never flattened
+  into Spark keys. Flat pipeline keys still override a leaf, as before.
+
+Trade-offs, and why `--config-transport files` remains available: Dynaconf
+merge directives (`@merge`, `@insert`, ...) are applied while layering files
+and cannot be reproduced by the build-time merge, so the generator warns and
+passes them through literally; Databricks documents no size limit for
+configuration values, so the manifest records each pipeline's inline size and
+the generator warns past a heuristic threshold. Secret references stay
+literal `@secret` strings in both transports and resolve at runtime.
 
 ## Recommendation
 
@@ -185,12 +238,11 @@ stable solution/target paths for shared deployments. Retain stable bundle
 resource keys and deployment state across releases. Secret values stay out of
 synced files; preserve secret references and the appropriate runtime identity.
 
-## Proposed CLI experience
+## CLI experience
 
-Add a `kindling bundle` group for assembly, initially supporting Databricks:
+A `kindling bundle` group assembles bundles, initially for Databricks:
 
 ```bash
-# Proposed commands, not available today:
 kindling bundle build --platform databricks --target dev --env dev
 # Remaining deployment inputs supplied through KINDLING_BUNDLE_* variables.
 
@@ -250,7 +302,7 @@ supported source: a workflow maps repository/environment variables into the
 process environment. Other CI systems and local shells use the same contract.
 Kindling does not fetch GitHub variables itself or depend on GitHub APIs.
 
-Proposed input interface (not implemented):
+Input interface (implemented; `--workspace-id`, `--config-transport`, `--dependency`, and `--wheel` were added during implementation):
 
 | CLI option | Environment variable | Meaning |
 | --- | --- | --- |

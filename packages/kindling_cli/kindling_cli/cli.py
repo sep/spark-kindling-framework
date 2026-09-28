@@ -7118,6 +7118,191 @@ def app_inspect(
     click.echo(_format_table(table_headers, table_rows))
 
 
+@cli.group("bundle")
+def bundle_group() -> None:
+    """Assemble platform deployment bundles from a Kindling project."""
+
+
+@bundle_group.command("build")
+@click.option(
+    "--platform",
+    type=click.Choice(["databricks"]),
+    default="databricks",
+    show_default=True,
+    help="Bundle platform. Only Databricks (Lakeflow pipelines) is supported.",
+)
+@click.option(
+    "--project-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Kindling project root holding config/ and data-apps/ (default: current directory).",
+)
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Generated bundle directory (default: <project-root>/dist/bundles/databricks).",
+)
+@click.option(
+    "--config-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Shared settings directory (default: <project-root>/config).",
+)
+@click.option(
+    "--apps-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="App directories root (default: data-apps/ or apps/ under the project root).",
+)
+@click.option("--name", default=None, help="Stable logical bundle name [KINDLING_BUNDLE_NAME].")
+@click.option(
+    "--target", default=None, help="Deployment target, e.g. dev [KINDLING_BUNDLE_TARGET]."
+)
+@click.option(
+    "--app",
+    "apps",
+    multiple=True,
+    help="Managed app (repeatable; the complete set) [KINDLING_BUNDLE_APPS as a JSON array].",
+)
+@click.option(
+    "--workspace-host",
+    default=None,
+    help="Destination workspace URL [KINDLING_BUNDLE_WORKSPACE_HOST].",
+)
+@click.option(
+    "--workspace-root",
+    default=None,
+    help="Stable remote root for files, artifacts and state [KINDLING_BUNDLE_WORKSPACE_ROOT].",
+)
+@click.option(
+    "--workspace-id",
+    default=None,
+    help="Selects config/workspace_<id>.yaml and sets the bootstrap workspace id "
+    "[KINDLING_BUNDLE_WORKSPACE_ID].",
+)
+@click.option("--catalog", default=None, help="Default pipeline catalog [KINDLING_BUNDLE_CATALOG].")
+@click.option("--schema", default=None, help="Default pipeline schema [KINDLING_BUNDLE_SCHEMA].")
+@click.option(
+    "--env",
+    default=None,
+    help="Kindling runtime environment overlay (default: the target) [KINDLING_BUNDLE_RUNTIME_ENV].",
+)
+@click.option(
+    "--continuous/--no-continuous",
+    default=None,
+    help="Continuous pipeline updates (default: off) [KINDLING_BUNDLE_CONTINUOUS].",
+)
+@click.option(
+    "--run-as-service-principal",
+    default=None,
+    help="Pipeline execution identity [KINDLING_BUNDLE_RUN_AS_SERVICE_PRINCIPAL].",
+)
+@click.option(
+    "--config-transport",
+    type=click.Choice(["inline", "files"]),
+    default=None,
+    help="inline (default): merged settings inside the pipeline resource; "
+    "files: staged settings files referenced at runtime [KINDLING_BUNDLE_CONFIG_TRANSPORT].",
+)
+@click.option(
+    "--dependency",
+    "dependencies",
+    multiple=True,
+    help="Pipeline environment dependency, e.g. spark-kindling-ext-databricks==0.1.15 "
+    "(repeatable) [KINDLING_BUNDLE_DEPENDENCIES as a JSON array].",
+)
+@click.option(
+    "--wheel",
+    "wheels",
+    multiple=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Local wheel staged under wheels/ and added as a dependency (repeatable) "
+    "[KINDLING_BUNDLE_WHEELS as a JSON array].",
+)
+@click.option(
+    "--app-options-json",
+    default=None,
+    help="Per-app overrides: {app: {catalog, schema, continuous, pipes, "
+    "pipelines: {suffix: {...}}}} [KINDLING_BUNDLE_APP_OPTIONS].",
+)
+@click.option(
+    "--permissions-json",
+    default=None,
+    help="Pipeline permissions: [{level, user_name|service_principal_name|group_name}] "
+    "[KINDLING_BUNDLE_PERMISSIONS].",
+)
+@click.option("--force", is_flag=True, help="Replace an output directory this tool did not write.")
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def bundle_build(
+    platform: str,
+    project_root: Optional[Path],
+    output: Optional[Path],
+    config_dir: Optional[Path],
+    apps_dir: Optional[Path],
+    force: bool,
+    json_output: bool,
+    **inputs: Any,
+) -> None:
+    """Precompile a Kindling project into a Databricks bundle.
+
+    Reads the project's settings overlays and the deployment inputs (options
+    or KINDLING_BUNDLE_* variables; options win) and writes a disposable
+    bundle: databricks.yml, one resources/<key>.pipeline.yml per pipeline,
+    the generic Lakeflow source, and manifest.json. By default each
+    pipeline carries its effective configuration inline, so the deployed
+    pipeline reads no workspace files or volumes. Deploy with the Databricks
+    CLI from the generated directory.
+
+    \b
+    Examples:
+      kindling bundle build --name sales --target dev --app orders \\
+        --workspace-host https://adb-123.azuredatabricks.net \\
+        --catalog dev_sales --schema orders
+      KINDLING_BUNDLE_APPS='["orders"]' kindling bundle build --name sales --target dev ...
+    """
+    del platform  # only databricks today; validated by click.Choice
+    from kindling_cli.bundle import BundleError, build_bundle, resolve_bundle_inputs
+
+    root = (project_root or Path.cwd()).expanduser()
+    try:
+        resolved_inputs = resolve_bundle_inputs(inputs, os.environ)
+        result = build_bundle(
+            resolved_inputs,
+            project_root=root,
+            output_dir=output.expanduser() if output else None,
+            config_dir=config_dir,
+            apps_dir=apps_dir,
+            force=force,
+        )
+    except BundleError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    pipeline_keys = [pipeline["key"] for pipeline in result.manifest["pipelines"]]
+    summary = {
+        "output_dir": str(result.output_dir),
+        "target": resolved_inputs.target,
+        "config_transport": resolved_inputs.config_transport,
+        "pipelines": pipeline_keys,
+        "files": result.files,
+        "warnings": result.warnings,
+    }
+    if json_output:
+        click.echo(json.dumps(summary, indent=2))
+        return
+
+    click.echo(f"Bundle written to {result.output_dir} ({len(result.files)} files)")
+    click.echo(f"  transport: {resolved_inputs.config_transport}")
+    click.echo(f"  pipelines: {', '.join(pipeline_keys)}")
+    for warning in result.warnings:
+        click.echo(f"  warning: {warning}", err=True)
+    click.echo("Next:")
+    click.echo(f"  cd {result.output_dir}")
+    click.echo(f"  databricks bundle validate -t {resolved_inputs.target}")
+    click.echo(f"  databricks bundle deploy -t {resolved_inputs.target}")
+    click.echo(f"  databricks bundle run -t {resolved_inputs.target} {pipeline_keys[0]}")
+
+
 # [implementer] runner command group for durable runner lifecycle — ki-sag
 
 

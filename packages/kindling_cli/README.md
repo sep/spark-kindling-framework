@@ -38,8 +38,43 @@ pip install spark-kindling-sdk
 - `kindling runner status` — check whether the runner is installed and healthy
 - `kindling runner repair` — reinstall the runner (delete and recreate)
 - `kindling runner delete` — remove the runner from a platform
+- `kindling bundle build` — precompile a project into a Databricks bundle (`databricks.yml`, pipeline resources, generic Lakeflow source, manifest) for `databricks bundle validate/deploy/run`
 
 Run any command with `--help` for full options.
+
+## Databricks bundles
+
+`kindling bundle build` assembles a disposable Databricks bundle from a
+project's `config/` overlays and `data-apps/` (or `apps/`) directories. It
+starts no Spark session and imports no app code. Deployment inputs come from
+options or `KINDLING_BUNDLE_*` environment variables (options win; runtime
+settings files are never consulted):
+
+```bash
+kindling bundle build \
+  --name sales --target dev --app orders \
+  --workspace-host https://adb-123.azuredatabricks.net \
+  --catalog dev_sales --schema orders \
+  --dependency 'spark-kindling-ext-databricks==0.1.15' \
+  --wheel dist/orders_kindling_app-1.4.0-py3-none-any.whl
+
+cd dist/bundles/databricks
+databricks bundle validate -t dev
+databricks bundle deploy -t dev
+databricks bundle run -t dev orders
+```
+
+By default each pipeline resource carries its effective configuration inline
+(`kindling.lakeflow.settings_json`): the base, platform, workspace,
+environment and app settings files are merged at build time in the runtime's
+order, so the deployed pipeline reads no workspace files or volumes.
+`--config-transport files` instead stages the settings files in the bundle
+and references them through `spark.kindling.bootstrap.config_files`.
+`--app-options-json` sets per-app catalog/schema/continuous/pipes or splits
+an app into several pipelines (`{"orders": {"pipelines": {"bronze": {...}}}}`).
+`manifest.json` records the generator version, inputs, and the SHA-256 of
+every settings file and wheel; no timestamps, so identical inputs give
+identical output. See `docs/proposals/databricks_bundle_deployment.md`.
 
 ## Scaffolding
 

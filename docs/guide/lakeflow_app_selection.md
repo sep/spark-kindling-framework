@@ -102,6 +102,32 @@ configuration values:
   re-uploaded wheel with the same filename is silently ignored. Bump the
   wheel version on every change.
 
+## Inline settings (`kindling.lakeflow.settings_json`)
+
+Instead of pointing the pipeline at settings files, the configuration can
+carry the effective settings tree itself:
+
+```yaml
+configuration:
+  "kindling.data_app": telemetry
+  "kindling.lakeflow.settings_json": '{"kindling":{"storage":{"table_schema":"cwmdp"}},"dataentities":{"silver.events":{"tags":{"provider.table_name":"dev_silver.cwmdp.events"}}}}'
+```
+
+The value is a JSON object with the same shape as a settings YAML file. The
+selector injects each top-level section (`kindling`, `dataentities`,
+`datapipes`, `dataentities-bytag`, ...) literally into Kindling's
+configuration before initialization, so dotted entity ids and tag keys keep
+their meaning. A flat pipeline key such as `kindling.telemetry.logging.level`
+still overrides the same leaf. An inline `kindling.platform.environment` is
+honoured by early platform selection exactly like one read from a settings
+file. The key is point-looked-up on restricted runtimes without being named
+in `kindling.lakeflow.config_keys`.
+
+`kindling bundle build` writes this key by default after merging the project's
+overlays in the runtime's order (see the
+[CLI README](../../packages/kindling_cli/README.md#databricks-bundles)); write
+it by hand only for small pipelines.
+
 ## Dataset naming
 
 Datasets are emitted with single-part names in the pipeline's target
