@@ -76,6 +76,14 @@ an app into several pipelines (`{"orders": {"pipelines": {"bronze": {...}}}}`).
 every settings file and wheel; no timestamps, so identical inputs give
 identical output. See `docs/proposals/databricks_bundle_deployment.md`.
 
+The default `--workspace-root` is `/Workspace/Shared/kindling/<name>/<target>`:
+a stable path that survives redeploys by different principals, which is
+what shared dev/prod targets need. `databricks bundle validate` warns that
+`/Workspace/Shared` is writable by all workspace users; for a personal
+development target pass `--workspace-root /Workspace/Users/<you>/...`, and
+for shared targets either accept the warning or grant the intended group
+through `--permissions-json`.
+
 ## Scaffolding
 
 The scaffolding commands now target true multi-package repos:
