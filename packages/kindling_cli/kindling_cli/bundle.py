@@ -441,13 +441,6 @@ def resolve_bundle_inputs(cli: Mapping[str, Any], environ: Mapping[str, str]) ->
             f"--config-transport must be one of {', '.join(CONFIG_TRANSPORTS)} (got {transport!r})."
         )
 
-    dependencies = _string_list_input(
-        cli.get("dependencies") or (), environ, "DEPENDENCIES", "--dependency"
-    )
-    dependencies_defaulted = dependencies is None
-    if dependencies is None:
-        dependencies = list(DEFAULT_DEPENDENCIES)
-
     wheel_values = _string_list_input(
         [str(path) for path in (cli.get("wheels") or ())], environ, "WHEELS", "--wheel"
     )
@@ -457,6 +450,15 @@ def resolve_bundle_inputs(cli: Mapping[str, Any], environ: Mapping[str, str]) ->
         if wheel_path.suffix != ".whl" or not wheel_path.is_file():
             raise BundleInputError(f"--wheel {raw_wheel!r} is not an existing .whl file.")
         wheels.append(wheel_path.resolve())
+
+    dependencies = _string_list_input(
+        cli.get("dependencies") or (), environ, "DEPENDENCIES", "--dependency"
+    )
+    dependencies_defaulted = dependencies is None
+    if dependencies is None:
+        # Staged wheels are the dependency set unless told otherwise; the
+        # unpinned PyPI default only applies when nothing else is supplied.
+        dependencies = [] if wheels else list(DEFAULT_DEPENDENCIES)
 
     return BundleInputs(
         name=name,
@@ -798,6 +800,18 @@ def _bundle_root(inputs: BundleInputs, sync_include: Sequence[str]) -> Dict[str,
 
 PipelinePlan = Tuple[PipelineSpec, List[ConfigSource], Dict[str, Any]]
 
+_DATABRICKS_EXTENSION_DIST = "spark-kindling-ext-databricks"
+
+
+def _provides_databricks_extension(inputs: BundleInputs) -> bool:
+    normalized_dist = _DATABRICKS_EXTENSION_DIST.replace("-", "_")
+    for dependency in inputs.dependencies:
+        if re.match(
+            rf"^{normalized_dist}(\s*[=<>!~\[]|$)", dependency.strip().lower().replace("-", "_")
+        ):
+            return True
+    return any(wheel.name.lower().startswith(f"{normalized_dist}-") for wheel in inputs.wheels)
+
 
 def _plan_pipelines(
     inputs: BundleInputs,
@@ -919,11 +933,16 @@ def build_bundle(
         resolved_output = project_root / resolved_output
 
     warnings: List[str] = []
-    if inputs.dependencies_defaulted:
+    if inputs.dependencies_defaulted and not inputs.wheels:
         warnings.append(
             "No --dependency / KINDLING_BUNDLE_DEPENDENCIES given; the pipeline environment "
             f"depends on {', '.join(DEFAULT_DEPENDENCIES)} unpinned. Pin exact versions for "
             "reproducible promotion."
+        )
+    if not _provides_databricks_extension(inputs):
+        warnings.append(
+            "Neither --dependency nor --wheel supplies spark-kindling-ext-databricks; the "
+            "generated pipeline source imports kindling_ext_databricks and will fail to start."
         )
 
     # Resolve everything before writing anything.

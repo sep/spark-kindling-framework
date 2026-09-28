@@ -372,6 +372,39 @@ def test_unpinned_default_dependency_warns(tmp_path):
     assert result.manifest["warnings"] == result.warnings
 
 
+def test_wheels_alone_form_the_dependency_set(tmp_path):
+    extension = tmp_path / "spark_kindling_ext_databricks-0.1.15-py3-none-any.whl"
+    extension.write_bytes(b"x")
+    app = tmp_path / "orders_app-1.0.0-py3-none-any.whl"
+    app.write_bytes(b"y")
+
+    inputs = bundle.resolve_bundle_inputs(
+        {"wheels": (extension, app)}, {**_REQUIRED_ENV, "KINDLING_BUNDLE_APPS": '["telemetry"]'}
+    )
+    assert inputs.dependencies == ()
+    assert inputs.dependencies_defaulted is True
+
+    result = _build_example(
+        tmp_path, dependencies=(), dependencies_defaulted=True, wheels=(extension, app)
+    )
+    assert result.warnings == []
+    assert _resource(result, "telemetry_bronze")["environment"]["dependencies"] == [
+        "../wheels/spark_kindling_ext_databricks-0.1.15-py3-none-any.whl",
+        "../wheels/orders_app-1.0.0-py3-none-any.whl",
+    ]
+
+
+def test_missing_databricks_extension_warns(tmp_path):
+    app = tmp_path / "orders_app-1.0.0-py3-none-any.whl"
+    app.write_bytes(b"y")
+
+    result = _build_example(tmp_path, dependencies=(), dependencies_defaulted=True, wheels=(app,))
+
+    assert any("spark-kindling-ext-databricks" in warning for warning in result.warnings)
+    pinned = _build_example(tmp_path / "b", dependencies=("Spark-Kindling-Ext-Databricks>=0.1.15",))
+    assert pinned.warnings == []
+
+
 # --------------------------------------------------------------------------- #
 # Synthetic projects: layout resolution and safety
 # --------------------------------------------------------------------------- #
