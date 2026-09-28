@@ -55,7 +55,9 @@ kindling bundle build \
   --name sales --target dev --app orders \
   --workspace-host https://adb-123.azuredatabricks.net \
   --catalog dev_sales --schema orders \
-  --dependency 'spark-kindling-ext-databricks==0.1.15' \
+  --wheel dist/spark_kindling-0.12.49-py3-none-any.whl \
+  --wheel dist/spark_kindling_ext_sdp-0.3.4-py3-none-any.whl \
+  --wheel dist/spark_kindling_ext_databricks-0.2.0-py3-none-any.whl \
   --wheel dist/orders_kindling_app-1.4.0-py3-none-any.whl
 
 cd dist/bundles/databricks
@@ -64,17 +66,25 @@ databricks bundle deploy -t dev
 databricks bundle run -t dev orders
 ```
 
-By default each pipeline resource carries its effective configuration inline
-(`kindling.lakeflow.settings_json`): the base, platform, workspace,
-environment and app settings files are merged at build time in the runtime's
-order, so the deployed pipeline reads no workspace files or volumes.
-`--config-transport files` instead stages the settings files in the bundle
-and references them through `spark.kindling.bootstrap.config_files`.
+Settings are found by convention, never listed: the shared `config/`
+overlays (`settings.yaml`, `settings.databricks.yaml`, `workspace_<id>.yaml`,
+`settings.<env>.yaml`) and then the app's own `settings*.yaml` are merged at
+build time in the runtime's order, and each pipeline resource carries the
+result inline as `kindling.lakeflow.settings_json`. The deployed pipeline
+reads no settings files from the workspace or a volume, and the resource file
+is the complete, reviewable description of what the pipeline runs with.
 `--app-options-json` sets per-app catalog/schema/continuous/pipes or splits
 an app into several pipelines (`{"orders": {"pipelines": {"bronze": {...}}}}`).
 `manifest.json` records the generator version, inputs, and the SHA-256 of
 every settings file and wheel; no timestamps, so identical inputs give
 identical output. See `docs/proposals/databricks_bundle_deployment.md`.
+
+Wheels passed with `--wheel` are uploaded by `databricks bundle deploy` under
+the bundle's own workspace root and become the pipeline environment's
+dependencies in the order given. Serverless installs them one at a time and
+Kindling packages are not on PyPI, so list dependencies first: framework
+core, then `spark-kindling-ext-sdp`, then `spark-kindling-ext-databricks`,
+then the app wheel.
 
 The default `--workspace-root` is `/Workspace/Shared/kindling/<name>/<target>`:
 a stable path that survives redeploys by different principals, which is

@@ -7199,13 +7199,6 @@ def bundle_group() -> None:
     help="Pipeline execution identity [KINDLING_BUNDLE_RUN_AS_SERVICE_PRINCIPAL].",
 )
 @click.option(
-    "--config-transport",
-    type=click.Choice(["inline", "files"]),
-    default=None,
-    help="inline (default): merged settings inside the pipeline resource; "
-    "files: staged settings files referenced at runtime [KINDLING_BUNDLE_CONFIG_TRANSPORT].",
-)
-@click.option(
     "--dependency",
     "dependencies",
     multiple=True,
@@ -7249,10 +7242,12 @@ def bundle_build(
     Reads the project's settings overlays and the deployment inputs (options
     or KINDLING_BUNDLE_* variables; options win) and writes a disposable
     bundle: databricks.yml, one resources/<key>.pipeline.yml per pipeline,
-    the generic Lakeflow source, and manifest.json. By default each
-    pipeline carries its effective configuration inline, so the deployed
-    pipeline reads no workspace files or volumes. Deploy with the Databricks
-    CLI from the generated directory.
+    the generic Lakeflow source, and manifest.json. Settings are found by
+    convention (config/ overlays, then the app's settings*.yaml), merged in
+    the runtime's order, and carried inline in each pipeline resource
+    (kindling.lakeflow.settings_json), so the deployed pipeline reads no
+    settings files. Deploy with the Databricks CLI from the generated
+    directory.
 
     \b
     Examples:
@@ -7270,7 +7265,10 @@ def bundle_build(
         result = build_bundle(
             resolved_inputs,
             project_root=root,
-            output_dir=output.expanduser() if output else None,
+            # A relative --output is relative to the working directory, like
+            # any CLI path; build_bundle() itself anchors relative paths to
+            # the project root for library callers.
+            output_dir=output.expanduser().resolve() if output else None,
             config_dir=config_dir,
             apps_dir=apps_dir,
             force=force,
@@ -7282,7 +7280,6 @@ def bundle_build(
     summary = {
         "output_dir": str(result.output_dir),
         "target": resolved_inputs.target,
-        "config_transport": resolved_inputs.config_transport,
         "pipelines": pipeline_keys,
         "files": result.files,
         "warnings": result.warnings,
@@ -7292,7 +7289,6 @@ def bundle_build(
         return
 
     click.echo(f"Bundle written to {result.output_dir} ({len(result.files)} files)")
-    click.echo(f"  transport: {resolved_inputs.config_transport}")
     click.echo(f"  pipelines: {', '.join(pipeline_keys)}")
     for warning in result.warnings:
         click.echo(f"  warning: {warning}", err=True)

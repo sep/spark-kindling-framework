@@ -19,16 +19,29 @@ All notable changes to spark-kindling are documented here.
   Per-app catalog/schema/continuous/pipe subsets and multiple pipelines per
   app come from `--app-options-json`. The Databricks CLI still owns
   validate/deploy/run; the command prints the next steps.
-- **Inline configuration transport for Lakeflow:
-  `kindling.lakeflow.settings_json`** (`spark-kindling-ext-databricks`
-  0.1.15). The selector accepts a JSON object holding an already-merged
-  settings tree and injects its top-level sections literally, so dotted
-  entity ids and tag keys are never split into paths, and a flat pipeline key
-  naming the same leaf still wins. `kindling bundle build` emits it by default
-  (`--config-transport inline`), so the deployed pipeline reads no workspace
-  files or volumes at declaration time; `--config-transport files` keeps the
-  `spark.kindling.bootstrap.config_files` path with staged, synced settings
-  files.
+- **Lakeflow settings travel inline: `kindling.lakeflow.settings_json`**
+  (`spark-kindling-ext-databricks` 0.2.0). The selector accepts a JSON object
+  holding an already-merged settings tree and injects its top-level sections
+  literally, so dotted entity ids and tag keys are never split into paths and
+  a flat pipeline key naming the same leaf still wins. `kindling bundle build`
+  finds the project's settings by convention and writes this value, so the
+  deployed pipeline reads no settings files from the workspace or a volume.
+- End-to-end coverage:
+  `tests/system/extensions/databricks/test_bundle_build_platform.py` builds
+  this checkout's wheels, generates a bundle, deploys and runs it through the
+  Databricks CLI, verifies the outputs via SQL, and destroys it.
+
+### Removed
+
+- **Settings-file lists are no longer a Lakeflow concept.** The selector
+  stops reading `spark.kindling.bootstrap.config_files` (and the long-removed
+  `kindling.lakeflow.config_files` alias): a pipeline still setting either
+  gets a warning and the value is dropped, never read from the workspace.
+  Settings are found by convention (`config/` overlays, then the app's
+  `settings*.yaml`) and carried inline. `examples/lakeflow-telemetry` is now a
+  project plus generated `bundle/` output pinned by a drift test; the
+  hand-written `databricks.yml` with workspace file paths is gone. The
+  runtime's own artifacts-storage discovery is unchanged.
 
 ### Fixed
 

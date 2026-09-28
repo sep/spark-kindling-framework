@@ -30,6 +30,20 @@ selector:
   follow-up scope. `--wheel`/`--dependency` pass already-built artifacts
   through; nothing is rebuilt or resolved.
 
+Verified end to end on 2026-09-28 against a real serverless pipeline with
+Databricks CLI 1.18.0 (`tests/system/extensions/databricks/test_bundle_build_platform.py`
+codifies the run): the generated YAML validates and deploys; `bundle deploy`
+uploads local `--wheel` files under the bundle's `artifacts/.internal/` and
+rewrites `environment.dependencies` to those paths, so no volume upload step
+is needed; the pipeline environment installs them in the order given; the
+inline `kindling.lakeflow.settings_json` value is read by point lookup on
+serverless and its structured `datapipes.<pipe>.engine.*` block applied table
+properties and expectations. The run also exposed and fixed a core bug in the
+declaration-only platform fallback (see CHANGELOG). Still open: whether very
+large inline values hit a platform limit (the manifest records each
+pipeline's size), and promotion of the same artifacts across several targets
+in CI.
+
 ### Inline configuration transport (decision)
 
 The default transport departs from the staged-files design below. Instead of
@@ -48,13 +62,18 @@ tree at build time and writes it into the pipeline resource as the
   section literally, so dotted entity ids and tag keys are never flattened
   into Spark keys. Flat pipeline keys still override a leaf, as before.
 
-Trade-offs, and why `--config-transport files` remains available: Dynaconf
-merge directives (`@merge`, `@insert`, ...) are applied while layering files
-and cannot be reproduced by the build-time merge, so the generator warns and
-passes them through literally; Databricks documents no size limit for
-configuration values, so the manifest records each pipeline's inline size and
-the generator warns past a heuristic threshold. Secret references stay
-literal `@secret` strings in both transports and resolve at runtime.
+Settings-file lists are gone from the Lakeflow surface altogether (decision
+2026-09-28): the selector no longer reads `spark.kindling.bootstrap.config_files`
+(it warns and drops the value), the generator has no files transport, and the
+example bundle is generated output pinned by a drift test. Settings are found
+by convention and inlined; the file list the runtime builds for itself from
+artifacts storage remains an internal detail of bootstrap. Known trade-offs:
+Dynaconf merge directives (`@merge`, `@insert`, ...) are applied while
+layering files and cannot be reproduced by the build-time merge, so the
+generator warns and passes them through literally; Databricks documents no
+size limit for configuration values, so the manifest records each pipeline's
+inline size and the generator warns past a heuristic threshold. Secret
+references stay literal `@secret` strings and resolve at runtime.
 
 ## Recommendation
 
@@ -86,11 +105,12 @@ See [bundle configuration](https://docs.databricks.com/aws/en/dev-tools/bundles/
   module with declaration-only `register_all()`. A generic source calls
   `declare_from_pipeline_config()`; one pipeline selects one app.
 - [Structured configuration](obsolete/lakeflow_structured_config.md) is the
-  design history behind `spark.kindling.bootstrap.config_files`, the canonical
-  key for explicit settings files (its `kindling.lakeflow.config_files` alias
-  was removed in 0.12.47). The selector bridges the key to the shared bootstrap
-  loader, which loads the files by the normal Dynaconf route. The proposal's
-  historical problem statement should not be read as current behavior.
+  design history behind explicit settings files for Lakeflow
+  (`spark.kindling.bootstrap.config_files`; its `kindling.lakeflow.config_files`
+  alias was removed in 0.12.47). That surface is itself gone as of 2026-09-28:
+  the selector drops file lists with a warning and settings arrive inline.
+  The proposal's historical problem statement should not be read as current
+  behavior.
 - [CLI conventions](../../packages/kindling_cli/README.md) separate buildable
   packages under `packages/` from apps under `apps/`. `kindling app package`
   creates a KDA; `kindling app deploy` delegates remote app storage to the SDK.
@@ -196,27 +216,28 @@ existing Lakeflow guide records caching of unchanged wheel requirements.
 
 ## Configuration contract
 
-Ship the complete non-secret config directory. Each target selects an ordered
-file list through `spark.kindling.bootstrap.config_files`: base, applicable platform
-and workspace layers, environment, then app overrides. Preserve Kindling's
-existing ordering; do not flatten structured entity IDs into Spark keys.
-The starter can use base plus environment, expanding only when layers exist.
-
-Conceptual fragment within the pipeline resource:
+Settings are found by convention and shipped inline. For each pipeline the
+generator resolves the same ordered hierarchy the runtime applies (base,
+platform, workspace, environment, then the app's base/platform/environment
+overlays), deep-merges the files at build time, and writes the tree into the
+pipeline resource as `kindling.lakeflow.settings_json`. Structured entity ids
+and tag keys keep their shape because the selector injects the sections
+literally; a flat pipeline key naming the same leaf still overrides it. No
+file list is written and the pipeline reads no settings files from the
+workspace or a volume. Fragment within the pipeline resource:
 
 ```yaml
 configuration:
   kindling.data_app: orders
-  kindling.lakeflow.allowed_apps: orders
-  spark.kindling.bootstrap.config_files: >-
-    ["${workspace.file_path}/config/settings.yaml",
-     "${workspace.file_path}/config/settings.${bundle.target}.yaml"]
+  kindling.lakeflow.pipes: bronze.ingest_orders
+  spark.kindling.bootstrap.environment: dev
+  kindling.lakeflow.settings_json: '{"kindling":{...},"dataentities":{"silver.orders":{...}}}'
+  kindling.lakeflow.config_keys: spark.kindling.bootstrap.environment
 ```
 
-This illustrates the default target-name-to-environment mapping. Permit an
-explicit mapping when target and environment names differ. Selecting a file
-list is transport wiring; its contents remain the source of runtime behavior.
-Do not assume the bundle target automatically sets Kindling's environment.
+The runtime environment (`--env`) selects which overlays are merged; the
+deployment target identifies where resources are deployed. These names may
+differ.
 
 Use pipeline catalog/schema for managed outputs. Preserve external table
 overrides and the [dataset naming contract](../contributing/databricks_execution_contract.md).
@@ -302,7 +323,7 @@ supported source: a workflow maps repository/environment variables into the
 process environment. Other CI systems and local shells use the same contract.
 Kindling does not fetch GitHub variables itself or depend on GitHub APIs.
 
-Input interface (implemented; `--workspace-id`, `--config-transport`, `--dependency`, and `--wheel` were added during implementation):
+Input interface (implemented; `--workspace-id`, `--dependency`, and `--wheel` were added during implementation):
 
 | CLI option | Environment variable | Meaning |
 | --- | --- | --- |

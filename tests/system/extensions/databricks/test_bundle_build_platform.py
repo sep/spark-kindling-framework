@@ -21,14 +21,16 @@ What this proves beyond that test:
   - the declaration-only platform fallback (no workspace id detectable in a
     serverless pipeline) succeeds.
 
-Prerequisites: ``databricks`` CLI on PATH (the devcontainer ships it);
-spark_kindling, spark_kindling_ext_sdp, spark_kindling_ext_databricks and
-lakeflow_engine_test_app wheels uploaded to the UC artifacts volume
-packages/ path at the versions in this checkout (same prerequisite as the
-other Lakeflow platform tests). Authentication follows the CLI's unified
-auth: ``DATABRICKS_HOST`` plus ``az login`` locally, or ``ARM_*`` service
-principal variables in CI (``AZURE_CLIENT_ID``/``AZURE_CLIENT_SECRET``/
-``AZURE_TENANT_ID`` are mapped onto them when ``ARM_*`` are unset).
+Prerequisites: ``databricks`` CLI and ``poetry`` on PATH (the devcontainer
+ships both). The test builds the spark_kindling, spark_kindling_ext_sdp,
+spark_kindling_ext_databricks and lakeflow_engine_test_app wheels from this
+checkout and stages them with ``--wheel``; ``bundle deploy`` uploads them
+under the bundle's own workspace root, so nothing is written to the shared
+UC artifacts volume and the pipeline always runs this checkout's code.
+Authentication follows the CLI's unified auth: ``DATABRICKS_HOST`` plus
+``az login`` locally, or ``ARM_*`` service principal variables in CI
+(``AZURE_CLIENT_ID``/``AZURE_CLIENT_SECRET``/``AZURE_TENANT_ID`` are mapped
+onto them when ``ARM_*`` are unset).
 
 Limitation: bronze_orders/silver_orders are pipeline-produced datasets with
 fixed names in the target schema, shared with test_lakeflow_engine_platform;
@@ -50,12 +52,10 @@ import pytest
 import yaml
 
 from tests.system.extensions.databricks.lakeflow_test_helpers import (
-    PACKAGES_VOLUME,
     WORKSPACE_ROOT,
     execute_statement,
     print_error_events,
     select_warehouse_id,
-    wheel_version,
 )
 
 EXPECTED_VALID_ROWS = {
@@ -81,29 +81,40 @@ datapipes:
 """
 
 
-def _volume_wheel(pkg_root: str, dist: str, pyproject: Path) -> str:
-    return f"{pkg_root}/{dist}-{wheel_version(pyproject)}-py3-none-any.whl"
+WHEEL_PROJECTS = (
+    WORKSPACE_ROOT.parent,
+    WORKSPACE_ROOT.parent / "packages" / "extensions" / "kindling_ext_sdp",
+    WORKSPACE_ROOT.parent / "packages" / "extensions" / "kindling_ext_databricks",
+    WORKSPACE_ROOT / "data-apps" / "lakeflow-engine-test-app",
+)
 
 
-def _volume_dependencies(pkg_root: str) -> list:
-    repo = WORKSPACE_ROOT.parent
-    extensions = repo / "packages" / "extensions"
-    return [
-        _volume_wheel(pkg_root, "spark_kindling", repo / "pyproject.toml"),
-        _volume_wheel(
-            pkg_root, "spark_kindling_ext_sdp", extensions / "kindling_ext_sdp" / "pyproject.toml"
-        ),
-        _volume_wheel(
-            pkg_root,
-            "spark_kindling_ext_databricks",
-            extensions / "kindling_ext_databricks" / "pyproject.toml",
-        ),
-        _volume_wheel(
-            pkg_root,
-            "lakeflow_engine_test_app",
-            WORKSPACE_ROOT / "data-apps" / "lakeflow-engine-test-app" / "pyproject.toml",
-        ),
-    ]
+def _build_wheels(output_dir: Path) -> list:
+    """Build this checkout's wheels with poetry-core (no virtualenv needed).
+
+    Returned in dependency order (core, SDP extension, Databricks extension,
+    app): serverless installs ``environment.dependencies`` one entry at a
+    time, and Kindling packages are not on PyPI, so a wheel listed before
+    the wheels it requires fails to install.
+    """
+    env = {**os.environ, "POETRY_VIRTUALENVS_CREATE": "false"}
+    wheels = []
+    for project in WHEEL_PROJECTS:
+        target = output_dir / project.name
+        target.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            ["poetry", "build", "-f", "wheel", "-o", str(target)],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert proc.returncode == 0, f"poetry build failed in {project}:\n{proc.stderr[-2000:]}"
+        built = list(target.glob("*.whl"))
+        assert len(built) == 1, built
+        wheels.append(built[0])
+    return wheels
 
 
 def _write_project(root: Path) -> Path:
@@ -165,6 +176,8 @@ class TestBundleBuildPlatform:
             pytest.skip("Bundle deployment coverage is Databricks-only.")
         if shutil.which("databricks") is None:
             pytest.skip("databricks CLI not on PATH (the devcontainer image installs it).")
+        if shutil.which("poetry") is None:
+            pytest.skip("poetry is required to build this checkout's wheels.")
         host = os.getenv("DATABRICKS_HOST")
         if not host:
             pytest.skip("DATABRICKS_HOST is required for bundle deployment.")
@@ -174,7 +187,6 @@ class TestBundleBuildPlatform:
         w = client.client
         catalog = os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_CATALOG", "medallion")
         schema = os.getenv("KINDLING_DATABRICKS_RUNTIME_VOLUME_SCHEMA", "default")
-        pkg_root = PACKAGES_VOLUME.format(catalog=catalog, schema=schema)
 
         warehouse_id = select_warehouse_id(w, os.getenv("SYSTEM_TEST_SQL_WAREHOUSE_ID"))
         if not warehouse_id:
@@ -187,6 +199,8 @@ class TestBundleBuildPlatform:
         bronze_table = f"{catalog}.{schema}.bronze_orders"
         silver_table = f"{catalog}.{schema}.silver_orders"
 
+        wheels = _build_wheels(tmp_path / "wheels")
+        print("🛞 Built wheels: " + ", ".join(wheel.name for wheel in wheels))
         project_root = _write_project(tmp_path / "project")
         inputs = resolve_bundle_inputs(
             {
@@ -197,7 +211,7 @@ class TestBundleBuildPlatform:
                 "workspace_root": workspace_root,
                 "catalog": catalog,
                 "schema": schema,
-                "dependencies": tuple(_volume_dependencies(pkg_root)),
+                "wheels": tuple(wheels),
             },
             {},
         )
@@ -211,6 +225,10 @@ class TestBundleBuildPlatform:
         configuration = resource["resources"]["pipelines"]["lakeflow_engine"]["configuration"]
         assert "kindling.lakeflow.settings_json" in configuration
         assert "spark.kindling.bootstrap.config_files" not in configuration
+        dependencies = resource["resources"]["pipelines"]["lakeflow_engine"]["environment"][
+            "dependencies"
+        ]
+        assert dependencies == [f"../wheels/{wheel.name}" for wheel in wheels], dependencies
         print(f"📦 Bundle generated at {result.output_dir} ({len(result.files)} files)")
 
         deployed = False

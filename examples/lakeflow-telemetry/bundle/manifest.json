@@ -1,0 +1,109 @@
+{
+  "generator": {
+    "name": "kindling bundle build",
+    "version": "latest"
+  },
+  "bundle": {
+    "name": "lakeflow-telemetry",
+    "target": "dev",
+    "runtime_environment": "dev",
+    "workspace_host": "https://adb-lakeflow-telemetry.azuredatabricks.net",
+    "workspace_root": "/Workspace/Shared/kindling/lakeflow-telemetry/dev",
+    "workspace_id": "adb-lakeflow-telemetry",
+    "run_as_service_principal": null,
+    "serverless": true
+  },
+  "apps": [
+    "telemetry"
+  ],
+  "pipelines": [
+    {
+      "key": "telemetry_bronze",
+      "name": "telemetry-bronze",
+      "app": "telemetry",
+      "resource_file": "resources/telemetry_bronze.pipeline.yml",
+      "catalog": "dev_bronze",
+      "schema": "cwmdp",
+      "continuous": false,
+      "pipes": [
+        "bronze.ingest_telemetry"
+      ],
+      "config_sources": [
+        {
+          "role": "base",
+          "path": "config/settings.yaml",
+          "sha256": "bb008677af1f6d9f460d24b293c8ee5609bd03b1c71903dd6f8cb98e80e42776"
+        },
+        {
+          "role": "platform",
+          "path": "config/settings.databricks.yaml",
+          "sha256": "be4127f92e277fb88260e2b5f6d8c1977e80581e7b6f7dc5b81aad14f16bb85c"
+        },
+        {
+          "role": "workspace",
+          "path": "config/workspace_adb-lakeflow-telemetry.yaml",
+          "sha256": "c692906c725508ef755b4a00f5c968b6878bc214612310c7935221055a442f3e"
+        },
+        {
+          "role": "environment",
+          "path": "config/settings.dev.yaml",
+          "sha256": "a89a4d729a899507736032c1f9598a48c26c88d6921a611a97d0db3ccb1debb1"
+        },
+        {
+          "role": "app",
+          "path": "data-apps/telemetry/settings.yaml",
+          "sha256": "a985f4a1da81b680cb151370e86e6d615d677b207e540dd62e84ee58b5563ae4"
+        }
+      ],
+      "settings_json_bytes": 1165
+    },
+    {
+      "key": "telemetry_silver",
+      "name": "telemetry-silver",
+      "app": "telemetry",
+      "resource_file": "resources/telemetry_silver.pipeline.yml",
+      "catalog": "dev_silver",
+      "schema": "cwmdp",
+      "continuous": false,
+      "pipes": [
+        "silver.build_telemetry",
+        "silver.derive_events",
+        "silver.derive_episodes"
+      ],
+      "config_sources": [
+        {
+          "role": "base",
+          "path": "config/settings.yaml",
+          "sha256": "bb008677af1f6d9f460d24b293c8ee5609bd03b1c71903dd6f8cb98e80e42776"
+        },
+        {
+          "role": "platform",
+          "path": "config/settings.databricks.yaml",
+          "sha256": "be4127f92e277fb88260e2b5f6d8c1977e80581e7b6f7dc5b81aad14f16bb85c"
+        },
+        {
+          "role": "workspace",
+          "path": "config/workspace_adb-lakeflow-telemetry.yaml",
+          "sha256": "c692906c725508ef755b4a00f5c968b6878bc214612310c7935221055a442f3e"
+        },
+        {
+          "role": "environment",
+          "path": "config/settings.dev.yaml",
+          "sha256": "a89a4d729a899507736032c1f9598a48c26c88d6921a611a97d0db3ccb1debb1"
+        },
+        {
+          "role": "app",
+          "path": "data-apps/telemetry/settings.yaml",
+          "sha256": "a985f4a1da81b680cb151370e86e6d615d677b207e540dd62e84ee58b5563ae4"
+        }
+      ],
+      "settings_json_bytes": 1165
+    }
+  ],
+  "dependencies": [
+    "spark-kindling-ext-databricks==0.2.0"
+  ],
+  "wheels": [],
+  "permissions": [],
+  "warnings": []
+}

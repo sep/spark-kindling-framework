@@ -85,42 +85,16 @@ emits `config.pre_reload` / `config.post_reload` with a change diff.
 
 ## Lakeflow Pipelines
 
-Lakeflow uses the same files and the same bootstrap key. Put the selected app
-and pipe subset in the pipeline configuration, then pass the deployed settings
-files through `spark.kindling.bootstrap.config_files`:
-
-```yaml
-resources:
-  pipelines:
-    telemetry_silver:
-      name: telemetry-silver
-      catalog: dev_silver
-      target: cwmdp
-      configuration:
-        "kindling.data_app": telemetry
-        "kindling.lakeflow.allowed_apps": telemetry
-        "kindling.lakeflow.pipes": silver.build_telemetry,silver.derive_events,silver.derive_episodes
-        "spark.kindling.bootstrap.environment": dev
-        "spark.kindling.bootstrap.workspace_id": adb-dev
-        "spark.kindling.bootstrap.config_files": '["/Workspace/Shared/kindling/dev/config/settings.yaml", "/Workspace/Shared/kindling/dev/config/settings.databricks.yaml", "/Workspace/Shared/kindling/dev/data-apps/telemetry/settings.yaml"]'
-```
-
-The selector sets `declaration_only=true` and calls
-`kindling.initialize(..., app_name="telemetry", engine="databricks_sdp")`.
-Configuration files are still loaded by Kindling's shared Dynaconf path; the
-Lakeflow selector does not parse or validate YAML itself.
-
-### Generating the bundle
-
-`kindling bundle build` produces a bundle like the one above from a project's
-`config/` and `data-apps/` directories, including one pipeline resource per
-app (or per configured split). Its default `inline` transport merges the
-overlays at build time and writes the result into the pipeline configuration
-as `kindling.lakeflow.settings_json`, so nothing is read from workspace files
-at declaration time; `--config-transport files` reproduces the
-`spark.kindling.bootstrap.config_files` layout shown here with staged files
-referenced through `${workspace.file_path}`. See the
-[CLI README](../../packages/kindling_cli/README.md#databricks-bundles).
+Lakeflow pipelines do not read settings files at all. `kindling bundle build`
+finds the project's settings by convention (`config/` overlays, then the
+app's `settings*.yaml`), merges them at build time in the runtime's order and
+writes the result into each pipeline resource as
+`kindling.lakeflow.settings_json`; the selector injects it before
+initialization, and flat pipeline keys still act as just-in-time overrides.
+The bundle it produces is the pipeline counterpart of the job layout above,
+with no `sync` of a `config/` directory and no file paths in the pipeline
+configuration. See the [CLI README](../../packages/kindling_cli/README.md#databricks-bundles)
+and `examples/lakeflow-telemetry/`.
 
 ## CI/CD promotion
 

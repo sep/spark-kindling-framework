@@ -78,20 +78,15 @@ configuration values:
   app-selection keys automatically; name any further keys you need in
   `kindling.lakeflow.config_keys` (comma-separated) and the selector
   bridges each by point lookup.
-- `spark.kindling.bootstrap.config_files` is read by direct point lookup, so
-  the canonical explicit-file path works when only `RuntimeConfig.get` is
-  available. Use a JSON array string for several files. Do not list it in
-  `kindling.lakeflow.config_keys`; that setting is only for additional flat
-  keys after enumeration fails. Use
-  [Databricks Asset Bundle config promotion](dab_config_promotion.md) to deploy
-  companion YAML and pass the resulting paths. That guide documents
-  `/Workspace/...` reads for UC shared/standard access mode clusters and jobs;
-  `/Workspace/...` readability from a Lakeflow serverless pipeline remains
-  unverified, so use a Unity Catalog volume path when you need a confirmed
-  pipeline-readable location.
+- Settings are carried inline in the pipeline configuration
+  (`kindling.lakeflow.settings_json`, below), read by direct point lookup.
+  Lakeflow pipelines do not load settings files: a pipeline that still sets
+  `spark.kindling.bootstrap.config_files` gets a warning and the value is
+  dropped. `kindling bundle build` finds the project's settings by convention
+  and writes the inline value.
 - The selector sets `declaration_only=true` instead of defaulting the
   platform to `standalone`. Platform identity remains real configuration:
-  `kindling.platform.environment` from explicit settings files or
+  `kindling.platform.environment` from the inline settings or
   `spark.kindling.bootstrap.artifacts_storage_path` discovery can still select
   Databricks platform layers. Under `declaration_only`, dependency
   installation, workspace package loading, watermark registration, and
@@ -104,8 +99,7 @@ configuration values:
 
 ## Inline settings (`kindling.lakeflow.settings_json`)
 
-Instead of pointing the pipeline at settings files, the configuration can
-carry the effective settings tree itself:
+The pipeline configuration carries the effective settings tree itself:
 
 ```yaml
 configuration:

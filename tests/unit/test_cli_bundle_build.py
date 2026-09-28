@@ -89,10 +89,9 @@ def _example_inputs(**overrides) -> bundle.BundleInputs:
         "workspace_host": EXAMPLE_HOST,
         "workspace_root": "/Workspace/Shared/kindling/lakeflow-telemetry/dev",
         "runtime_env": "dev",
-        "config_transport": bundle.TRANSPORT_INLINE,
         "workspace_id": "adb-lakeflow-telemetry",
         "app_options": bundle._validate_app_options(EXAMPLE_APP_OPTIONS, ["telemetry"]),
-        "dependencies": ("spark-kindling-ext-databricks==0.1.15",),
+        "dependencies": ("spark-kindling-ext-databricks==0.2.0",),
     }
     values.update(overrides)
     return bundle.BundleInputs(**values)
@@ -139,19 +138,39 @@ def _resolve_through_runtime(configuration: dict, spark_factory=FakeSpark) -> di
     }
 
 
-def _example_file_transport_configuration(pipeline: str) -> dict:
-    """The checked-in example's configuration with workspace paths localized."""
-    with (_example_root() / "databricks.yml").open(encoding="utf-8") as handle:
-        configuration = yaml.safe_load(handle)["resources"]["pipelines"][pipeline]["configuration"]
-    prefix = "/Workspace/Shared/kindling/lakeflow-telemetry/dev/"
-    localized = dict(configuration)
-    localized[selector.CANONICAL_CONFIG_FILES_CONFIG_KEY] = json.dumps(
-        [
-            str(_example_root() / path[len(prefix) :])
-            for path in json.loads(configuration[selector.CANONICAL_CONFIG_FILES_CONFIG_KEY])
-        ]
-    )
-    return localized
+def _example_source_files() -> list:
+    """The example's settings files in the runtime's overlay order."""
+    root = _example_root()
+    files = [
+        root / "config" / "settings.yaml",
+        root / "config" / "settings.databricks.yaml",
+        root / "config" / "workspace_adb-lakeflow-telemetry.yaml",
+        root / "config" / "settings.dev.yaml",
+        root / "data-apps" / "telemetry" / "settings.yaml",
+    ]
+    return [str(path) for path in files]
+
+
+def _resolve_files_through_dynaconf(files: list) -> dict:
+    """Layer the same source files with Dynaconf itself (the runtime's loader)."""
+    from kindling.spark_config import DynaconfConfig
+
+    service = DynaconfConfig()
+    with patch(
+        "kindling.spark_config.get_or_create_spark_session",
+        return_value=SimpleNamespace(conf=FakeConf()),
+    ):
+        service.initialize(config_files=files, initial_config={}, environment="dev")
+    dataentities = service.get("dataentities")
+    bytag = service.get("dataentities-bytag")
+    return {
+        "platform": service.get("kindling.platform.environment"),
+        "dataset_naming": service.get("kindling.sdp.dataset_naming"),
+        "logging_level": service.get("kindling.telemetry.logging.level"),
+        "table_schema": service.get("kindling.storage.table_schema"),
+        "events_table": dataentities["silver.events"]["tags"]["provider.table_name"],
+        "bronze_retention": bytag["tier"]["bronze"]["tags"]["retention.days"],
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -194,7 +213,7 @@ def test_example_pipeline_resource_shape(tmp_path):
     assert silver["target"] == "cwmdp"
     assert silver["continuous"] is False
     assert silver["libraries"] == [{"file": {"path": "../src/kindling_lakeflow.py"}}]
-    assert silver["environment"] == {"dependencies": ["spark-kindling-ext-databricks==0.1.15"]}
+    assert silver["environment"] == {"dependencies": ["spark-kindling-ext-databricks==0.2.0"]}
     configuration = silver["configuration"]
     assert configuration["kindling.data_app"] == "telemetry"
     assert configuration["kindling.lakeflow.pipes"] == (
@@ -202,7 +221,7 @@ def test_example_pipeline_resource_shape(tmp_path):
     )
     assert configuration["spark.kindling.bootstrap.environment"] == "dev"
     assert configuration["spark.kindling.bootstrap.workspace_id"] == "adb-lakeflow-telemetry"
-    assert selector.CANONICAL_CONFIG_FILES_CONFIG_KEY not in configuration
+    assert "spark.kindling.bootstrap.config_files" not in configuration
     assert "kindling.lakeflow.allowed_apps" not in configuration
     assert all(isinstance(value, str) for value in configuration.values())
     # Every emitted key the selector does not point-look-up by default is named.
@@ -230,15 +249,15 @@ def test_inline_settings_preserve_structured_ids_and_overlay_order(tmp_path):
     assert settings["datapipes"]["silver.derive_episodes"]["output_type"] == "delta"
 
 
-def test_inline_transport_resolves_identically_to_the_file_based_example(tmp_path):
-    """The generated inline configuration and the checked-in file-transport
-    example load to the same effective values through the same runtime path."""
+def test_inline_settings_match_dynaconf_layering_of_the_source_files(tmp_path):
+    """The build-time merge reproduces what Dynaconf produces when it layers
+    the same files itself, so inlining loses nothing versus file loading."""
     result = _build_example(tmp_path)
 
     inline = _resolve_through_runtime(_resource(result, "telemetry_silver")["configuration"])
-    files = _resolve_through_runtime(_example_file_transport_configuration("telemetry_silver"))
+    files = _resolve_files_through_dynaconf(_example_source_files())
 
-    assert inline == files
+    assert {key: inline[key] for key in files} == files
     assert inline["platform"] == "databricks"
     assert inline["dataset_naming"] == "leaf"
     assert inline["logging_level"] == "CRITICAL"
@@ -269,14 +288,12 @@ def test_generated_configuration_is_bridged_from_flat_configuration_keys_by_defa
     selector's default list; otherwise config_keys would have to name them."""
     values = {key: "x" for key in bundle.SELECTOR_DEFAULT_LOOKUP_KEYS}
     values[selector.SETTINGS_JSON_CONFIG_KEY] = "{}"
-    values[selector.CANONICAL_CONFIG_FILES_CONFIG_KEY] = "[]"
     values["kindling.lakeflow.config_keys"] = ""
 
     bridged = selector._pipeline_config_for_kindling(PointLookupSpark(values), "telemetry")
 
     for key in bundle.SELECTOR_DEFAULT_LOOKUP_KEYS - {
         selector.SETTINGS_JSON_CONFIG_KEY,
-        selector.CANONICAL_CONFIG_FILES_CONFIG_KEY,
         "kindling.lakeflow.config_keys",
     }:
         assert key in bridged, key
@@ -293,7 +310,7 @@ def test_output_is_deterministic(tmp_path):
         ).read_bytes(), relative
     manifest = first.manifest
     assert manifest["generator"]["name"] == bundle.GENERATOR_NAME
-    assert manifest["bundle"]["config_transport"] == "inline"
+    assert "transport" not in json.dumps(manifest)
     assert [pipeline["key"] for pipeline in manifest["pipelines"]] == [
         "telemetry_bronze",
         "telemetry_silver",
@@ -311,36 +328,6 @@ def test_output_is_deterministic(tmp_path):
     assert "timestamp" not in json.dumps(manifest)
 
 
-def test_files_transport_stages_settings_and_references_workspace_paths(tmp_path):
-    result = _build_example(tmp_path, config_transport=bundle.TRANSPORT_FILES)
-
-    staged = [path for path in result.files if path.startswith(("config/", "data-apps/"))]
-    assert staged == [
-        "config/settings.databricks.yaml",
-        "config/settings.dev.yaml",
-        "config/settings.yaml",
-        "config/workspace_adb-lakeflow-telemetry.yaml",
-        "data-apps/telemetry/settings.yaml",
-    ]
-    for relative in staged:
-        assert (result.output_dir / relative).read_bytes() == (
-            _example_root() / relative
-        ).read_bytes()
-
-    configuration = _resource(result, "telemetry_bronze")["configuration"]
-    assert selector.SETTINGS_JSON_CONFIG_KEY not in configuration
-    assert json.loads(configuration[selector.CANONICAL_CONFIG_FILES_CONFIG_KEY]) == [
-        "${workspace.file_path}/config/settings.yaml",
-        "${workspace.file_path}/config/settings.databricks.yaml",
-        "${workspace.file_path}/config/workspace_adb-lakeflow-telemetry.yaml",
-        "${workspace.file_path}/config/settings.dev.yaml",
-        "${workspace.file_path}/data-apps/telemetry/settings.yaml",
-    ]
-    root = yaml.safe_load((result.output_dir / "databricks.yml").read_text(encoding="utf-8"))
-    assert root["sync"] == {"include": ["src/**", "config/**", "data-apps/**"]}
-    assert [entry["path"] for entry in result.manifest["staged_files"]] == staged
-
-
 def test_run_as_permissions_and_wheels_are_rendered(tmp_path):
     wheel = tmp_path / "telemetry_app-1.2.3-py3-none-any.whl"
     wheel.write_bytes(b"not really a wheel")
@@ -356,7 +343,7 @@ def test_run_as_permissions_and_wheels_are_rendered(tmp_path):
     bronze = _resource(result, "telemetry_bronze")
     assert bronze["permissions"] == [{"level": "CAN_MANAGE", "group_name": "data-eng"}]
     assert bronze["environment"]["dependencies"] == [
-        "spark-kindling-ext-databricks==0.1.15",
+        "spark-kindling-ext-databricks==0.2.0",
         "../wheels/telemetry_app-1.2.3-py3-none-any.whl",
     ]
     assert (result.output_dir / "wheels" / wheel.name).read_bytes() == wheel.read_bytes()
@@ -373,7 +360,7 @@ def test_unpinned_default_dependency_warns(tmp_path):
 
 
 def test_wheels_alone_form_the_dependency_set(tmp_path):
-    extension = tmp_path / "spark_kindling_ext_databricks-0.1.15-py3-none-any.whl"
+    extension = tmp_path / "spark_kindling_ext_databricks-0.2.0-py3-none-any.whl"
     extension.write_bytes(b"x")
     app = tmp_path / "orders_app-1.0.0-py3-none-any.whl"
     app.write_bytes(b"y")
@@ -389,7 +376,7 @@ def test_wheels_alone_form_the_dependency_set(tmp_path):
     )
     assert result.warnings == []
     assert _resource(result, "telemetry_bronze")["environment"]["dependencies"] == [
-        "../wheels/spark_kindling_ext_databricks-0.1.15-py3-none-any.whl",
+        "../wheels/spark_kindling_ext_databricks-0.2.0-py3-none-any.whl",
         "../wheels/orders_app-1.0.0-py3-none-any.whl",
     ]
 
@@ -401,14 +388,14 @@ def test_missing_databricks_extension_warns(tmp_path):
     result = _build_example(tmp_path, dependencies=(), dependencies_defaulted=True, wheels=(app,))
 
     assert any("spark-kindling-ext-databricks" in warning for warning in result.warnings)
-    pinned = _build_example(tmp_path / "b", dependencies=("Spark-Kindling-Ext-Databricks>=0.1.15",))
+    pinned = _build_example(tmp_path / "b", dependencies=("Spark-Kindling-Ext-Databricks>=0.2.0",))
     assert pinned.warnings == []
     volume = _build_example(
         tmp_path / "c",
         dependencies=(
             "/Volumes/cat/schema/artifacts/packages/spark_kindling-0.12.48-py3-none-any.whl",
             "/Volumes/cat/schema/artifacts/packages/"
-            "spark_kindling_ext_databricks-0.1.15-py3-none-any.whl",
+            "spark_kindling_ext_databricks-0.2.0-py3-none-any.whl",
         ),
     )
     assert volume.warnings == []
@@ -446,10 +433,9 @@ def _inputs(**overrides) -> bundle.BundleInputs:
         "workspace_host": "https://adb-1.azuredatabricks.net",
         "workspace_root": "/Workspace/Shared/kindling/sales/prod",
         "runtime_env": "prod",
-        "config_transport": bundle.TRANSPORT_INLINE,
         "catalog": "prod_sales",
         "schema": "sales",
-        "dependencies": ("spark-kindling-ext-databricks==0.1.15",),
+        "dependencies": ("spark-kindling-ext-databricks==0.2.0",),
     }
     values.update(overrides)
     return bundle.BundleInputs(**values)
@@ -562,7 +548,6 @@ def test_inputs_come_from_environment_with_documented_defaults():
     assert inputs.workspace_host == "https://adb-1.azuredatabricks.net"
     assert inputs.workspace_root == "/Workspace/Shared/kindling/sales/dev"
     assert inputs.runtime_env == "dev"
-    assert inputs.config_transport == "inline"
     assert inputs.continuous is False
     assert inputs.dependencies == bundle.DEFAULT_DEPENDENCIES
     assert inputs.dependencies_defaulted is True
@@ -574,7 +559,6 @@ def test_cli_options_override_environment_and_collections_replace():
         "KINDLING_BUNDLE_RUNTIME_ENV": "dev",
         "KINDLING_BUNDLE_CONTINUOUS": "true",
         "KINDLING_BUNDLE_DEPENDENCIES": '["a==1"]',
-        "KINDLING_BUNDLE_CONFIG_TRANSPORT": "files",
     }
     inputs = bundle.resolve_bundle_inputs(
         {
@@ -583,7 +567,6 @@ def test_cli_options_override_environment_and_collections_replace():
             "env": "production",
             "continuous": False,
             "dependencies": ("b==2", "c==3"),
-            "config_transport": "inline",
         },
         environ,
     )
@@ -594,7 +577,6 @@ def test_cli_options_override_environment_and_collections_replace():
     assert inputs.continuous is False
     assert inputs.dependencies == ("b==2", "c==3")
     assert inputs.dependencies_defaulted is False
-    assert inputs.config_transport == "inline"
 
 
 @pytest.mark.parametrize(
@@ -612,7 +594,6 @@ def test_cli_options_override_environment_and_collections_replace():
         ),
         ({**_REQUIRED_ENV, "KINDLING_BUNDLE_CONTINUOUS": "yes"}, "exactly 'true' or 'false'"),
         ({**_REQUIRED_ENV, "KINDLING_BUNDLE_WORKSPACE_HOST": "adb-1"}, "https://"),
-        ({**_REQUIRED_ENV, "KINDLING_BUNDLE_CONFIG_TRANSPORT": "volume"}, "inline, files"),
         ({**_REQUIRED_ENV, "KINDLING_BUNDLE_APP_OPTIONS": "{not json"}, "not valid JSON"),
         (
             {**_REQUIRED_ENV, "KINDLING_BUNDLE_APP_OPTIONS": '{"payments": {}}'},
@@ -716,7 +697,7 @@ def test_bundle_build_command_emits_json_summary(tmp_path):
             "--schema",
             "cwmdp",
             "--dependency",
-            "spark-kindling-ext-databricks==0.1.15",
+            "spark-kindling-ext-databricks==0.2.0",
             "--json",
         ],
     )
@@ -725,7 +706,6 @@ def test_bundle_build_command_emits_json_summary(tmp_path):
     summary = json.loads(result.output)
     assert summary["output_dir"] == str(output)
     assert summary["pipelines"] == ["telemetry"]
-    assert summary["config_transport"] == "inline"
     assert "resources/telemetry.pipeline.yml" in summary["files"]
     assert (output / "manifest.json").exists()
 
