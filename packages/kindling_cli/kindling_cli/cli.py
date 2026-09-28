@@ -667,18 +667,33 @@ def _load_effective_raw_config(
         used.append(base_path)
 
     if platform:
-        platform_path = settings_dir / f"settings.{platform}.yaml"
-        if platform_path.exists():
+        platform_path = _first_existing_settings_file(
+            settings_dir, f"settings.{platform}.yaml", f"platform_{platform}.yaml"
+        )
+        if platform_path is not None:
             merged = _deep_merge_dict(merged, _load_yaml_config(platform_path))
             used.append(platform_path)
 
     if env:
-        env_path = settings_dir / f"settings.{env}.yaml"
-        if env_path.exists():
+        env_path = _first_existing_settings_file(
+            settings_dir, f"settings.{env}.yaml", f"env_{env}.yaml"
+        )
+        if env_path is not None:
             merged = _deep_merge_dict(merged, _load_yaml_config(env_path))
             used.append(env_path)
 
     return merged, used
+
+
+def _first_existing_settings_file(settings_dir: Path, *names: str) -> Optional[Path]:
+    """Canonical settings file name first, then the documented legacy name
+    (``platform_<p>.yaml`` / ``env_<e>.yaml``), mirroring the runtime's
+    ``settings_hierarchy``."""
+    for name in names:
+        candidate = settings_dir / name
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _flatten_config_dict(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
@@ -962,18 +977,20 @@ def _bootstrap_app(
     """
     from kindling.bootstrap import initialize_framework
 
-    cfg_root = config_dir.expanduser().resolve() if config_dir else app_dir
     resolved_platform = platform or "standalone"
-    _, config_paths = _load_effective_raw_config(cfg_root, env, resolved_platform)
-    initialize_framework(
-        {
-            "platform": resolved_platform,
-            "environment": env,
-            "config_files": [str(path) for path in config_paths],
-            "install_bootstrap_dependencies": False,
-            "registration_packages": _read_app_lake_requirement_packages(app_dir),
-        }
-    )
+    bootstrap_config: Dict[str, Any] = {
+        "platform": resolved_platform,
+        "environment": env,
+        # Settings are found by convention: bootstrap resolves the shared
+        # overlays under config_dir (when given) and the app's own
+        # settings*.yaml under app_dir itself. No file list is built here.
+        "app_dir": str(app_dir),
+        "install_bootstrap_dependencies": False,
+        "registration_packages": _read_app_lake_requirement_packages(app_dir),
+    }
+    if config_dir:
+        bootstrap_config["config_dir"] = str(config_dir.expanduser().resolve())
+    initialize_framework(bootstrap_config)
 
 
 def _load_app_module_if_present(
@@ -5308,24 +5325,10 @@ def _run_standalone_app(
     resolved_app = _discover_app_py_under(source_path)
     app_dir = resolved_app.parent
 
-    # Resolve config files: explicit --config dir overrides auto-discovery from app dir
-    cfg_root = config_dir.expanduser().resolve() if config_dir else app_dir
-    config_files = []
-    base_cfg = cfg_root / "settings.yaml"
-    if base_cfg.exists():
-        config_files.append(str(base_cfg))
-    overlay_platform = (
-        os.getenv("KINDLING_PLATFORM")
-        or os.getenv("KINDLING_PLATFORM_ENVIRONMENT")
-        or (platform if platform != "standalone" else None)
-    )
-    if overlay_platform:
-        platform_cfg = cfg_root / f"settings.{overlay_platform}.yaml"
-        if platform_cfg.exists():
-            config_files.append(str(platform_cfg))
-    env_cfg = cfg_root / f"settings.{resolved_env}.yaml"
-    if env_cfg.exists():
-        config_files.append(str(env_cfg))
+    # Settings are found by convention inside the runner (bootstrap resolves
+    # the app's own settings*.yaml from the app directory); --config names an
+    # additional shared overlay directory.
+    shared_config_dir = config_dir.expanduser().resolve() if config_dir else None
 
     from kindling_cli.test_runner import load_dotenv as _load_dotenv
 
@@ -5368,7 +5371,7 @@ def _run_standalone_app(
         "kindling_cli._runner",
         "--env",
         resolved_env,
-        *[arg for cfg in config_files for arg in ("--config", cfg)],
+        *(["--config-dir", str(shared_config_dir)] if shared_config_dir else []),
         *(["--load-lake"] if load_lake else []),
         str(resolved_app),
     ]

@@ -30,8 +30,8 @@ my-solution/
 ├── databricks.yml
 ├── config/
 │   ├── settings.yaml        # base kindling config
-│   ├── dev.yaml             # kindling environment overlays
-│   └── prod.yaml
+│   ├── settings.dev.yaml    # kindling environment overlays
+│   └── settings.prod.yaml
 └── apps/ ...
 ```
 
@@ -70,16 +70,16 @@ ENV = "prod"   # or resolve from a job parameter / cluster tag
 
 kindling.initialize(config={
     "environment": ENV,
-    "config_files": [
-        f"/Workspace/Shared/kindling/{ENV}/config/settings.yaml",
-        f"/Workspace/Shared/kindling/{ENV}/config/{ENV}.yaml",
-    ],
+    "config_dir": f"/Workspace/Shared/kindling/{ENV}/config",
     "install_bootstrap_dependencies": False,
 })
 ```
 
-Explicit `config_files` bypasses the `artifacts_storage_path` download flow
-entirely; the paths are ordinary driver-local reads. Long-running jobs can
+`config_dir` names the deployed directory; Kindling finds `settings.yaml` and
+`settings.<env>.yaml` (plus platform and workspace overlays when present) by
+convention, with ordinary driver-local reads, bypassing the
+`artifacts_storage_path` download flow entirely. Name a deployed app directory
+with `app_dir` when the job runs one app's overlays on top. Long-running jobs can
 pick up a promotion without restart via `ConfigService.reload()`, which
 emits `config.pre_reload` / `config.post_reload` with a change diff.
 
@@ -118,5 +118,5 @@ is redeploying an earlier ref.
 The ABFSS `artifacts_storage_path` flow remains preferable when you rely on
 workspace-id–keyed config resolution, ship config alongside deployed wheels
 and KDA apps as one artifact set, or serve multiple workspaces from one
-storage location. The two coexist: `config_files` layers on top of anything
+storage location. The two coexist: a `config_dir` layers on top of anything
 downloaded from storage.

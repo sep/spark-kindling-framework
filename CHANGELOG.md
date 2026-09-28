@@ -6,6 +6,18 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **Settings discovery by convention: `config_dir` / `app_dir`** (proposal
+  `docs/proposals/settings_discovery_by_convention.md`). Callers name the
+  directories that hold settings and bootstrap resolves the ordered file
+  list itself from one hierarchy table shared with the artifacts-storage
+  download (`settings.yaml`, `settings.<platform>.yaml`, `workspace_<id>.yaml`,
+  `settings.<env>.yaml`, then the app's base/platform/env overlays; legacy
+  `platform_<p>.yaml` / `env_<e>.yaml` names honoured when the canonical file
+  is absent). Local directories layer on top of anything discovered in
+  artifacts storage. `kindling app run`, the local runner (`--config-dir`),
+  the CLI's own bootstrap, the scaffolded test templates and the local
+  fixture project no longer build settings-file lists.
+
 - **`kindling bundle build`: precompile a Kindling project into a Databricks
   bundle** (proposal `docs/proposals/databricks_bundle_deployment.md`). Reads
   the project's settings overlays (`config/settings.yaml`,
@@ -30,6 +42,13 @@ All notable changes to spark-kindling are documented here.
   `tests/system/extensions/databricks/test_bundle_build_platform.py` builds
   this checkout's wheels, generates a bundle, deploys and runs it through the
   Databricks CLI, verifies the outputs via SQL, and destroys it.
+
+### Deprecated
+
+- **Bootstrap `config_files`.** Explicit settings-file lists still load,
+  after directory-resolved files, but bootstrap warns and names
+  `config_dir` / `app_dir` as the replacement. Lakeflow pipelines already
+  refuse file lists (0.2.0 of the Databricks extension).
 
 ### Removed
 

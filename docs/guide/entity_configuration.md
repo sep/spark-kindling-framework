@@ -105,7 +105,7 @@ Entity tag configuration is loaded automatically through the standard Kindling c
 
 ```python
 bootstrap_framework({
-    "config_files": ["settings.yaml", "production.yaml"],
+    "config_dir": "config",   # settings.yaml + settings.production.yaml found by convention
     "environment": "production",
 })
 ```

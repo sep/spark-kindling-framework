@@ -33,10 +33,13 @@ same key.
 Databricks Lakeflow follows this same order. The Lakeflow selector supplies the
 selected `app_name` to `kindling.initialize()`, sets `declaration_only=true`,
 and bridges `spark.kindling.*` pipeline settings through the shared SparkConf
-reader. It does not add a Lakeflow-specific config-file step; use
-`spark.kindling.bootstrap.config_files` for explicit settings files or
-`spark.kindling.bootstrap.artifacts_storage_path` for the normal discovered
-hierarchy.
+reader. Lakeflow pipelines carry their merged settings inline in
+`kindling.lakeflow.settings_json` (written by `kindling bundle build`, which
+applies this same hierarchy at build time); settings-file lists are not read
+there. Use `spark.kindling.bootstrap.artifacts_storage_path` for the normal
+discovered hierarchy on other Databricks workloads, or
+`spark.kindling.bootstrap.config_dir` / `app_dir` to point at deployed
+directories.
 
 Legacy filenames are still checked as a fallback when the canonical name above isn't
 found: `platform_{platform}.yaml`, `env_{environment}.yaml`, `app.{platform}.yaml`,

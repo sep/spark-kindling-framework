@@ -265,7 +265,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="kindling_cli._runner", add_help=False)
     parser.add_argument("app_path")
     parser.add_argument("--env", default="local")
-    parser.add_argument("--config", action="append", dest="config_files", default=[])
+    parser.add_argument(
+        "--config-dir",
+        dest="config_dir",
+        default=None,
+        help="Shared settings overlay directory; the app's own settings*.yaml are "
+        "always resolved from the app directory.",
+    )
     parser.add_argument(
         "--load-lake",
         action="store_true",
@@ -275,7 +281,6 @@ def main() -> None:
     args = parser.parse_args()
 
     app_path = Path(args.app_path).resolve()
-    config_files = [f for f in args.config_files if Path(f).exists()]
 
     restore_version_shim = _install_local_package_version_shim()
 
@@ -299,7 +304,10 @@ def main() -> None:
                 **parameters,
                 "platform": "standalone",
                 "environment": args.env,
-                "config_files": config_files,
+                # Settings by convention: bootstrap resolves the hierarchy
+                # from these directories; no file list is built here.
+                "app_dir": str(app_path.parent),
+                **({"config_dir": args.config_dir} if args.config_dir else {}),
                 "registration_packages": registration_packages,
             }
         )

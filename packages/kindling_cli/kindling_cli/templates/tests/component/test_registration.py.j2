@@ -5,6 +5,7 @@ per process. Tests share a single injector session and verify registry state
 after importing {{ snake_name }} modules. No DataFrames are read or written.
 """
 
+from pathlib import Path
 import pytest
 
 
@@ -31,7 +32,9 @@ def initialize_{{ snake_name }}():
         {
             "platform": "standalone",
             "environment": "local",
-            "config_files": ["settings.yaml", "settings.local.yaml"],
+            # settings.yaml and settings.local.yaml are found by convention
+            # under the package root; nothing lists files.
+            "config_dir": str(Path(__file__).resolve().parents[2]),
         }
     )
     import {{ snake_name }}.entities.records  # noqa: F401
