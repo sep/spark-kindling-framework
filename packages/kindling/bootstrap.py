@@ -2291,12 +2291,11 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             except Exception as exc:
                 if not declaration_only or platform == "standalone":
                     raise
+                # SparkLogger takes a single message (no printf-style args).
                 logger.warning(
-                    "Platform service '%s' could not be constructed during "
+                    f"Platform service '{platform}' could not be constructed during "
                     "declaration-only initialization; falling back to standalone "
-                    "service for declaration-time operations: %s",
-                    platform,
-                    exc,
+                    f"service for declaration-time operations: {exc}"
                 )
                 platformservice = initialize_platform_services("standalone", config_service, logger)
         logger.info("Platform services initialized")

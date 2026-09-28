@@ -30,6 +30,17 @@ All notable changes to spark-kindling are documented here.
   `spark.kindling.bootstrap.config_files` path with staged, synced settings
   files.
 
+### Fixed
+
+- **Declaration-only platform fallback crashed instead of falling back.**
+  When the Databricks platform service cannot be constructed inside a
+  serverless Lakeflow pipeline (no detectable workspace id), bootstrap falls
+  back to the standalone service for declaration-time operations. The
+  fallback's warning used printf-style arguments, which `SparkLogger.warning`
+  does not accept, so every such pipeline failed with a `TypeError` that hid
+  the original error. Found by deploying a `kindling bundle build` bundle to a
+  real serverless pipeline.
+
 ## [0.12.48] - 2026-09-23
 
 ### Added
