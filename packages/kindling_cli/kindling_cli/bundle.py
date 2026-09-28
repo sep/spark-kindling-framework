@@ -262,7 +262,9 @@ def _string_list_input(
     parsed = _json_input(None, environ, env_suffix, option)
     if parsed is None:
         return None
-    if not isinstance(parsed, list) or not all(isinstance(item, str) and item for item in parsed):
+    if not isinstance(parsed, list) or not all(
+        isinstance(item, str) and item.strip() for item in parsed
+    ):
         raise BundleInputError(
             f"{ENV_PREFIX}{env_suffix} must be a JSON array of non-empty strings."
         )
@@ -432,6 +434,13 @@ def resolve_bundle_inputs(cli: Mapping[str, Any], environ: Mapping[str, str]) ->
         if wheel_path.suffix != ".whl" or not wheel_path.is_file():
             raise BundleInputError(f"--wheel {raw_wheel!r} is not an existing .whl file.")
         wheels.append(wheel_path.resolve())
+    basenames = [wheel.name for wheel in wheels]
+    duplicate_names = sorted({name for name in basenames if basenames.count(name) > 1})
+    if duplicate_names:
+        raise BundleInputError(
+            "--wheel file names must be unique; they are staged side by side under "
+            f"wheels/: {', '.join(duplicate_names)}."
+        )
 
     dependencies = _string_list_input(
         cli.get("dependencies") or (), environ, "DEPENDENCIES", "--dependency"
@@ -484,20 +493,25 @@ class ConfigSource:
     exists: bool
 
 
-def resolve_apps_dir(project_root: Path, apps_dir: Optional[Path]) -> Path:
+def resolve_apps_dirs(project_root: Path, apps_dir: Optional[Path]) -> List[Path]:
+    """Return the app roots to search: the explicit one, or every conventional
+    root that exists (``data-apps/`` and ``apps/`` may coexist)."""
     if apps_dir is not None:
         resolved = apps_dir if apps_dir.is_absolute() else project_root / apps_dir
         if not resolved.is_dir():
             raise BundleProjectError(f"Apps directory `{resolved}` does not exist.")
-        return resolved.resolve()
-    for candidate in DEFAULT_APP_DIR_CANDIDATES:
-        resolved = project_root / candidate
-        if resolved.is_dir():
-            return resolved.resolve()
-    raise BundleProjectError(
-        f"No apps directory found under `{project_root}` (looked for "
-        f"{', '.join(DEFAULT_APP_DIR_CANDIDATES)}). Pass --apps-dir."
-    )
+        return [resolved.resolve()]
+    roots = [
+        (project_root / candidate).resolve()
+        for candidate in DEFAULT_APP_DIR_CANDIDATES
+        if (project_root / candidate).is_dir()
+    ]
+    if not roots:
+        raise BundleProjectError(
+            f"No apps directory found under `{project_root}` (looked for "
+            f"{', '.join(DEFAULT_APP_DIR_CANDIDATES)}). Pass --apps-dir."
+        )
+    return roots
 
 
 def resolve_config_dir(project_root: Path, config_dir: Optional[Path]) -> Path:
@@ -509,18 +523,26 @@ def resolve_config_dir(project_root: Path, config_dir: Optional[Path]) -> Path:
     return (project_root / DEFAULT_CONFIG_DIR).resolve()
 
 
-def resolve_app_dir(apps_dir: Path, app: str) -> Path:
-    candidates = [apps_dir / app]
+def resolve_app_dir(apps_dirs: Sequence[Path], app: str) -> Path:
+    """Locate one app directory across the app roots; ambiguity is an error."""
+    names = [app]
     snake = app.replace("-", "_")
     if snake != app:
-        candidates.append(apps_dir / snake)
-    for candidate in candidates:
-        if candidate.is_dir():
-            return candidate.resolve()
+        names.append(snake)
+    candidates = [root / name for root in apps_dirs for name in names]
+    matches = [candidate.resolve() for candidate in candidates if candidate.is_dir()]
+    if len(matches) > 1:
+        raise BundleProjectError(
+            f"App '{app}' matches more than one directory: {', '.join(map(str, matches))}. "
+            "Keep one, or pass --apps-dir to choose the root."
+        )
+    if matches:
+        return matches[0]
     looked = ", ".join(str(candidate) for candidate in candidates)
     raise BundleProjectError(
-        f"App '{app}' has no directory under `{apps_dir}` (looked at: {looked}). "
-        "Every managed app needs an app directory holding its settings overlays."
+        f"App '{app}' has no directory under {', '.join(map(str, apps_dirs))} "
+        f"(looked at: {looked}). Every managed app needs an app directory holding "
+        "its settings overlays."
     )
 
 
@@ -537,18 +559,20 @@ def resolve_config_sources(
     workspace, environment, then the app's base/platform/environment overlays
     so app settings win. ``settings.local.*`` is never deployed.
     """
+    platform_names = (f"settings.{PLATFORM_OVERLAY}.yaml", f"platform_{PLATFORM_OVERLAY}.yaml")
+    env_names = (f"settings.{env}.yaml", f"env_{env}.yaml")
     candidates: List[Tuple[str, Path]] = [
         ("base", config_dir / "settings.yaml"),
-        ("platform", config_dir / f"settings.{PLATFORM_OVERLAY}.yaml"),
+        ("platform", _first_existing(config_dir, platform_names)),
     ]
     if workspace_id:
         candidates.append(("workspace", config_dir / f"workspace_{workspace_id}.yaml"))
     candidates.extend(
         [
-            ("environment", config_dir / f"settings.{env}.yaml"),
+            ("environment", _first_existing(config_dir, env_names)),
             ("app", app_dir / "settings.yaml"),
-            ("app-platform", app_dir / f"settings.{PLATFORM_OVERLAY}.yaml"),
-            ("app-environment", app_dir / f"settings.{env}.yaml"),
+            ("app-platform", _first_existing(app_dir, platform_names)),
+            ("app-environment", _first_existing(app_dir, env_names)),
         ]
     )
     sources: List[ConfigSource] = []
@@ -562,6 +586,15 @@ def resolve_config_sources(
             )
         )
     return sources
+
+
+def _first_existing(directory: Path, names: Sequence[str]) -> Path:
+    """The canonical file name, or the documented legacy name when only that
+    exists (``platform_<p>.yaml`` / ``env_<e>.yaml``), as the runtime does."""
+    for name in names:
+        if (directory / name).is_file():
+            return directory / name
+    return directory / names[0]
 
 
 def _relative_posix(path: Path, root: Path) -> str:
@@ -671,7 +704,9 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _prepare_output_dir(output_dir: Path, project_root: Path, force: bool) -> None:
+def _prepare_output_dir(
+    output_dir: Path, project_root: Path, protected: Sequence[Path], force: bool
+) -> None:
     resolved_output = output_dir.resolve()
     resolved_root = project_root.resolve()
     if resolved_output == resolved_root or resolved_output in resolved_root.parents:
@@ -679,6 +714,18 @@ def _prepare_output_dir(output_dir: Path, project_root: Path, force: bool) -> No
             f"Output directory `{resolved_output}` contains the project root; choose a "
             "dedicated generated directory (default dist/bundles/databricks)."
         )
+    for source_dir in protected:
+        resolved_source = source_dir.resolve()
+        if (
+            resolved_output == resolved_source
+            or resolved_output in resolved_source.parents
+            or resolved_source in resolved_output.parents
+        ):
+            raise BundleProjectError(
+                f"Output directory `{resolved_output}` overlaps the project input "
+                f"`{resolved_source}`; the output directory is replaced on every build, "
+                "so it must not hold settings or app directories."
+            )
     if resolved_output.exists():
         if not resolved_output.is_dir():
             raise BundleProjectError(f"Output path `{resolved_output}` is not a directory.")
@@ -793,14 +840,14 @@ def _plan_pipelines(
     inputs: BundleInputs,
     project_root: Path,
     config_dir: Path,
-    apps_dir: Path,
+    apps_dirs: Sequence[Path],
     warnings: List[str],
 ) -> List[PipelinePlan]:
     """Resolve every pipeline's app directory, settings sources and (for the
     inline transport) merged settings before anything is written."""
     plan: List[PipelinePlan] = []
     for spec in inputs.pipelines():
-        app_dir = resolve_app_dir(apps_dir, spec.app)
+        app_dir = resolve_app_dir(apps_dirs, spec.app)
         sources = resolve_config_sources(
             project_root, config_dir, app_dir, inputs.runtime_env, inputs.workspace_id
         )
@@ -898,15 +945,13 @@ def build_bundle(
         )
 
     # Resolve everything before writing anything.
-    plan = _plan_pipelines(
-        inputs,
-        project_root,
-        resolve_config_dir(project_root, config_dir),
-        resolve_apps_dir(project_root, apps_dir),
-        warnings,
-    )
+    resolved_config_dir = resolve_config_dir(project_root, config_dir)
+    resolved_apps_dirs = resolve_apps_dirs(project_root, apps_dir)
+    plan = _plan_pipelines(inputs, project_root, resolved_config_dir, resolved_apps_dirs, warnings)
 
-    _prepare_output_dir(resolved_output, project_root, force)
+    protected = [resolved_config_dir, *resolved_apps_dirs]
+    protected.extend(source.path.parent for _, sources, _ in plan for source in sources)
+    _prepare_output_dir(resolved_output, project_root, protected, force)
     files: List[str] = []
     version = _kindling_version()
     header = _GENERATED_HEADER.format(generator=GENERATOR_NAME)

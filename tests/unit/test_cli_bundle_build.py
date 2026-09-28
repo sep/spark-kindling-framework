@@ -477,6 +477,94 @@ def test_missing_app_directory_is_reported(tmp_path):
         bundle.build_bundle(_inputs(apps=("sales-ops", "orders")), project_root=root)
 
 
+def test_apps_are_found_across_both_conventional_roots(tmp_path):
+    root = _write_project(tmp_path / "project")
+    (root / "data-apps" / "orders").mkdir(parents=True)
+    (root / "data-apps" / "orders" / "settings.yaml").write_text(
+        "kindling:\n  storage:\n    table_schema: orders\n", encoding="utf-8"
+    )
+
+    result = bundle.build_bundle(_inputs(apps=("sales-ops", "orders")), project_root=root)
+
+    assert [pipeline["key"] for pipeline in result.manifest["pipelines"]] == [
+        "sales_ops",
+        "orders",
+    ]
+    settings = json.loads(
+        _resource(result, "orders")["configuration"][selector.SETTINGS_JSON_CONFIG_KEY]
+    )
+    assert settings["kindling"]["storage"]["table_schema"] == "orders"
+
+
+def test_app_present_in_both_roots_is_ambiguous(tmp_path):
+    root = _write_project(tmp_path / "project")
+    (root / "data-apps" / "sales_ops").mkdir(parents=True)
+    (root / "data-apps" / "sales_ops" / "settings.yaml").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(bundle.BundleProjectError, match="more than one directory"):
+        bundle.build_bundle(_inputs(), project_root=root)
+    # An explicit root disambiguates.
+    result = bundle.build_bundle(_inputs(), project_root=root, apps_dir=Path("apps"))
+    assert result.manifest["pipelines"][0]["config_sources"][-1]["path"] == (
+        "apps/sales_ops/settings.yaml"
+    )
+
+
+def test_legacy_platform_and_env_file_names_are_honoured_when_canonical_is_absent(tmp_path):
+    root = _write_project(tmp_path / "project")
+    (root / "config" / "settings.prod.yaml").rename(root / "config" / "env_prod.yaml")
+    (root / "config" / "platform_databricks.yaml").write_text(
+        "kindling:\n  telemetry:\n    logging:\n      level: WARNING\n", encoding="utf-8"
+    )
+
+    result = bundle.build_bundle(_inputs(), project_root=root)
+
+    assert [source["path"] for source in result.manifest["pipelines"][0]["config_sources"]] == [
+        "config/settings.yaml",
+        "config/platform_databricks.yaml",
+        "config/env_prod.yaml",
+        "apps/sales_ops/settings.yaml",
+    ]
+    settings = json.loads(
+        _resource(result, "sales_ops")["configuration"][selector.SETTINGS_JSON_CONFIG_KEY]
+    )
+    assert settings["kindling"]["storage"]["table_schema"] == "prod"
+    assert settings["kindling"]["telemetry"]["logging"]["level"] == "WARNING"
+
+
+def test_output_directory_may_not_overlap_project_inputs(tmp_path):
+    root = _write_project(tmp_path / "project")
+
+    for target in (
+        root / "config",
+        root / "apps",
+        root / "apps" / "sales_ops",
+        root / "config" / "sub",
+    ):
+        with pytest.raises(bundle.BundleProjectError, match="overlaps the project input"):
+            bundle.build_bundle(_inputs(), project_root=root, output_dir=target, force=True)
+    assert (root / "config" / "settings.yaml").exists()
+    assert (root / "apps" / "sales_ops" / "settings.yaml").exists()
+
+
+def test_duplicate_wheel_basenames_are_rejected(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    for directory in ("a", "b"):
+        (tmp_path / directory / "orders_app-1.0.0-py3-none-any.whl").write_bytes(b"x")
+
+    with pytest.raises(bundle.BundleInputError, match="must be unique"):
+        bundle.resolve_bundle_inputs(
+            {
+                "wheels": (
+                    tmp_path / "a" / "orders_app-1.0.0-py3-none-any.whl",
+                    tmp_path / "b" / "orders_app-1.0.0-py3-none-any.whl",
+                )
+            },
+            _REQUIRED_ENV,
+        )
+
+
 def test_missing_apps_directory_names_candidates(tmp_path):
     root = tmp_path / "project"
     (root / "config").mkdir(parents=True)
@@ -591,6 +679,10 @@ def test_cli_options_override_environment_and_collections_replace():
         (
             {**_REQUIRED_ENV, "KINDLING_BUNDLE_APPS": '"orders"'},
             "KINDLING_BUNDLE_APPS must be a JSON array",
+        ),
+        (
+            {**_REQUIRED_ENV, "KINDLING_BUNDLE_DEPENDENCIES": '["   "]'},
+            "KINDLING_BUNDLE_DEPENDENCIES must be a JSON array of non-empty strings",
         ),
         ({**_REQUIRED_ENV, "KINDLING_BUNDLE_CONTINUOUS": "yes"}, "exactly 'true' or 'false'"),
         ({**_REQUIRED_ENV, "KINDLING_BUNDLE_WORKSPACE_HOST": "adb-1"}, "https://"),
