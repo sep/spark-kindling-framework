@@ -403,6 +403,15 @@ def test_missing_databricks_extension_warns(tmp_path):
     assert any("spark-kindling-ext-databricks" in warning for warning in result.warnings)
     pinned = _build_example(tmp_path / "b", dependencies=("Spark-Kindling-Ext-Databricks>=0.1.15",))
     assert pinned.warnings == []
+    volume = _build_example(
+        tmp_path / "c",
+        dependencies=(
+            "/Volumes/cat/schema/artifacts/packages/spark_kindling-0.12.48-py3-none-any.whl",
+            "/Volumes/cat/schema/artifacts/packages/"
+            "spark_kindling_ext_databricks-0.1.15-py3-none-any.whl",
+        ),
+    )
+    assert volume.warnings == []
 
 
 # --------------------------------------------------------------------------- #

@@ -804,13 +804,16 @@ _DATABRICKS_EXTENSION_DIST = "spark-kindling-ext-databricks"
 
 
 def _provides_databricks_extension(inputs: BundleInputs) -> bool:
-    normalized_dist = _DATABRICKS_EXTENSION_DIST.replace("-", "_")
+    """True when a dependency spec, a dependency path, or a staged wheel
+    supplies the Databricks extension the generated source imports."""
+    dist = _DATABRICKS_EXTENSION_DIST.replace("-", "_")
     for dependency in inputs.dependencies:
-        if re.match(
-            rf"^{normalized_dist}(\s*[=<>!~\[]|$)", dependency.strip().lower().replace("-", "_")
-        ):
+        candidate = dependency.strip().lower().replace("-", "_")
+        if re.match(rf"^{dist}(\s*[=<>!~\[]|$)", candidate):
             return True
-    return any(wheel.name.lower().startswith(f"{normalized_dist}-") for wheel in inputs.wheels)
+        if PurePosixPath(candidate).name.startswith(f"{dist}_") and candidate.endswith(".whl"):
+            return True
+    return any(wheel.name.lower().startswith(f"{dist}-") for wheel in inputs.wheels)
 
 
 def _plan_pipelines(
