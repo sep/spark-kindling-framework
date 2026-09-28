@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import json
 import logging
 from types import CodeType, ModuleType
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
@@ -26,10 +27,14 @@ from kindling.bootstrap import (
 APP_ENTRY_POINT_GROUP = "spark_kindling.data_apps"
 DATA_APP_CONFIG_KEY = "kindling.data_app"
 ALLOWED_APPS_CONFIG_KEY = "kindling.lakeflow.allowed_apps"
-#: Canonical Lakeflow pipeline-configuration key for explicit settings files.
-#: (``kindling.lakeflow.config_files``, the comma-separated alias #281
-#: deprecated, was removed in 0.12.47 -- see #298; it is now simply ignored.)
-CANONICAL_CONFIG_FILES_CONFIG_KEY = "spark.kindling.bootstrap.config_files"
+#: Settings-file lists are not a Lakeflow concept any more: configuration
+#: arrives inline (``SETTINGS_JSON_CONFIG_KEY``). A pipeline still setting
+#: ``spark.kindling.bootstrap.config_files`` (or the alias removed in 0.12.47)
+#: gets a warning and the value is dropped rather than read from the workspace.
+_REMOVED_CONFIG_FILES_KEYS = (
+    "spark.kindling.bootstrap.config_files",
+    "kindling.lakeflow.config_files",
+)
 #: Comma-separated pipeline-configuration keys to bridge by point lookup.
 #: Restricted runtimes (serverless / shared-access clusters) allow
 #: ``spark.conf.get`` on pipeline configuration but block every enumeration
@@ -37,6 +42,15 @@ CANONICAL_CONFIG_FILES_CONFIG_KEY = "spark.kindling.bootstrap.config_files"
 CONFIG_KEYS_CONFIG_KEY = "kindling.lakeflow.config_keys"
 #: Comma-separated pipe ids to declare; unset declares every registered pipe.
 PIPES_CONFIG_KEY = "kindling.lakeflow.pipes"
+#: JSON object holding an already-merged Kindling settings tree (the same
+#: shape as a settings YAML file: top-level ``kindling``, ``dataentities``,
+#: ``datapipes``, ``*-bytag`` ... sections). The inline transport written by
+#: ``kindling bundle build``: the pipeline resource carries the effective
+#: configuration itself, so declaration time reads no workspace files or
+#: volumes. Sections are injected literally -- dotted entity ids and tag keys
+#: are never split into paths -- and a flat pipeline key naming the same leaf
+#: still wins, as a just-in-time override.
+SETTINGS_JSON_CONFIG_KEY = "kindling.lakeflow.settings_json"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -101,7 +115,7 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
         DATA_APP_CONFIG_KEY,
         ALLOWED_APPS_CONFIG_KEY,
         CONFIG_KEYS_CONFIG_KEY,
-        CANONICAL_CONFIG_FILES_CONFIG_KEY,
+        SETTINGS_JSON_CONFIG_KEY,
         PIPES_CONFIG_KEY,
         # Restricted runtimes point-look-up only these defaults, so a key the
         # declaration path reads must be named here or it is simply absent —
@@ -119,12 +133,22 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
         *configured_keys,
     )
     spark_items = tuple(iter_spark_conf_items(spark, extra_keys=lookup_keys))
-    config: Dict[str, Any] = map_spark_kindling_items(spark_items)
+    # Inline settings sections go in first so every flat pipeline key merged
+    # after them overrides the same leaf (DynaconfConfig merges initial_config
+    # in insertion order).
+    config: Dict[str, Any] = _inline_settings_sections(
+        spark_conf_get(spark, SETTINGS_JSON_CONFIG_KEY)
+    )
+    config.update(map_spark_kindling_items(spark_items))
     for key, value in spark_items:
-        if not isinstance(key, str):
+        if not isinstance(key, str) or key == SETTINGS_JSON_CONFIG_KEY:
+            continue
+        if key in _REMOVED_CONFIG_FILES_KEYS:
             continue
         if key.startswith(("kindling.", "datapipes.")):
             config[key] = value
+    _drop_removed_config_files(config, spark_items)
+    _lift_inline_platform(config)
 
     # These are read before initialization, so make the exact selected values
     # available to ConfigService even when a fake or runtime only exposes get().
@@ -135,6 +159,62 @@ def _pipeline_config_for_kindling(spark: Any, app_name: str) -> Dict[str, Any]:
 
     config["declaration_only"] = True
     return config
+
+
+def _inline_settings_sections(raw: Optional[str]) -> Dict[str, Any]:
+    """Parse ``kindling.lakeflow.settings_json`` into literal top-level sections."""
+    if raw is None or not str(raw).strip():
+        return {}
+    try:
+        sections = json.loads(raw)
+    except ValueError as exc:
+        raise LakeflowAppSelectionError(
+            f"'{SETTINGS_JSON_CONFIG_KEY}' must be a JSON object of settings sections: {exc}"
+        ) from exc
+    if not isinstance(sections, dict):
+        raise LakeflowAppSelectionError(
+            f"'{SETTINGS_JSON_CONFIG_KEY}' must be a JSON object of settings sections "
+            f"(got {type(sections).__name__})."
+        )
+    return {str(section): value for section, value in sections.items()}
+
+
+def _drop_removed_config_files(config: Dict[str, Any], spark_items: Any) -> None:
+    """Refuse settings-file lists: warn once and drop the bridged value.
+
+    ``map_spark_kindling_items`` maps ``spark.kindling.bootstrap.config_files``
+    to the bootstrap ``config_files`` key on runtimes that can enumerate
+    configuration; Lakeflow pipelines carry their settings inline instead.
+    """
+    present = [key for key, _ in spark_items if key in _REMOVED_CONFIG_FILES_KEYS]
+    if not present and "config_files" not in config:
+        return
+    config.pop("config_files", None)
+    _LOGGER.warning(
+        "Ignoring %s: Lakeflow pipelines do not load settings files. Put the merged "
+        "settings in '%s' (kindling bundle build writes it).",
+        ", ".join(present) or "config_files",
+        SETTINGS_JSON_CONFIG_KEY,
+    )
+
+
+def _lift_inline_platform(config: Dict[str, Any]) -> None:
+    """Expose an inline ``kindling.platform.environment`` as the flat key.
+
+    Bootstrap peeks that key before the configuration service exists, the
+    way it peeks explicit settings files; a nested inline section would
+    otherwise be invisible to early platform selection. A flat pipeline key
+    already present keeps precedence.
+    """
+    kindling_section = config.get("kindling")
+    if not isinstance(kindling_section, dict):
+        return
+    platform_section = kindling_section.get("platform")
+    if not isinstance(platform_section, dict):
+        return
+    environment = platform_section.get("environment")
+    if environment is not None:
+        config.setdefault("kindling.platform.environment", environment)
 
 
 def _parse_allowlist(raw: Optional[str]) -> set[str]:

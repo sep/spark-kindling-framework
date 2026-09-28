@@ -145,13 +145,16 @@ def test_declaration_only_falls_back_when_platform_service_constructor_raises():
         call("databricks", ANY, result["logger"]),
         call("standalone", ANY, result["logger"]),
     ]
+    # SparkLogger.warning(msg) takes one pre-formatted message; printf-style
+    # arguments raised TypeError inside the fallback on a real serverless
+    # pipeline, masking the original platform-construction error.
     assert any(
-        warning.args[:2]
+        len(warning.args) == 1
+        and warning.args[0]
         == (
-            "Platform service '%s' could not be constructed during "
+            "Platform service 'databricks' could not be constructed during "
             "declaration-only initialization; falling back to standalone "
-            "service for declaration-time operations: %s",
-            "databricks",
+            "service for declaration-time operations: No workspace_id provided"
         )
         for warning in result["logger"].warning.call_args_list
     )

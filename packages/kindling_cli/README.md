@@ -38,8 +38,61 @@ pip install spark-kindling-sdk
 - `kindling runner status` — check whether the runner is installed and healthy
 - `kindling runner repair` — reinstall the runner (delete and recreate)
 - `kindling runner delete` — remove the runner from a platform
+- `kindling bundle build` — precompile a project into a Databricks bundle (`databricks.yml`, pipeline resources, generic Lakeflow source, manifest) for `databricks bundle validate/deploy/run`
 
 Run any command with `--help` for full options.
+
+## Databricks bundles
+
+`kindling bundle build` assembles a disposable Databricks bundle from a
+project's `config/` overlays and `data-apps/` (or `apps/`) directories. It
+starts no Spark session and imports no app code. Deployment inputs come from
+options or `KINDLING_BUNDLE_*` environment variables (options win; runtime
+settings files are never consulted):
+
+```bash
+kindling bundle build \
+  --name sales --target dev --app orders \
+  --workspace-host https://adb-123.azuredatabricks.net \
+  --catalog dev_sales --schema orders \
+  --wheel dist/spark_kindling-0.12.49-py3-none-any.whl \
+  --wheel dist/spark_kindling_ext_sdp-0.3.4-py3-none-any.whl \
+  --wheel dist/spark_kindling_ext_databricks-0.2.0-py3-none-any.whl \
+  --wheel dist/orders_kindling_app-1.4.0-py3-none-any.whl
+
+cd dist/bundles/databricks
+databricks bundle validate -t dev
+databricks bundle deploy -t dev
+databricks bundle run -t dev orders
+```
+
+Settings are found by convention, never listed: the shared `config/`
+overlays (`settings.yaml`, `settings.databricks.yaml`, `workspace_<id>.yaml`,
+`settings.<env>.yaml`) and then the app's own `settings*.yaml` are merged at
+build time in the runtime's order, and each pipeline resource carries the
+result inline as `kindling.lakeflow.settings_json`. The deployed pipeline
+reads no settings files from the workspace or a volume, and the resource file
+is the complete, reviewable description of what the pipeline runs with.
+`--app-options-json` sets per-app catalog/schema/continuous/pipes or splits
+an app into several pipelines (`{"orders": {"pipelines": {"bronze": {...}}}}`).
+`manifest.json` records the generator version, inputs, and the SHA-256 of
+every settings file and wheel; no timestamps, so identical inputs give
+identical output. See `docs/proposals/databricks_bundle_deployment.md`.
+
+Wheels passed with `--wheel` are uploaded by `databricks bundle deploy` under
+the bundle's own workspace root and become the pipeline environment's
+dependencies in the order given. Serverless installs them one at a time and
+Kindling packages are not on PyPI, so list dependencies first: framework
+core, then `spark-kindling-ext-sdp`, then `spark-kindling-ext-databricks`,
+then the app wheel.
+
+The default `--workspace-root` is `/Workspace/Shared/kindling/<name>/<target>`:
+a stable path that survives redeploys by different principals, which is
+what shared dev/prod targets need. `databricks bundle validate` warns that
+`/Workspace/Shared` is writable by all workspace users; for a personal
+development target pass `--workspace-root /Workspace/Users/<you>/...`, and
+for shared targets either accept the warning or grant the intended group
+through `--permissions-json`.
 
 ## Scaffolding
 

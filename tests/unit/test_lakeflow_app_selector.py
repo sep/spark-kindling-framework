@@ -242,7 +242,6 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
             "kindling.lakeflow.allowed_apps": "orders",
             "datapipes.silver.orders.engine": '{"dataset_type": "materialized_view"}',
             "spark.kindling.bootstrap.load_lake": "false",
-            "spark.kindling.bootstrap.config_files": '["/Workspace/Shared/settings.yaml"]',
             "spark.sql.shuffle.partitions": "10",
         }
     )
@@ -266,7 +265,7 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
     assert captured["config"]["kindling.data_app"] == "orders"
     assert captured["config"]["kindling.lakeflow.allowed_apps"] == "orders"
     assert captured["config"]["use_lake_packages"] is False
-    assert captured["config"]["config_files"] == ["/Workspace/Shared/settings.yaml"]
+    assert "config_files" not in captured["config"]
     assert captured["config"]["declaration_only"] is True
     assert "datapipes.silver.orders.engine" in captured["config"]
     assert "spark.sql.shuffle.partitions" not in captured["config"]
@@ -526,37 +525,31 @@ def test_restricted_runtime_bridges_named_config_keys():
     assert "kindling.unrelated" not in config
 
 
-def test_canonical_config_files_key_is_point_looked_up_without_config_keys():
-    config = selector._pipeline_config_for_kindling(
-        SparkPointLookupOnly(
-            {
-                "kindling.data_app": "orders",
-                selector.CANONICAL_CONFIG_FILES_CONFIG_KEY: '["/Workspace/settings.yaml"]',
-            }
-        ),
-        "orders",
-    )
-
-    assert config["config_files"] == ["/Workspace/settings.yaml"]
-
-
-def test_removed_lakeflow_config_files_alias_is_ignored(caplog):
-    """`kindling.lakeflow.config_files` (deprecated by #281, removed by #298) is
-    neither bridged nor warned about: a pipeline still setting it loads no
-    files from it and must move to `spark.kindling.bootstrap.config_files`."""
+@pytest.mark.parametrize(
+    "key",
+    ["spark.kindling.bootstrap.config_files", "kindling.lakeflow.config_files"],
+)
+@pytest.mark.parametrize("spark_factory", [FakeSpark, SparkPointLookupOnly])
+def test_settings_file_lists_are_dropped_with_a_warning(caplog, key, spark_factory):
+    """Lakeflow pipelines carry settings inline; a settings-file list is not
+    read from the workspace on any runtime, enumerable or point-lookup-only."""
     with caplog.at_level("WARNING", logger=selector.__name__):
         config = selector._pipeline_config_for_kindling(
-            FakeSpark(
+            spark_factory(
                 {
                     "kindling.data_app": "orders",
-                    "kindling.lakeflow.config_files": "legacy.yaml,dbfs:/other.yaml",
+                    key: '["/Workspace/Shared/settings.yaml"]',
+                    "kindling.lakeflow.config_keys": "kindling.storage.table_catalog",
+                    "kindling.storage.table_catalog": "main",
                 }
             ),
             "orders",
         )
 
     assert "config_files" not in config
-    assert "kindling.lakeflow.config_files" not in caplog.text
+    assert key not in config
+    assert config["kindling.storage.table_catalog"] == "main"
+    assert selector.SETTINGS_JSON_CONFIG_KEY in caplog.text
 
 
 _REAL_SELECTOR_REPRO = textwrap.dedent("""
@@ -572,10 +565,10 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
     from kindling_ext_databricks import lakeflow_app_selector as selector
     from pyspark.sql.types import StringType, StructField, StructType
 
+    import yaml
+
     tmp_path, result_path = sys.argv[1], sys.argv[2]
-    settings_path = f"{tmp_path}/settings.yaml"
-    with open(settings_path, "w", encoding="utf-8") as config_file:
-        config_file.write(
+    settings_yaml = (
             "kindling:\\n"
             "  data_app: yaml_app\\n"
             "  lakeflow:\\n"
@@ -600,7 +593,8 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
             "    tags:\\n"
             "      from_datapipes: yaml\\n"
             "    output_type: memory\\n"
-        )
+    )
+    settings_json = json.dumps(yaml.safe_load(settings_yaml))
 
     class FakeConf:
         def __init__(self, values):
@@ -673,7 +667,7 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
                 "kindling.data_app": "orders",
                 "kindling.lakeflow.allowed_apps": "orders",
                 "kindling.platform.environment": "standalone",
-                selector.CANONICAL_CONFIG_FILES_CONFIG_KEY: json.dumps([settings_path]),
+                selector.SETTINGS_JSON_CONFIG_KEY: settings_json,
                 "kindling.sdp.dataset_naming": "normalized",
                 "datapipes.bronze.ingest_telemetry.engine.sdp.dataset_type": "streaming_table",
         }
@@ -716,13 +710,15 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
     """)
 
 
-def test_config_files_reach_real_initialize_registry_overlays_and_reentry(tmp_path):
+def test_inline_settings_reach_real_initialize_registry_overlays_and_reentry(tmp_path):
     result = _run_repro(_REAL_SELECTOR_REPRO, tmp_path)
 
     assert result["first_plan"] == ["bronze.ingest_telemetry"]
     assert result["second_plan"] == ["bronze.ingest_telemetry"]
     assert result["same_config_service"] is True
-    assert result["config_files"] == [str(tmp_path / "settings.yaml")]
+    # Inline settings, not a file list, reached initialization: the
+    # dataentities/bytag overlays asserted below only exist in settings_json.
+    assert result["config_files"] is None
     assert result["data_app"] == "orders"
     assert result["allowlist"] == "orders"
     assert result["dataset_naming"] == "normalized"
@@ -746,10 +742,8 @@ def test_config_files_reach_real_initialize_registry_overlays_and_reentry(tmp_pa
 
 
 def test_structured_config_cannot_authorize_non_allowlisted_app(monkeypatch, tmp_path):
-    settings = tmp_path / "settings.yaml"
-    settings.write_text(
-        "kindling:\n" "  data_app: customers\n" "  lakeflow:\n" "    allowed_apps: orders\n",
-        encoding="utf-8",
+    settings_json = json.dumps(
+        {"kindling": {"data_app": "customers", "lakeflow": {"allowed_apps": "orders"}}}
     )
     monkeypatch.setattr(
         selector,
@@ -763,7 +757,7 @@ def test_structured_config_cannot_authorize_non_allowlisted_app(monkeypatch, tmp
                 {
                     "kindling.data_app": "orders",
                     "kindling.lakeflow.allowed_apps": "customers",
-                    selector.CANONICAL_CONFIG_FILES_CONFIG_KEY: str(settings),
+                    selector.SETTINGS_JSON_CONFIG_KEY: settings_json,
                 }
             )
         )
@@ -823,3 +817,138 @@ def test_declared_pipes_are_filtered_by_config(monkeypatch):
         "temporal.chain.events.default",
         "temporal.chain.episodes.default",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Inline settings transport: kindling.lakeflow.settings_json
+# --------------------------------------------------------------------------- #
+
+_INLINE_SETTINGS = {
+    "kindling": {
+        "platform": {"environment": "databricks"},
+        "telemetry": {"logging": {"level": "CRITICAL"}},
+        "storage": {"table_schema": "cwmdp"},
+    },
+    "dataentities": {"silver.events": {"tags": {"provider.table_name": "dev_silver.cwmdp.events"}}},
+    "datapipes": {"silver.derive_events": {"output_type": "delta"}},
+}
+
+
+def _load_shared_config(initial_config):
+    from kindling.spark_config import DynaconfConfig
+
+    service = DynaconfConfig()
+    with patch(
+        "kindling.spark_config.get_or_create_spark_session",
+        return_value=SimpleNamespace(conf=FakeConf()),
+    ):
+        service.initialize(
+            config_files=initial_config.get("config_files"),
+            initial_config=initial_config,
+            environment=initial_config.get("environment", "development"),
+        )
+    return service
+
+
+def test_settings_json_sections_are_injected_literally():
+    config = selector._pipeline_config_for_kindling(
+        FakeSpark(
+            {
+                "kindling.data_app": "orders",
+                selector.SETTINGS_JSON_CONFIG_KEY: json.dumps(_INLINE_SETTINGS),
+            }
+        ),
+        "orders",
+    )
+
+    assert config["kindling"] == _INLINE_SETTINGS["kindling"]
+    assert config["dataentities"] == _INLINE_SETTINGS["dataentities"]
+    assert config["datapipes"] == _INLINE_SETTINGS["datapipes"]
+    # The raw JSON string is consumed, never forwarded as a flat setting.
+    assert selector.SETTINGS_JSON_CONFIG_KEY not in config
+    assert config["declaration_only"] is True
+
+    service = _load_shared_config(config)
+    assert service.get("kindling.telemetry.logging.level") == "CRITICAL"
+    assert service.get("kindling.storage.table_schema") == "cwmdp"
+    dataentities = service.get("dataentities")
+    assert dataentities["silver.events"]["tags"]["provider.table_name"] == "dev_silver.cwmdp.events"
+    assert service.get("datapipes")["silver.derive_events"]["output_type"] == "delta"
+
+
+def test_flat_pipeline_keys_override_inline_settings_leaves():
+    config = selector._pipeline_config_for_kindling(
+        FakeSpark(
+            {
+                "kindling.data_app": "orders",
+                selector.SETTINGS_JSON_CONFIG_KEY: json.dumps(_INLINE_SETTINGS),
+                "kindling.telemetry.logging.level": "DEBUG",
+                "datapipes.silver.derive_events.output_type": "memory",
+            }
+        ),
+        "orders",
+    )
+    service = _load_shared_config(config)
+
+    assert service.get("kindling.telemetry.logging.level") == "DEBUG"
+    assert service.get("datapipes.silver.derive_events.output_type") == "memory"
+    # Untouched inline leaves survive next to the override.
+    assert service.get("kindling.storage.table_schema") == "cwmdp"
+
+
+def test_settings_json_is_point_looked_up_on_restricted_runtimes():
+    config = selector._pipeline_config_for_kindling(
+        SparkPointLookupOnly(
+            {
+                "kindling.data_app": "orders",
+                selector.SETTINGS_JSON_CONFIG_KEY: json.dumps(_INLINE_SETTINGS),
+            }
+        ),
+        "orders",
+    )
+
+    assert config["dataentities"] == _INLINE_SETTINGS["dataentities"]
+
+
+def test_inline_platform_environment_is_lifted_for_early_platform_selection():
+    inline = selector._pipeline_config_for_kindling(
+        FakeSpark(
+            {
+                "kindling.data_app": "orders",
+                selector.SETTINGS_JSON_CONFIG_KEY: json.dumps(_INLINE_SETTINGS),
+            }
+        ),
+        "orders",
+    )
+    assert inline["kindling.platform.environment"] == "databricks"
+    assert "platform" not in inline
+
+    explicit = selector._pipeline_config_for_kindling(
+        FakeSpark(
+            {
+                "kindling.data_app": "orders",
+                selector.SETTINGS_JSON_CONFIG_KEY: json.dumps(_INLINE_SETTINGS),
+                "kindling.platform.environment": "standalone",
+            }
+        ),
+        "orders",
+    )
+    assert explicit["kindling.platform.environment"] == "standalone"
+
+
+@pytest.mark.parametrize("raw", ["{not json", '["a", "b"]', '"scalar"'])
+def test_settings_json_must_be_a_json_object(raw):
+    with pytest.raises(selector.LakeflowAppSelectionError, match="settings_json"):
+        selector._pipeline_config_for_kindling(
+            FakeSpark({"kindling.data_app": "orders", selector.SETTINGS_JSON_CONFIG_KEY: raw}),
+            "orders",
+        )
+
+
+def test_empty_settings_json_is_ignored():
+    config = selector._pipeline_config_for_kindling(
+        FakeSpark({"kindling.data_app": "orders", selector.SETTINGS_JSON_CONFIG_KEY: "  "}),
+        "orders",
+    )
+    assert "kindling" not in config
+    assert selector.SETTINGS_JSON_CONFIG_KEY not in config

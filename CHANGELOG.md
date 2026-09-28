@@ -2,6 +2,58 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Added
+
+- **`kindling bundle build`: precompile a Kindling project into a Databricks
+  bundle** (proposal `docs/proposals/databricks_bundle_deployment.md`). Reads
+  the project's settings overlays (`config/settings.yaml`,
+  `settings.databricks.yaml`, `workspace_<id>.yaml`, `settings.<env>.yaml`,
+  then the app's `settings*.yaml`) and typed deployment inputs from options or
+  `KINDLING_BUNDLE_*` variables, and writes a disposable bundle directory
+  (default `dist/bundles/databricks`): `databricks.yml`, one
+  `resources/<key>.pipeline.yml` per pipeline (serverless Lakeflow pipeline
+  running the generic `declare_from_pipeline_config()` source), the source
+  file, staged wheels, and a provenance `manifest.json` with input hashes.
+  Per-app catalog/schema/continuous/pipe subsets and multiple pipelines per
+  app come from `--app-options-json`. The Databricks CLI still owns
+  validate/deploy/run; the command prints the next steps.
+- **Lakeflow settings travel inline: `kindling.lakeflow.settings_json`**
+  (`spark-kindling-ext-databricks` 0.2.0). The selector accepts a JSON object
+  holding an already-merged settings tree and injects its top-level sections
+  literally, so dotted entity ids and tag keys are never split into paths and
+  a flat pipeline key naming the same leaf still wins. `kindling bundle build`
+  finds the project's settings by convention and writes this value, so the
+  deployed pipeline reads no settings files from the workspace or a volume.
+- End-to-end coverage:
+  `tests/system/extensions/databricks/test_bundle_build_platform.py` builds
+  this checkout's wheels, generates a bundle, deploys and runs it through the
+  Databricks CLI, verifies the outputs via SQL, and destroys it.
+
+### Removed
+
+- **Settings-file lists are no longer a Lakeflow concept.** The selector
+  stops reading `spark.kindling.bootstrap.config_files` (and the long-removed
+  `kindling.lakeflow.config_files` alias): a pipeline still setting either
+  gets a warning and the value is dropped, never read from the workspace.
+  Settings are found by convention (`config/` overlays, then the app's
+  `settings*.yaml`) and carried inline. `examples/lakeflow-telemetry` is now a
+  project plus generated `bundle/` output pinned by a drift test; the
+  hand-written `databricks.yml` with workspace file paths is gone. The
+  runtime's own artifacts-storage discovery is unchanged.
+
+### Fixed
+
+- **Declaration-only platform fallback crashed instead of falling back.**
+  When the Databricks platform service cannot be constructed inside a
+  serverless Lakeflow pipeline (no detectable workspace id), bootstrap falls
+  back to the standalone service for declaration-time operations. The
+  fallback's warning used printf-style arguments, which `SparkLogger.warning`
+  does not accept, so every such pipeline failed with a `TypeError` that hid
+  the original error. Found by deploying a `kindling bundle build` bundle to a
+  real serverless pipeline.
+
 ## [0.12.48] - 2026-09-23
 
 ### Added

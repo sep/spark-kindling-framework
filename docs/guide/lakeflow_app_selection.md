@@ -78,20 +78,15 @@ configuration values:
   app-selection keys automatically; name any further keys you need in
   `kindling.lakeflow.config_keys` (comma-separated) and the selector
   bridges each by point lookup.
-- `spark.kindling.bootstrap.config_files` is read by direct point lookup, so
-  the canonical explicit-file path works when only `RuntimeConfig.get` is
-  available. Use a JSON array string for several files. Do not list it in
-  `kindling.lakeflow.config_keys`; that setting is only for additional flat
-  keys after enumeration fails. Use
-  [Databricks Asset Bundle config promotion](dab_config_promotion.md) to deploy
-  companion YAML and pass the resulting paths. That guide documents
-  `/Workspace/...` reads for UC shared/standard access mode clusters and jobs;
-  `/Workspace/...` readability from a Lakeflow serverless pipeline remains
-  unverified, so use a Unity Catalog volume path when you need a confirmed
-  pipeline-readable location.
+- Settings are carried inline in the pipeline configuration
+  (`kindling.lakeflow.settings_json`, below), read by direct point lookup.
+  Lakeflow pipelines do not load settings files: a pipeline that still sets
+  `spark.kindling.bootstrap.config_files` gets a warning and the value is
+  dropped. `kindling bundle build` finds the project's settings by convention
+  and writes the inline value.
 - The selector sets `declaration_only=true` instead of defaulting the
   platform to `standalone`. Platform identity remains real configuration:
-  `kindling.platform.environment` from explicit settings files or
+  `kindling.platform.environment` from the inline settings or
   `spark.kindling.bootstrap.artifacts_storage_path` discovery can still select
   Databricks platform layers. Under `declaration_only`, dependency
   installation, workspace package loading, watermark registration, and
@@ -101,6 +96,31 @@ configuration values:
 - Serverless environments cache installed wheels by requirement set: a
   re-uploaded wheel with the same filename is silently ignored. Bump the
   wheel version on every change.
+
+## Inline settings (`kindling.lakeflow.settings_json`)
+
+The pipeline configuration carries the effective settings tree itself:
+
+```yaml
+configuration:
+  "kindling.data_app": telemetry
+  "kindling.lakeflow.settings_json": '{"kindling":{"storage":{"table_schema":"cwmdp"}},"dataentities":{"silver.events":{"tags":{"provider.table_name":"dev_silver.cwmdp.events"}}}}'
+```
+
+The value is a JSON object with the same shape as a settings YAML file. The
+selector injects each top-level section (`kindling`, `dataentities`,
+`datapipes`, `dataentities-bytag`, ...) literally into Kindling's
+configuration before initialization, so dotted entity ids and tag keys keep
+their meaning. A flat pipeline key such as `kindling.telemetry.logging.level`
+still overrides the same leaf. An inline `kindling.platform.environment` is
+honoured by early platform selection exactly like one read from a settings
+file. The key is point-looked-up on restricted runtimes without being named
+in `kindling.lakeflow.config_keys`.
+
+`kindling bundle build` writes this key by default after merging the project's
+overlays in the runtime's order (see the
+[CLI README](../../packages/kindling_cli/README.md#databricks-bundles)); write
+it by hand only for small pipelines.
 
 ## Dataset naming
 
