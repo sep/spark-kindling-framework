@@ -1,6 +1,6 @@
 # Kindling Framework - DevContainer Setup
 
-This development container provides a complete environment for working with the Kindling framework, including Spark, Azure CLI, and all necessary Python packages.
+This development container provides a complete environment for working with the Kindling framework, including Spark, the Azure, GitHub and Databricks CLIs, and all necessary Python packages.
 
 ## Quick Start
 
@@ -12,9 +12,11 @@ This development container provides a complete environment for working with the 
 ## What's Included
 
 - **Python 3.11** - Latest stable Python
-- **PySpark 3.4.3** - Apache Spark in local mode
-- **Java 11** - LTS version compatible with Spark 3.4
+- **PySpark 3.5.5** - Apache Spark in local mode
+- **Java 21** - LTS version used for Spark 3.5 local development
 - **Azure CLI** - For Azure authentication and resource management
+- **GitHub CLI** (`gh`) - Pull requests, releases, and API access
+- **Databricks CLI** (`databricks`, pinned in the Dockerfile) - Validate, deploy and run Databricks bundles, including the output of `kindling bundle build`
 - **Azure Python SDKs** - `azure-identity`, `azure-storage-blob`, `azure-core`
 - **Poetry** - Dependency management
 - **VS Code Extensions** - Python, Pylance, Jupyter, YAML, Docker
@@ -86,6 +88,26 @@ credential = DefaultAzureCredential()
 # Access Azure storage
 account_url = "https://mystorageacct.dfs.core.windows.net"
 service_client = BlobServiceClient(account_url, credential=credential)
+```
+
+## Databricks CLI
+
+The container ships the Databricks CLI at the version pinned by
+`DATABRICKS_CLI_VERSION` in the Dockerfile. Authenticate against a workspace
+before deploying (`bundle validate` also needs workspace access to resolve
+the target):
+
+```bash
+databricks auth login --host https://adb-<workspace>.azuredatabricks.net
+# or export DATABRICKS_HOST and DATABRICKS_TOKEN / ARM_* service principal credentials
+```
+
+Then, from a generated bundle directory (see `kindling bundle build --help`):
+
+```bash
+databricks bundle validate -t dev
+databricks bundle deploy -t dev
+databricks bundle run -t dev <pipeline_key>
 ```
 
 ## Java Version

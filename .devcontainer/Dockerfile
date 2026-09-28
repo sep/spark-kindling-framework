@@ -27,6 +27,22 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Databricks CLI (validate/deploy/run bundles, e.g. the output of
+# `kindling bundle build`). Pinned and verified against the release checksums;
+# bump DATABRICKS_CLI_VERSION deliberately and re-run the bundle tests.
+ARG DATABRICKS_CLI_VERSION=1.18.0
+RUN set -eux; arch="$(dpkg --print-architecture)"; \
+    base="https://github.com/databricks/cli/releases/download/v${DATABRICKS_CLI_VERSION}"; \
+    tarball="databricks_cli_${DATABRICKS_CLI_VERSION}_linux_${arch}.tar.gz"; \
+    cd /tmp \
+    && curl -fsSL -o "${tarball}" "${base}/${tarball}" \
+    && curl -fsSL -o SHA256SUMS "${base}/databricks_cli_${DATABRICKS_CLI_VERSION}_SHA256SUMS" \
+    && sha256sum --check --ignore-missing SHA256SUMS \
+    && tar -xzf "${tarball}" databricks \
+    && install -m 0755 databricks /usr/local/bin/databricks \
+    && rm -f "${tarball}" SHA256SUMS databricks \
+    && databricks --version
+
 # Set Java environment (Java 21 for Spark 3.5)
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 ENV PATH="${JAVA_HOME}/bin:${PATH}"

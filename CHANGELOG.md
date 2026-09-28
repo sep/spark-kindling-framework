@@ -54,6 +54,15 @@ All notable changes to spark-kindling are documented here.
   the original error. Found by deploying a `kindling bundle build` bundle to a
   real serverless pipeline.
 
+### Changed
+
+- **Devcontainer ships the Databricks CLI** (pinned `DATABRICKS_CLI_VERSION`,
+  currently 1.18.0, downloaded from the GitHub release and verified against
+  its `SHA256SUMS`). `databricks bundle validate/deploy/run` now works inside
+  the container without manual setup, which is what the `kindling bundle
+  build` workflow hands off to. Rebuild the container (or pull the republished
+  image) to pick it up.
+
 ## [0.12.48] - 2026-09-23
 
 ### Added
