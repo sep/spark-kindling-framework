@@ -93,7 +93,8 @@ service_client = BlobServiceClient(account_url, credential=credential)
 ## Databricks CLI
 
 The container ships the Databricks CLI at the version pinned by
-`DATABRICKS_CLI_VERSION` in the Dockerfile. Authenticate against a workspace
+`DATABRICKS_CLI_VERSION` in the Dockerfile (both this directory's Dockerfile and
+the published domain image, `.github/Dockerfile.devcontainer`). Authenticate against a workspace
 before deploying (`bundle validate` also needs workspace access to resolve
 the target):
 
