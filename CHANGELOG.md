@@ -2,7 +2,7 @@
 
 All notable changes to spark-kindling are documented here.
 
-## Unreleased
+## [0.12.49] - 2026-09-29
 
 ### Added
 
