@@ -292,7 +292,16 @@ def wrap_execute(
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         base_kwargs = {key: value for key, value in kwargs.items() if key in original_keys}
         extra_kwargs = {key: kwargs[key] for key in added_keys if key in kwargs}
-        result = original(*args, **base_kwargs)
+        try:
+            result = original(*args, **base_kwargs)
+        except TypeError:
+            # Streaming's compatibility path calls a single-input execute
+            # positionally when the keyword form does not fit its signature
+            # (``def transform(df)``); it can no longer do so through this
+            # wrapper once inputs were added, so mirror that retry here.
+            if args or len(original_keys) != 1 or len(base_kwargs) != 1:
+                raise
+            result = original(next(iter(base_kwargs.values())))
         return transform(result, **extra_kwargs)
 
     wrapped.__name__ = getattr(original, "__name__", "execute")

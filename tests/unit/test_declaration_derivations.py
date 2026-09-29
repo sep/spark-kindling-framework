@@ -466,3 +466,56 @@ def test_pipe_derivation_tag_secrets_are_resolved(monkeypatch):
 
     assert manager.resolve_secret_tags(secret_provider=object()) == []
     assert manager.get_pipe_definition("silver.build_orders").tags["token"] == "RESOLVED"
+
+
+def test_wrap_execute_retries_single_input_originals_positionally():
+    def transform(df):  # single positional input, the streaming-compatible shape
+        return f"t({df})"
+
+    wrapped = wrap_execute(
+        transform, ["silver.orders"], lambda previous, ref_fx: f"{previous}+{ref_fx}", ["ref.fx"]
+    )
+    assert wrapped(silver_orders="O", ref_fx="F") == "t(O)+F"
+
+    def two_inputs(a, b):
+        return a + b
+
+    strict = wrap_execute(two_inputs, ["x.a", "x.b"], lambda previous: previous, [])
+    with pytest.raises(TypeError):
+        strict(x_a="1", nope="2")
+
+
+def test_extending_an_scd2_entity_refreshes_its_companion():
+    manager = _entities()
+    _register_orders(manager, tags={"tier": "silver", "scd.type": "2"})
+    assert "silver.orders.current" in manager.get_entity_ids()
+
+    manager.derive_entity(
+        "silver.orders", EntityDerivation(add_columns=(StructField("region", StringType()),))
+    )
+
+    companion = manager.get_entity_definition("silver.orders.current")
+    assert [f.name for f in companion.schema.fields] == ["order_id", "amount", "region"]
+
+    manager.derive_entity(
+        "silver.orders", EntityDerivation(tags={"scd.current_entity_id": "silver.orders.latest"})
+    )
+    assert "silver.orders.latest" in manager.get_entity_ids()
+    assert "silver.orders.current" not in manager.get_entity_ids()
+
+
+def test_unregistering_a_source_pipe_invalidates_its_clones():
+    manager = _pipes()
+    _register_build(manager)
+    manager.derive_pipe("silver.copy", PipeDerivation(clone_of="silver.build_orders"))
+    manager.derive_pipe("silver.copy2", PipeDerivation(clone_of="silver.copy"))
+    assert set(manager.get_pipe_ids()) == {"silver.build_orders", "silver.copy", "silver.copy2"}
+
+    manager.unregister_pipe("silver.build_orders")
+
+    assert manager.get_pipe_ids() == []
+    assert set(manager.pending_derivations()) == {"silver.copy", "silver.copy2"}
+    with pytest.raises(DerivationError, match="waiting for 'silver.build_orders'"):
+        manager.get_pipe_definition("silver.copy")
+    _register_build(manager)  # re-registering the template resolves the chain again
+    assert set(manager.get_pipe_ids()) == {"silver.build_orders", "silver.copy", "silver.copy2"}

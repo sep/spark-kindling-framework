@@ -488,7 +488,17 @@ class DataPipesManager(DataPipesRegistry):
         self._raw_params.pop(pipeid, None)
         self._derivations.pop(pipeid, None)
         self._pending.pop(pipeid, None)
+        self._invalidate_clones_of(pipeid)
         self.logger.debug(f"Pipe unregistered: {pipeid}")
+
+    def _invalidate_clones_of(self, pipeid) -> None:
+        """A clone whose template disappears becomes unresolved again rather
+        than running on its last built execute; transitively."""
+        for target, derivations in list(self._derivations.items()):
+            if any(d.clone_of == pipeid for d in derivations) and target in self.registry:
+                del self.registry[target]
+                self._pending[target] = self._pending_reason(target)
+                self._invalidate_clones_of(target)
 
     def _declared_ids(self) -> List[str]:
         ids = list(self._raw_params)

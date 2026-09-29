@@ -1031,9 +1031,10 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             self.registry[target] = entity
             if newly_registered:
                 self.emit("entity.registered", entity_id=target, entity_name=entity.name)
-            scd_config = scd_config_from_tags(entity)
-            if scd_config.enabled:
-                self._register_scd2_current_companion(entity, scd_config)
+        # A rebuilt SCD2 base (extended columns, changed current_entity_id)
+        # must refresh or retire its companion, not just create it if absent.
+        if any(entity is not None for entity in staged.values()):
+            self._converge_scd2_companions()
 
     def _stage(self, entityid, staged: Dict[str, Any]) -> None:
         params = self._effective_raw_params(entityid)
