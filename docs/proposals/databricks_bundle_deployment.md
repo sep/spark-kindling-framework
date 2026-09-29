@@ -75,6 +75,28 @@ size limit for configuration values, so the manifest records each pipeline's
 inline size and the generator warns past a heuristic threshold. Secret
 references stay literal `@secret` strings and resolve at runtime.
 
+### Templates, not a deployment spec (decision, 2026-09-29)
+
+A downstream project's review asked for preserved resource keys and display
+names, per-pipeline tags/permissions/dependencies and runtime overrides, and a
+source-controlled declaration in place of `--app-options-json`. Rather than
+grow a Kindling deployment specification that re-models Databricks bundle
+fields one by one, the generator renders a **template**: ordinary bundle YAML
+with Jinja placeholders that the project owns. The renderer that shipped in
+0.12.49 is the built-in default template; `kindling bundle template init`
+copies it into the project as the starting point, and a team migrating from a
+hand-authored bundle turns that bundle into the template by replacing each
+pipeline's configuration block with `kindling.configuration(<app>, ...)` and
+the wheel list with `{{ dependencies }}`. Identity, tags, permissions,
+clusters and every other DAB field stay in YAML the project writes, so there
+is nothing for Kindling to lag behind on and migration creates no new
+pipelines. The generator supplies only what it uniquely knows: the merged
+settings per app and, through the helper, a `configuration` map whose
+`config_keys` names exactly the keys it emitted; rendered resources are parsed
+back and inconsistent pipelines fail the build. The manifest gains the
+template files' hashes. `--app-options-json` remains the way to drive the
+default template.
+
 ## Recommendation
 
 Use Kindling CLI to materialize a disposable Databricks bundle from the existing

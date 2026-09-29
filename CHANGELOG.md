@@ -2,6 +2,23 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Added
+
+- **`kindling bundle build` renders a template.** The bundle is ordinary
+  Databricks bundle YAML with Jinja placeholders; the renderer from 0.12.49 is
+  now the built-in default template and `kindling bundle template init` copies
+  it into a project to own resource keys, display names, tags, per-pipeline
+  permissions, clusters or any other DAB field directly. In a template,
+  `kindling.configuration(<app>, pipes=[...], extra={...})` returns a
+  pipeline's complete configuration map, including the inline settings and a
+  `kindling.lakeflow.config_keys` naming every emitted key; rendered resources
+  are parsed back and a pipeline whose configuration did not come from the
+  helper, or whose `config_keys` is incomplete, fails the build. `--app` may
+  be omitted to build every app under the app roots. The manifest records the
+  template files' hashes, and per-app settings sources move under `apps`.
+
 ## [0.12.49] - 2026-09-29
 
 ### Added

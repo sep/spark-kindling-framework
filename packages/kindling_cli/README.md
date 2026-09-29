@@ -66,18 +66,38 @@ databricks bundle deploy -t dev
 databricks bundle run -t dev orders
 ```
 
-Settings are found by convention, never listed: the shared `config/`
-overlays (`settings.yaml`, `settings.databricks.yaml`, `workspace_<id>.yaml`,
-`settings.<env>.yaml`) and then the app's own `settings*.yaml` are merged at
-build time in the runtime's order, and each pipeline resource carries the
-result inline as `kindling.lakeflow.settings_json`. The deployed pipeline
-reads no settings files from the workspace or a volume, and the resource file
-is the complete, reviewable description of what the pipeline runs with.
-`--app-options-json` sets per-app catalog/schema/continuous/pipes or splits
-an app into several pipelines (`{"orders": {"pipelines": {"bronze": {...}}}}`).
-`manifest.json` records the generator version, inputs, and the SHA-256 of
-every settings file and wheel; no timestamps, so identical inputs give
-identical output. See `docs/proposals/databricks_bundle_deployment.md`.
+The bundle is rendered from a **template**: ordinary Databricks bundle YAML
+with Jinja placeholders. The built-in template produces `databricks.yml`, one
+`resources/<key>.pipeline.yml` per pipeline and the generic Lakeflow source,
+driven by `--app-options-json` (per-app catalog/schema/continuous/pipes, or a
+`pipelines` map to split an app). When a project needs its own resource keys,
+display names, tags, per-pipeline permissions, clusters or anything else DAB
+supports, copy the template and own it:
+
+```bash
+kindling bundle template init          # -> bundle-template/
+kindling bundle build --template-dir bundle-template ...
+```
+
+Inside a template the generator supplies only what it uniquely knows. Settings
+are found by convention, never listed: the shared `config/` overlays
+(`settings.yaml`, `settings.databricks.yaml`, `workspace_<id>.yaml`,
+`settings.<env>.yaml`) and then each app's own `settings*.yaml` are merged at
+build time in the runtime's order and exposed as `apps[<name>].settings`.
+`kindling.configuration(<app>, pipes=[...], extra={...})` returns a pipeline's
+complete `configuration` map: the app selection, the inline
+`kindling.lakeflow.settings_json`, the pipe subset, any extra flat overrides,
+and a `kindling.lakeflow.config_keys` naming every emitted key a restricted
+runtime must point-look-up. Rendered resources are parsed back and a pipeline
+whose configuration did not come from the helper, or whose `config_keys` is
+incomplete, fails the build. The deployed pipeline reads no settings files and
+the resource file is the complete, reviewable description of what it runs
+with. Files ending in `.j2` are rendered (`__pipeline__` in a name renders
+once per pipeline); other files are copied verbatim. `manifest.json` records
+the generator version, inputs, the SHA-256 of every settings file, wheel and
+template file; no timestamps, so identical inputs give identical output.
+`--app` may be omitted to build every app under `data-apps/` or `apps/`.
+See `docs/proposals/databricks_bundle_deployment.md`.
 
 Wheels passed with `--wheel` are uploaded by `databricks bundle deploy` under
 the bundle's own workspace root and become the pipeline environment's

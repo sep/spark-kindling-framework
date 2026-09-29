@@ -1,0 +1,21 @@
+{{ generated_header }}
+resources:
+  pipelines:
+    {{ pipeline.key | to_yaml }}:
+      name: {{ pipeline.name | to_yaml }}
+      serverless: true
+      catalog: {{ pipeline.catalog | to_yaml }}
+      target: {{ pipeline.schema | to_yaml }}
+      continuous: {{ pipeline.continuous | to_yaml }}
+      libraries:
+      - file:
+          path: ../src/kindling_lakeflow.py
+      environment:
+        dependencies:
+        {{ dependencies | to_yaml | indent(8) }}
+      configuration:
+        {{ kindling.configuration(pipeline.app, pipes=pipeline.pipes) | to_yaml | indent(8) }}
+{% if bundle.permissions %}
+      permissions:
+      {{ bundle.permissions | to_yaml | indent(6) }}
+{% endif %}

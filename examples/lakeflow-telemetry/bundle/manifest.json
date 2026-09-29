@@ -13,21 +13,30 @@
     "run_as_service_principal": null,
     "serverless": true
   },
+  "template": {
+    "source": "builtin",
+    "files": [
+      {
+        "path": "README.md",
+        "sha256": "9c06a0490e8132011989242097023fb8c318eb4ca2e8f9588913322a0ad469a8"
+      },
+      {
+        "path": "databricks.yml.j2",
+        "sha256": "4184f84ea85373ca31f4aa8461c39adca5c29456c7574b37e507d50eafe93dbb"
+      },
+      {
+        "path": "resources/__pipeline__.pipeline.yml.j2",
+        "sha256": "fdfbf53de894f815604e1c5e747b7d8127bd180c197777c660d15d0dc20b781c"
+      },
+      {
+        "path": "src/kindling_lakeflow.py",
+        "sha256": "20f0621c80f31af18f7ec9fc4f01e29a86038489a201f98f3efb2cce3a942080"
+      }
+    ]
+  },
   "apps": [
-    "telemetry"
-  ],
-  "pipelines": [
     {
-      "key": "telemetry_bronze",
-      "name": "telemetry-bronze",
-      "app": "telemetry",
-      "resource_file": "resources/telemetry_bronze.pipeline.yml",
-      "catalog": "dev_bronze",
-      "schema": "cwmdp",
-      "continuous": false,
-      "pipes": [
-        "bronze.ingest_telemetry"
-      ],
+      "name": "telemetry",
       "config_sources": [
         {
           "role": "base",
@@ -54,6 +63,20 @@
           "path": "data-apps/telemetry/settings.yaml",
           "sha256": "a985f4a1da81b680cb151370e86e6d615d677b207e540dd62e84ee58b5563ae4"
         }
+      ]
+    }
+  ],
+  "pipelines": [
+    {
+      "key": "telemetry_bronze",
+      "name": "telemetry-bronze",
+      "app": "telemetry",
+      "resource_file": "resources/telemetry_bronze.pipeline.yml",
+      "catalog": "dev_bronze",
+      "schema": "cwmdp",
+      "continuous": false,
+      "pipes": [
+        "bronze.ingest_telemetry"
       ],
       "settings_json_bytes": 1165
     },
@@ -69,33 +92,6 @@
         "silver.build_telemetry",
         "silver.derive_events",
         "silver.derive_episodes"
-      ],
-      "config_sources": [
-        {
-          "role": "base",
-          "path": "config/settings.yaml",
-          "sha256": "bb008677af1f6d9f460d24b293c8ee5609bd03b1c71903dd6f8cb98e80e42776"
-        },
-        {
-          "role": "platform",
-          "path": "config/settings.databricks.yaml",
-          "sha256": "be4127f92e277fb88260e2b5f6d8c1977e80581e7b6f7dc5b81aad14f16bb85c"
-        },
-        {
-          "role": "workspace",
-          "path": "config/workspace_adb-lakeflow-telemetry.yaml",
-          "sha256": "c692906c725508ef755b4a00f5c968b6878bc214612310c7935221055a442f3e"
-        },
-        {
-          "role": "environment",
-          "path": "config/settings.dev.yaml",
-          "sha256": "a89a4d729a899507736032c1f9598a48c26c88d6921a611a97d0db3ccb1debb1"
-        },
-        {
-          "role": "app",
-          "path": "data-apps/telemetry/settings.yaml",
-          "sha256": "a985f4a1da81b680cb151370e86e6d615d677b207e540dd62e84ee58b5563ae4"
-        }
       ],
       "settings_json_bytes": 1165
     }

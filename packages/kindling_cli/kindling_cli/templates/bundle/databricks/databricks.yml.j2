@@ -1,0 +1,18 @@
+{{ generated_header }}
+bundle:
+  name: {{ bundle.name | to_yaml }}
+include:
+- resources/*.pipeline.yml
+sync:
+  include:
+  - src/**
+targets:
+  {{ bundle.target | to_yaml }}:
+    default: true
+    workspace:
+      host: {{ bundle.workspace_host | to_yaml }}
+      root_path: {{ bundle.workspace_root | to_yaml }}
+{% if bundle.run_as_service_principal %}
+    run_as:
+      service_principal_name: {{ bundle.run_as_service_principal | to_yaml }}
+{% endif %}
