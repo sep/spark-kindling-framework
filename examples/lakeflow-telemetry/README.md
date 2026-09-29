@@ -21,9 +21,11 @@ kindling bundle build --output bundle \
                  "pipes": ["silver.build_telemetry", "silver.derive_events", "silver.derive_episodes"]}}}}'
 ```
 
-Each generated pipeline resource carries the merged settings for its app
-inline (`kindling.lakeflow.settings_json`): base, Databricks platform,
-workspace, `dev` environment, then the app overlay, exactly the order the
-runtime applies. The `--dependency` pin is illustrative; a real deployment
+The output is rendered from the CLI's built-in template. Each generated
+pipeline resource carries the merged settings for its app inline
+(`kindling.lakeflow.settings_json`): base, Databricks platform, workspace,
+`dev` environment, then the app overlay, exactly the order the runtime
+applies. A project that needs its own resource keys, names, tags or other
+bundle fields runs `kindling bundle template init` and edits the copy. The `--dependency` pin is illustrative; a real deployment
 passes the framework, extension and app wheels with `--wheel` in dependency
 order (see the CLI README).

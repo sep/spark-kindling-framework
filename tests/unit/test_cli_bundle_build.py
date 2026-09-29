@@ -316,14 +316,16 @@ def test_output_is_deterministic(tmp_path):
         "telemetry_silver",
     ]
     bronze = manifest["pipelines"][0]
-    assert [source["path"] for source in bronze["config_sources"]] == [
+    assert manifest["apps"][0]["name"] == "telemetry"
+    assert [source["path"] for source in manifest["apps"][0]["config_sources"]] == [
         "config/settings.yaml",
         "config/settings.databricks.yaml",
         "config/workspace_adb-lakeflow-telemetry.yaml",
         "config/settings.dev.yaml",
         "data-apps/telemetry/settings.yaml",
     ]
-    assert all(len(source["sha256"]) == 64 for source in bronze["config_sources"])
+    assert all(len(source["sha256"]) == 64 for source in manifest["apps"][0]["config_sources"])
+    assert manifest["template"]["source"] == "builtin"
     assert bronze["settings_json_bytes"] > 0
     assert "timestamp" not in json.dumps(manifest)
 
@@ -452,7 +454,7 @@ def test_kebab_app_resolves_snake_directory_and_local_settings_are_excluded(tmp_
     settings = json.loads(pipeline["configuration"][selector.SETTINGS_JSON_CONFIG_KEY])
     assert settings["kindling"]["storage"]["table_schema"] == "prod"
     assert settings["datapipes"]["sales.load"]["output_type"] == "delta"
-    assert [source["path"] for source in result.manifest["pipelines"][0]["config_sources"]] == [
+    assert [source["path"] for source in result.manifest["apps"][0]["config_sources"]] == [
         "config/settings.yaml",
         "config/settings.prod.yaml",
         "apps/sales_ops/settings.yaml",
@@ -505,7 +507,7 @@ def test_app_present_in_both_roots_is_ambiguous(tmp_path):
         bundle.build_bundle(_inputs(), project_root=root)
     # An explicit root disambiguates.
     result = bundle.build_bundle(_inputs(), project_root=root, apps_dir=Path("apps"))
-    assert result.manifest["pipelines"][0]["config_sources"][-1]["path"] == (
+    assert result.manifest["apps"][0]["config_sources"][-1]["path"] == (
         "apps/sales_ops/settings.yaml"
     )
 
@@ -519,7 +521,7 @@ def test_legacy_platform_and_env_file_names_are_honoured_when_canonical_is_absen
 
     result = bundle.build_bundle(_inputs(), project_root=root)
 
-    assert [source["path"] for source in result.manifest["pipelines"][0]["config_sources"]] == [
+    assert [source["path"] for source in result.manifest["apps"][0]["config_sources"]] == [
         "config/settings.yaml",
         "config/platform_databricks.yaml",
         "config/env_prod.yaml",
@@ -674,7 +676,7 @@ def test_cli_options_override_environment_and_collections_replace():
         ({"KINDLING_BUNDLE_NAME": "sales"}, "--target or set KINDLING_BUNDLE_TARGET"),
         (
             {"KINDLING_BUNDLE_NAME": "sales", "KINDLING_BUNDLE_TARGET": "dev"},
-            "--app .* or set KINDLING_BUNDLE_APPS",
+            "--workspace-host or set KINDLING_BUNDLE_WORKSPACE_HOST",
         ),
         (
             {**_REQUIRED_ENV, "KINDLING_BUNDLE_APPS": '"orders"'},

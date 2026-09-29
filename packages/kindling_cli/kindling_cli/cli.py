@@ -7228,6 +7228,13 @@ def bundle_group() -> None:
     help="Pipeline permissions: [{level, user_name|service_principal_name|group_name}] "
     "[KINDLING_BUNDLE_PERMISSIONS].",
 )
+@click.option(
+    "--template-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Project-owned bundle template (see `kindling bundle template init`); default: the "
+    "built-in template.",
+)
 @click.option("--force", is_flag=True, help="Replace an output directory this tool did not write.")
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def bundle_build(
@@ -7236,21 +7243,23 @@ def bundle_build(
     output: Optional[Path],
     config_dir: Optional[Path],
     apps_dir: Optional[Path],
+    template_dir: Optional[Path],
     force: bool,
     json_output: bool,
     **inputs: Any,
 ) -> None:
     """Precompile a Kindling project into a Databricks bundle.
 
-    Reads the project's settings overlays and the deployment inputs (options
-    or KINDLING_BUNDLE_* variables; options win) and writes a disposable
-    bundle: databricks.yml, one resources/<key>.pipeline.yml per pipeline,
-    the generic Lakeflow source, and manifest.json. Settings are found by
-    convention (config/ overlays, then the app's settings*.yaml), merged in
-    the runtime's order, and carried inline in each pipeline resource
-    (kindling.lakeflow.settings_json), so the deployed pipeline reads no
-    settings files. Deploy with the Databricks CLI from the generated
-    directory.
+    Renders a bundle template (the built-in one, or the project's own from
+    `kindling bundle template init`) with the project's settings and the
+    deployment inputs (options or KINDLING_BUNDLE_* variables; options win)
+    into a disposable directory: databricks.yml, pipeline resources, the
+    generic Lakeflow source, staged wheels, and manifest.json. Settings are
+    found by convention (config/ overlays, then the app's settings*.yaml),
+    merged in the runtime's order, and carried inline in each pipeline's
+    configuration through kindling.configuration(<app>, ...) in the
+    template, so the deployed pipeline reads no settings files. Deploy with
+    the Databricks CLI from the generated directory.
 
     \b
     Examples:
@@ -7274,6 +7283,7 @@ def bundle_build(
             output_dir=output.expanduser().resolve() if output else None,
             config_dir=config_dir,
             apps_dir=apps_dir,
+            template_dir=template_dir,
             force=force,
         )
     except BundleError as exc:
@@ -7300,6 +7310,48 @@ def bundle_build(
     click.echo(f"  databricks bundle validate -t {resolved_inputs.target}")
     click.echo(f"  databricks bundle deploy -t {resolved_inputs.target}")
     click.echo(f"  databricks bundle run -t {resolved_inputs.target} {pipeline_keys[0]}")
+
+
+@bundle_group.group("template")
+def bundle_template_group() -> None:
+    """Manage the project's bundle template."""
+
+
+@bundle_template_group.command("init")
+@click.option(
+    "--project-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Kindling project root (default: current directory).",
+)
+@click.option(
+    "--dir",
+    "destination",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Where to copy the template (default: <project-root>/bundle-template).",
+)
+@click.option("--force", is_flag=True, help="Replace an existing, non-empty destination.")
+def bundle_template_init(
+    project_root: Optional[Path], destination: Optional[Path], force: bool
+) -> None:
+    """Copy the built-in bundle template into the project to customize it.
+
+    The copy is ordinary Databricks bundle YAML with Jinja placeholders; edit
+    resource keys, names, tags, permissions, clusters or anything else DAB
+    supports, and keep `kindling.configuration(<app>, ...)` for each
+    pipeline's configuration so the inline settings and config_keys stay
+    consistent. Pass the directory to `kindling bundle build --template-dir`.
+    """
+    from kindling_cli.bundle import BundleError, init_template
+
+    root = (project_root or Path.cwd()).expanduser().resolve()
+    try:
+        target = init_template(root, destination.expanduser() if destination else None, force)
+    except BundleError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Bundle template written to {target}")
+    click.echo("Edit it, then: kindling bundle build --template-dir " + str(target))
 
 
 # [implementer] runner command group for durable runner lifecycle — ki-sag
