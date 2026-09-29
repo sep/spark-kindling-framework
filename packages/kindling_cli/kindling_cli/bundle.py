@@ -920,7 +920,9 @@ def _template_files(template_dir: Path) -> List[Path]:
 
 
 def _jinja_environment(template_dir: Path) -> jinja2.Environment:
-    environment = jinja2.Environment(
+    # These templates produce YAML, not HTML: autoescaping would HTML-escape
+    # quotes and ampersands inside YAML scalars and corrupt the bundle.
+    environment = jinja2.Environment(  # nosec B701
         loader=jinja2.FileSystemLoader(str(template_dir)),
         undefined=jinja2.StrictUndefined,
         trim_blocks=True,
@@ -952,6 +954,7 @@ def render_templates(
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
             files.append(relative.as_posix())
+            rendered.append(relative.as_posix())  # validated like rendered output
             continue
         output_name = relative.name[: -len(TEMPLATE_SUFFIX)]
         template = environment.get_template(relative.as_posix())
@@ -1025,6 +1028,12 @@ def _validate_rendered_pipelines(
                 raise BundleProjectError(
                     f"Pipeline `{key}` in `{relative}` selects app {app!r}, which has no "
                     "settings in this project."
+                )
+            if configuration[SETTINGS_JSON_KEY] != apps[app].settings_json:
+                raise BundleProjectError(
+                    f"Pipeline `{key}` in `{relative}`: {SETTINGS_JSON_KEY} is not the merged "
+                    f"settings of app {app!r}. Build the configuration with "
+                    "kindling.configuration() instead of writing it by hand."
                 )
             records.append(
                 {
@@ -1246,14 +1255,24 @@ def init_template(
     project_root: Path, destination: Optional[Path] = None, force: bool = False
 ) -> Path:
     """Copy the default template into a project as its own starting point."""
+    project_root = project_root.resolve()
     target = destination if destination is not None else project_root / "bundle-template"
     if not target.is_absolute():
         target = project_root / target
-    if target.exists() and any(target.iterdir()) and not force:
+    target = target.resolve()
+    if target == project_root or target in project_root.parents:
         raise BundleProjectError(
-            f"`{target}` already exists and is not empty; pass --force to overwrite it."
+            f"`{target}` is the project root or one of its parents; the template must live in "
+            "its own directory (default bundle-template/)."
         )
-    if target.exists() and force:
-        shutil.rmtree(target)
-    shutil.copytree(DEFAULT_TEMPLATE_DIR, target)
+    if target.exists():
+        if not target.is_dir():
+            raise BundleProjectError(f"`{target}` exists and is not a directory.")
+        if any(target.iterdir()):
+            if not force:
+                raise BundleProjectError(
+                    f"`{target}` already exists and is not empty; pass --force to overwrite it."
+                )
+            shutil.rmtree(target)
+    shutil.copytree(DEFAULT_TEMPLATE_DIR, target, dirs_exist_ok=True)
     return target

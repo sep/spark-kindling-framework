@@ -1,7 +1,7 @@
 {{ generated_header }}
 resources:
   pipelines:
-    {{ pipeline.key }}:
+    {{ pipeline.key | to_yaml }}:
       name: {{ pipeline.name | to_yaml }}
       serverless: true
       catalog: {{ pipeline.catalog | to_yaml }}

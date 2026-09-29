@@ -207,6 +207,10 @@ def test_apps_are_discovered_when_not_named(tmp_path):
             "        kindling.custom: x",
             "config_keys must name every non-default key",
         ),
+        (
+            "kindling.data_app: orders\n        kindling.lakeflow.settings_json: '{}'",
+            "is not the merged settings of app 'orders'",
+        ),
     ],
 )
 def test_template_pipelines_must_use_the_helper_consistently(tmp_path, configuration_expr, message):
@@ -224,6 +228,57 @@ def test_template_pipelines_must_use_the_helper_consistently(tmp_path, configura
         bundle.build_bundle(
             _inputs(), project_root=root, output_dir=tmp_path / "out", template_dir=template_dir
         )
+
+
+def test_copied_resource_files_are_validated_too(tmp_path):
+    root = _project(tmp_path)
+    template_dir = root / "bundle-template"
+    _write(template_dir / "databricks.yml.j2", "bundle:\n  name: {{ bundle.name }}\n")
+    _write(
+        template_dir / "resources" / "ok.yml.j2",
+        "resources:\n  pipelines:\n    ok:\n      name: ok\n      configuration:\n        "
+        "{{ kindling.configuration('orders') | to_yaml | indent(8) }}\n",
+    )
+    _write(
+        template_dir / "resources" / "stale.yml",
+        "resources:\n  pipelines:\n    stale:\n      name: stale\n      configuration:\n"
+        "        kindling.data_app: orders\n",
+    )
+
+    with pytest.raises(bundle.BundleProjectError, match="`stale` in `resources/stale.yml`"):
+        bundle.build_bundle(
+            _inputs(), project_root=root, output_dir=tmp_path / "out", template_dir=template_dir
+        )
+
+
+def test_template_init_never_deletes_the_project(tmp_path):
+    root = _project(tmp_path)
+
+    for target in (root, root.parent, Path(".")):
+        with pytest.raises(bundle.BundleProjectError, match="project root"):
+            bundle.init_template(root, target, force=True)
+    assert (root / "config" / "settings.yaml").exists()
+
+    empty = root / "tpl"
+    empty.mkdir()
+    assert bundle.init_template(root, empty) == empty
+    assert (empty / "databricks.yml.j2").exists()
+
+
+def test_yaml_special_names_are_quoted_by_the_builtin_template(tmp_path):
+    root = _project(tmp_path)
+    _write(root / "data-apps" / "true" / "settings.yaml", "kindling:\n  a: b\n")
+
+    result = bundle.build_bundle(
+        _inputs(apps=("true",), target="null", catalog="c", schema="s"),
+        project_root=root,
+        output_dir=tmp_path / "out",
+    )
+
+    root_yaml = _resource(result.output_dir, "databricks.yml")
+    assert list(root_yaml["targets"]) == ["null"]
+    pipeline = _resource(result.output_dir, "resources/true.pipeline.yml")
+    assert list(pipeline["resources"]["pipelines"]) == ["true"]
 
 
 def test_undefined_template_variable_is_reported(tmp_path):

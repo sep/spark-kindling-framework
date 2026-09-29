@@ -22,11 +22,11 @@
       },
       {
         "path": "databricks.yml.j2",
-        "sha256": "dfda2cbcc393c7b8c76154612a015def4a361a5e268eea00d51e384982e2a8b3"
+        "sha256": "4184f84ea85373ca31f4aa8461c39adca5c29456c7574b37e507d50eafe93dbb"
       },
       {
         "path": "resources/__pipeline__.pipeline.yml.j2",
-        "sha256": "5b465a0b539eb8a413d19dc5af7febe2a09e76fde50c331a16754102c10b2191"
+        "sha256": "fdfbf53de894f815604e1c5e747b7d8127bd180c197777c660d15d0dc20b781c"
       },
       {
         "path": "src/kindling_lakeflow.py",

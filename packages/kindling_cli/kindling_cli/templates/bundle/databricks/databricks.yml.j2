@@ -7,7 +7,7 @@ sync:
   include:
   - src/**
 targets:
-  {{ bundle.target }}:
+  {{ bundle.target | to_yaml }}:
     default: true
     workspace:
       host: {{ bundle.workspace_host | to_yaml }}
