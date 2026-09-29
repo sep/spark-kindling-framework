@@ -225,12 +225,18 @@ For app-based initialization (the standard pattern), define an `initialize(env)`
 
 ```python
 # app.py
-from kindling.spark_config import configure_injector_with_config
+from pathlib import Path
+
+from kindling.bootstrap import initialize_framework
 
 def initialize(env="local"):
-    configure_injector_with_config(
-        config_files=["settings.yaml"],
-        environment=env,
+    # settings.yaml / settings.<env>.yaml next to app.py are found by convention
+    initialize_framework(
+        {
+            "platform": "standalone",
+            "environment": env,
+            "app_dir": str(Path(__file__).resolve().parent),
+        }
     )
 ```
 

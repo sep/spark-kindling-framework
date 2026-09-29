@@ -26,7 +26,9 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 - `load_workspace_packages`: If true, load workspace packages (notebooks) after platform init.
   (`load_local_packages` still accepted as a deprecated alias.)
 - `temp_path`: Temporary file path root used during wheel/extension install; `kindling.temp_path` is the YAML equivalent.
-- `config_files`: Explicit list of local YAML config file paths (or a single path string) to load in addition to any files downloaded from artifacts storage. Useful for standalone/local runs where no artifacts storage is configured. Files are loaded after downloaded files so they take precedence.
+- `config_dir`: Directory holding the shared settings overlays (`settings.yaml`, `settings.<platform>.yaml`, `workspace_<id>.yaml`, `settings.<environment>.yaml`; the documented legacy names `platform_<p>.yaml` / `env_<e>.yaml` are honoured when the canonical file is absent). Bootstrap resolves the ordered file list itself, in the same order it uses for artifacts storage.
+- `app_dir`: Directory holding the app's own overlays (`settings.yaml`, `settings.<platform>.yaml`, `settings.<environment>.yaml`), applied after the shared overlays so the app wins. Local directories layer on top of anything discovered in artifacts storage.
+- `config_files`: **Deprecated.** Explicit list of local YAML config file paths (or a single path string). Still loaded, after downloaded and directory-resolved files, but bootstrap warns; name the directories with `config_dir` / `app_dir` instead and let the settings convention find the files.
 - `install_bootstrap_dependencies`: Boolean; controls whether `install_bootstrap_dependencies()` runs to install `kindling.required_packages` and `kindling.extensions` at startup. Defaults to `true` for cloud platforms and `false` for `standalone`.
 - `allow_standalone_fallback`: Boolean; when `true`, platform detection falls back to `standalone` if no cloud platform (Databricks, Fabric, Synapse) is detected. Default `false`.
 - `job_name`: Optional job name (mostly used by system test harness).
@@ -473,16 +475,18 @@ Streaming writes:
   observability: no `__g*` table to query when debugging which generation
   produced an event, and no per-stratum metrics in the event log. Prefer
   `table` unless storage or write amplification is the binding constraint.
-- `spark.kindling.bootstrap.config_files`: Canonical Databricks Lakeflow
-  pipeline `configuration:` key for explicit settings files. It maps through
-  the shared SparkConf ingestion path to bootstrap `config_files`; use a JSON
-  array string for several files or a bare string for one file. The files are
-  loaded by the same Dynaconf `settings_files` route as
-  `kindling.initialize(config={"config_files": [...]})`, so
-  `dataentities:`, `dataentities-bytag:`, `datapipes:`, and
-  `datapipes-bytag:` keep literal dotted IDs and follow the normal merge
-  rules. Flat bridged pipeline keys are bootstrap overrides and win over the
-  files.
+- `kindling.lakeflow.settings_json`: Databricks Lakeflow pipeline
+  `configuration:` key carrying the app's merged settings tree as a JSON
+  object (the shape of a settings YAML file). The selector injects the
+  top-level sections literally, so `dataentities:`, `dataentities-bytag:`,
+  `datapipes:`, and `datapipes-bytag:` keep literal dotted IDs; flat bridged
+  pipeline keys are bootstrap overrides and win over it. `kindling bundle
+  build` writes it from the project's settings by convention.
+- `spark.kindling.bootstrap.config_files`: **Not read by Lakeflow pipelines**
+  (removed from that surface with `spark-kindling-ext-databricks` 0.2.0): the
+  selector warns and drops it. Elsewhere it maps to the deprecated bootstrap
+  `config_files`; prefer `spark.kindling.bootstrap.config_dir` /
+  `spark.kindling.bootstrap.app_dir`.
 - `spark.kindling.bootstrap.artifacts_storage_path`,
   `spark.kindling.bootstrap.environment`, and
   `spark.kindling.bootstrap.workspace_id`: Preferred Lakeflow inputs when
@@ -492,13 +496,10 @@ Streaming writes:
   base, platform, workspace, environment, app overlays, SparkConf, then
   bootstrap overrides. A `kindling.platform.environment` in explicitly
   supplied settings files is honored during early platform selection.
-- `kindling.lakeflow.config_files`: **Removed in 0.12.47** (deprecated since
-  0.12.35). The key is ignored -- not bridged, not warned about -- so a
-  pipeline still setting it loads no files from it. Migrate the
-  comma-separated paths to `spark.kindling.bootstrap.config_files` as a JSON
-  array string. `LakeflowConfigSourceError` was removed with it; source
-  diagnostics come from the shared loader.
-
+- `kindling.lakeflow.config_files`: **Removed in 0.12.47**; ignored with a
+  warning since `spark-kindling-ext-databricks` 0.2.0, like
+  `spark.kindling.bootstrap.config_files`. Lakeflow settings arrive inline
+  through `kindling.lakeflow.settings_json`.
 ## Testing-Only Settings
 
 These are not framework defaults; they are typically injected by system tests or test apps.

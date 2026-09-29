@@ -586,6 +586,67 @@ def get_temp_path() -> str:
     return tempfile.mkdtemp(prefix="kindling_")
 
 
+def settings_hierarchy(
+    environment: str,
+    platform: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    include_app: bool = True,
+) -> List[Tuple[str, str, Optional[str]]]:
+    """The settings convention as an ordered table, lowest precedence first.
+
+    Each entry is ``(scope, canonical_name, legacy_name)`` where ``scope`` is
+    ``"config"`` (the shared ``config/`` directory) or ``"app"`` (the app's own
+    directory) and ``legacy_name`` is the documented pre-``settings.*`` file
+    name that is honoured only when the canonical file is absent. Both the
+    artifacts-storage download (:func:`download_config_files`) and local
+    directory discovery (:func:`resolve_settings_files`) are driven by this
+    one table so the two can never disagree.
+    """
+    entries: List[Tuple[str, str, Optional[str]]] = [("config", "settings.yaml", None)]
+    if platform:
+        entries.append(("config", f"settings.{platform}.yaml", f"platform_{platform}.yaml"))
+    if workspace_id:
+        entries.append(("config", f"workspace_{workspace_id}.yaml", None))
+    entries.append(("config", f"settings.{environment}.yaml", f"env_{environment}.yaml"))
+    if include_app:
+        entries.append(("app", "settings.yaml", None))
+        if platform:
+            entries.append(("app", f"settings.{platform}.yaml", f"app.{platform}.yaml"))
+        entries.append(("app", f"settings.{environment}.yaml", f"app.{environment}.yaml"))
+    return entries
+
+
+def resolve_settings_files(
+    config_dir: Optional[Any],
+    app_dir: Optional[Any],
+    environment: str,
+    platform: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+) -> List[str]:
+    """Apply the settings convention to local directories.
+
+    ``config_dir`` holds the shared overlays and ``app_dir`` the app's own;
+    either may be ``None``. Returns the existing files in precedence order
+    (see :func:`settings_hierarchy`); callers never spell the list out.
+    """
+    roots = {
+        "config": Path(config_dir).expanduser() if config_dir else None,
+        "app": Path(app_dir).expanduser() if app_dir else None,
+    }
+    resolved: List[str] = []
+    for scope, canonical, legacy in settings_hierarchy(
+        environment, platform, workspace_id, include_app=roots["app"] is not None
+    ):
+        root = roots[scope]
+        if root is None:
+            continue
+        for name in (canonical, legacy):
+            if name and (root / name).is_file():
+                resolved.append(str(root / name))
+                break
+    return resolved
+
+
 def download_config_files(
     artifacts_storage_path: str,
     environment: str,
@@ -657,74 +718,25 @@ def download_config_files(
 
     config_files = []
 
-    # Build list of config files to download in priority order (lowest to highest)
-    files_to_download = [
-        (f"{base_path}/config/settings.yaml", "settings.yaml"),
-    ]
-
-    # Add platform-specific config if platform is known
-    if platform:
-        files_to_download.append(
-            (f"{base_path}/config/settings.{platform}.yaml", f"settings.{platform}.yaml")
-        )
-
-    # Add workspace-specific config if workspace_id is known
-    if workspace_id:
-        files_to_download.append(
-            (f"{base_path}/config/workspace_{workspace_id}.yaml", f"workspace_{workspace_id}.yaml")
-        )
-
-    # Add environment config
-    files_to_download.append(
-        (f"{base_path}/config/settings.{environment}.yaml", f"settings.{environment}.yaml")
-    )
-
-    # Add app-specific settings last so app overlays win over workspace/global config.
-    app_config_prefix = None
-    if app_name:
-        safe_app_name = str(app_name).replace("/", "_")
-        app_config_prefix = f"app_{safe_app_name}_"
-        files_to_download.append(
-            (
-                f"{base_path}/data-apps/{app_name}/settings.yaml",
-                f"{app_config_prefix}settings.yaml",
-            )
-        )
-        if platform:
-            files_to_download.append(
-                (
-                    f"{base_path}/data-apps/{app_name}/settings.{platform}.yaml",
-                    f"{app_config_prefix}settings.{platform}.yaml",
-                )
-            )
-        files_to_download.append(
-            (
-                f"{base_path}/data-apps/{app_name}/settings.{environment}.yaml",
-                f"{app_config_prefix}settings.{environment}.yaml",
-            )
-        )
-
-    legacy_fallbacks = {}
-    if platform:
-        legacy_fallbacks[f"settings.{platform}.yaml"] = (
-            f"{base_path}/config/platform_{platform}.yaml",
-            f"platform_{platform}.yaml",
-        )
-    legacy_fallbacks[f"settings.{environment}.yaml"] = (
-        f"{base_path}/config/env_{environment}.yaml",
-        f"env_{environment}.yaml",
-    )
-    if app_name and app_config_prefix:
-        if platform:
-            legacy_fallbacks[f"{app_config_prefix}settings.{platform}.yaml"] = (
-                f"{base_path}/data-apps/{app_name}/app.{platform}.yaml",
-                f"{app_config_prefix}app.{platform}.yaml",
-            )
-        legacy_fallbacks[f"{app_config_prefix}settings.{environment}.yaml"] = (
-            f"{base_path}/data-apps/{app_name}/app.{environment}.yaml",
-            f"{app_config_prefix}app.{environment}.yaml",
-        )
-
+    # Build the download list from the shared convention table (lowest to
+    # highest precedence). App overlays come last so they win over
+    # workspace/global config; local copies of app files carry a prefix so
+    # they never collide with the shared files in the staging directory.
+    safe_app_name = str(app_name).replace("/", "_") if app_name else None
+    app_config_prefix = f"app_{safe_app_name}_" if safe_app_name else None
+    files_to_download: List[Tuple[str, str]] = []
+    legacy_fallbacks: Dict[str, Tuple[str, str]] = {}
+    for scope, canonical, legacy in settings_hierarchy(
+        environment, platform, workspace_id, include_app=bool(app_name)
+    ):
+        if scope == "config":
+            remote_dir, local_prefix = f"{base_path}/config", ""
+        else:
+            remote_dir, local_prefix = f"{base_path}/data-apps/{app_name}", app_config_prefix
+        local_name = f"{local_prefix}{canonical}"
+        files_to_download.append((f"{remote_dir}/{canonical}", local_name))
+        if legacy:
+            legacy_fallbacks[local_name] = (f"{remote_dir}/{legacy}", f"{local_prefix}{legacy}")
     for remote_path, filename in files_to_download:
         try:
             if is_databricks:
@@ -1950,6 +1962,11 @@ def _config_service_matches_request(config_service, config: Dict[str, Any]) -> b
     if requested_files is not None and requested_files != existing.get("config_files"):
         return False
 
+    for directory_key in ("config_dir", "app_dir"):
+        requested_dir = config.get(directory_key)
+        if requested_dir is not None and str(requested_dir) != str(existing.get(directory_key)):
+            return False
+
     return True
 
 
@@ -2024,14 +2041,33 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         config_files = [str(explicit_config_files)]
     else:
         config_files = [str(path) for path in explicit_config_files]
+    # Settings are found by convention: callers name the directories that
+    # hold them (shared overlays in config_dir, the app's own in app_dir) and
+    # bootstrap resolves the ordered file list itself, exactly as it does for
+    # artifacts storage. An explicit config_files list still works but is the
+    # legacy form.
+    settings_config_dir = config.get("config_dir")
+    settings_app_dir = config.get("app_dir")
+    if config_files and not (settings_config_dir or settings_app_dir):
+        _BOOTSTRAP_LOGGER.warning(
+            "Bootstrap config 'config_files' is deprecated: pass 'config_dir' (shared "
+            "overlays) and/or 'app_dir' (the app's settings) and let Kindling resolve "
+            "the settings hierarchy by convention."
+        )
+    requested_environment = config.get("environment", "development")
+    # Platform- and workspace-neutral local files are enough for the early
+    # peeks below; the full local hierarchy is resolved once both are known.
+    peek_files = list(config_files or []) or resolve_settings_files(
+        settings_config_dir, settings_app_dir, requested_environment
+    )
 
     # Explicit config files can name kindling.platform.environment before the
     # download hierarchy is selected. Discovered artifacts-storage files cannot:
     # platform is one of the inputs needed to choose those files, so using them
     # here would be circular.
-    settings_platform = peek_settings_value(config_files, "kindling.platform.environment")
+    settings_platform = peek_settings_value(peek_files, "kindling.platform.environment")
     settings_discover_config_files = peek_settings_value(
-        config_files, "kindling.bootstrap.discover_config_files"
+        peek_files, "kindling.bootstrap.discover_config_files"
     )
     explicit_platform = (
         config.get("kindling.platform.environment")
@@ -2115,6 +2151,28 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 config_files = downloaded_config_files + config_files
             else:
                 config_files = downloaded_config_files
+
+    if settings_config_dir or settings_app_dir:
+        # Local directories layer on top of anything discovered in artifacts
+        # storage and below an explicit (legacy) config_files list.
+        local_settings_files = resolve_settings_files(
+            settings_config_dir,
+            settings_app_dir,
+            environment,
+            platform=platform,
+            workspace_id=workspace_id,
+        )
+        explicit_files = [str(path) for path in (config.get("config_files") or [])]
+        if isinstance(config.get("config_files"), (str, Path)):
+            explicit_files = [str(config.get("config_files"))]
+        discovered = [path for path in (config_files or []) if path not in explicit_files]
+        config_files = discovered + local_settings_files + explicit_files
+        _BOOTSTRAP_LOGGER.info(
+            "Resolved %d settings file(s) by convention from config_dir=%s app_dir=%s",
+            len(local_settings_files),
+            settings_config_dir,
+            settings_app_dir,
+        )
 
     from kindling.spark_config import configure_injector_with_config
 

@@ -2355,7 +2355,10 @@ class TestAppRunCommand:
         env = captured_cmd["env"]
         assert "-m" in cmd and "kindling_cli._runner" in cmd
         assert "--env" in cmd and "dev" in cmd
-        assert str(config_dir / "settings.yaml") in cmd
+        # The shared overlay directory is passed as a directory; the runner
+        # resolves the settings hierarchy by convention, no file list here.
+        assert cmd[cmd.index("--config-dir") + 1] == str(config_dir)
+        assert "--config" not in cmd
         assert env["KINDLING_ENV"] == "dev"
         assert env["KINDLING_SPARK_ENABLE_DELTA"] == "true"
         assert env["KINDLING_LOG_LEVEL"] == "WARNING"
@@ -2435,14 +2438,12 @@ class TestAppRunCommand:
         )
 
         assert result.exit_code == 0, result.output
-        config_args = [
-            captured_cmd[i + 1] for i, arg in enumerate(captured_cmd) if arg == "--config"
-        ]
-        assert config_args == [
-            str(app_dir / "settings.yaml"),
-            str(app_dir / "settings.fabric.yaml"),
-            str(app_dir / "settings.dev.yaml"),
-        ]
+        # No settings-file list is spelled out: the runner receives the app
+        # path and resolves settings.yaml / settings.<platform>.yaml /
+        # settings.<env>.yaml from the app directory by convention.
+        assert "--config" not in captured_cmd
+        assert "--config-dir" not in captured_cmd
+        assert str(app_dir / "app.py") in captured_cmd
 
     def test_standalone_uses_kindling_runner_module(self, tmp_path, monkeypatch):
         import subprocess
@@ -2464,7 +2465,10 @@ class TestAppRunCommand:
 
         assert result.exit_code == 0, result.output
         assert "kindling_cli._runner" in captured_cmd
-        assert str(app_dir / "settings.yaml") in captured_cmd
+        # Settings are resolved by convention from the app directory inside
+        # the runner; the command carries the app path, never file lists.
+        assert str(app_dir / "app.py") in captured_cmd
+        assert "--config" not in captured_cmd
         assert "KINDLING_CONFIG_DIR" not in dict(zip(captured_cmd, captured_cmd))
 
     def test_standalone_preserves_delta_env_override(self, tmp_path, monkeypatch):
