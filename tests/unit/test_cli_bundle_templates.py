@@ -281,6 +281,69 @@ def test_yaml_special_names_are_quoted_by_the_builtin_template(tmp_path):
     assert list(pipeline["resources"]["pipelines"]) == ["true"]
 
 
+def test_template_output_may_not_collide_with_staged_files(tmp_path):
+    root = _project(tmp_path)
+    wheel = tmp_path / "app-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"real wheel")
+    template_dir = root / "bundle-template"
+    _write(template_dir / "databricks.yml.j2", "bundle:\n  name: {{ bundle.name }}\n")
+    _write(template_dir / "wheels" / "app-1.0-py3-none-any.whl", "impostor")
+    _write(
+        template_dir / "resources" / "p.yml.j2",
+        "resources:\n  pipelines:\n    p:\n      name: p\n      configuration:\n        "
+        "{{ kindling.configuration('orders') | to_yaml | indent(8) }}\n",
+    )
+
+    with pytest.raises(bundle.BundleProjectError, match="collides"):
+        bundle.build_bundle(
+            _inputs(wheels=(wheel,)),
+            project_root=root,
+            output_dir=tmp_path / "out",
+            template_dir=template_dir,
+        )
+
+    _write(template_dir / "manifest.json", "{}")
+    (template_dir / "wheels" / "app-1.0-py3-none-any.whl").unlink()
+    with pytest.raises(bundle.BundleProjectError, match="collides"):
+        bundle.build_bundle(
+            _inputs(), project_root=root, output_dir=tmp_path / "out2", template_dir=template_dir
+        )
+
+
+def test_builtin_template_builds_every_discovered_app_when_apps_are_omitted(tmp_path):
+    root = _project(tmp_path)
+
+    result = bundle.build_bundle(
+        _inputs(apps=(), catalog="c", schema="s"), project_root=root, output_dir=tmp_path / "out"
+    )
+
+    assert [p["key"] for p in result.manifest["pipelines"]] == ["customers", "orders"]
+    assert "resources/customers.pipeline.yml" in result.files
+
+
+def test_failed_render_leaves_the_previous_bundle_intact(tmp_path):
+    root = _project(tmp_path)
+    output = tmp_path / "out"
+    good = bundle.build_bundle(
+        _inputs(apps=("orders",), catalog="c", schema="s"), project_root=root, output_dir=output
+    )
+    before = {f: (output / f).read_bytes() for f in good.files}
+
+    template_dir = root / "bundle-template"
+    _write(template_dir / "databricks.yml.j2", "bundle:\n  name: {{ bundel.name }}\n")
+    with pytest.raises(bundle.BundleProjectError):
+        bundle.build_bundle(
+            _inputs(), project_root=root, output_dir=output, template_dir=template_dir
+        )
+
+    assert {f: (output / f).read_bytes() for f in good.files} == before
+    assert not [p for p in output.parent.iterdir() if p.name.startswith(".out.building-")]
+    # And the untouched previous bundle is still recognized as generated output.
+    bundle.build_bundle(
+        _inputs(apps=("orders",), catalog="c", schema="s"), project_root=root, output_dir=output
+    )
+
+
 def test_undefined_template_variable_is_reported(tmp_path):
     root = _project(tmp_path)
     template_dir = root / "bundle-template"

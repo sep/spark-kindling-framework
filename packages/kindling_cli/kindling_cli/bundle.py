@@ -19,10 +19,12 @@ file is the complete description of what the pipeline runs with.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -714,9 +716,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _prepare_output_dir(
+def _check_output_dir(
     output_dir: Path, project_root: Path, protected: Sequence[Path], force: bool
 ) -> None:
+    """Validate the output location before anything is rendered. Nothing is
+    deleted here; ``_replace_output_dir`` swaps the finished staging directory
+    in only after a successful build."""
     resolved_output = output_dir.resolve()
     resolved_root = project_root.resolve()
     if resolved_output == resolved_root or resolved_output in resolved_root.parents:
@@ -746,8 +751,16 @@ def _prepare_output_dir(
                     f"written by {GENERATOR_NAME}. Choose another --output or pass --force "
                     "to replace it."
                 )
-            shutil.rmtree(resolved_output)
-    resolved_output.mkdir(parents=True, exist_ok=True)
+
+
+def _replace_output_dir(staging_dir: Path, output_dir: Path) -> None:
+    """Atomically-enough swap: remove the previous bundle and move the
+    finished staging directory into place. A failed build never touches the
+    previous output, so the next build still recognizes it."""
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(staging_dir), str(output_dir))
 
 
 def _is_generated_dir(directory: Path) -> bool:
@@ -762,10 +775,22 @@ def _is_generated_dir(directory: Path) -> bool:
 
 
 def _write(output_dir: Path, relative: PurePosixPath, content: str, files: List[str]) -> None:
+    _reserve(relative, files)
     path = output_dir / Path(*relative.parts)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     files.append(relative.as_posix())
+
+
+def _reserve(relative: PurePosixPath, files: List[str]) -> None:
+    """Every output path is written exactly once: a template file that would
+    replace a staged wheel or another rendered file is an error, not a
+    silent overwrite that leaves the manifest describing different bytes."""
+    if relative.as_posix() in files or relative.as_posix() == MANIFEST_FILE:
+        raise BundleProjectError(
+            f"Template output `{relative}` collides with a file the bundle already contains "
+            "(a staged wheel, another template file, or manifest.json)."
+        )
 
 
 _DATABRICKS_EXTENSION_DIST = "spark-kindling-ext-databricks"
@@ -950,6 +975,7 @@ def render_templates(
         if relative.name == "README.md" and relative.parent == PurePosixPath("."):
             continue  # documents the template itself, not part of a bundle
         if not source.name.endswith(TEMPLATE_SUFFIX):
+            _reserve(relative, files)
             destination = output_dir / Path(*relative.parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
@@ -1156,8 +1182,41 @@ def build_bundle(
     protected.extend(source.path.parent for app in apps.values() for source in app.sources)
     if template_label != "builtin":
         protected.append(resolved_template_dir)
-    _prepare_output_dir(resolved_output, project_root, protected, force)
+    _check_output_dir(resolved_output, project_root, protected, force)
 
+    # Render into a sibling staging directory and swap it in only on success.
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(
+        tempfile.mkdtemp(prefix=f".{resolved_output.name}.building-", dir=resolved_output.parent)
+    )
+    try:
+        manifest, files, warnings = _render_bundle(
+            inputs,
+            resolved_template_dir,
+            template_label,
+            template_files,
+            apps,
+            staging_dir,
+            warnings,
+        )
+        _replace_output_dir(staging_dir, resolved_output)
+    finally:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+    return BuildResult(
+        output_dir=resolved_output, files=sorted(files), manifest=manifest, warnings=warnings
+    )
+
+
+def _render_bundle(
+    inputs: BundleInputs,
+    resolved_template_dir: Path,
+    template_label: str,
+    template_files: Sequence[Path],
+    apps: Mapping[str, AppContext],
+    resolved_output: Path,
+    warnings: List[str],
+) -> Tuple[Dict[str, Any], List[str], List[str]]:
     files: List[str] = []
     version = _kindling_version()
     wheel_records = _stage_wheels(inputs.wheels, resolved_output, files)
@@ -1180,7 +1239,11 @@ def build_bundle(
             "permissions": [dict(entry) for entry in inputs.permissions],
         },
         "apps": apps,
-        "pipelines": _LazyPipelines(inputs),
+        # Apps discovered because --app was omitted drive the default
+        # template's pipelines exactly as named apps would.
+        "pipelines": _LazyPipelines(
+            inputs if inputs.apps else dataclasses.replace(inputs, apps=tuple(apps))
+        ),
         "dependencies": dependencies,
         "wheels": wheel_files,
         "kindling": KindlingHelper(apps, inputs),
@@ -1240,15 +1303,12 @@ def build_bundle(
         "permissions": [dict(entry) for entry in inputs.permissions],
         "warnings": list(warnings),
     }
-    _write(
-        resolved_output,
-        PurePosixPath(MANIFEST_FILE),
-        json.dumps(manifest, indent=2, sort_keys=False) + "\n",
-        files,
+    manifest_path = resolved_output / MANIFEST_FILE
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=False) + "\n", encoding="utf-8"
     )
-    return BuildResult(
-        output_dir=resolved_output, files=sorted(files), manifest=manifest, warnings=warnings
-    )
+    files.append(MANIFEST_FILE)
+    return manifest, files, warnings
 
 
 def init_template(
