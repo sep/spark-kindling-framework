@@ -1357,6 +1357,17 @@ def _warn_missing_entity_fixtures(entity_registry: Any, pipe_registry: Any) -> N
             )
 
 
+def _pending_derivations(*registries: Any) -> Dict[str, str]:
+    """Unresolved clone/extend derivations across registries; registries that
+    do not implement the query (custom or mocked) contribute nothing."""
+    pending: Dict[str, str] = {}
+    for registry in registries:
+        reported = getattr(registry, "pending_derivations", lambda: {})()
+        if isinstance(reported, dict):
+            pending.update(reported)
+    return pending
+
+
 def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
     """Validate entity and pipe definitions without starting Spark."""
     try:
@@ -1375,10 +1386,7 @@ def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
-    pending = {
-        **getattr(entity_registry, "pending_derivations", lambda: {})(),
-        **getattr(pipe_registry, "pending_derivations", lambda: {})(),
-    }
+    pending = _pending_derivations(entity_registry, pipe_registry)
     if pending:
         raise click.ClickException(
             "Unresolved declaration derivations: "

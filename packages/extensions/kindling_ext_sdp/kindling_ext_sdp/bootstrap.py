@@ -75,10 +75,11 @@ def declare_pipeline(
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
     config_service = GlobalInjector.get(ConfigService)
-    pending = {
-        **getattr(entity_registry, "pending_derivations", lambda: {})(),
-        **getattr(pipe_registry, "pending_derivations", lambda: {})(),
-    }
+    pending: Dict[str, str] = {}
+    for registry in (entity_registry, pipe_registry):
+        reported = getattr(registry, "pending_derivations", lambda: {})()
+        if isinstance(reported, dict):  # custom or mocked registries may not implement it
+            pending.update(reported)
     if pending:
         details = "; ".join(f"{target}: {reason}" for target, reason in sorted(pending.items()))
         raise ValueError(

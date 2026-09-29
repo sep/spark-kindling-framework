@@ -388,7 +388,9 @@ def pending_declaration_derivations() -> Dict[str, str]:
             registry = get_kindling_service(interface)
         except Exception:  # noqa: BLE001 - registry not bound yet
             continue
-        pending.update(getattr(registry, "pending_derivations", lambda: {})())
+        reported = getattr(registry, "pending_derivations", lambda: {})()
+        if isinstance(reported, dict):  # custom or mocked registries may not implement it
+            pending.update(reported)
     return pending
 
 
