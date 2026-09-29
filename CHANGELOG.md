@@ -75,6 +75,17 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- **Domain devcontainer image installs the Kindling CLI only when nothing
+  provides one.** The published image (`.github/Dockerfile.devcontainer`)
+  no longer bakes in a "latest release" CLI at build time. `kindling` on its
+  PATH is a lazy shim that runs the project's own pinned CLI when present and
+  otherwise installs the latest release on first use, so `kindling env
+  bootstrap` still works in a fresh project while a project that declares
+  `spark-kindling-cli` runs exactly that version. The image now also ships
+  `uv`, which `kindling env bootstrap`/`env add`/`env update` drive. This
+  replaces the build-time release lookup that passed GitHub's release JSON
+  through the shell's `echo`; the 0.12.48 release body had broken that parse
+  and with it the image publish job on `main`.
 - **Devcontainer images ship the Databricks CLI** (pinned `DATABRICKS_CLI_VERSION`,
   currently 1.18.0, downloaded from the GitHub release and verified against
   its `SHA256SUMS`), in both the repository's `.devcontainer/Dockerfile` and
