@@ -61,12 +61,13 @@ RUN pip install --no-cache-dir poetry==1.8.3 poethepoet==0.45.0
 # wheel), and spark-kindling-sdk has never been published to PyPI. Passing
 # both wheels to the same `pip install` lets pip's resolver satisfy that
 # requirement from the second URL instead of trying PyPI.
-RUN LATEST_RELEASE_JSON="$(curl -fsSL https://api.github.com/repos/sep/spark-kindling-framework/releases/latest)" \
-    && LATEST_CLI_WHEEL_URL="$(echo "$LATEST_RELEASE_JSON" \
-        | python3 -c "import json, sys; assets = json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].startswith('spark_kindling_cli-') and a['name'].endswith('.whl')))")" \
-    && LATEST_SDK_WHEEL_URL="$(echo "$LATEST_RELEASE_JSON" \
-        | python3 -c "import json, sys; assets = json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].startswith('spark_kindling_sdk-') and a['name'].endswith('.whl')))")" \
-    && pip install --no-cache-dir "$LATEST_CLI_WHEEL_URL" "$LATEST_SDK_WHEEL_URL"
+# The release JSON is streamed straight into Python: passing it through the
+# shell's echo mangled JSON escape sequences in release bodies and broke the
+# image build once a release note contained one.
+RUN set -eux; \
+    WHEEL_URLS="$(curl -fsSL https://api.github.com/repos/sep/spark-kindling-framework/releases/latest \
+        | python3 -c 'import json, sys; assets = json.load(sys.stdin)["assets"]; print(" ".join(next(a["browser_download_url"] for a in assets if a["name"].startswith(prefix) and a["name"].endswith(".whl")) for prefix in ("spark_kindling_cli-", "spark_kindling_sdk-")))')" \
+    && pip install --no-cache-dir $WHEEL_URLS
 
 # Databricks CLI, pinned and verified against the release checksums. Same
 # recipe as the repository's own .devcontainer/Dockerfile; bump both together.

@@ -64,6 +64,12 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **Published devcontainer image build no longer breaks on release-note
+  content.** `.github/Dockerfile.devcontainer` looked up the latest CLI/SDK
+  wheels by passing the GitHub release JSON through the shell's `echo`, which
+  mangles JSON escape sequences; the 0.12.48 release body made the parse fail
+  and the image publish job on `main` with it. The JSON now streams straight
+  into Python.
 - **Declaration-only platform fallback crashed instead of falling back.**
   When the Databricks platform service cannot be constructed inside a
   serverless Lakeflow pipeline (no detectable workspace id), bootstrap falls
