@@ -96,10 +96,15 @@ guarantee was redundant once that was recognized.
   system Python — the actual root cause of a live bug: that build only
   matches a real, fetchable GitHub release when built from a release tag,
   and a `workflow_dispatch` dev build is not, so every project scaffolded
-  against that image would 404 on `poetry install`). The image now installs
-  only the Kindling CLI, resolved from the *latest published GitHub release*
-  at build time — never built from source — so `kindling env bootstrap` is
-  always available regardless of what commit produced the image.
+  against that image would 404 on `poetry install`). The image installs no
+  Kindling packages at all. `/usr/local/bin/kindling` is a lazy shim
+  (`.github/kindling-cli-shim.sh`, 2026-09-29): it runs the project's own
+  pinned CLI when one exists (`.venv/bin/kindling` or an importable
+  `kindling_cli`) and only when nothing provides one installs the latest
+  published release into the system Python, then runs the command. So
+  `kindling env bootstrap` is always available on first container creation,
+  and once the project declares its own `spark-kindling-cli` that version is
+  the one that runs.
 
 **Where this intentionally diverges from the design below:**
 
