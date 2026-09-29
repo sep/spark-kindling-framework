@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -748,7 +749,7 @@ class DataEntities:
         ``changes`` accepts the extension keywords (``tags``, ``add_columns``,
         ``add_partition_columns``, ``add_cluster_columns``) plus clone-only
         replacements (``name``, ``merge_columns``, ``partition_columns``,
-        ``cluster_columns``). ``name`` defaults to the new id's last segment.
+        ``cluster_columns``); ``name`` is copied from the source unless given.
         The clone implies nothing about data: whatever writes to it (a cloned
         pipe, a new pipe, or nothing yet) is a separate declaration. Resolved
         when the source is registered, in any import order.
@@ -945,7 +946,11 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
                 "directly; drop one of the two declarations."
             )
         self._raw_params[entityid] = dict(decorator_params)
-        self._rebuild(entityid)
+        try:
+            self._rebuild(entityid)
+        except Exception:
+            del self._raw_params[entityid]
+            raise
 
     def derive_entity(self, entityid, derivation) -> None:
         if derivation.is_clone:
@@ -1012,33 +1017,44 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         return params
 
     def _rebuild(self, entityid) -> None:
-        """(Re)build one entity from its effective raw declaration, then any
-        clones derived from it."""
+        """Rebuild ``entityid`` and every clone derived from it atomically:
+        the whole affected graph is built and validated first, and only then
+        committed, so a failure anywhere leaves the registry as it was."""
+        staged: Dict[str, Any] = {}
+        self._stage(entityid, staged)
+        for target, entity in staged.items():
+            if entity is None:
+                self._pending[target] = self._pending_reason(target)
+                continue
+            self._pending.pop(target, None)
+            newly_registered = target not in self.registry
+            self.registry[target] = entity
+            if newly_registered:
+                self.emit("entity.registered", entity_id=target, entity_name=entity.name)
+            scd_config = scd_config_from_tags(entity)
+            if scd_config.enabled:
+                self._register_scd2_current_companion(entity, scd_config)
+
+    def _stage(self, entityid, staged: Dict[str, Any]) -> None:
         params = self._effective_raw_params(entityid)
         if params is None:
-            missing = next(
-                (d.clone_of for d in self._derivations.get(entityid, []) if d.is_clone),
-                entityid,
-            )
-            self._pending[entityid] = (
-                f"waiting for '{missing}' to be registered"
-                if missing != entityid
-                else "extension declared before the entity itself"
-            )
-            return
-        self._pending.pop(entityid, None)
-        entity = self._build_metadata(entityid, params)
-        self._validate_entity(entity)
-        newly_registered = entityid not in self.registry
-        self.registry[entityid] = entity
-        if newly_registered:
-            self.emit("entity.registered", entity_id=entityid, entity_name=entity.name)
-        scd_config = scd_config_from_tags(entity)
-        if scd_config.enabled:
-            self._register_scd2_current_companion(entity, scd_config)
+            staged[entityid] = None
+        else:
+            entity = self._build_metadata(entityid, params)
+            self._validate_entity(entity)
+            staged[entityid] = entity
         for target, derivations in list(self._derivations.items()):
-            if target != entityid and any(d.clone_of == entityid for d in derivations):
-                self._rebuild(target)
+            if target != entityid and target not in staged:
+                if any(d.clone_of == entityid for d in derivations):
+                    self._stage(target, staged)
+
+    def _pending_reason(self, entityid) -> str:
+        missing = next(
+            (d.clone_of for d in self._derivations.get(entityid, []) if d.is_clone), entityid
+        )
+        if missing != entityid:
+            return f"waiting for '{missing}' to be registered"
+        return "extension declared before the entity itself"
 
     def _apply_config_derivations(self, section) -> None:
         """Register derivations declared in the ``dataentities:`` section
@@ -1060,6 +1076,11 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
                 raise DerivationError(
                     f"Config declares entity '{entityid}' as clone_of "
                     f"'{derivation.clone_of}', but it is also registered in code."
+                )
+            if derivation.is_clone and any(d.is_clone for d in self._derivations.get(entityid, [])):
+                raise DerivationError(
+                    f"Config declares entity '{entityid}' as clone_of "
+                    f"'{derivation.clone_of}', but code already clones it from another source."
                 )
             self._derivations.setdefault(entityid, []).append(derivation)
 
@@ -1090,7 +1111,20 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         self._apply_config_derivations(section)
         self._matcher = ConfigPatternMatcher(strip_derivation_keys(section))
         self._tag_matcher = TagRuleMatcher(config_service.get("dataentities-bytag"))
-        for entityid in self._declared_ids():
+        declared = set(self._declared_ids())
+        # A clone that only config declared and that this pass no longer
+        # declares is gone: drop its stale metadata (companions are
+        # converged below) and any pending record for ids nothing derives.
+        for stale in [
+            entityid
+            for entityid, metadata in self.registry.items()
+            if entityid not in declared and not (metadata.tags or {}).get("scd.companion_of")
+        ]:
+            del self.registry[stale]
+        for target in list(self._pending):
+            if target not in self._derivations:
+                del self._pending[target]
+        for entityid in declared:
             self._rebuild(entityid)
         self._converge_scd2_companions()
         _ENTITY_LOGGER.debug("Config overrides applied to %s entit(y/ies)", len(self._raw_params))
@@ -1130,6 +1164,29 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
                     tags[key] = resolve_secret_value(value, secret_provider)
                 except Exception:
                     failures.append(f"{entityid}.tags.{key}")
+        # Tags supplied through clone()/extend() live on the derivation, not
+        # in _raw_params; resolve them the same way and rebuild the targets.
+        touched = []
+        for entityid, derivations in self._derivations.items():
+            for index, derivation in enumerate(derivations):
+                if not derivation.tags:
+                    continue
+                resolved = dict(derivation.tags)
+                changed = False
+                for key, value in resolved.items():
+                    if not _is_unresolved_secret_reference(value):
+                        continue
+                    try:
+                        resolved[key] = resolve_secret_value(value, secret_provider)
+                        changed = True
+                    except Exception:
+                        failures.append(f"{entityid}.tags.{key}")
+                if changed:
+                    derivations[index] = dataclasses.replace(derivation, tags=resolved)
+                    touched.append(entityid)
+        for entityid in touched:
+            if entityid not in self._pending:
+                self._rebuild(entityid)
         return failures
 
     def _build_metadata(self, entityid, raw_params):

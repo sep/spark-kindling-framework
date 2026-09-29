@@ -356,3 +356,113 @@ def test_pipe_extension_may_not_redirect_output_and_config_can_clone_pipes():
         manager.apply_config_overrides(
             _config({"datapipes": {"p": {"clone_of": "silver.build_orders", "add_columns": []}}})
         )
+
+
+# --------------------------------------------------------------------------- #
+# Atomicity, config/code conflicts, hot reload, secrets
+# --------------------------------------------------------------------------- #
+
+
+def test_registering_a_source_that_breaks_a_pending_clone_commits_nothing():
+    manager = _entities()
+    manager.derive_entity(
+        "silver.copy",
+        EntityDerivation(
+            clone_of="silver.orders", add_columns=({"name": "amount", "type": "string"},)
+        ),
+    )
+
+    with pytest.raises(DerivationError, match="cannot be re-added as string"):
+        _register_orders(manager)  # amount is an int in the source schema
+
+    assert "silver.orders" not in manager.get_entity_ids()
+    assert "silver.orders" not in manager._raw_params
+    assert "silver.copy" in manager.pending_derivations()
+    # Dropping the bad clone lets the source register normally.
+    manager._derivations.pop("silver.copy")
+    manager._pending.pop("silver.copy")
+    _register_orders(manager)
+    assert "silver.orders" in manager.get_entity_ids()
+
+
+def test_config_clone_may_not_compete_with_a_code_clone():
+    manager = _entities()
+    _register_orders(manager)
+    manager.register_entity("bronze.other", name="o", merge_columns=[], tags={}, schema=None)
+    manager.derive_entity("silver.copy", EntityDerivation(clone_of="silver.orders"))
+
+    with pytest.raises(DerivationError, match="code already clones it"):
+        manager.apply_config_overrides(
+            _config({"dataentities": {"silver.copy": {"clone_of": "bronze.other"}}})
+        )
+
+
+def test_config_only_clone_disappears_on_hot_reload():
+    manager = _entities()
+    _register_orders(manager)
+    manager.apply_config_overrides(
+        _config({"dataentities": {"silver.copy": {"clone_of": "silver.orders"}}})
+    )
+    assert "silver.copy" in manager.get_entity_ids()
+
+    manager.apply_config_overrides(_config({"dataentities": {}}))
+
+    assert "silver.copy" not in manager.get_entity_ids()
+    assert manager.pending_derivations() == {}
+
+
+def test_secret_references_in_derivation_tags_are_resolved(monkeypatch):
+    monkeypatch.setattr(
+        "kindling.config_loaders.resolve_secret_value", lambda value, provider: "RESOLVED"
+    )
+    manager = _entities()
+    _register_orders(manager)
+    manager.derive_entity(
+        "silver.orders", EntityDerivation(tags={"provider.token": "@secret:scope:key"})
+    )
+    manager.derive_entity(
+        "silver.copy",
+        EntityDerivation(clone_of="silver.orders", tags={"provider.other": "@secret:scope:k2"}),
+    )
+
+    failures = manager.resolve_secret_tags(secret_provider=object())
+
+    assert failures == []
+    assert manager.get_entity_definition("silver.orders").tags["provider.token"] == "RESOLVED"
+    copy = manager.get_entity_definition("silver.copy")
+    assert copy.tags["provider.token"] == "RESOLVED"
+    assert copy.tags["provider.other"] == "RESOLVED"
+
+
+def test_pipe_cascade_is_atomic_and_config_clone_removal_cleans_up():
+    manager = _pipes()
+    manager.derive_pipe(
+        "silver.bad_clone",
+        PipeDerivation(clone_of="silver.build_orders", overrides={"schema": "nope"}),
+    )
+    with pytest.raises(DerivationError, match="cannot be overridden"):
+        _register_build(manager)
+    assert manager.get_pipe_ids() == []
+    assert "silver.build_orders" not in manager._raw_params
+
+    manager._derivations.pop("silver.bad_clone")
+    manager._pending.pop("silver.bad_clone")
+    _register_build(manager)
+    manager.apply_config_overrides(
+        _config({"datapipes": {"silver.canary": {"clone_of": "silver.build_orders"}}})
+    )
+    assert "silver.canary" in manager.get_pipe_ids()
+    manager.apply_config_overrides(_config({"datapipes": {}}))
+    assert "silver.canary" not in manager.get_pipe_ids()
+
+
+def test_pipe_derivation_tag_secrets_are_resolved(monkeypatch):
+    monkeypatch.setattr(
+        "kindling.config_loaders.resolve_secret_value", lambda value, provider: "RESOLVED"
+    )
+    manager = _pipes()
+    _register_build(manager)
+    manager.derive_pipe("silver.build_orders", PipeDerivation(tags={"token": "@secret:s:k"}))
+
+    assert manager.resolve_secret_tags(secret_provider=object()) == []
+    assert manager.get_pipe_definition("silver.build_orders").tags["token"] == "RESOLVED"

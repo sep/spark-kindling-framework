@@ -376,6 +376,22 @@ def _import_local_package_registrations(
     )
 
 
+def pending_declaration_derivations() -> Dict[str, str]:
+    """Clone/extend derivations whose source is not registered, across both
+    registries (``kindling.declaration_derivations``)."""
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
+
+    pending: Dict[str, str] = {}
+    for interface in (DataEntityRegistry, DataPipesRegistry):
+        try:
+            registry = get_kindling_service(interface)
+        except Exception:  # noqa: BLE001 - registry not bound yet
+            continue
+        pending.update(getattr(registry, "pending_derivations", lambda: {})())
+    return pending
+
+
 def apply_config_overrides() -> None:
     """Overlay ``datapipes:``/``dataentities:`` config sections onto
     registered pipe/entity metadata.
@@ -409,13 +425,6 @@ def apply_config_overrides() -> None:
             )
             continue
         overlay(config_service)
-        pending = getattr(registry, "pending_derivations", lambda: {})()
-        for target, reason in pending.items():
-            # A clone/extend whose source never registered: the target is
-            # missing from the registry and lookups raise, so say why here.
-            _BOOTSTRAP_LOGGER.warning(
-                "Declaration derivation for '%s' is unresolved: %s", target, reason
-            )
     _BOOTSTRAP_LOGGER.debug(
         "Config overrides applied to %s pipe(s) and %s entit(y/ies)",
         sum(1 for _ in pipes_registry.get_pipe_ids()),
@@ -2505,6 +2514,12 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 except Exception as _pre_seed_err:
                     logger.debug(f"Could not pre-seed notebook cache: {_pre_seed_err}")
 
+        for target, reason in pending_declaration_derivations().items():
+            # Every registration phase has run; a clone/extend still waiting
+            # for its source will raise on lookup, so say why now. Apps that
+            # register later (a Lakeflow selector's register_all) re-check at
+            # declaration time.
+            logger.warning(f"Declaration derivation for '{target}' is unresolved: {reason}")
         logger.info("Framework initialization complete")
 
         # `app_name` scopes app-specific config overlays. In declaration-only

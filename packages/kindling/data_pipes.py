@@ -446,7 +446,11 @@ class DataPipesManager(DataPipesRegistry):
                 "directly; drop one of the two declarations."
             )
         self._raw_params[pipeid] = dict(decorator_params)
-        self._rebuild(pipeid)
+        try:
+            self._rebuild(pipeid)
+        except Exception:
+            del self._raw_params[pipeid]
+            raise
         self.logger.debug(f"Pipe registered: {pipeid}")
 
     def derive_pipe(self, pipeid, derivation) -> None:
@@ -517,22 +521,32 @@ class DataPipesManager(DataPipesRegistry):
         return params
 
     def _rebuild(self, pipeid) -> None:
+        """Rebuild ``pipeid`` and every clone derived from it atomically (see
+        DataEntityManager._rebuild)."""
+        staged: Dict[str, Any] = {}
+        self._stage(pipeid, staged)
+        for target, metadata in staged.items():
+            if metadata is None:
+                self._pending[target] = self._pending_reason(target)
+                continue
+            self._pending.pop(target, None)
+            self.registry[target] = metadata
+
+    def _stage(self, pipeid, staged: Dict[str, Any]) -> None:
         params = self._effective_raw_params(pipeid)
-        if params is None:
-            missing = next(
-                (d.clone_of for d in self._derivations.get(pipeid, []) if d.is_clone), pipeid
-            )
-            self._pending[pipeid] = (
-                f"waiting for '{missing}' to be registered"
-                if missing != pipeid
-                else "extension declared before the pipe itself"
-            )
-            return
-        self._pending.pop(pipeid, None)
-        self.registry[pipeid] = self._build_validated_metadata(pipeid, params)
+        staged[pipeid] = None if params is None else self._build_validated_metadata(pipeid, params)
         for target, derivations in list(self._derivations.items()):
-            if target != pipeid and any(d.clone_of == pipeid for d in derivations):
-                self._rebuild(target)
+            if target != pipeid and target not in staged:
+                if any(d.clone_of == pipeid for d in derivations):
+                    self._stage(target, staged)
+
+    def _pending_reason(self, pipeid) -> str:
+        missing = next(
+            (d.clone_of for d in self._derivations.get(pipeid, []) if d.is_clone), pipeid
+        )
+        if missing != pipeid:
+            return f"waiting for '{missing}' to be registered"
+        return "extension declared before the pipe itself"
 
     def _apply_config_derivations(self, section) -> None:
         for target in list(self._derivations):
@@ -555,6 +569,11 @@ class DataPipesManager(DataPipesRegistry):
                 raise DerivationError(
                     f"Config declares pipe '{pipeid}' as clone_of '{derivation.clone_of}', "
                     "but it is also registered in code."
+                )
+            if derivation.is_clone and any(d.is_clone for d in self._derivations.get(pipeid, [])):
+                raise DerivationError(
+                    f"Config declares pipe '{pipeid}' as clone_of '{derivation.clone_of}', "
+                    "but code already clones it from another source."
                 )
             self._derivations.setdefault(pipeid, []).append(derivation)
 
@@ -581,7 +600,13 @@ class DataPipesManager(DataPipesRegistry):
         self._apply_config_derivations(section)
         self._matcher = ConfigPatternMatcher(strip_derivation_keys(section))
         self._tag_matcher = TagRuleMatcher(config_service.get("datapipes-bytag"))
-        for pipeid in self._declared_ids():
+        declared = set(self._declared_ids())
+        for stale in [pipeid for pipeid in self.registry if pipeid not in declared]:
+            del self.registry[stale]
+        for target in list(self._pending):
+            if target not in self._derivations:
+                del self._pending[target]
+        for pipeid in declared:
             self._rebuild(pipeid)
         self.logger.debug(f"Config overrides applied to {len(self._raw_params)} pipe(s)")
 
@@ -615,6 +640,27 @@ class DataPipesManager(DataPipesRegistry):
                     tags[key] = resolve_secret_value(value, secret_provider)
                 except Exception:
                     failures.append(f"{pipeid}.tags.{key}")
+        touched = []
+        for pipeid, derivations in self._derivations.items():
+            for index, derivation in enumerate(derivations):
+                if not derivation.tags:
+                    continue
+                resolved = dict(derivation.tags)
+                changed = False
+                for key, value in resolved.items():
+                    if not _is_unresolved_secret_reference(value):
+                        continue
+                    try:
+                        resolved[key] = resolve_secret_value(value, secret_provider)
+                        changed = True
+                    except Exception:
+                        failures.append(f"{pipeid}.tags.{key}")
+                if changed:
+                    derivations[index] = dataclasses.replace(derivation, tags=resolved)
+                    touched.append(pipeid)
+        for pipeid in touched:
+            if pipeid not in self._pending:
+                self._rebuild(pipeid)
         return failures
 
     def _build_metadata(self, pipeid, raw_params):

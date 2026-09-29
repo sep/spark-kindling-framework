@@ -1375,6 +1375,15 @@ def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
+    pending = {
+        **getattr(entity_registry, "pending_derivations", lambda: {})(),
+        **getattr(pipe_registry, "pending_derivations", lambda: {})(),
+    }
+    if pending:
+        raise click.ClickException(
+            "Unresolved declaration derivations: "
+            + "; ".join(f"{target} ({reason})" for target, reason in sorted(pending.items()))
+        )
     checks, _entity_count, _pipe_count = _build_entity_pipe_graph_checks(
         entity_registry, pipe_registry
     )
@@ -6739,6 +6748,16 @@ def entity_show(
         hint = f"\n  Known entities: {', '.join(known)}" if known else ""
         raise click.ClickException(f"Entity '{entity_id}' is not registered.{hint}")
 
+    derivations = getattr(entity_registry, "derivations_for", lambda _eid: [])(entity_id)
+    if derivations:
+        chain = []
+        for derivation in derivations:
+            label = (
+                f"clone of {derivation.clone_of}" if derivation.is_clone else "extension"
+            ) + f" [{derivation.source}]"
+            chain.append(label)
+        click.echo("Derived: " + " -> ".join(chain))
+
     provider_type, provider_path = _resolve_entity_info(entity_id, entity_def)
 
     # Priority 1 — tests/entities/ fixture CSV
@@ -6765,15 +6784,6 @@ def entity_show(
 
     # Priority 2 — no fixture; show metadata only (Spark not available in CLI context)
     click.echo(f"Entity: {entity_id}  [env: {env}]  Provider: {provider_type}  {data_source_label}")
-    derivations = getattr(entity_registry, "derivations_for", lambda _eid: [])(entity_id)
-    if derivations:
-        chain = []
-        for derivation in derivations:
-            label = (
-                f"clone of {derivation.clone_of}" if derivation.is_clone else "extension"
-            ) + f" [{derivation.source}]"
-            chain.append(label)
-        click.echo("Derived: " + " -> ".join(chain))
     click.echo(
         "No tests/entities/ fixture found. "
         "Live provider data requires a running Spark session.\n"
