@@ -376,6 +376,24 @@ def _import_local_package_registrations(
     )
 
 
+def pending_declaration_derivations() -> Dict[str, str]:
+    """Clone/extend derivations whose source is not registered, across both
+    registries (``kindling.declaration_derivations``)."""
+    from kindling.data_entities import DataEntityRegistry
+    from kindling.data_pipes import DataPipesRegistry
+
+    pending: Dict[str, str] = {}
+    for interface in (DataEntityRegistry, DataPipesRegistry):
+        try:
+            registry = get_kindling_service(interface)
+        except Exception:  # noqa: BLE001 - registry not bound yet
+            continue
+        reported = getattr(registry, "pending_derivations", lambda: {})()
+        if isinstance(reported, dict):  # custom or mocked registries may not implement it
+            pending.update(reported)
+    return pending
+
+
 def apply_config_overrides() -> None:
     """Overlay ``datapipes:``/``dataentities:`` config sections onto
     registered pipe/entity metadata.
@@ -2498,6 +2516,12 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 except Exception as _pre_seed_err:
                     logger.debug(f"Could not pre-seed notebook cache: {_pre_seed_err}")
 
+        for target, reason in pending_declaration_derivations().items():
+            # Every registration phase has run; a clone/extend still waiting
+            # for its source will raise on lookup, so say why now. Apps that
+            # register later (a Lakeflow selector's register_all) re-check at
+            # declaration time.
+            logger.warning(f"Declaration derivation for '{target}' is unresolved: {reason}")
         logger.info("Framework initialization complete")
 
         # `app_name` scopes app-specific config overlays. In declaration-only

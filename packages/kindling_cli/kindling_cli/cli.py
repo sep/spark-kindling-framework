@@ -1357,6 +1357,17 @@ def _warn_missing_entity_fixtures(entity_registry: Any, pipe_registry: Any) -> N
             )
 
 
+def _pending_derivations(*registries: Any) -> Dict[str, str]:
+    """Unresolved clone/extend derivations across registries; registries that
+    do not implement the query (custom or mocked) contribute nothing."""
+    pending: Dict[str, str] = {}
+    for registry in registries:
+        reported = getattr(registry, "pending_derivations", lambda: {})()
+        if isinstance(reported, dict):
+            pending.update(reported)
+    return pending
+
+
 def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
     """Validate entity and pipe definitions without starting Spark."""
     try:
@@ -1375,6 +1386,12 @@ def _validate_app(env: Optional[str], app_path: Optional[Path]) -> None:
 
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
+    pending = _pending_derivations(entity_registry, pipe_registry)
+    if pending:
+        raise click.ClickException(
+            "Unresolved declaration derivations: "
+            + "; ".join(f"{target} ({reason})" for target, reason in sorted(pending.items()))
+        )
     checks, _entity_count, _pipe_count = _build_entity_pipe_graph_checks(
         entity_registry, pipe_registry
     )
@@ -6738,6 +6755,16 @@ def entity_show(
         known = sorted(entity_registry.get_entity_ids())
         hint = f"\n  Known entities: {', '.join(known)}" if known else ""
         raise click.ClickException(f"Entity '{entity_id}' is not registered.{hint}")
+
+    derivations = getattr(entity_registry, "derivations_for", lambda _eid: [])(entity_id)
+    if derivations:
+        chain = []
+        for derivation in derivations:
+            label = (
+                f"clone of {derivation.clone_of}" if derivation.is_clone else "extension"
+            ) + f" [{derivation.source}]"
+            chain.append(label)
+        click.echo("Derived: " + " -> ".join(chain))
 
     provider_type, provider_path = _resolve_entity_info(entity_id, entity_def)
 

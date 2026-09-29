@@ -245,6 +245,34 @@ These keys are only meaningful when `platform` is `standalone` (local/OSS Spark 
 
 - `kindling.standalone.abfss_az_cli_auth`: Boolean (default `true`). When `true` and `az` is present on PATH, configures the Spark session to acquire Azure Storage tokens via `az account get-access-token` so that `abfss://` paths work without a service principal or storage key. Set to `false` to opt out of this injection (for example when using a different credential mechanism or when `az` is on PATH but you do not want automatic auth configuration).
 
+### Declaration derivations in config (`clone_of`, `add_columns`, `add_inputs`)
+
+An exact-id entry under `dataentities:` or `datapipes:` may declare a
+derivation alongside its ordinary overrides (see
+`docs/proposals/declaration_derivations.md`):
+
+```yaml
+dataentities:
+  silver.orders_eu:
+    clone_of: silver.orders                 # new entity from a template
+    add_columns:
+      - { name: region, type: string }      # atomic type, decimal(p,s) or array<type>
+    tags: { region: eu }                    # ordinary override, applies to the clone
+datapipes:
+  silver.build_orders_eu:
+    clone_of: silver.build_orders
+    output_entity_id: silver.orders_eu
+    add_inputs: [ref.regions]
+```
+
+`clone_of` requires an exact id (no glob patterns) and an id that is not also
+registered in code. `add_columns` accumulates by column name; the same name
+with a different type is an error. `add_inputs` appends unique inputs; without
+a code `transform`, the original execute still receives only its declared
+inputs. Config-sourced derivations are re-applied wholesale on every overlay
+pass, after code-declared ones, so they are idempotent and environment
+overlays keep the final word.
+
 ## Entity Tag Overrides (`entity_tags`)
 
 YAML can specify a top-level `entity_tags` mapping where the key is an `entityid` and the value is a dict of tags to merge over the entity’s base tags at lookup time.

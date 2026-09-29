@@ -10,6 +10,13 @@ from typing import Any, Callable, Dict, List, Optional
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
 from kindling.config_patterns import ConfigPatternMatcher, TagRuleMatcher
+from kindling.declaration_derivations import (
+    DerivationError,
+    PipeDerivation,
+    apply_pipe_derivation,
+    derivation_entries,
+    strip_derivation_keys,
+)
 from kindling.injection import *
 from kindling.sentinels import UNSET
 from kindling.signaling import SignalEmitter, SignalProvider
@@ -135,6 +142,20 @@ class _PipeIds:
     """
 
 
+_PIPE_EXTENSION_KEYWORDS = ("tags", "add_inputs", "transform")
+
+
+def _pipe_derivation(clone_of, **changes) -> PipeDerivation:
+    additive = {key: changes.pop(key) for key in _PIPE_EXTENSION_KEYWORDS if key in changes}
+    return PipeDerivation(
+        clone_of=clone_of,
+        tags=additive.get("tags"),
+        add_inputs=tuple(additive.get("add_inputs") or ()),
+        transform=additive.get("transform"),
+        overrides=dict(changes),
+    )
+
+
 class DataPipes:
     dpregistry = None
     ids = _PipeIds()
@@ -247,6 +268,49 @@ class DataPipes:
         return decorator
 
     @classmethod
+    def clone(cls, pipeid, from_pipe, **changes):
+        """Declare ``pipeid`` from ``from_pipe``'s raw declaration as a
+        template, optionally extended in the same call.
+
+        ``changes`` accepts the extension keywords (``tags``, ``add_inputs``,
+        ``transform``) plus clone-only replacements (``name``,
+        ``output_entity_id``, ``output_type``, ``use_watermark``,
+        ``driving_entity_ids``). A cloned pipe keeps its own watermark state,
+        keyed by the new id. Resolved when the source is registered, in any
+        import order.
+        """
+        cls._registry_for("DataPipes.clone").derive_pipe(
+            pipeid, _pipe_derivation(clone_of=from_pipe, **changes)
+        )
+        setattr(cls.ids, pipeid.replace(".", "_").replace("-", "_"), pipeid)
+        return lambda x: x
+
+    @classmethod
+    def extend(cls, pipeid, **changes):
+        """Additively extend a pipe in place: ``tags`` (later value wins),
+        ``add_inputs``, and ``transform(previous_output, **added_inputs)``,
+        which wraps the pipe's execute. Extensions stack in registration
+        order, the last one outermost; config overlays apply on top."""
+        cls._registry_for("DataPipes.extend").derive_pipe(
+            pipeid, _pipe_derivation(clone_of=None, **changes)
+        )
+        return lambda x: x
+
+    @classmethod
+    def _registry_for(cls, operation):
+        if cls.dpregistry is None:
+            try:
+                _raise_if_not_initialized(operation, "pipe")
+                cls.dpregistry = GlobalInjector.get(DataPipesRegistry)
+            except Exception as exc:
+                if isinstance(exc, KindlingNotInitializedError):
+                    raise
+                raise KindlingNotInitializedError(
+                    f"{operation} was called before initialize(). Call initialize() first."
+                ) from exc
+        return cls.dpregistry
+
+    @classmethod
     def pipe(cls, **decorator_params):
         def decorator(func):
             if cls.dpregistry is None:
@@ -286,6 +350,14 @@ class DataPipesRegistry(ABC):
     @abstractmethod
     def register_pipe(self, pipeid, **decorator_params):
         pass
+
+    def derive_pipe(self, pipeid, derivation) -> None:
+        """Apply a clone/extend derivation (see kindling.declaration_derivations)."""
+        raise NotImplementedError("This registry does not support declaration derivations")
+
+    def pending_derivations(self) -> Dict[str, str]:
+        """Derivations whose source is not registered yet, by target id."""
+        return {}
 
     @abstractmethod
     def unregister_pipe(self, pipeid):
@@ -361,20 +433,168 @@ class DataPipesManager(DataPipesRegistry):
         # rationale as _matcher, but matches by the pipe's own declared
         # tag value instead of its id.
         self._tag_matcher = None
+        # Declaration derivations by target id (see DataEntityManager).
+        self._derivations = {}
+        self._pending = {}
         self.logger = lp.get_logger("data_pipes_manager")
         self.logger.debug("Data pipes manager initialized ...")
 
     def register_pipe(self, pipeid, **decorator_params):
-        raw_params = dict(decorator_params)
-        metadata = self._build_validated_metadata(pipeid, raw_params)
-        self._raw_params[pipeid] = raw_params
-        self.registry[pipeid] = metadata
+        if any(d.is_clone for d in self._derivations.get(pipeid, [])):
+            raise DerivationError(
+                f"Pipe '{pipeid}' is declared as a clone and cannot also be registered "
+                "directly; drop one of the two declarations."
+            )
+        previous = self._raw_params.get(pipeid)
+        self._raw_params[pipeid] = dict(decorator_params)
+        try:
+            self._rebuild(pipeid)
+        except Exception:
+            # Roll back to the prior valid declaration (or to none) so later
+            # rebuilds of clones still see what the registry actually holds.
+            if previous is None:
+                del self._raw_params[pipeid]
+            else:
+                self._raw_params[pipeid] = previous
+            raise
         self.logger.debug(f"Pipe registered: {pipeid}")
+
+    def derive_pipe(self, pipeid, derivation) -> None:
+        if derivation.is_clone:
+            if derivation.clone_of == pipeid:
+                raise DerivationError(f"Pipe '{pipeid}' cannot be cloned from itself.")
+            if pipeid in self._raw_params:
+                raise DerivationError(
+                    f"Pipe '{pipeid}' is registered directly and cannot also be a clone; "
+                    "use DataPipes.extend to change it in place."
+                )
+            if any(d.is_clone for d in self._derivations.get(pipeid, [])):
+                raise DerivationError(f"Pipe '{pipeid}' already has a clone_of source.")
+        # Transactional: a derivation that cannot be applied is not kept, so
+        # it never poisons later rebuilds of the same declaration.
+        bucket = self._derivations.setdefault(pipeid, [])
+        bucket.append(derivation)
+        try:
+            self._rebuild(pipeid)
+        except Exception:
+            bucket.remove(derivation)
+            if not bucket:
+                del self._derivations[pipeid]
+            raise
+
+    def derivations_for(self, pipeid) -> List[Any]:
+        """The derivation chain applied to ``pipeid``, in order."""
+        return list(self._derivations.get(pipeid, []))
+
+    def pending_derivations(self) -> Dict[str, str]:
+        return dict(self._pending)
 
     def unregister_pipe(self, pipeid):
         self.registry.pop(pipeid, None)
         self._raw_params.pop(pipeid, None)
+        self._derivations.pop(pipeid, None)
+        self._pending.pop(pipeid, None)
+        self._invalidate_clones_of(pipeid)
         self.logger.debug(f"Pipe unregistered: {pipeid}")
+
+    def _invalidate_clones_of(self, pipeid) -> None:
+        """A clone whose template disappears becomes unresolved again rather
+        than running on its last built execute; transitively."""
+        for target, derivations in list(self._derivations.items()):
+            if any(d.clone_of == pipeid for d in derivations) and target in self.registry:
+                del self.registry[target]
+                self._pending[target] = self._pending_reason(target)
+                self._invalidate_clones_of(target)
+
+    def _declared_ids(self) -> List[str]:
+        ids = list(self._raw_params)
+        for target, derivations in self._derivations.items():
+            if target not in self._raw_params and any(d.is_clone for d in derivations):
+                ids.append(target)
+        return ids
+
+    def _effective_raw_params(self, pipeid, _visiting=None):
+        visiting = set(_visiting or ())
+        if pipeid in visiting:
+            raise DerivationError(f"Pipe derivations form a cycle through '{pipeid}'.")
+        visiting.add(pipeid)
+        derivations = list(self._derivations.get(pipeid, []))
+        clones = [d for d in derivations if d.is_clone]
+        owner = f"pipe '{pipeid}'"
+        if clones:
+            source_params = self._effective_raw_params(clones[0].clone_of, visiting)
+            if source_params is None:
+                return None
+            params = apply_pipe_derivation(source_params, clones[0], owner)
+            rest = [d for d in derivations if not d.is_clone]
+        else:
+            if pipeid not in self._raw_params:
+                return None
+            params = dict(self._raw_params[pipeid])
+            rest = derivations
+        for derivation in rest:
+            params = apply_pipe_derivation(params, derivation, owner)
+        return params
+
+    def _rebuild(self, pipeid) -> None:
+        """Rebuild ``pipeid`` and every clone derived from it atomically (see
+        DataEntityManager._rebuild)."""
+        staged: Dict[str, Any] = {}
+        self._stage(pipeid, staged)
+        for target, metadata in staged.items():
+            if metadata is None:
+                # Pending again (source removed or retargeted by a reload):
+                # stale metadata must not keep the id alive.
+                self.registry.pop(target, None)
+                self._pending[target] = self._pending_reason(target)
+                continue
+            self._pending.pop(target, None)
+            self.registry[target] = metadata
+
+    def _stage(self, pipeid, staged: Dict[str, Any]) -> None:
+        params = self._effective_raw_params(pipeid)
+        staged[pipeid] = None if params is None else self._build_validated_metadata(pipeid, params)
+        for target, derivations in list(self._derivations.items()):
+            if target != pipeid and target not in staged:
+                if any(d.clone_of == pipeid for d in derivations):
+                    self._stage(target, staged)
+
+    def _pending_reason(self, pipeid) -> str:
+        missing = next(
+            (d.clone_of for d in self._derivations.get(pipeid, []) if d.is_clone), pipeid
+        )
+        if missing != pipeid:
+            return f"waiting for '{missing}' to be registered"
+        return "extension declared before the pipe itself"
+
+    def _apply_config_derivations(self, section) -> None:
+        for target in list(self._derivations):
+            self._derivations[target] = [
+                d for d in self._derivations[target] if d.source != "config"
+            ]
+            if not self._derivations[target]:
+                del self._derivations[target]
+        for pipeid, entry in derivation_entries(section).items():
+            if "add_columns" in entry:
+                raise DerivationError(
+                    f"datapipes entry '{pipeid}': add_columns applies to entities, not pipes."
+                )
+            derivation = PipeDerivation(
+                clone_of=entry.get("clone_of"),
+                add_inputs=tuple(entry.get("add_inputs") or ()),
+                source="config",
+            )
+            if derivation.is_clone and pipeid in self._raw_params:
+                raise DerivationError(
+                    f"Config declares pipe '{pipeid}' as clone_of '{derivation.clone_of}', "
+                    "but it is also registered in code."
+                )
+            if derivation.is_clone and any(d.is_clone for d in self._derivations.get(pipeid, [])):
+                raise DerivationError(
+                    f"Config declares pipe '{pipeid}' as clone_of '{derivation.clone_of}', "
+                    "but code already clones it from another source."
+                )
+            self._derivations.setdefault(pipeid, []).append(derivation)
 
     def apply_config_overrides(self, config_service: ConfigService) -> None:
         """Overlay the ``datapipes:``/``datapipes-bytag:`` config sections
@@ -395,10 +615,18 @@ class DataPipesManager(DataPipesRegistry):
         then call again). Not synchronized with running DAGs — a concurrent
         run may observe a mix of old and new metadata across pipes.
         """
-        self._matcher = ConfigPatternMatcher(config_service.get("datapipes"))
+        section = config_service.get("datapipes")
+        self._apply_config_derivations(section)
+        self._matcher = ConfigPatternMatcher(strip_derivation_keys(section))
         self._tag_matcher = TagRuleMatcher(config_service.get("datapipes-bytag"))
-        for pipeid, raw_params in self._raw_params.items():
-            self.registry[pipeid] = self._build_validated_metadata(pipeid, raw_params)
+        declared = set(self._declared_ids())
+        for stale in [pipeid for pipeid in self.registry if pipeid not in declared]:
+            del self.registry[stale]
+        for target in list(self._pending):
+            if target not in self._derivations:
+                del self._pending[target]
+        for pipeid in declared:
+            self._rebuild(pipeid)
         self.logger.debug(f"Config overrides applied to {len(self._raw_params)} pipe(s)")
 
     def resolve_secret_tags(self, secret_provider) -> List[str]:
@@ -431,6 +659,27 @@ class DataPipesManager(DataPipesRegistry):
                     tags[key] = resolve_secret_value(value, secret_provider)
                 except Exception:
                     failures.append(f"{pipeid}.tags.{key}")
+        touched = []
+        for pipeid, derivations in self._derivations.items():
+            for index, derivation in enumerate(derivations):
+                if not derivation.tags:
+                    continue
+                resolved = dict(derivation.tags)
+                changed = False
+                for key, value in resolved.items():
+                    if not _is_unresolved_secret_reference(value):
+                        continue
+                    try:
+                        resolved[key] = resolve_secret_value(value, secret_provider)
+                        changed = True
+                    except Exception:
+                        failures.append(f"{pipeid}.tags.{key}")
+                if changed:
+                    derivations[index] = dataclasses.replace(derivation, tags=resolved)
+                    touched.append(pipeid)
+        for pipeid in touched:
+            if pipeid not in self._pending:
+                self._rebuild(pipeid)
         return failures
 
     def _build_metadata(self, pipeid, raw_params):
@@ -496,6 +745,8 @@ class DataPipesManager(DataPipesRegistry):
         return list(self.registry.keys())
 
     def get_pipe_definition(self, name):
+        if name in self._pending:
+            raise DerivationError(f"Pipe '{name}' is not available: {self._pending[name]}.")
         return self.registry.get(name)
 
 

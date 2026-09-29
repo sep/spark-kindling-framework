@@ -18,6 +18,22 @@ All notable changes to spark-kindling are documented here.
   helper, or whose `config_keys` is incomplete, fails the build. `--app` may
   be omitted to build every app under the app roots. The manifest records the
   template files' hashes, and per-app settings sources move under `apps`.
+- **Declaration derivations: clone and extend for entities and pipes**
+  (proposal `docs/proposals/declaration_derivations.md`).
+  `DataEntities.clone(id, from_entity=..., ...)` / `DataPipes.clone(id,
+  from_pipe=..., ...)` declare a new id from another declaration used as a
+  template; `DataEntities.extend(id, ...)` / `DataPipes.extend(id, ...)`
+  change a declaration in place. Changes are additive and stack last-in-wins
+  like config overlays: `tags`, `add_columns` (same name + same type is a
+  no-op, a different type is an error), `add_partition_columns`,
+  `add_cluster_columns`, `add_inputs`, and pipe `transform(previous_output,
+  **added_inputs)` wrapping the execute with the last registered outermost.
+  Derivations resolve when their source is registered, in any import order;
+  a target whose source never appears is reported by `pending_derivations()`
+  and raises on lookup. The YAML form uses `clone_of`, `add_columns` and
+  `add_inputs` on exact ids in `dataentities:`/`datapipes:`; config overlays
+  apply on top of derived declarations by their own id. `kindling entity
+  show` prints the derivation chain.
 
 ## [0.12.49] - 2026-09-29
 

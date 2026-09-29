@@ -75,6 +75,17 @@ def declare_pipeline(
     entity_registry = GlobalInjector.get(DataEntityRegistry)
     pipe_registry = GlobalInjector.get(DataPipesRegistry)
     config_service = GlobalInjector.get(ConfigService)
+    pending: Dict[str, str] = {}
+    for registry in (entity_registry, pipe_registry):
+        reported = getattr(registry, "pending_derivations", lambda: {})()
+        if isinstance(reported, dict):  # custom or mocked registries may not implement it
+            pending.update(reported)
+    if pending:
+        details = "; ".join(f"{target}: {reason}" for target, reason in sorted(pending.items()))
+        raise ValueError(
+            "Cannot declare the pipeline while declaration derivations are unresolved "
+            f"({details}). Register the source declarations or drop the derivations."
+        )
 
     selected = list(pipe_ids) if pipe_ids is not None else list(pipe_registry.get_pipe_ids())
     factory = engine_factory or OssSdpEngine

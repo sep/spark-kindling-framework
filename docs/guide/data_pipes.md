@@ -328,3 +328,28 @@ Distributed tracing spans are automatically created for:
 - Individual pipe execution
 
 This enables comprehensive monitoring and debugging of data pipeline performance and behavior.
+
+## Cloning and extending pipes
+
+`DataPipes.clone` declares a new pipe from another's declaration (retarget
+its output, add inputs, wrap its transform); `DataPipes.extend` adds to a
+pipe in place. `transform(previous_output, **added_inputs)` receives the
+previous execute's output and the DataFrames of its own `add_inputs` by
+keyword (entity id with dots replaced by underscores). Extensions stack with
+the last registered outermost, and the result is still one pipe with one
+execute, so the runner, streaming and the declarative engine see nothing new;
+a cloned pipe keeps its own watermark state under its own id.
+
+```python
+DataPipes.clone(
+    "silver.enrich_orders", from_pipe="silver.build_orders",
+    output_entity_id="silver.orders_enriched",
+    add_inputs=["ref.regions"],
+    transform=lambda df, ref_regions: df.join(ref_regions, "region_code"),
+)
+DataPipes.extend("silver.build_orders", tags={"sla": "gold"})
+```
+
+In settings YAML, `clone_of` and `add_inputs` on an exact id under
+`datapipes:` do the same without a transform. See
+`docs/proposals/declaration_derivations.md`.
