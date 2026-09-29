@@ -695,3 +695,30 @@ The framework supports data governance through:
 - **Audit Trail**: Integration with logging and monitoring systems
 
 This framework provides a robust foundation for managing data entities in a lakehouse architecture with strong governance, discoverability, and operational capabilities.
+
+## Cloning and extending declarations
+
+A declaration that is *almost* another one is a derivation, not a copy.
+`DataEntities.clone` declares a new entity from another's declaration used as
+a template; `DataEntities.extend` adds to an entity in place. Both are
+additive and stack last-in-wins, like config overlays, and both resolve when
+the source is registered, in any import order:
+
+```python
+DataEntities.clone(
+    "silver.orders_eu", from_entity="silver.orders",
+    name="orders_eu",
+    add_columns=[StructField("region", StringType())],
+    tags={"region": "eu"},
+)
+DataEntities.extend("silver.orders", tags={"owner": "sales"})
+```
+
+A clone implies nothing about data: a cloned pipe, a new pipe, or nothing
+yet may write to it. Adding a column with the same name but a different type
+is an error, because that is a migration (`kindling migrate`), not an
+extension. The same shape exists in settings YAML (`clone_of`,
+`add_columns` on an exact id under `dataentities:`), so environment overlays
+can declare variants without code. See
+`docs/proposals/declaration_derivations.md` and, for pipes,
+`docs/guide/data_pipes.md`.

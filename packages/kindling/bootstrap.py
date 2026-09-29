@@ -409,6 +409,13 @@ def apply_config_overrides() -> None:
             )
             continue
         overlay(config_service)
+        pending = getattr(registry, "pending_derivations", lambda: {})()
+        for target, reason in pending.items():
+            # A clone/extend whose source never registered: the target is
+            # missing from the registry and lookups raise, so say why here.
+            _BOOTSTRAP_LOGGER.warning(
+                "Declaration derivation for '%s' is unresolved: %s", target, reason
+            )
     _BOOTSTRAP_LOGGER.debug(
         "Config overrides applied to %s pipe(s) and %s entit(y/ies)",
         sum(1 for _ in pipes_registry.get_pipe_ids()),

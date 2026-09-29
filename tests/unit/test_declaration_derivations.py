@@ -1,0 +1,358 @@
+"""Clone and extend for entity and pipe declarations.
+
+See docs/proposals/declaration_derivations.md: one additive, stackable,
+last-in-wins mechanism resolved when the source is available, with config
+overlays applied on top.
+"""
+
+from unittest.mock import MagicMock
+
+import pytest
+from kindling.data_entities import DataEntityManager
+from kindling.data_pipes import DataPipesManager
+from kindling.declaration_derivations import (
+    DerivationError,
+    EntityDerivation,
+    PipeDerivation,
+    add_columns_to_schema,
+    derivation_entries,
+    strip_derivation_keys,
+    wrap_execute,
+)
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
+ORDERS_SCHEMA = StructType(
+    [StructField("order_id", StringType(), False), StructField("amount", IntegerType(), True)]
+)
+
+
+def _entities() -> DataEntityManager:
+    return DataEntityManager(signal_provider=MagicMock(), config_service=MagicMock())
+
+
+def _pipes() -> DataPipesManager:
+    provider = MagicMock()
+    provider.get_logger.return_value = MagicMock()
+    return DataPipesManager(provider)
+
+
+def _config(values):
+    service = MagicMock()
+    service.get.side_effect = lambda key, default=None: values.get(key, default)
+    return service
+
+
+def _register_orders(manager: DataEntityManager, **overrides):
+    params = {
+        "name": "orders",
+        "merge_columns": ["order_id"],
+        "tags": {"tier": "silver", "owner": "core"},
+        "schema": ORDERS_SCHEMA,
+    }
+    params.update(overrides)
+    manager.register_entity("silver.orders", **params)
+
+
+# --------------------------------------------------------------------------- #
+# Pure helpers
+# --------------------------------------------------------------------------- #
+
+
+def test_add_columns_accumulates_and_rejects_type_conflicts():
+    once = add_columns_to_schema(ORDERS_SCHEMA, [StructField("region", StringType())], "e")
+    assert [f.name for f in once.fields] == ["order_id", "amount", "region"]
+
+    again = add_columns_to_schema(once, [{"name": "region", "type": "string"}], "e")
+    assert [f.name for f in again.fields] == ["order_id", "amount", "region"]  # no-op
+
+    with pytest.raises(DerivationError, match="cannot be re-added as int"):
+        add_columns_to_schema(once, [{"name": "region", "type": "int"}], "e")
+    with pytest.raises(DerivationError, match="without a schema"):
+        add_columns_to_schema(None, [{"name": "x", "type": "string"}], "e")
+    with pytest.raises(DerivationError, match="invalid type"):
+        add_columns_to_schema(ORDERS_SCHEMA, [{"name": "x", "type": "nope"}], "e")
+
+
+def test_wrap_execute_routes_inputs_and_composes():
+    calls = []
+
+    def original(silver_orders):
+        calls.append(("original", sorted(["silver_orders"])))
+        return f"out({silver_orders})"
+
+    def enrich(previous, ref_regions):
+        calls.append(("enrich", previous, ref_regions))
+        return f"enriched({previous},{ref_regions})"
+
+    wrapped = wrap_execute(original, ["silver.orders"], enrich, ["ref.regions"])
+    result = wrapped(silver_orders="O", ref_regions="R")
+
+    assert result == "enriched(out(O),R)"
+    assert calls == [("original", ["silver_orders"]), ("enrich", "out(O)", "R")]
+    # Positional single-input calls (the streaming fallback) still reach the original;
+    # a transform that added no inputs receives just the previous output.
+    passthrough = wrap_execute(original, ["silver.orders"], lambda previous: f"p({previous})", [])
+    assert passthrough("O") == "p(out(O))"
+
+
+def test_config_section_split():
+    section = {
+        "silver.orders": {"tags": {"a": "b"}},
+        "silver.copy": {"clone_of": "silver.orders", "tags": {"c": "d"}},
+        "silver.*": {"tags": {"tier": "silver"}},
+    }
+    assert derivation_entries(section) == {"silver.copy": {"clone_of": "silver.orders"}}
+    assert strip_derivation_keys(section) == {
+        "silver.orders": {"tags": {"a": "b"}},
+        "silver.copy": {"tags": {"c": "d"}},
+        "silver.*": {"tags": {"tier": "silver"}},
+    }
+    with pytest.raises(DerivationError, match="exact id"):
+        derivation_entries({"silver.*": {"clone_of": "x"}})
+
+
+# --------------------------------------------------------------------------- #
+# Entities
+# --------------------------------------------------------------------------- #
+
+
+def test_clone_uses_the_source_as_a_template_in_any_order():
+    manager = _entities()
+    # Clone declared before its source: pending, then resolved on registration.
+    manager.derive_entity(
+        "silver.orders_eu",
+        EntityDerivation(
+            clone_of="silver.orders",
+            tags={"region": "eu"},
+            add_columns=(StructField("region", StringType()),),
+            overrides={"name": "orders_eu"},
+        ),
+    )
+    assert manager.pending_derivations() == {
+        "silver.orders_eu": "waiting for 'silver.orders' to be registered"
+    }
+    with pytest.raises(DerivationError, match="waiting for 'silver.orders'"):
+        manager.get_entity_definition("silver.orders_eu")
+
+    _register_orders(manager)
+
+    assert manager.pending_derivations() == {}
+    clone = manager.get_entity_definition("silver.orders_eu")
+    assert clone.name == "orders_eu"
+    assert clone.merge_columns == ["order_id"]
+    assert clone.tags == {"tier": "silver", "owner": "core", "region": "eu"}
+    assert [f.name for f in clone.schema.fields] == ["order_id", "amount", "region"]
+    # The source is untouched.
+    source = manager.get_entity_definition("silver.orders")
+    assert [f.name for f in source.schema.fields] == ["order_id", "amount"]
+    assert set(manager.get_entity_ids()) == {"silver.orders", "silver.orders_eu"}
+
+
+def test_extensions_stack_additively_last_in_wins():
+    manager = _entities()
+    _register_orders(manager)
+    manager.derive_entity(
+        "silver.orders",
+        EntityDerivation(
+            tags={"owner": "sales"}, add_columns=(StructField("region", StringType()),)
+        ),
+    )
+    manager.derive_entity(
+        "silver.orders",
+        EntityDerivation(
+            tags={"owner": "finance", "sla": "gold"},
+            add_columns=(StructField("region", StringType()), StructField("zone", StringType())),
+            add_partition_columns=("region",),
+        ),
+    )
+
+    entity = manager.get_entity_definition("silver.orders")
+    assert entity.tags == {"tier": "silver", "owner": "finance", "sla": "gold"}
+    assert [f.name for f in entity.schema.fields] == ["order_id", "amount", "region", "zone"]
+    assert entity.partition_columns == ["region"]
+
+
+def test_extension_before_registration_is_pending_then_applied():
+    manager = _entities()
+    manager.derive_entity("silver.orders", EntityDerivation(tags={"owner": "sales"}))
+    assert "silver.orders" in manager.pending_derivations()
+
+    _register_orders(manager)
+
+    assert manager.get_entity_definition("silver.orders").tags["owner"] == "sales"
+    assert manager.pending_derivations() == {}
+
+
+def test_clone_copies_source_extensions_but_not_config_overlays():
+    manager = _entities()
+    _register_orders(manager)
+    manager.derive_entity("silver.orders", EntityDerivation(tags={"ext": "yes"}))
+    manager.derive_entity("silver.copy", EntityDerivation(clone_of="silver.orders"))
+    manager.apply_config_overrides(
+        _config({"dataentities": {"silver.orders": {"tags": {"overlay": "source-only"}}}})
+    )
+
+    copy = manager.get_entity_definition("silver.copy")
+    assert copy.tags["ext"] == "yes"
+    assert "overlay" not in copy.tags
+    assert manager.get_entity_definition("silver.orders").tags["overlay"] == "source-only"
+
+
+def test_config_overlays_target_the_clone_by_its_own_id_and_config_can_clone():
+    manager = _entities()
+    _register_orders(manager)
+    manager.apply_config_overrides(
+        _config(
+            {
+                "dataentities": {
+                    "silver.orders_dev": {
+                        "clone_of": "silver.orders",
+                        "add_columns": [{"name": "debug", "type": "string"}],
+                        "tags": {"provider.table_name": "dev.orders"},
+                    }
+                }
+            }
+        )
+    )
+
+    clone = manager.get_entity_definition("silver.orders_dev")
+    assert clone.tags["provider.table_name"] == "dev.orders"
+    assert [f.name for f in clone.schema.fields] == ["order_id", "amount", "debug"]
+    # Re-applying is idempotent: config-sourced derivations are replaced, not stacked.
+    manager.apply_config_overrides(
+        _config({"dataentities": {"silver.orders_dev": {"clone_of": "silver.orders"}}})
+    )
+    clone = manager.get_entity_definition("silver.orders_dev")
+    assert [f.name for f in clone.schema.fields] == ["order_id", "amount"]
+
+
+def test_clone_conflicts_and_cycles_are_errors():
+    manager = _entities()
+    _register_orders(manager)
+    with pytest.raises(DerivationError, match="cannot be cloned from itself"):
+        manager.derive_entity("silver.orders", EntityDerivation(clone_of="silver.orders"))
+    with pytest.raises(DerivationError, match="registered directly"):
+        manager.derive_entity("silver.orders", EntityDerivation(clone_of="bronze.x"))
+    manager.derive_entity("a", EntityDerivation(clone_of="b"))
+    with pytest.raises(DerivationError, match="cycle"):
+        manager.derive_entity("b", EntityDerivation(clone_of="a"))
+    manager.derive_entity("silver.copy", EntityDerivation(clone_of="silver.orders"))
+    with pytest.raises(DerivationError, match="declared as a clone"):
+        manager.register_entity("silver.copy", name="x", merge_columns=[], tags={}, schema=None)
+
+
+def test_extension_may_not_replace_clone_only_fields():
+    manager = _entities()
+    _register_orders(manager)
+    with pytest.raises(DerivationError, match="Clone it instead"):
+        manager.derive_entity("silver.orders", EntityDerivation(overrides={"name": "renamed"}))
+    with pytest.raises(DerivationError, match="cannot be overridden"):
+        manager.derive_entity(
+            "silver.copy", EntityDerivation(clone_of="silver.orders", overrides={"schema": None})
+        )
+
+
+def test_scd2_companion_is_derived_for_a_clone():
+    manager = _entities()
+    _register_orders(manager)
+    manager.derive_entity(
+        "silver.orders_hist",
+        EntityDerivation(clone_of="silver.orders", tags={"scd.type": "2"}),
+    )
+    assert "silver.orders_hist.current" in manager.get_entity_ids()
+    assert "silver.orders.current" not in manager.get_entity_ids()
+
+
+# --------------------------------------------------------------------------- #
+# Pipes
+# --------------------------------------------------------------------------- #
+
+
+def _register_build(manager: DataPipesManager):
+    def build(silver_orders):
+        return f"built({silver_orders})"
+
+    manager.register_pipe(
+        "silver.build_orders",
+        name="Build Orders",
+        execute=build,
+        tags={"tier": "silver"},
+        input_entity_ids=["silver.orders"],
+        output_entity_id="gold.orders",
+        output_type="delta",
+    )
+
+
+def test_pipe_clone_retargets_output_and_wraps_transform():
+    manager = _pipes()
+    manager.derive_pipe(
+        "silver.enrich_orders",
+        PipeDerivation(
+            clone_of="silver.build_orders",
+            add_inputs=("ref.regions",),
+            transform=lambda previous, ref_regions: f"enriched({previous},{ref_regions})",
+            overrides={"output_entity_id": "gold.orders_enriched", "name": "Enrich"},
+        ),
+    )
+    _register_build(manager)
+
+    clone = manager.get_pipe_definition("silver.enrich_orders")
+    assert clone.output_entity_id == "gold.orders_enriched"
+    assert clone.input_entity_ids == ["silver.orders", "ref.regions"]
+    assert clone.execute(silver_orders="O", ref_regions="R") == "enriched(built(O),R)"
+    original = manager.get_pipe_definition("silver.build_orders")
+    assert original.output_entity_id == "gold.orders"
+    assert original.execute(silver_orders="O") == "built(O)"
+
+
+def test_pipe_extensions_stack_with_the_last_transform_outermost():
+    manager = _pipes()
+    _register_build(manager)
+    manager.derive_pipe(
+        "silver.build_orders",
+        PipeDerivation(tags={"sla": "silver"}, transform=lambda previous: f"a({previous})"),
+    )
+    manager.derive_pipe(
+        "silver.build_orders",
+        PipeDerivation(
+            tags={"sla": "gold"},
+            add_inputs=("ref.fx",),
+            transform=lambda previous, ref_fx: f"b({previous},{ref_fx})",
+        ),
+    )
+
+    pipe = manager.get_pipe_definition("silver.build_orders")
+    assert pipe.tags == {"tier": "silver", "sla": "gold"}
+    assert pipe.input_entity_ids == ["silver.orders", "ref.fx"]
+    assert pipe.execute(silver_orders="O", ref_fx="F") == "b(a(built(O)),F)"
+
+
+def test_pipe_extension_may_not_redirect_output_and_config_can_clone_pipes():
+    manager = _pipes()
+    _register_build(manager)
+    with pytest.raises(DerivationError, match="Clone it instead"):
+        manager.derive_pipe(
+            "silver.build_orders", PipeDerivation(overrides={"output_entity_id": "x"})
+        )
+
+    manager.apply_config_overrides(
+        _config(
+            {
+                "datapipes": {
+                    "silver.build_orders_canary": {
+                        "clone_of": "silver.build_orders",
+                        "output_entity_id": "gold.orders_canary",
+                        "add_inputs": ["ref.regions"],
+                    }
+                }
+            }
+        )
+    )
+    canary = manager.get_pipe_definition("silver.build_orders_canary")
+    assert canary.output_entity_id == "gold.orders_canary"
+    assert canary.input_entity_ids == ["silver.orders", "ref.regions"]
+    assert canary.execute(silver_orders="O", ref_regions="R") == "built(O)"
+    with pytest.raises(DerivationError, match="applies to entities"):
+        manager.apply_config_overrides(
+            _config({"datapipes": {"p": {"clone_of": "silver.build_orders", "add_columns": []}}})
+        )

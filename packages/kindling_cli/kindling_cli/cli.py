@@ -6765,6 +6765,15 @@ def entity_show(
 
     # Priority 2 — no fixture; show metadata only (Spark not available in CLI context)
     click.echo(f"Entity: {entity_id}  [env: {env}]  Provider: {provider_type}  {data_source_label}")
+    derivations = getattr(entity_registry, "derivations_for", lambda _eid: [])(entity_id)
+    if derivations:
+        chain = []
+        for derivation in derivations:
+            label = (
+                f"clone of {derivation.clone_of}" if derivation.is_clone else "extension"
+            ) + f" [{derivation.source}]"
+            chain.append(label)
+        click.echo("Derived: " + " -> ".join(chain))
     click.echo(
         "No tests/entities/ fixture found. "
         "Live provider data requires a running Spark session.\n"
