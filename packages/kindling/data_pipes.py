@@ -445,11 +445,17 @@ class DataPipesManager(DataPipesRegistry):
                 f"Pipe '{pipeid}' is declared as a clone and cannot also be registered "
                 "directly; drop one of the two declarations."
             )
+        previous = self._raw_params.get(pipeid)
         self._raw_params[pipeid] = dict(decorator_params)
         try:
             self._rebuild(pipeid)
         except Exception:
-            del self._raw_params[pipeid]
+            # Roll back to the prior valid declaration (or to none) so later
+            # rebuilds of clones still see what the registry actually holds.
+            if previous is None:
+                del self._raw_params[pipeid]
+            else:
+                self._raw_params[pipeid] = previous
             raise
         self.logger.debug(f"Pipe registered: {pipeid}")
 
@@ -537,6 +543,9 @@ class DataPipesManager(DataPipesRegistry):
         self._stage(pipeid, staged)
         for target, metadata in staged.items():
             if metadata is None:
+                # Pending again (source removed or retargeted by a reload):
+                # stale metadata must not keep the id alive.
+                self.registry.pop(target, None)
                 self._pending[target] = self._pending_reason(target)
                 continue
             self._pending.pop(target, None)

@@ -519,3 +519,57 @@ def test_unregistering_a_source_pipe_invalidates_its_clones():
         manager.get_pipe_definition("silver.copy")
     _register_build(manager)  # re-registering the template resolves the chain again
     assert set(manager.get_pipe_ids()) == {"silver.build_orders", "silver.copy", "silver.copy2"}
+
+
+def test_failed_reregistration_keeps_the_previous_declaration():
+    manager = _entities()
+    _register_orders(manager)
+    manager.derive_entity(
+        "silver.copy",
+        EntityDerivation(
+            clone_of="silver.orders", add_columns=({"name": "amount", "type": "int"},)
+        ),
+    )
+    incompatible = StructType(
+        [StructField("order_id", StringType()), StructField("amount", StringType())]
+    )
+
+    with pytest.raises(DerivationError, match="cannot be re-added as int"):
+        _register_orders(manager, schema=incompatible)
+
+    # The prior valid declaration survives for the source and its clone alike.
+    assert manager._raw_params["silver.orders"]["schema"] == ORDERS_SCHEMA
+    assert [f.name for f in manager.get_entity_definition("silver.copy").schema.fields] == [
+        "order_id",
+        "amount",
+    ]
+
+
+def test_wrap_execute_never_reruns_a_body_that_raised_type_error():
+    calls = []
+
+    def flaky(silver_orders):
+        calls.append(silver_orders)
+        raise TypeError("inside the pipe body")
+
+    wrapped = wrap_execute(flaky, ["silver.orders"], lambda previous: previous, [])
+    with pytest.raises(TypeError, match="inside the pipe body"):
+        wrapped(silver_orders="O")
+    assert calls == ["O"]  # executed once, not retried positionally
+
+
+def test_clone_pending_again_after_reload_is_removed_from_the_registry():
+    manager = _entities()
+    _register_orders(manager)
+    manager.register_entity("bronze.other", name="o", merge_columns=[], tags={}, schema=None)
+    manager.apply_config_overrides(
+        _config({"dataentities": {"silver.copy": {"clone_of": "bronze.missing"}}})
+    )
+    assert "silver.copy" in manager.pending_derivations()
+    assert "silver.copy" not in manager.get_entity_ids()
+
+    pipes = _pipes()
+    _register_build(pipes)
+    pipes.derive_pipe("silver.copy", PipeDerivation(clone_of="silver.build_orders"))
+    pipes.unregister_pipe("silver.build_orders")
+    assert "silver.copy" not in pipes.get_pipe_ids()

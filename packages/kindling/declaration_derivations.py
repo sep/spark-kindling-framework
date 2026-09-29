@@ -273,6 +273,19 @@ def input_kwarg(entity_id: str) -> str:
     return entity_id.replace(".", "_")
 
 
+def _accepts_keywords(function: Callable[..., Any], kwargs: Mapping[str, Any]) -> bool:
+    """Whether ``function(**kwargs)`` binds, judged from the signature alone."""
+    import inspect
+
+    try:
+        inspect.signature(function).bind(**kwargs)
+    except TypeError:
+        return False
+    except ValueError:  # no retrievable signature (builtins, some callables)
+        return True
+    return True
+
+
 def wrap_execute(
     original: Callable[..., Any],
     original_inputs: Sequence[str],
@@ -292,15 +305,15 @@ def wrap_execute(
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         base_kwargs = {key: value for key, value in kwargs.items() if key in original_keys}
         extra_kwargs = {key: kwargs[key] for key in added_keys if key in kwargs}
-        try:
+        if args or _accepts_keywords(original, base_kwargs) or len(base_kwargs) != 1:
             result = original(*args, **base_kwargs)
-        except TypeError:
+        else:
             # Streaming's compatibility path calls a single-input execute
             # positionally when the keyword form does not fit its signature
             # (``def transform(df)``); it can no longer do so through this
-            # wrapper once inputs were added, so mirror that retry here.
-            if args or len(original_keys) != 1 or len(base_kwargs) != 1:
-                raise
+            # wrapper once inputs were added, so decide by signature here.
+            # Never retry after running the body: a TypeError raised inside
+            # user code must surface, not re-execute it.
             result = original(next(iter(base_kwargs.values())))
         return transform(result, **extra_kwargs)
 
