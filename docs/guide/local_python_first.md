@@ -276,21 +276,24 @@ When a pipe reads `ref.statuses`, the provider materializes those rows on first 
 them in the in-memory store for subsequent reads. The entity schema is required — the provider
 validates that all keys in each row dict are declared schema fields and raises a clear error if not.
 
-Seed rows are local-only. The `provider_type: memory` tag means this entity is never read from or
-written to remote storage. Use them in `settings.local.yaml` overlays to swap real entities for
-in-memory fixtures during local development:
+Memory entities are never read from or written to remote storage, and nothing persists between
+runs: the seed is rebuilt from the declaration each time the process starts, and any writes last
+only for that run. This works on any platform, which makes seed rows a fit for small hard-coded
+reference data as well as local fixtures.
+
+To swap a real entity for an in-memory fixture during local development without touching code,
+use the top-level `entity_tags` override map (keyed by entity ID) in `settings.local.yaml`:
 
 ```yaml
 # settings.local.yaml
-entities:
-  - entityid: ref.statuses
-    tags:
-      provider_type: memory
-      provider.seed.rows:
-        - id: 1
-          label: active
-        - id: 2
-          label: inactive
+entity_tags:
+  ref.statuses:
+    provider_type: memory
+    provider.seed.rows:
+      - id: 1
+        label: active
+      - id: 2
+        label: inactive
 ```
 
 ## KindlingNotInitializedError
