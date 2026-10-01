@@ -18,7 +18,7 @@ pytest>=7.0.0
 pytest-cov>=4.0.0
 
 # Development tools
-pre-commit>=4.6.0
+pre-commit>=4.6.2
 black>=23.0.0
 isort>=8.0.1
 flake8>=7.3.0
