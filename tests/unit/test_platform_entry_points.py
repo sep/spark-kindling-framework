@@ -24,7 +24,7 @@ class TestRegisteredPlatformEntryPoints:
     def test_all_expected_platforms_are_advertised(self):
         """The installed distribution must register every platform the
         framework ships with. Catches missing/typo'd entries in the
-        ``[tool.poetry.plugins."spark_kindling.platforms"]`` section."""
+        ``[project.entry-points."spark_kindling.platforms"]`` table."""
         from kindling.bootstrap import _registered_platform_entry_points
 
         eps = _registered_platform_entry_points()
@@ -32,7 +32,7 @@ class TestRegisteredPlatformEntryPoints:
         missing = EXPECTED_PLATFORMS - set(eps)
         assert not missing, (
             f"Platforms expected but not advertised via entry points: {missing}. "
-            f'Check [tool.poetry.plugins."spark_kindling.platforms"] in the '
+            f'Check [project.entry-points."spark_kindling.platforms"] in the '
             f"root pyproject.toml."
         )
 

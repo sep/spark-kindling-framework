@@ -141,3 +141,6 @@ dev-attach.sh
 # Operational agent artifacts live in external Gas City storage.
 /plans/
 /docs/builds
+
+# uv-managed project virtualenv
+.venv/

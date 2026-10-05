@@ -18,29 +18,29 @@ Tests can be marked with platform-specific markers to indicate which platform th
 ### Run Only Unit Tests (No System Tests)
 
 ```bash
-poetry run pytest tests/unit/ -v
+uv run pytest tests/unit/ -v
 ```
 
 ### Skip All System Tests
 
 ```bash
-poetry run pytest tests/ --skip-system
+uv run pytest tests/ --skip-system
 ```
 
 ### Run Tests for a Specific Platform
 
 ```bash
 # Synapse only
-poetry run pytest tests/ --platform=synapse -v
+uv run pytest tests/ --platform=synapse -v
 
 # Databricks only
-poetry run pytest tests/ --platform=databricks -v
+uv run pytest tests/ --platform=databricks -v
 
 # Fabric only
-poetry run pytest tests/ --platform=fabric -v
+uv run pytest tests/ --platform=fabric -v
 
 # Standalone only
-poetry run pytest tests/ --platform=standalone -v
+uv run pytest tests/ --platform=standalone -v
 ```
 
 ### Require Platform Environment Variables
@@ -48,7 +48,7 @@ poetry run pytest tests/ --platform=standalone -v
 Skip tests if platform environment variables are not configured:
 
 ```bash
-poetry run pytest tests/system/ --require-platform-env --platform=synapse
+uv run pytest tests/system/ --require-platform-env --platform=synapse
 ```
 
 ## Marking Tests as Platform-Specific
@@ -141,19 +141,19 @@ export FABRIC_LAKEHOUSE_ID="lakehouse-id"
 
 ```bash
 # 1. Run unit tests during development (fast, no cloud required)
-poetry run pytest tests/unit/ -v
+uv run pytest tests/unit/ -v
 
 # 2. Run integration tests with local Spark
-poetry run pytest tests/integration/ -v
+uv run pytest tests/integration/ -v
 
 # 3. Before deploying to Synapse, run Synapse-specific tests
 export SYNAPSE_WORKSPACE_NAME="dev-workspace"
 export SYNAPSE_SPARK_POOL_NAME="dev-pool"
 # ... set other env vars ...
-poetry run pytest tests/system/ --platform=synapse --require-platform-env -v
+uv run pytest tests/system/ --platform=synapse --require-platform-env -v
 
 # 4. Run all tests except system tests (for CI without cloud access)
-poetry run pytest tests/ --skip-system
+uv run pytest tests/ --skip-system
 ```
 
 ### CI/CD Pipeline
@@ -165,7 +165,7 @@ test-unit:
   steps:
     - uses: actions/checkout@v3
     - name: Run unit tests
-      run: poetry run pytest tests/unit/ -v
+      run: uv run pytest tests/unit/ -v
 
 test-synapse:
   runs-on: ubuntu-latest
@@ -177,7 +177,7 @@ test-synapse:
         echo "SYNAPSE_WORKSPACE_NAME=${{ secrets.SYNAPSE_WORKSPACE }}" >> $GITHUB_ENV
         # ... other env vars ...
     - name: Run Synapse system tests
-      run: poetry run pytest tests/system/ --platform=synapse --require-platform-env -v
+      run: uv run pytest tests/system/ --platform=synapse --require-platform-env -v
 ```
 
 ## Test Discovery
@@ -262,10 +262,10 @@ class TestMy:
 
 ```bash
 # Check which tests are collected
-poetry run pytest tests/ --collect-only --platform=synapse
+uv run pytest tests/ --collect-only --platform=synapse
 
 # Verify markers are registered
-poetry run pytest --markers | grep "synapse:"
+uv run pytest --markers | grep "synapse:"
 ```
 
 ### Missing Dependencies
@@ -285,7 +285,7 @@ Ensure tests have the correct marker:
 
 ```bash
 # List all tests with synapse marker
-poetry run pytest tests/ -m synapse --collect-only
+uv run pytest tests/ -m synapse --collect-only
 ```
 
 ## Reference

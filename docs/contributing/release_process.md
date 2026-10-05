@@ -21,14 +21,14 @@ take the runtime lane. Unknown paths also take the runtime lane.
 
 ```bash
 # 1. Bump version in pyproject.toml
-poetry run poe version --bump_type patch
+poe version --bump_type patch
 # Or: --bump_type minor / --bump_type major
 
 # 2. Add release notes file
 vim docs/releases/<version>.md
 
 # 3. Commit and push
-git add pyproject.toml docs/releases/<version>.md
+git add pyproject.toml uv.lock docs/releases/<version>.md
 git commit -m "chore: prepare release <version>"
 git push origin main
 
@@ -39,7 +39,7 @@ git push origin main
 ### Step 2: Create the Release on GitHub
 
 ```bash
-poetry run poe release <version>
+poe release <version>
 ```
 
 The Poe task creates and pushes the release tag. CI owns the GitHub release
@@ -201,19 +201,21 @@ Assets
 Use the existing `poe version` task (defined in `pyproject.toml`):
 
 ```bash
-poetry run poe version --bump_type patch   # X.Y.Z -> X.Y.(Z+1)
-poetry run poe version --bump_type minor   # X.Y.Z -> X.(Y+1).0
-poetry run poe version --bump_type major   # X.Y.Z -> (X+1).0.0
-poetry run poe version --bump_type alpha   # X.Y.Z -> X.Y.(Z+1)a1
+poe version --bump_type patch   # X.Y.Z -> X.Y.(Z+1)
+poe version --bump_type minor   # X.Y.Z -> X.(Y+1).0
+poe version --bump_type major   # X.Y.Z -> (X+1).0.0
+poe version --bump_type alpha   # X.Y.Z -> X.Y.(Z+1)a1
 ```
 
-This updates the version in `pyproject.toml` and can optionally trigger build/deploy.
+This updates the version in `pyproject.toml`, runs `uv lock` to refresh the
+workspace member versions in `uv.lock` (commit both files), and can optionally
+trigger build/deploy.
 
 ## 🎯 Complete Release Workflow
 
 ```bash
 # 1. Update version
-poetry run poe version --bump_type patch
+poe version --bump_type patch
 
 # 2. Update release notes
 vim docs/releases/<version>.md
@@ -316,7 +318,7 @@ git add .
 git commit -m "fix: critical bug in platform detection"
 
 # 3. Update version
-poetry run poe version --bump_type patch
+poe version --bump_type patch
 
 # 4. Push and create PR
 git push origin hotfix/<version>

@@ -11,7 +11,7 @@ Builds runtime wheels for each supported platform (Synapse, Databricks, Fabric) 
 **Features:**
 - ✅ Creates single wheel per platform containing core + platform-specific code
 - ✅ Builds design-time wheels used for local tooling (`kindling-sdk`, `kindling-cli`)
-- ✅ Uses standard Poetry build system
+- ✅ Uses standard uv build system (`uv build --wheel`, `uv_build` backend)
 - ✅ Maintains platform tag naming for app_framework.py compatibility
 - ✅ Excludes other platform files to reduce wheel size
 - ✅ Places all artifacts in `dist/`
@@ -20,7 +20,7 @@ Builds runtime wheels for each supported platform (Synapse, Databricks, Fabric) 
 
 ```bash
 # Build all platform wheels
-poetry run poe build-wheels
+poe build-wheels
 ```
 
 **Output:**
@@ -39,7 +39,7 @@ dist/
 - Platform-specific dependencies (Azure SDKs, Databricks SDK, etc.)
 
 **Requirements:**
-- Poetry installed (`curl -sSL https://install.python-poetry.org | python3 -`)
+- uv installed (`pip install uv==0.12.20`; preinstalled in the devcontainer and CI image) and the dev env synced with `uv sync`
 - Platform-specific pyproject.toml files (pyproject-synapse.toml, etc.)
 
 **Installation:**

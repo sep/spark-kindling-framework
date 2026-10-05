@@ -46,7 +46,7 @@ python scripts/deploy.py --platform fabric
 | `poe version --type minor` | Bump minor version | Manual version editing |
 | `poe version --type major` | Bump major version | Manual version editing |
 | `poe release <version>` | **Full release workflow** | Manual git tag + gh release + build + upload |
-| `poe build` | Build all platform wheels | Manual poetry build commands |
+| `poe build` | Build all platform wheels | Manual `uv build` commands |
 | `poe deploy` | Deploy all platform wheels to Azure | Manual az storage commands |
 | `poe deploy --platform fabric` | Deploy Fabric wheel to Azure | Manual az storage commands |
 | `poe deploy --platform synapse` | Deploy Synapse wheel to Azure | Manual az storage commands |
@@ -311,7 +311,7 @@ result = deployer.deploy_as_job(app_path, job_config)
 
 ### Build Tool: Poe the Poet (poethepoet)
 
-**NOT using Poetry directly** - using Poe the Poet task runner that works with Poetry projects.
+**NOT using uv directly** - using Poe the Poet task runner on a uv project. Poe auto-detects uv and runs each task through `uv run`, so no prefix is needed; run `uv sync` once per checkout/worktree to create `.venv/`.
 
 **Build Commands:**
 ```bash
@@ -617,7 +617,7 @@ export AZURE_CLIENT_SECRET="..."
 
 - ✅ Test Artifacts: 69 total items cleaned (7 Databricks jobs, 62 storage data-apps)
 - ✅ Documentation: Removed 4 progress-oriented markdown files
-- ✅ Script: `scripts/cleanup_all_platforms.py` executed successfully via `poetry run poe cleanup`
+- ✅ Script: `scripts/cleanup_all_platforms.py` executed successfully via `poe cleanup`
 
 ### Test Infrastructure
 

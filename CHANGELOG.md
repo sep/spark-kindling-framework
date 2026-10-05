@@ -2,6 +2,20 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Changed
+
+- **The framework repo builds with uv instead of Poetry.** Every package
+  (`spark-kindling`, `-cli`, `-sdk` and the extensions) is now a PEP 621
+  project built by `uv_build`, the dev environment is a uv workspace
+  (`uv sync`, `uv.lock`), and `poe build`, the CI image and the devcontainer
+  drive `uv`. Wheel contents are unchanged; metadata differences are the
+  standard ones: `Requires-Python` drops the implicit `<4.0` cap, the licence
+  is a `License-Expression: MIT`, and the cosmos extension's extras are
+  published under their normalized names `spark-3-x` / `spark-4-x` (pip
+  still accepts `[spark_3_x]` / `[spark_4_x]`).
+
 ## [0.12.50] - 2026-09-29
 
 ### Added

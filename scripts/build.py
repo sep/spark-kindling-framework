@@ -4,9 +4,9 @@ Build Kindling wheels.
 
 Produces one runtime wheel (spark-kindling) that contains every
 ``platform_*.py`` module and declares platform-specific deps under extras
-(see ``[tool.poetry.extras]`` in the root pyproject.toml). Also builds the
+(see ``[project.optional-dependencies]`` in the root pyproject.toml). Also builds the
 design-time wheels: spark-kindling-cli, spark-kindling-sdk, and
-kindling extension wheels — all produced with a single ``poetry build`` per
+kindling extension wheels — all produced with a single ``uv build`` per
 package dir.
 
 Replaces the pre-rename three-wheel-per-platform build; users now install
@@ -66,27 +66,21 @@ def get_version_from_pyproject() -> str:
     return match.group(1)
 
 
-def ensure_poetry_installed() -> None:
-    environ.setdefault("POETRY_CACHE_DIR", "/tmp/poetry-cache")
-    environ.setdefault("POETRY_VIRTUALENVS_PATH", "/tmp/poetry-virtualenvs")
-    environ.setdefault("VIRTUALENV_OVERRIDE_APP_DATA", "/tmp/virtualenv-app-data")
-    environ.setdefault("XDG_DATA_HOME", "/tmp/xdg-data")
-    Path(environ["POETRY_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
-    Path(environ["POETRY_VIRTUALENVS_PATH"]).mkdir(parents=True, exist_ok=True)
-    Path(environ["VIRTUALENV_OVERRIDE_APP_DATA"]).mkdir(parents=True, exist_ok=True)
-    Path(environ["XDG_DATA_HOME"]).mkdir(parents=True, exist_ok=True)
+def ensure_uv_installed() -> None:
+    environ.setdefault("UV_CACHE_DIR", "/tmp/uv-cache")
+    Path(environ["UV_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run(["poetry", "--version"], capture_output=True, check=True)
+        subprocess.run(["uv", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        print("❌ Error: Poetry not found")
-        print("Install it: pip install poetry")
+        print("❌ Error: uv not found")
+        print("Install it: pip install uv")
         sys.exit(1)
 
 
 def build_runtime_wheel() -> tuple[str, int]:
     print("\n📦 Building spark-kindling runtime wheel...")
     result = subprocess.run(
-        ["poetry", "build", "--format", "wheel"], capture_output=True, text=True
+        ["uv", "build", "--wheel", "--out-dir", str(DIST_DIR)], capture_output=True, text=True
     )
     if result.returncode != 0:
         raise RuntimeError(f"Error building runtime wheel:\n{result.stderr}")
@@ -108,7 +102,7 @@ def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
     if package_dist.exists():
         shutil.rmtree(package_dist)
     result = subprocess.run(
-        ["poetry", "build", "--format", "wheel"],
+        ["uv", "build", "--wheel", "--out-dir", "dist"],
         cwd=package_dir,
         capture_output=True,
         text=True,
@@ -129,7 +123,7 @@ def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
 def main():
     print("🔥 Building Kindling wheels...")
     print(f"📅 Build time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    ensure_poetry_installed()
+    ensure_uv_installed()
     print("\n🧹 Cleaning previous builds...")
     if DIST_DIR.exists():
         shutil.rmtree(DIST_DIR)
@@ -180,8 +174,8 @@ def main():
     print("   pip install spark-kindling-sdk")
     print("   pip install spark-kindling-ext-visualization")
     print("\n📤 Next step:")
-    print("   poetry run poe deploy       # Deploy to Azure Storage (testing)")
-    print("   poetry run poe deploy --release latest  # Deploy from GitHub release (production)")
+    print("   poe deploy       # Deploy to Azure Storage (testing)")
+    print("   poe deploy --release latest  # Deploy from GitHub release (production)")
 
 
 if __name__ == "__main__":

@@ -1,16 +1,18 @@
-[tool.poetry]
+[project]
 name = "lakeflow-engine-test-app"
 version = "0.1.0"
 description = "System-test data app: general Lakeflow SDP execution path (overlays, dependency inference, materialized views, expectations)"
-authors = ["Kindling Team"]
-packages = [{ include = "lakeflow_engine_app" }]
+authors = [{name = "Kindling Team"}]
+requires-python = ">=3.10"
+dependencies = []
 
-[tool.poetry.dependencies]
-python = ">=3.10,<4.0"
-
-[tool.poetry.plugins."spark_kindling.data_apps"]
+[project.entry-points."spark_kindling.data_apps"]
 lakeflow_engine = "lakeflow_engine_app"
 
+[tool.uv.build-backend]
+module-root = ""
+module-name = "lakeflow_engine_app"
+
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.12.20,<0.13"]
+build-backend = "uv_build"

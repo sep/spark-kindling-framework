@@ -340,7 +340,7 @@ Examples:
         dist_dir = Path("dist")
         if not dist_dir.exists():
             print("❌ Error: dist/ directory not found")
-            print("Run: poetry run poe build")
+            print("Run: poe build")
             sys.exit(1)
 
         wheels = get_wheels(dist_dir, args.platform)

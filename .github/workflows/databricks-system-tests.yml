@@ -106,11 +106,8 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         run: |
           export PATH="/home/vscode/.local/bin:$PATH"
-          export POETRY_CACHE_DIR="${POETRY_CACHE_DIR:-/tmp/poetry-cache}"
-          export POETRY_VIRTUALENVS_PATH="${POETRY_VIRTUALENVS_PATH:-/tmp/poetry-virtualenvs}"
-          export VIRTUALENV_OVERRIDE_APP_DATA="${VIRTUALENV_OVERRIDE_APP_DATA:-/tmp/virtualenv-app-data}"
-          export XDG_DATA_HOME="${XDG_DATA_HOME:-/tmp/xdg-data}"
-          mkdir -p "$POETRY_CACHE_DIR" "$POETRY_VIRTUALENVS_PATH" "$VIRTUALENV_OVERRIDE_APP_DATA" "$XDG_DATA_HOME"
+          export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
+          mkdir -p "$UV_CACHE_DIR"
           python scripts/deploy_lakeflow_uc_wheels.py
 
       - name: Run Databricks system tests

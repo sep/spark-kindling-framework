@@ -167,7 +167,7 @@ def _ensure_xdist_available(workers: str) -> None:
     _exit(
         "pytest-xdist is required for distributed system test execution "
         f"(requested workers={workers}). Install dev dependencies with "
-        "`poetry install --with dev --sync` or rebuild/reopen the devcontainer."
+        "`uv sync` or rebuild/reopen the devcontainer."
     )
 
 

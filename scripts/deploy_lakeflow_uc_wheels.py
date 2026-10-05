@@ -81,7 +81,7 @@ def _build_test_app_wheel(app_dir: Path) -> Path:
         for stale in dist.glob("*.whl"):
             stale.unlink()
     result = subprocess.run(
-        ["poetry", "build", "--format", "wheel"],
+        ["uv", "build", "--wheel", "--out-dir", "dist"],
         cwd=app_dir,
         capture_output=True,
         text=True,
@@ -90,7 +90,7 @@ def _build_test_app_wheel(app_dir: Path) -> Path:
         raise RuntimeError(f"Failed building {app_dir.name} wheel:\n{result.stderr}")
     wheels = sorted(dist.glob("*.whl"))
     if not wheels:
-        raise FileNotFoundError(f"poetry build produced no wheel for {app_dir.name}")
+        raise FileNotFoundError(f"uv build produced no wheel for {app_dir.name}")
     return wheels[-1]
 
 

@@ -1,144 +1,138 @@
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.12.20,<0.13"]
+build-backend = "uv_build"
 
-[tool.poetry]
+[project]
 name = "spark-kindling"
 version = "0.12.50"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
-authors = ["SEP Engineering <engineering@sep.com>"]
+authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
-packages = [
-    {include = "kindling", from = "packages"}
-]
-
-[tool.poetry.dependencies]
-python = "^3.10"
+requires-python = ">=3.10"
 # Core framework (required on every platform). Kept as a minimal base
 # dependency set with no Spark runtime deps so the wheel installs cleanly
 # on cloud Spark runtimes (Synapse, Fabric, Databricks) without pip trying
 # to upgrade packages the runtime already provides via non-pip mechanisms.
-injector = ">=0.20.1"
-# Upper bound is load-bearing: dynaconf 3.3.4 changed object_merge/handle_metavalues
-# so that merging a dict into an existing namespace can eagerly evaluate an unrelated
-# sibling `@format` lazy value (one not part of the merge) before its referenced key
-# is ever set, raising DynaconfFormatError. Verified present in 3.3.4, absent in 3.3.1
-# and 3.2.13. Since cloud Spark runtimes (Fabric/Synapse) don't ship dynaconf
-# themselves, an unbounded range lets pip resolve whatever is newest on PyPI at
-# install time, independently of what's pinned in poetry.lock for local/CI use.
-dynaconf = ">=3.1.0,<3.3.2"
-pyyaml = ">=6.0"
-packaging = ">=23.0"
-blinker = ">=1.6.0"
-# Azure SDKs used by every Azure-backed platform.
-# `azure-core` needs a per-platform ceiling: Fabric's managed runtime ships
-# azure-core 1.30.2, so the [fabric] extra keeps the tight <1.31.0 upper
-# bound for managed-runtime compatibility. Every other install path (bare,
-# [databricks], [synapse], [all], ...) must NOT carry that ceiling: Azure
-# Databricks' runtime pre-ships azure-mgmt-core==1.5.0, which itself requires
-# azure-core>=1.31.0, so an unconditional <1.31.0 ceiling makes pip hold/
-# downgrade azure-core to 1.30.2 on Databricks and collide with the
-# preinstalled azure-mgmt-core (see the "azure-mgmt-core ... incompatible"
-# warning that used to show up on every Databricks CI job).
-#
-# This is expressed as two additive constraints rather than a mutually
-# exclusive pair: an unconditional base entry (no marker) plus a second entry
-# scoped to `extra == 'fabric'`. Poetry's build backend emits BOTH as
-# separate `Requires-Dist: azure-core (...)` lines in wheel METADATA, and pip
-# applies both whenever the fabric extra is requested, intersecting them to
-# `>=1.30.0,<1.31.0`. A markers-only *mutually exclusive* pair keyed off
-# `extra != 'fabric'` / `extra == 'fabric'` was tried first and does NOT
-# work: poetry-core silently drops the `extra != 'fabric'` entry from the
-# built wheel's METADATA, leaving bare/non-fabric installs with no azure-core
-# requirement at all. Verified by building the wheel and inspecting
-# `unzip -p spark_kindling-*.whl "*.dist-info/METADATA" | grep azure-core`.
-#
-# `azure-identity` and `azure-storage-file-datalake` are intentionally kept
-# loose so pip accepts the cluster's pre-installed versions without
-# unnecessary re-resolution.
-azure-core = [
-    {version = ">=1.30.0"},
-    {version = ">=1.30.0,<1.31.0", markers = "extra == 'fabric'"},
+dependencies = [
+    "injector>=0.20.1",
+    # Upper bound is load-bearing: dynaconf 3.3.4 changed object_merge/handle_metavalues
+    # so that merging a dict into an existing namespace can eagerly evaluate an unrelated
+    # sibling `@format` lazy value (one not part of the merge) before its referenced key
+    # is ever set, raising DynaconfFormatError. Verified present in 3.3.4, absent in 3.3.1
+    # and 3.2.13. Since cloud Spark runtimes (Fabric/Synapse) don't ship dynaconf
+    # themselves, an unbounded range lets pip resolve whatever is newest on PyPI at
+    # install time, independently of what's pinned in uv.lock for local/CI use.
+    "dynaconf>=3.1.0,<3.3.2",
+    "pyyaml>=6.0",
+    "packaging>=23.0",
+    "blinker>=1.6.0",
+    # Azure SDKs used by every Azure-backed platform.
+    # `azure-core` needs a per-platform ceiling: Fabric's managed runtime ships
+    # azure-core 1.30.2, so the [fabric] extra adds the tight <1.31.0 upper
+    # bound for managed-runtime compatibility. Every other install path (bare,
+    # [databricks], [synapse], [all], ...) must NOT carry that ceiling: Azure
+    # Databricks' runtime pre-ships azure-mgmt-core==1.5.0, which itself requires
+    # azure-core>=1.31.0, so an unconditional <1.31.0 ceiling makes pip hold/
+    # downgrade azure-core to 1.30.2 on Databricks and collide with the
+    # preinstalled azure-mgmt-core (see the "azure-mgmt-core ... incompatible"
+    # warning that used to show up on every Databricks CI job).
+    #
+    # This is expressed as two additive constraints: an unconditional base
+    # entry here plus a second `azure-core` entry in the `fabric` extra below.
+    # The wheel METADATA carries both as separate `Requires-Dist: azure-core`
+    # lines (the second with `extra == "fabric"`), and pip intersects them to
+    # `>=1.30.0,<1.31.0` whenever the fabric extra is requested. Do not try a
+    # mutually exclusive `extra != 'fabric'` marker pair instead: build
+    # backends drop or mis-evaluate negated extra markers. Verify with
+    # `unzip -p dist/spark_kindling-*.whl "*.dist-info/METADATA" | grep azure-core`.
+    #
+    # `azure-identity` and `azure-storage-file-datalake` are intentionally kept
+    # loose so pip accepts the cluster's pre-installed versions without
+    # unnecessary re-resolution.
+    "azure-core>=1.30.0",
+    "azure-identity>=1.12.0",
+    "azure-storage-file-datalake>=12.0.0",
 ]
-azure-identity = ">=1.12.0"
-azure-storage-file-datalake = ">=12.0.0"
-# Platform-exclusive runtime deps live in extras (see [tool.poetry.extras]).
-# Spark runtime deps (pyspark, delta-spark, pandas, pyarrow) are optional
-# because managed runtimes provide them via non-pip mechanisms; declaring
-# them as required Requires-Dist causes pip to hang trying to resolve them
-# during on-cluster install. Local/CI consumers get them via the
-# [standalone] extra instead.
-azure-synapse-artifacts = {version = ">=0.17.0", optional = true}
-databricks-sdk = {version = ">=0.12.0", optional = true}
-pyspark = {version = ">=3.4.0,<4.0.0", optional = true}
-delta-spark = {version = ">=2.4.0,<4.0.0", optional = true}
-pandas = {version = ">=2.0.0", optional = true}
-pyarrow = {version = ">=12.0.0", optional = true}
-# API-based ADX entity provider (provider_type "adx-api").
-azure-kusto-data = {version = ">=4.0.0", optional = true}
-azure-kusto-ingest = {version = ">=4.0.0", optional = true}
 
-[tool.poetry.extras]
-# Install with: pip install 'spark-kindling[synapse]' etc.
-# synapse/databricks/fabric: for cloud consumers — add platform-specific SDKs.
-# standalone: for local dev / CI / generic-Spark consumers — pull in pyspark
-#   and friends that managed runtimes already provide.
-synapse = ["azure-synapse-artifacts"]
-databricks = ["databricks-sdk"]
-fabric = []
-standalone = ["pyspark", "delta-spark", "pandas", "pyarrow"]
-adx = ["azure-kusto-data", "azure-kusto-ingest"]
+[project.optional-dependencies]
+synapse = ["azure-synapse-artifacts>=0.17.0"]
+databricks = ["databricks-sdk>=0.12.0"]
+fabric = ["azure-core>=1.30.0,<1.31.0"]
+standalone = [
+    "pyspark>=3.4.0,<4.0.0",
+    "delta-spark>=2.4.0,<4.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=12.0.0",
+]
+adx = ["azure-kusto-data>=4.0.0", "azure-kusto-ingest>=4.0.0"]
 all = [
-    "azure-synapse-artifacts",
-    "databricks-sdk",
-    "pyspark",
-    "delta-spark",
-    "pandas",
-    "pyarrow",
-    "azure-kusto-data",
-    "azure-kusto-ingest",
+    "azure-synapse-artifacts>=0.17.0",
+    "databricks-sdk>=0.12.0",
+    "pyspark>=3.4.0,<4.0.0",
+    "delta-spark>=2.4.0,<4.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=12.0.0",
+    "azure-kusto-data>=4.0.0",
+    "azure-kusto-ingest>=4.0.0",
 ]
 
-[tool.poetry.plugins."spark_kindling.platforms"]
-# Platform service discovery via importlib.metadata entry points.
-# Value is the module to import; the module self-registers its factory
-# via @PlatformServices.register(name="<platform>") on import.
+[project.entry-points."spark_kindling.platforms"]
 synapse = "kindling.platform_synapse"
 databricks = "kindling.platform_databricks"
 fabric = "kindling.platform_fabric"
 standalone = "kindling.platform_standalone"
 
-[tool.poetry.group.dev.dependencies]
-pytest = ">=7.0.0"
-pytest-cov = ">=4.0.0"
-pytest-json-report = ">=1.5.0"
-pytest-xdist = ">=3.0.0"
-black = ">=23.0.0"
-pylint = ">=2.17.0"
-mypy = ">=1.0.0"
-ipython = ">=8.0.0"
-jupyter = ">=1.0.0"
-poethepoet = ">=0.24.0"
-requests = ">=2.31.0"
-azure-mgmt-storage = "22.1.0"
-spark-kindling-cli = {path = "packages/kindling_cli", develop = true}
-spark-kindling-sdk = {path = "packages/kindling_sdk", develop = true}
-# Platform SDKs needed by dev/CI tooling — they're also runtime deps under
-# the corresponding extras, but we install them unconditionally in the dev
-# env because scripts/databricks_uc_preflight.py, scripts/manage_uc_volumes.py,
-# and kindling_sdk.platform_* use them at design time.
-databricks-sdk = ">=0.12.0"
-azure-synapse-artifacts = ">=0.17.0"
-# Spark runtime also needed at dev time: unit tests import from kindling
-# modules that do `from pyspark import ...` at module scope. Managed cloud
-# runtimes provide these via non-pip mechanisms (hence [standalone] extra
-# for local/CI consumers), but dev env has to pip-install them directly.
-pyspark = ">=3.4.0,<4.0.0"
-delta-spark = ">=2.4.0,<4.0.0"
-pandas = ">=2.0.0"
-pyarrow = ">=12.0.0"
-matplotlib = ">=3.7.0"
+[tool.uv.build-backend]
+module-root = "packages"
+module-name = "kindling"
+
+# The design-time packages are workspace members so the dev environment
+# installs them editable from this checkout and uv.lock resolves them together
+# with the runtime package. Extensions are deliberately NOT members: each pins
+# against a released spark-kindling range and is built standalone by
+# scripts/build.py (cosmos also declares mutually exclusive pyspark extras,
+# which a shared lock would have to model as conflicts).
+[tool.uv.workspace]
+members = ["packages/kindling_cli", "packages/kindling_sdk"]
+
+[tool.uv.sources]
+spark-kindling-cli = {workspace = true}
+spark-kindling-sdk = {workspace = true}
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-json-report>=1.5.0",
+    "pytest-xdist>=3.0.0",
+    "black>=23.0.0",
+    "pylint>=2.17.0",
+    "mypy>=1.0.0",
+    "ipython>=8.0.0",
+    "jupyter>=1.0.0",
+    "poethepoet>=0.24.0",
+    "requests>=2.31.0",
+    "azure-mgmt-storage==22.1.0",
+    "spark-kindling-cli",
+    "spark-kindling-sdk",
+    # Platform SDKs needed by dev/CI tooling — they're also runtime deps under
+    # the corresponding extras, but we install them unconditionally in the dev
+    # env because scripts/databricks_uc_preflight.py, scripts/manage_uc_volumes.py,
+    # and kindling_sdk.platform_* use them at design time.
+    "databricks-sdk>=0.12.0",
+    "azure-synapse-artifacts>=0.17.0",
+    # Spark runtime also needed at dev time: unit tests import from kindling
+    # modules that do `from pyspark import ...` at module scope. Managed cloud
+    # runtimes provide these via non-pip mechanisms (hence [standalone] extra
+    # for local/CI consumers), but dev env has to pip-install them directly.
+    "pyspark>=3.4.0,<4.0.0",
+    "delta-spark>=2.4.0,<4.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=12.0.0",
+    "matplotlib>=3.7.0",
+]
 
 [tool.poe.tasks]
 # Version management
