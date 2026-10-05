@@ -295,10 +295,10 @@ DataEntities.entity(
 
 ```bash
 kindling package add entity bronze.orders \
-    --package packages/my_domain_app/src/my_domain_app
+    --package packages/my_domain_app
 ```
 
-Creates the decorator stub in `entities.py` and a CSV fixture under `tests/entities/bronze/orders.csv`.
+Appends the entity stub to `src/my_domain_app/entities/bronze.py` (one module per namespace, inside the scaffolded `entities/` package so the package walk imports it) and creates a CSV fixture stub at `packages/my_domain_app/tests/entities/bronze/orders.csv`.
 
 ---
 
@@ -354,17 +354,17 @@ def orders_with_customers(silver_orders_clean, silver_dim_customer):
 
 ```bash
 # Single-input pipe
-kindling package add pipe bronze_to_silver_orders \
+kindling package add pipe silver.orders \
     --inputs bronze.orders \
-    --package packages/my_domain_app/src/my_domain_app
+    --package packages/my_domain_app
 
 # File ingestion pipe
 kindling package add ingestion bronze.sales_csv \
     --source-pattern 'sales_(?P<report_date>[^.]+)[.]csv' \
-    --package packages/my_domain_app/src/my_domain_app
+    --package packages/my_domain_app
 ```
 
-Each scaffold creates the pipe stub, a unit test stub, and CSV fixture stubs for all inputs.
+Each scaffold writes the pipe module into the package's `pipes/` package (`pipes/silver_orders.py`, `pipes/bronze_sales_csv_ingestion.py`; the ingestion entity goes into `entities/bronze.py`), and the test stubs and CSV fixture stubs under `packages/my_domain_app/tests/`. Pipe ids are `<namespace>.<name>`.
 
 ---
 
@@ -546,8 +546,8 @@ kindling workspace init --platform fabric --storage-account <acct>
 kindling app init my-domain-app --pattern batch --layers medallion --repo-root .
 
 # 4 — Develop entities and pipes (iterative)
-kindling package add entity bronze.orders --package packages/my_domain_app/src/my_domain_app
-kindling package add pipe bronze_to_silver_orders --inputs bronze.orders --package packages/my_domain_app/src/my_domain_app
+kindling package add entity bronze.orders --package packages/my_domain_app
+kindling package add pipe silver.orders --inputs bronze.orders --package packages/my_domain_app
 
 # 5 — Validate and test (iterative)
 kindling app validate --app apps/my_domain_app/app.py --env local

@@ -863,33 +863,40 @@ for non-standard layouts.
 
 Scaffold an entity definition and a CSV fixture stub.
 
-- Appends a `DataEntities.entity()` skeleton to `<path>/entities.py`
-- Creates `tests/entities/<ns>/<name>.csv`
+- Appends a `DataEntities.entity()` skeleton to `<module>/entities/<ns>.py` (inside
+  the scaffolded `entities/` package; `<module>/entities.py` for a package without one)
+- Creates `tests/entities/<ns>/<name>.csv` under the package's project root
 
 | Option | Default | Description |
 |---|---|---|
-| `--package PATH` | required | Package root |
+| `--package PATH` | required | Package project root (`packages/<pkg>`) or its module directory (`packages/<pkg>/src/<pkg>`) |
 
 ### `package add pipe <PIPE_ID>`
 
-Scaffold a `DataPipes` pipe and matching unit/integration test stubs.
+Scaffold a `DataPipes` pipe and matching unit/integration test stubs. `PIPE_ID`
+is `<namespace>.<name>`. The pipe goes to `<module>/pipes/<ns>_<name>.py` (or
+`<module>/<ns>/<name>.py`, with an `__init__.py`, without a `pipes/` package);
+test stubs and input fixture stubs go under the project root's `tests/`.
 
 | Option | Default | Description |
 |---|---|---|
 | `--inputs TEXT` | — | Comma-separated input entity IDs |
-| `--package PATH` | required | Package root |
+| `--package PATH` | required | Package project root (`packages/<pkg>`) or its module directory (`packages/<pkg>/src/<pkg>`) |
 
 ### `package add ingestion <ENTITY_ID>`
 
 Scaffold a file-ingestion pipe and matching test stubs. The `--source-pattern`
 is matched against the filename (not the full ABFSS path); named groups are
-automatically extracted as columns by the framework.
+automatically extracted as columns by the framework. Writes
+`<module>/pipes/<ns>_<name>_ingestion.py`, appends the entity to
+`<module>/entities/<ns>.py`, and puts test stubs and the sample-CSV folder under
+the project root's `tests/`.
 
 | Option | Default | Description |
 |---|---|---|
 | `--source-pattern TEXT` | — | Regex for matching filenames; named groups become columns |
 | `--filename-metadata TEXT` | — | Field name to extract from a named capture group (ignored when `--source-pattern` is set) |
-| `--package PATH` | required | Package root |
+| `--package PATH` | required | Package project root (`packages/<pkg>`) or its module directory (`packages/<pkg>/src/<pkg>`) |
 
 ---
 

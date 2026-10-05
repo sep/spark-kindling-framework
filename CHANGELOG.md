@@ -25,6 +25,16 @@ All notable changes to spark-kindling are documented here.
   (checksum-verified, as this repo's own devcontainer does) and gives the
   `vscode` user ownership of `/opt/hadoop-jars`, so `kindling env ensure` can
   add or refresh JARs inside the container.
+- **`kindling package add entity` / `pipe` / `ingestion` generate code the
+  runtime imports.** On a `package init` package they wrote a flat
+  `entities.py` (shadowed by the scaffolded `entities/` package) and pipes
+  under `<namespace>/` directories without `__init__.py`, so the package walk
+  never registered them and the documented flow ended in `entity not found`.
+  They now write `entities/<ns>.py` and `pipes/<ns>_<name>.py` inside the
+  scaffolded packages (creating `__init__.py` for flat layouts), put test
+  stubs and fixtures under the package's project root instead of inside the
+  importable module, and accept either the project root or the module
+  directory as `--package`.
 - `poe deploy-extension` help pointed at building into the extension's own
   `dist/`, where the deploy never looks; it now says `poe build`.
 

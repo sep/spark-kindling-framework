@@ -210,16 +210,16 @@ These commands add new building blocks to an existing package and generate the c
 so that the entity is registered and a sample CSV fixture is created for use in unit and integration tests.
 
 ```bash
-kindling package add entity bronze.orders --package packages/orders/src/orders
+kindling package add entity bronze.orders --package packages/orders
 ```
 
 Generated:
 ```
-packages/orders/src/orders/entities.py     # entity definition appended or created
-tests/entities/bronze/orders.csv           # empty CSV with header row matching entity schema
+packages/orders/src/orders/entities/bronze.py   # entity definition appended or created (one module per namespace)
+packages/orders/tests/entities/bronze/orders.csv  # CSV fixture stub (placeholder header line)
 ```
 
-The generated CSV is a stub — column headers only — so unit and integration tests have a file to populate rather than having to create it from scratch.
+The generated CSV is a stub with a placeholder line to replace with the column headers, so unit and integration tests have a file to populate rather than having to create it from scratch.
 
 **As a developer, I want to add a new data pipe to a package**
 so that the pipe is registered, a transform function skeleton exists, and all three test tiers have scaffolding.
@@ -227,15 +227,15 @@ so that the pipe is registered, a transform function skeleton exists, and all th
 ```bash
 kindling package add pipe bronze.ingest_orders \
     --inputs bronze.raw_orders \
-    --package packages/orders/src/orders
+    --package packages/orders
 ```
 
 Generated:
 ```
-packages/orders/src/orders/bronze/ingest_orders.py    # pipe + transform function skeleton
-tests/unit/test_ingest_orders.py                       # unit test: calls transform directly with sample data
-tests/integration/test_ingest_orders.py                # integration test: runs full pipeline, asserts on output entity
-tests/entities/bronze/raw_orders.csv                  # fixture stub if not already present for input entities
+packages/orders/src/orders/pipes/bronze_ingest_orders.py   # pipe + transform function skeleton
+packages/orders/tests/unit/test_ingest_orders.py           # unit test stub (skipped until implemented)
+packages/orders/tests/integration/test_ingest_orders.py    # integration test stub (skipped until implemented)
+packages/orders/tests/entities/bronze/raw_orders.csv      # fixture stub if not already present for input entities
 ```
 
 The unit test skeleton reads from `tests/entities/` directly and calls the transform function. The integration test skeleton runs the full pipeline via the Kindling runtime and reads the output entity to assert on.
@@ -264,12 +264,12 @@ so that I have the correct ingestion scaffolding for a bronze CSV source without
 # Option A: provide a full filename regex (named groups become columns automatically)
 kindling package add ingestion bronze.myproject_raw \
   --source-pattern 'myproject_(?P<test_name>[^_]+)_(?P<frequency>\d+)hz\.csv' \
-  --package packages/myproject/src/myproject
+  --package packages/myproject
 
 # Option B: let --filename-metadata generate a default single-group pattern
 kindling package add ingestion bronze.myproject_raw \
   --filename-metadata frequency \
-  --package packages/myproject/src/myproject
+  --package packages/myproject
 ```
 
 The base storage path (ABFSS URL) is set in `settings.yaml` per environment and passed to
@@ -277,11 +277,11 @@ The base storage path (ABFSS URL) is set in `settings.yaml` per environment and 
 
 Generated:
 ```
-packages/myproject/src/myproject/bronze/myproject_raw_ingestion.py    # FileIngestionEntries entry with filename regex
-packages/myproject/src/myproject/entities.py                          # bronze.myproject_raw entity definition with CSV provider
-tests/unit/test_myproject_raw_ingestion.py                            # unit test: filename pattern matching, metadata extraction
-tests/integration/test_myproject_raw_ingestion.py                     # integration test: reads from tests/entities/bronze/myproject_raw/
-tests/entities/bronze/myproject_raw/                                  # folder for sample CSV files matching the ingestion pattern
+packages/myproject/src/myproject/pipes/bronze_myproject_raw_ingestion.py   # FileIngestionEntries entry with filename regex
+packages/myproject/src/myproject/entities/bronze.py                         # bronze.myproject_raw entity definition with CSV provider
+packages/myproject/tests/unit/test_myproject_raw_ingestion.py               # unit test stub: filename pattern matching, metadata extraction
+packages/myproject/tests/integration/test_myproject_raw_ingestion.py        # integration test stub: reads from tests/entities/bronze/myproject_raw/
+packages/myproject/tests/entities/bronze/myproject_raw/                     # folder for sample CSV files matching the ingestion pattern
 ```
 
 The unit test covers filename parsing and metadata extraction (e.g. deriving `frequency` from the filename) independently of storage. The integration test places sample CSVs in the fixture folder and verifies they land in the bronze Delta entity correctly.
@@ -292,7 +292,7 @@ so that fixture stubs are generated for all of them.
 ```bash
 kindling package add pipe silver.clean_orders \
     --inputs bronze.orders,bronze.products \
-    --package packages/orders/src/orders
+    --package packages/orders
 ```
 
 Generated fixture stubs:
