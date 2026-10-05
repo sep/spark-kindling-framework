@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling"
-version = "0.12.50"
+version = "0.13.0"
 description = "A unified framework for data apps across Fabric, Synapse, and Databricks"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
