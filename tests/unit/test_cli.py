@@ -3877,8 +3877,8 @@ def test_package_add_writes_into_scaffolded_subpackages(tmp_path, monkeypatch, t
     assert not (module / "entities.py").exists()
     assert not (module / "tests").exists()
     assert (project / "tests" / "entities" / "bronze" / "orders.csv").exists()
-    assert (project / "tests" / "unit" / "test_orders.py").exists()
-    assert (project / "tests" / "unit" / "test_sales_csv_ingestion.py").exists()
+    assert (project / "tests" / "unit" / "test_silver_orders.py").exists()
+    assert (project / "tests" / "unit" / "test_bronze_sales_csv_ingestion.py").exists()
     assert (project / "tests" / "entities" / "bronze" / "sales_csv").is_dir()
 
     # Walk the package the way the runtime does (it imports subpackages).
@@ -3889,6 +3889,19 @@ def test_package_add_writes_into_scaffolded_subpackages(tmp_path, monkeypatch, t
         f"{name}.pipes.silver_orders",
         f"{name}.pipes.bronze_sales_csv_ingestion",
     } <= walked
+
+
+def test_package_add_same_name_in_two_namespaces_keeps_both_test_stubs(tmp_path):
+    project = _scaffolded_package(tmp_path, "ledger")
+    runner = CliRunner()
+    for pipe_id in ("bronze.orders", "silver.orders"):
+        result = runner.invoke(cli, ["package", "add", "pipe", pipe_id, "--package", str(project)])
+        assert result.exit_code == 0, result.output
+
+    for ns in ("bronze", "silver"):
+        assert (project / "tests" / "unit" / f"test_{ns}_orders.py").exists()
+        assert (project / "tests" / "integration" / f"test_{ns}_orders.py").exists()
+        assert (project / "src" / "ledger" / "pipes" / f"{ns}_orders.py").exists()
 
 
 def test_package_add_pipe_flat_layout_creates_importable_namespace(tmp_path):

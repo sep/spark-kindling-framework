@@ -6276,8 +6276,8 @@ def package_add_pipe(pipe_id: str, inputs: Optional[str], package_path: Path) ->
     Creates:
       <module>/pipes/<ns>_<pipe_name>.py         — pipe skeleton with @DataPipes.pipe
                                                    (<module>/<ns>/<pipe_name>.py without pipes/)
-      tests/unit/test_<pipe_name>.py             — pytest skip stub
-      tests/integration/test_<pipe_name>.py      — pytest skip stub
+      tests/unit/test_<ns>_<pipe_name>.py        — pytest skip stub
+      tests/integration/test_<ns>_<pipe_name>.py — pytest skip stub
       tests/entities/<ns>/<id>.csv               — fixture stubs for any --inputs
     (tests/ under the project root)
 
@@ -6351,11 +6351,13 @@ def test_{pipe_name}_pipeline():
     ...
 """
 
-    unit_test_file = project_dir / "tests" / "unit" / f"test_{pipe_name}.py"
+    unit_test_file = project_dir / "tests" / "unit" / f"test_{namespace}_{pipe_name}.py"
     _write_new_file(unit_test_file, unit_test_content)
     click.echo(f"Created unit test stub {unit_test_file}")
 
-    integration_test_file = project_dir / "tests" / "integration" / f"test_{pipe_name}.py"
+    integration_test_file = (
+        project_dir / "tests" / "integration" / f"test_{namespace}_{pipe_name}.py"
+    )
     _write_new_file(integration_test_file, integration_test_content)
     click.echo(f"Created integration test stub {integration_test_file}")
 
@@ -6420,8 +6422,8 @@ def package_add_ingestion(
                                                     (<module>/<ns>/<name>_ingestion.py without pipes/)
       <module>/entities/<ns>.py                   — entity definition with CSV provider
                                                     (<module>/entities.py without entities/)
-      tests/unit/test_<name>_ingestion.py         — pytest skip stub
-      tests/integration/test_<name>_ingestion.py  — pytest skip stub
+      tests/unit/test_<ns>_<name>_ingestion.py        — pytest skip stub
+      tests/integration/test_<ns>_<name>_ingestion.py — pytest skip stub
       tests/entities/<namespace>/<name>/           — empty folder for sample CSVs
     (tests/ under the project root)
 
@@ -6542,11 +6544,13 @@ def test_{name}_ingestion_pipeline():
     ...
 """
 
-    unit_test_file = project_dir / "tests" / "unit" / f"test_{name}_ingestion.py"
+    unit_test_file = project_dir / "tests" / "unit" / f"test_{namespace}_{name}_ingestion.py"
     _write_new_file(unit_test_file, unit_test_content)
     click.echo(f"Created unit test stub {unit_test_file}")
 
-    integration_test_file = project_dir / "tests" / "integration" / f"test_{name}_ingestion.py"
+    integration_test_file = (
+        project_dir / "tests" / "integration" / f"test_{namespace}_{name}_ingestion.py"
+    )
     _write_new_file(integration_test_file, integration_test_content)
     click.echo(f"Created integration test stub {integration_test_file}")
 

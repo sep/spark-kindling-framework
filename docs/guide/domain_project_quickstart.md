@@ -551,7 +551,7 @@ kindling package add pipe silver.orders --inputs bronze.orders --package package
 
 # 5 — Validate and test (iterative)
 kindling app validate --app apps/my_domain_app/app.py --env local
-kindling pipeline run bronze_to_silver_orders --app apps/my_domain_app/app.py --env local
+kindling pipeline run silver.orders --app apps/my_domain_app/app.py --env local
 (cd packages/my_domain_app && uv run poe test)
 
 # 6 — Run full app locally

@@ -168,6 +168,8 @@ uv run poe build    # wheel lands in the repo-root dist/
 Then create an app under `apps/` (it uses the package with the same name unless you pass `--package`):
 
 ```bash
+cd ../..   # back to the repo root
+
 # Batch medallion app (bronze/silver/gold layers)
 kindling app init my-domain-app --pattern batch --layers medallion --repo-root .
 
