@@ -18,37 +18,41 @@ Tests can be marked with platform-specific markers to indicate which platform th
 ### Run Only Unit Tests (No System Tests)
 
 ```bash
-uv run pytest tests/unit/ -v
+poe test-unit
 ```
 
 ### Skip All System Tests
 
 ```bash
-uv run pytest tests/ --skip-system
+poe test   # unit, integration and KDA suites with --skip-system
 ```
 
 ### Run Tests for a Specific Platform
 
 ```bash
 # Synapse only
-uv run pytest tests/ --platform=synapse -v
+poe test-system --platform synapse
 
 # Databricks only
-uv run pytest tests/ --platform=databricks -v
+poe test-system --platform databricks
 
 # Fabric only
-uv run pytest tests/ --platform=fabric -v
+poe test-system --platform fabric
 
-# Standalone only
-uv run pytest tests/ --platform=standalone -v
+# Narrow further to one test or pattern
+poe test-system --platform synapse --test <pattern>
 ```
+
+The poe tasks pass `--platform` through to the pytest options described in
+this guide and add the paths and environment the suites expect; always run
+suites through them.
 
 ### Require Platform Environment Variables
 
 Skip tests if platform environment variables are not configured:
 
 ```bash
-uv run pytest tests/system/ --require-platform-env --platform=synapse
+poe test-system-ci --platform synapse   # CI mode: preflight fails fast on missing env
 ```
 
 ## Marking Tests as Platform-Specific
@@ -141,19 +145,19 @@ export FABRIC_LAKEHOUSE_ID="lakehouse-id"
 
 ```bash
 # 1. Run unit tests during development (fast, no cloud required)
-uv run pytest tests/unit/ -v
+poe test-unit
 
 # 2. Run integration tests with local Spark
-uv run pytest tests/integration/ -v
+poe test-integration
 
 # 3. Before deploying to Synapse, run Synapse-specific tests
 export SYNAPSE_WORKSPACE_NAME="dev-workspace"
 export SYNAPSE_SPARK_POOL_NAME="dev-pool"
 # ... set other env vars ...
-uv run pytest tests/system/ --platform=synapse --require-platform-env -v
+poe test-system --platform synapse
 
 # 4. Run all tests except system tests (for CI without cloud access)
-uv run pytest tests/ --skip-system
+poe test
 ```
 
 ### CI/CD Pipeline
@@ -165,7 +169,7 @@ test-unit:
   steps:
     - uses: actions/checkout@v3
     - name: Run unit tests
-      run: uv run pytest tests/unit/ -v
+      run: poe test-unit
 
 test-synapse:
   runs-on: ubuntu-latest
@@ -177,7 +181,7 @@ test-synapse:
         echo "SYNAPSE_WORKSPACE_NAME=${{ secrets.SYNAPSE_WORKSPACE }}" >> $GITHUB_ENV
         # ... other env vars ...
     - name: Run Synapse system tests
-      run: uv run pytest tests/system/ --platform=synapse --require-platform-env -v
+      run: poe test-system-ci --platform synapse
 ```
 
 ## Test Discovery
@@ -259,6 +263,9 @@ class TestMy:
 ## Troubleshooting
 
 ### Tests Not Running
+
+For collection diagnostics only (not for running suites), call pytest
+directly:
 
 ```bash
 # Check which tests are collected

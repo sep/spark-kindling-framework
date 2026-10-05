@@ -31,7 +31,7 @@ The packages are not on PyPI yet, so install them by release wheel URL.
 (see `kindling env update`); for a one-off install:
 
 ```bash
-V=0.12.50  # any release tag, without the leading v
+V=0.13.0  # any release tag, without the leading v
 BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
 pip install "spark-kindling[standalone] @ $BASE/spark_kindling-$V-py3-none-any.whl" \
     "$BASE/spark_kindling_sdk-$V-py3-none-any.whl" \
@@ -39,25 +39,18 @@ pip install "spark-kindling[standalone] @ $BASE/spark_kindling-$V-py3-none-any.w
 ```
 
 The CLI requires the SDK, which is why it is listed even for local-only use.
-The variants below use the same URLs; they are shown by package name.
 
-For local development (includes PySpark and Delta Lake):
-
-```bash
-pip install 'spark-kindling[standalone]' spark-kindling-cli
-```
-
-For CI or cloud environments where PySpark is already provided by the platform:
+For CI or cloud environments where PySpark is already provided by the
+platform, drop the `standalone` extra:
 
 ```bash
-pip install spark-kindling spark-kindling-cli
+pip install "spark-kindling @ $BASE/spark_kindling-$V-py3-none-any.whl" \
+    "$BASE/spark_kindling_sdk-$V-py3-none-any.whl" \
+    "$BASE/spark_kindling_cli-$V-py3-none-any.whl"
 ```
 
-To also deploy and manage remote platform workspaces:
-
-```bash
-pip install spark-kindling spark-kindling-cli spark-kindling-sdk
-```
+The SDK is what deploys to and manages remote platform workspaces, so the
+same three wheels cover that too.
 
 ### Devcontainer (recommended)
 

@@ -28,7 +28,8 @@ poe version --bump_type patch
 vim docs/releases/<version>.md
 
 # 3. Commit and push
-git add pyproject.toml uv.lock docs/releases/<version>.md
+git add pyproject.toml packages/kindling_cli/pyproject.toml \
+    packages/kindling_sdk/pyproject.toml uv.lock CHANGELOG.md docs/releases/<version>.md
 git commit -m "chore: prepare release <version>"
 git push origin main
 
