@@ -876,6 +876,8 @@ Scaffold an entity definition and a CSV fixture stub.
 Scaffold a `DataPipes` pipe and matching unit/integration test stubs. `PIPE_ID`
 is `<namespace>.<name>`. The pipe goes to `<module>/pipes/<ns>_<name>.py` (or
 `<module>/<ns>/<name>.py`, with an `__init__.py`, without a `pipes/` package);
+its output entity `<ns>.<name>_output` is declared in `<module>/entities/<ns>.py`
+unless it already exists;
 test stubs and input fixture stubs go under the project root's `tests/`.
 
 | Option | Default | Description |

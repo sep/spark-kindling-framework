@@ -5,6 +5,16 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 from kindling_cli.cli import _load_pyproject_toml, cli
+
+
+def _load_toml_text(text):
+    try:
+        import tomllib
+    except ImportError:  # Python 3.10
+        import tomli as tomllib
+    return tomllib.loads(text)
+
+
 from kindling_cli.scaffold import (
     AppScaffoldConfig,
     PackageScaffoldConfig,
@@ -442,12 +452,33 @@ class TestScaffoldCommands:
         assert "kindling env bootstrap" in result.output
         assert "Kept the existing pyproject.toml" not in result.output
 
+    def test_package_init_rejects_root_workspace_name(self, tmp_path):
+        runner = CliRunner()
+        assert (
+            runner.invoke(cli, ["repo", "init", "sales", "--output-dir", str(tmp_path)]).exit_code
+            == 0
+        )
+
+        result = runner.invoke(
+            cli, ["package", "init", "sales-workspace", "--repo-root", str(tmp_path)]
+        )
+
+        assert result.exit_code != 0
+        assert "repo root project's name" in result.output
+        assert not (tmp_path / "packages" / "sales_workspace").exists()
+
     def test_repo_init_reports_kept_root_pyproject(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
         result = CliRunner().invoke(cli, ["repo", "init", "x", "--output-dir", str(tmp_path)])
 
         assert result.exit_code == 0, result.output
         assert "Kept the existing pyproject.toml" in result.output
+        snippet = "\n".join(
+            line.strip()
+            for line in result.output.splitlines()
+            if line.strip().startswith(("[tool", "members"))
+        )
+        assert _load_toml_text(snippet)["tool"]["uv"]["workspace"]["members"] == ["packages/*"]
 
     def test_repo_init_warns_for_existing_devcontainer(self, tmp_path):
         devcontainer = tmp_path / ".devcontainer" / "devcontainer.json"

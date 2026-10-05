@@ -37,19 +37,25 @@ extensions version independently.
 
 The runtime wheel is installed with the extra for its environment:
 
+| Extra | Adds |
+|---|---|
+| `synapse` | `azure-synapse-artifacts` |
+| `databricks` | `databricks-sdk` |
+| `fabric` | the `azure-core` ceiling for Fabric's runtime |
+| `standalone` | `pyspark`, `delta-spark`, `pandas`, `pyarrow` |
+| `adx` | Azure Data Explorer clients |
+| `all` | everything above except the Fabric ceiling |
+
+The packages are not on PyPI, so the extra goes on a direct wheel reference,
+for example a local build:
+
 ```bash
-pip install 'spark-kindling[synapse]'      # azure-synapse-artifacts
-pip install 'spark-kindling[databricks]'   # databricks-sdk
-pip install 'spark-kindling[fabric]'       # azure-core ceiling for Fabric's runtime
-pip install 'spark-kindling[standalone]'   # pyspark, delta-spark, pandas, pyarrow
-pip install 'spark-kindling[adx]'          # Azure Data Explorer clients
-pip install 'spark-kindling[all]'
+pip install "spark-kindling[synapse] @ file://$PWD/dist/spark_kindling-<version>-py3-none-any.whl"
 ```
 
-The platform is detected at runtime; each platform module registers itself
-through the `spark_kindling.platforms` entry-point group. The packages are not
-on PyPI yet; see [setup_guide.md](../guide/setup_guide.md) for installing by
-release wheel URL.
+or a release wheel URL (see [setup_guide.md](../guide/setup_guide.md)). The
+platform is detected at runtime; each platform module registers itself through
+the `spark_kindling.platforms` entry-point group.
 
 ## Project Configuration
 

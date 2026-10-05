@@ -6176,36 +6176,19 @@ def _package_add_pipe_file(module_dir: Path, namespace: str, stem: str) -> Path:
     return namespace_dir / f"{stem}.py"
 
 
-# ---- package add entity ----
+def _entity_declared_in(module_dir: Path, entity_id: str) -> bool:
+    """Whether any module under module_dir already declares entity_id."""
+    needle = f'entityid="{entity_id}"'
+    return any(
+        needle in path.read_text(encoding="utf-8", errors="ignore")
+        for path in module_dir.rglob("*.py")
+    )
 
 
-@package_add_group.command("entity")
-@click.argument("entity_id")
-@click.option(
-    "--package",
-    "package_path",
-    required=True,
-    type=click.Path(path_type=Path, file_okay=False),
-    help="Package project root (packages/<pkg>) or its module directory (packages/<pkg>/src/<pkg>).",
-)
-def package_add_entity(entity_id: str, package_path: Path) -> None:
-    """Scaffold an entity definition and a CSV fixture stub.
-
-    \b
-    ENTITY_ID   Dot-separated namespace and name, e.g. bronze.orders
-
-    \b
-    Creates / appends:
-      <module>/entities/<ns>.py      — DataEntities.entity() skeleton
-                                       (<module>/entities.py without an entities/ package)
-      tests/entities/<ns>/<name>.csv — CSV fixture stub, under the project root
-
-    \b
-    Example:
-      kindling package add entity bronze.orders --package packages/my_pkg
-    """
+def _scaffold_entity_definition(module_dir: Path, entity_id: str) -> Path:
+    """Append a DataEntities.entity() skeleton for entity_id to the package's
+    entities module for its namespace; returns that module."""
     namespace, name = _parse_entity_id(entity_id)
-    module_dir, project_dir = _package_add_targets(package_path)
     schema_var = f"{namespace}_{name}_schema"
 
     entity_block = f"""
@@ -6244,6 +6227,41 @@ DataEntities.entity(
         _append_to_file(entities_py, entity_block)
         click.echo(f"Appended entity {entity_id!r} to {entities_py}")
 
+    return entities_py
+
+
+# ---- package add entity ----
+
+
+@package_add_group.command("entity")
+@click.argument("entity_id")
+@click.option(
+    "--package",
+    "package_path",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Package project root (packages/<pkg>) or its module directory (packages/<pkg>/src/<pkg>).",
+)
+def package_add_entity(entity_id: str, package_path: Path) -> None:
+    """Scaffold an entity definition and a CSV fixture stub.
+
+    \b
+    ENTITY_ID   Dot-separated namespace and name, e.g. bronze.orders
+
+    \b
+    Creates / appends:
+      <module>/entities/<ns>.py      — DataEntities.entity() skeleton
+                                       (<module>/entities.py without an entities/ package)
+      tests/entities/<ns>/<name>.csv — CSV fixture stub, under the project root
+
+    \b
+    Example:
+      kindling package add entity bronze.orders --package packages/my_pkg
+    """
+    namespace, name = _parse_entity_id(entity_id)
+    module_dir, project_dir = _package_add_targets(package_path)
+    _scaffold_entity_definition(module_dir, entity_id)
+
     csv_path = _create_csv_stub(project_dir, namespace, name)
     click.echo(f"Created fixture stub {csv_path}")
 
@@ -6276,6 +6294,8 @@ def package_add_pipe(pipe_id: str, inputs: Optional[str], package_path: Path) ->
     Creates:
       <module>/pipes/<ns>_<pipe_name>.py         — pipe skeleton with @DataPipes.pipe
                                                    (<module>/<ns>/<pipe_name>.py without pipes/)
+      <module>/entities/<ns>.py                  — its output entity <ns>.<pipe_name>_output,
+                                                   unless already declared
       tests/unit/test_<ns>_<pipe_name>.py        — pytest skip stub
       tests/integration/test_<ns>_<pipe_name>.py — pytest skip stub
       tests/entities/<ns>/<id>.csv               — fixture stubs for any --inputs
@@ -6332,6 +6352,12 @@ def {namespace}_{pipe_name}({func_params}):
     pipe_file = _package_add_pipe_file(module_dir, namespace, pipe_name)
     _write_new_file(pipe_file, pipe_content)
     click.echo(f"Created pipe module {pipe_file}")
+
+    # The pipe persists to its output entity through the entity registry, so
+    # it must be declared too.
+    output_entity_id = f"{namespace}.{pipe_name}_output"
+    if not _entity_declared_in(module_dir, output_entity_id):
+        _scaffold_entity_definition(module_dir, output_entity_id)
 
     unit_test_content = f"""\"\"\"Unit tests for {namespace}.{pipe_name} transform.\"\"\"
 import pytest
@@ -7975,8 +8001,10 @@ def repo_init(
     if had_root_pyproject:
         click.echo(
             "Kept the existing pyproject.toml. For the repo-wide environment, make it a "
-            'uv workspace over the packages: [tool.uv.workspace] members = ["packages/*"].'
+            "uv workspace over the packages by adding:"
         )
+        click.echo("  [tool.uv.workspace]")
+        click.echo('  members = ["packages/*"]')
     click.echo()
     click.echo("Next steps:")
     click.echo("  Reopen the repo in its devcontainer (or run `kindling env bootstrap` here):")
@@ -8068,6 +8096,23 @@ def package_init(
         raise click.ClickException(
             f"Package already exists: {target}\nChoose a different package name or --repo-root."
         )
+
+    # uv rejects a workspace in which two projects share a name, and the repo
+    # root is one of them.
+    root_pyproject = cfg.repo_root / "pyproject.toml"
+    if root_pyproject.is_file():
+        try:
+            root_name = _load_pyproject_toml(root_pyproject).get("project", {}).get("name")
+        except Exception:
+            root_name = None
+        if isinstance(root_name, str) and _canonical_distribution_name(
+            root_name
+        ) == _canonical_distribution_name(cfg.kebab_name):
+            raise click.ClickException(
+                f"Package name '{cfg.kebab_name}' is the repo root project's name in "
+                f"{root_pyproject}; uv workspace members need distinct names. "
+                "Choose a different package name."
+            )
 
     try:
         generate_package(cfg)

@@ -3902,6 +3902,9 @@ def test_package_add_same_name_in_two_namespaces_keeps_both_test_stubs(tmp_path)
         assert (project / "tests" / "unit" / f"test_{ns}_orders.py").exists()
         assert (project / "tests" / "integration" / f"test_{ns}_orders.py").exists()
         assert (project / "src" / "ledger" / "pipes" / f"{ns}_orders.py").exists()
+    entities = (project / "src" / "ledger" / "entities" / "bronze.py").read_text()
+    assert 'entityid="bronze.orders_output"' in entities  # each pipe's output entity
+    assert entities.count('entityid="bronze.orders_output"') == 1
 
 
 def test_package_add_pipe_flat_layout_creates_importable_namespace(tmp_path):
