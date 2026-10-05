@@ -71,15 +71,15 @@ Add this job to `.github/workflows/ci.yml`:
         with:
           python-version: "3.11"
 
-      - name: Install Poetry
+      - name: Install uv
         run: |
           python -m pip install --upgrade pip
-          pip install poetry
+          pip install uv
 
-      - name: Configure Poetry for GitHub Packages
+      - name: Configure uv for GitHub Packages
         run: |
-          poetry config repositories.github https://pypi.pkg.github.com/${{ github.repository_owner }}
-          poetry config pypi-token.github ${{ secrets.GITHUB_TOKEN }}
+          echo "UV_PUBLISH_URL=https://pypi.pkg.github.com/${{ github.repository_owner }}" >> $GITHUB_ENV
+          echo "UV_PUBLISH_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
 
       - name: Build and publish Synapse wheel
         run: |
@@ -89,8 +89,8 @@ Add this job to `.github/workflows/ci.yml`:
           cp build-configs/synapse.toml build/pyproject.toml
           cp README.md build/
           cd build
-          poetry build
-          poetry publish --repository github
+          uv build
+          uv publish
           cd ..
           rm -rf build
 
@@ -101,8 +101,8 @@ Add this job to `.github/workflows/ci.yml`:
           cp build-configs/databricks.toml build/pyproject.toml
           cp README.md build/
           cd build
-          poetry build
-          poetry publish --repository github
+          uv build
+          uv publish
           cd ..
           rm -rf build
 
@@ -113,8 +113,8 @@ Add this job to `.github/workflows/ci.yml`:
           cp build-configs/fabric.toml build/pyproject.toml
           cp README.md build/
           cd build
-          poetry build
-          poetry publish --repository github
+          uv build
+          uv publish
           cd ..
           rm -rf build
 
@@ -214,7 +214,7 @@ pip install kindling-synapse \
 ### Public Packages
 ```yaml
 # In your pyproject.toml (or build-configs/*.toml)
-[tool.poetry]
+[project]
 # No special config needed - packages are public by default if repo is public
 ```
 
@@ -291,13 +291,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Poetry
-        run: pip install poetry
+      - name: Install uv
+        run: pip install uv
 
-      - name: Configure Poetry for GitHub Packages
+      - name: Configure uv for GitHub Packages
         run: |
-          poetry config repositories.github https://pypi.pkg.github.com/${{ github.repository_owner }}
-          poetry config pypi-token.github ${{ secrets.GITHUB_TOKEN }}
+          echo "UV_PUBLISH_URL=https://pypi.pkg.github.com/${{ github.repository_owner }}" >> $GITHUB_ENV
+          echo "UV_PUBLISH_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
 
       - name: Build ${{ matrix.platform }} wheel
         run: |
@@ -309,11 +309,11 @@ jobs:
 
           # Update version if this is a release
           if [ "${{ github.event_name }}" == "release" ]; then
-            poetry version ${{ github.event.release.tag_name }}
+            uv version ${{ github.event.release.tag_name }}
           fi
 
-          poetry build
-          poetry publish --repository github
+          uv build
+          uv publish
 ```
 
 ### 2. User Installation Instructions
@@ -512,5 +512,5 @@ This gives you all the benefits of a package registry while keeping everything w
 
 - [GitHub Packages Documentation](https://docs.github.com/en/packages)
 - [Publishing Python Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-python-registry)
-- [Configuring Poetry for GitHub Packages](https://python-poetry.org/docs/repositories/)
+- [Building and publishing a package with uv](https://docs.astral.sh/uv/guides/package/)
 - [GitHub Packages Pricing](https://docs.github.com/en/billing/managing-billing-for-github-packages/about-billing-for-github-packages)

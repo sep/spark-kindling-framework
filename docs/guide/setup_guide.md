@@ -45,7 +45,7 @@ pip install spark-kindling spark-kindling-cli spark-kindling-sdk
 
 ### Devcontainer (recommended)
 
-The supplied devcontainer ships with Python 3.11, Java 11, PySpark 3.4, Delta Lake, Azure CLI, and all tooling pre-installed. Open the repo in VS Code and choose **Dev Containers: Reopen in Container**. The `postCreateCommand` automatically runs `poetry install --with dev --sync`.
+The supplied devcontainer ships with Python 3.11, Java 11, PySpark 3.4, Delta Lake, Azure CLI, and all tooling pre-installed. Open the repo in VS Code and choose **Dev Containers: Reopen in Container**. The `postCreateCommand` automatically runs `kindling env bootstrap`, which runs `uv sync` (including the `dev` dependency group).
 
 To pick up a newer Kindling release inside an existing devcontainer without rebuilding:
 

@@ -307,6 +307,12 @@ the first PyPI release:
   `UV_PROJECT_ENVIRONMENT=/workspace/.venv` with `UV_NO_SYNC=1` — the uv
   analog of the old `POETRY_VIRTUALENVS_CREATE=false` workaround.
 
-Still on Poetry, unchanged by this cutover: the `kindling repo init` /
-`package init` templates and `.github/Dockerfile.devcontainer`'s Poetry pin
-(domain-project scaffolding, per "Not done, deliberately" above).
+The scaffolding deferred under "Not done, deliberately" landed in the same
+change, since `kindling env` commands had been uv-only while `repo init` /
+`package init` still generated Poetry-schema projects they could not read:
+`pyproject.toml.j2` renders the same uv shape the migration script produces
+(plus an explicit `module-name`), the generated `ci.yml` runs `uv sync && uv
+run poe test && uv run poe build`, package scaffolds drop `src/__init__.py`
+(`uv_build` refuses an `__init__.py` above the module root), and
+`.github/Dockerfile.devcontainer` no longer installs Poetry. The CLI keeps
+reading legacy `[tool.poetry]` name/version metadata where it already did.

@@ -6,6 +6,16 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- **`kindling repo init` / `kindling package init` scaffold uv projects.**
+  Packages are PEP 621 projects built by `uv_build`, with the Kindling
+  release wheels pinned in `[tool.uv.sources]` and dev tooling in
+  `[dependency-groups]` — the schema `kindling env update`/`env add`/`env
+  bootstrap` already required, so those commands now work on a freshly
+  scaffolded project. The generated CI runs `uv sync && uv run poe test &&
+  uv run poe build`; the published devcontainer image no longer ships
+  Poetry. Package scaffolds no longer write `src/__init__.py` (uv_build
+  rejects it). Existing Poetry projects convert with
+  `scripts/migrate_domain_project_to_uv.py`.
 - **The framework repo builds with uv instead of Poetry.** Every package
   (`spark-kindling`, `-cli`, `-sdk` and the extensions) is now a PEP 621
   project built by `uv_build`, the dev environment is a uv workspace

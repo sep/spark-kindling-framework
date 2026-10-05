@@ -20,7 +20,7 @@ In VS Code:
 1. Open the repo root.
 2. **Command Palette → "Dev Containers: Reopen in Container"**
 
-Once inside the container the `postCreateCommand` automatically runs `poetry install --with dev --sync` and installs pre-commit hooks. You don't need to run those manually.
+Once inside the container the `postCreateCommand` automatically runs `kindling env bootstrap` (which runs `uv sync` to install the project's dependencies, including the `dev` group) and installs pre-commit hooks. You don't need to run those manually.
 
 Verify the environment:
 
@@ -40,7 +40,7 @@ kindling env update
 Generated packages also expose the same workflow as:
 
 ```bash
-poetry run poe update-kindling
+uv run poe update-kindling
 ```
 
 ---
@@ -507,7 +507,7 @@ For CATALOG mode entities, destructive rewrites use a **blue-green strategy**: t
 ## Command Order Summary
 
 ```
-# 1 — One-time environment setup (devcontainer handles poetry install automatically)
+# 1 — One-time environment setup (devcontainer handles uv sync automatically)
 az login
 kindling env check --local --platform fabric
 
@@ -542,7 +542,7 @@ kindling app run my-domain-app --platform fabric --env prod
 
 | Symptom | Check |
 |---|---|
-| `kindling env check` reports missing JARs | Re-run `poetry install`; the devcontainer post-create script should have fetched them |
+| `kindling env check` reports missing JARs | Re-run `uv sync`; the devcontainer post-create script should have fetched them |
 | Spark session fails to start | Java 11 must be active: `java -version`; set `JAVA_HOME` if wrong |
 | `entity not found` at runtime | Ensure the module defining the entity is imported in `app.py::initialize()` |
 | Merge fails with schema mismatch | Run `kindling migrate plan` to inspect pending schema changes |

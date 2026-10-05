@@ -33,7 +33,7 @@ An app distribution advertises a declaration module through the
 callable `register_all()`:
 
 ```toml
-[tool.poetry.plugins."spark_kindling.data_apps"]
+[project.entry-points."spark_kindling.data_apps"]
 orders = "orders_kindling_app"
 ```
 
