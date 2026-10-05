@@ -7,8 +7,11 @@
 # create (adopting the release a package already pins, or the latest release
 # for an empty repo) and runs `uv sync --all-packages`. Every package must pin
 # the same Kindling release as this root; `kindling env update` moves them.
+#
+# The `-workspace` suffix keeps this name distinct from a package scaffolded
+# with the repo's own name: uv requires unique names across workspace members.
 [project]
-name = "{{ repo_kebab_name }}"
+name = "{{ repo_kebab_name }}-workspace"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = []

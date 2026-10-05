@@ -79,7 +79,7 @@ Add one, then run `kindling env bootstrap` at the repo root:
 
 ```toml
 [project]
-name = "data-platform"
+name = "data-platform-workspace"   # must differ from every package name
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = []

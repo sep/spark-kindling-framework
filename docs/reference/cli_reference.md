@@ -792,7 +792,7 @@ inside the devcontainer image), `.gitignore` (includes `.venv/` and `dist/`),
 
 ```toml
 [project]
-name = "<repo-name>"
+name = "<repo-name>-workspace"   # distinct from any package name
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = []

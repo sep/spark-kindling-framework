@@ -177,11 +177,27 @@ def test_repo_root_pyproject_is_a_uv_workspace_over_packages(tmp_path):
     generate_repo(RepoScaffoldConfig(name="data-platform", output_dir=repo_root))
 
     data = tomllib.loads((repo_root / "pyproject.toml").read_text())
-    assert data["project"]["name"] == "data-platform"
+    assert data["project"]["name"] == "data-platform-workspace"
     assert data["project"]["dependencies"] == []
     assert data["tool"]["uv"]["package"] is False
     assert data["tool"]["uv"]["workspace"]["members"] == ["packages/*"]
     assert ".venv/" in (repo_root / ".gitignore").read_text()
+
+
+def test_repo_root_name_does_not_collide_with_same_named_package(tmp_path):
+    """uv rejects two workspace members with one name; the documented flow
+    scaffolds `repo init X` then `package init X`."""
+    import tomllib
+
+    repo_root = tmp_path / "my_pipeline"
+    generate_repo(RepoScaffoldConfig(name="my-pipeline", output_dir=repo_root))
+    generate_package(PackageScaffoldConfig(name="my-pipeline", repo_root=repo_root))
+
+    root_name = tomllib.loads((repo_root / "pyproject.toml").read_text())["project"]["name"]
+    package_name = tomllib.loads(
+        (_package_root(repo_root, "my_pipeline") / "pyproject.toml").read_text()
+    )["project"]["name"]
+    assert root_name != package_name
 
 
 def test_repo_preserves_existing_root_pyproject(tmp_path):
