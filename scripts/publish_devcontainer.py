@@ -2,7 +2,7 @@
 """Build and publish the Kindling devcontainer image to GHCR.
 
 The image is decoupled from Kindling package releases (it only provides
-OS/Java/Python/Poetry/JARs/the bootstrap CLI), so the default tag is a
+OS/Java/Python/uv/JARs/the bootstrap CLI), so the default tag is a
 build identity, not the framework's version.
 
 poe publish-devcontainer                  # build + push, tag build-<sha>

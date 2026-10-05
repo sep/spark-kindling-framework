@@ -124,7 +124,7 @@ Examples:
 
 Before deploying, build the extension:
   cd packages/extensions/kindling_ext_otel_azure
-  poetry build
+  uv build --wheel --out-dir dist
         """,
     )
     parser.add_argument(
@@ -149,7 +149,7 @@ Before deploying, build the extension:
         print(f"❌ No wheels found for extension: {args.extension}")
         print(f"\nMake sure the extension is built:")
         print(f"  cd packages/extensions/{args.extension.replace('-', '_')}")
-        print(f"  poetry build")
+        print(f"  uv build --wheel --out-dir dist")
         sys.exit(1)
 
     print(f"\n📦 Extension to deploy:")

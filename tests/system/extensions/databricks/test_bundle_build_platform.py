@@ -21,7 +21,7 @@ What this proves beyond that test:
   - the declaration-only platform fallback (no workspace id detectable in a
     serverless pipeline) succeeds.
 
-Prerequisites: ``databricks`` CLI and ``poetry`` on PATH (the devcontainer
+Prerequisites: ``databricks`` CLI and ``uv`` on PATH (the devcontainer
 ships both). The test builds the spark_kindling, spark_kindling_ext_sdp,
 spark_kindling_ext_databricks and lakeflow_engine_test_app wheels from this
 checkout and stages them with ``--wheel``; ``bundle deploy`` uploads them
@@ -90,27 +90,25 @@ WHEEL_PROJECTS = (
 
 
 def _build_wheels(output_dir: Path) -> list:
-    """Build this checkout's wheels with poetry-core (no virtualenv needed).
+    """Build this checkout's wheels with ``uv build`` (no virtualenv needed).
 
     Returned in dependency order (core, SDP extension, Databricks extension,
     app): serverless installs ``environment.dependencies`` one entry at a
     time, and Kindling packages are not on PyPI, so a wheel listed before
     the wheels it requires fails to install.
     """
-    env = {**os.environ, "POETRY_VIRTUALENVS_CREATE": "false"}
     wheels = []
     for project in WHEEL_PROJECTS:
         target = output_dir / project.name
         target.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
-            ["poetry", "build", "-f", "wheel", "-o", str(target)],
+            ["uv", "build", "--wheel", "--out-dir", str(target)],
             cwd=project,
-            env=env,
             capture_output=True,
             text=True,
             timeout=600,
         )
-        assert proc.returncode == 0, f"poetry build failed in {project}:\n{proc.stderr[-2000:]}"
+        assert proc.returncode == 0, f"uv build failed in {project}:\n{proc.stderr[-2000:]}"
         built = list(target.glob("*.whl"))
         assert len(built) == 1, built
         wheels.append(built[0])
@@ -176,8 +174,8 @@ class TestBundleBuildPlatform:
             pytest.skip("Bundle deployment coverage is Databricks-only.")
         if shutil.which("databricks") is None:
             pytest.skip("databricks CLI not on PATH (the devcontainer image installs it).")
-        if shutil.which("poetry") is None:
-            pytest.skip("poetry is required to build this checkout's wheels.")
+        if shutil.which("uv") is None:
+            pytest.skip("uv is required to build this checkout's wheels.")
         host = os.getenv("DATABRICKS_HOST")
         if not host:
             pytest.skip("DATABRICKS_HOST is required for bundle deployment.")

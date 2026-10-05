@@ -5852,9 +5852,9 @@ def _infer_artifact_package_specs(app_path: Path, modules: List[str]) -> List[st
             import tomllib
 
             project_data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-            poetry_data = project_data.get("tool", {}).get("poetry", {})
-            package_name = poetry_data.get("name") or package_root
-            version = poetry_data.get("version")
+            metadata = project_data.get("project") or project_data.get("tool", {}).get("poetry", {})
+            package_name = metadata.get("name") or package_root
+            version = metadata.get("version")
         except Exception:
             package_name = package_root
             version = None
@@ -8005,8 +8005,8 @@ def package_init(
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd packages/{cfg.snake_name}")
-    click.echo("  poetry install")
-    click.echo("  poetry run poe test                  # run the test suite")
+    click.echo("  uv sync")
+    click.echo("  uv run poe test                      # run the test suite")
     click.echo(f"  cd ../.. && kindling app init {cfg.snake_name} --package {cfg.snake_name}")
 
 
@@ -8026,7 +8026,7 @@ def package_init(
     show_default=True,
     type=click.Path(path_type=Path, file_okay=False),
     help=(
-        "Directory where Poetry should write the built wheel. Relative paths "
+        "Directory where uv should write the built wheel. Relative paths "
         "are resolved from PACKAGE_PATH."
     ),
 )

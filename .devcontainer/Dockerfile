@@ -79,7 +79,7 @@ RUN pip install --no-cache-dir \
     # Databricks SDK for testing
     databricks-sdk \
     # Build tools
-    poetry \
+    uv==0.12.20 \
     poethepoet
 
 # Pre-download hadoop-azure JARs for local ABFSS integration testing.

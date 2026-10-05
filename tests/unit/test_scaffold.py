@@ -274,6 +274,20 @@ def test_package_pyproject_uses_kebab_name(tmp_path):
     assert 'name = "my-project"' in pyproject
 
 
+def test_package_scaffold_is_buildable_by_uv_build(tmp_path):
+    """uv_build refuses an __init__.py above the module root (src/), and
+    module-name must point at the generated package directory."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    generate_package(PackageScaffoldConfig(name="sales-ops", repo_root=repo_root))
+
+    package_root = _package_root(repo_root, "sales_ops")
+    assert not (package_root / "src" / "__init__.py").exists()
+    assert (package_root / "src" / "sales_ops" / "__init__.py").exists()
+    pyproject = (package_root / "pyproject.toml").read_text()
+    assert 'module-name = "sales_ops"' in pyproject
+
+
 def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -281,10 +295,12 @@ def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path
     generate_package(cfg)
 
     pyproject = (_package_root(repo_root, "proj") / "pyproject.toml").read_text()
+    assert 'build-backend = "uv_build"' in pyproject
+    assert '"spark-kindling[standalone]",' in pyproject
     assert "spark-kindling = { url = " in pyproject
     assert "/spark_kindling-" in pyproject  # pinned to a release wheel URL
-    assert 'extras = ["standalone"]' in pyproject
-    assert 'poethepoet = ">=0.24.0"' in pyproject
+    assert '"poethepoet>=0.24.0",' in pyproject
+    assert "[tool.poetry" not in pyproject
     assert "spark-kindling-cli = { url = " in pyproject
     assert "/spark_kindling_cli-" in pyproject
     assert "spark-kindling-sdk = { url = " in pyproject
@@ -294,7 +310,7 @@ def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path
     assert 'test-unit = "pytest tests/unit -v"' in pyproject
     assert 'test-component = "pytest tests/component -v"' in pyproject
     assert 'test-integration = "pytest tests/integration -v"' in pyproject
-    assert 'build = "poetry build"' in pyproject
+    assert 'build = "uv build"' in pyproject
     assert 'update-kindling = "kindling env update"' in pyproject
 
 
@@ -345,8 +361,7 @@ def test_repo_ci_runs_each_package(tmp_path):
 
     workflow = (tmp_path / "proj" / ".github" / "workflows" / "ci.yml").read_text()
     assert "for pkg in packages/*" in workflow
-    assert "poetry run poe test" in workflow
-    assert "poetry run poe build" in workflow
+    assert "uv sync && uv run poe test && uv run poe build" in workflow
 
 
 def test_repo_devcontainer_uses_repo_workspace_and_package_pythonpath_for_new(tmp_path):
@@ -519,7 +534,7 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         assert "Next steps" in result.output
         assert "cd packages/my_pkg" in result.output
-        assert "poetry run poe test" in result.output
+        assert "uv run poe test" in result.output
         assert "kindling app init my_pkg --package my_pkg" in result.output
 
     def test_package_init_no_integration_skips_integration_dir(self, tmp_path):

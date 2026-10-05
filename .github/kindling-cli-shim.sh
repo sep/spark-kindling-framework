@@ -14,7 +14,7 @@
 # CLI whose version has nothing to do with the project's pin.
 set -e
 
-# 1. The project's own environment (uv/poetry in-project virtualenv).
+# 1. The project's own environment (uv's in-project .venv).
 if [ -x "./.venv/bin/kindling" ]; then
   exec "./.venv/bin/kindling" "$@"
 fi

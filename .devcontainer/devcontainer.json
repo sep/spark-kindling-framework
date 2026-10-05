@@ -13,7 +13,7 @@
 				"ms-azuretools.vscode-docker"
 			],
 			"settings": {
-				"python.defaultInterpreterPath": "/usr/local/bin/python",
+				"python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
 				"python.linting.enabled": true,
 				"python.linting.pylintEnabled": true,
 				"python.linting.flake8Enabled": true,
@@ -37,7 +37,7 @@
 			}
 		}
 	},
-	"postCreateCommand": "sudo chown -R vscode:vscode /workspaces/kindling-city 2>/dev/null || true; poetry env remove --all 2>/dev/null; poetry install --with dev --sync && poetry run python -c \"import xdist\" && git config --unset-all core.hooksPath; pre-commit install && bash -lc 'grep -q \"# kindling .env auto-load\" ~/.bashrc || { echo \"# kindling .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/kindling/.env ] && set -a && source /workspaces/kindling/.env && set +a\" >> ~/.bashrc; }'",
+	"postCreateCommand": "sudo chown -R vscode:vscode /workspaces/kindling-city 2>/dev/null || true; uv sync --frozen && .venv/bin/python -c \"import xdist\" && git config --unset-all core.hooksPath; pre-commit install && bash -lc 'grep -q \"# kindling .env auto-load\" ~/.bashrc || { echo \"# kindling .env auto-load\" >> ~/.bashrc; echo \"[ -f /workspaces/kindling/.env ] && set -a && source /workspaces/kindling/.env && set +a\" >> ~/.bashrc; }'",
 	"postStartCommand": "bash -c '[ -f \"/workspaces/kindling/.env\" ] && echo \"✅ .env will load in new terminals\" || echo \"⚠️  No .env file found\"'",
 	"initializeCommand": "echo '⚙️  Initializing devcontainer...'",
 	"mounts": [],

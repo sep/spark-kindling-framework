@@ -12,12 +12,12 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # The devcontainer image supplies Java 21 and Poetry; it is not tied to a
+    # The devcontainer image supplies Java 21 and uv; it is not tied to a
     # Kindling version, so it's referenced by :latest here rather than a
     # release tag that may never have had a matching image published (the
     # image is only rebuilt when its own inputs change, not on every
-    # Kindling release). `poetry install` resolves Kindling packages
-    # directly from their pinned GitHub release wheel URLs in poetry.lock.
+    # Kindling release). `uv sync` resolves Kindling packages directly
+    # from their pinned GitHub release wheel URLs ([tool.uv.sources], uv.lock).
     container:
       image: ghcr.io/sep/spark-kindling-framework/devcontainer:latest
       credentials:
@@ -37,7 +37,7 @@ jobs:
             if [ -f "$pkg/pyproject.toml" ]; then
               found=1
               echo "==> Testing $pkg"
-              (cd "$pkg" && poetry install --no-interaction && poetry run poe test && poetry run poe build)
+              (cd "$pkg" && uv sync && uv run poe test && uv run poe build)
             fi
           done
           if [ "$found" -eq 0 ]; then

@@ -155,7 +155,7 @@ jobs:
               CHANGELOG.md)
                 docs_changed=true
                 ;;
-              pyproject.toml|poetry.lock)
+              pyproject.toml|uv.lock)
                 if [[ "$is_tag" == "true" ]]; then
                   # Version bumps and lockfile churn are release metadata on tag
                   # ranges. Source changes in the same range choose the gates.

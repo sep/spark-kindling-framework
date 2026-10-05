@@ -19,7 +19,10 @@ It runs on:
 
 These lanes run as part of normal CI:
 
-- build CI container image
+- build CI container image (`.github/Dockerfile.ci` installs uv 0.12.20 and
+  runs `uv sync --frozen --no-install-project` into `/workspace/.venv`, with
+  `UV_PROJECT_ENVIRONMENT=/workspace/.venv` and `UV_NO_SYNC=1` set so later
+  `uv run` calls reuse that environment)
 - unit tests / quality lanes
 - integration tests
 - KDA packaging tests
@@ -84,7 +87,7 @@ For runtime release/manual system-test runs, CI:
 
 1. builds wheel artifacts
 2. downloads them into `dist/`
-3. deploys them to Azure storage with `poetry run poe deploy`
+3. deploys them to Azure storage with `poe deploy`
 4. passes the resolved `AZURE_BASE_PATH` into system tests
 5. attaches wheels to the GitHub release only after all platform lanes succeed
 
@@ -97,12 +100,12 @@ gates pass.
 The repo tasks that map most closely to CI are:
 
 ```bash
-poetry install
-poetry run poe test-unit
-poetry run poe test-integration
-poetry run poe test-system --platform synapse
-poetry run poe build
-poetry run poe deploy
+uv sync
+poe test-unit
+poe test-integration
+poe test-system --platform synapse
+poe build
+poe deploy
 ```
 
 ## Manual System Test Dispatch

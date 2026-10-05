@@ -2,7 +2,8 @@
 
 **Date:** 2026-08-19
 **Status:** Implemented (as a direct cutover — see "Phasing — Landed as a
-Direct Cutover")
+Direct Cutover"). The framework repo's own build, originally out of scope,
+followed on 2026-10-05 — see "Framework Repo Cutover".
 **Scope:** Replacing Poetry with uv as the toolchain `kindling repo init` /
 `kindling package init` scaffold into domain projects, and specifically
 enabling uv workspaces for the apps/packages monorepo layout domain teams
@@ -271,3 +272,47 @@ rollout at all — it landed as a single direct cutover:
   project left anywhere, so the CLI's uv-only cutover has no transition gap
   to manage. `_reconcile_root_kindling_dependencies` retires once every
   domain project is on a real `[tool.uv.workspace]`.
+
+---
+
+## Framework Repo Cutover (2026-10-05)
+
+The "Deliberately Out of Scope" internal build moved to uv as well, ahead of
+the first PyPI release:
+
+- **Packages.** The root (`spark-kindling`), `kindling_cli`, `kindling_sdk`,
+  the 8 extensions and the test fixture projects (`tests/data-apps/lakeflow-*`,
+  `tests/local-project`) are PEP 621 projects built by `uv_build`. The root's
+  `azure-core` Fabric ceiling stays expressed as two additive constraints —
+  the unconditional base entry plus an `azure-core` entry in the `fabric`
+  extra — which is now plain `[project.optional-dependencies]` rather than a
+  Poetry marker list.
+- **Workspace.** The root is a `[tool.uv.workspace]` whose members are
+  `packages/kindling_cli` and `packages/kindling_sdk` (editable in the dev
+  environment, as the old path dependencies were). Extensions are not
+  members: they pin released `spark-kindling` ranges and cosmos's
+  mutually exclusive pyspark extras would otherwise need `[tool.uv]`
+  conflict declarations in a shared lock.
+- **Lock.** `uv.lock` replaced `poetry.lock`, seeded from the Poetry lock's
+  exact pins so the cutover changed no resolved versions. Dependency
+  upgrades are separate changes (`uv lock --upgrade-package <pkg>`).
+- **Verification.** Every wheel was built with both backends from the same
+  commit: package file contents are byte-identical; metadata differences are
+  the dropped implicit `<4.0` Python cap, `License-Expression` (PEP 639),
+  per-extra `Requires-Dist` lines, and cosmos's extras normalized to
+  `spark-3-x` / `spark-4-x` (PEP 685).
+- **Tooling.** `scripts/build.py` runs `uv build --wheel`; `poe version` runs
+  `uv lock` after bumping; poe's uv executor wraps tasks in `uv run`. The CI
+  image runs `uv sync --frozen --no-install-project` and pins
+  `UV_PROJECT_ENVIRONMENT=/workspace/.venv` with `UV_NO_SYNC=1` — the uv
+  analog of the old `POETRY_VIRTUALENVS_CREATE=false` workaround.
+
+The scaffolding deferred under "Not done, deliberately" landed in the same
+change, since `kindling env` commands had been uv-only while `repo init` /
+`package init` still generated Poetry-schema projects they could not read:
+`pyproject.toml.j2` renders the same uv shape the migration script produces
+(plus an explicit `module-name`), the generated `ci.yml` runs `uv sync && uv
+run poe test && uv run poe build`, package scaffolds drop `src/__init__.py`
+(`uv_build` refuses an `__init__.py` above the module root), and
+`.github/Dockerfile.devcontainer` no longer installs Poetry. The CLI keeps
+reading legacy `[tool.poetry]` name/version metadata where it already did.

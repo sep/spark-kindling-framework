@@ -1,24 +1,22 @@
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.12.20,<0.13"]
+build-backend = "uv_build"
 
-[tool.poetry]
+[project]
 name = "sales-ops"
 version = "0.1.0"
 description = "Example Kindling consumer project for local-python-first development validation"
-authors = ["SEP Engineering <engineering@sep.com>"]
-packages = [{include = "sales_ops", from = "src"}]
-
-[tool.poetry.dependencies]
-python = "^3.10"
+authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
+requires-python = ">=3.10"
 # The runtime distribution is published as `spark-kindling`, while imports
 # remain `import kindling`. The standalone extra pulls in local Spark deps.
-spark-kindling = {version = ">=0.9.2", extras = ["standalone"]}
+dependencies = ["spark-kindling[standalone]>=0.9.2"]
 
-[tool.poetry.group.dev.dependencies]
-pytest = ">=7.0.0"
-pytest-cov = ">=4.0.0"
-poethepoet = ">=0.24.0"
+[tool.uv.build-backend]
+module-name = "sales_ops"
+
+[dependency-groups]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "poethepoet>=0.24.0"]
 
 [tool.poe.tasks]
 test-unit = "pytest tests/unit -v"
@@ -27,7 +25,7 @@ test-integration = "pytest tests/integration -v"
 test-integration-az = "pytest tests/integration -v -m requires_az_login"
 test-all = { sequence = ["test-unit", "test-component", "test-integration"] }
 test = { sequence = ["test-unit", "test-component"] }
-build = "poetry build"
+build = "uv build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

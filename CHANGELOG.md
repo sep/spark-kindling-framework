@@ -2,6 +2,37 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [0.13.0] - 2026-10-05
+
+### Changed
+
+- **Docs: install instructions match how Kindling ships.** The setup guide
+  installs from GitHub Release wheel URLs (the packages are not on PyPI
+  yet), and the setup guide and domain quickstart describe the devcontainer
+  image's actual contents (Java 21, uv, Databricks CLI; PySpark 3.5 and Delta
+  from the project's dependencies). The GitHub Packages guide is removed:
+  GitHub Packages has no Python registry, and the per-platform packages it
+  described never existed.
+- **`kindling repo init` / `kindling package init` scaffold uv projects.**
+  Packages are PEP 621 projects built by `uv_build`, with the Kindling
+  release wheels pinned in `[tool.uv.sources]` and dev tooling in
+  `[dependency-groups]` — the schema `kindling env update`/`env add`/`env
+  bootstrap` already required, so those commands now work on a freshly
+  scaffolded project. The generated CI runs `uv sync && uv run poe test &&
+  uv run poe build`; the published devcontainer image no longer ships
+  Poetry. Package scaffolds no longer write `src/__init__.py` (uv_build
+  rejects it). Existing Poetry projects convert with
+  `scripts/migrate_domain_project_to_uv.py`.
+- **The framework repo builds with uv instead of Poetry.** Every package
+  (`spark-kindling`, `-cli`, `-sdk` and the extensions) is now a PEP 621
+  project built by `uv_build`, the dev environment is a uv workspace
+  (`uv sync`, `uv.lock`), and `poe build`, the CI image and the devcontainer
+  drive `uv`. Wheel contents are unchanged; metadata differences are the
+  standard ones: `Requires-Python` drops the implicit `<4.0` cap, the licence
+  is a `License-Expression: MIT`, and the cosmos extension's extras are
+  published under their normalized names `spark-3-x` / `spark-4-x` (pip
+  still accepts `[spark_3_x]` / `[spark_4_x]`).
+
 ## [0.12.50] - 2026-09-29
 
 ### Added

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Upload runtime wheels to Azure Storage
 # Preferred entrypoints:
-#   poetry run poe upload
-#   poetry run poe upload-release
+#   poe upload
+#   poe upload-release
 # Direct script usage:
 #   ./scripts/upload_to_storage.sh
 #   ./scripts/upload_to_storage.sh --release
@@ -104,7 +104,7 @@ else
 
     if [ ! -d "dist" ]; then
         echo "❌ Error: dist/ directory not found"
-        echo "Run: poetry run poe build"
+        echo "Run: poe build"
         exit 1
     fi
 

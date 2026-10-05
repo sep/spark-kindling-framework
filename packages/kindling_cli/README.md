@@ -141,17 +141,17 @@ cd ../..
 kindling package init customer-360 --repo-root .
 
 cd packages/customer_360
-poetry install
-poetry run poe test
+uv sync
+uv run poe test
 ```
 
 The generated CI workflow runs each scaffolded package independently by
 iterating `packages/*` and executing:
 
 ```bash
-poetry install --no-interaction
-poetry run poe test
-poetry run poe build
+uv sync
+uv run poe test
+uv run poe build
 ```
 
 The CI job fails if no package `pyproject.toml` files are found under

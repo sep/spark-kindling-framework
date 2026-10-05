@@ -3,18 +3,18 @@
 # Published to ghcr.io/sep/spark-kindling-framework/devcontainer:latest.
 # Repos scaffolded with `kindling repo init` use this as their devcontainer
 # base. This image intentionally does NOT install the Kindling framework or
-# SDK: those are per-project Poetry dependencies, pinned to a specific
-# Kindling release wheel URL in each project's own pyproject.toml/poetry.lock
+# SDK: those are per-project uv dependencies, pinned to a specific
+# Kindling release wheel URL in each project's own pyproject.toml/uv.lock
 # (see templates/pyproject.toml.j2). Baking them into the image here would
 # mean building from source at whatever commit triggered the image build,
 # which only matches a real, fetchable GitHub release when the build runs
 # from a release tag -- a workflow_dispatch dev build does not, and the
 # resulting version-pinned dependency in every project created afterward
-# would silently 404 on `poetry install`.
+# would silently 404 on `uv sync`.
 #
 # What's baked in:
 #   - Python 3.11 + Java 21 (for PySpark 3.5)
-#   - Poetry (for project-level dependency management)
+#   - uv (project-level dependency management) and Poe (task runner)
 #   - No Kindling packages. /usr/local/bin/kindling is a lazy shim
 #     (.github/kindling-cli-shim.sh): it runs the project's own pinned CLI
 #     when one exists and installs the latest published release only when
@@ -46,9 +46,9 @@ RUN JAVA_BIN="$(readlink -f "$(command -v java)")" \
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-current
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
-# Install uv (what `kindling env bootstrap`/`env add`/`env update` drive),
-# Poetry and Poe globally (version-pinned for reproducibility)
-RUN pip install --no-cache-dir uv==0.12.20 poetry==1.8.3 poethepoet==0.45.0
+# Install uv (what `kindling env bootstrap`/`env add`/`env update` drive)
+# and Poe globally (version-pinned for reproducibility)
+RUN pip install --no-cache-dir uv==0.12.20 poethepoet==0.45.0
 
 # Lazy Kindling CLI: prefers the project's own pinned CLI, installs the
 # latest published release only when nothing provides one (see the shim).
@@ -86,4 +86,4 @@ RUN mkdir -p /home/vscode/.claude \
     && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.vscode-server
 
 LABEL org.opencontainers.image.source="https://github.com/sep/spark-kindling-framework"
-LABEL org.opencontainers.image.description="Kindling developer environment — Python 3.11, Java 21, uv/Poetry, lazy Kindling CLI, Databricks CLI, Hadoop JARs"
+LABEL org.opencontainers.image.description="Kindling developer environment — Python 3.11, Java 21, uv, lazy Kindling CLI, Databricks CLI, Hadoop JARs"

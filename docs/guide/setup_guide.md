@@ -17,7 +17,8 @@ This guide explains how to install, configure, and start using the Spark Kindlin
 
 ## Installation
 
-Kindling is distributed as three pip packages:
+Kindling is distributed as three pip packages, published as wheel assets on
+each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases):
 
 | Package | Purpose |
 |---|---|
@@ -25,27 +26,35 @@ Kindling is distributed as three pip packages:
 | `spark-kindling-cli` | CLI tooling (`kindling` command) |
 | `spark-kindling-sdk` | Platform API clients (deploy, status, logs) |
 
-For local development (includes PySpark and Delta Lake):
+The packages are not on PyPI yet, so install them by release wheel URL.
+`kindling repo init` / `kindling package init` projects pin these URLs for you
+(see `kindling env update`); for a one-off install:
 
 ```bash
-pip install 'spark-kindling[standalone]' spark-kindling-cli
+V=0.13.0  # any release tag, without the leading v
+BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
+pip install "spark-kindling[standalone] @ $BASE/spark_kindling-$V-py3-none-any.whl" \
+    "$BASE/spark_kindling_sdk-$V-py3-none-any.whl" \
+    "$BASE/spark_kindling_cli-$V-py3-none-any.whl"
 ```
 
-For CI or cloud environments where PySpark is already provided by the platform:
+The CLI requires the SDK, which is why it is listed even for local-only use.
+
+For CI or cloud environments where PySpark is already provided by the
+platform, drop the `standalone` extra:
 
 ```bash
-pip install spark-kindling spark-kindling-cli
+pip install "spark-kindling @ $BASE/spark_kindling-$V-py3-none-any.whl" \
+    "$BASE/spark_kindling_sdk-$V-py3-none-any.whl" \
+    "$BASE/spark_kindling_cli-$V-py3-none-any.whl"
 ```
 
-To also deploy and manage remote platform workspaces:
-
-```bash
-pip install spark-kindling spark-kindling-cli spark-kindling-sdk
-```
+The SDK is what deploys to and manages remote platform workspaces, so the
+same three wheels cover that too.
 
 ### Devcontainer (recommended)
 
-The supplied devcontainer ships with Python 3.11, Java 11, PySpark 3.4, Delta Lake, Azure CLI, and all tooling pre-installed. Open the repo in VS Code and choose **Dev Containers: Reopen in Container**. The `postCreateCommand` automatically runs `poetry install --with dev --sync`.
+The devcontainer image ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs; PySpark 3.5 and Delta Lake come from the project's own dependencies (the `standalone` extra). Open the repo in VS Code and choose **Dev Containers: Reopen in Container**. The `postCreateCommand` automatically runs `kindling env bootstrap`, which runs `uv sync` (including the `dev` dependency group).
 
 To pick up a newer Kindling release inside an existing devcontainer without rebuilding:
 

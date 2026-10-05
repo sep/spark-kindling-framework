@@ -3709,7 +3709,10 @@ def test_app_add_executor_creates_entrypoint_and_app_yaml(tmp_path):
     assert app_settings["kindling"]["extensions"] == ["sales"]
 
 
-def test_app_add_executor_auto_discovers_app_directory_from_repo_root(tmp_path, monkeypatch):
+@pytest.mark.parametrize("metadata_table", ["[project]", "[tool.poetry]"])
+def test_app_add_executor_auto_discovers_app_directory_from_repo_root(
+    tmp_path, monkeypatch, metadata_table
+):
     app_dir = tmp_path / "apps" / "sales_ops"
     app_dir.mkdir(parents=True)
     package_dir = tmp_path / "packages" / "sales"
@@ -3717,7 +3720,7 @@ def test_app_add_executor_auto_discovers_app_directory_from_repo_root(tmp_path, 
     (package_dir / "pyproject.toml").write_text(
         "\n".join(
             [
-                "[tool.poetry]",
+                metadata_table,
                 'name = "sales-domain"',
                 'version = "1.2.3"',
                 "",

@@ -18,7 +18,7 @@ This development container provides a complete environment for working with the 
 - **GitHub CLI** (`gh`) - Pull requests, releases, and API access
 - **Databricks CLI** (`databricks`, pinned in the Dockerfile) - Validate, deploy and run Databricks bundles, including the output of `kindling bundle build`
 - **Azure Python SDKs** - `azure-identity`, `azure-storage-blob`, `azure-core`
-- **Poetry** - Dependency management
+- **uv** (0.12.20) - Dependency management; `postCreateCommand` runs `uv sync --frozen` into `.venv/`, which VS Code uses as its interpreter (`${workspaceFolder}/.venv/bin/python`)
 - **VS Code Extensions** - Python, Pylance, Jupyter, YAML, Docker
 
 ## Spark Local Mode
@@ -130,8 +130,8 @@ If you modify the Dockerfile or docker-compose.yml:
 ## Development Workflow
 
 ```bash
-# Install the framework in development mode
-poetry install
+# Install the framework in development mode (creates .venv/, dev group included)
+uv sync
 
 # Run tests
 poe test-quick
@@ -184,7 +184,7 @@ If port 4040 (Spark UI) is already in use, Spark will automatically try 4041, 40
 
 ## Next Steps
 
-1. Install dependencies: `poetry install`
+1. Install dependencies: `uv sync` (already run by `postCreateCommand`)
 2. Run tests to verify setup: `poe test-quick`
 3. Start developing your Spark data pipelines!
 

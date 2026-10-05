@@ -157,6 +157,14 @@ def main(
             rel_path = updated_path.relative_to(Path(__file__).parent.parent)
             print(f"✅ Updated {rel_path}")
 
+        # uv.lock records the workspace members' versions; refresh it so
+        # `uv sync --locked` keeps passing. Existing pins are kept as-is.
+        result = run_command(["uv", "lock"])
+        if result != 0:
+            print("❌ uv lock failed")
+            return result
+        print("✅ Updated uv.lock")
+
         # Determine if we need to build/deploy
         should_build = build or deploy or bool(platform)
         should_deploy = deploy or bool(platform)

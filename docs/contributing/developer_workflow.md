@@ -1,22 +1,30 @@
 # Developer Workflow
 
-This repo uses Poetry plus Poe the Poet for day-to-day development.
+This repo uses uv plus Poe the Poet for day-to-day development. `uv sync`
+creates `.venv/` in the checkout (dev group included) with the CLI and SDK
+workspace members installed editable; poe runs each task through `uv run`, so
+no wrapper prefix is needed. Each worktree under `.worktrees/` runs `uv sync`
+once to get its own `.venv/`.
+
+Add a dependency with `uv add <pkg>` (or `uv add --group dev <pkg>`) and
+upgrade one with `uv lock --upgrade-package <pkg>`; commit `uv.lock` alongside
+the `pyproject.toml` change.
 
 ## Core Commands
 
 ```bash
-poetry install
-poetry run poe test-unit
-poetry run poe test-integration
-poetry run poe test-system --platform synapse
-poetry run poe build
-poetry run poe deploy --platform fabric
-poetry run poe upload
+uv sync
+poe test-unit
+poe test-integration
+poe test-system --platform synapse
+poe build
+poe deploy --platform fabric
+poe upload
 ```
 
 ## Build Model
 
-`poetry run poe build` produces the current artifact set:
+`poe build` produces the current artifact set:
 
 - `spark_kindling-<version>-py3-none-any.whl` — combined runtime wheel
 - `spark_kindling_cli-<version>-py3-none-any.whl` — CLI wheel
@@ -38,8 +46,8 @@ There are two common deployment flows for the kindling project itself:
 
 ```bash
 # Upload the current runtime artifacts to storage
-poetry run poe deploy
-poetry run poe upload
+poe deploy
+poe upload
 
 # Push workspace bootstrap assets and config
 kindling workspace deploy --platform synapse --storage-account <account>

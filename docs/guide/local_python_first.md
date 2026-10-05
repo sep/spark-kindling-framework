@@ -22,19 +22,19 @@ cd my_pipeline
 kindling package init my-pipeline
 kindling app init my-pipeline --package my-pipeline
 cd packages/my_pipeline
-poetry install
+uv sync
 cp .env.example .env
 # Update .env with your environment settings
 source .env
 
-poetry run poe test
-poetry run poe build
+uv run poe test
+uv run poe build
 ```
 
 If you generated integration tests and have Azure credentials available:
 
 ```bash
-poetry run poe test-integration
+uv run poe test-integration
 ```
 
 ## What The Scaffold Creates
@@ -69,15 +69,24 @@ To add a second package later:
 cd ../..
 kindling package init customer-360 --repo-root .
 cd packages/customer_360
-poetry install
-poetry run poe test
+uv sync
+uv run poe test
 ```
 
-The generated `pyproject.toml` depends on the published runtime distribution:
+The generated `pyproject.toml` depends on the published runtime distribution,
+pinned to a release wheel by URL:
 
 ```toml
-spark-kindling = { version = ">=0.9.2", extras = ["standalone"] }
+[project]
+dependencies = ["spark-kindling[standalone]"]
+
+[tool.uv.sources]
+spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/releases/download/vX.Y.Z/spark_kindling-X.Y.Z-py3-none-any.whl" }
 ```
+
+`spark-kindling-cli` and `spark-kindling-sdk` are pinned the same way and sit in
+the `dev` dependency group. Run `kindling env update` (or
+`uv run poe update-kindling`) to move all three pins to a newer release.
 
 The package import still stays `import kindling`.
 
@@ -105,7 +114,7 @@ pip install 'spark-kindling[standalone]'
 pip install -e /path/to/kindling
 
 # 3. Local wheel built from this repo
-poetry run poe build
+uv run poe build
 pip install 'spark-kindling[standalone] @ file:///path/to/dist/spark_kindling-<version>-py3-none-any.whl'
 ```
 
@@ -117,17 +126,17 @@ packages that managed platforms already provide.
 Generated packages expose these tasks:
 
 ```bash
-poetry run poe test-unit
-poetry run poe test-component
-poetry run poe test
-poetry run poe build
+uv run poe test-unit
+uv run poe test-component
+uv run poe test
+uv run poe build
 ```
 
 When integration tests are included, the scaffold also adds:
 
 ```bash
-poetry run poe test-integration
-poetry run poe test-all
+uv run poe test-integration
+uv run poe test-all
 ```
 
 At the repo level, the generated CI workflow loops over `packages/*` and runs
@@ -136,7 +145,7 @@ each package independently:
 ```bash
 for pkg in packages/*; do
   if [ -f "$pkg/pyproject.toml" ]; then
-    (cd "$pkg" && poetry install --no-interaction && poetry run poe test && poetry run poe build)
+    (cd "$pkg" && uv sync && uv run poe test && uv run poe build)
   fi
 done
 ```
@@ -309,7 +318,7 @@ includes a pointer to the correct order.
 For local integration tests against ABFSS you still need:
 
 1. Java 11+ on `PATH`
-2. The Python environment installed via `poetry install`
+2. The Python environment installed via `uv sync`
 3. Hadoop Azure JARs in `/tmp/hadoop-jars`
 
 The CLI checks all of this for you:

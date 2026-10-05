@@ -1,11 +1,11 @@
 # Platform Wheel Build System
 
-This document describes the Poetry-based build system that replaced the custom 400+ line build script.
+This document describes the uv-based build system that replaced the custom 400+ line build script.
 
 ## Overview
 
 **Current Version:** 0.6.0
-**Build Tool:** Poe the Poet (poethepoet) task runner with Poetry
+**Build Tool:** Poe the Poet (poethepoet) task runner with uv (`uv_build` backend)
 **Platforms:** Microsoft Fabric, Azure Synapse Analytics, Databricks
 
 ## Build Commands
@@ -34,10 +34,10 @@ poe deploy             # Deploy ALL wheels (avoid during testing)
   - Non-standard build approach
   - Maintenance nightmare
 
-### **After: Poetry + Simple Shell Script** ✅
-- **File**: `scripts/build_platform_wheels.sh` (89 lines)
+### **After: uv + Simple Build Script** ✅
+- **File**: `scripts/build.py` (`poe build`), runs `uv build --wheel` per package into `dist/`
 - **Benefits**:
-  - Standard Poetry build system
+  - Standard PEP 621 packaging with the `uv_build` backend
   - Platform-specific pyproject.toml configs
   - Clean wheel post-processing
   - Maintainable and readable
@@ -81,19 +81,24 @@ python scripts/build_platform_wheels.py --all
 # Hardcoded pyproject.toml generation
 ```
 
-### **New Poetry + Poe System**
+### **New uv + Poe System**
 ```bash
 poe build  # Build all platform wheels
-# Standard Poetry build system
+# Single package: uv build --wheel --out-dir dist (inside its directory)
+# Standard uv build system (uv_build backend)
 # Platform-specific configs in pyproject.toml
 # Poe the Poet task automation
 ```
 
 ## **Key Configuration**
 
-### **Poetry Configuration**
-- `pyproject.toml` - Main project configuration with platform-specific extras
-- `tool.poetry.extras` - Platform-specific dependencies
+### **Project Configuration**
+- `pyproject.toml` - PEP 621 `[project]` table, build backend `uv_build` (`requires = ["uv_build>=0.12.20,<0.13"]`); the same layout applies to `packages/kindling_cli`, `packages/kindling_sdk` and `packages/extensions/*`
+- `project.optional-dependencies` - Platform-specific dependencies (extras)
+- `project.entry-points."spark_kindling.platforms"` - Platform entry points
+- `dependency-groups.dev` - Dev dependencies (installed by default with `uv sync`)
+- `tool.uv.workspace` - Workspace members `packages/kindling_cli` and `packages/kindling_sdk` (installed editable in the dev env); extensions are not members and are built standalone
+- `uv.lock` - Lockfile for the workspace
 - `tool.poe.tasks` - Build and deployment automation
 
 ### **Poe Tasks**
@@ -147,7 +152,7 @@ pip install kindling-databricks-dlt-0.1.0-py3-none-any.whl
 ✅ **Eliminated** 400+ line custom build script
 ✅ **Achieved** single wheel per platform deployment
 ✅ **Maintained** full compatibility with existing code
-✅ **Used** standard Python packaging tools (Poetry + Poe)
+✅ **Used** standard Python packaging tools (uv + Poe)
 ✅ **Provided** clean extensibility path for platform-specific features
 ✅ **Reduced** wheel size by excluding unused platform files
 ✅ **Version** 0.6.0 with hierarchical config, data apps, job deployment

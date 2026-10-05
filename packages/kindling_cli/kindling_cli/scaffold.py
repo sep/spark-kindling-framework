@@ -235,7 +235,6 @@ def generate_package(cfg: PackageScaffoldConfig) -> List[Path]:
         files.append(p)
         return p
 
-    _write("src/__init__.py", "")
     _write(f"src/{pkg}/__init__.py", "")
 
     _write(f"src/{pkg}/entities/__init__.py", "")
