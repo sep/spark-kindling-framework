@@ -6,6 +6,13 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- **Docs: install instructions match how Kindling ships.** The setup guide
+  installs from GitHub Release wheel URLs (the packages are not on PyPI
+  yet), and the setup guide and domain quickstart describe the devcontainer
+  image's actual contents (Java 21, uv, Databricks CLI; PySpark 3.5 and Delta
+  from the project's dependencies). The GitHub Packages guide is removed:
+  GitHub Packages has no Python registry, and the per-platform packages it
+  described never existed.
 - **`kindling repo init` / `kindling package init` scaffold uv projects.**
   Packages are PEP 621 projects built by `uv_build`, with the Kindling
   release wheels pinned in `[tool.uv.sources]` and dev tooling in

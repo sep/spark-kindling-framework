@@ -13,14 +13,14 @@ This guide walks a **domain project developer** through standing up a local dev 
 
 ## 1. Open the Dev Container
 
-The devcontainer ships with Python 3.11, Java 11, PySpark 3.4, Azure CLI, and all tooling pre-installed.
+The devcontainer image ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs; PySpark 3.5 and Delta Lake come from the project's own dependencies (the `standalone` extra).
 
 In VS Code:
 
 1. Open the repo root.
 2. **Command Palette → "Dev Containers: Reopen in Container"**
 
-Once inside the container the `postCreateCommand` automatically runs `kindling env bootstrap` (which runs `uv sync` to install the project's dependencies, including the `dev` group) and installs pre-commit hooks. You don't need to run those manually.
+Once inside the container the `postCreateCommand` automatically runs `kindling env bootstrap` (which runs `uv sync` to install the project's dependencies, including the `dev` group). You don't need to run it manually.
 
 Verify the environment:
 
