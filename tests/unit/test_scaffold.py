@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-from kindling_cli.cli import cli
+from kindling_cli.cli import _load_pyproject_toml, cli
 from kindling_cli.scaffold import (
     AppScaffoldConfig,
     PackageScaffoldConfig,
@@ -171,12 +171,10 @@ def test_repo_preserves_existing_devcontainer(tmp_path):
 def test_repo_root_pyproject_is_a_uv_workspace_over_packages(tmp_path):
     """The devcontainer runs `kindling env bootstrap` at the repo root, which
     needs a root pyproject.toml to pin Kindling into and sync."""
-    import tomllib
-
     repo_root = tmp_path / "data_platform"
     generate_repo(RepoScaffoldConfig(name="data-platform", output_dir=repo_root))
 
-    data = tomllib.loads((repo_root / "pyproject.toml").read_text())
+    data = _load_pyproject_toml(repo_root / "pyproject.toml")
     assert data["project"]["name"] == "data-platform-workspace"
     assert data["project"]["dependencies"] == []
     assert data["tool"]["uv"]["package"] is False
@@ -187,16 +185,14 @@ def test_repo_root_pyproject_is_a_uv_workspace_over_packages(tmp_path):
 def test_repo_root_name_does_not_collide_with_same_named_package(tmp_path):
     """uv rejects two workspace members with one name; the documented flow
     scaffolds `repo init X` then `package init X`."""
-    import tomllib
-
     repo_root = tmp_path / "my_pipeline"
     generate_repo(RepoScaffoldConfig(name="my-pipeline", output_dir=repo_root))
     generate_package(PackageScaffoldConfig(name="my-pipeline", repo_root=repo_root))
 
-    root_name = tomllib.loads((repo_root / "pyproject.toml").read_text())["project"]["name"]
-    package_name = tomllib.loads(
-        (_package_root(repo_root, "my_pipeline") / "pyproject.toml").read_text()
-    )["project"]["name"]
+    root_name = _load_pyproject_toml(repo_root / "pyproject.toml")["project"]["name"]
+    package_name = _load_pyproject_toml(_package_root(repo_root, "my_pipeline") / "pyproject.toml")[
+        "project"
+    ]["name"]
     assert root_name != package_name
 
 
