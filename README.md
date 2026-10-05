@@ -48,7 +48,7 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 - [Platform API Architecture](./docs/contributing/platform_api_architecture.md) - Multi-platform abstraction
 - [Platform Storage Utils](./docs/contributing/platform_storage_utils.md) - Storage operations
 - [Utilities](./docs/guide/utilities.md) - Common utilities and helper functions
-- [Build System](./docs/contributing/build_system.md) - Platform-specific wheel building
+- [Build System](./docs/contributing/build_system.md) - How `poe build` produces the runtime, CLI, SDK and extension wheels
 - [CI/CD Setup](./docs/contributing/ci_cd_setup.md) - Continuous integration and deployment
 - [Testing](./docs/contributing/testing.md) - Unit, integration, and system testing
 
@@ -84,13 +84,16 @@ The framework consists of several modular components:
 
 ## Install
 
-One distribution, platform-specific extras:
+Kindling is not on PyPI. Each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases)
+publishes the wheels; install them by URL. One distribution, platform-specific extras:
 
 ```bash
-pip install 'spark-kindling[synapse]'      # Azure Synapse Analytics
-pip install 'spark-kindling[databricks]'   # Databricks
-pip install 'spark-kindling[fabric]'       # Microsoft Fabric
-pip install 'spark-kindling[standalone]'   # Local development / generic Spark
+V=0.13.0  # any release, without the leading v
+BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
+pip install "spark-kindling[synapse] @ $BASE/spark_kindling-$V-py3-none-any.whl"      # Azure Synapse Analytics
+pip install "spark-kindling[databricks] @ $BASE/spark_kindling-$V-py3-none-any.whl"   # Databricks
+pip install "spark-kindling[fabric] @ $BASE/spark_kindling-$V-py3-none-any.whl"       # Microsoft Fabric
+pip install "spark-kindling[standalone] @ $BASE/spark_kindling-$V-py3-none-any.whl"   # Local development / generic Spark
 ```
 
 The Python import name is `kindling` (unchanged):
@@ -102,27 +105,28 @@ from kindling.data_entities import DataEntities
 Design-time tooling ships separately:
 
 ```bash
-pip install spark-kindling-cli    # `kindling` CLI for scaffolding and deploy
-pip install spark-kindling-sdk    # Programmatic access to platform APIs
+# `kindling` CLI for scaffolding and deploy; it requires the SDK (programmatic access to platform APIs)
+pip install "$BASE/spark_kindling_cli-$V-py3-none-any.whl" "$BASE/spark_kindling_sdk-$V-py3-none-any.whl"
 ```
+
+Projects scaffolded with `kindling repo init` / `kindling package init` pin these wheel URLs in `pyproject.toml` for you.
 
 See [docs/release_process.md](./docs/contributing/release_process.md) for install-from-release examples and [docs/developer_workflow.md](./docs/contributing/developer_workflow.md) for local development.
 
 ## CLI Quick Start
 
-Install the CLI and scaffold a repo, package, and app explicitly:
+Install the CLI (as above; you also need [uv](https://docs.astral.sh/uv/)) and scaffold a repo, package, and app explicitly:
 
 ```bash
-pip install 'spark-kindling[standalone]' spark-kindling-cli
-
 kindling repo init my-app --output-dir ./my_app
 cd my_app
 kindling package init my-app
 kindling app init my-app --package my-app
-cd apps/my_app
-kindling app run . --env local
+kindling env bootstrap      # pins Kindling at the root and syncs one repo-wide .venv/
+uv run kindling app run my-app --env local
 ```
 
+Or open the generated repo in its devcontainer (`.devcontainer/devcontainer.json`), which runs `kindling env bootstrap` for you.
 No Azure credentials needed — the scaffold uses in-memory entity providers by default.
 See [Local Python-First Development](./docs/guide/local_python_first.md) for the full local workflow.
 

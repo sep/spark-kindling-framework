@@ -1,6 +1,7 @@
 # Kindling CLI Reference
 
-The `kindling` CLI is installed via `spark-kindling-cli`. Run any command with `-h`
+The `kindling` CLI is installed via `spark-kindling-cli` (from GitHub Release wheel
+URLs — Kindling is not on PyPI; scaffolded projects pin it in their dev group). Run any command with `-h`
 or `--help` for inline help. Use `-V` / `--version` to print CLI, SDK, and runtime
 versions.
 
@@ -169,11 +170,17 @@ kindling env check --platform fabric
 
 ### `env ensure`
 
-Download local Spark + ABFSS support JARs into `/tmp/hadoop-jars/`.
-Safe to re-run; existing JARs are skipped.
+Download local Spark + ABFSS support JARs (hadoop-azure and related JARs,
+plus `kindling-abfss-local-auth.jar`) into `/tmp/hadoop-jars/`. Safe to
+re-run; existing JARs are skipped. This — not `uv sync` — is how missing JARs
+are restored.
+
+| Option | Default | Description |
+|---|---|---|
+| `--cloud azure` | auto-detected | Cloud to download JARs for. Without it the cloud is inferred from CLIs on `PATH` (`az` → Azure); if none is found, nothing is downloaded |
 
 ```bash
-kindling env ensure
+kindling env ensure --cloud azure
 ```
 
 ### `env update`
@@ -184,20 +191,28 @@ Update every Kindling package a project already depends on. Scans
 `env add`), wherever it's declared — the main dependency table or any
 dependency group — and points each one at its matching wheel in the target
 Kindling release (default: latest) by running
-`poetry add <release wheel URL>`. Every Kindling package in a release is
+`uv add <release wheel URL>`. Every Kindling package in a release is
 versioned together, so one release resolves every dependency at once.
 Existing `extras` and dependency group placement are re-supplied on each
-call so they survive the update. Finishes with `poetry install --sync`.
+call so they survive the update.
 
-No local wheel cache or Poetry source configuration is required — each
+If nothing is declared at the project itself (e.g. a uv workspace root), the
+Kindling dependency of a nested package/app `pyproject.toml` is adopted into
+it first; this fails if nested projects disagree on the release. Every other
+nested project that declares its own Kindling pin (each `packages/*`
+workspace member) is moved to the same release too — members must match the
+root, or `uv sync` fails with "conflicting URLs". Run it at the repo root.
+Finishes with `uv sync --all-packages`.
+
+No local wheel cache or package index configuration is required — each
 dependency points directly at its wheel's GitHub release asset URL.
 
 | Option | Default | Description |
 |---|---|---|
 | `--version TEXT` | `latest` | Kindling release version or tag to update to |
 | `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
-| `--project PATH` | `.` | Poetry project to update |
-| `--no-sync` | — | Run `poetry install` without `--sync` |
+| `--project PATH` | `.` | uv project to update |
+| `--no-sync` | — | Run `uv sync` with `--inexact` (don't remove extraneous packages) |
 
 ```bash
 kindling env update
@@ -209,20 +224,20 @@ kindling env update --version 0.10.35
 Add a Kindling framework or extension package as a project dependency,
 pinned to the exact wheel published in a Kindling GitHub release. Resolves
 `PACKAGE`'s wheel from the given release (default: latest) and runs
-`poetry add <release wheel URL>`. If `PACKAGE` is already declared anywhere
+`uv add <release wheel URL>`. If `PACKAGE` is already declared anywhere
 in the project, its existing dependency group and `extras` are reused
-automatically (Poetry does not infer either from a prior entry on its own);
+automatically (uv does not infer either from a prior entry on its own);
 `--group` only applies when adding `PACKAGE` for the first time.
 
-No local wheel cache or Poetry source configuration is required.
+No local wheel cache or package index configuration is required.
 
 | Option | Default | Description |
 |---|---|---|
 | `PACKAGE` | — | Package to add, e.g. `spark-kindling-ext-databricks` (required) |
 | `--version TEXT` | `latest` | Kindling release version or tag to resolve `PACKAGE`'s version from |
 | `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
-| `--project PATH` | `.` | Poetry project to add the dependency to |
-| `--group TEXT` | — | Poetry dependency group (e.g. `dev`) for a new dependency; ignored if `PACKAGE` already exists in a group |
+| `--project PATH` | `.` | uv project to add the dependency to |
+| `--group TEXT` | — | Dependency group (e.g. `dev`) for a new dependency; ignored if `PACKAGE` already exists in a group |
 
 ```bash
 kindling env add spark-kindling-ext-databricks
@@ -233,25 +248,33 @@ kindling env add spark-kindling-ext-sdp --group dev
 
 Ensure a project can load Kindling, adding it if it isn't declared yet.
 Checks `pyproject.toml` for any `spark-kindling`/`spark-kindling-*`
-dependency. If none is declared — a project created without
-`kindling repo init`, or one that predates this devcontainer's package
-model — adds the framework, SDK, and CLI pinned to the target Kindling
-release (default: latest). If Kindling is already declared, this leaves it
-untouched; the project's own `pyproject.toml`/`poetry.lock` remain
-authoritative. Either way, finishes with `poetry install --sync`.
+dependency. If none is declared — as in the uv workspace root that
+`kindling repo init` writes — it adopts the Kindling dependencies declared by
+nested package/app projects (e.g. `packages/*/pyproject.toml`), failing if
+they disagree on the release. Only if no nested project declares Kindling
+either (an empty repo) does it add `spark-kindling[standalone]` to
+`dependencies` and `spark-kindling-sdk`/`spark-kindling-cli` to the `dev`
+group, pinned to the target Kindling release (default: latest) as GitHub
+release wheel URLs in `[tool.uv.sources]`. If Kindling is already declared,
+this leaves it untouched; the project's own `pyproject.toml`/`uv.lock` remain
+authoritative. Either way, finishes with `uv sync --all-packages`, which at a
+repo root gives one repo-wide `.venv/` and `uv.lock` with every package
+installed editable and `.venv/bin/kindling`. Fails if the project has no
+`pyproject.toml` (add the workspace root described under `repo init` first).
 
 This is the generated devcontainer's `postCreateCommand`, run on every
-container creation. The devcontainer image itself never installs the
-Kindling framework or SDK directly — only the CLI is baked in (from the
-latest published release), so this command is always available to bring a
-project up to a working state.
+container creation. The devcontainer image itself installs no Kindling
+packages: `kindling` there is a shim that runs `./.venv/bin/kindling` when
+the current directory has one, else a system-installed CLI, else installs the
+latest release CLI — so this command is always available to bring a project
+up to a working state.
 
 | Option | Default | Description |
 |---|---|---|
 | `--version TEXT` | `latest` | Kindling release version or tag to install if nothing is declared yet |
 | `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
-| `--project PATH` | `.` | Poetry project to bootstrap |
-| `--no-sync` | — | Run `poetry install` without `--sync` |
+| `--project PATH` | `.` | uv project to bootstrap |
+| `--no-sync` | — | Run `uv sync` with `--inexact` (don't remove extraneous packages) |
 
 ```bash
 kindling env bootstrap
@@ -448,7 +471,8 @@ Validate, package, deploy, run, and inspect Kindling applications.
 
 Create a Kindling app under `apps/` in an existing repo. Generates `app.py`,
 `app.yaml`, `lake-reqs.txt`, `settings.yaml`, `settings.local.yaml`, and
-`QUICKSTART.md`.
+`.env.example`, `QUICKSTART.md`, and a seed CSV under `tests/entities/`.
+The directory name is the snake-case form of `APP_NAME`.
 
 | Option | Default | Description |
 |---|---|---|
@@ -757,8 +781,34 @@ Scaffold and manage multi-package Kindling repos.
 
 ### `repo init <REPO_NAME>`
 
-Create a Kindling repo root with shared dev tooling (`.devcontainer/`,
-`.github/workflows/ci.yml`, `.gitignore`).
+Create a Kindling repo root with shared dev tooling: `.devcontainer/devcontainer.json`
+(image `ghcr.io/sep/spark-kindling-framework/devcontainer:latest`,
+`postCreateCommand` `kindling env bootstrap`, interpreter
+`${containerWorkspaceFolder}/.venv/bin/python`), `.github/workflows/ci.yml`
+(runs `uv run poe test && uv run poe build` in each `packages/*`
+inside the devcontainer image), `.gitignore` (includes `.venv/` and `dist/`),
+`scripts/setup-local-dev.sh`, empty `packages/` and `apps/`, and a root
+`pyproject.toml` that is a non-package uv workspace root:
+
+```toml
+[project]
+name = "<repo-name>"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+```
+
+An existing `.devcontainer/` is left unchanged unless
+`--overwrite-devcontainer` is passed. An existing root `pyproject.toml` is
+kept; add `[tool.uv.workspace] members = ["packages/*"]` to it. Repos created
+before `repo init` wrote this file have none: add the file above, then run
+`kindling env bootstrap` at the root.
 
 | Option | Default | Description |
 |---|---|---|
@@ -775,7 +825,16 @@ Create and deploy Kindling domain packages.
 ### `package init <PACKAGE_NAME>`
 
 Create a Kindling package under an existing multi-package repo at
-`packages/<name>/`.
+`packages/<snake_name>/`, as a uv workspace member: its own `pyproject.toml`
+(uv_build, `src/<snake_name>/` layout, Kindling pinned by release wheel URL to
+the CLI's version, a `dev` group with pytest, pytest-cov, poethepoet, the SDK
+and the CLI) with poe tasks `test`, `test-unit`, `test-component`
+(`test-integration`/`test-all` unless `--no-integration`), `build`
+(`uv build`; wheels land in the repo-root `dist/`) and `update-kindling`.
+Every package must pin the same Kindling release as the repo root;
+`kindling env update` moves the pins. Work in it with `uv run poe test` /
+`uv run poe build` (`uv run` syncs the package; a bare `uv sync` in a package
+directory would remove the other packages from the shared `.venv/`).
 
 | Option | Default | Description |
 |---|---|---|
@@ -787,14 +846,14 @@ Create a Kindling package under an existing multi-package repo at
 
 ### `package deploy <PACKAGE_NAME>`
 
-Build a package wheel with Poetry and upload it to artifact storage at
+Build a package wheel with `uv build` and upload it to artifact storage at
 `{base}/packages/`. Looks up `packages/<package_name>/` by convention; use `--local-folder`
 for non-standard layouts.
 
 | Option | Default | Description |
 |---|---|---|
 | `--local-folder PATH` | — | Override convention lookup with this directory |
-| `--dist-dir PATH` | `dist` | Directory where Poetry writes the wheel |
+| `--dist-dir PATH` | `dist` | Directory where uv writes the wheel |
 | `--storage-account TEXT` | `AZURE_STORAGE_ACCOUNT` | Storage account |
 | `--container TEXT` | `AZURE_CONTAINER` or `artifacts` | Container name |
 | `--base-path TEXT` | `AZURE_BASE_PATH` | Base path prefix |

@@ -1,0 +1,20 @@
+# Repo root: a uv workspace over the packages in packages/. It is not itself a
+# package (nothing here is built or published); it exists so the whole repo
+# shares one environment (.venv/) and one lockfile (uv.lock) with every package
+# installed editable.
+#
+# The devcontainer's `kindling env bootstrap` pins Kindling here on first
+# create (adopting the release a package already pins, or the latest release
+# for an empty repo) and runs `uv sync --all-packages`. Every package must pin
+# the same Kindling release as this root; `kindling env update` moves them.
+[project]
+name = "{{ repo_kebab_name }}"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]

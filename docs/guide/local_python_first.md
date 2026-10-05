@@ -21,11 +21,11 @@ kindling repo init my-pipeline --output-dir ./my_pipeline
 cd my_pipeline
 kindling package init my-pipeline
 kindling app init my-pipeline --package my-pipeline
+kindling env bootstrap   # pins Kindling in the root pyproject.toml, syncs the repo-wide .venv/
 cd packages/my_pipeline
-uv sync
 cp .env.example .env
 # Update .env with your environment settings
-source .env
+set -a; source .env; set +a
 
 uv run poe test
 uv run poe build
@@ -41,10 +41,15 @@ uv run poe test-integration
 
 The explicit scaffold flow creates:
 
-- repo root shared files: `.devcontainer/`, `.github/workflows/ci.yml`, `.gitignore`
+- repo root shared files: `.devcontainer/`, `.github/workflows/ci.yml`,
+  `.gitignore`, `scripts/setup-local-dev.sh`, and empty `packages/` and `apps/`
+- a root `pyproject.toml` that is a uv workspace root, not a package — every
+  `packages/*` directory is a workspace member, so the repo shares one `.venv/`
+  and one `uv.lock` at the root with every package installed editable
 - package-local source at `packages/<pkg>/src/<pkg>/...`
 - package-local tests at `packages/<pkg>/tests/`
-- package-local `pyproject.toml` with `poethepoet` tasks
+- package-local `pyproject.toml` (uv_build, `src/` layout, Kindling pinned to
+  the CLI's release) with `poethepoet` tasks
 - app-local entrypoint and config at `apps/<app>/app.py`, `apps/<app>/settings.yaml`, and `apps/<app>/settings.local.yaml`
 
 Run the commands as separate steps so repos, packages, and apps can evolve independently:
@@ -61,7 +66,34 @@ cd apps/my_pipeline
 If you start from a repo that already has a `.devcontainer/` so the Kindling
 CLI is available inside the container, `kindling repo init` will warn and leave
 that devcontainer unchanged. Re-run with `--overwrite-devcontainer` when you
-intentionally want the generated Kindling devcontainer config.
+intentionally want the generated Kindling devcontainer config. An existing
+root `pyproject.toml` is kept too; add the workspace table to it yourself:
+
+```toml
+[tool.uv.workspace]
+members = ["packages/*"]
+```
+
+Repos scaffolded before `repo init` wrote a root `pyproject.toml` have none.
+Add one, then run `kindling env bootstrap` at the repo root:
+
+```toml
+[project]
+name = "data-platform"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+```
+
+`kindling env bootstrap` adopts the Kindling release your packages pin (it
+fails if they disagree) and runs `uv sync --all-packages`. In the generated
+devcontainer this runs automatically as the `postCreateCommand`.
 
 To add a second package later:
 
@@ -69,9 +101,10 @@ To add a second package later:
 cd ../..
 kindling package init customer-360 --repo-root .
 cd packages/customer_360
-uv sync
 uv run poe test
 ```
+
+`uv run` syncs what the package needs before running. Don't run a bare `uv sync` inside a package directory: in the workspace it is an exact sync of that one package and removes the others from the shared `.venv/`. Resync the whole repo with `uv sync --all-packages` (or `kindling env bootstrap`) at the root.
 
 The generated `pyproject.toml` depends on the published runtime distribution,
 pinned to a release wheel by URL:
@@ -85,8 +118,10 @@ spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/releas
 ```
 
 `spark-kindling-cli` and `spark-kindling-sdk` are pinned the same way and sit in
-the `dev` dependency group. Run `kindling env update` (or
-`uv run poe update-kindling`) to move all three pins to a newer release.
+the `dev` dependency group. Every package must pin the same Kindling release as
+the root `pyproject.toml` (they share one lockfile). Run `kindling env update`
+at the repo root (or `uv run poe update-kindling`) to move every pin to a newer
+release together.
 
 The package import still stays `import kindling`.
 
@@ -106,14 +141,14 @@ pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
 
 Other supported paths are:
 
-```bash
-# 1. Released package for local/CI use from PyPI
-pip install 'spark-kindling[standalone]'
+Kindling is not published to PyPI; the release wheel URLs above are the
+supported install. For framework development:
 
-# 2. Editable source install for framework iteration
+```bash
+# 1. Editable source install for framework iteration
 pip install -e /path/to/kindling
 
-# 3. Local wheel built from this repo
+# 2. Local wheel built from this repo
 uv run poe build
 pip install 'spark-kindling[standalone] @ file:///path/to/dist/spark_kindling-<version>-py3-none-any.whl'
 ```
@@ -139,19 +174,20 @@ uv run poe test-integration
 uv run poe test-all
 ```
 
-At the repo level, the generated CI workflow loops over `packages/*` and runs
-each package independently:
+At the repo level, the generated CI workflow runs inside the devcontainer image,
+loops over `packages/*` and runs each package independently:
 
 ```bash
 for pkg in packages/*; do
   if [ -f "$pkg/pyproject.toml" ]; then
-    (cd "$pkg" && uv sync && uv run poe test && uv run poe build)
+    (cd "$pkg" && uv run poe test && uv run poe build)
   fi
 done
 ```
 
-That means local day-to-day work stays package-scoped, while CI validates all
-scaffolded packages in the repo.
+That means local day-to-day work stays package-scoped (in the shared repo-root
+`.venv/`; `uv build` in a workspace member writes wheels to the repo-root
+`dist/`), while CI validates all scaffolded packages in the repo.
 
 ## Running an App Locally
 
@@ -317,14 +353,16 @@ includes a pointer to the correct order.
 
 For local integration tests against ABFSS you still need:
 
-1. Java 11+ on `PATH`
-2. The Python environment installed via `uv sync`
-3. Hadoop Azure JARs in `/tmp/hadoop-jars`
+1. Java 11+ on `PATH` (the devcontainer image ships Java 21)
+2. The Python environment installed via `kindling env bootstrap` (or
+   `uv sync --all-packages`) at the repo root
+3. Hadoop Azure JARs in `/tmp/hadoop-jars` — the devcontainer image ships them;
+   elsewhere run `kindling env ensure --cloud azure`
 
 The CLI checks all of this for you:
 
 ```bash
-kindling env check --local --config config/settings.yaml
+kindling env check --local
 ```
 
 ## Packaging and Remote Lifecycle
@@ -355,8 +393,8 @@ kindling app deploy my-pipeline --local-folder path/to/app --platform fabric
 kindling package deploy my-package --local-folder path/to/package
 ```
 
-Remote operations use `spark-kindling-sdk`, so install it alongside the CLI when
-you want deploy/manage capabilities.
+Remote operations use `spark-kindling-sdk`. The CLI depends on it, so it is
+always installed alongside the CLI.
 
 ## Artifact Storage and Workspace Bootstrap
 

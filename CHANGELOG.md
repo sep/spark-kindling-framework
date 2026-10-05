@@ -2,6 +2,39 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **A freshly scaffolded repo's devcontainer now comes up.** `kindling repo
+  init` writes a root `pyproject.toml`: a non-package uv workspace over
+  `packages/*`. The devcontainer's `kindling env bootstrap` previously failed
+  at the repo root with "No pyproject.toml found"; it now pins Kindling there
+  (adopting the release a package already pins, or the latest for an empty
+  repo) and syncs one repo-wide `.venv/`, which the generated devcontainer
+  uses as its interpreter. An existing root `pyproject.toml` is kept. Repos
+  scaffolded earlier can add the same file (see the domain project
+  quickstart).
+- **Package workflows no longer prune the shared environment.** In the repo
+  workspace, a bare `uv sync` inside a package directory is an exact sync of
+  that one package and removed every other package from `.venv/`. `package
+  init`'s next steps, the package quickstart, the generated CI and the docs
+  now use `uv run poe ...` in packages (it syncs incrementally) and
+  `uv sync --all-packages` at the root.
+- **The published devcontainer image ships `kindling-abfss-local-auth.jar`**
+  (checksum-verified, as this repo's own devcontainer does) and gives the
+  `vscode` user ownership of `/opt/hadoop-jars`, so `kindling env ensure` can
+  add or refresh JARs inside the container.
+- `poe deploy-extension` help pointed at building into the extension's own
+  `dist/`, where the deploy never looks; it now says `poe build`.
+
+### Changed
+
+- Contributor and domain-project docs corrected against the current code: the
+  build system doc describes the single runtime wheel with platform extras
+  (not per-platform wheels), and devcontainer, troubleshooting and repo-layout
+  guidance matches the scaffolding.
+
 ## [0.13.0] - 2026-10-05
 
 ### Changed

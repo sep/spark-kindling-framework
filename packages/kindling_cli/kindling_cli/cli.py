@@ -7903,12 +7903,23 @@ def repo_init(
             err=True,
         )
 
+    had_root_pyproject = (cfg.output_dir / "pyproject.toml").exists()
     try:
         created = generate_repo(cfg)
     except Exception as exc:
         raise click.ClickException(f"Repo scaffold failed: {exc}") from exc
 
     click.echo(f"Initialized repo {cfg.kebab_name} in {cfg.output_dir} ({len(created)} files)")
+    if had_root_pyproject:
+        click.echo(
+            "Kept the existing pyproject.toml. For the repo-wide environment, make it a "
+            'uv workspace over the packages: [tool.uv.workspace] members = ["packages/*"].'
+        )
+    click.echo()
+    click.echo("Next steps:")
+    click.echo("  Reopen the repo in its devcontainer (or run `kindling env bootstrap` here):")
+    click.echo("  it pins Kindling in pyproject.toml and syncs .venv/ for the whole repo.")
+    click.echo("  kindling package init <name>         # scaffold a package under packages/")
 
 
 @cli.group("package")
@@ -8005,8 +8016,7 @@ def package_init(
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd packages/{cfg.snake_name}")
-    click.echo("  uv sync")
-    click.echo("  uv run poe test                      # run the test suite")
+    click.echo("  uv run poe test                      # syncs this package, then runs its tests")
     click.echo(f"  cd ../.. && kindling app init {cfg.snake_name} --package {cfg.snake_name}")
 
 

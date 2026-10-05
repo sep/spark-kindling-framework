@@ -6,10 +6,11 @@ transforms that can be imported by one or more Kindling apps.
 ## Develop
 
 ```bash
-uv sync
 uv run poe test
 uv run poe build
 ```
+
+`uv run` syncs what the package needs before running. Don't run a bare `uv sync` inside a package directory: in the workspace it is an exact sync of that one package and removes the others from the shared `.venv/`. Resync the whole repo with `uv sync --all-packages` (or `kindling env bootstrap`) at the root.
 
 ## Use From An App
 

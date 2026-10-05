@@ -122,9 +122,8 @@ def main():
 Examples:
   poe deploy-extension spark-kindling-ext-otel-azure
 
-Before deploying, build the extension:
-  cd packages/extensions/kindling_ext_otel_azure
-  uv build --wheel --out-dir dist
+Before deploying, build the wheels into dist/:
+  poe build
         """,
     )
     parser.add_argument(
@@ -147,9 +146,8 @@ Before deploying, build the extension:
 
     if not wheels:
         print(f"❌ No wheels found for extension: {args.extension}")
-        print(f"\nMake sure the extension is built:")
-        print(f"  cd packages/extensions/{args.extension.replace('-', '_')}")
-        print(f"  uv build --wheel --out-dir dist")
+        print("\nMake sure the extension is built into dist/:")
+        print("  poe build")
         sys.exit(1)
 
     print(f"\n📦 Extension to deploy:")

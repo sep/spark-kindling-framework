@@ -13,14 +13,25 @@ This guide walks a **domain project developer** through standing up a local dev 
 
 ## 1. Open the Dev Container
 
-The devcontainer image ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs; PySpark 3.5 and Delta Lake come from the project's own dependencies (the `standalone` extra).
+If you are starting a new repo, scaffold the repo root and a domain package first (the `kindling` CLI can come from a one-off install — see the [Setup Guide](setup_guide.md#installation)):
+
+```bash
+kindling repo init my-project              # .devcontainer/, CI, .gitignore, root pyproject.toml, packages/, apps/
+kindling package init my-domain-app        # packages/my_domain_app/ — entities, pipes, tests, its own pyproject.toml
+```
+
+The root `pyproject.toml` is not a package: it is a uv workspace root (`members = ["packages/*"]`) so the whole repo shares one `.venv/` and one `uv.lock`.
+
+The devcontainer image (`ghcr.io/sep/spark-kindling-framework/devcontainer:latest`) ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs. It bakes in no Kindling packages and no Azure CLI; PySpark 3.5 and Delta Lake come from the project's own dependencies (the `standalone` extra).
 
 In VS Code:
 
 1. Open the repo root.
 2. **Command Palette → "Dev Containers: Reopen in Container"**
 
-Once inside the container the `postCreateCommand` automatically runs `kindling env bootstrap` (which runs `uv sync` to install the project's dependencies, including the `dev` group). You don't need to run it manually.
+Once inside the container the `postCreateCommand` automatically runs `kindling env bootstrap` at the repo root. If the root `pyproject.toml` declares no Kindling dependency yet, it adopts the release your packages pin (or, for an empty repo, pins the latest release), then runs `uv sync --all-packages`. The result is one repo-wide `.venv/` with every package installed editable, including the `dev` group and `.venv/bin/kindling`; VS Code's interpreter is set to `.venv/bin/python`. You don't need to run it manually.
+
+> `kindling` in the image is a shim: it runs `./.venv/bin/kindling` when one exists in the **current directory**, otherwise a system-wide CLI. Run `kindling` commands from the repo root, or use `uv run kindling ...` from a subdirectory, so you get the project's pinned CLI and its packages.
 
 Verify the environment:
 
@@ -28,10 +39,11 @@ Verify the environment:
 kindling env check --local
 ```
 
-This validates Python version, PySpark, delta-spark, and the Hadoop/Azure JARs. Fix any reported issues before continuing.
+This validates Java, PySpark, delta-spark, and the Hadoop/Azure JARs. Fix any reported issues before continuing.
 
 To pick up a newer Kindling release inside an existing devcontainer without
-rebuilding the container, run this from a package directory:
+rebuilding the container, run this from the repo root (it moves the root's pin
+and every package's pin together — all of them must pin the same release):
 
 ```bash
 kindling env update
@@ -47,10 +59,10 @@ uv run poe update-kindling
 
 ## 2. Create Your `.env` File
 
-Nothing creates this automatically. Copy the template and fill in your values:
+Nothing creates `.env` automatically. `kindling package init` and `kindling app init` each write a `.env.example` template; copy it and fill in your values:
 
 ```bash
-cp .env.template .env
+cp packages/my_domain_app/.env.example .env
 ```
 
 Then edit `.env` and populate at minimum:
@@ -66,7 +78,11 @@ export SYNAPSE_WORKSPACE_NAME=<name>              # Synapse
 export DATABRICKS_HOST=<host>                     # Databricks
 ```
 
-The devcontainer's `postCreateCommand` adds a `.bashrc` hook that auto-sources `.env` in every new terminal. If you see `⚠️  No .env file found` in the terminal on container start, this step was skipped.
+Nothing loads `.env` for you — the devcontainer does not source it. Load it into your shell before running commands that need the values:
+
+```bash
+set -a; source .env; set +a
+```
 
 > `.env` is gitignored — never commit it.
 
@@ -74,9 +90,13 @@ The devcontainer's `postCreateCommand` adds a `.bashrc` hook that auto-sources `
 
 ## 3. Authenticate with Azure
 
+The devcontainer image does not include the Azure CLI. Either install it (for example, add the `ghcr.io/devcontainers/features/azure-cli:1` feature to `.devcontainer/devcontainer.json`) and log in:
+
 ```bash
 az login
 ```
+
+or set the `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` service principal variables in `.env`.
 
 For platform-specific credential checks:
 
@@ -169,53 +189,55 @@ kindling workspace deploy \
 
 ## 6. Create an App
 
-Each deployable unit is an **app**. Create one under `apps/`:
+Each deployable unit is an **app**. Entities and pipes live in the domain package under `packages/`; the app selects which packages to run. Create one under `apps/` (by default it uses the package with the same name; pass `--package` otherwise):
 
 ```bash
 # Batch processing app with bronze/silver/gold medallion scaffold
 kindling app init my-domain-app --pattern batch --layers medallion --repo-root .
 
 # Streaming app
-kindling app init my-stream-app --pattern streaming --repo-root .
+kindling app init my-stream-app --pattern streaming --package my-domain-app --repo-root .
 
 # File ingestion app
-kindling app init my-ingest-app --pattern file-ingestion --repo-root .
+kindling app init my-ingest-app --pattern file-ingestion --package my-domain-app --repo-root .
 ```
 
-This creates:
+Names are normalised to snake case on disk, so this creates:
 
 ```
-apps/my-domain-app/
+apps/my_domain_app/
   app.yaml                  # App metadata
-  app.py                    # Framework entrypoint (calls initialize())
+  app.py                    # Framework entrypoint (pattern-specific)
   settings.yaml             # App-level base config
   settings.local.yaml       # Local overrides (gitignored)
-  lake-reqs.txt             # Remote package requirements
+  lake-reqs.txt             # Packages the app loads (and auto-registers)
+  .env.example              # Template for .env
+  QUICKSTART.md
+  tests/
+    entities/               # CSV fixtures for local runs
+
+packages/my_domain_app/     # from `kindling package init`
+  pyproject.toml            # uv workspace member; poe tasks
+  settings.yaml
+  settings.local.yaml
   src/
     my_domain_app/
-      entities.py           # Entity definitions
-      pipes/
-        bronze.py           # Bronze layer pipes
-        silver.py           # Silver layer pipes
+      entities/             # Entity definitions
+      pipes/                # Pipe definitions
+      transforms/
   tests/
-    entities/               # CSV fixtures for local testing
-    unit/                   # Unit tests
-    integration/            # Integration tests
+    unit/
+    component/
+    integration/            # omitted with --no-integration
 ```
 
-`app.py` wires the app to the framework:
-
-```python
-def initialize(env: str = None, config_dir: Path = None):
-    from my_domain_app import entities
-    from my_domain_app.pipes import bronze, silver
-```
+`app.py` needs no import wiring: the packages listed in `lake-reqs.txt` have their entities and pipes registered automatically.
 
 ---
 
 ## 7. Add Entities
 
-Entities are named, schema-typed data sets — Delta tables, views, or in-memory frames. They are registered with the `DataEntities.entity()` decorator and live in `entities.py` (or any module imported by `app.py`).
+Entities are named, schema-typed data sets — Delta tables, views, or in-memory frames. They are registered with the `DataEntities.entity()` decorator and live in the domain package (e.g. `packages/my_domain_app/src/my_domain_app/entities/`).
 
 ### Basic entity
 
@@ -273,7 +295,7 @@ DataEntities.entity(
 
 ```bash
 kindling package add entity bronze.orders \
-    --package apps/my-domain-app/src/my_domain_app
+    --package packages/my_domain_app/src/my_domain_app
 ```
 
 Creates the decorator stub in `entities.py` and a CSV fixture under `tests/entities/bronze/orders.csv`.
@@ -334,12 +356,12 @@ def orders_with_customers(silver_orders_clean, silver_dim_customer):
 # Single-input pipe
 kindling package add pipe bronze_to_silver_orders \
     --inputs bronze.orders \
-    --package apps/my-domain-app/src/my_domain_app
+    --package packages/my_domain_app/src/my_domain_app
 
 # File ingestion pipe
 kindling package add ingestion bronze.sales_csv \
     --source-pattern 'sales_(?P<report_date>[^.]+)[.]csv' \
-    --package apps/my-domain-app/src/my_domain_app
+    --package packages/my_domain_app/src/my_domain_app
 ```
 
 Each scaffold creates the pipe stub, a unit test stub, and CSV fixture stubs for all inputs.
@@ -352,11 +374,11 @@ Before running the full app, smoke-test individual pipes:
 
 ```bash
 # List all registered pipes for the app
-kindling pipeline list --app apps/my-domain-app/app.py --env local
+kindling pipeline list --app apps/my_domain_app/app.py --env local
 
 # Run a specific pipe
 kindling pipeline run bronze_to_silver_orders \
-    --app apps/my-domain-app/app.py \
+    --app apps/my_domain_app/app.py \
     --env local
 ```
 
@@ -366,7 +388,7 @@ To reprocess the full dataset ignoring watermarks:
 
 ```bash
 kindling pipeline run bronze_to_silver_orders \
-    --app apps/my-domain-app/app.py \
+    --app apps/my_domain_app/app.py \
     --env local \
     --no-watermark
 ```
@@ -378,8 +400,8 @@ kindling pipeline run bronze_to_silver_orders \
 Check that all entities and pipes are correctly registered and that their configurations are internally consistent — without starting a Spark session:
 
 ```bash
-cd apps/my-domain-app
-kindling app validate --env local
+cd apps/my_domain_app
+uv run kindling app validate --env local
 ```
 
 Fix any reported issues before continuing.
@@ -388,38 +410,39 @@ Fix any reported issues before continuing.
 
 ## 11. Run Tests
 
+Tests live in the package and run through its poe tasks:
+
 ```bash
-# All tests
-pytest apps/my-domain-app/tests/ -v
-
-# Unit tests only (fast, no Spark)
-pytest apps/my-domain-app/tests/unit/ -v
-
-# Integration tests (local Spark, uses CSV fixtures)
-pytest apps/my-domain-app/tests/integration/ -v
+cd packages/my_domain_app
+uv run poe test               # unit + component
+uv run poe test-unit          # unit tests only
+uv run poe test-integration   # integration tests (if generated)
+uv run poe build              # wheel lands in the repo-root dist/
 ```
+
+`uv run` syncs what the package needs before running. Don't run a bare `uv sync` inside a package directory: in the workspace it is an exact sync of that one package and removes the others from the shared `.venv/`. Resync the whole repo with `uv sync --all-packages` (or `kindling env bootstrap`) at the root.
 
 ---
 
 ## 12. Run the Full App Locally
 
 ```bash
-cd apps/my-domain-app
-kindling app run . --env local
+cd apps/my_domain_app
+uv run kindling app run . --env local
 ```
 
 Or from repo root:
 
 ```bash
-kindling app run my-domain-app --env local --local-folder apps/my-domain-app
+kindling app run my-domain-app --env local --local-folder apps/my_domain_app
 ```
 
 Pass runtime parameters:
 
 ```bash
-kindling app run . --env local --param report_date=2024-01-15
+uv run kindling app run . --env local --param report_date=2024-01-15
 # or from a file
-kindling app run . --env local --parameters params.yaml
+uv run kindling app run . --env local --parameters params.yaml
 ```
 
 ---
@@ -430,7 +453,7 @@ kindling app run . --env local --parameters params.yaml
 
 ```bash
 kindling app package my-domain-app \
-    --local-folder apps/my-domain-app \
+    --local-folder apps/my_domain_app \
     --output dist/my-domain-app.kda
 ```
 
@@ -438,7 +461,7 @@ kindling app package my-domain-app \
 
 ```bash
 kindling app deploy my-domain-app \
-    --local-folder apps/my-domain-app \
+    --local-folder apps/my_domain_app \
     --platform fabric
 ```
 
@@ -471,20 +494,20 @@ The migration system detects schema drift between your registered entity definit
 
 ```bash
 # Inspect pending changes (no writes)
-kindling migrate plan --app apps/my-domain-app/app.py --env local
+kindling migrate plan --app apps/my_domain_app/app.py --env local
 
 # Apply non-destructive changes (column additions, view updates, cluster changes)
-kindling migrate apply --app apps/my-domain-app/app.py --env local
+kindling migrate apply --app apps/my_domain_app/app.py --env local
 
 # Apply destructive changes too (column removals, type changes, partition changes)
-kindling migrate apply --app apps/my-domain-app/app.py --env prod \
+kindling migrate apply --app apps/my_domain_app/app.py --env prod \
     --destructive --backup snapshot
 
 # After a successful blue-green migration, drop the archived table
-kindling migrate cleanup silver.dim_customer --app apps/my-domain-app/app.py
+kindling migrate cleanup silver.dim_customer --app apps/my_domain_app/app.py
 
 # If something went wrong, restore the pre-migration table
-kindling migrate rollback silver.dim_customer --app apps/my-domain-app/app.py
+kindling migrate rollback silver.dim_customer --app apps/my_domain_app/app.py
 ```
 
 `--app` auto-discovers `app.py` when omitted (same as `kindling pipeline run`). These commands start a local Spark session, so they are the right tool for pre-deployment schema management and CI/CD pipelines — run `plan` in a PR check, `apply` in the deploy step, then run the app.
@@ -507,8 +530,12 @@ For CATALOG mode entities, destructive rewrites use a **blue-green strategy**: t
 ## Command Order Summary
 
 ```
-# 1 — One-time environment setup (devcontainer handles uv sync automatically)
-az login
+# 0 — New repo only
+kindling repo init my-project
+kindling package init my-domain-app
+
+# 1 — One-time environment setup (the devcontainer runs `kindling env bootstrap` automatically)
+az login                                   # or service principal vars in .env
 kindling env check --local --platform fabric
 
 # 2 — One-time workspace setup (or after settings.yaml changes)
@@ -519,20 +546,20 @@ kindling workspace init --platform fabric --storage-account <acct>
 kindling app init my-domain-app --pattern batch --layers medallion --repo-root .
 
 # 4 — Develop entities and pipes (iterative)
-kindling package add entity bronze.orders --package apps/my-domain-app/src/my_domain_app
-kindling package add pipe bronze_to_silver_orders --inputs bronze.orders --package apps/my-domain-app/src/my_domain_app
+kindling package add entity bronze.orders --package packages/my_domain_app/src/my_domain_app
+kindling package add pipe bronze_to_silver_orders --inputs bronze.orders --package packages/my_domain_app/src/my_domain_app
 
 # 5 — Validate and test (iterative)
-kindling app validate --app apps/my-domain-app/app.py --env local
-kindling pipeline run bronze_to_silver_orders --app apps/my-domain-app/app.py --env local
-pytest apps/my-domain-app/tests/ -v
+kindling app validate --app apps/my_domain_app/app.py --env local
+kindling pipeline run bronze_to_silver_orders --app apps/my_domain_app/app.py --env local
+(cd packages/my_domain_app && uv run poe test)
 
 # 6 — Run full app locally
-kindling app run my-domain-app --env local --local-folder apps/my-domain-app
+kindling app run my-domain-app --env local --local-folder apps/my_domain_app
 
 # 7 — Ship
-kindling app package my-domain-app --local-folder apps/my-domain-app --output dist/my-domain-app.kda
-kindling app deploy my-domain-app --local-folder apps/my-domain-app --platform fabric
+kindling app package my-domain-app --local-folder apps/my_domain_app --output dist/my-domain-app.kda
+kindling app deploy my-domain-app --local-folder apps/my_domain_app --platform fabric
 kindling app run my-domain-app --platform fabric --env prod
 ```
 
@@ -542,9 +569,11 @@ kindling app run my-domain-app --platform fabric --env prod
 
 | Symptom | Check |
 |---|---|
-| `kindling env check` reports missing JARs | Re-run `uv sync`; the devcontainer post-create script should have fetched them |
-| Spark session fails to start | Java 11 must be active: `java -version`; set `JAVA_HOME` if wrong |
-| `entity not found` at runtime | Ensure the module defining the entity is imported in `app.py::initialize()` |
+| `kindling env check` reports missing JARs | Run `kindling env ensure --cloud azure` (downloads into `/tmp/hadoop-jars`; without `--cloud` it needs `az` on PATH to detect Azure). The devcontainer image ships them at `/opt/hadoop-jars`, symlinked to `/tmp/hadoop-jars` |
+| Spark session fails to start | Java 11+ must be active (the devcontainer ships Java 21): `java -version`; set `JAVA_HOME` if wrong |
+| `kindling` or `import kindling` not found | Run `kindling env bootstrap` at the repo root to recreate `.venv/`; run `kindling` from the repo root or via `uv run kindling` |
+| `uv sync` fails with conflicting URLs for `spark-kindling` | A package pins a different Kindling release than the root; run `kindling env update` at the repo root |
+| `entity not found` at runtime | Ensure the package defining the entity is listed in the app's `lake-reqs.txt` and installed (`uv sync --all-packages` at the repo root) |
 | Merge fails with schema mismatch | Run `kindling migrate plan` to inspect pending schema changes |
 | Remote deploy fails with auth error | Re-run `az login`; check `kindling env check --platform <platform>` |
 | Watermark prevents full reload | Pass `--no-watermark` to `kindling pipeline run` |
