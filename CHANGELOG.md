@@ -2,6 +2,34 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Added
+
+- **Kindling is published to PyPI.** `pip install 'spark-kindling[standalone]'
+  spark-kindling-cli` now works without release URLs. Published:
+  `spark-kindling`, `spark-kindling-cli`, `spark-kindling-sdk` and the
+  Databricks, SDP, Cosmos DB, Temporal and OpenTelemetry Azure extensions;
+  the ADX, Databricks Auto Loader and visualization extensions remain on
+  GitHub Releases only. Releases upload from CI after every gate passes,
+  through PyPI trusted publishing; release candidates go to TestPyPI.
+  GitHub Releases keep carrying the same wheels (and now sdists).
+- `kindling env update` / `env add` / `env bootstrap` take `--source
+  auto|pypi|github`.
+
+### Changed
+
+- **Kindling dependencies are pinned as PyPI versions.** `kindling package
+  init` scaffolds `spark-kindling[standalone]==X.Y.Z` (and `==` pins for the
+  SDK and CLI) instead of release wheel URLs, unless the repo root still pins
+  by URL. `kindling env update` / `env add` / `env bootstrap` write version
+  pins for any package version on PyPI and fall back to the release wheel URL
+  otherwise; running `kindling env update` on a URL-pinned project converts it.
+- The devcontainer image's lazy `kindling` shim installs the CLI from PyPI,
+  falling back to the GitHub release.
+- Package metadata on PyPI: project URLs, classifiers and keywords; README
+  links are absolute so they work on pypi.org.
+
 ## [0.13.1] - 2026-10-06
 
 ### Fixed

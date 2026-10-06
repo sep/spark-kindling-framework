@@ -56,7 +56,7 @@ def bump_version(current: str, bump_type: str) -> str:
 
     Args:
         current: Current version string (e.g., "0.4.1a1")
-        bump_type: One of: alpha, patch, minor, major
+        bump_type: One of: alpha, rc, release, patch, minor, major
 
     Returns:
         New version string
@@ -71,6 +71,23 @@ def bump_version(current: str, bump_type: str) -> str:
         else:
             # Start new alpha series (bump patch)
             return f"{parts['major']}.{parts['minor']}.{parts['patch'] + 1}a1"
+
+    elif bump_type == "rc":
+        # Next release candidate: rcN -> rc(N+1); from a final version, the
+        # first candidate of the next minor (0.13.1 -> 0.14.0rc1).
+        if parts["pre_type"] == "rc":
+            return (
+                f"{parts['major']}.{parts['minor']}.{parts['patch']}rc{(parts['pre_num'] or 0) + 1}"
+            )
+        if parts["pre_type"]:
+            return f"{parts['major']}.{parts['minor']}.{parts['patch']}rc1"
+        return f"{parts['major']}.{parts['minor'] + 1}.0rc1"
+
+    elif bump_type == "release":
+        # Finalize a prerelease: 0.14.0rc2 -> 0.14.0.
+        if not parts["pre_type"]:
+            raise ValueError(f"{current} is not a prerelease; nothing to finalize")
+        return f"{parts['major']}.{parts['minor']}.{parts['patch']}"
 
     elif bump_type == "patch":
         # Remove pre-release if exists, otherwise bump patch

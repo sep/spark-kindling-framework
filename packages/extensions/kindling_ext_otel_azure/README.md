@@ -2,8 +2,7 @@
 
 Azure Monitor OpenTelemetry integration for the Kindling Spark framework.
 
-> **⚠️ Alpha Version**: This is version 0.3.0-alpha.1 with updated dependencies for better cross-platform compatibility.
-> See [CHANGELOG.md](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_otel_azure/CHANGELOG.md) for details.
+> See [CHANGELOG.md](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_otel_azure/CHANGELOG.md) for release history.
 
 ## Overview
 
@@ -14,12 +13,11 @@ This package provides Azure Monitor-backed implementations of Kindling's telemet
 ## Installation
 
 ```bash
-# Latest stable
 pip install spark-kindling-ext-otel-azure
-
-# Alpha version with improved Databricks compatibility
-pip install spark-kindling-ext-otel-azure==0.3.0a1
 ```
+
+In a uv project, `kindling env add spark-kindling-ext-otel-azure` pins the
+version that matches the project's Kindling release.
 
 ## Usage
 

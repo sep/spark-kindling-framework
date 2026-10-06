@@ -152,7 +152,7 @@ dev = [
 
 [tool.poe.tasks]
 # Version management
-version = { script = "scripts.bump_version:main", help = "Bump version and optionally build/deploy", args = [{name = "bump_type", default = "alpha", positional = false, help = "Version bump type: alpha (default), patch, minor, major"}, {name = "platform", default = "", positional = false, help = "Platform to deploy after bump (fabric, synapse, databricks). Implies build+deploy"}, {name = "build", type = "boolean", default = false, positional = false, help = "Build wheels after version bump"}, {name = "deploy", type = "boolean", default = false, positional = false, help = "Deploy all platforms after build"}] }
+version = { script = "scripts.bump_version:main", help = "Bump version and optionally build/deploy", args = [{name = "bump_type", default = "alpha", positional = false, help = "Version bump type: alpha (default), rc, release, patch, minor, major"}, {name = "platform", default = "", positional = false, help = "Platform to deploy after bump (fabric, synapse, databricks). Implies build+deploy"}, {name = "build", type = "boolean", default = false, positional = false, help = "Build wheels after version bump"}, {name = "deploy", type = "boolean", default = false, positional = false, help = "Deploy all platforms after build"}] }
 
 # Build and deploy tasks
 build = { script = "scripts.build:main" }

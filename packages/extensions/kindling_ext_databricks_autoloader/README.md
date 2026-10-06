@@ -9,6 +9,20 @@ calls into for any `FileIngestionEntry` registered with `discovery="autoloader"`
 Entries left at the default `discovery="batch"` are unaffected and never touch
 this package.
 
+## Installation
+
+This extension is not on PyPI. Install its wheel from a
+[GitHub Release](https://github.com/sep/spark-kindling-framework/releases): the
+extension keeps its own version, so take the `spark_kindling_ext_databricks_autoloader-*.whl` asset
+attached to the release that matches your Kindling version.
+
+```bash
+pip install "https://github.com/sep/spark-kindling-framework/releases/download/v0.14.0/spark_kindling_ext_databricks_autoloader-0.1.0-py3-none-any.whl"
+```
+
+In a uv project, `kindling env add spark-kindling-ext-databricks-autoloader` resolves it from
+the release and pins that wheel URL for you.
+
 ## Usage
 
 ```python

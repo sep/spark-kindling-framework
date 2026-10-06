@@ -11,6 +11,15 @@ Operator docs: the execution/streaming contract is specified in
 `docs/guide/temporal_streaming_contract.md`; a worked telemetry-to-gold
 walkthrough is in `docs/guide/temporal_end_to_end.md`.
 
+## Installation
+
+```bash
+pip install spark-kindling-ext-temporal
+```
+
+In a uv project, `kindling env add spark-kindling-ext-temporal` pins the version that matches the
+project's Kindling release.
+
 ## Implemented
 
 - canonical `silver.events`, `silver.conditions`, and `silver.episodes` entity

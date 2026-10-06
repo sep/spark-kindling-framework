@@ -6,6 +6,10 @@ This package turns existing `DataEntities`/`DataPipes` registrations into a
 validated, pure-metadata `DeclarationPlan` that a concrete engine can emit as
 `pyspark.pipelines` (OSS Spark 4.1+) or Databricks Lakeflow declarations.
 
+Install it from PyPI with `pip install spark-kindling-ext-sdp`; in a uv project,
+`kindling env add spark-kindling-ext-sdp` pins the version that matches the
+project's Kindling release.
+
 Phase 1 contains:
 
 - The abstract `DeclarationEngine` interface and the shared plan builder.

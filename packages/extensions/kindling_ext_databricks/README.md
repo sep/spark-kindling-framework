@@ -8,6 +8,10 @@ translating it: the OSS emission (materialized views with comments, table
 properties, partitioning, clustering, schema) runs unchanged, and
 Databricks-only capabilities are layered on top.
 
+Install it from PyPI with `pip install spark-kindling-ext-databricks`; in a uv project,
+`kindling env add spark-kindling-ext-databricks` pins the version that matches the
+project's Kindling release.
+
 Selected with:
 
 ```python

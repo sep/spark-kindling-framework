@@ -82,18 +82,17 @@ The framework consists of several modular components:
 - **[spark-kindling-ext-cosmos](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_cosmos)** - Azure Cosmos DB entity provider (idempotent upsert writes)
 - **[spark-kindling-ext-visualization](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_visualization)** - Matplotlib visualization helpers
 
+Install an extension with `pip install <name>` or `kindling env add <name>`. The ADX, Auto Loader and visualization extensions are not on PyPI; they are attached to each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases) as wheels (`kindling env add` pins those by URL).
+
 ## Install
 
-Kindling is not on PyPI. Each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases)
-publishes the wheels; install them by URL. One distribution, platform-specific extras:
+Kindling is on [PyPI](https://pypi.org/project/spark-kindling/). One distribution, platform-specific extras:
 
 ```bash
-V=0.13.0  # any release, without the leading v
-BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
-pip install "spark-kindling[synapse] @ $BASE/spark_kindling-$V-py3-none-any.whl"      # Azure Synapse Analytics
-pip install "spark-kindling[databricks] @ $BASE/spark_kindling-$V-py3-none-any.whl"   # Databricks
-pip install "spark-kindling[fabric] @ $BASE/spark_kindling-$V-py3-none-any.whl"       # Microsoft Fabric
-pip install "spark-kindling[standalone] @ $BASE/spark_kindling-$V-py3-none-any.whl"   # Local development / generic Spark
+pip install 'spark-kindling[synapse]'      # Azure Synapse Analytics
+pip install 'spark-kindling[databricks]'   # Databricks
+pip install 'spark-kindling[fabric]'       # Microsoft Fabric
+pip install 'spark-kindling[standalone]'   # Local development / generic Spark
 ```
 
 The Python import name is `kindling` (unchanged):
@@ -105,17 +104,28 @@ from kindling.data_entities import DataEntities
 Design-time tooling ships separately:
 
 ```bash
-# `kindling` CLI for scaffolding and deploy; it requires the SDK (programmatic access to platform APIs)
+# `kindling` CLI for scaffolding and deploy; it pulls in spark-kindling-sdk (programmatic access to platform APIs)
+pip install spark-kindling-cli
+```
+
+Pin one release across every Kindling package (`==0.14.0`); they are versioned together. Projects scaffolded with `kindling repo init` / `kindling package init` pin these versions in `pyproject.toml` for you, and `kindling env update` moves them to a newer release.
+
+### Without PyPI access
+
+Each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases) also attaches the wheels, so environments that cannot reach PyPI (and releases before 0.14.0, which exist only on GitHub) can install by URL:
+
+```bash
+V=0.14.0  # any release, without the leading v
+BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
+pip install "spark-kindling[databricks] @ $BASE/spark_kindling-$V-py3-none-any.whl"
 pip install "$BASE/spark_kindling_cli-$V-py3-none-any.whl" "$BASE/spark_kindling_sdk-$V-py3-none-any.whl"
 ```
 
-Projects scaffolded with `kindling repo init` / `kindling package init` pin these wheel URLs in `pyproject.toml` for you.
-
-See [docs/release_process.md](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/release_process.md) for install-from-release examples and [docs/developer_workflow.md](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/developer_workflow.md) for local development.
+See [docs/release_process.md](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/release_process.md) for how releases are published and [docs/developer_workflow.md](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/developer_workflow.md) for local development.
 
 ## CLI Quick Start
 
-Install the CLI (as above; you also need [uv](https://docs.astral.sh/uv/)) and scaffold a repo, package, and app explicitly:
+Install the CLI (`pip install spark-kindling-cli`; you also need [uv](https://docs.astral.sh/uv/)) and scaffold a repo, package, and app explicitly:
 
 ```bash
 kindling repo init my-app --output-dir ./my_app

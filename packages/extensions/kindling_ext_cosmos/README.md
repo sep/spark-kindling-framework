@@ -37,9 +37,13 @@ line, not by platform, because a Databricks cluster on Spark 4.0 and a
 standalone Spark 4.0 need the same connector artifact:
 
 ```bash
-pip install 'spark-kindling-ext-cosmos[spark_3_x]'   # Spark 3.4-3.5 (Fabric, Synapse, standalone)
-pip install 'spark-kindling-ext-cosmos[spark_4_x]'   # Spark 4.0-4.1 (Databricks 17+, standalone-4x)
+pip install 'spark-kindling-ext-cosmos[spark-3-x]'   # Spark 3.4-3.5 (Fabric, Synapse, standalone)
+pip install 'spark-kindling-ext-cosmos[spark-4-x]'   # Spark 4.0-4.1 (Databricks 17+, standalone-4x)
 ```
+
+(`spark_3_x` / `spark_4_x` are accepted too.) The package is on PyPI; in a uv
+project, `kindling env add spark-kindling-ext-cosmos` pins the version that
+matches the project's Kindling release.
 
 Never request both. Managed runtimes install the bare wheel (Kindling's
 extension bootstrap passes no extras) and keep their own `pyspark`.

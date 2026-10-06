@@ -1,13 +1,13 @@
 # Build System
 
-How this repo builds its wheels. Packaging is standard PEP 621 with the
+How this repo builds its wheels and source distributions. Packaging is standard PEP 621 with the
 `uv_build` backend; `poe build` is the entry point and the only supported way
 to produce a release-shaped `dist/`.
 
 ## Build Commands
 
 ```bash
-poe build                          # every wheel, into dist/
+poe build                          # every sdist and wheel, into dist/
 
 poe deploy                         # all wheels in dist/ -> Azure storage
 poe deploy --platform fabric       # only the runtime wheel (see below)
@@ -23,7 +23,9 @@ wheels in storage.
 ## What `poe build` Produces
 
 `poe build` runs `scripts/build.py`, which clears `dist/` and runs
-`uv build --wheel` once per package:
+`uv build` once per package. Each build writes a source distribution
+(`<name>-<v>.tar.gz`) and a wheel built from that sdist, so the wheel attached
+to the GitHub release is the same file PyPI receives:
 
 | Wheel | Source | Notes |
 |---|---|---|
@@ -34,6 +36,13 @@ wheels in storage.
 
 Runtime, CLI and SDK share one version (bumped together by `poe version`);
 extensions version independently.
+
+Where they are published: every wheel is attached to the GitHub release. The
+`publish-pypi` job also uploads the wheel and sdist of `spark-kindling`,
+`spark-kindling-cli`, `spark-kindling-sdk` and the `databricks`, `sdp`,
+`cosmos`, `temporal` and `otel-azure` extensions to PyPI; the `adx`,
+`databricks-autoloader` and `visualization` extensions stay GitHub-release-only.
+See [release_process.md](./release_process.md#-publishing-to-pypi).
 
 The runtime wheel is installed with the extra for its environment:
 
@@ -46,14 +55,14 @@ The runtime wheel is installed with the extra for its environment:
 | `adx` | Azure Data Explorer clients |
 | `all` | everything above except the Fabric ceiling |
 
-The packages are not on PyPI, so the extra goes on a direct wheel reference,
-for example a local build:
+A released version installs from PyPI (`pip install 'spark-kindling[synapse]'`).
+To install a local build, put the extra on a direct wheel reference:
 
 ```bash
 pip install "spark-kindling[synapse] @ file://$PWD/dist/spark_kindling-<version>-py3-none-any.whl"
 ```
 
-or a release wheel URL (see [setup_guide.md](../guide/setup_guide.md)). The
+or use a release wheel URL the same way (see [setup_guide.md](../guide/setup_guide.md)). The
 platform is detected at runtime; each platform module registers itself through
 the `spark_kindling.platforms` entry-point group.
 
@@ -80,7 +89,12 @@ the `spark_kindling.platforms` entry-point group.
 poe build
 unzip -p dist/spark_kindling-*.whl '*.dist-info/METADATA' | grep -E 'Requires-(Dist|Python)|Provides-Extra'
 unzip -p dist/spark_kindling-*.whl '*.dist-info/entry_points.txt'
+uvx twine check dist/*                # the README renders as the PyPI project page
 ```
+
+`[project]` metadata (description, `readme`, classifiers, keywords,
+`[project.urls]`) is what PyPI shows, and READMEs use absolute GitHub links so
+they resolve on pypi.org.
 
 The Fabric `azure-core` ceiling is expressed as two `Requires-Dist: azure-core`
 lines, the second scoped to `extra == "fabric"`; see the comment above
