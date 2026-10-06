@@ -4,7 +4,17 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-from kindling_cli.cli import cli
+from kindling_cli.cli import _load_pyproject_toml, cli
+
+
+def _load_toml_text(text):
+    try:
+        import tomllib
+    except ImportError:  # Python 3.10
+        import tomli as tomllib
+    return tomllib.loads(text)
+
+
 from kindling_cli.scaffold import (
     AppScaffoldConfig,
     PackageScaffoldConfig,
@@ -47,6 +57,7 @@ class TestValidateName:
 
 REPO_FILES = [
     ".gitignore",
+    "pyproject.toml",
     ".github/workflows/ci.yml",
     ".devcontainer/devcontainer.json",
     "scripts/setup-local-dev.sh",
@@ -164,6 +175,45 @@ def test_repo_preserves_existing_devcontainer(tmp_path):
     generate_repo(cfg)
 
     assert devcontainer.read_text() == '{"name": "existing"}'
+    assert (repo_root / ".gitignore").exists()
+
+
+def test_repo_root_pyproject_is_a_uv_workspace_over_packages(tmp_path):
+    """The devcontainer runs `kindling env bootstrap` at the repo root, which
+    needs a root pyproject.toml to pin Kindling into and sync."""
+    repo_root = tmp_path / "data_platform"
+    generate_repo(RepoScaffoldConfig(name="data-platform", output_dir=repo_root))
+
+    data = _load_pyproject_toml(repo_root / "pyproject.toml")
+    assert data["project"]["name"] == "data-platform-workspace"
+    assert data["project"]["dependencies"] == []
+    assert data["tool"]["uv"]["package"] is False
+    assert data["tool"]["uv"]["workspace"]["members"] == ["packages/*"]
+    assert ".venv/" in (repo_root / ".gitignore").read_text()
+
+
+def test_repo_root_name_does_not_collide_with_same_named_package(tmp_path):
+    """uv rejects two workspace members with one name; the documented flow
+    scaffolds `repo init X` then `package init X`."""
+    repo_root = tmp_path / "my_pipeline"
+    generate_repo(RepoScaffoldConfig(name="my-pipeline", output_dir=repo_root))
+    generate_package(PackageScaffoldConfig(name="my-pipeline", repo_root=repo_root))
+
+    root_name = _load_pyproject_toml(repo_root / "pyproject.toml")["project"]["name"]
+    package_name = _load_pyproject_toml(_package_root(repo_root, "my_pipeline") / "pyproject.toml")[
+        "project"
+    ]["name"]
+    assert root_name != package_name
+
+
+def test_repo_preserves_existing_root_pyproject(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "pyproject.toml").write_text('[project]\nname = "existing"\n', encoding="utf-8")
+
+    generate_repo(RepoScaffoldConfig(name="repo", output_dir=repo_root))
+
+    assert (repo_root / "pyproject.toml").read_text() == '[project]\nname = "existing"\n'
     assert (repo_root / ".gitignore").exists()
 
 
@@ -361,7 +411,8 @@ def test_repo_ci_runs_each_package(tmp_path):
 
     workflow = (tmp_path / "proj" / ".github" / "workflows" / "ci.yml").read_text()
     assert "for pkg in packages/*" in workflow
-    assert "uv sync && uv run poe test && uv run poe build" in workflow
+    assert '(cd "$pkg" && uv run poe test && uv run poe build)' in workflow
+    assert "uv sync" not in workflow
 
 
 def test_repo_devcontainer_uses_repo_workspace_and_package_pythonpath_for_new(tmp_path):
@@ -377,12 +428,12 @@ def test_repo_devcontainer_uses_repo_workspace_and_package_pythonpath_for_new(tm
     assert '"PYTHONPATH": "/workspaces/my-proj"' in dcj
 
 
-def test_repo_devcontainer_defaults_to_system_python_without_primary_package(tmp_path):
+def test_repo_devcontainer_uses_root_workspace_venv(tmp_path):
     cfg = RepoScaffoldConfig(name="repo-only", output_dir=tmp_path / "repo-only")
     generate_repo(cfg)
 
     dcj = (tmp_path / "repo-only" / ".devcontainer" / "devcontainer.json").read_text()
-    assert "/usr/local/bin/python" in dcj
+    assert '"python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python"' in dcj
     assert "postCreateCommand" in dcj
 
 
@@ -397,6 +448,63 @@ class TestScaffoldCommands:
         assert (tmp_path / "packages").is_dir()
         assert (tmp_path / ".devcontainer" / "devcontainer.json").exists()
         assert not (tmp_path / "data_platform").exists()
+        assert (tmp_path / "pyproject.toml").exists()
+        assert "kindling env bootstrap" in result.output
+        assert "Kept the existing pyproject.toml" not in result.output
+
+    def test_package_init_rejects_root_workspace_name(self, tmp_path):
+        runner = CliRunner()
+        assert (
+            runner.invoke(cli, ["repo", "init", "sales", "--output-dir", str(tmp_path)]).exit_code
+            == 0
+        )
+
+        result = runner.invoke(
+            cli, ["package", "init", "sales-workspace", "--repo-root", str(tmp_path)]
+        )
+
+        assert result.exit_code != 0
+        assert "repo root project's name" in result.output
+        assert not (tmp_path / "packages" / "sales_workspace").exists()
+
+    def test_package_init_adopts_root_kindling_pin(self, tmp_path):
+        runner = CliRunner()
+        assert (
+            runner.invoke(cli, ["repo", "init", "shop", "--output-dir", str(tmp_path)]).exit_code
+            == 0
+        )
+        root = tmp_path / "pyproject.toml"
+        url = (
+            "https://github.com/sep/spark-kindling-framework/releases/download/"
+            "v0.9.1/spark_kindling-0.9.1-py3-none-any.whl"
+        )
+        root.write_text(
+            root.read_text().replace(
+                "dependencies = []", 'dependencies = ["spark-kindling[standalone]"]'
+            )
+            + f'\n[tool.uv.sources]\nspark-kindling = {{ url = "{url}" }}\n',
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["package", "init", "orders", "--repo-root", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        package_pyproject = (tmp_path / "packages" / "orders" / "pyproject.toml").read_text()
+        assert "/v0.9.1/spark_kindling-0.9.1-py3-none-any.whl" in package_pyproject
+        assert "/v0.9.1/spark_kindling_cli-0.9.1-py3-none-any.whl" in package_pyproject
+
+    def test_repo_init_reports_kept_root_pyproject(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
+        result = CliRunner().invoke(cli, ["repo", "init", "x", "--output-dir", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        assert "Kept the existing pyproject.toml" in result.output
+        snippet = "\n".join(
+            line.strip()
+            for line in result.output.splitlines()
+            if line.strip().startswith(("[tool", "members"))
+        )
+        assert _load_toml_text(snippet)["tool"]["uv"]["workspace"]["members"] == ["packages/*"]
 
     def test_repo_init_warns_for_existing_devcontainer(self, tmp_path):
         devcontainer = tmp_path / ".devcontainer" / "devcontainer.json"

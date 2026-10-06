@@ -2,50 +2,36 @@
 
 This directory contains helper scripts for development workflows.
 
-## Platform Wheel Building
+## Wheel Building
 
-### `build_platform_wheels.sh`
+### `build.py` (`poe build`)
 
-Builds runtime wheels for each supported platform (Synapse, Databricks, Fabric) plus design-time `kindling-sdk` and `kindling-cli` wheels.
-
-**Features:**
-- ✅ Creates single wheel per platform containing core + platform-specific code
-- ✅ Builds design-time wheels used for local tooling (`kindling-sdk`, `kindling-cli`)
-- ✅ Uses standard uv build system (`uv build --wheel`, `uv_build` backend)
-- ✅ Maintains platform tag naming for app_framework.py compatibility
-- ✅ Excludes other platform files to reduce wheel size
-- ✅ Places all artifacts in `dist/`
+Builds every wheel into `dist/` with `uv build --wheel`, one package at a
+time: the `spark-kindling` runtime (one wheel for all platforms; platform
+dependencies are extras), the design-time `spark-kindling-cli` and
+`spark-kindling-sdk`, and each `spark-kindling-ext-*` extension.
+`build_platform_wheels.sh` (`poe build-wheels`) is a thin wrapper kept for
+older callers. See [docs/contributing/build_system.md](../docs/contributing/build_system.md).
 
 **Usage:**
 
 ```bash
-# Build all platform wheels
-poe build-wheels
+uv sync      # once per checkout or worktree
+poe build
 ```
 
 **Output:**
 ```
 dist/
-├── kindling_synapse-<version>-py3-none-any.whl
-├── kindling_databricks-<version>-py3-none-any.whl
-├── kindling_fabric-<version>-py3-none-any.whl
-├── kindling_sdk-<version>-py3-none-any.whl
-└── kindling_cli-<version>-py3-none-any.whl
+├── spark_kindling-<version>-py3-none-any.whl
+├── spark_kindling_cli-<version>-py3-none-any.whl
+├── spark_kindling_sdk-<version>-py3-none-any.whl
+└── spark_kindling_ext_<name>-<ext-version>-py3-none-any.whl   (one per extension)
 ```
-
-**Each wheel contains:**
-- Core kindling framework (data_apps.py, bootstrap.py, etc.)
-- Single platform implementation (platform_synapse.py OR platform_databricks.py OR platform_fabric.py)
-- Platform-specific dependencies (Azure SDKs, Databricks SDK, etc.)
-
-**Requirements:**
-- uv installed (`pip install uv==0.12.20`; preinstalled in the devcontainer and CI image) and the dev env synced with `uv sync`
-- Platform-specific pyproject.toml files (pyproject-synapse.toml, etc.)
 
 **Installation:**
 ```bash
-# Install platform-specific wheel
-pip install dist/kindling_synapse-<version>-py3-none-any.whl
+pip install 'spark-kindling[synapse] @ file://'"$PWD"/dist/spark_kindling-<version>-py3-none-any.whl
 ```
 
 ## Azure Development Environment Setup

@@ -1,29 +1,37 @@
 # spark-kindling-cli
 
-Command-line tooling for the Spark Kindling Framework. Distributed on PyPI as
+Command-line tooling for the Spark Kindling Framework. Distributed as
 `spark-kindling-cli`; installs the `kindling` console script.
 
 ## Install
 
-```bash
-pip install spark-kindling-cli
-```
-
-Depends on `spark-kindling-sdk` for remote platform lifecycle operations.
-Install the SDK alongside the CLI when you want to deploy apps or manage the
-durable runner:
+Kindling packages are not on PyPI; install them from a
+[GitHub Release](https://github.com/sep/spark-kindling-framework/releases)'s
+wheel URLs. The CLI depends on `spark-kindling-sdk` (used for remote platform
+lifecycle operations), and the SDK only resolves from its release URL too, so
+install both:
 
 ```bash
-pip install spark-kindling-sdk
+V=0.13.0  # any release, without the leading v
+BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
+pip install "$BASE/spark_kindling_cli-$V-py3-none-any.whl" \
+    "$BASE/spark_kindling_sdk-$V-py3-none-any.whl"
 ```
+
+Inside the Kindling devcontainer, `kindling` is a shim that runs the project's
+own `./.venv/bin/kindling` (pinned in `pyproject.toml`) when present.
 
 ## Commands
 
-- `kindling repo init` — scaffold a multi-package repo root with shared dev tooling
-- `kindling package init` — scaffold a package under `packages/<name>` in an existing repo
+- `kindling repo init` — scaffold a multi-package repo root (uv workspace root `pyproject.toml`, devcontainer, CI) with shared dev tooling
+- `kindling package init` — scaffold a package (a uv workspace member) under `packages/<name>` in an existing repo
+- `kindling app init` — scaffold an app under `apps/<name>` that runs a domain package
 - `kindling config init` — generate a starter `settings.yaml`
 - `kindling config set <key> <value>` — set a config value using dot-notation
 - `kindling env check` — validate the local Python/config environment
+- `kindling env bootstrap` — pin Kindling if nothing declares it yet and `uv sync --all-packages` (the devcontainer's `postCreateCommand`)
+- `kindling env update` / `kindling env add` — move or add Kindling release wheel pins
+- `kindling env ensure` — download Hadoop/ABFSS JARs into `/tmp/hadoop-jars/`
 - `kindling workspace check` — validate the configured platform workspace
 - `kindling workspace init` — scaffold bootstrap + starter notebook files for a platform
 - `kindling workspace deploy` — upload the runtime wheel, bootstrap script, config, and notebooks to artifact storage
@@ -124,32 +132,38 @@ cd data-platform
 kindling repo init data-platform
 
 kindling package init sales-ops --repo-root .
-kindling package init customer-360 --repo-root .
 ```
 
-This produces a repo root with shared `.devcontainer/`, CI, and `.gitignore`
-plus independently buildable packages under `packages/`.
+This produces a repo root with shared `.devcontainer/`, CI,
+`scripts/setup-local-dev.sh` and `.gitignore` plus independently buildable
+packages under `packages/`. The root `pyproject.toml` is a non-package uv
+workspace root (`[tool.uv] package = false`,
+`[tool.uv.workspace] members = ["packages/*"]`), so the repo shares one
+`.venv/` and `uv.lock` with every package installed editable. Run
+`kindling env bootstrap` at the root (the devcontainer does this on create) to
+pin Kindling there and sync. Every package must pin the same Kindling release
+as the root; `kindling env update` moves them together.
 If `.devcontainer/` already exists, `kindling repo init` warns and leaves it
 unchanged. Pass `--overwrite-devcontainer` to replace the generated
-devcontainer config.
+devcontainer config. An existing root `pyproject.toml` is also kept; add
+`[tool.uv.workspace] members = ["packages/*"]` to it.
 
 To add a second package later, return to the repo root and scaffold another
 package:
 
 ```bash
-cd ../..
 kindling package init customer-360 --repo-root .
 
 cd packages/customer_360
-uv sync
 uv run poe test
 ```
 
-The generated CI workflow runs each scaffolded package independently by
-iterating `packages/*` and executing:
+`uv run` syncs what the package needs before running. Don't run a bare `uv sync` inside a package directory: in the workspace it is an exact sync of that one package and removes the others from the shared `.venv/`. Resync the whole repo with `uv sync --all-packages` (or `kindling env bootstrap`) at the root.
+
+The generated CI workflow runs in the devcontainer image and tests each
+scaffolded package independently by iterating `packages/*` and executing:
 
 ```bash
-uv sync
 uv run poe test
 uv run poe build
 ```
@@ -165,5 +179,5 @@ kindling app init sales-ops --package sales-ops --repo-root .
 
 ## Related
 
-- Runtime framework: `pip install 'spark-kindling[<platform>]'` where `<platform>` is one of `synapse`, `databricks`, `fabric`, `standalone`.
-- Design-time SDK: `pip install spark-kindling-sdk`.
+- Runtime framework: `pip install "spark-kindling[<platform>] @ $BASE/spark_kindling-$V-py3-none-any.whl"` where `<platform>` is one of `synapse`, `databricks`, `fabric`, `standalone`.
+- Design-time SDK: `pip install "$BASE/spark_kindling_sdk-$V-py3-none-any.whl"`.

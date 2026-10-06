@@ -3829,6 +3829,7 @@ def test_package_add_entity_uses_package_option(tmp_path):
         ["package", "add", "entity", "bronze.orders", "--package", str(package_dir)],
     )
 
+    # A bare directory (no entities/ package, no pyproject): flat layout.
     assert result.exit_code == 0, result.output
     assert (package_dir / "entities.py").exists()
     assert (package_dir / "tests" / "entities" / "bronze" / "orders.csv").exists()
@@ -3838,6 +3839,122 @@ def test_package_add_entity_uses_package_option(tmp_path):
         ["app", "add", "entity", "bronze.orders", "--app", str(package_dir)],
     )
     assert old_result.exit_code != 0
+
+
+def _scaffolded_package(tmp_path, name="sales"):
+    from kindling_cli.scaffold import PackageScaffoldConfig, generate_package
+
+    generate_package(PackageScaffoldConfig(name=name, repo_root=tmp_path))
+    return tmp_path / "packages" / name
+
+
+@pytest.mark.parametrize("target", ["project_root", "module_dir"])
+def test_package_add_writes_into_scaffolded_subpackages(tmp_path, monkeypatch, target):
+    """package init creates entities/ and pipes/ packages; flat entities.py or
+    <ns>/<name>.py modules beside them are never imported by the runtime's
+    package walk, so generated code must land inside them, and tests/fixtures
+    under the project root."""
+    import pkgutil
+
+    name = f"sales_{target}"
+    project = _scaffolded_package(tmp_path, name)
+    module = project / "src" / name
+    package_arg = str(project if target == "project_root" else module)
+    runner = CliRunner()
+
+    for args in (
+        ["entity", "bronze.orders"],
+        ["pipe", "silver.orders", "--inputs", "bronze.orders"],
+        ["ingestion", "bronze.sales_csv"],
+    ):
+        result = runner.invoke(cli, ["package", "add", *args, "--package", package_arg])
+        assert result.exit_code == 0, result.output
+
+    assert "bronze.orders" in (module / "entities" / "bronze.py").read_text()
+    assert "bronze.sales_csv" in (module / "entities" / "bronze.py").read_text()
+    assert (module / "pipes" / "silver_orders.py").exists()
+    assert (module / "pipes" / "bronze_sales_csv_ingestion.py").exists()
+    assert not (module / "entities.py").exists()
+    assert not (module / "tests").exists()
+    assert (project / "tests" / "entities" / "bronze" / "orders.csv").exists()
+    assert (project / "tests" / "unit" / "test_silver_orders.py").exists()
+    assert (project / "tests" / "unit" / "test_bronze_sales_csv_ingestion.py").exists()
+    assert (project / "tests" / "entities" / "bronze" / "sales_csv").is_dir()
+
+    # Walk the package the way the runtime does (it imports subpackages).
+    monkeypatch.syspath_prepend(str(project / "src"))
+    walked = {m.name for m in pkgutil.walk_packages([str(module)], prefix=f"{name}.")}
+    assert {
+        f"{name}.entities.bronze",
+        f"{name}.pipes.silver_orders",
+        f"{name}.pipes.bronze_sales_csv_ingestion",
+    } <= walked
+
+
+def test_package_add_same_name_in_two_namespaces_keeps_both_test_stubs(tmp_path):
+    project = _scaffolded_package(tmp_path, "ledger")
+    runner = CliRunner()
+    for pipe_id in ("bronze.orders", "silver.orders"):
+        result = runner.invoke(cli, ["package", "add", "pipe", pipe_id, "--package", str(project)])
+        assert result.exit_code == 0, result.output
+
+    for ns in ("bronze", "silver"):
+        assert (project / "tests" / "unit" / f"test_{ns}_orders.py").exists()
+        assert (project / "tests" / "integration" / f"test_{ns}_orders.py").exists()
+        assert (project / "src" / "ledger" / "pipes" / f"{ns}_orders.py").exists()
+    entities = (project / "src" / "ledger" / "entities" / "bronze.py").read_text()
+    assert 'entityid="bronze.orders_output"' in entities  # each pipe's output entity
+    assert entities.count('entityid="bronze.orders_output"') == 1
+
+
+def test_package_add_pipe_creates_pipes_package_when_missing(tmp_path):
+    """The runtime imports only <root>.entities/.pipes/.ingestion, so a pipe
+    must land in a pipes/ package even when the package has none yet."""
+    module = tmp_path / "pkg"
+    module.mkdir()
+    (module / "__init__.py").write_text("", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["package", "add", "pipe", "silver.orders", "--package", str(module)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (module / "pipes" / "__init__.py").exists()
+    assert (module / "pipes" / "silver_orders.py").exists()
+    assert not (module / "silver").exists()
+
+
+def test_package_add_pipe_appends_to_flat_pipes_module(tmp_path):
+    module = tmp_path / "pkg"
+    module.mkdir()
+    (module / "__init__.py").write_text("", encoding="utf-8")
+    (module / "pipes.py").write_text("EXISTING = 1\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["package", "add", "pipe", "silver.orders", "--package", str(module)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (module / "pipes").exists()
+    content = (module / "pipes.py").read_text()
+    assert content.startswith("EXISTING = 1")
+    assert 'pipeid="silver.orders"' in content
+
+
+@pytest.mark.parametrize(
+    "spelling", ["entityid='silver.orders_output'", 'entityid = "silver.orders_output"']
+)
+def test_package_add_pipe_skips_existing_output_entity(tmp_path, spelling):
+    project = _scaffolded_package(tmp_path, "ledger")
+    entities = project / "src" / "ledger" / "entities" / "silver.py"
+    entities.write_text(f"DataEntities.entity({spelling})\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["package", "add", "pipe", "silver.orders", "--package", str(project)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert entities.read_text() == f"DataEntities.entity({spelling})\n"
 
 
 # ---------------------------------------------------------------------------

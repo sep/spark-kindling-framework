@@ -264,8 +264,8 @@ gh release download v<version> --pattern "*.whl"
 
 # Option 2: Use curl with token
 curl -H "Authorization: token YOUR_PAT" \
-  -L https://github.com/sep/spark-kindling-framework/releases/download/v<version>/kindling_synapse-<version>-py3-none-any.whl \
-  -o kindling_synapse-<version>-py3-none-any.whl
+  -L https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl \
+  -o spark_kindling-<version>-py3-none-any.whl
 ```
 
 ## 📝 Release Notes Best Practices

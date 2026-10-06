@@ -355,7 +355,7 @@ poe deploy             # Deploy ALL wheels (avoid this during testing)
 {AZURE_BASE_PATH}/
 ├── config/              # Hierarchical config system (see below)
 ├── data-apps/{app}/     # App-specific code and config
-├── packages/            # Python wheels (kindling_fabric-*.whl)
+├── packages/            # Python wheels (spark_kindling-*.whl, extensions)
 └── scripts/             # Utility scripts (kindling_bootstrap.py)
 
 **Lakehouse vs External Storage:**

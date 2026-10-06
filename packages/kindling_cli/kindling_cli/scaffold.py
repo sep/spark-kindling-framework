@@ -53,6 +53,9 @@ class PackageScaffoldConfig:
     auth: str = "oauth"
     integration: bool = True
     template_dir: Optional[Path] = None
+    # Kindling release to pin; defaults to this CLI's own version. Set it to
+    # the repo root's pin so a new workspace member agrees with it.
+    kindling_version: Optional[str] = None
 
     @property
     def snake_name(self) -> str:
@@ -161,7 +164,7 @@ def _package_ctx(cfg: PackageScaffoldConfig) -> dict:
         "layers": cfg.layers,
         "integration": cfg.integration,
         "primary_package_snake_name": cfg.snake_name,
-        "kindling_version": _kindling_version(),
+        "kindling_version": cfg.kindling_version or _kindling_version(),
     }
 
 
@@ -206,6 +209,11 @@ def generate_repo(cfg: RepoScaffoldConfig) -> List[Path]:
     (root / "apps").mkdir(parents=True, exist_ok=True)
 
     _write(".gitignore", ".gitignore.j2")
+    # An existing root pyproject.toml (adopting Kindling into a repo that
+    # already has one) is left alone; `kindling env bootstrap` adds Kindling
+    # to it either way.
+    if not (root / "pyproject.toml").exists():
+        _write("pyproject.toml", "pyproject.root.toml.j2")
     _write(".github/workflows/ci.yml", ".github/workflows/ci.yml.j2")
     if not skip_devcontainer:
         _write(

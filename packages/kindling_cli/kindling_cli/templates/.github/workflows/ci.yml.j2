@@ -16,7 +16,7 @@ jobs:
     # Kindling version, so it's referenced by :latest here rather than a
     # release tag that may never have had a matching image published (the
     # image is only rebuilt when its own inputs change, not on every
-    # Kindling release). `uv sync` resolves Kindling packages directly
+    # Kindling release). `uv run` syncs each package, resolving Kindling directly
     # from their pinned GitHub release wheel URLs ([tool.uv.sources], uv.lock).
     container:
       image: ghcr.io/sep/spark-kindling-framework/devcontainer:latest
@@ -37,7 +37,7 @@ jobs:
             if [ -f "$pkg/pyproject.toml" ]; then
               found=1
               echo "==> Testing $pkg"
-              (cd "$pkg" && uv sync && uv run poe test && uv run poe build)
+              (cd "$pkg" && uv run poe test && uv run poe build)
             fi
           done
           if [ "$found" -eq 0 ]; then

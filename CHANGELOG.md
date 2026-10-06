@@ -2,6 +2,57 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **A freshly scaffolded repo's devcontainer now comes up.** `kindling repo
+  init` writes a root `pyproject.toml`: a non-package uv workspace over
+  `packages/*`. The devcontainer's `kindling env bootstrap` previously failed
+  at the repo root with "No pyproject.toml found"; it now pins Kindling there
+  (adopting the release a package already pins, or the latest for an empty
+  repo) and syncs one repo-wide `.venv/`, which the generated devcontainer
+  uses as its interpreter. An existing root `pyproject.toml` is kept. Repos
+  scaffolded earlier can add the same file (see the domain project
+  quickstart).
+- **Package workflows no longer prune the shared environment.** In the repo
+  workspace, a bare `uv sync` inside a package directory is an exact sync of
+  that one package and removed every other package from `.venv/`. `package
+  init`'s next steps, the package quickstart, the generated CI and the docs
+  now use `uv run poe ...` in packages (it syncs incrementally) and
+  `uv sync --all-packages` at the root.
+- **The published devcontainer image ships `kindling-abfss-local-auth.jar`**
+  (checksum-verified, as this repo's own devcontainer does) and gives the
+  `vscode` user ownership of `/opt/hadoop-jars`, so `kindling env ensure` can
+  add or refresh JARs inside the container.
+- **`kindling package add entity` / `pipe` / `ingestion` generate code the
+  runtime imports.** On a `package init` package they wrote a flat
+  `entities.py` (shadowed by the scaffolded `entities/` package) and pipes
+  under `<namespace>/` directories without `__init__.py`, so the package walk
+  never registered them and the documented flow ended in `entity not found`.
+  They now write `entities/<ns>.py` and `pipes/<ns>_<name>.py` (creating
+  `pipes/` when missing, since the runtime imports only a package's
+  `entities`, `pipes` and `ingestion` namespaces), put test
+  stubs and fixtures under the package's project root instead of inside the
+  importable module, and accept either the project root or the module
+  directory as `--package`. `package add pipe` also declares the pipe's
+  output entity (`<ns>.<name>_output`) when it doesn't exist yet, and test
+  stubs are namespaced (`test_<ns>_<name>.py`) so same-named pipes in two
+  layers no longer overwrite each other's stubs.
+- `kindling package init` refuses a package name equal to the repo root
+  workspace project's name (uv rejects duplicate member names), and pins the
+  Kindling release the root already pins rather than the running CLI's own
+  version, so an older system CLI can't create a conflicting member.
+- `poe deploy-extension` help pointed at building into the extension's own
+  `dist/`, where the deploy never looks; it now says `poe build`.
+
+### Changed
+
+- Contributor and domain-project docs corrected against the current code: the
+  build system doc describes the single runtime wheel with platform extras
+  (not per-platform wheels), and devcontainer, troubleshooting and repo-layout
+  guidance matches the scaffolding.
+
 ## [0.13.0] - 2026-10-05
 
 ### Changed

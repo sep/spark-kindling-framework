@@ -6124,35 +6124,81 @@ def app_add_executor(
         click.echo(f"Updated app settings {settings_yaml}")
 
 
-# ---- package add entity ----
+# ---- package add: target resolution ----
 
 
-@package_add_group.command("entity")
-@click.argument("entity_id")
-@click.option(
-    "--package",
-    "package_path",
-    required=True,
-    type=click.Path(path_type=Path, file_okay=False),
-    help="Path to the package root.",
-)
-def package_add_entity(entity_id: str, package_path: Path) -> None:
-    """Scaffold an entity definition and a CSV fixture stub.
+def _package_add_targets(package_path: Path) -> Tuple[Path, Path]:
+    """Resolve `--package` to (module_dir, project_dir) for `package add`.
 
-    \b
-    ENTITY_ID   Dot-separated namespace and name, e.g. bronze.orders
-
-    \b
-    Creates / appends:
-      <path>/entities.py            — DataEntities.entity() skeleton
-      tests/entities/<ns>/<name>.csv — CSV fixture stub (headers placeholder)
-
-    \b
-    Example:
-      kindling package add entity bronze.orders --package packages/my_pkg/src/my_pkg
+    module_dir is the importable package that generated modules go into;
+    project_dir is the project root, where tests/ and the tests/entities/
+    fixtures belong (pytest and the fixture provider run from there). Accepts
+    either the module directory (packages/<pkg>/src/<pkg>) or the project
+    root (packages/<pkg>, resolved through its src/ layout).
     """
-    namespace, name = _parse_entity_id(entity_id)
     resolved = package_path.expanduser().resolve()
+    if (resolved / "__init__.py").is_file():
+        for ancestor in (resolved, *resolved.parents):
+            if (ancestor / "pyproject.toml").is_file():
+                return resolved, ancestor
+        return resolved, resolved
+    src_dir = resolved / "src"
+    if src_dir.is_dir():
+        modules = [d for d in src_dir.iterdir() if (d / "__init__.py").is_file()]
+        if len(modules) == 1:
+            return modules[0], resolved
+    return resolved, resolved
+
+
+def _package_add_entities_file(module_dir: Path, namespace: str) -> Path:
+    """Module that `package add entity`/`ingestion` append entities to. With
+    the scaffold's entities/ package present, `entities/<namespace>.py`: a
+    flat entities.py beside that package would be shadowed by it and never
+    imported by the runtime's package walk."""
+    entities_pkg = module_dir / "entities"
+    if (entities_pkg / "__init__.py").is_file():
+        return entities_pkg / f"{namespace}.py"
+    return module_dir / "entities.py"
+
+
+def _package_add_pipe_file(module_dir: Path, namespace: str, stem: str) -> Path:
+    """Module for a generated pipe: `pipes/<namespace>_<stem>.py`. The runtime
+    imports only a package's entities, pipes and ingestion namespaces, so the
+    pipes/ package is created when missing. A package that keeps its pipes in
+    a flat pipes.py gets that module back instead (callers append to it), since
+    a pipes/ directory beside it would shadow it."""
+    pipes_pkg = module_dir / "pipes"
+    if not (pipes_pkg / "__init__.py").is_file():
+        if (module_dir / "pipes.py").is_file():
+            return module_dir / "pipes.py"
+        _ensure_dir(pipes_pkg)
+        (pipes_pkg / "__init__.py").write_text("", encoding="utf-8")
+    return pipes_pkg / f"{namespace}_{stem}.py"
+
+
+def _write_or_append_module(path: Path, content: str) -> str:
+    """Write a generated module, appending when it targets an existing shared
+    module (a flat pipes.py); returns the verb for the CLI message."""
+    if path.name == "pipes.py" and path.exists():
+        _append_to_file(path, "\n\n" + content)
+        return "Appended to"
+    _write_new_file(path, content)
+    return "Created"
+
+
+def _entity_declared_in(module_dir: Path, entity_id: str) -> bool:
+    """Whether any module under module_dir already declares entity_id."""
+    pattern = re.compile(r"""entityid\s*=\s*(["'])""" + re.escape(entity_id) + r"\1")
+    return any(
+        pattern.search(path.read_text(encoding="utf-8", errors="ignore"))
+        for path in module_dir.rglob("*.py")
+    )
+
+
+def _scaffold_entity_definition(module_dir: Path, entity_id: str) -> Path:
+    """Append a DataEntities.entity() skeleton for entity_id to the package's
+    entities module for its namespace; returns that module."""
+    namespace, name = _parse_entity_id(entity_id)
     schema_var = f"{namespace}_{name}_schema"
 
     entity_block = f"""
@@ -6179,7 +6225,7 @@ DataEntities.entity(
 )
 """
 
-    entities_py = resolved / "entities.py"
+    entities_py = _package_add_entities_file(module_dir, namespace)
     header = "from kindling.data_entities import DataEntities\n"
     if not entities_py.exists():
         _write_new_file(entities_py, header + entity_block)
@@ -6191,7 +6237,42 @@ DataEntities.entity(
         _append_to_file(entities_py, entity_block)
         click.echo(f"Appended entity {entity_id!r} to {entities_py}")
 
-    csv_path = _create_csv_stub(resolved, namespace, name)
+    return entities_py
+
+
+# ---- package add entity ----
+
+
+@package_add_group.command("entity")
+@click.argument("entity_id")
+@click.option(
+    "--package",
+    "package_path",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Package project root (packages/<pkg>) or its module directory (packages/<pkg>/src/<pkg>).",
+)
+def package_add_entity(entity_id: str, package_path: Path) -> None:
+    """Scaffold an entity definition and a CSV fixture stub.
+
+    \b
+    ENTITY_ID   Dot-separated namespace and name, e.g. bronze.orders
+
+    \b
+    Creates / appends:
+      <module>/entities/<ns>.py      — DataEntities.entity() skeleton
+                                       (<module>/entities.py without an entities/ package)
+      tests/entities/<ns>/<name>.csv — CSV fixture stub, under the project root
+
+    \b
+    Example:
+      kindling package add entity bronze.orders --package packages/my_pkg
+    """
+    namespace, name = _parse_entity_id(entity_id)
+    module_dir, project_dir = _package_add_targets(package_path)
+    _scaffold_entity_definition(module_dir, entity_id)
+
+    csv_path = _create_csv_stub(project_dir, namespace, name)
     click.echo(f"Created fixture stub {csv_path}")
 
 
@@ -6211,7 +6292,7 @@ DataEntities.entity(
     "package_path",
     required=True,
     type=click.Path(path_type=Path, file_okay=False),
-    help="Path to the package root.",
+    help="Package project root (packages/<pkg>) or its module directory (packages/<pkg>/src/<pkg>).",
 )
 def package_add_pipe(pipe_id: str, inputs: Optional[str], package_path: Path) -> None:
     """Scaffold a DataPipes pipe and matching unit/integration test stubs.
@@ -6221,19 +6302,23 @@ def package_add_pipe(pipe_id: str, inputs: Optional[str], package_path: Path) ->
 
     \b
     Creates:
-      <path>/<namespace>/<pipe_name>.py          — pipe skeleton with @DataPipes.pipe
-      tests/unit/test_<pipe_name>.py             — pytest skip stub
-      tests/integration/test_<pipe_name>.py      — pytest skip stub
+      <module>/pipes/<ns>_<pipe_name>.py         — pipe skeleton with @DataPipes.pipe
+                                                   (pipes/ is created if missing)
+      <module>/entities/<ns>.py                  — its output entity <ns>.<pipe_name>_output,
+                                                   unless already declared
+      tests/unit/test_<ns>_<pipe_name>.py        — pytest skip stub
+      tests/integration/test_<ns>_<pipe_name>.py — pytest skip stub
       tests/entities/<ns>/<id>.csv               — fixture stubs for any --inputs
+    (tests/ under the project root)
 
     \b
     Examples:
       kindling package add pipe bronze.to_silver \\
           --inputs bronze.orders \\
-          --package packages/my_pkg/src/my_pkg
+          --package packages/my_pkg
     """
     namespace, pipe_name = _parse_entity_id(pipe_id)
-    resolved = package_path.expanduser().resolve()
+    module_dir, project_dir = _package_add_targets(package_path)
 
     input_ids: List[str] = []
     input_params: List[str] = []
@@ -6274,9 +6359,15 @@ def {namespace}_{pipe_name}({func_params}):
     return transform_{pipe_name}({func_params})
 """
 
-    pipe_file = resolved / namespace / f"{pipe_name}.py"
-    _write_new_file(pipe_file, pipe_content)
-    click.echo(f"Created pipe module {pipe_file}")
+    pipe_file = _package_add_pipe_file(module_dir, namespace, pipe_name)
+    verb = _write_or_append_module(pipe_file, pipe_content)
+    click.echo(f"{verb} pipe module {pipe_file}")
+
+    # The pipe persists to its output entity through the entity registry, so
+    # it must be declared too.
+    output_entity_id = f"{namespace}.{pipe_name}_output"
+    if not _entity_declared_in(module_dir, output_entity_id):
+        _scaffold_entity_definition(module_dir, output_entity_id)
 
     unit_test_content = f"""\"\"\"Unit tests for {namespace}.{pipe_name} transform.\"\"\"
 import pytest
@@ -6296,18 +6387,20 @@ def test_{pipe_name}_pipeline():
     ...
 """
 
-    unit_test_file = resolved / "tests" / "unit" / f"test_{pipe_name}.py"
+    unit_test_file = project_dir / "tests" / "unit" / f"test_{namespace}_{pipe_name}.py"
     _write_new_file(unit_test_file, unit_test_content)
     click.echo(f"Created unit test stub {unit_test_file}")
 
-    integration_test_file = resolved / "tests" / "integration" / f"test_{pipe_name}.py"
+    integration_test_file = (
+        project_dir / "tests" / "integration" / f"test_{namespace}_{pipe_name}.py"
+    )
     _write_new_file(integration_test_file, integration_test_content)
     click.echo(f"Created integration test stub {integration_test_file}")
 
     for entity_id in input_ids:
         ns, nm = _parse_entity_id(entity_id)
-        if not _csv_stub_exists(resolved, ns, nm):
-            csv_path = _create_csv_stub(resolved, ns, nm)
+        if not _csv_stub_exists(project_dir, ns, nm):
+            csv_path = _create_csv_stub(project_dir, ns, nm)
             click.echo(f"Created fixture stub {csv_path}")
 
 
@@ -6340,7 +6433,7 @@ def test_{pipe_name}_pipeline():
     "package_path",
     required=True,
     type=click.Path(path_type=Path, file_okay=False),
-    help="Path to the package root.",
+    help="Package project root (packages/<pkg>) or its module directory (packages/<pkg>/src/<pkg>).",
 )
 def package_add_ingestion(
     entity_id: str,
@@ -6361,24 +6454,27 @@ def package_add_ingestion(
 
     \b
     Creates:
-      <path>/<namespace>/<name>_ingestion.py      — FileIngestionEntries skeleton
-      <path>/entities.py                          — entity definition with CSV provider
-      tests/unit/test_<name>_ingestion.py         — pytest skip stub
-      tests/integration/test_<name>_ingestion.py  — pytest skip stub
+      <module>/pipes/<ns>_<name>_ingestion.py     — FileIngestionEntries skeleton
+                                                    (pipes/ is created if missing)
+      <module>/entities/<ns>.py                   — entity definition with CSV provider
+                                                    (<module>/entities.py without entities/)
+      tests/unit/test_<ns>_<name>_ingestion.py        — pytest skip stub
+      tests/integration/test_<ns>_<name>_ingestion.py — pytest skip stub
       tests/entities/<namespace>/<name>/           — empty folder for sample CSVs
+    (tests/ under the project root)
 
     \b
     Examples:
       kindling package add ingestion bronze.sales_report \\
           --source-pattern 'sales_(?P<report_date>[^.]+)[.]csv' \\
-          --package packages/my_pkg/src/my_pkg
+          --package packages/my_pkg
 
       kindling package add ingestion bronze.sales_report \\
           --filename-metadata report_date \\
-          --package packages/my_pkg/src/my_pkg
+          --package packages/my_pkg
     """
     namespace, name = _parse_entity_id(entity_id)
-    resolved = package_path.expanduser().resolve()
+    module_dir, project_dir = _package_add_targets(package_path)
     schema_var = f"{namespace}_{name}_schema"
 
     if source_pattern:
@@ -6411,9 +6507,9 @@ FileIngestionEntries.entry(
 )
 """
 
-    ingestion_file = resolved / namespace / f"{name}_ingestion.py"
-    _write_new_file(ingestion_file, ingestion_content)
-    click.echo(f"Created ingestion module {ingestion_file}")
+    ingestion_file = _package_add_pipe_file(module_dir, namespace, f"{name}_ingestion")
+    verb = _write_or_append_module(ingestion_file, ingestion_content)
+    click.echo(f"{verb} ingestion module {ingestion_file}")
 
     # --- entity definition in entities.py ---
     entity_block = f"""
@@ -6440,7 +6536,7 @@ DataEntities.entity(
 )
 """
 
-    entities_py = resolved / "entities.py"
+    entities_py = _package_add_entities_file(module_dir, namespace)
     header = "from kindling.data_entities import DataEntities\n"
     if not entities_py.exists():
         _write_new_file(entities_py, header + entity_block)
@@ -6484,16 +6580,18 @@ def test_{name}_ingestion_pipeline():
     ...
 """
 
-    unit_test_file = resolved / "tests" / "unit" / f"test_{name}_ingestion.py"
+    unit_test_file = project_dir / "tests" / "unit" / f"test_{namespace}_{name}_ingestion.py"
     _write_new_file(unit_test_file, unit_test_content)
     click.echo(f"Created unit test stub {unit_test_file}")
 
-    integration_test_file = resolved / "tests" / "integration" / f"test_{name}_ingestion.py"
+    integration_test_file = (
+        project_dir / "tests" / "integration" / f"test_{namespace}_{name}_ingestion.py"
+    )
     _write_new_file(integration_test_file, integration_test_content)
     click.echo(f"Created integration test stub {integration_test_file}")
 
     # --- sample CSV folder ---
-    sample_dir = resolved / "tests" / "entities" / namespace / name
+    sample_dir = project_dir / "tests" / "entities" / namespace / name
     _ensure_dir(sample_dir)
     click.echo(f"Created sample CSV folder {sample_dir}/")
 
@@ -7903,12 +8001,25 @@ def repo_init(
             err=True,
         )
 
+    had_root_pyproject = (cfg.output_dir / "pyproject.toml").exists()
     try:
         created = generate_repo(cfg)
     except Exception as exc:
         raise click.ClickException(f"Repo scaffold failed: {exc}") from exc
 
     click.echo(f"Initialized repo {cfg.kebab_name} in {cfg.output_dir} ({len(created)} files)")
+    if had_root_pyproject:
+        click.echo(
+            "Kept the existing pyproject.toml. For the repo-wide environment, make it a "
+            "uv workspace over the packages by adding:"
+        )
+        click.echo("  [tool.uv.workspace]")
+        click.echo('  members = ["packages/*"]')
+    click.echo()
+    click.echo("Next steps:")
+    click.echo("  Reopen the repo in its devcontainer (or run `kindling env bootstrap` here):")
+    click.echo("  it pins Kindling in pyproject.toml and syncs .venv/ for the whole repo.")
+    click.echo("  kindling package init <name>         # scaffold a package under packages/")
 
 
 @cli.group("package")
@@ -7996,6 +8107,34 @@ def package_init(
             f"Package already exists: {target}\nChoose a different package name or --repo-root."
         )
 
+    # uv rejects a workspace in which two projects share a name, and the repo
+    # root is one of them; it also rejects members pinning Kindling to a
+    # different release URL than the root, so a pinned root sets the version.
+    root_pyproject = cfg.repo_root / "pyproject.toml"
+    if root_pyproject.is_file():
+        try:
+            root_pins = {
+                name: _declared_kindling_version(entry)
+                for name, _group, entry in _iter_kindling_dependency_entries(root_pyproject)
+            }
+        except Exception:
+            root_pins = {}
+        root_version = root_pins.get("spark-kindling")
+        if root_version:
+            cfg.kindling_version = root_version
+        try:
+            root_name = _load_pyproject_toml(root_pyproject).get("project", {}).get("name")
+        except Exception:
+            root_name = None
+        if isinstance(root_name, str) and _canonical_distribution_name(
+            root_name
+        ) == _canonical_distribution_name(cfg.kebab_name):
+            raise click.ClickException(
+                f"Package name '{cfg.kebab_name}' is the repo root project's name in "
+                f"{root_pyproject}; uv workspace members need distinct names. "
+                "Choose a different package name."
+            )
+
     try:
         generate_package(cfg)
     except Exception as exc:
@@ -8005,8 +8144,7 @@ def package_init(
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  cd packages/{cfg.snake_name}")
-    click.echo("  uv sync")
-    click.echo("  uv run poe test                      # run the test suite")
+    click.echo("  uv run poe test                      # syncs this package, then runs its tests")
     click.echo(f"  cd ../.. && kindling app init {cfg.snake_name} --package {cfg.snake_name}")
 
 
