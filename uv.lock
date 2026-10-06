@@ -3359,7 +3359,7 @@ wheels = [
 
 [[package]]
 name = "spark-kindling"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "." }
 dependencies = [
     { name = "azure-core" },
@@ -3485,7 +3485,7 @@ dev = [
 
 [[package]]
 name = "spark-kindling-cli"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "packages/kindling_cli" }
 dependencies = [
     { name = "click" },
@@ -3521,7 +3521,7 @@ provides-extras = ["deploy", "test-cleanup"]
 
 [[package]]
 name = "spark-kindling-sdk"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "packages/kindling_sdk" }
 dependencies = [
     { name = "azure-core" },
