@@ -53,6 +53,9 @@ class PackageScaffoldConfig:
     auth: str = "oauth"
     integration: bool = True
     template_dir: Optional[Path] = None
+    # Kindling release to pin; defaults to this CLI's own version. Set it to
+    # the repo root's pin so a new workspace member agrees with it.
+    kindling_version: Optional[str] = None
 
     @property
     def snake_name(self) -> str:
@@ -161,7 +164,7 @@ def _package_ctx(cfg: PackageScaffoldConfig) -> dict:
         "layers": cfg.layers,
         "integration": cfg.integration,
         "primary_package_snake_name": cfg.snake_name,
-        "kindling_version": _kindling_version(),
+        "kindling_version": cfg.kindling_version or _kindling_version(),
     }
 
 

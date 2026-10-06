@@ -3907,7 +3907,9 @@ def test_package_add_same_name_in_two_namespaces_keeps_both_test_stubs(tmp_path)
     assert entities.count('entityid="bronze.orders_output"') == 1
 
 
-def test_package_add_pipe_flat_layout_creates_importable_namespace(tmp_path):
+def test_package_add_pipe_creates_pipes_package_when_missing(tmp_path):
+    """The runtime imports only <root>.entities/.pipes/.ingestion, so a pipe
+    must land in a pipes/ package even when the package has none yet."""
     module = tmp_path / "pkg"
     module.mkdir()
     (module / "__init__.py").write_text("", encoding="utf-8")
@@ -3917,8 +3919,42 @@ def test_package_add_pipe_flat_layout_creates_importable_namespace(tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    assert (module / "silver" / "orders.py").exists()
-    assert (module / "silver" / "__init__.py").exists()
+    assert (module / "pipes" / "__init__.py").exists()
+    assert (module / "pipes" / "silver_orders.py").exists()
+    assert not (module / "silver").exists()
+
+
+def test_package_add_pipe_appends_to_flat_pipes_module(tmp_path):
+    module = tmp_path / "pkg"
+    module.mkdir()
+    (module / "__init__.py").write_text("", encoding="utf-8")
+    (module / "pipes.py").write_text("EXISTING = 1\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["package", "add", "pipe", "silver.orders", "--package", str(module)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (module / "pipes").exists()
+    content = (module / "pipes.py").read_text()
+    assert content.startswith("EXISTING = 1")
+    assert 'pipeid="silver.orders"' in content
+
+
+@pytest.mark.parametrize(
+    "spelling", ["entityid='silver.orders_output'", 'entityid = "silver.orders_output"']
+)
+def test_package_add_pipe_skips_existing_output_entity(tmp_path, spelling):
+    project = _scaffolded_package(tmp_path, "ledger")
+    entities = project / "src" / "ledger" / "entities" / "silver.py"
+    entities.write_text(f"DataEntities.entity({spelling})\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["package", "add", "pipe", "silver.orders", "--package", str(project)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert entities.read_text() == f"DataEntities.entity({spelling})\n"
 
 
 # ---------------------------------------------------------------------------

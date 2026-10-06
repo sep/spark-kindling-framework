@@ -30,8 +30,9 @@ All notable changes to spark-kindling are documented here.
   `entities.py` (shadowed by the scaffolded `entities/` package) and pipes
   under `<namespace>/` directories without `__init__.py`, so the package walk
   never registered them and the documented flow ended in `entity not found`.
-  They now write `entities/<ns>.py` and `pipes/<ns>_<name>.py` inside the
-  scaffolded packages (creating `__init__.py` for flat layouts), put test
+  They now write `entities/<ns>.py` and `pipes/<ns>_<name>.py` (creating
+  `pipes/` when missing, since the runtime imports only a package's
+  `entities`, `pipes` and `ingestion` namespaces), put test
   stubs and fixtures under the package's project root instead of inside the
   importable module, and accept either the project root or the module
   directory as `--package`. `package add pipe` also declares the pipe's
@@ -39,7 +40,9 @@ All notable changes to spark-kindling are documented here.
   stubs are namespaced (`test_<ns>_<name>.py`) so same-named pipes in two
   layers no longer overwrite each other's stubs.
 - `kindling package init` refuses a package name equal to the repo root
-  workspace project's name (uv rejects duplicate member names).
+  workspace project's name (uv rejects duplicate member names), and pins the
+  Kindling release the root already pins rather than the running CLI's own
+  version, so an older system CLI can't create a conflicting member.
 - `poe deploy-extension` help pointed at building into the extension's own
   `dist/`, where the deploy never looks; it now says `poe build`.
 

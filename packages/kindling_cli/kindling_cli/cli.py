@@ -6162,25 +6162,35 @@ def _package_add_entities_file(module_dir: Path, namespace: str) -> Path:
 
 
 def _package_add_pipe_file(module_dir: Path, namespace: str, stem: str) -> Path:
-    """Module for a generated pipe. With the scaffold's pipes/ package present,
-    `pipes/<namespace>_<stem>.py`; otherwise `<namespace>/<stem>.py`, creating
-    `<namespace>/__init__.py` so the runtime's package walk can reach it."""
+    """Module for a generated pipe: `pipes/<namespace>_<stem>.py`. The runtime
+    imports only a package's entities, pipes and ingestion namespaces, so the
+    pipes/ package is created when missing. A package that keeps its pipes in
+    a flat pipes.py gets that module back instead (callers append to it), since
+    a pipes/ directory beside it would shadow it."""
     pipes_pkg = module_dir / "pipes"
-    if (pipes_pkg / "__init__.py").is_file():
-        return pipes_pkg / f"{namespace}_{stem}.py"
-    namespace_dir = module_dir / namespace
-    init_file = namespace_dir / "__init__.py"
-    if not init_file.exists():
-        _ensure_dir(namespace_dir)
-        init_file.write_text("", encoding="utf-8")
-    return namespace_dir / f"{stem}.py"
+    if not (pipes_pkg / "__init__.py").is_file():
+        if (module_dir / "pipes.py").is_file():
+            return module_dir / "pipes.py"
+        _ensure_dir(pipes_pkg)
+        (pipes_pkg / "__init__.py").write_text("", encoding="utf-8")
+    return pipes_pkg / f"{namespace}_{stem}.py"
+
+
+def _write_or_append_module(path: Path, content: str) -> str:
+    """Write a generated module, appending when it targets an existing shared
+    module (a flat pipes.py); returns the verb for the CLI message."""
+    if path.name == "pipes.py" and path.exists():
+        _append_to_file(path, "\n\n" + content)
+        return "Appended to"
+    _write_new_file(path, content)
+    return "Created"
 
 
 def _entity_declared_in(module_dir: Path, entity_id: str) -> bool:
     """Whether any module under module_dir already declares entity_id."""
-    needle = f'entityid="{entity_id}"'
+    pattern = re.compile(r"""entityid\s*=\s*(["'])""" + re.escape(entity_id) + r"\1")
     return any(
-        needle in path.read_text(encoding="utf-8", errors="ignore")
+        pattern.search(path.read_text(encoding="utf-8", errors="ignore"))
         for path in module_dir.rglob("*.py")
     )
 
@@ -6293,7 +6303,7 @@ def package_add_pipe(pipe_id: str, inputs: Optional[str], package_path: Path) ->
     \b
     Creates:
       <module>/pipes/<ns>_<pipe_name>.py         — pipe skeleton with @DataPipes.pipe
-                                                   (<module>/<ns>/<pipe_name>.py without pipes/)
+                                                   (pipes/ is created if missing)
       <module>/entities/<ns>.py                  — its output entity <ns>.<pipe_name>_output,
                                                    unless already declared
       tests/unit/test_<ns>_<pipe_name>.py        — pytest skip stub
@@ -6350,8 +6360,8 @@ def {namespace}_{pipe_name}({func_params}):
 """
 
     pipe_file = _package_add_pipe_file(module_dir, namespace, pipe_name)
-    _write_new_file(pipe_file, pipe_content)
-    click.echo(f"Created pipe module {pipe_file}")
+    verb = _write_or_append_module(pipe_file, pipe_content)
+    click.echo(f"{verb} pipe module {pipe_file}")
 
     # The pipe persists to its output entity through the entity registry, so
     # it must be declared too.
@@ -6445,7 +6455,7 @@ def package_add_ingestion(
     \b
     Creates:
       <module>/pipes/<ns>_<name>_ingestion.py     — FileIngestionEntries skeleton
-                                                    (<module>/<ns>/<name>_ingestion.py without pipes/)
+                                                    (pipes/ is created if missing)
       <module>/entities/<ns>.py                   — entity definition with CSV provider
                                                     (<module>/entities.py without entities/)
       tests/unit/test_<ns>_<name>_ingestion.py        — pytest skip stub
@@ -6498,8 +6508,8 @@ FileIngestionEntries.entry(
 """
 
     ingestion_file = _package_add_pipe_file(module_dir, namespace, f"{name}_ingestion")
-    _write_new_file(ingestion_file, ingestion_content)
-    click.echo(f"Created ingestion module {ingestion_file}")
+    verb = _write_or_append_module(ingestion_file, ingestion_content)
+    click.echo(f"{verb} ingestion module {ingestion_file}")
 
     # --- entity definition in entities.py ---
     entity_block = f"""
@@ -8098,9 +8108,20 @@ def package_init(
         )
 
     # uv rejects a workspace in which two projects share a name, and the repo
-    # root is one of them.
+    # root is one of them; it also rejects members pinning Kindling to a
+    # different release URL than the root, so a pinned root sets the version.
     root_pyproject = cfg.repo_root / "pyproject.toml"
     if root_pyproject.is_file():
+        try:
+            root_pins = {
+                name: _declared_kindling_version(entry)
+                for name, _group, entry in _iter_kindling_dependency_entries(root_pyproject)
+            }
+        except Exception:
+            root_pins = {}
+        root_version = root_pins.get("spark-kindling")
+        if root_version:
+            cfg.kindling_version = root_version
         try:
             root_name = _load_pyproject_toml(root_pyproject).get("project", {}).get("name")
         except Exception:

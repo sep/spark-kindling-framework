@@ -467,6 +467,32 @@ class TestScaffoldCommands:
         assert "repo root project's name" in result.output
         assert not (tmp_path / "packages" / "sales_workspace").exists()
 
+    def test_package_init_adopts_root_kindling_pin(self, tmp_path):
+        runner = CliRunner()
+        assert (
+            runner.invoke(cli, ["repo", "init", "shop", "--output-dir", str(tmp_path)]).exit_code
+            == 0
+        )
+        root = tmp_path / "pyproject.toml"
+        url = (
+            "https://github.com/sep/spark-kindling-framework/releases/download/"
+            "v0.9.1/spark_kindling-0.9.1-py3-none-any.whl"
+        )
+        root.write_text(
+            root.read_text().replace(
+                "dependencies = []", 'dependencies = ["spark-kindling[standalone]"]'
+            )
+            + f'\n[tool.uv.sources]\nspark-kindling = {{ url = "{url}" }}\n',
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["package", "init", "orders", "--repo-root", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        package_pyproject = (tmp_path / "packages" / "orders" / "pyproject.toml").read_text()
+        assert "/v0.9.1/spark_kindling-0.9.1-py3-none-any.whl" in package_pyproject
+        assert "/v0.9.1/spark_kindling_cli-0.9.1-py3-none-any.whl" in package_pyproject
+
     def test_repo_init_reports_kept_root_pyproject(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
         result = CliRunner().invoke(cli, ["repo", "init", "x", "--output-dir", str(tmp_path)])
