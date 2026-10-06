@@ -24,12 +24,16 @@ if python3 -c "import kindling_cli" >/dev/null 2>&1; then
   exec python3 -m kindling_cli.cli "$@"
 fi
 
-# 3. Nothing provides one: install the latest release (CLI plus the SDK it
-#    requires, which is not on PyPI) and run it. The release JSON streams
-#    straight into Python; passing it through the shell's echo mangles JSON
-#    escape sequences in release bodies.
+# 3. Nothing provides one: install the latest release and run it -- from
+#    PyPI (the CLI pulls in the SDK), falling back to the GitHub release
+#    wheels where PyPI is unreachable. The release JSON streams straight
+#    into Python; passing it through the shell's echo mangles JSON escape
+#    sequences in release bodies.
 echo "kindling: no Kindling CLI in this project or the system Python; installing the latest release..." >&2
-WHEEL_URLS="$(curl -fsSL https://api.github.com/repos/sep/spark-kindling-framework/releases/latest \
-  | python3 -c 'import json, sys; assets = json.load(sys.stdin)["assets"]; print(" ".join(next(a["browser_download_url"] for a in assets if a["name"].startswith(prefix) and a["name"].endswith(".whl")) for prefix in ("spark_kindling_cli-", "spark_kindling_sdk-")))')"
-pip install --no-cache-dir $WHEEL_URLS >&2
+if ! pip install --no-cache-dir spark-kindling-cli >&2; then
+  echo "kindling: PyPI install failed; installing from the latest GitHub release..." >&2
+  WHEEL_URLS="$(curl -fsSL https://api.github.com/repos/sep/spark-kindling-framework/releases/latest \
+    | python3 -c 'import json, sys; assets = json.load(sys.stdin)["assets"]; print(" ".join(next(a["browser_download_url"] for a in assets if a["name"].startswith(prefix) and a["name"].endswith(".whl")) for prefix in ("spark_kindling_cli-", "spark_kindling_sdk-")))')"
+  pip install --no-cache-dir $WHEEL_URLS >&2
+fi
 exec python3 -m kindling_cli.cli "$@"

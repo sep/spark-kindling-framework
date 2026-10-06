@@ -338,23 +338,39 @@ def test_package_scaffold_is_buildable_by_uv_build(tmp_path):
     assert 'module-name = "sales_ops"' in pyproject
 
 
+def test_package_pyproject_github_source_pins_release_wheel_urls(tmp_path):
+    cfg = PackageScaffoldConfig(
+        name="proj", repo_root=tmp_path, kindling_version="0.13.1", kindling_source="github"
+    )
+    generate_package(cfg)
+
+    data = _load_pyproject_toml(_package_root(tmp_path, "proj") / "pyproject.toml")
+    assert data["project"]["dependencies"] == ["spark-kindling[standalone]"]
+    sources = data["tool"]["uv"]["sources"]
+    assert sources["spark-kindling"]["url"].endswith(
+        "/v0.13.1/spark_kindling-0.13.1-py3-none-any.whl"
+    )
+    assert set(sources) == {"spark-kindling", "spark-kindling-cli", "spark-kindling-sdk"}
+
+
 def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    cfg = PackageScaffoldConfig(name="proj", repo_root=repo_root, integration=True)
+    cfg = PackageScaffoldConfig(
+        name="proj", repo_root=repo_root, integration=True, kindling_version="0.14.0"
+    )
     generate_package(cfg)
 
     pyproject = (_package_root(repo_root, "proj") / "pyproject.toml").read_text()
+    data = _load_pyproject_toml(_package_root(repo_root, "proj") / "pyproject.toml")
     assert 'build-backend = "uv_build"' in pyproject
-    assert '"spark-kindling[standalone]",' in pyproject
-    assert "spark-kindling = { url = " in pyproject
-    assert "/spark_kindling-" in pyproject  # pinned to a release wheel URL
+    # PyPI version pins, one release for every Kindling package; no URL sources.
+    assert data["project"]["dependencies"] == ["spark-kindling[standalone]==0.14.0"]
+    assert "spark-kindling-sdk==0.14.0" in data["dependency-groups"]["dev"]
+    assert "spark-kindling-cli==0.14.0" in data["dependency-groups"]["dev"]
+    assert "sources" not in data.get("tool", {}).get("uv", {})
     assert '"poethepoet>=0.24.0",' in pyproject
     assert "[tool.poetry" not in pyproject
-    assert "spark-kindling-cli = { url = " in pyproject
-    assert "/spark_kindling_cli-" in pyproject
-    assert "spark-kindling-sdk = { url = " in pyproject
-    assert "/spark_kindling_sdk-" in pyproject
     assert "kindling-local" not in pyproject  # no local PEP 503 index source anymore
     assert 'test = { sequence = ["test-unit", "test-component"] }' in pyproject
     assert 'test-unit = "pytest tests/unit -v"' in pyproject
@@ -490,8 +506,30 @@ class TestScaffoldCommands:
 
         assert result.exit_code == 0, result.output
         package_pyproject = (tmp_path / "packages" / "orders" / "pyproject.toml").read_text()
+        # The root pins by URL, so the new member does too (one package, one form).
         assert "/v0.9.1/spark_kindling-0.9.1-py3-none-any.whl" in package_pyproject
         assert "/v0.9.1/spark_kindling_cli-0.9.1-py3-none-any.whl" in package_pyproject
+
+    def test_package_init_adopts_root_version_pin(self, tmp_path):
+        runner = CliRunner()
+        assert (
+            runner.invoke(cli, ["repo", "init", "shop", "--output-dir", str(tmp_path)]).exit_code
+            == 0
+        )
+        root = tmp_path / "pyproject.toml"
+        root.write_text(
+            root.read_text().replace(
+                "dependencies = []", 'dependencies = ["spark-kindling[standalone]==0.14.2"]'
+            ),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["package", "init", "orders", "--repo-root", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        data = _load_pyproject_toml(tmp_path / "packages" / "orders" / "pyproject.toml")
+        assert data["project"]["dependencies"] == ["spark-kindling[standalone]==0.14.2"]
+        assert "sources" not in data.get("tool", {}).get("uv", {})
 
     def test_repo_init_reports_kept_root_pyproject(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")

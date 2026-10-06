@@ -2684,15 +2684,25 @@ def _uv_source_for(sources: Dict[str, Any], name: str) -> Any:
     return None
 
 
-def _uv_synthetic_entry(sources: Dict[str, Any], name: str, extras: List[str]) -> Dict[str, Any]:
-    """Build a Poetry-shaped entry dict ({"url": ..., "extras": [...]}) from
-    a uv dependency's [tool.uv.sources] override, so _dependency_extras and
-    _declared_kindling_version (written against Poetry's dict shape) work
-    unchanged against a uv project too."""
+_PEP508_EXACT_VERSION_RE = re.compile(r"==\s*([A-Za-z0-9][A-Za-z0-9.+!_-]*)")
+
+
+def _uv_synthetic_entry(
+    sources: Dict[str, Any], name: str, extras: List[str], requirement: str = ""
+) -> Dict[str, Any]:
+    """Build an entry dict ({"url": ...} or {"version": ...}, plus "extras")
+    for a uv dependency: the release wheel URL when [tool.uv.sources] pins
+    one, otherwise the exact `==` version from the requirement string (a
+    PyPI version pin). _dependency_extras and _declared_kindling_version
+    read this shape."""
     entry: Dict[str, Any] = {}
     source = _uv_source_for(sources, name)
     if isinstance(source, dict) and isinstance(source.get("url"), str):
         entry["url"] = source["url"]
+    else:
+        version_match = _PEP508_EXACT_VERSION_RE.search(requirement)
+        if version_match:
+            entry["version"] = version_match.group(1)
     if extras:
         entry["extras"] = extras
     return entry
@@ -2713,7 +2723,7 @@ def _iter_uv_kindling_dependency_entries(
                 continue
             name, extras = _parse_pep508_name_extras(requirement)
             if _is_kindling_distribution(name):
-                yield name, None, _uv_synthetic_entry(sources, name, extras)
+                yield name, None, _uv_synthetic_entry(sources, name, extras, requirement)
 
     groups = data.get("dependency-groups", {})
     if isinstance(groups, dict):
@@ -2725,7 +2735,7 @@ def _iter_uv_kindling_dependency_entries(
                     continue  # skip {include-group = "..."} entries
                 name, extras = _parse_pep508_name_extras(requirement)
                 if _is_kindling_distribution(name):
-                    yield name, group_name, _uv_synthetic_entry(sources, name, extras)
+                    yield name, group_name, _uv_synthetic_entry(sources, name, extras, requirement)
 
 
 def _iter_kindling_dependency_entries(
@@ -2983,6 +2993,103 @@ def _uv_add_url(
     _run_checked(command, cwd=project_path)
     if group:
         _remove_stray_bare_uv_dependency(project_path, distribution, frozen=frozen)
+
+
+_KINDLING_SOURCE_CHOICES = ("auto", "pypi", "github")
+_pypi_release_cache: Dict[Tuple[str, str], bool] = {}
+
+
+def _pypi_base_url() -> str:
+    """PyPI JSON API base. KINDLING_PYPI_URL points it elsewhere (e.g.
+    https://test.pypi.org for a release-candidate dry run)."""
+    return os.environ.get("KINDLING_PYPI_URL", "https://pypi.org").rstrip("/")
+
+
+def _published_on_pypi(distribution: str, version: str) -> bool:
+    """Whether distribution==version exists on PyPI. Any failure (offline,
+    blocked egress, rate limit) counts as no, which falls back to the GitHub
+    release wheel URL -- the pin that works without PyPI access."""
+    key = (_canonical_distribution_name(distribution), version)
+    if key not in _pypi_release_cache:
+        url = f"{_pypi_base_url()}/pypi/{key[0]}/{quote(version)}/json"
+        try:
+            import requests
+
+            response = requests.get(url, timeout=10)
+            _pypi_release_cache[key] = response.status_code == 200
+        except Exception:
+            _pypi_release_cache[key] = False
+    return _pypi_release_cache[key]
+
+
+def _uv_pin_kindling(
+    project_path: Path,
+    wheel: Dict[str, str],
+    *,
+    group: Optional[str] = None,
+    extras: Optional[List[str]] = None,
+    frozen: bool = False,
+    source: str = "auto",
+) -> str:
+    """Pin one Kindling package from a release in project_path's pyproject.
+
+    `wheel` is a release asset entry ({"distribution", "version", "url"}).
+    With source "pypi" -- or "auto" when that version is on PyPI -- this
+    writes a version pin (`uv add <dist>==<version>`), first removing any
+    [tool.uv.sources] URL override, which `uv add` would otherwise keep and
+    let win. Otherwise it pins the release wheel URL. Returns "pypi" or
+    "github" for the caller's message.
+    """
+    distribution = wheel["distribution"]
+    version = wheel["version"]
+    use_pypi = source == "pypi" or (source == "auto" and _published_on_pypi(distribution, version))
+    if not use_pypi:
+        if not wheel.get("url"):
+            raise click.ClickException(
+                f"{distribution} {version} has no release wheel URL to pin and is not " "on PyPI."
+            )
+        _uv_add_url(
+            project_path, distribution, wheel["url"], group=group, extras=extras, frozen=frozen
+        )
+        return "github"
+
+    pyproject_path = project_path / "pyproject.toml"
+    try:
+        sources = (
+            _load_pyproject_toml(pyproject_path).get("tool", {}).get("uv", {}).get("sources", {})
+        )
+    except Exception:
+        sources = {}
+    if isinstance(sources, dict) and _uv_source_for(sources, distribution) is not None:
+        command = ["uv", "remove", distribution, "--frozen"]
+        if group:
+            command.extend(["--group", group])
+        _run_checked(command, cwd=project_path)
+
+    command = ["uv", "add", f"{distribution}=={version}"]
+    if group:
+        command.extend(["--group", group])
+    for extra in extras or []:
+        command.extend(["--extra", extra])
+    if frozen:
+        command.append("--frozen")
+    _run_checked(command, cwd=project_path)
+    if group:
+        _remove_stray_bare_uv_dependency(project_path, distribution, frozen=frozen)
+    return "pypi"
+
+
+def _source_option(func):
+    return click.option(
+        "--source",
+        "source",
+        type=click.Choice(_KINDLING_SOURCE_CHOICES),
+        default="auto",
+        show_default=True,
+        help="How to pin Kindling packages: version pins from PyPI (pypi), GitHub "
+        "release wheel URLs (github), or PyPI when the release is published "
+        "there and GitHub otherwise (auto).",
+    )(func)
 
 
 def _sync_command(*, no_sync: bool) -> List[str]:
@@ -3318,17 +3425,21 @@ def env_ensure(cloud: Optional[str]) -> None:
     is_flag=True,
     help="Run uv sync with --inexact (don't remove extraneous packages).",
 )
-def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> None:
+@_source_option
+def env_update(
+    version: str, repo: str, project_path: Path, no_sync: bool, source: str = "auto"
+) -> None:
     """Update every Kindling package this project already depends on.
 
     Finds every dependency named 'spark-kindling' or 'spark-kindling-*'
     (the framework, SDK, CLI, and any extensions added via
     `kindling env add`) declared anywhere in pyproject.toml, and points
-    each one at its matching wheel in the target Kindling release
-    (default: latest) via `uv add <release wheel url>`. Every
-    Kindling package in a release is versioned together, so one release
-    resolves every dependency at once -- no local wheel cache or Poetry
-    source configuration required.
+    each one at the version the target Kindling release (default: latest)
+    ships: a PyPI version pin (`<dist>==<version>`) when that version is on
+    PyPI, otherwise the release's wheel URL (see --source). A release names
+    one coherent set of package versions, so one release resolves every
+    dependency at once. Projects pinned to release wheel URLs move to PyPI
+    version pins this way.
 
     If nothing is declared at PROJECT itself, looks for a Kindling
     dependency in a nested package/app pyproject.toml (e.g. a monorepo's
@@ -3397,16 +3508,18 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
                     f"Kindling {resolved_version}"
                 )
                 continue
-            _uv_add_url(
+            pinned_from = _uv_pin_kindling(
                 target_dir,
-                distribution,
-                match["url"],
+                match,
                 group=group,
                 extras=extras,
                 frozen=frozen_add,
+                source=source,
             )
             location = f" [{group}]" if group else ""
-            click.echo(f"  [{target_dir}] {distribution} -> {match['version']}{location}")
+            click.echo(
+                f"  [{target_dir}] {distribution} -> {match['version']}{location} ({pinned_from})"
+            )
             updated = True
 
     if not updated:
@@ -3448,19 +3561,20 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
     help="Dependency group for PACKAGE if it isn't already declared "
     "(e.g. 'dev'). Ignored if PACKAGE already exists in a group.",
 )
+@_source_option
 def env_add(
     package: str,
     version: str,
     repo: str,
     project_path: Path,
     dependency_group: Optional[str],
+    source: str = "auto",
 ) -> None:
     """Add a Kindling framework or extension package as a project dependency.
 
-    Resolves PACKAGE's wheel from the given Kindling release (default:
-    latest) and runs `uv add <release wheel url>`, pinning PACKAGE to
-    the exact wheel published for that release -- no local wheel cache or
-    Poetry-style source configuration required.
+    Resolves PACKAGE's version from the given Kindling release (default:
+    latest) and pins it: a PyPI version pin when that version is on PyPI,
+    otherwise the release's wheel URL (see --source).
 
     \b
     Examples:
@@ -3505,10 +3619,12 @@ def env_add(
         group, extras = dependency_group, []
 
     click.echo(f"Resolving {package} {match['version']} from Kindling {resolved_version} ({repo})")
-    _uv_add_url(project_path, normalized_target, match["url"], group=group, extras=extras)
+    pinned_from = _uv_pin_kindling(project_path, match, group=group, extras=extras, source=source)
 
     location = f" [{group}]" if group else ""
-    click.echo(f"\nAdded {package} {match['version']}{location} to {pyproject_path}.")
+    click.echo(
+        f"\nAdded {package} {match['version']}{location} to {pyproject_path} ({pinned_from})."
+    )
 
 
 _BOOTSTRAP_PACKAGES: Tuple[Tuple[str, Optional[str], List[str]], ...] = (
@@ -3544,7 +3660,10 @@ _BOOTSTRAP_PACKAGES: Tuple[Tuple[str, Optional[str], List[str]], ...] = (
     is_flag=True,
     help="Run uv sync with --inexact (don't remove extraneous packages).",
 )
-def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) -> None:
+@_source_option
+def env_bootstrap(
+    version: str, repo: str, project_path: Path, no_sync: bool, source: str = "auto"
+) -> None:
     """Ensure a project can load Kindling, adding it if it isn't declared yet.
 
     Checks pyproject.toml for any 'spark-kindling'/'spark-kindling-*'
@@ -3553,8 +3672,9 @@ def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) ->
     model -- looks for one declared in a nested package/app pyproject.toml
     (e.g. a monorepo's apps/*/pyproject.toml) and adopts it; only if no
     nested project declares Kindling either does it add the framework, SDK,
-    and CLI pinned to the target Kindling release (default: latest) via
-    `uv add <release wheel URL>`. Fails if nested projects disagree on
+    and CLI pinned to the target Kindling release (default: latest): PyPI
+    version pins when that release is on PyPI, otherwise its wheel URLs
+    (see --source). Fails if nested projects disagree on
     which release to use. If Kindling is already declared at the project
     root, this leaves it untouched: the project's own pyproject.toml/
     uv.lock remain authoritative. Either way, finishes with `uv sync`.
@@ -3579,10 +3699,21 @@ def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) ->
                 "copying from nested project(s):"
             )
             for distribution, (group, extras, entry) in sorted(to_copy.items()):
-                url = entry.get("url") if isinstance(entry, dict) else None
-                if not url:
+                if not isinstance(entry, dict):
                     continue
-                _uv_add_url(project_path, distribution, url, group=group, extras=extras)
+                url = entry.get("url")
+                pinned_version = _declared_kindling_version(entry)
+                if not url and not pinned_version:
+                    continue
+                # Adopt the nested pin in its own form: uv rejects a workspace
+                # that pins one package both by URL and from an index.
+                _uv_pin_kindling(
+                    project_path,
+                    {"distribution": distribution, "version": pinned_version or "", "url": url},
+                    group=group,
+                    extras=extras,
+                    source="github" if url else "pypi",
+                )
                 location = f" [{group}]" if group else ""
                 click.echo(f"  added {distribution}{location} (from nested project)")
         else:
@@ -3597,9 +3728,11 @@ def env_bootstrap(version: str, repo: str, project_path: Path, no_sync: bool) ->
                         f"'{distribution}' is not among the wheel assets in Kindling "
                         f"{resolved_version} ({repo})."
                     )
-                _uv_add_url(project_path, distribution, match["url"], group=group, extras=extras)
+                pinned_from = _uv_pin_kindling(
+                    project_path, match, group=group, extras=extras, source=source
+                )
                 location = f" [{group}]" if group else ""
-                click.echo(f"  added {distribution} {match['version']}{location}")
+                click.echo(f"  added {distribution} {match['version']}{location} ({pinned_from})")
 
     _run_checked(_sync_command(no_sync=no_sync), cwd=project_path)
 
@@ -8114,14 +8247,17 @@ def package_init(
     if root_pyproject.is_file():
         try:
             root_pins = {
-                name: _declared_kindling_version(entry)
+                _canonical_distribution_name(name): entry
                 for name, _group, entry in _iter_kindling_dependency_entries(root_pyproject)
             }
         except Exception:
             root_pins = {}
-        root_version = root_pins.get("spark-kindling")
+        root_entry = root_pins.get("spark-kindling")
+        root_version = _declared_kindling_version(root_entry) if root_entry else None
         if root_version:
             cfg.kindling_version = root_version
+            if isinstance(root_entry, dict) and root_entry.get("url"):
+                cfg.kindling_source = "github"
         try:
             root_name = _load_pyproject_toml(root_pyproject).get("project", {}).get("name")
         except Exception:

@@ -10,6 +10,15 @@ authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 # Kindling and Spark are provided by the target runtime. The Cosmos Spark
 # connector is a JVM/Spark package and must be installed as a Maven coordinate
 # on the pool -- one artifact per Spark line, see
@@ -29,6 +38,12 @@ requires-python = ">=3.10"
 # without extras, so nothing here is required at import time: a bare install
 # works on every platform. Never request both extras in one environment.
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/sep/spark-kindling-framework"
+Documentation = "https://github.com/sep/spark-kindling-framework/tree/main/docs"
+Changelog = "https://github.com/sep/spark-kindling-framework/blob/main/CHANGELOG.md"
+Issues = "https://github.com/sep/spark-kindling-framework/issues"
 
 [project.optional-dependencies]
 spark_3_x = ["pyspark>=3.4.0,<4.0.0"]

@@ -10,12 +10,27 @@ authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "click>=8.1.0",
     "jinja2>=3.1.0",
     "pyyaml>=6.0",
     "spark-kindling-sdk>=0.9.10",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sep/spark-kindling-framework"
+Documentation = "https://github.com/sep/spark-kindling-framework/tree/main/docs"
+Changelog = "https://github.com/sep/spark-kindling-framework/blob/main/CHANGELOG.md"
+Issues = "https://github.com/sep/spark-kindling-framework/issues"
 
 [project.optional-dependencies]
 deploy = ["requests>=2.31.0", "azure-identity>=1.15.0", "azure-storage-blob>=12.14.0"]

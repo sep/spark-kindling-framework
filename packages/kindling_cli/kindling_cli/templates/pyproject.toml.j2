@@ -4,9 +4,17 @@ version = "0.1.0"
 description = "Kindling data pipeline project — {{ kebab_name }}"
 authors = []
 requires-python = ">=3.10"
+{% if kindling_source == "github" %}
 dependencies = [
     "spark-kindling[standalone]",
 ]
+{% else %}
+# Kindling packages are pinned to one release (they are versioned together);
+# `kindling env update` moves every pin in the repo to a newer release.
+dependencies = [
+    "spark-kindling[standalone]=={{ kindling_version }}",
+]
+{% endif %}
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
@@ -14,11 +22,12 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "{{ snake_name }}"
+{% if kindling_source == "github" %}
 
-# Kindling packages are pinned directly to their release wheel on GitHub, so
-# the exact version in use is whatever's recorded here and in uv.lock — no
-# local wheel cache or package index configuration required. `kindling env
-# update` and `kindling env add` manage these entries; see their `--help`.
+# Kindling packages are pinned directly to their release wheel on GitHub (the
+# repo root pins them this way, and a workspace must pin one package one way).
+# `kindling env update` manages these entries -- and moves them to PyPI
+# version pins once the release is on PyPI; see its `--help`.
 # spark-kindling-sdk must stay listed: spark-kindling-cli depends on it, and
 # that transitive requirement only resolves through this URL override.
 [tool.uv.sources]
@@ -34,6 +43,17 @@ dev = [
     "spark-kindling-sdk",
     "spark-kindling-cli",
 ]
+{% else %}
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "poethepoet>=0.24.0",
+    "spark-kindling-sdk=={{ kindling_version }}",
+    "spark-kindling-cli=={{ kindling_version }}",
+]
+{% endif %}
 
 [tool.poe.tasks]
 test-unit = "pytest tests/unit -v"

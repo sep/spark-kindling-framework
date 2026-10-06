@@ -170,7 +170,7 @@ On `engine="databricks_sdp"`, `kindling.lakeflow.temporal_mode: batch` lowers
 `<events>__g0..gN` as materialized views with batch reads instead of streaming
 tables with append flows; the reserved names below are unchanged in both
 modes. See the
-[Databricks extension documentation](../kindling_ext_databricks/README.md#temporal-chain-execution-mode).
+[Databricks extension documentation](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_databricks/README.md#temporal-chain-execution-mode).
 
 ### Generated dataset names
 

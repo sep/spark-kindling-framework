@@ -56,6 +56,9 @@ class PackageScaffoldConfig:
     # Kindling release to pin; defaults to this CLI's own version. Set it to
     # the repo root's pin so a new workspace member agrees with it.
     kindling_version: Optional[str] = None
+    # "pypi" renders version pins; "github" renders release wheel URL pins,
+    # for a repo root that still pins Kindling by URL.
+    kindling_source: str = "pypi"
 
     @property
     def snake_name(self) -> str:
@@ -165,6 +168,7 @@ def _package_ctx(cfg: PackageScaffoldConfig) -> dict:
         "integration": cfg.integration,
         "primary_package_snake_name": cfg.snake_name,
         "kindling_version": cfg.kindling_version or _kindling_version(),
+        "kindling_source": cfg.kindling_source,
     }
 
 

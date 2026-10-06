@@ -10,6 +10,15 @@ authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 # kindling is provided by the runtime environment, not installed as a dependency.
 #
 # These are import-time runtime deps — config.py / trace_provider.py /
@@ -32,6 +41,12 @@ dependencies = [
     "opentelemetry-sdk>=1.20.0,<2.0.0",
     "typing-extensions>=4.6.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sep/spark-kindling-framework"
+Documentation = "https://github.com/sep/spark-kindling-framework/tree/main/docs"
+Changelog = "https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_otel_azure/CHANGELOG.md"
+Issues = "https://github.com/sep/spark-kindling-framework/issues"
 
 [tool.uv.build-backend]
 module-root = ""

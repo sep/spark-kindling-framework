@@ -936,6 +936,8 @@ jobs:
       )
     permissions:
       contents: write
+    outputs:
+      is_prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
 
     steps:
       - name: Classify prerelease
@@ -1030,6 +1032,83 @@ jobs:
           else
             echo "No wheel assets were attached for this docs-only release." >> $GITHUB_STEP_SUMMARY
           fi
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [classify-changes, publish-release]
+    # Runs only after the GitHub release is published, so PyPI receives
+    # exactly the files that passed every gate (cloud system tests included),
+    # byte-identical to the release assets. Prerelease tags (a/b/rc) go to
+    # TestPyPI as a dry run; final tags go to PyPI.
+    if: |
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.publish-release.result == 'success' &&
+      needs.classify-changes.outputs.needs_wheels == 'true'
+    # Trusted publishing: PyPI accepts this job's GitHub OIDC identity
+    # (repo + ci.yml + this environment) for each project, so no API token is
+    # stored anywhere. Configure the publisher per project on pypi.org /
+    # test.pypi.org; require a reviewer on the `pypi` environment to gate
+    # every upload behind an approval.
+    environment:
+      name: ${{ needs.publish-release.outputs.is_prerelease == 'true' && 'testpypi' || 'pypi' }}
+      url: ${{ needs.publish-release.outputs.is_prerelease == 'true' && 'https://test.pypi.org/project/spark-kindling/' || 'https://pypi.org/project/spark-kindling/' }}
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: platform-wheels
+          path: dist/
+
+      - name: Select distributions published to PyPI
+        run: |
+          set -euo pipefail
+          # Packages published to PyPI. The rest (adx, databricks_autoloader,
+          # visualization) stay GitHub-release-only until they are added here.
+          PUBLISHED="spark_kindling spark_kindling_cli spark_kindling_sdk \
+            spark_kindling_ext_databricks spark_kindling_ext_sdp \
+            spark_kindling_ext_cosmos spark_kindling_ext_temporal \
+            spark_kindling_ext_otel_azure"
+          mkdir -p pypi-dist
+          for name in $PUBLISHED; do
+            files=$(ls dist/"$name"-[0-9]*.whl dist/"$name"-[0-9]*.tar.gz 2>/dev/null || true)
+            if [ "$(echo "$files" | grep -c .)" -ne 2 ]; then
+              echo "❌ Expected one wheel and one sdist for $name, found:"
+              echo "$files"
+              exit 1
+            fi
+            cp $files pypi-dist/
+          done
+          ls -l pypi-dist/
+
+      - name: Publish to TestPyPI
+        if: needs.publish-release.outputs.is_prerelease == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi-dist/
+          repository-url: https://test.pypi.org/legacy/
+          # Extensions keep their version across Kindling releases; an
+          # unchanged one is already uploaded and is skipped, not an error.
+          skip-existing: true
+
+      - name: Publish to PyPI
+        if: needs.publish-release.outputs.is_prerelease != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi-dist/
+          skip-existing: true
+
+      - name: Summary
+        run: |
+          target=${{ needs.publish-release.outputs.is_prerelease == 'true' && 'TestPyPI' || 'PyPI' }}
+          echo "# 📦 ${{ github.ref_name }} published to ${target}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for f in pypi-dist/*; do echo "- $(basename "$f")" >> $GITHUB_STEP_SUMMARY; done
 
   build-devcontainer-image:
     name: Build & Publish Devcontainer Image

@@ -312,7 +312,7 @@ code is declarable, or that a query refreshes incrementally.
 
 ## Output dataset naming
 
-Lakeflow uses the shared [SDP dataset naming configuration](../kindling_ext_sdp/README.md#output-dataset-naming):
+Lakeflow uses the shared [SDP dataset naming configuration](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_sdp/README.md#output-dataset-naming):
 
 ```yaml
 kindling:
@@ -338,7 +338,7 @@ When consuming these outputs, explicitly align external entity metadata with
 the leaf table, for example
 `provider.table_name: dev_silver.cwmdp.device_telemetry`. Otherwise a consumer
 configured with catalog and schema still resolves the historical flattened
-name. See [external reads and generated-name reservations](../kindling_ext_sdp/README.md#reading-leaf-named-outputs-from-elsewhere)
+name. See [external reads and generated-name reservations](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_sdp/README.md#reading-leaf-named-outputs-from-elsewhere)
 for the complete example and the temporal source limitation.
 
 ## Canonical configuration from a Bundle
@@ -358,7 +358,7 @@ act as bootstrap overrides and win over settings files.
 
 Use Bundle sync to deploy config to a stable workspace or volume path. This
 matches the transport pattern in the
-[DAB config promotion guide](../../../docs/guide/dab_config_promotion.md):
+[DAB config promotion guide](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/dab_config_promotion.md):
 
 ```yaml
 # databricks.yml

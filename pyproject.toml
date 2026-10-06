@@ -11,6 +11,16 @@ license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["spark", "pyspark", "databricks", "microsoft-fabric", "azure-synapse", "delta-lake", "data-engineering"]
 # Core framework (required on every platform). Kept as a minimal base
 # dependency set with no Spark runtime deps so the wheel installs cleanly
 # on cloud Spark runtimes (Synapse, Fabric, Databricks) without pip trying
@@ -55,6 +65,12 @@ dependencies = [
     "azure-identity>=1.12.0",
     "azure-storage-file-datalake>=12.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sep/spark-kindling-framework"
+Documentation = "https://github.com/sep/spark-kindling-framework/tree/main/docs"
+Changelog = "https://github.com/sep/spark-kindling-framework/blob/main/CHANGELOG.md"
+Issues = "https://github.com/sep/spark-kindling-framework/issues"
 
 [project.optional-dependencies]
 synapse = ["azure-synapse-artifacts>=0.17.0"]

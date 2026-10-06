@@ -3,7 +3,7 @@
 Azure Monitor OpenTelemetry integration for the Kindling Spark framework.
 
 > **⚠️ Alpha Version**: This is version 0.3.0-alpha.1 with updated dependencies for better cross-platform compatibility.
-> See [CHANGELOG.md](CHANGELOG.md) for details.
+> See [CHANGELOG.md](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_otel_azure/CHANGELOG.md) for details.
 
 ## Overview
 
