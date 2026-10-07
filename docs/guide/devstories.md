@@ -279,7 +279,7 @@ The base storage path (ABFSS URL) is set in `settings.yaml` per environment and 
 Generated:
 ```
 packages/myproject/src/myproject/pipes/bronze_myproject_raw_ingestion.py   # FileIngestionEntries entry with filename regex
-packages/myproject/src/myproject/entities/bronze.py                         # bronze.myproject_raw entity definition with CSV provider
+packages/myproject/src/myproject/entities/bronze.py                         # bronze.myproject_raw destination entity (default Delta provider)
 packages/myproject/tests/unit/test_bronze_myproject_raw_ingestion.py              # unit test placeholder (skipped)
 packages/myproject/tests/integration/test_bronze_myproject_raw_ingestion.py       # integration test placeholder (skipped)
 packages/myproject/tests/entities/bronze/myproject_raw/                     # folder for sample CSV files matching the ingestion pattern

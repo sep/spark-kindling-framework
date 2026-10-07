@@ -24,11 +24,11 @@ boundary immediately around those cloudFiles-native behaviors:
   call.
 - once cloudFiles has delivered a microbatch (i.e. a file already passed the
   stream's own source_glob), _process_autoloader_batch still re-matches each
-  file's name against the entry's own patterns[0] regex (mirroring the batch
+  file's name against the entry's own patterns regexes (mirroring the batch
   path's per-file matching in _build_df_plan) before writing it -- a file
   that does not match the regex must be skipped (not written, no exception),
   with its file_ingestion.after_file signal reporting matched=False. This
-  matters because source_glob and patterns[0] are different languages (glob
+  matters because source_glob and patterns are different languages (glob
   vs. regex): a file can satisfy one and not the other.
 """
 
@@ -83,7 +83,10 @@ def _make_processor(entry, spark):
     proc.fir.get_entry_definition.side_effect = {entry.entry_id: entry}.get
     proc.der = MagicMock()
     proc.der.get_entity_definition.return_value = SimpleNamespace(entityid=entry.dest_entity_id)
+    # The destination entity's provider, as resolved by the provider registry.
     proc.ep = MagicMock()
+    proc.provider_registry = MagicMock()
+    proc.provider_registry.get_provider_for_entity.return_value = proc.ep
     return proc
 
 

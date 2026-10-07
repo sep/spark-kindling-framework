@@ -913,9 +913,11 @@ runs ignore it until you replace it with a header row and data rows.
 Scaffold a file-ingestion pipe and matching test stubs. The `--source-pattern`
 is matched against the filename (not the full ABFSS path); named groups are
 automatically extracted as columns by the framework. Writes
-`<module>/pipes/<ns>_<name>_ingestion.py`, appends the entity to
+`<module>/pipes/<ns>_<name>_ingestion.py`, appends the destination entity to
 `<module>/entities/<ns>.py`, and puts test stubs and the sample-CSV folder under
-the project root's `tests/`.
+the project root's `tests/`. The entity has no `provider_type` tag, so matched
+files are appended through the default Delta provider; ingestion writes through
+whatever provider the destination entity declares.
 
 | Option | Default | Description |
 |---|---|---|
