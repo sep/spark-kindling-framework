@@ -85,6 +85,8 @@ def _parse_merge_token(value: str, token: str) -> Any:
         parsed = rest
     if isinstance(parsed, str):
         parsed = [item.strip() for item in parsed.split(",") if item.strip()]
+    elif not isinstance(parsed, (list, dict)):
+        parsed = [parsed]  # `@merge 3` appends one item
     return parsed
 
 
@@ -434,7 +436,14 @@ class DynaconfConfig(ConfigService):
         # kindling.telemetry.logging.level=DEBUG) must also update the flat
         # key code reads (log_level), which _translate_yaml_to_flat copied
         # from the files before parameters applied.
+        explicit_flat = {str(k).lower() for k in merged_initial} | {
+            str(k).lower() for k in self.initial_config
+        }
         for nested_key, flat_key in _NESTED_TO_FLAT_KEYS.items():
+            # An explicitly supplied flat key (e.g. spark.kindling.bootstrap.
+            # log_level) keeps its own value.
+            if flat_key.lower() in explicit_flat:
+                continue
             if self._dotted_key_in(nested, nested_key):
                 value = self.dynaconf.get(nested_key)
                 if value is not None:

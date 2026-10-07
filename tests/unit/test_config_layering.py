@@ -60,6 +60,8 @@ def test_runtime_merge_matches_bundle_build():
         {"kindling": {"extensions": ["a"], "s": {"x": 1, "y": [1, 2]}, "flag": True}},
         {"kindling": {"extensions": ["b", "c"], "s": {"y": [3]}, "flag": False}},
         {"kindling": {"s": {"z": {"deep": 1}}}, "spark_configs": {"k": "v"}},
+        {"kindling": {"telemetry": {"logging": {"level": "INFO"}}}},
+        {"kindling": {"TELEMETRY": {"logging": {"level": "DEBUG"}}}},
     ]
     bundle_merged = {}
     for layer in layers:
@@ -200,3 +202,22 @@ def test_flat_alias_mirrors_list_without_appending(_spark, tmp_path):
     config = DynaconfConfig()
     config.initialize(config_files=[settings], initial_config={})
     assert list(config.get("extensions")) == ["a"]
+
+
+@pytest.mark.parametrize("token,expected", [("@merge 3", [1, 2, 3]), ("@merge_unique 2", [1, 2])])
+def test_scalar_merge_payload_appends_one_item(token, expected):
+    assert _merge({"x": [1, 2]}, {"x": token}) == {"x": expected}
+
+
+@patch(
+    "kindling.spark_config.get_or_create_spark_session",
+    side_effect=lambda: _spark_without_conf(),
+)
+def test_explicit_flat_log_level_wins_over_nested(_spark, tmp_path):
+    settings = _write(tmp_path / "settings.yaml", {"kindling": {"a": 1}})
+    config = DynaconfConfig()
+    config.initialize(
+        config_files=[settings],
+        initial_config={"kindling.telemetry.logging.level": "WARN", "log_level": "DEBUG"},
+    )
+    assert config.get("log_level") == "DEBUG"

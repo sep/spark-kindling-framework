@@ -626,6 +626,10 @@ def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> Dict[str
     """
     merged: Dict[str, Any] = dict(base)
     for key, value in override.items():
+        # Keys match case-insensitively, as at runtime (Dynaconf lookups are
+        # case-insensitive); the earlier spelling is kept.
+        if key not in merged and isinstance(key, str):
+            key = next((k for k in merged if isinstance(k, str) and k.lower() == key.lower()), key)
         existing = merged.get(key)
         if isinstance(existing, Mapping) and isinstance(value, Mapping):
             merged[key] = deep_merge(existing, value)
