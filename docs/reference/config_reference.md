@@ -10,6 +10,31 @@ Kindling has three main configuration surfaces:
 
 Kindling also supports SparkConf injection via `spark.kindling.*` keys; Kindling reads these and merges them into bootstrap/YAML config at startup.
 
+## How Settings Layers Merge
+
+The YAML layers (base, platform, workspace, environment, then the app's base,
+platform and environment files) merge in that order, later layers winning:
+
+- **Mappings deep-merge**: a layer that sets `kindling.storage.root` keeps the
+  rest of `kindling.storage` from the layers below.
+- **Lists and scalars replace**: `kindling.extensions: [b]` in an environment
+  file replaces `[a]` from the base; it does not become `[a, b]`.
+- **Appending is opt-in**, with Dynaconf's markers: put `dynaconf_merge` (or
+  `dynaconf_merge_unique`, which skips items already present) in the list,
+  write the value as `"@merge [b]"`, or `"@merge b,c"`. A mapping with
+  `dynaconf_merge: false` replaces the one below instead of merging.
+
+The runtime, config overlays (`dataentities:`, `entity_tags`, ...) and
+`kindling bundle build` all use these rules, so a setting resolves to the same
+value everywhere.
+
+`settings.local.yaml` is the environment layer for `environment: local` and
+is applied only then (it is never deployed). It does not apply to any other
+environment, even when it sits beside the files being loaded.
+
+`@format` templates, `@secret` references and `KINDLING_` environment
+variables are resolved after the files are merged.
+
 ## Bootstrap Config Keys
 
 These are read from the bootstrap config dict and/or job parameters passed to the Kindling bootstrap script.

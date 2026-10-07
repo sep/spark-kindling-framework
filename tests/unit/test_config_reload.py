@@ -48,7 +48,8 @@ class TestConfigReloadBasic:
         result = config.reload()
 
         assert result["status"] == "success", "Should return success status"
-        mock_dynaconf.reload.assert_called_once(), "Should call Dynaconf reload"
+        # Fallback re-merges the source files into a fresh Dynaconf.
+        assert mock_dynaconf_class.call_count == 2
 
     @patch("kindling.bootstrap.download_config_files")
     @patch("kindling.spark_config.Dynaconf")
@@ -191,9 +192,8 @@ class TestConfigReloadSignals:
         mock_spark_fn.return_value = mock_spark
         mock_dynaconf = MagicMock()
         mock_dynaconf.to_dict.return_value = {"test": "value"}
-        # Make reload raise an exception
-        mock_dynaconf.reload.side_effect = RuntimeError("Config error")
-        mock_dynaconf_class.return_value = mock_dynaconf
+        # Make the reload's rebuild raise an exception
+        mock_dynaconf_class.side_effect = [mock_dynaconf, RuntimeError("Config error")]
 
         config = DynaconfConfig()
         config.initialize(initial_config={"test": "value"})

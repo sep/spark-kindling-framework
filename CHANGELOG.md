@@ -2,6 +2,30 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **`settings.local.yaml` no longer overrides other environments.** Dynaconf
+  silently loaded a `settings.local.yaml` beside every settings file, after
+  all of them, so a developer's local overrides won in `dev`, `prod` or any
+  other environment run from their checkout (deployed runs never saw the file).
+  It now applies only as the `local` environment's layer, and only once.
+- **Lists from different settings layers replace instead of appending.** The
+  runtime appended a list in a later layer to the one below
+  (`[a, b]` + `[c]` → `[a, b, c]`, and `[a, b, c, c]` under `env=local`),
+  unlike config overlays and `kindling bundle build`, which replace -- so the
+  same YAML could resolve differently in a Lakeflow bundle than in a job.
+  Kindling now merges the layers itself (mappings deep-merge, lists and
+  scalars replace) before Dynaconf resolves `@format`, secrets and
+  environment variables. Appending is opt-in with Dynaconf's markers
+  (`dynaconf_merge` in the list, or `"@merge [...]"`). **Behaviour change**:
+  a configuration that relied on lists accumulating across layers must add a
+  marker.
+- `--param kindling.telemetry.logging.level=...` (or any parameter setting a
+  nested key that older code reads through a flat alias such as `log_level`)
+  now takes effect.
+
 ## [0.13.1] - 2026-10-06
 
 ### Fixed

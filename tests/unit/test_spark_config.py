@@ -1,3 +1,5 @@
+import yaml
+
 """
 Unit tests for kindling.spark_config module.
 
@@ -116,14 +118,18 @@ class TestDynaconfConfigInitialization:
         mock_dynaconf = MagicMock()
         mock_dynaconf_class.return_value = mock_dynaconf
 
-        config_files = ["/path/to/config1.yaml", "/path/to/config2.yaml"]
+        tmp_dir = Path(tempfile.mkdtemp())
+        (tmp_dir / "config1.yaml").write_text("kindling:\n  a: 1\n")
+        (tmp_dir / "config2.yaml").write_text("kindling:\n  b: 2\n")
+        config_files = [str(tmp_dir / "config1.yaml"), str(tmp_dir / "config2.yaml")]
 
         config = DynaconfConfig()
         config.initialize(config_files=config_files, environment="production")
 
         # Verify Dynaconf was initialized with correct parameters
         call_kwargs = mock_dynaconf_class.call_args[1]
-        assert call_kwargs["settings_files"] == config_files, "Should pass config files"
+        [merged] = call_kwargs["settings_files"]
+        assert yaml.safe_load(Path(merged).read_text()) == {"kindling": {"a": 1, "b": 2}}
         # Note: env parameter not passed because environments=False
         # Kindling uses separate files (settings.yaml, production.yaml) not environment blocks
         assert (
@@ -342,9 +348,12 @@ class TestDynaconfConfigHelperMethods:
         config = DynaconfConfig()
         config.dynaconf = MagicMock()
 
+        original = config.dynaconf
         config.reload()
 
-        config.dynaconf.reload.assert_called_once(), "Should call Dynaconf reload"
+        # Without a reload context the source files are re-merged into a
+        # fresh Dynaconf (the merged file is a snapshot).
+        assert config.dynaconf is not original
 
     def test_get_fresh_prefers_spark(self):
         """Test that get_fresh prefers Spark configuration"""
@@ -629,17 +638,20 @@ class TestConfigTranslation:
         from kindling.spark_config import peek_settings_value
 
         settings = tmp_path / "settings.yaml"
+        settings.write_text("kindling:\n  platform:\n    environment: databricks\n")
         mock_dynaconf = MagicMock()
         mock_dynaconf.get.return_value = "databricks"
         mock_dynaconf_class.return_value = mock_dynaconf
 
         assert peek_settings_value([str(settings)], "kindling.platform.environment") == "databricks"
-        mock_dynaconf_class.assert_called_once_with(
-            settings_files=[str(settings)],
-            environments=False,
-            MERGE_ENABLED_FOR_DYNACONF=True,
-            envvar_prefix="KINDLING",
-        )
+        kwargs = mock_dynaconf_class.call_args.kwargs
+        # The layers are merged by Kindling into one file Dynaconf loads.
+        [merged] = kwargs["settings_files"]
+        assert "kindling-settings-" in merged
+        assert "databricks" in Path(merged).read_text()
+        assert kwargs["environments"] is False
+        assert kwargs["MERGE_ENABLED_FOR_DYNACONF"] is True
+        assert kwargs["envvar_prefix"] == "KINDLING"
 
     @patch("kindling.spark_config.get_or_create_spark_session")
     @patch("kindling.spark_config.Dynaconf")
