@@ -2833,6 +2833,13 @@ def _reconcile_root_kindling_dependencies(
     the root is a single install, not a per-app one -- so this raises if they
     disagree rather than silently preferring one.
 
+    The root's spark-kindling always gets the `standalone` extra: packages
+    declare plain spark-kindling (their wheels go onto managed Spark
+    runtimes) and keep the local Spark stack in their `dev` group, while the
+    root is the repo's local dev environment (in the `kindling repo init`
+    layout a `package = false` workspace root, never built into a wheel
+    whose Requires-Dist could carry the extra).
+
     Returns {distribution: (group, extras, raw_entry)} to add at the root,
     or {} if no nested project declares Kindling either.
     """
@@ -2875,6 +2882,11 @@ def _reconcile_root_kindling_dependencies(
     merged: Dict[str, Tuple[Optional[str], List[str], Any]] = {}
     for entries in by_project.values():
         for name, (group, extras, entry) in entries.items():
+            if (
+                _canonical_distribution_name(name) == _KINDLING_DISTRIBUTION_PREFIX
+                and "standalone" not in extras
+            ):
+                extras = [*extras, "standalone"]
             merged.setdefault(name, (group, extras, entry))
     return merged
 
@@ -3522,6 +3534,9 @@ def env_add(
     click.echo(f"\nAdded {package} {match['version']}{location} to {pyproject_path}.")
 
 
+# The root keeps spark-kindling[standalone] (unlike a package, which declares
+# plain spark-kindling): it is the repo's local dev environment and is never
+# built into a wheel. See _reconcile_root_kindling_dependencies.
 _BOOTSTRAP_PACKAGES: Tuple[Tuple[str, Optional[str], List[str]], ...] = (
     ("spark-kindling", None, ["standalone"]),
     ("spark-kindling-sdk", "dev", []),

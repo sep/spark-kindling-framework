@@ -21,6 +21,19 @@ def _kindling_version() -> str:
 
 _BUILTIN_TEMPLATES = Path(__file__).parent / "templates"
 
+# The local Spark stack a generated package needs for its own tests and local
+# runs. It goes in the package's `dev` group, not its runtime dependencies: a
+# package wheel is pip-installed onto Databricks/Fabric/Synapse clusters, which
+# ship their own Spark and Delta, so its Requires-Dist must name plain
+# `spark-kindling`. Mirrors spark-kindling's `standalone` extra (root
+# pyproject.toml); a unit test keeps the two in step.
+_LOCAL_SPARK_REQUIREMENTS = (
+    "pyspark>=3.4.0,<4.0.0",
+    "delta-spark>=2.4.0,<4.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=12.0.0",
+)
+
 
 @dataclass
 class RepoScaffoldConfig:
@@ -165,6 +178,7 @@ def _package_ctx(cfg: PackageScaffoldConfig) -> dict:
         "integration": cfg.integration,
         "primary_package_snake_name": cfg.snake_name,
         "kindling_version": cfg.kindling_version or _kindling_version(),
+        "local_spark_requirements": _LOCAL_SPARK_REQUIREMENTS,
     }
 
 

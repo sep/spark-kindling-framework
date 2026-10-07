@@ -22,7 +22,7 @@ kindling package init my-domain-app        # packages/my_domain_app/ — entitie
 
 The root `pyproject.toml` is not a package: it is a uv workspace root (`members = ["packages/*"]`) so the whole repo shares one `.venv/` and one `uv.lock`.
 
-The devcontainer image (`ghcr.io/sep/spark-kindling-framework/devcontainer:latest`) ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs. It bakes in no Kindling packages and no Azure CLI; PySpark 3.5 and Delta Lake come from the project's own dependencies (the `standalone` extra).
+The devcontainer image (`ghcr.io/sep/spark-kindling-framework/devcontainer:latest`) ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs. It bakes in no Kindling packages and no Azure CLI; PySpark 3.5 and Delta Lake come from the project's own dependencies (the repo root's `spark-kindling[standalone]` and each package's `dev` group).
 
 In VS Code:
 

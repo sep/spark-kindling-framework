@@ -253,7 +253,9 @@ Checks `pyproject.toml` for any `spark-kindling`/`spark-kindling-*`
 dependency. If none is declared — as in the uv workspace root that
 `kindling repo init` writes — it adopts the Kindling dependencies declared by
 nested package/app projects (e.g. `packages/*/pyproject.toml`), failing if
-they disagree on the release. Only if no nested project declares Kindling
+they disagree on the release; the adopted `spark-kindling` always gets the
+`standalone` extra at the root (packages declare plain `spark-kindling`), since
+the root is the local dev environment and is never built into a wheel. Only if no nested project declares Kindling
 either (an empty repo) does it add `spark-kindling[standalone]` to
 `dependencies` and `spark-kindling-sdk`/`spark-kindling-cli` to the `dev`
 group, pinned to the target Kindling release (default: latest) as GitHub
@@ -903,12 +905,17 @@ Create and deploy Kindling domain packages.
 
 Create a Kindling package under an existing multi-package repo at
 `packages/<snake_name>/`, as a uv workspace member: its own `pyproject.toml`
-(uv_build, `src/<snake_name>/` layout, Kindling pinned by release wheel URL to
-the CLI's version, a `dev` group with pytest, pytest-cov, poethepoet, the SDK
-and the CLI) with poe tasks `test`, `test-unit`, `test-component`
+(uv_build, `src/<snake_name>/` layout, plain `spark-kindling` as the runtime
+dependency pinned by release wheel URL to the CLI's version, a `dev` group with
+pytest, pytest-cov, poethepoet, the SDK, the CLI and the local Spark stack
+`pyspark`/`delta-spark`/`pandas`/`pyarrow` at the bounds of the `standalone`
+extra) with poe tasks `test`, `test-unit`, `test-component`
 (`test-integration`/`test-all` unless `--no-integration`), `build`
 (`uv build`; wheels land in the repo-root `dist/`) and `update-kindling`.
-Every package must pin the same Kindling release as the repo root;
+The runtime dependency carries no `standalone` extra because the package's
+wheel is installed on managed Spark runtimes (Databricks, Fabric, Synapse) that
+provide their own Spark and Delta; its `Requires-Dist` names plain
+`spark-kindling`. Every package must pin the same Kindling release as the repo root;
 `kindling env update` moves the pins. Work in it with `uv run poe test` /
 `uv run poe build` (`uv run` syncs the package; a bare `uv sync` in a package
 directory would remove the other packages from the shared `.venv/`).

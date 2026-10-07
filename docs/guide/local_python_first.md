@@ -107,15 +107,33 @@ uv run poe test
 `uv run` syncs what the package needs before running. Don't run a bare `uv sync` inside a package directory: in the workspace it is an exact sync of that one package and removes the others from the shared `.venv/`. Resync the whole repo with `uv sync --all-packages` (or `kindling env bootstrap`) at the root.
 
 The generated `pyproject.toml` depends on the published runtime distribution,
-pinned to a release wheel by URL:
+pinned to a release wheel by URL, and keeps the local Spark stack in its `dev`
+dependency group:
 
 ```toml
 [project]
-dependencies = ["spark-kindling[standalone]"]
+dependencies = ["spark-kindling"]
 
 [tool.uv.sources]
 spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/releases/download/vX.Y.Z/spark_kindling-X.Y.Z-py3-none-any.whl" }
+
+[dependency-groups]
+dev = [
+    # ...pytest, poethepoet, spark-kindling-sdk, spark-kindling-cli
+    "pyspark>=3.4.0,<4.0.0",
+    "delta-spark>=2.4.0,<4.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=12.0.0",
+]
 ```
+
+The runtime dependency is plain `spark-kindling`, not
+`spark-kindling[standalone]`: the package's wheel is installed on Databricks,
+Fabric and Synapse clusters, which provide their own Spark and Delta, so its
+`Requires-Dist` must not pull in `pyspark` or `delta-spark`. The `dev` group
+carries the same packages as the `standalone` extra for local tests and runs,
+and the repo root (never built into a wheel) pins `spark-kindling[standalone]`
+so the shared `.venv/` always has local Spark.
 
 `spark-kindling-cli` and `spark-kindling-sdk` are pinned the same way and sit in
 the `dev` dependency group. Every package must pin the same Kindling release as

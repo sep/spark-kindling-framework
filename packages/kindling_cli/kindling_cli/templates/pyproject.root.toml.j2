@@ -5,7 +5,10 @@
 #
 # The devcontainer's `kindling env bootstrap` pins Kindling here on first
 # create (adopting the release a package already pins, or the latest release
-# for an empty repo) and runs `uv sync --all-packages`. Every package must pin
+# for an empty repo) and runs `uv sync --all-packages`. The root pins
+# spark-kindling[standalone] so the shared environment has local Spark;
+# packages declare plain spark-kindling because their wheels are installed on
+# managed Spark runtimes, and carry the Spark stack in their `dev` group. Every package must pin
 # the same Kindling release as this root; `kindling env update` moves them.
 #
 # The `-workspace` suffix keeps this name distinct from a package scaffolded

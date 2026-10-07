@@ -446,6 +446,53 @@ def test_env_update_propagates_to_nested_project_with_its_own_pin(monkeypatch, t
     assert (expected_cmd, resolved_member) in commands
 
 
+def test_env_update_keeps_plain_member_pin_and_root_standalone_extra(monkeypatch, tmp_path):
+    """A generated package declares plain spark-kindling (its wheel goes onto
+    managed Spark runtimes); updating must not add the standalone extra to
+    it, while the root keeps its own spark-kindling[standalone]."""
+    old_url = (
+        "https://github.com/sep/spark-kindling-framework/"
+        "releases/download/v1.0.0/spark_kindling-1.0.0-py3-none-any.whl"
+    )
+    root_dir = tmp_path / "root"
+    _write_pyproject(
+        root_dir,
+        "[project]\nname = 'root'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling[standalone]"]\n\n'
+        f'[tool.uv.sources]\nspark-kindling = {{ url = "{old_url}" }}\n\n'
+        "[tool.uv.workspace]\nmembers = ['packages/*']\n",
+    )
+    _write_pyproject(
+        root_dir / "packages" / "member",
+        "[project]\nname = 'member'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling"]\n\n'
+        f'[tool.uv.sources]\nspark-kindling = {{ url = "{old_url}" }}\n',
+    )
+    commands = []
+
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets("spark_kindling-1.2.3-py3-none-any.whl"),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(cli, ["env", "update", "--project", str(root_dir)])
+
+    assert result.exit_code == 0, result.output
+    url = _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")
+    assert (
+        ["uv", "add", url, "--extra", "standalone", "--frozen"],
+        root_dir.resolve(),
+    ) in commands
+    assert (
+        ["uv", "add", url, "--frozen"],
+        (root_dir / "packages" / "member").resolve(),
+    ) in commands
+
+
 def test_env_update_fails_when_nested_projects_disagree_on_version(tmp_path):
     root_dir = tmp_path / "root"
     _write_pyproject(root_dir, "[project]\nname = 'root'\nversion = '0.1.0'\ndependencies = []\n")
@@ -802,6 +849,49 @@ def test_env_bootstrap_copies_kindling_dependency_from_nested_project(monkeypatc
         ],
         resolved,
     ) in commands
+
+
+def test_env_bootstrap_adds_standalone_extra_when_adopting_plain_package_pin(monkeypatch, tmp_path):
+    """`kindling package init` declares plain spark-kindling; the root that
+    adopts it is the repo's local dev environment (never built into a wheel),
+    so it gets spark-kindling[standalone] to keep local Spark installed."""
+    url = (
+        "https://github.com/sep/spark-kindling-framework/releases/download/"
+        "v1.2.3/spark_kindling-1.2.3-py3-none-any.whl"
+    )
+    cli_url = url.replace("spark_kindling-", "spark_kindling_cli-")
+    root_dir = tmp_path / "root"
+    _write_pyproject(
+        root_dir,
+        "[project]\nname = 'root-workspace'\nversion = '0.1.0'\ndependencies = []\n\n"
+        "[tool.uv]\npackage = false\n\n[tool.uv.workspace]\nmembers = ['packages/*']\n",
+    )
+    _write_pyproject(
+        root_dir / "packages" / "orders",
+        "[project]\nname = 'orders'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling"]\n\n'
+        "[tool.uv.sources]\n"
+        f'spark-kindling = {{ url = "{url}" }}\n'
+        f'spark-kindling-cli = {{ url = "{cli_url}" }}\n\n'
+        "[dependency-groups]\n"
+        'dev = ["spark-kindling-cli", "pyspark>=3.4.0,<4.0.0"]\n',
+    )
+    commands = []
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._resolve_github_version",
+        lambda version, repo: (_ for _ in ()).throw(AssertionError("should not resolve latest")),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(root_dir)])
+
+    assert result.exit_code == 0, result.output
+    resolved = root_dir.resolve()
+    assert (["uv", "add", url, "--extra", "standalone"], resolved) in commands
+    assert (["uv", "add", cli_url, "--group", "dev"], resolved) in commands
 
 
 def test_env_bootstrap_leaves_existing_kindling_declaration_untouched(monkeypatch, tmp_path):
