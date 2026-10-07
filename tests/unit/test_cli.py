@@ -2811,6 +2811,157 @@ class TestAppRunCommand:
         assert "SYNAPSE_WORKSPACE_NAME" in result.output
 
 
+class TestAppRunTargetResolution:
+    """`app run APP` accepts an app name or a path to an app directory."""
+
+    @staticmethod
+    def _repo_with_app(tmp_path, app_dir_name="my_app"):
+        app_dir = tmp_path / "repo" / "apps" / app_dir_name
+        app_dir.mkdir(parents=True)
+        (app_dir / "app.py").write_text("# app\n", encoding="utf-8")
+        return tmp_path / "repo", app_dir
+
+    @staticmethod
+    def _capture_standalone(monkeypatch):
+        import subprocess
+
+        calls = []
+
+        def fake_run(cmd, env=None, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return calls
+
+    def test_dot_from_inside_app_dir(self, tmp_path, monkeypatch):
+        _repo, app_dir = self._repo_with_app(tmp_path)
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(app_dir)
+
+        result = CliRunner().invoke(cli, ["app", "run", ".", "--no-dotenv"])
+
+        assert result.exit_code == 0, result.output
+        assert calls[0][-1] == str((app_dir / "app.py").resolve())
+
+    def test_relative_path_from_repo_root(self, tmp_path, monkeypatch):
+        repo, app_dir = self._repo_with_app(tmp_path)
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(repo)
+
+        result = CliRunner().invoke(cli, ["app", "run", "apps/my_app", "--no-dotenv"])
+
+        assert result.exit_code == 0, result.output
+        assert calls[0][-1] == str((app_dir / "app.py").resolve())
+
+    def test_absolute_path(self, tmp_path, monkeypatch):
+        _repo, app_dir = self._repo_with_app(tmp_path)
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["app", "run", str(app_dir), "--no-dotenv"])
+
+        assert result.exit_code == 0, result.output
+        assert calls[0][-1] == str((app_dir / "app.py").resolve())
+
+    @pytest.mark.parametrize("name", ["my_app", "my-app"])
+    def test_name_resolves_by_convention(self, tmp_path, monkeypatch, name):
+        repo, app_dir = self._repo_with_app(tmp_path)
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(repo / "apps")  # walks up to find apps/my_app/
+
+        result = CliRunner().invoke(cli, ["app", "run", name, "--no-dotenv"])
+
+        assert result.exit_code == 0, result.output
+        assert calls[0][-1] == str((app_dir / "app.py").resolve())
+
+    def test_missing_path_is_a_clear_error(self, tmp_path, monkeypatch):
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["app", "run", "apps/nope", "--no-dotenv"])
+
+        assert result.exit_code != 0
+        assert "App path 'apps/nope' does not exist" in result.output
+        assert "Python identifier" not in result.output
+        assert calls == []
+
+    def test_directory_without_app_py_is_rejected(self, tmp_path, monkeypatch):
+        calls = self._capture_standalone(monkeypatch)
+        (tmp_path / "not_an_app").mkdir()
+        monkeypatch.chdir(tmp_path / "not_an_app")
+
+        result = CliRunner().invoke(cli, ["app", "run", ".", "--no-dotenv"])
+
+        assert result.exit_code != 0
+        assert "is not an app directory: no app.py" in result.output
+        assert calls == []
+
+    def test_unknown_name_still_reports_convention_lookup(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["app", "run", "ghost", "--no-dotenv"])
+
+        assert result.exit_code != 0
+        assert "App 'ghost' not found at apps/ghost/" in result.output
+
+    @staticmethod
+    def _fake_remote(monkeypatch):
+        from unittest.mock import MagicMock
+
+        api = MagicMock()
+        api.submit_app_run.return_value = "run-1"
+        monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (api, p))
+        return api
+
+    def test_remote_dot_submits_app_directory_name(self, tmp_path, monkeypatch):
+        """A path names the deployed app the way `app deploy` does by default."""
+        _repo, app_dir = self._repo_with_app(tmp_path)
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(app_dir)
+
+        result = CliRunner().invoke(cli, ["app", "run", ".", "--platform", "fabric", "--no-wait"])
+
+        assert result.exit_code == 0, result.output
+        assert api.submit_app_run.call_args.args[0] == "my_app"
+        api.deploy_app.assert_not_called()
+
+    def test_remote_name_is_submitted_verbatim(self, tmp_path, monkeypatch):
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            cli, ["app", "run", "orders", "--platform", "fabric", "--no-wait"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert api.submit_app_run.call_args.args[0] == "orders"
+
+    def test_remote_app_name_overrides_path(self, tmp_path, monkeypatch):
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            cli,
+            ["app", "run", ".", "--platform", "fabric", "--no-wait", "--app-name", "orders"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert api.submit_app_run.call_args.args[0] == "orders"
+
+    def test_remote_invalid_path_is_rejected(self, tmp_path, monkeypatch):
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            cli, ["app", "run", "./missing", "--platform", "fabric", "--no-wait"]
+        )
+
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
+        api.submit_app_run.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # env check --platform
 # ---------------------------------------------------------------------------
@@ -3955,6 +4106,67 @@ def test_package_add_pipe_skips_existing_output_entity(tmp_path, spelling):
 
     assert result.exit_code == 0, result.output
     assert entities.read_text() == f"DataEntities.entity({spelling})\n"
+
+
+def test_package_add_entity_fixture_stub_is_header_row_from_schema(tmp_path):
+    """The stub is the scaffolded schema's header row with no data rows, so the
+    runtime treats it as "no fixture" until rows are added."""
+    from kindling.entity_provider_csv import fixture_csv_has_data_rows
+
+    project = _scaffolded_package(tmp_path, "ledger")
+    result = CliRunner().invoke(
+        cli, ["package", "add", "entity", "bronze.orders", "--package", str(project)]
+    )
+
+    assert result.exit_code == 0, result.output
+    entities = (project / "src" / "ledger" / "entities" / "bronze.py").read_text()
+    assert 'StructField("id", StringType(), False)' in entities
+    stub = project / "tests" / "entities" / "bronze" / "orders.csv"
+    assert stub.read_text(encoding="utf-8") == "id\n"
+    assert fixture_csv_has_data_rows(stub) is False
+
+
+def test_package_add_entity_keeps_existing_fixture(tmp_path):
+    project = _scaffolded_package(tmp_path, "ledger")
+    fixture = project / "tests" / "entities" / "bronze" / "orders.csv"
+    fixture.parent.mkdir(parents=True, exist_ok=True)
+    fixture.write_text("id,amount\n1,10\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["package", "add", "entity", "bronze.orders", "--package", str(project)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert fixture.read_text(encoding="utf-8") == "id,amount\n1,10\n"
+    assert "Kept existing fixture" in result.output
+
+
+def test_package_add_pipe_input_stub_is_treated_as_no_fixture(tmp_path):
+    """An input's schema isn't known to `package add pipe`, so its stub is a
+    comment-only placeholder, which the runtime ignores."""
+    from kindling.entity_provider_csv import fixture_csv_has_data_rows
+
+    project = _scaffolded_package(tmp_path, "ledger")
+    result = CliRunner().invoke(
+        cli,
+        [
+            "package",
+            "add",
+            "pipe",
+            "silver.orders",
+            "--inputs",
+            "bronze.orders",
+            "--package",
+            str(project),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    stub = project / "tests" / "entities" / "bronze" / "orders.csv"
+    content = stub.read_text(encoding="utf-8")
+    assert content.startswith("#")
+    assert "bronze.orders" in content
+    assert fixture_csv_has_data_rows(stub) is False
 
 
 # ---------------------------------------------------------------------------

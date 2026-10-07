@@ -16,7 +16,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 from urllib.parse import quote, urlparse
 
 import click
@@ -1349,11 +1349,20 @@ def _warn_missing_entity_fixtures(entity_registry: Any, pipe_registry: Any) -> N
             continue
         entity = entity_registry.get_entity_definition(entity_id)
         is_delta = entity.tags.get("provider_type", "delta") == "delta"
-        if is_delta and _fixture_csv_path(entity_id, cwd) is None:
-            parts = entity_id.replace(".", "/")
+        if not is_delta:
+            continue
+        parts = entity_id.replace(".", "/")
+        fixture_path = _fixture_csv_path(entity_id, cwd)
+        if fixture_path is None:
             click.echo(
                 f"[WARN] entity.{entity_id}.fixture: no fixture CSV at"
                 f" tests/entities/{parts}.csv — local runs will require cloud storage"
+            )
+        elif not _fixture_csv_has_data_rows(fixture_path):
+            click.echo(
+                f"[WARN] entity.{entity_id}.fixture: fixture CSV at"
+                f" tests/entities/{parts}.csv has no data rows and is ignored"
+                " — local runs will require cloud storage"
             )
 
 
@@ -4896,6 +4905,62 @@ def _resolve_by_convention(name: str, root_dir: str, label: str) -> Path:
     )
 
 
+def _looks_like_app_path(app: str) -> bool:
+    """True when `app run`'s APP argument is a filesystem path rather than a name.
+
+    `.`/`..`, anything containing a path separator, `~`-prefixed and absolute
+    paths, and `*.py` files are paths; anything else is an app name.
+    """
+    if app in (".", "..") or app.startswith("~") or app.endswith(".py"):
+        return True
+    if any(sep and sep in app for sep in (os.sep, os.altsep)):
+        return True
+    return Path(app).is_absolute()
+
+
+def _resolve_app_dir_from_path(app: str) -> Path:
+    """Resolve a path argument (an app directory or its app.py) to the app directory."""
+    candidate = Path(app).expanduser()
+    if not candidate.exists():
+        raise click.ClickException(
+            f"App path '{app}' does not exist. Pass an app directory containing app.py "
+            "(e.g. `.` or `apps/<app>`) or an app name."
+        )
+    resolved = candidate.resolve()
+    if resolved.is_file():
+        if resolved.name != "app.py":
+            raise click.ClickException(
+                f"'{app}' is not an app: expected an app directory or its app.py."
+            )
+        return resolved.parent
+    if not (resolved / "app.py").is_file():
+        raise click.ClickException(
+            f"'{app}' is not an app directory: no app.py in {resolved}. "
+            "Pass an app directory containing app.py, an app name (looked up as "
+            "apps/<app>/), or use --local-folder for other layouts."
+        )
+    return resolved
+
+
+def _resolve_app_run_dir(app: str) -> Path:
+    """Resolve `app run`'s APP argument to a local app directory.
+
+    A path (`.`, `apps/foo`, an absolute path) must be a directory containing
+    app.py. A name is looked up by convention as apps/<snake_name>/ walking up
+    from the current directory; failing that, a directory of that name in the
+    current directory that contains app.py is accepted.
+    """
+    if _looks_like_app_path(app):
+        return _resolve_app_dir_from_path(app)
+    try:
+        return _resolve_by_convention(app, "apps", "app")
+    except click.ClickException:
+        local_dir = Path(app)
+        if (local_dir / "app.py").is_file():
+            return local_dir.resolve()
+        raise
+
+
 @app_group.command("init")
 @click.argument("app_name")
 @click.option(
@@ -5540,11 +5605,17 @@ def app_run(
 ) -> None:
     """Run an app locally or remotely on a managed platform.
 
-    For standalone runs, APP is the app name and kindling looks up apps/<app>/ by
-    convention. Use --local-folder to override for non-standard layouts.
+    APP is an app name or a path to an app directory (one containing app.py),
+    e.g. `.` from inside the app directory, `apps/my_app`, or an absolute path.
 
-    For remote runs (--platform), APP is the deployed app name. The app must already
-    be deployed; use 'kindling app deploy APP --platform PLATFORM' first.
+    For standalone runs, a name is looked up as apps/<app>/ by convention
+    (walking up from the current directory). Use --local-folder to override for
+    non-standard layouts.
+
+    For remote runs (--platform), a name is the deployed app name; a path runs
+    the app deployed under that directory's name (the name `kindling app deploy`
+    gives it by default). Nothing is uploaded: deploy first with
+    'kindling app deploy APP --platform PLATFORM'. --app-name overrides the name.
 
     \b
     --trace/--trace-level are documented sugar for
@@ -5559,7 +5630,7 @@ def app_run(
         if local_folder:
             resolved_app_ref = str(local_folder.expanduser().resolve())
         else:
-            resolved_app_ref = str(_resolve_by_convention(app, "apps", "app"))
+            resolved_app_ref = str(_resolve_app_run_dir(app))
         resolved_dotenvs: Tuple[Path, ...]
         if no_dotenv:
             resolved_dotenvs = ()
@@ -5598,8 +5669,14 @@ def app_run(
     if load_lake:
         raise click.ClickException("--load-lake is only valid for standalone app runs.")
 
+    # Remote runs submit an already-deployed app by name (nothing is uploaded).
+    # A path argument names the app the way `app deploy` does by default: by
+    # its directory name. --app-name, when given, wins either way.
+    remote_app_ref = app
+    if not app_name and _looks_like_app_path(app):
+        remote_app_ref = _default_app_name(_resolve_app_dir_from_path(app))
     _run_remote_app(
-        app,
+        remote_app_ref,
         app_name,
         env,
         parameters_path,
@@ -5776,12 +5853,27 @@ def _csv_stub_exists(app_path: Path, namespace: str, name: str) -> bool:
     return (app_path / "tests" / "entities" / namespace / f"{name}.csv").exists()
 
 
-def _create_csv_stub(app_path: Path, namespace: str, name: str) -> Path:
-    """Create an empty CSV stub (headers only) if it does not already exist."""
+def _create_csv_stub(
+    app_path: Path, namespace: str, name: str, columns: Optional[Sequence[str]] = None
+) -> Path:
+    """Create a CSV fixture stub with no data rows if it does not already exist.
+
+    With *columns* the stub is a header row of those columns; without them
+    (schema unknown) it is a single comment line. Either way it has no data
+    rows, so local runs ignore it and read the entity's provider until rows
+    are added.
+    """
     csv_path = app_path / "tests" / "entities" / namespace / f"{name}.csv"
     if not csv_path.exists():
         _ensure_dir(csv_path.parent)
-        csv_path.write_text("# add CSV headers here\n", encoding="utf-8")
+        if columns:
+            content = ",".join(columns) + "\n"
+        else:
+            content = (
+                f"# Fixture for {namespace}.{name}: replace this line with a CSV header row "
+                "and add data rows (ignored until it has data rows)\n"
+            )
+        csv_path.write_text(content, encoding="utf-8")
     return csv_path
 
 
@@ -6197,11 +6289,20 @@ def _entity_declared_in(module_dir: Path, entity_id: str) -> bool:
     )
 
 
+# Columns of the schema _scaffold_entity_definition generates; the fixture
+# stub `package add entity` writes uses them as its header row.
+_SCAFFOLD_ENTITY_COLUMNS = ("id",)
+
+
 def _scaffold_entity_definition(module_dir: Path, entity_id: str) -> Path:
     """Append a DataEntities.entity() skeleton for entity_id to the package's
     entities module for its namespace; returns that module."""
     namespace, name = _parse_entity_id(entity_id)
     schema_var = f"{namespace}_{name}_schema"
+    schema_fields = "".join(
+        f'        StructField("{column}", StringType(), False),\n'
+        for column in _SCAFFOLD_ENTITY_COLUMNS
+    )
 
     entity_block = f"""
 # --- {entity_id} ---
@@ -6209,8 +6310,7 @@ from pyspark.sql.types import StringType, StructField, StructType
 
 {schema_var} = StructType(
     [
-        StructField("id", StringType(), False),
-        # TODO: add fields for {entity_id}
+{schema_fields}        # TODO: add fields for {entity_id}
     ]
 )
 
@@ -6274,8 +6374,13 @@ def package_add_entity(entity_id: str, package_path: Path) -> None:
     module_dir, project_dir = _package_add_targets(package_path)
     _scaffold_entity_definition(module_dir, entity_id)
 
-    csv_path = _create_csv_stub(project_dir, namespace, name)
-    click.echo(f"Created fixture stub {csv_path}")
+    if _csv_stub_exists(project_dir, namespace, name):
+        click.echo(f"Kept existing fixture tests/entities/{namespace}/{name}.csv")
+        return
+    csv_path = _create_csv_stub(project_dir, namespace, name, columns=_SCAFFOLD_ENTITY_COLUMNS)
+    click.echo(
+        f"Created fixture stub {csv_path} (header only; local runs ignore it until it has data rows)"
+    )
 
 
 # ---- package add pipe ----
@@ -6614,6 +6719,14 @@ def _fixture_csv_path(entity_id: str, cwd: Path) -> Optional[Path]:
         relative = Path(f"{parts[0]}.csv")
     candidate = cwd / "tests" / "entities" / relative
     return candidate if candidate.is_file() else None
+
+
+def _fixture_csv_has_data_rows(csv_path: Path) -> bool:
+    """Whether local runs use this fixture: one with no data rows (empty,
+    header-only or comment-only) is ignored in favour of the entity's provider."""
+    from kindling.entity_provider_csv import fixture_csv_has_data_rows
+
+    return fixture_csv_has_data_rows(csv_path)
 
 
 def _read_csv_rows(csv_path: Path) -> Tuple[List[str], List[List[str]]]:
@@ -7240,6 +7353,8 @@ def app_inspect(
         fixture_path = _fixture_csv_path(eid, cwd)
         if fixture_path is not None:
             fixture_label = str(fixture_path.relative_to(cwd))
+            if not _fixture_csv_has_data_rows(fixture_path):
+                fixture_label += " (no data rows; ignored)"
         else:
             fixture_label = "-"
         table_rows.append([eid, provider_type, provider_path, fixture_label])

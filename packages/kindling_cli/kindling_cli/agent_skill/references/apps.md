@@ -201,11 +201,14 @@ kindling app run daily_orders --env local  # full app in a subprocess (standalon
 kindling app run daily_orders --param report_date=2024-01-15 --trace
 ```
 
-- `app run <app>` takes an app **name**, not a path. It is normalized to snake_case
-  and resolved by walking up from the current directory to `apps/<app>/`. Use
-  `--local-folder <dir>` for other layouts. `kindling app run .` **fails**
-  ("'.' cannot be converted to a valid Python identifier"), even though the
-  scaffolded app.py docstring and some docs suggest it.
+- `app run <app>` takes an app **name** or a **path** to an app directory (one
+  containing `app.py`): `kindling app run .` from inside the app directory,
+  `kindling app run apps/<app>`, or an absolute path. A name is normalized to
+  snake_case and resolved by walking up from the current directory to
+  `apps/<app>/`. Use `--local-folder <dir>` for other layouts.
+- With `--platform`, a name is the deployed app name, used as given; a path
+  runs the app deployed under that directory's name (what `app deploy` names it
+  by default). Nothing is uploaded, so deploy first.
 - The `APP_NAME` argument to `app inspect` is only a display label. The app
   itself is still found through `--app` or the current directory.
 - Fixture CSVs at `tests/entities/<ns>/<name>.csv` are resolved **relative to the

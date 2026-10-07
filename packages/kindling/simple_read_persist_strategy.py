@@ -9,6 +9,7 @@ from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.entity_provider_csv import (
     FixtureCSVEntityProvider,
+    fixture_csv_has_data_rows,
     resolve_fixture_csv_path,
 )
 from kindling.entity_provider_registry import EntityProviderRegistry
@@ -158,6 +159,15 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             # Fixture discovery applies only when running locally (standalone platform).
             cwd = Path(os.getcwd())
             fixture_path = resolve_fixture_csv_path(entity.entityid, cwd)
+            if fixture_path is not None and not fixture_csv_has_data_rows(fixture_path):
+                # An empty, header-only or comment-only file (e.g. a freshly
+                # scaffolded stub) is not a fixture: don't let it hijack the read.
+                self.logger.warning(
+                    f"Ignoring fixture CSV for entity '{entity.entityid}' at {fixture_path}: "
+                    "it has no data rows. Reading from the entity's provider instead; "
+                    "add data rows to use the fixture."
+                )
+                fixture_path = None
             if fixture_path is not None:
                 self.logger.info(
                     f"Using fixture CSV for entity '{entity.entityid}': {fixture_path}"
