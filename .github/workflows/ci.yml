@@ -187,7 +187,7 @@ jobs:
               packages/kindling_sdk/*)
                 sdk_changed=true
                 ;;
-              docs/*|README.md|AGENTS.md|CLAUDE.md|.github/instructions/*|.github/kindling-agent-reference.md)
+              docs/*|README.md|AGENTS.md|CLAUDE.md|.github/instructions/*)
                 docs_changed=true
                 ;;
               .github/Dockerfile.devcontainer)
@@ -208,7 +208,7 @@ jobs:
 
           devcontainer_changed=false
           if printf '%s\n' "$changed_files" \
-              | grep -qE '^\.github/Dockerfile\.devcontainer$|^\.github/kindling-agent-reference\.md$'; then
+              | grep -qE '^\.github/Dockerfile\.devcontainer$'; then
             devcontainer_changed=true
           fi
 

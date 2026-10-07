@@ -783,7 +783,7 @@ Scaffold and manage multi-package Kindling repos.
 
 Create a Kindling repo root with shared dev tooling: `.devcontainer/devcontainer.json`
 (image `ghcr.io/sep/spark-kindling-framework/devcontainer:latest`,
-`postCreateCommand` `kindling env bootstrap`, interpreter
+`postCreateCommand` `kindling env bootstrap && kindling agent setup`, interpreter
 `${containerWorkspaceFolder}/.venv/bin/python`), `.github/workflows/ci.yml`
 (runs `uv run poe test && uv run poe build` in each `packages/*`
 inside the devcontainer image), `.gitignore` (includes `.venv/` and `dist/`),
@@ -810,11 +810,15 @@ kept; add `[tool.uv.workspace] members = ["packages/*"]` to it. Repos created
 before `repo init` wrote this file have none: add the file above, then run
 `kindling env bootstrap` at the root.
 
+It also installs the Kindling agent skill for the agents chosen with
+`--agents` (see [`agent setup`](#agent-setup)).
+
 | Option | Default | Description |
 |---|---|---|
 | `--output-dir PATH` | `.` | Directory to initialize as the repo root |
 | `--template-dir PATH` | — | Custom Jinja2 templates overlaying the built-ins |
 | `--overwrite-devcontainer` | — | Replace an existing `devcontainer.json` |
+| `--agents LIST` | `all` | Coding agents to install the Kindling skill for (`claude`, `codex`, `copilot`, `all`, `none`); see `agent setup` |
 
 ---
 
@@ -909,16 +913,34 @@ Manage agent instruction files for Claude Code, Copilot, and Codex.
 
 ### `agent setup`
 
-Generate (or update) agent instruction files from the Kindling reference doc:
+Install the Kindling **skill** and a short always-loaded instruction block for
+the coding agents a project uses. The skill (`SKILL.md` plus references for
+entities, pipes, apps and config) ships inside `spark-kindling-cli`, so it
+matches the Kindling release the project pins; its code examples are tested
+against the framework.
 
-- `CLAUDE.md` — Claude Code
-- `.github/copilot-instructions.md` — GitHub Copilot
-- `AGENTS.md` — Codex / OpenAI agents
+| Agent | Skill | Instructions |
+|---|---|---|
+| `claude` | `.claude/skills/kindling/` | `CLAUDE.md` |
+| `codex` | `.agents/skills/kindling/` | `AGENTS.md` |
+| `copilot` | `.github/skills/kindling/` | `.github/copilot-instructions.md` |
 
-Re-run after pulling a new devcontainer image to pick up updated documentation.
+Copilot also reads `.claude/skills` and `.agents/skills`, so its own skill
+directory is written only when neither `claude` nor `codex` is selected. In the
+instruction files only the block between the `kindling:begin` / `kindling:end`
+markers is managed; text around it is kept. The selection is saved in
+`.kindling-agent.json` and reused when `--agents` is omitted; agents dropped
+from it have their Kindling files removed. `kindling repo init` runs this, and
+the scaffolded devcontainer reruns it after `kindling env bootstrap`; rerun it
+after `kindling env update` to move the skill to the new release.
 
 | Option | Default | Description |
 |---|---|---|
+| `--agents LIST` | saved selection, else `all` | Comma-separated `claude`, `codex`, `copilot`, or `all` / `none` |
+| `--check` | — | Report whether the files are up to date without writing; exit 1 if not |
+| `--project PATH` | `.` | Project root directory |
+
+---|---|---|
 | `--force` | — | Regenerate even if version is unchanged |
 | `--check` | — | Report whether files are up to date without writing |
 | `--project PATH` | `.` | Project root directory |
