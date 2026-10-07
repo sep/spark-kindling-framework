@@ -29,42 +29,129 @@ from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 from pyspark.sql import DataFrame
 
-_QUERY_START = ("select", "with", "values", "table", "from")
-_NON_QUERY_KEYWORDS = re.compile(
-    r"\b(insert|update|delete|merge|drop|create|alter|truncate|replace|grant|revoke"
-    r"|refresh|optimize|vacuum|msck|load|cache|uncache|set|reset|use|call)\b",
-    re.IGNORECASE,
-)
+_QUERY_START = {"select", "with", "values", "table", "from"}
 
 
-def _strip_sql_comments_and_literals(sql: str) -> str:
-    """The SQL with comments removed and quoted text blanked, so keyword and
-    statement checks see only the statement's own tokens."""
-    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
-    sql = re.sub(r"--[^\n]*", " ", sql)
-    return re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`[^`]*`", "''", sql)
+def _sql_tokens(sql: str):
+    """Tokenize SQL into ("word", w), ("str", ""), ("(", ""), (")", ""),
+    (";", "") and ("sym", c), skipping comments.
+
+    One pass that tracks quoting, so comment markers inside strings stay part
+    of the string and quotes inside comments stay part of the comment.
+    """
+    tokens = []
+    i, n = 0, len(sql)
+    while i < n:
+        c = sql[i]
+        if c.isspace():
+            i += 1
+        elif sql.startswith("--", i):
+            end = sql.find("\n", i)
+            i = n if end == -1 else end + 1
+        elif sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            if end == -1:
+                raise ValueError("unterminated block comment")
+            i = end + 2
+        elif c in "'\"`":
+            j = i + 1
+            while True:
+                if j >= n:
+                    raise ValueError("unterminated quoted text")
+                if sql[j] == "\\" and c != "`":
+                    j += 2
+                    continue
+                if sql[j] == c:
+                    if j + 1 < n and sql[j + 1] == c:  # doubled quote
+                        j += 2
+                        continue
+                    break
+                j += 1
+            tokens.append(("str", "") if c != "`" else ("word", "`"))
+            i = j + 1
+        elif c.isalpha() or c == "_":
+            j = i
+            while j < n and (sql[j].isalnum() or sql[j] == "_"):
+                j += 1
+            tokens.append(("word", sql[i:j].lower()))
+            i = j
+        elif c in "();":
+            tokens.append((c, ""))
+            i += 1
+        else:
+            tokens.append(("sym", c))
+            i += 1
+    return tokens
+
+
+def _main_statement_index(tokens) -> int:
+    """Index of the statement keyword after a WITH clause's definitions."""
+    i, depth = 1, 0
+    if i < len(tokens) and tokens[i] == ("word", "recursive"):
+        i += 1
+    while i < len(tokens):
+        kind, value = tokens[i]
+        if kind == "(":
+            depth += 1
+        elif kind == ")":
+            depth -= 1
+        elif depth == 0 and kind == "word" and value not in ("as", "not", "materialized"):
+            # Skip the CTE name: the statement starts at the first depth-0
+            # word that follows a closed definition and no comma.
+            previous = tokens[i - 1][0]
+            if previous == ")":
+                return i
+        i += 1
+    return -1
 
 
 def require_query_sql(sql: str, entity_id: str) -> None:
     """Raise ValueError unless sql is a single read-only query.
 
-    A SQL entity is read by running its SQL, so anything other than a query
-    (DDL, DML, session commands, several statements) must be rejected before
-    it reaches Spark.
+    A SQL entity is read by running its SQL, so DDL, DML, session commands or
+    several statements must be rejected before reaching Spark. Statement
+    keywords are checked only where a statement starts (and Spark's
+    FROM-first INSERT), so functions and columns named like keywords
+    (``replace(...)``, ``update_time``) are fine.
     """
-    code = _strip_sql_comments_and_literals(sql).strip().rstrip(";").strip()
-    first_word = re.match(r"\(*\s*([A-Za-z]+)", code)
     problem = None
-    if not code:
+    try:
+        tokens = _sql_tokens(sql or "")
+    except ValueError as exc:
+        tokens, problem = [], str(exc)
+    while tokens and tokens[-1][0] == ";":
+        tokens.pop()
+    first = next((i for i, tok in enumerate(tokens) if tok[0] != "("), None)
+    if problem:
+        pass
+    elif first is None:
         problem = "it is empty"
-    elif ";" in code:
+    elif any(kind == ";" for kind, _ in tokens):
         problem = "it contains more than one statement"
-    elif not first_word or first_word.group(1).lower() not in _QUERY_START:
+    elif tokens[first][0] != "word" or tokens[first][1] not in _QUERY_START:
         problem = "it does not start with SELECT, WITH, VALUES, TABLE or FROM"
     else:
-        match = _NON_QUERY_KEYWORDS.search(code)
-        if match:
-            problem = f"it contains the non-query keyword {match.group(1).upper()}"
+        if tokens[first][1] == "with":
+            main = _main_statement_index(tokens[first:])
+            keyword = tokens[first + main][1] if main >= 0 else None
+            if keyword not in _QUERY_START - {"with"}:
+                problem = (
+                    f"the statement after its WITH clause is {str(keyword).upper()}, not a query"
+                )
+        if problem is None:
+            depth = 0
+            for index, (kind, value) in enumerate(tokens):
+                depth += kind == "("
+                depth -= kind == ")"
+                following = tokens[index + 1] if index + 1 < len(tokens) else ("", "")
+                if (
+                    depth == 0
+                    and kind == "word"
+                    and value == "insert"
+                    and following in (("word", "into"), ("word", "overwrite"))
+                ):
+                    problem = "it contains an INSERT statement"
+                    break
     if problem:
         raise ValueError(
             f"SQL entity '{entity_id}' must be a single read-only query, but {problem}."

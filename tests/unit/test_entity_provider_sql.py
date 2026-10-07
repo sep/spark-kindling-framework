@@ -151,6 +151,12 @@ class TestSqlEntityProviderRegistration:
         "INSERT INTO t VALUES (1)",
         "SET spark.sql.shuffle.partitions=1",
         "",
+        # comment markers inside strings must not hide the statement
+        "WITH x AS (SELECT '--' AS n) INSERT INTO target SELECT n FROM x",
+        "WITH x AS (SELECT '/*' AS a) INSERT INTO target SELECT '*/' AS a FROM x",
+        "FROM src INSERT INTO t1 SELECT a",
+        "with x as (select 1) delete from t",
+        "select 'unterminated",
     ],
 )
 def test_non_query_sql_is_rejected_before_spark(sql, monkeypatch):
@@ -179,6 +185,10 @@ def test_non_query_sql_is_rejected_before_spark(sql, monkeypatch):
         "with recent as (select * from s.o) select * from recent;",
         "select 'drop table x' as note, last_update from t -- insert later",
         "(SELECT 1)",
+        "SELECT replace('abc', 'a', 'z') AS cleaned",  # function named like a command
+        "select load, update_time from t",
+        "with a as (select 1), b (c) as (select 2) select * from a join b",
+        "select 'it''s' as q, 'semi;colon' as s",
     ],
 )
 def test_queries_are_accepted(sql):
