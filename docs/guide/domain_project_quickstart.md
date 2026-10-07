@@ -431,10 +431,11 @@ cd apps/my_domain_app
 uv run kindling app run . --env local
 ```
 
-Or from repo root:
+Or from repo root, by path or by name (`apps/<name>/` by convention):
 
 ```bash
-kindling app run my-domain-app --env local --local-folder apps/my_domain_app
+kindling app run apps/my_domain_app --env local
+kindling app run my-domain-app --env local
 ```
 
 Pass runtime parameters:
@@ -555,7 +556,7 @@ kindling pipeline run silver.orders --app apps/my_domain_app/app.py --env local
 (cd packages/my_domain_app && uv run poe test)
 
 # 6 — Run full app locally
-kindling app run my-domain-app --env local --local-folder apps/my_domain_app
+kindling app run apps/my_domain_app --env local
 
 # 7 — Ship
 kindling app package my-domain-app --local-folder apps/my_domain_app --output dist/my-domain-app.kda

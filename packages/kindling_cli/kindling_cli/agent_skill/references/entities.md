@@ -251,8 +251,13 @@ directory** before it asks the provider. The rules:
 - The id's dots become directories. The last segment is the file name.
 - The CSV is read with `header=true, inferSchema=true`. The declared schema is
   not applied.
-- A fixture with headers only, or the stub `kindling package add entity`
-  writes, raises `ValueError ... has no data rows`. Fill it in or delete it.
+- A fixture with no data rows (empty, headers only, or only `#` comment lines)
+  is ignored with a warning naming the file, and the entity's provider is read
+  instead. The stubs `kindling package add entity` (a header row) and
+  `package add pipe --inputs` (a comment line) write are like that until you
+  add rows. `app validate` warns and `app inspect --entities` marks them
+  "ignored".
+- Lines starting with `#` are comments in a fixture.
 - Fixtures only replace **reads**. Writes still go to the entity's provider.
 - `kindling entity show` and `kindling entity validate` use the same lookup.
 

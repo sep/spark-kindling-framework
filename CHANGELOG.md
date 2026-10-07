@@ -45,6 +45,22 @@ All notable changes to spark-kindling are documented here.
 - `--param kindling.telemetry.logging.level=...` (or any parameter setting a
   nested key that older code reads through a flat alias such as `log_level`)
   now takes effect.
+- **`kindling app run .` works.** `app run` accepts a path to an app
+  directory (`.`, `apps/my_app`, an absolute path; one containing `app.py`) as
+  well as an app name, as the scaffolded `app.py`, `kindling app init`'s next
+  steps and the quickstart already suggested. It used to fail with "Project
+  name '.' cannot be converted to a valid Python identifier". With
+  `--platform`, a path runs the app deployed under that directory's name (the
+  name `kindling app deploy` gives it by default); a name is still used as
+  given.
+- **A freshly scaffolded entity no longer breaks local reads.** A
+  `tests/entities/` fixture with no data rows (empty, header-only, or only `#`
+  comment lines) is now ignored with a warning naming the file, and the
+  entity's provider is read, instead of raising "has no data rows". `kindling
+  package add entity` writes the scaffolded schema's header row (`id`) as the
+  stub, `package add pipe --inputs` keeps a comment-line stub, `app validate`
+  warns about such fixtures and `app inspect --entities` marks them ignored.
+  Lines starting with `#` are comments in fixtures.
 
 ## [0.13.1] - 2026-10-06
 

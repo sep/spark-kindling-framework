@@ -451,6 +451,27 @@ class TestAppInspectEntities:
         assert "tests/entities" in result.output
         assert "-" in result.output
 
+    def test_app_inspect_marks_fixture_without_rows_as_ignored(self, monkeypatch):
+        runner = CliRunner()
+        entity_registry = Mock(spec=DataEntityRegistry)
+        entity_registry.get_entity_ids.return_value = ["bronze.orders"]
+        entity_registry.get_entity_definition.return_value = _make_entity(
+            "bronze.orders", tags={"provider_type": "delta"}
+        )
+        monkeypatch.setattr("kindling.injection.GlobalInjector.get", lambda _t: entity_registry)
+
+        with runner.isolated_filesystem():
+            app_path = _write_app(Path("app.py"))
+            _write_fixture_csv(Path("."), "bronze.orders", "id\n")  # header-only stub
+
+            result = runner.invoke(
+                cli,
+                ["app", "inspect", "myapp", "--entities", "--app", str(app_path)],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "tests/entities/bronze/orders.csv (no data rows; ignored)" in result.output
+
     def test_app_inspect_entities_no_entities(self, monkeypatch):
         runner = CliRunner()
         entity_registry = Mock(spec=DataEntityRegistry)
@@ -515,3 +536,53 @@ class TestAppInspectEntities:
         result = runner.invoke(cli, ["entity", "validate", "--help"])
         assert result.exit_code == 0
         assert "env" in result.output.lower() or "quality" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# _warn_missing_entity_fixtures
+# ---------------------------------------------------------------------------
+
+
+class TestWarnMissingEntityFixtures:
+    """Delta source entities without a usable fixture get a [WARN] line."""
+
+    @staticmethod
+    def _registries():
+        entity_registry = Mock()
+        entity_registry.get_entity_ids.return_value = ["bronze.orders"]
+        entity_registry.get_entity_definition.return_value = _make_entity(
+            "bronze.orders", tags={"provider_type": "delta"}
+        )
+        pipe_registry = Mock()
+        pipe_registry.get_pipe_ids.return_value = ["silver.orders"]
+        pipe_registry.get_pipe_definition.return_value = SimpleNamespace(
+            input_entity_ids=["bronze.orders"]
+        )
+        return entity_registry, pipe_registry
+
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            (None, "no fixture CSV at tests/entities/bronze/orders.csv"),
+            ("id\n", "has no data rows and is ignored"),
+            ("# stub\n", "has no data rows and is ignored"),
+            ("id\n1\n", None),
+        ],
+    )
+    def test_warning_reflects_whether_fixture_is_used(
+        self, tmp_path, monkeypatch, capsys, content, expected
+    ):
+        from kindling_cli.cli import _warn_missing_entity_fixtures
+
+        monkeypatch.chdir(tmp_path)
+        if content is not None:
+            _write_fixture_csv(tmp_path, "bronze.orders", content)
+
+        _warn_missing_entity_fixtures(*self._registries())
+
+        out = capsys.readouterr().out
+        if expected is None:
+            assert out == ""
+        else:
+            assert "[WARN] entity.bronze.orders.fixture" in out
+            assert expected in out

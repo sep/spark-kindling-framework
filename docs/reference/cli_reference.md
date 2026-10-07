@@ -25,6 +25,8 @@ re-running upstream layers.
 
 Entity data sources follow the priority stack:
 `tests/entities/` fixture CSV → `kindling.yaml` env mapping → registered provider.
+A fixture with no data rows (empty, header-only, or only `#` comment lines) is ignored
+with a warning naming the file, and the entity's provider is read instead.
 
 | Option | Default | Description |
 |---|---|---|
@@ -518,14 +520,21 @@ on the fly; use `--local-folder` to override or `--kda-package` for a pre-built 
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
 | `--json` | — | Machine-readable JSON output |
 
-### `app run <APP_NAME>`
+### `app run <APP>`
 
 Run an app locally (standalone) or submit a run of a deployed app (remote).
 
-**Standalone** (`--platform standalone`, the default): looks up `apps/<app_name>/` by convention
-and runs locally with embedded Spark. Use `--local-folder` to override for non-standard layouts.
+`APP` is an app name or a path to an app directory (one containing `app.py`): `.` from
+inside the app directory, `apps/my_pipeline`, or an absolute path. `.`, `..`, `~`-prefixed
+and absolute paths, and anything containing a path separator are paths; anything else is a name.
 
-**Remote** (`--platform databricks|fabric|synapse`): submits a run of the already-deployed app.
+**Standalone** (`--platform standalone`, the default): a name looks up `apps/<app_name>/` by
+convention (walking up from the current directory); a path runs that directory. Runs locally
+with embedded Spark. Use `--local-folder` to override for non-standard layouts.
+
+**Remote** (`--platform databricks|fabric|synapse`): submits a run of the already-deployed app;
+nothing is uploaded. A name is the deployed app name, used as given. A path selects the app
+deployed under that directory's name (the name `kindling app deploy` uses by default).
 The app must have been deployed first with `kindling app deploy`. `--local-folder` has no meaning
 for remote runs and will error.
 
@@ -550,6 +559,10 @@ for remote runs and will error.
 | `--json` | — | Machine-readable JSON output |
 
 ```bash
+# Local standalone — from inside apps/my_pipeline/, or by path
+kindling app run .
+kindling app run apps/my_pipeline
+
 # Local standalone — convention lookup
 kindling app run my-pipeline
 kindling app run my-pipeline --local-package packages/my_pipeline --env local
@@ -870,7 +883,9 @@ Scaffold an entity definition and a CSV fixture stub.
 
 - Appends a `DataEntities.entity()` skeleton to `<module>/entities/<ns>.py` (inside
   the scaffolded `entities/` package; `<module>/entities.py` for a package without one)
-- Creates `tests/entities/<ns>/<name>.csv` under the package's project root
+- Creates `tests/entities/<ns>/<name>.csv` under the package's project root: a header
+  row of the scaffolded schema's columns (`id`) and no data rows. Local runs ignore a
+  fixture with no data rows and read the entity's provider until you add rows.
 
 | Option | Default | Description |
 |---|---|---|
@@ -884,7 +899,9 @@ runtime imports only a package's `entities`, `pipes` and `ingestion` namespaces,
 so `pipes/` is created if missing; a flat `pipes.py` is appended to instead);
 its output entity `<ns>.<name>_output` is declared in `<module>/entities/<ns>.py`
 unless it already exists;
-test stubs and input fixture stubs go under the project root's `tests/`.
+test stubs and input fixture stubs go under the project root's `tests/`. An input
+fixture stub is a single comment line (the input's schema isn't known), so local
+runs ignore it until you replace it with a header row and data rows.
 
 | Option | Default | Description |
 |---|---|---|

@@ -5,6 +5,7 @@ Read-only entity provider for CSV files using Spark's CSV reader.
 Includes FixtureCSVEntityProvider for auto-discovered tests/entities/ fixtures.
 """
 
+import csv
 import logging
 from pathlib import Path
 from typing import Optional
@@ -66,13 +67,47 @@ def resolve_fixture_csv_path(entity_id: str, cwd: Path) -> Optional[Path]:
     return None
 
 
+# Lines starting with this are comments in fixture CSVs: skipped by the
+# data-row check and by the fixture reader (Spark's ``comment`` option).
+_FIXTURE_COMMENT_PREFIX = "#"
+
+
+def fixture_csv_has_data_rows(csv_path: Path) -> bool:
+    """
+    Return True if a fixture CSV has a header row and at least one data row.
+
+    Blank lines and lines starting with ``#`` are ignored, so an empty file, a
+    header-only file, and a comment-only stub (as ``kindling package add``
+    writes) all return False. Only the first two records are parsed.
+
+    Args:
+        csv_path: Path to the fixture CSV file.
+
+    Returns:
+        True when the file holds at least one data row after its header.
+    """
+    with open(csv_path, newline="", encoding="utf-8") as handle:
+        lines = (line for line in handle if not line.startswith(_FIXTURE_COMMENT_PREFIX))
+        records = 0
+        for record in csv.reader(lines):
+            if not any(field.strip() for field in record):
+                continue
+            records += 1
+            if records >= 2:
+                return True
+    return False
+
+
 class FixtureCSVEntityProvider(BaseEntityProvider):
     """
     Entity provider that reads a single fixture CSV file from tests/entities/.
 
     This provider is instantiated per-entity during local execution when the
     auto-discovery convention applies.  It is NOT registered as a singleton in
-    the DI container — callers construct it directly.
+    the DI container — callers construct it directly.  Callers check
+    fixture_csv_has_data_rows() first: a fixture with no data rows is not a
+    fixture, and the entity's registered provider is read instead.  Lines
+    starting with ``#`` are comments.
 
     Raises:
         ValueError: If the CSV exists but contains no data rows (headers only).
@@ -110,6 +145,7 @@ class FixtureCSVEntityProvider(BaseEntityProvider):
             spark.read.format("csv")
             .option("header", True)
             .option("inferSchema", True)
+            .option("comment", _FIXTURE_COMMENT_PREFIX)
             .load(path_str)
         )
 
