@@ -616,6 +616,29 @@ def test_published_on_pypi_queries_json_api_and_degrades_to_false(monkeypatch):
     assert len(calls) == 3
 
 
+def test_env_bootstrap_rejects_nested_projects_with_mixed_pin_forms(monkeypatch, tmp_path):
+    root = tmp_path / "repo"
+    _write_pyproject(root, "[project]\nname = 'repo'\nversion = '0.1.0'\ndependencies = []\n")
+    _write_pyproject(
+        root / "packages" / "a",
+        "[project]\nname = 'a'\nversion = '0.1.0'\ndependencies = ['spark-kindling']\n\n"
+        f"[tool.uv.sources]\nspark-kindling = {{ url = '{_wheel_url('spark_kindling-1.2.3-py3-none-any.whl')}' }}\n",
+    )
+    _write_pyproject(
+        root / "packages" / "b",
+        "[project]\nname = 'b'\nversion = '0.1.0'\ndependencies = ['spark-kindling==1.2.3']\n",
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(root)])
+
+    assert result.exit_code != 0
+    assert "two forms" in result.output
+    assert "kindling env update" in result.output
+    assert commands == []
+
+
 def test_version_pinned_dependency_reports_its_version(tmp_path):
     from kindling_cli.cli import (
         _declared_kindling_version,

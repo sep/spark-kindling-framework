@@ -13,7 +13,8 @@ All notable changes to spark-kindling are documented here.
   the ADX, Databricks Auto Loader and visualization extensions remain on
   GitHub Releases only. Releases upload from CI after every gate passes,
   through PyPI trusted publishing; release candidates go to TestPyPI.
-  GitHub Releases keep carrying the same wheels (and now sdists).
+  GitHub Releases keep carrying the same wheels; sdists are published to
+  PyPI only.
 - `kindling env update` / `env add` / `env bootstrap` take `--source
   auto|pypi|github`.
 

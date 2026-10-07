@@ -3634,6 +3634,33 @@ _BOOTSTRAP_PACKAGES: Tuple[Tuple[str, Optional[str], List[str]], ...] = (
 )
 
 
+def _require_single_pin_form(project_path: Path) -> None:
+    """Fail when nested projects pin Kindling both by release URL and by
+    version. uv rejects a workspace that sources one package both ways, and
+    bootstrap adopts just one nested entry, so the sync would fail; `kindling
+    env update` rewrites every project to one form."""
+    forms: Dict[str, List[Path]] = {"url": [], "version": []}
+    for nested in _discover_descendant_pyprojects(project_path):
+        try:
+            entries = list(_iter_kindling_dependency_entries(nested))
+        except Exception:
+            continue
+        for _name, _group, entry in entries:
+            if isinstance(entry, dict) and entry.get("url"):
+                forms["url"].append(nested)
+            elif isinstance(entry, dict) and entry.get("version"):
+                forms["version"].append(nested)
+    if forms["url"] and forms["version"]:
+        by_url = ", ".join(sorted({str(p.parent) for p in forms["url"]}))
+        by_version = ", ".join(sorted({str(p.parent) for p in forms["version"]}))
+        raise click.ClickException(
+            "Nested projects pin Kindling in two forms -- by release wheel URL "
+            f"({by_url}) and by version ({by_version}); a uv workspace must pin each "
+            "package one way. Run `kindling env update` at the repo root to give every "
+            "project the same form."
+        )
+
+
 @env_group.command("bootstrap")
 @click.option(
     "--version",
@@ -3693,6 +3720,7 @@ def env_bootstrap(
         click.echo(f"Kindling is already declared in {pyproject_path}.")
     else:
         to_copy = _reconcile_root_kindling_dependencies(pyproject_path, project_path)
+        _require_single_pin_form(project_path)
         if to_copy:
             click.echo(
                 f"No Kindling dependency found in {pyproject_path}; "

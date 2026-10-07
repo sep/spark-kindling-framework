@@ -179,21 +179,54 @@ patch version. This is another reason to dry-run packaging changes as an rc.
 
 ### One-time setup
 
-For each published package, on both [pypi.org](https://pypi.org/manage/account/publishing/)
-and [test.pypi.org](https://test.pypi.org/manage/account/publishing/), add a
-trusted publisher (a *pending* publisher for a project that does not exist
-yet; the first upload creates it):
+PyPI allows one *pending* trusted publisher per publisher identity (owner,
+repository, workflow, environment), and a pending publisher creates a single
+project, so CI cannot create all eight projects itself. Create them with one
+manual upload of the first release candidate, then attach the publisher to
+each existing project (an existing publisher can serve any number of
+projects). Do this once, before tagging that candidate.
 
-| Field | PyPI | TestPyPI |
-|---|---|---|
-| Owner | `sep` | `sep` |
-| Repository | `spark-kindling-framework` | `spark-kindling-framework` |
-| Workflow | `ci.yml` | `ci.yml` |
-| Environment | `pypi` | `testpypi` |
+1. **GitHub environments.** In **Settings → Environments**, create `pypi` and
+   `testpypi`. Add required reviewers to `pypi` to gate every upload behind
+   an approval, and restrict it to `v*` tags if desired.
+2. **Build the candidate locally.** After the rc version bump is merged, from
+   an up-to-date `main`:
 
-In the GitHub repository (**Settings → Environments**), create the `pypi`
-and `testpypi` environments. Add required reviewers to `pypi` to gate every
-upload behind an approval, and restrict it to `v*` tags if desired.
+   ```bash
+   uv sync
+   poe build
+   bash scripts/select_pypi_dists.sh dist pypi-dist   # the 8 published packages
+   ```
+
+3. **Upload it with a personal API token** (account settings → API tokens,
+   scoped to the whole account, since the projects do not exist yet):
+
+   ```bash
+   UV_PUBLISH_TOKEN=<test.pypi.org token> uv publish \
+       --publish-url https://test.pypi.org/legacy/ pypi-dist/*
+   UV_PUBLISH_TOKEN=<pypi.org token> uv publish pypi-dist/*
+   ```
+
+   Uploading the candidate to PyPI as well claims the names now; prerelease
+   versions are not installed unless asked for by version.
+4. **Attach the trusted publisher** to each of the eight projects, on both
+   sites (**Manage → Publishing → Add a new publisher → GitHub**):
+
+   | Field | PyPI | TestPyPI |
+   |---|---|---|
+   | Owner | `sep` | `sep` |
+   | Repository | `spark-kindling-framework` | `spark-kindling-framework` |
+   | Workflow | `ci.yml` | `ci.yml` |
+   | Environment | `pypi` | `testpypi` |
+
+5. **Revoke the API tokens.** CI publishes with trusted publishing from here
+   on.
+
+Then `poe release` the candidate as usual. Its `publish-pypi` job finds the
+files already uploaded and skips them (`skip-existing`), so the candidate's
+files on PyPI are the locally built ones; every later release is uploaded by
+CI. A package added to PyPI later needs the same bootstrap: one manual upload,
+then the publisher.
 
 ## 📥 Installing a Release
 

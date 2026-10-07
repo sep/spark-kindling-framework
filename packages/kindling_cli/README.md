@@ -10,8 +10,9 @@ pip install spark-kindling-cli
 ```
 
 The CLI depends on `spark-kindling-sdk` (used for remote platform lifecycle
-operations), so this installs the SDK too. Pin both to one Kindling release
-(`spark-kindling-cli==0.14.0`) when you need a specific version.
+operations), so this installs the SDK too. The CLI only requires a minimum SDK
+version, so to pin one Kindling release, pin both:
+`pip install spark-kindling-cli==0.14.0 spark-kindling-sdk==0.14.0`.
 
 Without PyPI access (or for a release before 0.14.0, which exists only on
 GitHub), install both from a
