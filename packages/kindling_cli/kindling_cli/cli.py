@@ -6757,15 +6757,15 @@ def _read_csv_rows(csv_path: Path) -> Tuple[List[str], List[List[str]]]:
     Returns:
         Tuple of column headers list and list of row value lists.
     """
+    # Lines starting with "#" and blank records are skipped, as the runtime's
+    # fixture reader does (Spark comment="#"), so show/validate see the same
+    # header and rows a local run reads.
     text = csv_path.read_text(encoding="utf-8")
-    reader = csv.reader(io.StringIO(text))
-    rows_iter = iter(reader)
-    try:
-        headers = next(rows_iter)
-    except StopIteration:
+    lines = [line for line in text.splitlines(keepends=True) if not line.startswith("#")]
+    records = [r for r in csv.reader(lines) if any(field.strip() for field in r)]
+    if not records:
         return [], []
-    rows = list(rows_iter)
-    return headers, rows
+    return records[0], records[1:]
 
 
 def _resolve_entity_info(entity_id: str, entity_def: Any) -> Tuple[str, str]:

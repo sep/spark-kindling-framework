@@ -233,10 +233,20 @@ class TestLakePackageRegistration:
                 "LAKE_REG_TEST: declarations missing" not in log
             ), "The lake package's entities/pipes were not registered remotely"
             assert "App execution failed" not in log, "Bootstrap reported app failure"
-            assert MARKER_DONE in log or job_succeeded or infra_error, (
-                f"No completion marker and job not successful: status={job_status} "
-                f"result={job_result} log_length={len(log)}"
-            )
+            # Registration must be positively verified: the app's marker, or a
+            # successful job (app.py exits 1 when declarations are missing). An
+            # infrastructure error proves nothing, so it fails as inconclusive
+            # rather than passing.
+            if MARKER_DONE not in log and not job_succeeded:
+                if infra_error:
+                    pytest.fail(
+                        f"Inconclusive: job ended {job_status} before registration was "
+                        "verified (infrastructure error); rerun the test"
+                    )
+                pytest.fail(
+                    f"No completion marker and job not successful: status={job_status} "
+                    f"result={job_result} log_length={len(log)}"
+                )
         finally:
             try:
                 api_client.cancel_job(run_id=run_id)

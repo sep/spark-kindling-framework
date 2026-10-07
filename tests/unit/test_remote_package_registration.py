@@ -74,3 +74,36 @@ def test_error_inside_a_declaration_module_is_raised(scaffolded_package, tmp_pat
 
     with pytest.raises(ModuleNotFoundError, match="not_a_real_module_xyz"):
         _manager()._import_installed_packages([scaffolded_package])
+
+
+def test_registration_runs_after_all_dependencies_are_installed(monkeypatch):
+    """A declaration module may import a library the app's requirements.txt
+    provides, so lake packages are imported only after PyPI installs too."""
+    order = []
+    manager = _manager()
+    monkeypatch.setattr(manager, "_download_lake_wheels", lambda app, reqs, tmp: "/cache")
+    monkeypatch.setattr(
+        manager, "_install_lake_wheels", lambda cache, reqs: order.append("lake") or True
+    )
+    monkeypatch.setattr(
+        manager, "_install_pypi_dependencies", lambda deps, cache: order.append("pypi")
+    )
+    monkeypatch.setattr(
+        manager, "_import_installed_packages", lambda reqs: order.append("register")
+    )
+
+    manager._install_app_dependencies("app", ["requests"], ["sales-domain"])
+
+    assert order == ["lake", "pypi", "register"]
+
+
+def test_no_registration_when_no_lake_wheels_installed(monkeypatch):
+    calls = []
+    manager = _manager()
+    monkeypatch.setattr(manager, "_download_lake_wheels", lambda app, reqs, tmp: "/cache")
+    monkeypatch.setattr(manager, "_install_lake_wheels", lambda cache, reqs: False)
+    monkeypatch.setattr(manager, "_import_installed_packages", lambda reqs: calls.append(reqs))
+
+    manager._install_app_dependencies("app", [], ["sales-domain"])
+
+    assert calls == []

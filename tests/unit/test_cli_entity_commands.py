@@ -586,3 +586,15 @@ class TestWarnMissingEntityFixtures:
         else:
             assert "[WARN] entity.bronze.orders.fixture" in out
             assert expected in out
+
+
+def test_read_csv_rows_skips_comments_and_blank_records(tmp_path):
+    """Matches the runtime fixture reader: a leading comment is not the header."""
+    from kindling_cli.cli import _read_csv_rows
+
+    fixture = tmp_path / "orders.csv"
+    fixture.write_text("# sample orders\nid,name\n\n1,foo\n# trailing note\n2,bar\n")
+
+    assert _read_csv_rows(fixture) == (["id", "name"], [["1", "foo"], ["2", "bar"]])
+    (tmp_path / "empty.csv").write_text("# only a comment\n")
+    assert _read_csv_rows(tmp_path / "empty.csv") == ([], [])
